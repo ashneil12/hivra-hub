@@ -562,6 +562,11 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       // answer is written; the page that comes back starts its own driver.
       setTimeout(() => window.location.reload(), Number(action.afterMs ?? 300));
       return { ok: true, at: Date.now() };
+    case "quit":
+      // r98 (B5): Ash quits the way the app menu's Quit MonoCode does (verify_live_quit -> window::request_quit), once
+      // this answer is written. Never a kill: the windows save their work first, and a busy chat still asks.
+      setTimeout(() => void invoke("verify_live_quit").catch((error) => console.error("verify driver quit", error)), Number(action.afterMs ?? 300));
+      return { ok: true, at: Date.now() };
     case "snapshot":
       return { ok: true, ...snapshot(host) };
     case "buttons":

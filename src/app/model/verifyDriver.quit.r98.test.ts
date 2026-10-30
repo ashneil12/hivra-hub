@@ -1,0 +1,23 @@
+// @vitest-environment happy-dom
+// r98 (B5): the bench quits the dev copy the way the app menu's Quit does, after the answer is written; never a kill.
+import { afterEach, expect, it, vi } from "vitest";
+
+const invoke = vi.fn(async (..._args: unknown[]) => undefined);
+vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
+
+const { DriverLog, perform } = await import("./verifyDriver");
+
+afterEach(() => {
+  vi.useRealTimers();
+  invoke.mockClear();
+});
+
+it("answers first, then asks the app to quit through its own Quit path", async () => {
+  vi.useFakeTimers();
+  const answer = (await perform({ id: "1", op: "quit", afterMs: 50 }, {} as never, new DriverLog())) as { ok: boolean };
+  expect(answer.ok).toBe(true);
+  expect(invoke).not.toHaveBeenCalled();
+  await vi.advanceTimersByTimeAsync(60);
+  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(invoke).toHaveBeenCalledWith("verify_live_quit");
+});
