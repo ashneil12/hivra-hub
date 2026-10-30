@@ -4553,17 +4553,22 @@ mod reap_logic_tests {
 
 /// The settings MonoCode itself passes a session (`ClaudeCliSettings` in claudeProtocol.ts), kept in a dev copy so it
 /// runs like the daily app: thinking, fast mode, ultracode and the long-chat compaction ceiling.
-const DEV_CLAUDE_SETTINGS: [&str; 4] = [
+const DEV_CLAUDE_SETTINGS: [&str; 7] = [
     "alwaysThinkingEnabled",
     "fastMode",
     "ultracode",
     "autoCompactWindow",
+    // r83 (quietWorkers.ts): a hub worker raises no notifications of its own.
+    "agentPushNotifEnabled",
+    "inputNeededNotifEnabled",
+    "taskCompleteNotifEnabled",
 ];
 
 /// The env a dev copy keeps from the app's own settings: a non-Anthropic worker's sub-agent model pins (r69).
-const DEV_CLAUDE_ENV: [&str; 2] = [
+const DEV_CLAUDE_ENV: [&str; 3] = [
     "CLAUDE_CODE_SUBAGENT_MODEL",
     "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL",
+    "CLAUDE_CODE_DISABLE_PERMISSION_PROMPT_NOTIFY_HOOKS",
 ];
 
 /// The app's own delegate tool (`monocode mcp`, src/mcp_server.rs) is the one MCP server a dev copy's Claude keeps: it
