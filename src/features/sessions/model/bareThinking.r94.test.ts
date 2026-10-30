@@ -38,3 +38,15 @@ it("the chat's lone-step group skips a bare thought (source check: no layout nee
   const src = readFileSync("src/features/sessions/ui/AgentTranscript.tsx", "utf8");
   expect(src).toMatch(/phase\.steps\.length === 1\) \{\n\s*\/\/[^\n]*\n\s*if \(isBareThought\(phase\.steps\[0\], turnLive\)\) return null;/);
 });
+
+it("(g) a rendered Mono reply says Nothing needs you once", async () => {
+  const { MonoActivityTrail } = await import("../ui/AgentTranscript");
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  const said: Block = { id: "s", role: "assistant", text: "Nothing needs you. No questions are waiting." };
+  await act(async () => root.render(createElement(MonoActivityTrail, { blocks: [said] } as never)));
+  expect(host.textContent).toContain("Nothing needs you.");
+  expect(host.textContent).not.toMatch(/No questions/);
+  await act(async () => root.unmount());
+});
