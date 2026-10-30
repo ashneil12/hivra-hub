@@ -1,5 +1,6 @@
 // The app's one hook for delegation rows (model/delegations.ts): one tracker per window, boot recovery in the main
 // window, and each chat's Claude session bound for Ash OS (`ash-hub-chat-bind`) whenever it binds or rotates.
+import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { leadFor } from "../../hub/model/hubLeads";
@@ -67,6 +68,8 @@ export function useDelegations(options: {
   /** Put a report in a Mono's queue (queueMonoSessionCompletion). */
   queueReport: (monoId: string, message: QueuedMessage) => Promise<void>;
   quitting: () => boolean;
+  /** r84: lands a resumed worker's finished changes (workerLanding.ts). */
+  land?: (result: MonoSessionCompletionResult) => Promise<MonoSessionCompletionResult>;
   backend?: DelegationsBackend;
 }): DelegationTracker {
   const latest = useRef(options);
@@ -85,6 +88,7 @@ export function useDelegations(options: {
         queueReport: (monoId, message) =>
           latest.current.queueReport(monoId, message),
         quitting: () => latest.current.quitting(),
+        land: (result) => latest.current.land?.(result) ?? Promise.resolve(result),
       }),
   );
 

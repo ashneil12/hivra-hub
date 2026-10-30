@@ -1,3 +1,4 @@
+import { cutTestOutput } from "./testOutput";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
   failedReason,
@@ -149,8 +150,8 @@ export function monoSessionCompletionResult(
     title,
     status: outcome.status,
     originalPrompt: prompt.slice(0, RESULT_MAX_CHARS),
-    result: result.slice(0, RESULT_MAX_CHARS),
-    truncated: result.length > RESULT_MAX_CHARS,
+    result: cutTestOutput(result).slice(0, RESULT_MAX_CHARS),
+    truncated: cutTestOutput(result).length > RESULT_MAX_CHARS,
     ...(outcome.error ? { error: outcome.error } : {}),
     ...(claim
       ? { claim: { confidence: claim.confidence, backed: claim.backed, missing: claim.missing, line: claim.line } }

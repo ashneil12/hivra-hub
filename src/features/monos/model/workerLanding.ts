@@ -15,9 +15,14 @@ export type Lander = (input: { checkout: string; project: string }) => Promise<L
 /** A report that stopped to ask (a "Needs Ash:" line, a pick put to him, or "Stopped."): its work isn't finished. */
 const STOPPED_TO_ASK = /^\s*Stopped\b|\bNeeds (?:Ash|the user)\s*:|^\s*My pick\s*:/im;
 
+/** r84 (s14): the worker stopped on a choice that is Ash's; its decided work isn't built yet. */
+export function stoppedForAsh(result: MonoSessionCompletionResult): boolean {
+  return result.status === "completed" && (STOPPED_TO_ASK.test(result.result) || waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure)));
+}
+
 export function landingDue(result: MonoSessionCompletionResult, session: Pick<Session, "cwd" | "worktreeCwd"> | undefined): { checkout: string; project: string } | undefined {
   if (result.status !== "completed" || result.reviewProblem) return undefined;
-  if (STOPPED_TO_ASK.test(result.result) || waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure))) return undefined;
+  if (stoppedForAsh(result)) return undefined;
   const checkout = session?.worktreeCwd;
   const project = session?.cwd;
   if (!checkout || !project || checkout === project) return undefined;

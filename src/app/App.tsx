@@ -43,7 +43,8 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
-import { landingDue, landWorkerCopy, withLanding } from "../features/monos/model/workerLanding";
+import { landingDue, landWorkerCopy, stoppedForAsh, withLanding } from "../features/monos/model/workerLanding";
+import { ashAnsweredLeadNote, ashWordsNote, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
@@ -1146,6 +1147,8 @@ type SubmitOptions = ComposerTurnOptions & {
   /** A room's turn or another Mono's message (hub rooms): a hidden turn shown as a quiet line. */
   monoNote?: Block["monoNote"];
   onSettled?: (outcome: ControlOutcome) => void;
+  /** r84 (s14): Ash's own message to a worker whose job is open; its turn carries a note that his words decide. */
+  ashToWorker?: boolean;
   /** The turn was committed to the session (its user block is in). */
   onStarted?: () => void;
   /**
@@ -7740,12 +7743,29 @@ function Workspace({
               // An automatic resume carries a note or a ship's receipt, so its text isn't the bare continue.
               !!options?.autoResume || text.trim() === CONTINUE_PROMPT,
             );
+      // r84 (s14): Ash himself answering a worker whose job is open: its Lead hears his words at once (save, say what's
+      // next), and the worker's turn says his words decide.
+      const ashTyped =
+        !!delegation &&
+        !options?.monoNote &&
+        !options?.managed &&
+        !options?.appRequestId &&
+        !options?.autoResume &&
+        !options?.monoCheck &&
+        text.trim() !== CONTINUE_PROMPT;
+      const answeredJob = ashTyped ? openJobOf(delegationsRef.current?.known() ?? [], sessionId) : undefined;
       if (delegation)
         options = {
           ...options,
           onSettled: delegation.settled,
           onStarted: delegation.started,
+          ...(answeredJob ? { ashToWorker: true } : {}),
         };
+      if (answeredJob)
+        void queueMonoSessionCompletionRef.current(
+          answeredJob.ownerSession,
+          ashAnsweredLeadNote(answeredJob, text, Date.now().toString(36)),
+        );
       if (editedResends.isActive(sessionId)) return false;
       // Output already received belongs before the submitted user message.
       // Flush before reading the session too, since pending errors can settle it.
@@ -9124,6 +9144,7 @@ function Workspace({
               ? standingRuleSendNote(turnPrompt)
               : undefined;
           if (ruleNote) appContext.push(ruleNote);
+          if (options?.ashToWorker) appContext.push(ashWordsNote());
           if (monoRotation) {
             appContext.push(monoRotation.brief(sessionId));
           }
@@ -9846,6 +9867,11 @@ function Workspace({
     queueReport: (monoId, message) =>
       queueMonoSessionCompletionRef.current(monoId, message),
     quitting: isAppQuitting,
+    // r84 (s14): the worker Ash answered finishes in a resumed turn; its changes land like a first report's.
+    land: async (result) => {
+      const landing = landingDue(result, sessionsRef.current.find((session) => session.id === result.sessionId));
+      return landing ? withLanding(result, await landWorkerCopy(landing)) : result;
+    },
   });
   delegationsRef.current = delegations;
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
@@ -12962,6 +12988,13 @@ function Workspace({
                 finish(gateFailedResult(result, run));
                 return;
               }
+            }
+            // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
+            // completed) for his answer; his message in the worker's chat picks it back up (resumeMonitor).
+            if (row && stoppedForAsh(result)) {
+              settled = true;
+              settle(result);
+              return;
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
             const landing = landingDue(result, sessionsRef.current.find((session) => session.id === sessionId));
