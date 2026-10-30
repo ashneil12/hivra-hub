@@ -33,3 +33,9 @@ describe("a re-asked worker's report", () => {
     expect(result.review?.how).toBe("npm test");
   });
 });
+
+it("r82 (c02): the Lead checks a worker's copy with reads, never shell commands that wait on Ash", async () => {
+  const { SILENT_CHECK } = await import("./monoSessionCompletion");
+  expect(SILENT_CHECK).toMatch(/In a worker's copy use Read, Grep and Glob \(no Allow needed\)/);
+  expect(SILENT_CHECK).toMatch(/shell commands there wait on the user/);
+});

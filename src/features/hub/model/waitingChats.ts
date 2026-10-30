@@ -76,7 +76,7 @@ export type WaitingChatsHost = {
 export type WorkerQuestionRouter = (chat: WaitingEntry) => boolean;
 
 type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pendingQuestion" | "inboxAsk" | "ephemeral" | "orchestrationLeadId"> & {
-  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool">>)[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool" | "monoSpawnedSessions">>)[];
 };
 
 const KEY = "monocode:hub-waiting-chats";
@@ -249,7 +249,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const mono = monoForSession(chat.id);
     const q =
       read?.source === "permission"
-        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title })) }
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, orchestrator: chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
         : read?.source === "marker" && answeredThisTurn(chat, read.question)
           ? null
           : read;

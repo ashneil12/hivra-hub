@@ -359,11 +359,14 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
  * r81 (Critiquito): who is asking, instead of "it": "the Tally Lead", "the health worker". A name that is already a
  * person's (a Mono called Pip) stays bare; a chat's title becomes "the <title> worker".
  */
-export function whoAsks(input: { monoName?: string; title?: string }): string {
+export function whoAsks(input: { monoName?: string; title?: string; orchestrator?: boolean }): string {
   const name = input.monoName?.trim();
   if (name) return /\b(lead|worker|team|chat|bot)$/i.test(name) ? `the ${name}` : name;
-  const title = input.title?.trim().replace(/\s+worker$/i, "");
+  // r82 (c02): a stored title can carry its harness ("claude · Tally health…"); Ash never sees that part.
+  const title = input.title?.trim().replace(/^[a-z][\w-]* · /i, "").replace(/\s+(worker|chat)$/i, "");
   if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
+  // r82 (c02): a coding-team chat that sends out workers is not one of them: "the Tally health chat".
+  if (input.orchestrator) return `the ${title} chat`;
   const plain = /^[A-Z][a-z]/.test(title) ? title[0].toLowerCase() + title.slice(1) : title;
   return `the ${plain} worker`;
 }

@@ -281,9 +281,9 @@ function nameList(names: readonly string[]): string {
  * when everything is back, in the Landed / Not fixed shape.
  */
 export const SILENT_CHECK =
-  "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat.";
+  "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat. In a worker's copy use Read, Grep and Glob (no Allow needed); shell commands there wait on the user.";
 export const ROLL_UP_SHAPE =
-  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Anything a worker found that doesn't match (a mismatch, a conflict) is told plainly, never only checked.";
+  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Say plainly any mismatch a worker found.";
 
 /** What the notification asks of the Mono, by where the report stands among its turn's sessions. */
 function completionAsk(count: number, progress?: CompletionProgress): string {
