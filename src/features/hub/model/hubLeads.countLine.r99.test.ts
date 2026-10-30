@@ -12,3 +12,11 @@ it("every Lead's soul opens a status answer with one plain count line", () => {
     expect(soul).toContain("`Of 40: 1 running, 5 waiting on you, 34 parked.`");
   }
 });
+
+it("the count line matches its detail, and decisions on his card are pointed to, not pasted again (B5 936c)", () => {
+  const lead = leadFor("tally-lead");
+  if (!lead) return;
+  const soul = leadSoul(lead, "/code/x");
+  expect(soul).toContain("each one matches what you then list under it");
+  expect(soul).toContain("instead of pasting them again");
+});
