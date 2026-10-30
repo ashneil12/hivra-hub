@@ -1,6 +1,7 @@
 // r82: the routes check, run by the app (gates.rs) when a delegated worker reports done, instead of by the bench. Its
 // words go back to the worker; a worker that still fails it after two tries reaches its Lead as failed, with them.
 import { invoke } from "@tauri-apps/api/core";
+import type { Session } from "../../sessions/model/session";
 import { gateLog } from "../../hub/model/waitingChats";
 import { waitsOnAshCall, type MonoSessionCompletionResult } from "./monoSessionCompletion";
 
@@ -45,6 +46,14 @@ export function gateFailedResult(result: MonoSessionCompletionResult, run: GateR
 /** Ash signs the check's items off by answering: an answer of his in the Lead's chat since the worker started. */
 export function signedOffSince(ownerSession: string, since: number, log = gateLog()): boolean {
   return log.some((r) => r.sessionId === ownerSession && !!r.answer && r.answer.at >= since);
+}
+
+/**
+ * The worker's own copy: an isolated worker keeps the project as its `cwd` and its checkout in `worktreeCwd` (s14 r82 #2:
+ * the check was handed the project folder, refused it, and never ran).
+ */
+export function gateCheckout(session: Pick<Session, "cwd" | "worktreeCwd"> | undefined): string | undefined {
+  return session?.worktreeCwd || session?.cwd || undefined;
 }
 
 export const runWorkerGate: GateRunner = async ({ projectId, checkout, signedOff }) => {

@@ -42,7 +42,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
-import { gateAsk, gateAskNote, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -12933,7 +12933,7 @@ function Workspace({
               return;
             }
             if (gateDue(result)) {
-              const checkout = sessionsRef.current.find((session) => session.id === sessionId)?.cwd;
+              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               const run = checkout && projectId
                 ? await runWorkerGate({ projectId, checkout, signedOff: signedOffSince(monoId, workerStarted) })

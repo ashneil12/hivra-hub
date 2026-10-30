@@ -106,3 +106,13 @@ it("App runs the check before a finished worker's report goes out, and sends its
   expect(app).toMatch(/submitSessionRef\.current\(sessionId, gateAsk\(run\), \[\], \{/);
   expect(app).toMatch(/finish\(gateFailedResult\(result, run\)\)/);
 });
+
+describe("the copy the check runs on (s14 r82 #2)", () => {
+  it("is an isolated worker's worktree, not the project it started in", async () => {
+    const { gateCheckout } = await import("./workerGate");
+    expect(gateCheckout({ cwd: "/p/tally", worktreeCwd: "/p/tally-worktrees/mc-1" })).toBe("/p/tally-worktrees/mc-1");
+    expect(gateCheckout({ cwd: "/p/tally-worktrees/mc-2" })).toBe("/p/tally-worktrees/mc-2");
+    expect(gateCheckout(undefined)).toBeUndefined();
+  });
+});
+
