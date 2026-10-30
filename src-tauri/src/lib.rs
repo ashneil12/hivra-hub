@@ -15,6 +15,7 @@ pub mod control_cli;
 mod cursor_store;
 mod delegations;
 mod dev_fault;
+mod gates;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -498,6 +499,7 @@ pub fn run() {
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
             dev_fault::dev_fault_take_worker_failure,
+            gates::run_worker_gate,
             worker_queue::worker_queue_list,
             worker_queue::worker_queue_add,
             worker_queue::worker_queue_take,
