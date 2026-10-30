@@ -36,7 +36,7 @@ describe("the words", () => {
   it("names who did what; only the agent whose chat exists is a link", () => {
     expect(noteParts(note()).head).toEqual([
       { kind: "name", text: "Lead", opens: null },
-      { kind: "text", text: " messaged " },
+      { kind: "text", text: " handed a job to " },
       { kind: "name", text: 'Worker "Example: fix the save bug"', opens: "w-1" },
     ]);
     expect(noteParts(note({ kind: "stuck", from: worker, to: lead })).head.map((p) => p.text).join("")).toBe('Worker "Example: fix the save bug" is with Lead');
@@ -81,7 +81,7 @@ describe("the words", () => {
     // anything else is kept
     expect(detailOf(note({ kind: "messaged", from: worker, to: lead, line: "Which format? [JSON | binary]" }))).toBe("Which format? [JSON | binary]");
     expect(detailOf(note({ kind: "stuck", from: worker, to: lead, line: "Failed: the build broke" }))).toBe("Failed: the build broke");
-    expect(noteText(note({ line: "Example: fix the save bug" }))).toBe('Lead messaged Worker "Example: fix the save bug"');
+    expect(noteText(note({ line: "Example: fix the save bug" }))).toBe('Lead handed a job to Worker "Example: fix the save bug"');
   });
 
   it("a note keeps its own line in the chat, never folded into the work trail", () => {
@@ -98,8 +98,8 @@ describe("the row", () => {
     expect(row.className).toContain("text-content/50");
     expect(row.className).not.toMatch(/rounded|bg-|border|shadow/);
     // the brief's first line is the worker's label: said once, not twice
-    expect(row.textContent).toBe('Lead messaged Worker "Example: fix the save bug"');
-    expect(row.getAttribute("aria-label")).toBe('Lead messaged Worker "Example: fix the save bug"');
+    expect(row.textContent).toBe('Lead handed a job to Worker "Example: fix the save bug"');
+    expect(row.getAttribute("aria-label")).toBe('Lead handed a job to Worker "Example: fix the save bug"');
     const links = row.querySelectorAll("[data-agent-note-open]");
     expect(links).toHaveLength(1);
     expect(links[0].textContent).toBe('Worker "Example: fix the save bug"');

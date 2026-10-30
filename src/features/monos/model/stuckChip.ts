@@ -2,7 +2,7 @@
 // (a billing or sign-in refusal: no Lead or retry can fix it); a crash self-repair is still retrying, or one its Lead
 // retried, reads a grey "Retrying"; everything else is its Lead's to handle, a grey "With <Lead>". There is no "Stuck"
 // word, and the line never carries the raw fault text or a file path.
-import { NEEDS_YOU, RETRYING, withLead, type Chip } from "../../hub/model/statusChip";
+import { NEEDS_YOU, RETRYING, STALLED, withLead, type Chip } from "../../hub/model/statusChip";
 import { REPAIR_BACKOFF_MS, repairableFailure } from "./selfRepair";
 import { ashMustAct, failedTimes, stuckOwner, type StuckWorker } from "./workerStuck";
 import { withoutTestMarker } from "./devFault";
@@ -17,7 +17,7 @@ export function stuckWorkerChip(stuck: Pick<StuckWorker, "kind" | "row">, lead: 
   const owner = stuckOwner(stuck);
   if (owner === "needs-you") return NEEDS_YOU;
   if (owner === "retrying") return RETRYING;
-  return withLead(lead);
+  return stuck.kind === "stalled" ? STALLED : withLead(lead);
 }
 
 const PLAIN_CLASS: Record<string, string> = {

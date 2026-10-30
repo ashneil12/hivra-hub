@@ -9,14 +9,18 @@ import { stuckOwner, type StuckWorker } from "./workerStuck";
 export function foldStopped<S extends Pick<StuckWorker, "kind" | "row">>(
   stuck: readonly S[],
   open: boolean,
-): { cards: S[]; stopped: number } {
+): { cards: S[]; stopped: number; stalled: number } {
   const keep = (s: S) => s.kind === "asking" || stuckOwner(s) === "needs-you";
   const stopped = stuck.filter((s) => !keep(s));
-  if (open || stopped.length === 0) return { cards: [...stuck], stopped: stopped.length };
-  return { cards: stuck.filter(keep), stopped: stopped.length };
+  const stalled = stopped.filter((s) => s.kind === "stalled").length;
+  if (open || stopped.length === 0) return { cards: [...stuck], stopped: stopped.length, stalled };
+  return { cards: stuck.filter(keep), stopped: stopped.length, stalled };
 }
 
-/** "1 worker stopped" / "3 workers stopped". */
-export function stoppedLine(n: number): string {
-  return `${n} ${n === 1 ? "worker" : "workers"} stopped`;
+/**
+ * "1 worker stopped" / "3 workers stopped". r91 (Critiquito): one word for a stalled worker everywhere, so when every
+ * folded worker is stalled the line says so ("1 worker stalled"), as its card and its rail row do ("Stalled").
+ */
+export function stoppedLine(n: number, stalled = 0): string {
+  return `${n} ${n === 1 ? "worker" : "workers"} ${stalled === n && n > 0 ? "stalled" : "stopped"}`;
 }

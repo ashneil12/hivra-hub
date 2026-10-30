@@ -130,9 +130,12 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [],
   const jobTitle = (j: { title: string }) => j.title.trim() || "a job";
   const needsYou = once([...recent.filter(red).map(title), ...recentJobs.filter((j) => j.needsYou).map(jobTitle)]);
   const failed = once([...recent.filter((s) => s.kind === "failed" && !red(s)).map(title), ...recentJobs.filter((j) => j.failed && !j.needsYou).map(jobTitle)]);
+  // r91 (Critiquito): a stalled worker is said as such ("1 has stalled"), not folded into "with its Lead".
+  const stalled = once(recent.filter((s) => s.kind === "stalled" && !red(s)).map(title));
   const waiting = once([...recent.filter((s) => s.kind !== "failed").map(title), ...recentJobs.filter((j) => !j.failed && !j.needsYou).map(jobTitle)]);
   if (needsYou.length) sentences.push(`${needsYou.length} ${needsYou.length === 1 ? "needs" : "need"} you: ${list(needsYou)}.`);
   if (failed.length) sentences.push(`${failed.length} failed and ${failed.length === 1 ? "is" : "are"} with ${failed.length === 1 ? "its" : "their"} Lead: ${list(failed)}.`);
+  if (stalled.length) sentences.push(`${stalled.length} ${stalled.length === 1 ? "has" : "have"} stalled: ${list(stalled)}.`);
   if (waiting.length) sentences.push(`${waiting.length} ${waiting.length === 1 ? "is with its Lead or waiting on an answer" : "are with their Lead or waiting on an answer"}: ${list(waiting)}.`);
 
   // Bot changes that still stand.

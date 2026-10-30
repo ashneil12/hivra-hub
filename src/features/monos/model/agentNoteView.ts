@@ -1,7 +1,7 @@
 // How an agent-to-agent note reads on screen (PM's half of the notes; CoS's agentNotes.ts is the data). Pure, so the
 // look can change without touching the events: the note's words split into parts, the one agent with a chat to open
 // marked as the link, and notes landing together grouped so a burst shows as one line that expands.
-import { stoppedWords, type AgentNote } from "./agentNotes";
+import { messagedWords, stoppedWords, type AgentNote } from "./agentNotes";
 
 /** Notes this close together fold into one line (a Lead handing out three jobs at once). */
 export const FOLD_MS = 2 * 60_000;
@@ -26,7 +26,7 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
       : note.kind === "reported"
         ? // r78 (Critiquito, c02): a finished worker is a short "X is back" line in the chat, named by its job.
           [{ ...name(note.from), text: labelTask(note.from.name) ?? note.from.name }, { kind: "text", text: " is back" }]
-        : [name(note.from), { kind: "text", text: " messaged " }, name(note.to)];
+        : [name(note.from), { kind: "text", text: messagedWords(note) }, name(note.to)];
   return { head, line: detailOf(note) };
 }
 

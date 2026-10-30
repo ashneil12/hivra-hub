@@ -22,6 +22,7 @@ import { appIdentity } from "../../../app/model/appIdentity";
 import { toolCallLabel, toolCallState } from "../../sessions/model/transcriptActivity";
 import type { Block, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation, type DelegationTracker, type StallKind } from "./delegations";
+import { serviceStallLine } from "./workerStuck";
 
 const MIN = 60_000;
 
@@ -240,7 +241,8 @@ export function providerStallChatLine(row: Pick<Delegation, "id" | "title">, sta
   return {
     id: `provider-stall-${row.id}-${stall.since}`,
     role: "system",
-    text: `The worker on "${title}" is stalled: its provider errored and it has made no progress since (${why}). Flagged on Today, Being built and the Monos rail; its Lead can retry it, or open its chat from the rail.`,
+    // r91 (Critiquito): Ash's words, no codes ("API retry 2 of 2 · API overloaded (529)" stays in the Lead's note).
+    text: `The worker on "${title}" has stalled. ${serviceStallLine(why).replace(/^Stalled: t/, "T")} It shows as Stalled on Inbox, Being built and the rail; its Lead can try it again, or you can open its chat from the rail.`,
     startedAt: stall.since,
   } as Block;
 }

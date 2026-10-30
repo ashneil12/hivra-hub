@@ -32,7 +32,17 @@ export type AgentNote = {
    * a retry's, or Ash's (a billing or sign-in refusal). Missing on notes made before r30b: read as its Lead's.
    */
   owner?: StuckOwner;
+  /** r91: a worker's question to its owner (kind `messaged`), said "asked", not "messaged". */
+  ask?: true;
 };
+
+/**
+ * r91 (Critiquito: "Chat messaged Worker …" read like a log): what a `messaged` note says between the two names.
+ * The owner handing out the job is " handed a job to "; a worker's question is " asked ".
+ */
+export function messagedWords(note: Pick<AgentNote, "ask">): string {
+  return note.ask ? " asked " : " handed a job to ";
+}
 
 const firstLine = (text: string | null | undefined, max = 140): string | undefined => {
   const line = (text ?? "").trim().split("\n").find((l) => l.trim())?.trim();
@@ -77,7 +87,7 @@ export function defaultNoteNames(
   monoName: (id: string) => string | undefined = (id) => findMono(id)?.name,
 ): NoteNames {
   const title = row.title?.trim();
-  const owner = row.ownerMono ? monoName(row.ownerMono)?.trim() || "Lead" : "Chat";
+  const owner = row.ownerMono ? monoName(row.ownerMono)?.trim() || "Lead" : "This chat";
   return { owner, worker: title ? `Worker "${firstLine(title, 60)}"` : "Worker" };
 }
 
@@ -101,7 +111,7 @@ export function agentNotesFor(
   ];
   const stuck = stuckOf(row, now);
   if (stuck?.kind === "asking")
-    notes.push({ ...base, kind: "messaged", from: worker, to: owner, at: stuck.since, line: firstLine(storedQuestion(row.pendingQuestion).text) });
+    notes.push({ ...base, kind: "messaged", ask: true, from: worker, to: owner, at: stuck.since, line: firstLine(storedQuestion(row.pendingQuestion).text) });
   else if (stuck)
     notes.push({ ...base, kind: "stuck", from: worker, to: owner, at: stuck.since, line: firstLine(stuck.line), owner: stuckOwner(stuck) });
   if (row.state === "completed")
@@ -126,7 +136,7 @@ export function agentNoteText(note: AgentNote): string {
       ? `${note.from.name}${stoppedWords(note)}`
       : note.kind === "reported"
         ? `${note.from.name.match(/"(.+)"\s*$/)?.[1]?.trim() ?? note.from.name} is back`
-        : `${note.from.name} messaged ${note.to.name}`;
+        : `${note.from.name}${messagedWords(note)}${note.to.name}`;
   return note.line ? `${head}: ${note.line}` : head;
 }
 

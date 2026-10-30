@@ -708,6 +708,9 @@ export async function runBench(options, hooks = {}) {
     fs.writeFileSync(path.join(evidence, "snapshot-ready.json"), JSON.stringify(ready, null, 2));
     log(`ready: ${leadId}; room ${roomId} seats ${ready.rooms.find((r) => r.id === roomId).memberIds.join(", ")}`);
     await act("defaults", { model: spec.appModel ?? "claude:sonnet-5", effort: spec.effort ?? "medium" });
+    // r91: the fresh copy is set up like Ash's own app, which knows him by name, so the Leads write "Needs Ash:".
+    const named = await act("userName", { name: spec.ownerName ?? "Ash" }).catch((error) => ({ ok: false, error: error.message }));
+    log(`owner name: ${named.ok ? named.name : `NOT SET (${named.error ?? "refused"})`}`);
 
     // -- helpers the scenarios use ------------------------------------------------------------------------------------------------
     const usageEntries = () => readNdjson(path.join(state, "usage.ndjson"));

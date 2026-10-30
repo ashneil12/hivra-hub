@@ -32,6 +32,7 @@ import type { RuntimeMode, Session } from "../../features/sessions/model/session
 import { appIdentity } from "./appIdentity";
 import { benchAshTeam } from "./benchAshTeam";
 import { teamPack } from "../../features/hub/model/teamPack";
+import { setUserName, userName } from "../../features/hub/model/userName";
 
 /**
  * Where Ash writes: a room, a Mono's chat, a chat by id, or a project's coding team (a new chat there, as his New
@@ -456,6 +457,12 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
       const wrote = await benchAshTeam();
       return { ok: teamPack() === "ash", pack: teamPack(), wrote };
+    }
+    case "userName": {
+      // r91: the bench names the owner as his own app does (onboarding's "What should your team call you?").
+      if (typeof action.name !== "string" || !action.name.trim()) return { ok: false, error: "userName: no name" };
+      setUserName(action.name);
+      return { ok: userName() === action.name.trim(), name: userName() };
     }
     case "monoSetting": {
       // A bench scene's per-Mono setting before it starts (scripts/realconv: scene.longChat). Only "Keep one long chat".

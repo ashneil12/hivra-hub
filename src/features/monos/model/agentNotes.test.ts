@@ -31,8 +31,8 @@ describe("agent notes from the delegation rows", () => {
       ["messaged", "Lead", 'Worker "Fix the save bug"', "app-lead-chat-a"],
       ["messaged", 'Worker "Fix the save bug"', "Lead", "app-lead-chat-a"],
     ]);
-    expect(agentNoteText(asked[0])).toBe('Lead messaged Worker "Fix the save bug": Fix the save bug');
-    expect(agentNoteText(asked[1])).toBe('Worker "Fix the save bug" messaged Lead: Which format? [JSON | binary]');
+    expect(agentNoteText(asked[0])).toBe('Lead handed a job to Worker "Fix the save bug": Fix the save bug');
+    expect(agentNoteText(asked[1])).toBe('Worker "Fix the save bug" asked Lead: Which format? [JSON | binary]');
     const failed = agentNotesFor(row("f", { state: "failed", error: "The build broke.", settledAt: NOW - MIN }), NOW, all);
     expect(failed[1]).toMatchObject({ kind: "stuck", line: "Failed: the build broke" });
     expect(failed[1].owner).toBe("with-lead");
@@ -48,11 +48,11 @@ describe("agent notes from the delegation rows", () => {
     const names = { alfred: "Alfred", "hub-lead": "MonoCode Hub lead" } as Record<string, string>;
     const own = row("o", { ownerMono: "alfred", title: "Write qa-a8 note" });
     const notes = agentNotesFor(own, NOW, all, defaultNoteNames(own, (id) => names[id]));
-    expect(agentNoteText(notes[0])).toBe('Alfred messaged Worker "Write qa-a8 note": Write qa-a8 note');
+    expect(agentNoteText(notes[0])).toBe('Alfred handed a job to Worker "Write qa-a8 note": Write qa-a8 note');
     expect(defaultNoteNames(row("l", { ownerMono: "hub-lead" }), (id) => names[id]).owner).toBe("MonoCode Hub lead");
     // Unknown Mono: "Lead" as before; no Mono at all: "Chat".
     expect(defaultNoteNames(row("u", { ownerMono: "gone" }), () => undefined).owner).toBe("Lead");
-    expect(defaultNoteNames(row("c", { ownerMono: null }), (id) => names[id]).owner).toBe("Chat");
+    expect(defaultNoteNames(row("c", { ownerMono: null }), (id) => names[id]).owner).toBe("This chat");
   });
 
   it("a worker whose chat is gone gets notes without a link", () => {
@@ -68,7 +68,7 @@ describe("agent notes from the delegation rows", () => {
       ["lead-chat", "messaged", "new"],
       ["lead-chat", "reported", "new"],
     ]);
-    expect(first[0].block).toMatchObject({ role: "system", text: expect.stringContaining("Lead messaged") });
+    expect(first[0].block).toMatchObject({ role: "system", text: expect.stringContaining("Lead handed a job to") });
     const again = newAgentNoteBlocks(rows, [{ id: "lead-chat", blocks: first.map((n) => n.block) }], NOW - 5 * MIN, NOW, all);
     expect(again).toEqual([]);
     // No owner chat open: nothing to add it to.
@@ -91,7 +91,7 @@ describe("the default note in a chat", () => {
     const gone = agentNoteBlock(agentNotesFor(row("b"), NOW, () => false)[0]).agentNote!;
     act(() => root.render(createElement(AgentNoteRow, { note: gone })));
     expect(container.querySelector("[data-agent-note-open]")).toBeNull();
-    expect(container.querySelector("[data-agent-note]")?.textContent).toContain("Lead messaged");
+    expect(container.querySelector("[data-agent-note]")?.textContent).toContain("Lead handed a job to");
     act(() => root.unmount());
     container.remove();
     off();

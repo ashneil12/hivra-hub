@@ -42,5 +42,9 @@ describe("the app's own test run after the last landing", () => {
     expect(green.text).toContain("15 passed, 0 failed: the suite is green");
     const red = hubTestNote("hub-tests-r1", { command: "npm test", ok: false, output: "ℹ pass 12\nℹ fail 1" }, chat);
     expect(red.text).toContain("12 passed, 1 failed, so the suite is not green");
+    // r91 (Critiquito, shot 08): the result comes first, so a cut line still says it; no command in it.
+    expect(green.text.startsWith("15 passed, 0 failed: the suite is green.")).toBe(true);
+    expect(red.text.startsWith("12 passed, 1 failed")).toBe(true);
+    expect(green.text).not.toContain("npm test");
   });
 });

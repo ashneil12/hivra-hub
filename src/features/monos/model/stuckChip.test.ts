@@ -56,7 +56,7 @@ describe("stuckWorkerChip", () => {
       expect(chip.tone).not.toBe("red");
       expect(chip.word).not.toMatch(/stuck|failed/i);
     }
-    expect(stuckWorkerChip(stuck("stalled"), "Hivra lead").word).toBe("With Hivra lead");
+    expect(stuckWorkerChip(stuck("stalled"), "Hivra lead").word).toBe("Stalled");
   });
   it("is grey Retrying while a retry or its Lead's retry has it", () => {
     const chip = stuckWorkerChip(stuck("failed", { errorClass: "overloaded" }), "Hivra lead");

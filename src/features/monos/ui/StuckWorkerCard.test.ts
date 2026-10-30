@@ -161,7 +161,7 @@ describe("stuck workers in the Lead's chat", () => {
     // r30: one plain line, and the chip says whose it is: a billing refusal only Ash can sort is the red Needs you.
     expect(card("w4")!.querySelector("[data-stuck-line]")!.textContent).toBe("Out of credits");
     expect(card("w4")!.querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("Needs you");
-    expect(card("w3")!.querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("With EXO lead");
+    expect(card("w3")!.querySelector("[data-stuck-chip]")!.getAttribute("data-stuck-chip")).toBe("Stalled");
     expect(card("w2")!.querySelector("[data-stuck-where]")!.textContent).toBe("Job w2");
     expect(card("w2")!.textContent).toContain("· asking");
     // Its stored question reads without the "(Recommended)" marker.

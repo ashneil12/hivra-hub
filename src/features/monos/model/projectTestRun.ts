@@ -66,7 +66,8 @@ export function projectTestNote(chat: Session, noted: ReadonlySet<string>, now =
   return {
     id,
     role: "system",
-    text: `Test run in the project itself, after the workers' reports: ${verdict}. This is newer than any worker's own run in its copy.`,
+    // r91 (Critiquito, shot 08): the result first, so a cut line still says it.
+    text: `${cap(verdict)}. Test run in the project itself, after the workers' reports; newer than any worker's own run in its copy.`,
     // Timed, so the line sits where it was said (a stored note with no time drops out of a timed read of the chat).
     startedAt: now,
   } as Block;
@@ -124,7 +125,7 @@ export function hubTestNote(key: string, run: HubTestRun, chat: Pick<Session, "b
   return {
     id: key,
     role: "system",
-    text: `Test run in the project itself, by the app after the last landing (${run.command}; the Lead hadn't run one): ${verdict}. This is newer than any worker's own run in its copy.`,
+    text: `${cap(verdict)}. Test run in the project itself, by the app after the last landing (the Lead hadn't run one); newer than any worker's own run in its copy.`,
     startedAt: now,
   } as Block;
 }
@@ -138,3 +139,8 @@ export const runProjectTests = async (project: string): Promise<HubTestRun | nul
     return null;
   }
 };
+
+/** r91: the verdict leads the line, so it starts with a capital ("12 passed…", "It failed: …"). */
+function cap(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}

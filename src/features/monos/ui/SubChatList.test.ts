@@ -84,12 +84,22 @@ describe("a worker only waiting on its Lead's answer (Ash, 22 Oct: one word for 
     expect(row("w1").getAttribute("title")).toBe("Job w1, waiting on its Lead");
     expect(row("w2").querySelector("svg")!.getAttribute("class")).toContain("text-content/60"); // grey, never amber (r27b)
     // r88: the rail says it in a word, grey too.
-    expect(row("w2").querySelector("[data-sub-chat-stalled]")!.textContent).toBe("stalled");
+    expect(row("w2").querySelector("[data-sub-chat-stalled]")!.textContent).toBe("Stalled");
     expect(row("w1").querySelector("[data-sub-chat-stalled]")).toBeNull();
-    // Folded: "2 sub-chats · 1 waiting · 1 with its Lead", never "2 stuck".
+    // Folded: "2 sub-chats · 1 waiting · 1 stalled" (r91: one word for stalled), never "2 stuck".
     act(() => toggle.click());
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(toggle.textContent).toBe("2 sub-chats · 1 waiting · 1 with its Lead");
+    expect(toggle.textContent).toBe("2 sub-chats · 1 waiting · 1 stalled");
+  });
+
+  it("r91: leaves out '1 waiting' when its owner's row already says Needs you", () => {
+    const asked = { ...chat("w1", NOW - 10 * 60_000, { state: "question", pendingQuestion: "Can I run the tests?" }), state: "question" as const };
+    const attention = subChatAttention([asked], NOW);
+    resetSubChatFolds();
+    act(() => root.render(createElement(SubChatList, { foldKey: "chat:lead-chat", owner: "lead-chat", children: [asked], attention, now: NOW, onOpen: vi.fn(), ownerNeedsYou: true })));
+    const toggle = container.querySelector<HTMLButtonElement>("[data-sub-chats-toggle]")!;
+    if (toggle.getAttribute("aria-expanded") === "true") act(() => toggle.click());
+    expect(toggle.textContent).toBe("1 sub-chat");
   });
 
   it("alone, the fold says only '1 waiting', with no stuck count at all", () => {

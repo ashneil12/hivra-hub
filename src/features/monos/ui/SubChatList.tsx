@@ -64,6 +64,7 @@ export function SubChatList({
   children,
   attention,
   stuckSplit,
+  ownerNeedsYou = false,
   leadName = "its Lead",
   now,
   onOpen,
@@ -77,6 +78,11 @@ export function SubChatList({
   attention: ReturnType<typeof subChatAttention>;
   /** "1 working · 2 with EXO lead", said to a screen reader on the fold. */
   stuckSplit?: string;
+  /**
+   * r91 (Critiquito: "Needs you" sat next to "1 waiting" for the same ask): its owner's row already says Needs you, so
+   * the fold leaves out its waiting count. One word for one thing.
+   */
+  ownerNeedsYou?: boolean;
   /** Who its sub-chats answer to ("EXO lead"), for "2 with EXO lead" on the fold (r30b). */
   leadName?: string;
   now: number;
@@ -96,7 +102,9 @@ export function SubChatList({
   const waitingCount = attention.stuck.size - stuckCount;
   const owned = (owner: ReturnType<typeof stuckOwner>) => stopped.filter((s) => stuckOwner(s) === owner).length;
   const retryingCount = owned("retrying");
-  const withLeadCount = owned("with-lead");
+  // r91 (Critiquito: one word for a stalled worker everywhere): a stalled one is counted as "stalled", not "with its Lead".
+  const stalledCount = stopped.filter((s) => s.kind === "stalled" && stuckOwner(s) === "with-lead").length;
+  const withLeadCount = owned("with-lead") - stalledCount;
   const needsYouCount = owned("needs-you");
   const attrs = ATTRS;
   return (
@@ -115,9 +123,10 @@ export function SubChatList({
         />
         <span className="min-w-0 truncate">
           {count}
-          {!open && waitingCount ? ` · ${waitingCount} waiting` : ""}
+          {!open && waitingCount && !ownerNeedsYou ? ` · ${waitingCount} waiting` : ""}
           {!open && retryingCount ? ` · ${retryingCount} retrying` : ""}
           {!open && withLeadCount ? ` · ${withLeadCount} with ${leadName}` : ""}
+          {!open && stalledCount ? ` · ${stalledCount} stalled` : ""}
           {!open && needsYouCount ? (
             <span className="text-red-400" data-sub-chats-needs-you>{` · ${needsYouCount} needs you`}</span>
           ) : null}
@@ -146,7 +155,7 @@ export function SubChatList({
                 {/* r88 (s15 scripted run 2: the rail showed the sub-chat with no word that it was stalled); grey, as its mark (r27b). */}
                 {stalled ? (
                   <span data-sub-chat-stalled className="shrink-0 text-[11px] text-content/45">
-                    stalled
+                    Stalled
                   </span>
                 ) : null}
                 {ran ? (

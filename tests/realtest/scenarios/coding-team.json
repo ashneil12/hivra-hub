@@ -149,6 +149,16 @@
           "text": "hows it going, anything need me"
         },
         {
+          "sleep": 6
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "coding-team-thinking"
+        },
+        {
           "wait": {
             "chatReply": "dump",
             "maxSec": 120
