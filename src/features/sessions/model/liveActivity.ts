@@ -101,13 +101,16 @@ export function searchStep(query: string): string {
   return more ? `Searching for “${shown}” and ${more} more` : `Searching for “${shown}”`;
 }
 
+/** r97 (Critiquito d): the Lead's hand-off step, short and plain. */
+export const HANDING_OUT = "Handing out a job";
+
 function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): string {
   const preview = block.tool?.preview;
   const rawPath = preview?.path ? displayPath(preview.path, cwd) : preview?.fileName;
   const path = rawPath ? (detail === "name" ? fileName(rawPath) : shortPath(rawPath)) : undefined;
   const title = block.text || block.tool?.title || "";
   const delegate = delegateToolName(block);
-  if (delegate === "delegate_task") return "Handing work to a worker";
+  if (delegate === "delegate_task") return HANDING_OUT;
   if (delegate === "task_wait" || delegate === "task_status") return "Waiting on a worker";
   const command = block.tool?.command?.replace(/\s+/g, " ").trim();
   switch (toolCategory(block)) {
@@ -150,7 +153,7 @@ function plainWordsStep(block: Block, step: string): string {
   return plain.length > MAX_COMMAND + 12 ? `${plain.slice(0, MAX_COMMAND + 11)}…` : plain;
 }
 
-/** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing work to a worker"). */
+/** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing out a job"). */
 export function plainToolStep(block: Block, cwd?: string): string {
   return plainWordsStep(block, toolStep(block, cwd, "name"));
 }
@@ -280,12 +283,22 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+// The chat's plain rows say what to do ("Run the tests", r97 k); after "Still working on" they read as doing it.
+const ING: Record<string, string> = { run: "running", look: "looking", search: "searching", check: "checking", install: "installing", list: "listing", read: "reading", remember: "remembering", forget: "forgetting" };
+const onStep = (step: string) => {
+  const [first = "", ...rest] = step.split(" ");
+  const word = ING[first.toLowerCase()] ?? first.charAt(0).toLowerCase() + first.slice(1);
+  return [word, ...rest].join(" ").replace(/, then (\w+)/g, (m, w: string) => (ING[w] ? `, then ${ING[w]}` : m));
+};
+
 /** What the line reads at `now`: the step and its timer, or, after a minute with nothing new, that nothing is happening. */
 export function activityLine(activity: LiveActivity, now: number): { text: string; stalled: boolean } {
   const idle = now - activity.lastEventAt;
   if (idle >= (activity.label === "Thinking" ? THINK_STALL_MS : STALL_MS)) return { text: `No activity for ${Math.floor(idle / 60_000)} min`, stalled: true };
   if (activity.label === "Thinking" && now - (activity.stepSince ?? activity.since) >= STILL_MS) {
-    const on = activity.lastStep ? ` on ${activity.lastStep.charAt(0).toLowerCase()}${activity.lastStep.slice(1)}` : "";
+    // r97 (Critiquito d): not "Still working on handing work to a worker · 20s": the hand-off says itself.
+    if (activity.lastStep === HANDING_OUT) return { text: `${HANDING_OUT} · ${formatElapsed(now - activity.since)}`, stalled: false };
+    const on = activity.lastStep ? ` on ${onStep(activity.lastStep)}` : "";
     return { text: `Still working${on} · ${formatElapsed(now - activity.since)}`, stalled: false };
   }
   // r96 (Critiquito): under a second there is no time worth showing ("Thinking · 0s"), so the step stands alone.
