@@ -864,6 +864,9 @@ export class DelegationTracker {
             outcome,
             session: this.host.session(row.childSession),
             latestTurn: true,
+            // r84 (s14 blind 3): a resumed job's report is read for its self-review too, or a checked report settles
+            // failed as "without a self-review".
+            ...(row.reviewRequired ? { reviewRequired: true } : {}),
           });
           const landed = this.host.land ? await this.host.land(result).catch(() => result) : result;
           const change = await this.backend.settle(settleInput(row, landed));

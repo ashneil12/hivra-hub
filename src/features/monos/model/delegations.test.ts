@@ -617,6 +617,28 @@ describe("delegations that survive restarts", () => {
     expect(app.mono.queuedMessages?.map((message) => message.id)).toEqual(["mono-completion-app-mono-exo-a-g2"]);
   });
 
+  // r84 (s14 blind 3): Ash answered a held worker in its chat; its checked report settled failed "without a self-review".
+  it("reads a resumed job's self-review, so Ash's answered job settles done", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const launch = app.tracker.launch({ ownerSession: MONO, requestId: "app-mono-exo-a", childSession: "app-mono-exo-a", brief: "Delete tallies", reviewRequired: true });
+    await launch.row;
+    await app.settledDown();
+    // The store keeps the flag (delegations.rs review_required); the memory store here doesn't, so it is set as stored.
+    row(store, "app-mono-exo-a").reviewRequired = true;
+    const settles: { state: string; selfReview?: string }[] = [];
+    const settle = store.settle.bind(store);
+    store.settle = (input) => {
+      settles.push(input);
+      return settle(input);
+    };
+    app.sessions.set("app-mono-exo-a", { ...newSession("claude", PROJECT), id: "app-mono-exo-a" });
+    app.resume("app-mono-exo-a", "Kept 30 days.\n\n## Self-review\nChecked: delete then undo.\nHow: npm test.\nUnsure: nothing", "keep them 30 days")();
+    await app.settledDown();
+    expect(settles.at(-1)?.state).toBe("completed");
+    expect(settles.at(-1)?.selfReview).toContain("delete then undo");
+  });
+
   it("does not settle a turn the quit cut short: its resumed turn reports instead", async () => {
     const store = new MemoryStore();
     const app = new AppRun(store);
