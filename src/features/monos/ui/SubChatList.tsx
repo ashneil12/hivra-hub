@@ -143,6 +143,12 @@ export function SubChatList({
               >
                 <ChildChatMark state={chat.state} stalled={stalled} />
                 <span className="min-w-0 truncate">{chat.title}</span>
+                {/* r88 (s15 scripted run 2: the rail showed the sub-chat with no word that it was stalled); grey, as its mark (r27b). */}
+                {stalled ? (
+                  <span data-sub-chat-stalled className="shrink-0 text-[11px] text-content/45">
+                    stalled
+                  </span>
+                ) : null}
                 {ran ? (
                   <span data-sub-chat-ran className="ml-auto shrink-0 text-[11px] tabular-nums text-content/35">
                     {ran}

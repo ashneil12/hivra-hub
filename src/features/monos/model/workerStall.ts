@@ -230,6 +230,21 @@ export function providerStallNote(row: Pick<Delegation, "id" | "title">, stall: 
   return `Your worker on "${title}" hit a provider error and has made no progress since (${stall.reason.replace(`${PROVIDER_STALL_PREFIX}, `, "")}). It shows as stuck on Today and Being built. It may recover by itself; if it doesn't, retry it with delegate_task redoes "${row.id}" and the same brief. Tell Ash in one line that it stalled on a provider error and what you're doing about it.`;
 }
 
+/**
+ * r88 (s15 scripted run 2: Today and Being built said it at once, the Lead's own words came ~20s later): the line the
+ * Lead's chat shows from the app the moment the flag is set, before the Lead has said anything. Once per stall.
+ */
+export function providerStallChatLine(row: Pick<Delegation, "id" | "title">, stall: Stall): Block {
+  const title = row.title?.trim().split("\n")[0].slice(0, 80) || "its job";
+  const why = stall.reason.replace(`${PROVIDER_STALL_PREFIX}, `, "");
+  return {
+    id: `provider-stall-${row.id}-${stall.since}`,
+    role: "system",
+    text: `The worker on "${title}" is stalled: its provider errored and it has made no progress since (${why}). Flagged on Today, Being built and the Monos rail; its Lead can retry it, or open its chat from the rail.`,
+    startedAt: stall.since,
+  } as Block;
+}
+
 /** What the watcher needs from the app. */
 export type StallWatchHost = {
   tracker(): DelegationTracker | null;
