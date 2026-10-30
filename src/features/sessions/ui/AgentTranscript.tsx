@@ -17,6 +17,7 @@ import {
   Wrench,
   X,
 } from "../../../shared/ui/icons";
+import { appNoteLine } from "../model/appNote";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
@@ -2579,6 +2580,18 @@ const TranscriptBlock = memo(function TranscriptBlock({
   editing?: boolean;
 }) {
   if (block.role === "user") {
+    // r93: the app's note to the chat is one small neutral line, never a bubble in Ash's name.
+    const appNote = appNoteLine(block);
+    if (appNote)
+      return (
+        <div
+          data-app-note={block.id}
+          role="note"
+          className="flex justify-center px-4 py-1.5 text-center font-sans text-[12px] text-content/45"
+        >
+          {appNote}
+        </div>
+      );
     return (
       <UserMessageBlock
         block={block}
