@@ -283,7 +283,7 @@ function nameList(names: readonly string[]): string {
 export const SILENT_CHECK =
   "Check the work yourself without announcing it: write nothing before or between your checks (no \"I'll check\", \"I'll read\" or \"before calling it done\" line), and never repeat a line you already wrote in this chat. In a worker's copy use Read, Grep and Glob (no Allow needed); shell commands there wait on the user.";
 export const ROLL_UP_SHAPE =
-  "Roll it all up once, in the shape Landed / Not fixed (add Waiting on you only if something needs the user), each piece of work once with what was run to check it and anything left open. Say plainly any mismatch a worker found and anything built differently from the brief or TODO.";
+  "Roll it all up once and short, in the shape Landed / Not fixed: at most eight lines, no headings, tables or test output, each piece of work once. Landed: one line each, with the check that passed (work marked [MonoCode landed] is already in the project; [MonoCode not landed] is not). Not fixed: one line each, with why. Waiting on you only if something needs the user. Say plainly any mismatch a worker found, or anything built unlike the brief or TODO, in one line.";
 
 /** A worker's own sentence saying two things disagree, or that it built something unlike its brief or TODO. */
 const MISMATCH =

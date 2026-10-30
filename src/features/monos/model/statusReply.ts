@@ -4,6 +4,7 @@
 import type { Block, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation } from "./delegations";
 import { stuckOf, stuckOwner } from "./workerStuck";
+import { asksIn } from "./workerStartNudge";
 
 /** A short "how's it going" kind of message: a status question, not new work. */
 const STATUS =
@@ -17,16 +18,21 @@ export function isStatusQuestion(text: string): boolean {
   return STATUS.test(t);
 }
 
-/** Ash's status question waiting on a busy chat: its last message, or the first one queued behind the turn. */
-function pendingQuestion(chat: Session): { id: string; text: string } | undefined {
+/**
+ * Ash's status question waiting on a busy chat: its last message, or the first one queued behind the turn. r84 (c02 r83:
+ * the first words came 70s after his numbered list): his list of asks, while the turn on it runs, gets the line too.
+ */
+function pendingQuestion(chat: Session): { id: string; text: string; asks: number; at?: number } | undefined {
   const queued = chat.queuedMessages?.find((m) => isStatusQuestion(m.text));
-  if (queued) return { id: queued.blockId ?? queued.id, text: queued.text };
+  if (queued) return { id: queued.blockId ?? queued.id, text: queued.text, asks: 0 };
   for (let index = chat.blocks.length - 1; index >= 0; index--) {
     const block = chat.blocks[index];
     // r80 (c02): the turn's own text still being written is not a reply to him.
     if (block.role === "assistant" && !block.tool && !block.internal && !block.streaming && block.text.trim()) return undefined;
-    if (block.role === "user" && !block.draft && !block.monoNote)
-      return isStatusQuestion(block.text) ? { id: block.id, text: block.text } : undefined;
+    if (block.role === "user" && !block.draft && !block.monoNote) {
+      const asks = asksIn(block.text);
+      return isStatusQuestion(block.text) || asks ? { id: block.id, text: block.text, asks, at: block.startedAt ?? block.sentAt } : undefined;
+    }
   }
   return undefined;
 }
@@ -38,7 +44,7 @@ const list = (rows: readonly Pick<Delegation, "title">[]) =>
 export const STATUS_REPLY_PREFIX = "status-reply-";
 
 /** The line's words from what the app knows now: who is working, back, asking, and whether anything needs Ash. */
-function statusText(chat: Session, rows: readonly Delegation[], since: number, now: number): string {
+function statusText(chat: Session, rows: readonly Delegation[], since: number, now: number, asks = 0): string {
   const own = rows.filter((row) => row.ownerSession === chat.id && row.createdAt >= since).sort((a, b) => a.createdAt - b.createdAt);
   const working = own.filter((row) => isOpenDelegation(row) && row.state !== "question");
   const asking = own.filter((row) => row.state === "question");
@@ -52,8 +58,8 @@ function statusText(chat: Session, rows: readonly Delegation[], since: number, n
     ...(back.length ? [`${back.length} back (${list(back)})`] : []),
     ...(asking.length ? [`${asking.length} asking this chat a question (${list(asking)})`] : []),
   ];
-  const head = parts.length ? `Right now: ${parts.join(", ")}.` : "No workers out yet: this chat is still on its reply.";
-  return `${head} ${needsYou.length ? `Needs you: ${list(needsYou)}.` : "Nothing needs you yet."} The full answer comes when this turn ends.`;
+  const head = parts.length ? `Right now: ${parts.join(", ")}.` : asks ? "No workers out yet: this chat is planning them, and each shows here as it starts." : "No workers out yet: this chat is still on its reply.";
+  return `${asks ? `Got your ${asks} asks. ` : ""}${head} ${needsYou.length ? `Needs you: ${list(needsYou)}.` : "Nothing needs you yet."} The full answer comes when this turn ends.`;
 }
 
 /** A finished assistant message after `from` in the chat: its own words, not a tool step or a note. */
@@ -78,7 +84,9 @@ export function statusReplyChange(
   const queued = chat.queuedMessages?.some((m) => (m.blockId ?? m.id) === questionId);
   const asked = chat.blocks.findIndex((b) => b.id === questionId);
   if (!chat.busy || (!queued && saysAfter(chat, Math.max(at, asked)))) return { remove: line.id };
-  const text = statusText(chat, rows, since, now);
+  const asks = asked >= 0 ? asksIn(chat.blocks[asked].text) : 0;
+  const from = asks ? Math.max(since, chat.blocks[asked].startedAt ?? chat.blocks[asked].sentAt ?? since) : since;
+  const text = statusText(chat, rows, from, now, asks);
   return text === line.text ? undefined : { update: { ...line, text } };
 }
 
@@ -98,5 +106,6 @@ export function statusReply(
   if (!question) return undefined;
   const id = `${STATUS_REPLY_PREFIX}${question.id}`.slice(0, 200);
   if (replied.has(id) || chat.blocks.some((b) => b.id === id)) return undefined;
-  return { id, role: "system", notice: "still-running", text: statusText(chat, rows, since, now) };
+  const from = question.asks ? Math.max(since, question.at ?? since) : since;
+  return { id, role: "system", notice: "still-running", text: statusText(chat, rows, from, now, question.asks) };
 }
