@@ -1,5 +1,7 @@
 import { composeToolTitle } from "../../../integrations/harness/core/preview";
 import { isInFlightSession } from "./inFlight";
+import { plainToolStep } from "./liveActivity";
+import { plainFindRow } from "../../../shared/lib/plainSearch";
 import { displayPath } from "../../../shared/lib/paths";
 import {
   sessionDisplayTitle,
@@ -146,7 +148,7 @@ function activityLabel(block: Block | undefined, cwd: string): string {
   const path = preview?.path
     ? displayPath(preview.path, cwd)
     : preview?.fileName;
-  return (
+  const label = plainFindRow(
     composeToolTitle({
       kind: block.tool?.kind,
       title: block.text || block.tool?.title,
@@ -154,6 +156,10 @@ function activityLabel(block: Block | undefined, cwd: string): string {
       query: preview?.query,
       previewKind: preview?.kind,
       cwd,
-    }) || "Working"
+    }) || "Working",
   );
+  // r92 (c02 blind run 0176, sidebar foot): a raw tool name ("mcp__monocode__task_wait") or a path outside the
+  // project ("Read /private/var/folders/…", a worker's own checkout) reads as the plain step instead.
+  if (/mcp__|\s\/(?:private|var|tmp|Users|home)\//.test(label)) return plainToolStep(block, cwd);
+  return label;
 }
