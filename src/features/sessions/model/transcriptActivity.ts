@@ -20,7 +20,7 @@ import {
 import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
 import { allModels } from "./models";
-import { monoCodeWorkSummary } from "./monocodeToolCall";
+import { delegateToolLabel, delegateToolName, monoCodeWorkSummary } from "./monocodeToolCall";
 import { plainFindRow, plainSearchLabel } from "../../../shared/lib/plainSearch";
 
 export { plainSearchLabel };
@@ -72,6 +72,10 @@ export function toolCallState(block: Block): ToolCallState {
 
 
 export function toolCallLabel(block: Block, cwd?: string): string {
+  // r96 (c02 BLIND 6968): a MonoCode delegate tool's row is the tool's own words ("Delegated a task"), never a path
+  // read out of its brief: a "Done when: … npm test passed." goal read as a file is a false result line.
+  const delegate = delegateToolName(block);
+  if (delegate) return delegateToolLabel(block, delegate);
   const preview = block.tool?.preview;
   const searching = preview?.kind === "search" || /^(search|grep|glob)$/i.test(block.tool?.kind ?? "");
   const plain = searching && preview?.query ? plainSearchLabel(preview.query) : undefined;
@@ -942,6 +946,7 @@ export function toolCategory(block: Block): ActivityWorkKind {
   const kind = block.tool?.kind;
   const title = block.text || block.tool?.title;
   const preview = block.tool?.preview;
+  if (delegateToolName(block)) return "other";
   const label = toolCallLabel(block);
   if (isAgentTool(kind, title) || kind === "workflow") return "agent";
   if (isEditTool(kind, title, preview)) return "edit";
