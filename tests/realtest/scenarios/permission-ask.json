@@ -103,6 +103,13 @@
         },
         {
           "snapshot": "after"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "today"
+          },
+          "name": "today-end"
         }
       ],
       "checks": {
