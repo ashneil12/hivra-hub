@@ -780,6 +780,8 @@ export async function runBench(options, hooks = {}) {
       const windows = listWindows(scratch).filter((w) => w.pid === app.pid);
       const window = windows.sort((a, b) => b.area - a.area)[0];
       if (!window) return { ok: false, why: `no window for pid ${app.pid} (${windows.length} listed; the screen may be locked or the copy is an accessory app off-screen)` };
+      // r90: a window that isn't on screen (Ash's own apps in front, another Space) captures blank; say so, keep no file.
+      if (!window.onscreen) return { ok: false, why: "the hub's window is not on screen (other apps in front), so a window shot would be blank; nothing was brought forward" };
       const shot = spawnSync("screencapture", ["-x", "-o", "-l", String(window.id), file], { encoding: "utf8" });
       if (shot.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 2000)
         return { ok: false, why: `screencapture failed (${shot.status}): ${(shot.stderr || "").trim().slice(0, 200)}` };
