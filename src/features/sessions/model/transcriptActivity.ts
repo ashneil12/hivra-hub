@@ -293,6 +293,21 @@ export type ToolCallDisplay = {
 };
 
 /**
+ * r97 item 2 (c02 BLIND 242d): the Lead read files in its workers' checkouts, and the row showed the whole temp path
+ * ("Read /private/var/folders/…/projects/tally-worktrees/mc-098cbf4c/README.md"). A row shows a path inside a checkout
+ * relative to it ("README.md", "packages/api/src/server.ts") and any other absolute path as its last two parts
+ * ("…/src/server.ts"); the full path stays in the row's hover text. A path that is already short is kept.
+ */
+export function shortToolTarget(target: string): string {
+  const path = target.replace(/\\/g, "/");
+  if (!/^(?:\/|~\/|[A-Za-z]:\/)/.test(path)) return target;
+  const inCheckout = /-worktrees\/[^/]+\/(.+)$/.exec(path) ?? /\/\.monocode\/worktrees\/[^/]+\/(.+)$/.exec(path);
+  if (inCheckout) return inCheckout[1]!;
+  const parts = path.split("/").filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : target;
+}
+
+/**
  * Parses a tool call row's label into the action/target shown on screen, and
  * resolves the file path a click should open. The opened path is always
  * derived from `target` (what the user reads), never from `preview.path` on

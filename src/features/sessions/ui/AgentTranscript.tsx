@@ -179,6 +179,7 @@ import {
   nestedScrollAbsorbsWheel,
   proseSummary,
   resolveToolCallDisplay,
+  shortToolTarget,
   subagentBrief,
   subagentModelName,
   subagentName,
@@ -5483,7 +5484,7 @@ function ToolCallSummary({
             }`}
           >
             <FileTypeIcon name={fileName} isDir={false} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </ToolDiffPreview>
         ) : canOpen ? (
           <button
@@ -5500,7 +5501,7 @@ function ToolCallSummary({
             }}
           >
             <FileTypeIcon name={fileName} isDir={action === "List"} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </button>
         ) : (
           <span
@@ -5512,7 +5513,7 @@ function ToolCallSummary({
             title={target}
           >
             <FileTypeIcon name={fileName} isDir={action === "List"} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </span>
         )
       ) : (
@@ -5520,7 +5521,7 @@ function ToolCallSummary({
           className={`flex min-w-0 flex-1 items-center gap-1.5 pl-1 ${targetTone}`}
           title={target}
         >
-          <span className="min-w-0 truncate">{target}</span>
+          <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
         </span>
       )}
     </span>
