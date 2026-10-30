@@ -584,20 +584,37 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       ...BENCH_GIT_ENV,
     });
-    const out = fs.openSync(path.join(evidence, "app.log"), "w");
-    const child = spawn(binary, [], { cwd: ROOT, env: appEnv, stdio: ["ignore", out, out] });
-    children.push(child);
-    const running = await until(() => {
-      try {
-        const record = JSON.parse(fs.readFileSync(path.join(dataDir, "running.json"), "utf8"));
-        return record.pid && alive(record.pid) ? record : null;
-      } catch {
-        return null;
-      }
-    }, 120_000);
-    if (!running) throw new Error("the app never wrote running.json (app.log)");
-    app = { pid: running.pid, child };
-    log(`app pid ${running.pid}`);
+    // The run's own launch, and (r98, B5) its reopen after Ash's Quit: the same binary, HOME and data, in the background
+    // (MONOCODE_HUB_BACKGROUND: an accessory app that never activates or comes forward, like `open -g`).
+    let launches = 0;
+    const launchApp = async () => {
+      const before = app?.pid ?? null;
+      const out = fs.openSync(path.join(evidence, launches++ ? `app-${launches}.log` : "app.log"), "w");
+      const child = spawn(binary, [], { cwd: ROOT, env: appEnv, stdio: ["ignore", out, out] });
+      children.push(child);
+      const running = await until(() => {
+        try {
+          const record = JSON.parse(fs.readFileSync(path.join(dataDir, "running.json"), "utf8"));
+          return record.pid && record.pid !== before && alive(record.pid) ? record : null;
+        } catch {
+          return null;
+        }
+      }, 120_000);
+      if (!running) return { pid: null, why: "the app never wrote running.json (app.log)" };
+      app = { pid: running.pid, child };
+      log(`app pid ${running.pid}`);
+      return { pid: running.pid };
+    };
+    const first = await launchApp();
+    if (!first.pid) throw new Error(first.why);
+    const restart = async ({ idleMs = 0 } = {}) => {
+      const { quitThenReopen } = await import("./hub-realtest-scenarios.mjs");
+      const front = () => spawnSync("lsappinfo", ["info", "-only", "pid", spawnSync("lsappinfo", ["front"], { encoding: "utf8" }).stdout.trim()], { encoding: "utf8" }).stdout;
+      const result = await quitThenReopen({ act, pid: app.pid, alive, until, launch: launchApp, idleMs });
+      // Read-only check that the reopened copy didn't take the front (it is an accessory app; this proves it).
+      if (result.ok) result.front = new RegExp(`=\\s*${result.pid}\\b`).test(front()) ? "the reopened copy is in front" : "not in front";
+      return result;
+    };
 
     // -- the driver ---------------------------------------------------------------------------------------------------------------
     let seq = 0;
@@ -784,10 +801,13 @@ export async function runBench(options, hooks = {}) {
       const window = windows.sort((a, b) => b.area - a.area)[0];
       if (!window) return { ok: false, why: `no window for pid ${app.pid} (${windows.length} listed; the screen may be locked or the copy is an accessory app off-screen)` };
       // r90: a window that isn't on screen (Ash's own apps in front, another Space) captures blank; say so, keep no file.
-      if (!window.onscreen) return { ok: false, why: "the hub's window is not on screen (other apps in front), so a window shot would be blank; nothing was brought forward" };
+      // r98 (Critiquito): a covered or off-screen window is still tried by its id (-l), never raised or resized; a
+      // capture that comes out blank (a near-empty file) is reported and deleted, never passed off as a shot.
       const shot = spawnSync("screencapture", ["-x", "-o", "-l", String(window.id), file], { encoding: "utf8" });
-      if (shot.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 2000)
-        return { ok: false, why: `screencapture failed (${shot.status}): ${(shot.stderr || "").trim().slice(0, 200)}` };
+      if (shot.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 2000) {
+        fs.rmSync(file, { force: true });
+        return { ok: false, why: window.onscreen ? `screencapture failed (${shot.status}): ${(shot.stderr || "").trim().slice(0, 200)}` : "the hub's window is not on screen and its capture came out blank; nothing was brought forward" };
+      }
       // r90 (Ash on the Mac): only the hub's own window is captured, never the whole screen (r83's banner check is answered).
       const screen = null;
       const hash = crypto.createHash("sha1").update(fs.readFileSync(file)).digest("hex");
@@ -818,7 +838,7 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
+    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");

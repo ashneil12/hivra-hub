@@ -18,6 +18,28 @@ const ASH = "ash";
 /** Ash's message as the scenario file writes it: a string, or lines joined with newlines. */
 const textOf = (value) => (Array.isArray(value) ? value.join("\n") : String(value ?? ""));
 
+/**
+ * r98 (B5): Ash quits the dev copy and opens it again. The quit is the app's own (the driver's `quit`, the path the app
+ * menu's Quit MonoCode takes: windows save first); nothing is ever killed. If the old copy is still up after `waitMs`
+ * (a busy chat asked, a save failed) it is left alone and nothing new is opened. The reopen is `launch` (the run's own
+ * background launch: an accessory app that never comes forward).
+ */
+export async function quitThenReopen({ act, pid, alive, until, launch, waitMs = 90_000, idleMs = 0, everyMs = 15_000 }) {
+  // While chats still run the driver refuses (Quit would ask in a Mac dialog): Ash waits up to `idleMs` and tries again.
+  const idleBy = Date.now() + idleMs;
+  let asked;
+  for (;;) {
+    asked = await act("quit", { afterMs: 300 }, 30_000).catch((error) => ({ ok: false, error: error.message }));
+    if (asked?.ok || !asked?.busy || Date.now() + everyMs > idleBy) break;
+    await sleep(everyMs);
+  }
+  if (!asked?.ok) return { ok: false, step: "quit", why: `the app didn't take the quit: ${asked?.error ?? "no answer"}` };
+  const gone = await until(() => !alive(pid), waitMs, 250);
+  if (!gone) return { ok: false, step: "quit", why: `the app was still open ${Math.round(waitMs / 1000)}s after Quit (nothing was killed, nothing reopened)` };
+  const reopened = await launch();
+  return { ok: !!reopened?.pid, step: "reopen", pid: reopened?.pid ?? null, ...(reopened?.why ? { why: reopened.why } : {}) };
+}
+
 /** Messages in one room after `since`, in order. */
 export function roomMessages(events, room, since = 0) {
   return events.filter((event) => event.kind === "room-message" && event.room === room && event.t >= since);
@@ -399,6 +421,19 @@ export async function runScenario(scenario, ctx) {
       const back = await act("ping", {}, 120_000).catch(() => null);
       record.marks.push({ t: Date.now(), mark: back?.ok ? "reloaded" : "reload: the driver never came back" });
       log(`  ${back?.ok ? "the reloaded window answers the driver" : "the reloaded window never answered"}`);
+    } else if (step.restart) {
+      // r98 (B5): Ash quits the app (its own Quit, never a kill) and opens it again in the background.
+      const result = ctx.restart ? await ctx.restart({ idleMs: Math.max(0, Math.min((step.restart.waitIdleSec ?? 0) * 1000, stop - Date.now())) }) : { ok: false, why: "this run can't restart the app" };
+      record.marks.push({ t: Date.now(), mark: "restart", result });
+      log(`  Ash quits the app and opens it again: ${result.ok ? `back as pid ${result.pid}` : `NOT DONE (${result.why})`}`);
+      if (!result.ok) {
+        record.notes.push(`restart: ${result.why}`);
+        break;
+      }
+      const back = await act("ping", {}, 120_000).catch(() => null);
+      record.marks.push({ t: Date.now(), mark: back?.ok ? "reopened" : "reopen: the driver never came back" });
+      if (!back?.ok) break;
+      if (step.restart.settleSec) await sleep(step.restart.settleSec * 1000);
     } else if (step.retry) {
       // The "Try again" button on a Mono whose last turn failed (Today, Being built, the rail).
       const answer = await act("retry", { mono: resolveMono(step.retry.mono) }).catch((error) => ({ ok: false, error: error.message }));

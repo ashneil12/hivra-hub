@@ -702,6 +702,7 @@ pub fn run() {
             harness::harness_runtime_binary_paths,
             verify_live::verify_live_take,
             verify_live::verify_live_done,
+            verify_live::verify_live_quit,
             harness::harness_resolve_claude,
             harness::harness_claude_grok_bridge,
             harness::claude_mcp_list,
