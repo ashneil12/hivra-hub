@@ -6,7 +6,8 @@ import { isReadTool } from "../../../integrations/harness/core/preview";
 import { displayPath } from "../../../shared/lib/paths";
 import { delegateToolName } from "./monocodeToolCall";
 import type { Block } from "./session";
-import { isProseBlock, isThinkingBlock, isToolBlock, needsApproval, toolCategory } from "./transcriptActivity";
+import { plainCommandRow } from "../../../shared/lib/plainCommand";
+import { isProseBlock, isThinkingBlock, isToolBlock, isToolSearchStep, needsApproval, toolCategory } from "./transcriptActivity";
 
 /** `lastStep`: on a "Thinking" step, the last tool step of the turn, for "Still working on …" (r66). */
 export type LiveStep = { key: string; label: string; lastStep?: string };
@@ -100,13 +101,16 @@ export function searchStep(query: string): string {
   return more ? `Searching for “${shown}” and ${more} more` : `Searching for “${shown}”`;
 }
 
+/** r97 (Critiquito d): the Lead's hand-off step, short and plain. */
+export const HANDING_OUT = "Handing out a job";
+
 function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): string {
   const preview = block.tool?.preview;
   const rawPath = preview?.path ? displayPath(preview.path, cwd) : preview?.fileName;
   const path = rawPath ? (detail === "name" ? fileName(rawPath) : shortPath(rawPath)) : undefined;
   const title = block.text || block.tool?.title || "";
   const delegate = delegateToolName(block);
-  if (delegate === "delegate_task") return "Handing work to a worker";
+  if (delegate === "delegate_task") return HANDING_OUT;
   if (delegate === "task_wait" || delegate === "task_status") return "Waiting on a worker";
   const command = block.tool?.command?.replace(/\s+/g, " ").trim();
   switch (toolCategory(block)) {
@@ -135,14 +139,29 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
   }
 }
 
-/** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing work to a worker"). */
+/**
+ * r97 items 1 and k (Critiquito, c02 BLIND 242d sidebar foot: "Searching for *select:…", "Running npm test"): a step reads
+ * in the same plain words the chat rows use (r96 plainCommandRow): "Run the tests", "Look at the changes". The harness
+ * looking up its own tools is no step at all ("Getting ready"); callers skip it where they can.
+ */
+function plainWordsStep(block: Block, step: string): string {
+  if (isToolSearchStep(block)) return "Getting ready";
+  const command = block.tool?.command?.replace(/\s+/g, " ").trim();
+  if (toolCategory(block) !== "run" || !command) return step;
+  const plain = plainCommandRow(command);
+  if (plain === command) return step;
+  return plain.length > MAX_COMMAND + 12 ? `${plain.slice(0, MAX_COMMAND + 11)}…` : plain;
+}
+
+/** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing out a job"). */
 export function plainToolStep(block: Block, cwd?: string): string {
-  return toolStep(block, cwd, "name");
+  return plainWordsStep(block, toolStep(block, cwd, "name"));
 }
 
 /** The turn's current step, from its latest block that says anything. */
 export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDetail = "full"): LiveStep {
-  const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft);
+  // r97: the harness looking up its own tools is no step Ash sees.
+  const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft && !(isToolBlock(b) && isToolSearchStep(b)));
   const waiting = seen.find(needsApproval);
   if (waiting) return { key: `approval:${waiting.id}`, label: "Waiting for your OK" };
   const workflow = seen.find((b) => b.workflowRun?.status === "running");
@@ -264,12 +283,22 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, "0")}m`;
 }
 
+// The chat's plain rows say what to do ("Run the tests", r97 k); after "Still working on" they read as doing it.
+const ING: Record<string, string> = { run: "running", look: "looking", search: "searching", check: "checking", install: "installing", list: "listing", read: "reading", remember: "remembering", forget: "forgetting" };
+const onStep = (step: string) => {
+  const [first = "", ...rest] = step.split(" ");
+  const word = ING[first.toLowerCase()] ?? first.charAt(0).toLowerCase() + first.slice(1);
+  return [word, ...rest].join(" ").replace(/, then (\w+)/g, (m, w: string) => (ING[w] ? `, then ${ING[w]}` : m));
+};
+
 /** What the line reads at `now`: the step and its timer, or, after a minute with nothing new, that nothing is happening. */
 export function activityLine(activity: LiveActivity, now: number): { text: string; stalled: boolean } {
   const idle = now - activity.lastEventAt;
   if (idle >= (activity.label === "Thinking" ? THINK_STALL_MS : STALL_MS)) return { text: `No activity for ${Math.floor(idle / 60_000)} min`, stalled: true };
   if (activity.label === "Thinking" && now - (activity.stepSince ?? activity.since) >= STILL_MS) {
-    const on = activity.lastStep ? ` on ${activity.lastStep.charAt(0).toLowerCase()}${activity.lastStep.slice(1)}` : "";
+    // r97 (Critiquito d): not "Still working on handing work to a worker · 20s": the hand-off says itself.
+    if (activity.lastStep === HANDING_OUT) return { text: `${HANDING_OUT} · ${formatElapsed(now - activity.since)}`, stalled: false };
+    const on = activity.lastStep ? ` on ${onStep(activity.lastStep)}` : "";
     return { text: `Still working${on} · ${formatElapsed(now - activity.since)}`, stalled: false };
   }
   // r96 (Critiquito): under a second there is no time worth showing ("Thinking · 0s"), so the step stands alone.

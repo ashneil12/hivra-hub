@@ -658,7 +658,9 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
     });
     // A Lead brief says how it went in (started, queued behind the Lead's work, or steered into it) and to whom.
     // A worker over its project's limit waits, and says why; a worker says which model and effort it runs on (E7).
+    // r97: the job's name, so the Lead's row reads "Asked a worker to: <job>" (the call's input isn't kept).
     for key in [
+        "title",
         "delivery",
         "lead",
         "waiting",
@@ -1201,6 +1203,22 @@ mod tests {
         assert_eq!(lines[4]["result"]["protocolVersion"], PROTOCOLS[0]);
         assert_eq!(lines[5]["error"]["code"], -32700);
         assert!(app.actions().is_empty(), "listing tools calls nothing");
+    }
+
+    #[test]
+    fn a_delegation_passes_back_the_jobs_name_for_its_row() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(
+                json!({ "taskId": "t-1", "childSessionId": "c", "status": "running", "title": "API health and negative bump" }),
+            )
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Add GET /health", "title": "API health and negative bump" }),
+        );
+        assert_eq!(outcome.unwrap()["title"], "API health and negative bump");
     }
 
     #[test]

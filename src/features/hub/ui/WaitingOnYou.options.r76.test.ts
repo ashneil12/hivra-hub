@@ -38,6 +38,8 @@ it("shows the options the ask points back to, capitalised", () => {
   ]);
   act(() => root.render(createElement(WaitingOnYou, { projectId: undefined })));
   expect(el.querySelector("[data-hub-waiting-question]")?.textContent).toBe("Which of those two?");
-  const options = [...el.querySelectorAll("[data-hub-waiting-option]")].map((o) => o.lastElementChild?.textContent);
+  const options = [...el.querySelectorAll("[data-hub-waiting-option]")].map((o) => o.children[1]?.textContent);
   expect(options).toEqual(["Everyone sees everyone's tallies", "Tallies stay private unless shared"]);
+  // r97 (Critiquito g): the pick is marked on its option.
+  expect([...el.querySelectorAll("[data-hub-waiting-option]")].map((o) => !!o.querySelector("[data-hub-waiting-option-pick]"))).toEqual([false, true]);
 });

@@ -133,6 +133,10 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
             <li key={i} className="flex gap-1.5" data-hub-waiting-option>
               <span className="shrink-0 text-content/50" aria-hidden>{i + 1}.</span>
               <span className="min-w-0 break-words">{option}</span>
+              {/* r97 (Critiquito g): the Lead's pick is marked on its option. */}
+              {chat.pick && option.trim().toLowerCase() === chat.pick.trim().toLowerCase() ? (
+                <span className="shrink-0 text-content/50" data-hub-waiting-option-pick>(its pick)</span>
+              ) : null}
             </li>
           ))}
         </ol>

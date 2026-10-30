@@ -130,6 +130,24 @@ function delegateToolDone(block: Block): boolean {
   );
 }
 
+const MAX_JOB = 60;
+
+/**
+ * r97 item 3: the job a delegate_task call handed out, from its result's title (the input isn't kept once the call is
+ * done), as a goal: the row reads "Asked a worker to: Fix the save bug". Never a result: anything from a "Done when" on
+ * and any claim that something passed or is done is cut (r96, c02 6968: "Done when: … npm test passed" read as done).
+ */
+export function delegateJobName(block: Block): string | undefined {
+  const raw = delegateToolData(block.tool?.detail)?.title;
+  if (typeof raw !== "string") return undefined;
+  let job = raw.split("\n")[0]!.replace(/\s+/g, " ").trim();
+  job = job.replace(/\s*(?:[-–—:;,.]\s*)?\bdone when\b.*$/i, "").trim();
+  if (/\b(?:passed|passes|pass(?:ing)?|green|is done|are done|done|fixed|landed|works now)\s*[.!]?$/i.test(job)) return undefined;
+  job = job.replace(/[.:;,\s]+$/, "");
+  if (!job) return undefined;
+  return job.length > MAX_JOB ? `${job.slice(0, MAX_JOB - 1).trimEnd()}…` : job;
+}
+
 /** One delegate tool call as its row reads: "Delegating a task", "Delegated a task", "Tried to delegate a task". */
 export function delegateToolLabel(
   block: Block,
@@ -138,6 +156,10 @@ export function delegateToolLabel(
   const [action, running, done, object] = DELEGATE_TOOLS[name].labels;
   if (delegateToolFailed(block))
     return `Tried to ${action.toLowerCase()} ${object}`;
+  if (name === "delegate_task") {
+    const job = delegateJobName(block);
+    if (job) return `Asked a worker to: ${job}`;
+  }
   return `${delegateToolDone(block) ? done : running} ${object}`;
 }
 

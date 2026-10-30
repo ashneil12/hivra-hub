@@ -179,6 +179,7 @@ import {
   nestedScrollAbsorbsWheel,
   proseSummary,
   resolveToolCallDisplay,
+  shortToolTarget,
   subagentBrief,
   subagentModelName,
   subagentName,
@@ -2713,9 +2714,10 @@ const TranscriptBlock = memo(function TranscriptBlock({
     }
     return (
       <div className={`${embedded ? "" : "px-4"} py-2 text-content/50`}>
-        <pre className="min-w-0 whitespace-pre-wrap break-words">
+        {/* r97 (Critiquito h): the app's grey line uses the UI font, never a code font (r94 shot 05). */}
+        <p data-app-status className="min-w-0 whitespace-pre-wrap break-words font-sans text-[12px]">
           {block.text}
-        </pre>
+        </p>
       </div>
     );
   }
@@ -4745,7 +4747,9 @@ function ActivityStatusRow({ block }: { block: Block }) {
       <span
         title={text}
         {...(still ? { "data-still-running": true } : {})}
-        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${still ? "text-content/85" : "text-content/50"}`}
+        // r97 (Critiquito h): the UI font, not a code font, like the app's other grey lines.
+        {...(still ? {} : { "data-app-status": true })}
+        className={`min-w-0 flex-1 truncate font-sans text-[12px] ${still ? "text-content/85" : "text-content/50"}`}
       >
         {text}
       </span>
@@ -5483,7 +5487,7 @@ function ToolCallSummary({
             }`}
           >
             <FileTypeIcon name={fileName} isDir={false} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </ToolDiffPreview>
         ) : canOpen ? (
           <button
@@ -5500,7 +5504,7 @@ function ToolCallSummary({
             }}
           >
             <FileTypeIcon name={fileName} isDir={action === "List"} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </button>
         ) : (
           <span
@@ -5512,7 +5516,7 @@ function ToolCallSummary({
             title={target}
           >
             <FileTypeIcon name={fileName} isDir={action === "List"} />
-            <span className="min-w-0 truncate">{target}</span>
+            <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
           </span>
         )
       ) : (
@@ -5520,7 +5524,7 @@ function ToolCallSummary({
           className={`flex min-w-0 flex-1 items-center gap-1.5 pl-1 ${targetTone}`}
           title={target}
         >
-          <span className="min-w-0 truncate">{target}</span>
+          <span className="min-w-0 truncate">{shortToolTarget(target)}</span>
         </span>
       )}
     </span>

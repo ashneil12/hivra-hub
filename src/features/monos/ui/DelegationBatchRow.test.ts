@@ -162,6 +162,13 @@ describe("DelegationBatchRow", () => {
     );
     expect(container.querySelector('[data-delegation-stuck="w2"]')?.textContent).toBe("Stalled");
     expect(container.querySelector('[data-delegation-stuck="w1"]')).toBeNull();
+    // r97 (Critiquito a): the stalled card shows the stalled circle, not a spinner; the running one keeps its spinner.
+    const card = (id: string) => container.querySelector(`[data-launched-session="${id}"]`)!;
+    expect(card("w2").querySelector("[data-launched-stalled]")).not.toBeNull();
+    expect(card("w2").querySelector(".animate-spin")).toBeNull();
+    expect(card("w2").getAttribute("data-state")).toBe("stalled");
+    expect(card("w1").querySelector(".animate-spin")).not.toBeNull();
+    expect(card("w1").querySelector("[data-launched-stalled]")).toBeNull();
     expect(
       [...container.querySelectorAll<HTMLElement>("[data-delegation-stop]")].map((b) => b.dataset.delegationStop),
     ).toEqual(["w1", "w2"]);

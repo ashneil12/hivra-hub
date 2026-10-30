@@ -1,7 +1,7 @@
 // How an agent-to-agent note reads on screen (PM's half of the notes; CoS's agentNotes.ts is the data). Pure, so the
 // look can change without touching the events: the note's words split into parts, the one agent with a chat to open
 // marked as the link, and notes landing together grouped so a burst shows as one line that expands.
-import { messagedWords, stoppedWords, type AgentNote } from "./agentNotes";
+import { messagedWords, serviceStallWords, stoppedWords, type AgentNote } from "./agentNotes";
 
 /** Notes this close together fold into one line (a Lead handing out three jobs at once). */
 export const FOLD_MS = 2 * 60_000;
@@ -18,6 +18,8 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
     text: side.name,
     opens: note.target && side.session === note.target ? note.target : null,
   });
+  const stall = serviceStallWords(note);
+  if (stall) return { head: [name(note.from), { kind: "text", text: stall }], line: detailOf(note) };
   const head: NotePart[] =
     note.kind === "stuck"
       ? note.owner === "needs-you" || note.owner === "retrying"
@@ -45,6 +47,15 @@ function labelTask(name: string): string | undefined {
   return name.match(/"(.+)"\s*$/)?.[1]?.trim();
 }
 
+// A file path in a finished job's line: `packages/api/src/stats.ts`, ./src/a.ts, /Users/ash/x/y.ts (anything with a slash
+// and a file ending), with the "in"/"at" that leads into it.
+const PATH = /\s*(?:\b(?:in|at|inside|within|to|from|under)\s+)?`?(?:~|\.{1,2})?\/?(?:[\w.@-]+\/)+[\w.@-]+\.\w{1,6}`?(?::\d+)*/gi;
+
+/** r97 (Critiquito i, c02 BLIND 242d): the job's name says what was done; the done line carries no file path. */
+export function withoutPaths(line: string): string {
+  return line.replace(PATH, "").replace(/\s+([.,;:!?])/g, "$1").replace(/\s{2,}/g, " ").trim();
+}
+
 const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /**
@@ -52,8 +63,9 @@ const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").tri
  * its job has the brief's first line as the detail, which is that same label (cut short or not), so it is left off.
  */
 export function detailOf(note: AgentNote): string | undefined {
+  if (serviceStallWords(note)) return undefined; // r97 (c): the stall sentence is the whole head
   // r96: the landed words are in the head of a finished job's line, so the detail is the result alone.
-  const line = (note.kind === "reported" ? note.line?.trim().replace(LANDED, "") : note.line)?.trim();
+  const line = (note.kind === "reported" ? withoutPaths(note.line?.trim().replace(LANDED, "") ?? "") : note.line)?.trim();
   if (!line) return undefined;
   const d = same(line);
   for (const side of [note.from, note.to]) {

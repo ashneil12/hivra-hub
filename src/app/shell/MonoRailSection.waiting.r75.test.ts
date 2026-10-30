@@ -63,7 +63,8 @@ describe("r75: a Mono's chat waiting on Ash is red on its rail row", () => {
     // r76 (Critiquito): one red "Needs you" line under the name, no button (the row itself opens the chat).
     expect(line!.textContent).toBe("Needs you");
     expect(line!.querySelector("button")).toBeNull();
-    expect(line!.title).toBe("Everyone sees every tally, or private unless shared?");
+    // r97 (Critiquito g): the ask now carries its two options, listed under the question on hover.
+    expect(line!.title).toBe("Everyone sees every tally, or private unless shared?\n1. Everyone sees every tally\n2. Private unless shared");
     expect(container.querySelector(`[data-mono-waiting="${other.id}"]`)).toBeNull();
   });
 });

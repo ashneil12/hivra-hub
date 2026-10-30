@@ -114,6 +114,7 @@ export function DelegationBatchRow({
                       delegationOf(launch.sessionId, rows),
                     )
               }
+              stalled={states[index] === "stuck"}
               open={openSessionId === launch.sessionId}
               onOpen={
                 onOpen && !waiting[index]

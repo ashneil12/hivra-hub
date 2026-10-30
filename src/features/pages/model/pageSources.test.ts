@@ -51,7 +51,7 @@ it("a watching page hears every change to the agents and reads them as they are 
   // The Lead's own chat asks Ash: Waiting on you has it, so the page does.
   noteChats([{ ...session("s-exo"), busy: false, blocks: [{ id: "b", role: "assistant", text: "Needs Ash: ship today or tomorrow?\nMy pick: today" }] } as never]);
   await vi.advanceTimersByTimeAsync(60);
-  expect(last()).toMatchObject({ state: "asking", question: { chatId: "s-exo", pick: "today" } });
+  expect(last()).toMatchObject({ state: "asking", question: { chatId: "s-exo", pick: "Ship today" } }); // r97 (g): the pick reads as its option
 
   // The app's watcher marks the busy worker stalled on its row (workerStall.ts): the page reads it as stuck, and its
   // "No output for N min" counts up by itself (the clock ticks).

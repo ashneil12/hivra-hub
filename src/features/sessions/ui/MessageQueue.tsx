@@ -14,7 +14,7 @@ import { isImeComposition } from "../../../shared/lib/keyboard";
 import type { MessageQueueStatus, QueuedMessage } from "../model/session";
 
 export function MessageQueue({
-  messages,
+  messages: queued,
   status,
   onDelete,
   onEdit,
@@ -45,6 +45,10 @@ export function MessageQueue({
       if (editingIdRef.current) onEditingChangeRef.current?.();
     };
   }, []);
+  // r97 (Critiquito b): the app's own notes to a chat still go out in order, but never sit in Ash's queue bar (Steer,
+  // edit, delete are for his messages). They show only as the grey line in the chat once sent (r94 shot 05).
+  // A finished worker's completion keeps its own labelled row (it can be removed, never edited or steered).
+  const messages = queued.filter((message) => message.monoSessionCompletion || appNoteText(message.text) === undefined);
   if (messages.length === 0) return null;
   const paused = status === "paused";
   const failed = messages.some((message) => message.error);
@@ -107,7 +111,7 @@ export function MessageQueue({
                 : message.monoSessionCompletion.sessionCount
                   ? `${message.monoSessionCompletion.sessionCount} sessions finished`
                   : `Session ${message.monoSessionCompletion.status}: ${message.monoSessionCompletion.title}`
-              : (appNoteText(message.text) ?? message.text.trim())) ||
+              : message.text.trim()) ||
             message.noteCard?.title ||
             message.handoffCard?.brief ||
             `${message.attachments.length} attachment${message.attachments.length === 1 ? "" : "s"}`;
