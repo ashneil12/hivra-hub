@@ -10,11 +10,16 @@ describe("withoutDoubledAllClear", () => {
     ["Nothing needs you right now, no questions pending.", "Nothing needs you right now."],
     ["Nothing needs you. No decisions are waiting on you.", "Nothing needs you."],
     ["Nothing needs you yet. No approvals pending", "Nothing needs you yet."],
+    // c02 BLIND 0774: the Lead's own variant.
+    ["Nothing needs you. No one is stuck on a question.\nThe alive check is in.", "Nothing needs you.\nThe alive check is in."],
+    ["Nothing needs you. Nobody is waiting on you.", "Nothing needs you."],
   ])("%s", (input, want) => expect(withoutDoubledAllClear(input)).toBe(want));
 
   it("leaves other replies and code alone", () => {
     expect(withoutDoubledAllClear("No questions are waiting.")).toBe("No questions are waiting.");
     expect(withoutDoubledAllClear("Nothing needs you. The tests pass.")).toBe("Nothing needs you. The tests pass.");
+    expect(withoutDoubledAllClear("Nothing needs you. No tests are red.")).toBe("Nothing needs you. No tests are red.");
+    expect(withoutDoubledAllClear("Nothing needs you. No one is waiting on 2 jobs.")).toBe("Nothing needs you. No one is waiting on 2 jobs.");
     const fenced = "```\nNothing needs you. No questions are waiting.\n```";
     expect(withoutDoubledAllClear(fenced)).toBe(fenced);
   });
