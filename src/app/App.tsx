@@ -44,7 +44,7 @@ import {
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
-import { ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
+import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
@@ -7765,6 +7765,15 @@ function Workspace({
       if (answeredJob?.state === "question")
         void delegationsRef.current?.setQuestion(answeredJob, null, "ash", { answers: "ash-in-chat" }).catch(() => undefined);
       if (answeredJob) noteAshAnswer(answeredJob.id, text);
+      // r89 (Ash): his answer drops the Lead's queued wake with this worker's question, so the Lead never asks it.
+      if (answeredJob) {
+        const owner = sessionsRef.current.find((s) => s.id === answeredJob.ownerSession);
+        const wakes = answeredQuestionWakes(owner, sessionId);
+        if (wakes.length)
+          setSessions((previous) =>
+            previous.map((s) => (s.id === answeredJob.ownerSession ? wakes.reduce(dequeueQueuedMessage, s) : s)),
+          );
+      }
       if (answeredJob)
         void queueMonoSessionCompletionRef.current(
           answeredJob.ownerSession,

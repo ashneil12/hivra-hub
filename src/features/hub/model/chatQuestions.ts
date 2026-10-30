@@ -43,6 +43,11 @@ export type ChatQuestion = {
    */
   provide?: string;
   /**
+   * r89 (Ash, s14 r88 run 2: a blocking "Needs Ash" about a job that had already landed): the landed job's title the
+   * question is about. The gate holds such a question for review instead of showing it as blocking.
+   */
+  afterLanding?: string;
+  /**
    * r76 (Critiquito): the options an ask points back to ("which of those two?"), from the agent's own message, or a live
    * question's options; so the card can be answered without opening the chat. Capitalised, in the agent's words.
    */
@@ -322,6 +327,21 @@ export function answerSettles(note: string, question: string): boolean {
   return shared(stems(words), asked) >= 2;
 }
 
+/**
+ * r89 (Ash): the job a "Needs Ash" question asks about when that job has already landed: a report in the chat carries
+ * "[MonoCode landed]" and its job title shares half or more of its words with the question.
+ */
+export function landedJobAsked(blocks: ChatLike["blocks"], question: string): string | undefined {
+  const asked = stems(question);
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const report = blocks[i].monoSessionCompletion;
+    if (!report || report.question || !blocks[i].text?.includes("[MonoCode landed]")) continue;
+    const job = stems(report.title);
+    if (job.size && shared(job, asked) * 2 >= job.size) return report.title;
+  }
+  return undefined;
+}
+
 /** The Ash-answered notes the chat has, delivered or still queued. */
 function answerNotes(chat: ChatLike): string[] {
   const isNote = (text: string | undefined) => !!text?.startsWith(ASH_ANSWERED_PREFIX);
@@ -506,6 +526,7 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
         redLine: marker.redLine,
         ...(marker.flag ? { flag: marker.flag } : {}),
         ...(marker.provide ? { provide: marker.provide } : {}),
+        ...afterLanding(chat.blocks, marker.question),
       }
     : null;
 }
@@ -523,6 +544,11 @@ function withWhy(q: ChatQuestion, prompt: UserQuestionPrompt, markerPick: string
   const fromOption = option?.description?.replace(/^\s*\(?recommended\)?\s*[:.,\u2014-]?\s*/i, "");
   const why = oneLine((fromMarker ?? fromOption ?? "").replace(/^[\s.,:;\u2014-]+/, "")).trim();
   return why ? { ...q, why } : q;
+}
+
+function afterLanding(blocks: ChatLike["blocks"], question: string): { afterLanding?: string } {
+  const title = landedJobAsked(blocks, question);
+  return title ? { afterLanding: title } : {};
 }
 
 function markerOptions(question: string, turnText: string): { options?: string[] } {
@@ -557,7 +583,9 @@ const ERLANDS = new Set(["sign in", "enter a code", "pay"]);
  * pay), where the errand is the recommendation. Everything else (progress, status, a question with no recommendation)
  * stays in the chat, and the reason says why in words Ash could act on.
  */
-export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag" | "provide">): GateDecision {
+export function gateQuestion(
+  q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag" | "provide"> & Partial<Pick<ChatQuestion, "afterLanding">>,
+): GateDecision {
   const question = q.question.trim();
   const asks = ASKS.test(question) || APPROVAL.test(question) || CHOICE.test(question);
 
@@ -565,6 +593,9 @@ export function gateQuestion(q: Pick<ChatQuestion, "source" | "question" | "pick
   if (q.source === "permission") return { admit: true, kind: "approval", reason: "A tool call is held on Ash's Allow." };
   // A key, a token or access only Ash can hand over: an errand that waits for him, with or without a pick (r65).
   if (q.provide) return { admit: true, kind: "action", reason: `Only Ash can provide ${q.provide}, so it waits for him.` };
+  // r89 (Ash): a blocking question about a job that already landed is held for review, not shown as blocking.
+  if (q.afterLanding)
+    return { admit: false, reason: `It asks about "${q.afterLanding}", which has already landed, so it is held for review instead of shown as blocking.` };
 
   if (q.redLine) {
     return q.pick

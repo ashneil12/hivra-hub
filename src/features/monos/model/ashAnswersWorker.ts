@@ -5,6 +5,7 @@
 // at once to save his call and say what happens next; and the worker's turn carries a note that his words decide.
 import { forUser } from "../../hub/model/userName";
 import type { QueuedMessage } from "../../sessions/model/session";
+import { isQuestionWakeFor } from "./delegationQuestions";
 import { isOpenDelegation, type Delegation } from "./delegations";
 
 export const ASH_ANSWERED_PREFIX = "[MonoCode Ash answered]";
@@ -31,6 +32,14 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
     steerWhenBusy: true,
     text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your worker on "${short(row.title || "its job", 80)}" in its chat: "${short(words, 400)}". The worker carries on from his words, not from any pick of yours. Save his call now with ash_remember, in his words, then tell him in one line what happens next, as work still to come ("the worker will…"; nothing is in until its report lands; if you asked him this too, that line says it is answered; don't ask it again). Its report comes to you when it is done. This is an app notification, not a new message from Ash.`,
   };
+}
+
+/**
+ * r89 (Ash): once he has answered in the worker's chat, the Lead's queued wake carrying that worker's question is
+ * dropped, so the Lead never puts the answered question to him. The ids to take out of the Lead's queue.
+ */
+export function answeredQuestionWakes(lead: { queuedMessages?: readonly Pick<QueuedMessage, "id">[] } | undefined, workerChat: string): string[] {
+  return (lead?.queuedMessages ?? []).filter((message) => isQuestionWakeFor(message, workerChat)).map((message) => message.id);
 }
 
 /**
