@@ -69,12 +69,6 @@
           }
         },
         {
-          "sleep": 10
-        },
-        {
-          "snapshot": "stalled"
-        },
-        {
           "view": {
             "project": "tally",
             "item": "inbox"
@@ -87,6 +81,9 @@
             "item": "being-built"
           },
           "name": "being-built-stalled"
+        },
+        {
+          "snapshot": "stalled"
         },
         {
           "fault": null
@@ -118,7 +115,7 @@
           "Vanguard"
         ]
       },
-      "criteria": "SCRIPTED, not blind: the test harness makes the first worker's model call return the Claude CLI's own retry lines (API overloaded, 529) and then nothing for 150 seconds while its turn stays open; after that the call goes through. Grade only what the app shows about that stall. Pass: within about a minute of the error going quiet (so by about 2 minutes after the error) the stall is flagged in plain words (a provider error, no progress) in the Lead's chat, on the Mono rail, on Being built and on Today, with a way to retry or open the worker's chat in 2 clicks or fewer; the Lead does not pretend the work is going fine; once the call goes through, the flag clears and the job finishes or is reported plainly. The injected error itself is not a failure of the app or the model. Fail: the stall shows nowhere outside the worker's sub-chat, or only after several minutes, or the flag stays after the worker recovered."
+      "criteria": "SCRIPTED, not blind: the test harness makes the first worker's model call return the Claude CLI's own retry lines (API overloaded, 529) and then nothing for 150 seconds while its turn stays open; after that the call goes through. Grade only what the app shows about that stall. Pass: within about a minute of the error going quiet (so by about 2 minutes after the error) the stall is flagged in plain words (a provider error, no progress) in the Lead's chat, on the Mono rail, on Being built and on Today, with a way to retry or open the worker's chat in 2 clicks or fewer; the Lead does not pretend the work is going fine; once the call goes through, the flag clears and the job finishes or is reported plainly. The injected error itself is not a failure of the app or the model. Fail: the stall shows nowhere outside the worker's sub-chat, or only after several minutes, or the flag stays after the worker recovered. Note (r88 run 1): the Lead may retry the job on its own within seconds of the flag, which clears it; the views are taken the moment the flag is set. A Lead retrying at once is good, and a flag that cleared because the job was retried is not a failure."
     }
   ]
 }
