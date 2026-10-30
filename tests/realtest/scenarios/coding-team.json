@@ -194,8 +194,7 @@
         },
         {
           "wait": {
-            "chatText": "dump",
-            "pattern": "Test run in the project itself",
+            "snapshotText": "Test run in the project itself",
             "maxSec": 150
           }
         },

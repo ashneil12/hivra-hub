@@ -106,6 +106,8 @@ export async function runScenario(scenario, ctx) {
       const last = Math.max(ref, ...all.map((m) => m.t), typing?.t ?? 0);
       return replies.length > 0 && !typing?.who && Date.now() - last >= (cond.quietSec ?? 40) * 1000;
     }
+    // r88: words anywhere the window shows (its snapshot), app lines too (e.g. "Test run in the project itself").
+    if (cond.snapshotText) return new RegExp(cond.snapshotText, "i").test(JSON.stringify(await act("snapshot")));
     if (cond.monoReply || cond.monoText) {
       const monoId = resolveMono(cond.monoReply ?? cond.monoText);
       const session = await ctx.monoSession(monoId);
