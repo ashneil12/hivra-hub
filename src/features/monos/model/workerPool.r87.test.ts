@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Delegation } from "./delegations";
 import {
   admitWorker,
+  areasNamed,
   declareFiles,
   filesNamed,
   forgetFiles,
@@ -95,5 +96,31 @@ describe("two jobs on the same files (r87)", () => {
       "See https://example.com/x.html for the style; version 1.2.3.\n<worker_rules> - Never edit TODO.md</worker_rules>";
     expect(filesNamed(brief)).toEqual(["packages/ui/src/App.tsx"]);
     expect(filesNamed("UI only. Delete the local tally type copy.")).toEqual([]);
+  });
+});
+
+describe("a brief's area, when it names no file (c02 r87 run 1)", () => {
+  // The five briefs of c02 r87 run 1, as the Lead wrote them.
+  const briefs: [string, string, string[]][] = [
+    ["GET /health alive", 'Ash\'s words: "add a GET /health endpoint that says its alive."  Add GET /health that says the service is alive (plain, obvious response). Change only the API server. Do not edit the README, the UI, or bump validation.', ["area:api"]],
+    ["Reject negative bump", 'Ash\'s words: "the api should reject a negative bump with a plain english error."  Reject a negative bump with a plain-English error (not a code or stack trace). Change only the bump handler. Do not add /health, do not edit the README or the UI.', ["area:api"]],
+    ["UI uses shared tally type", 'Ash\'s words: "the ui has its own copy of the tally type, make it use the shared package."  Delete the UI\'s local tally type and import it from the shared package. Change only that type wiring. Do not change the board layout or the API.', ["area:ui"]],
+    ["Last week on the board", 'Ash\'s words: "show last weeks total next to this week on the board." Show last week\'s total beside this week\'s on the board, with weeks starting Monday.', ["area:ui"]],
+    ["README documents /health", 'Ash\'s words: "put the new endpoint in the readme."  Document GET /health (says the service is alive) in the README. Change only the README. Do not add the route yourself.', ["area:docs"]],
+  ];
+  it.each(briefs)("%s", (title, brief, areas) => {
+    expect(areasNamed(title, brief)).toEqual(areas);
+  });
+
+  it("holds the second UI job behind the first, and says so in plain words", () => {
+    declareFiles("app-ui", areasNamed(briefs[2][0], briefs[2][1]));
+    const admission = admitWorker(job("app-week", areasNamed(briefs[3][0], briefs[3][1])), {
+      rows: [row("app-ui", "UI uses shared tally type")],
+      room,
+    });
+    expect(admission).toMatchObject({ start: false, reason: "files" });
+    if (!admission.start) expect(admission.line).toBe('Waiting for "UI uses shared tally type" to land: both change the UI. It starts by itself then, from the project with that work in.');
+    // The README job, in another area, starts beside it.
+    expect(admitWorker(job("app-readme", ["area:docs"]), { rows: [row("app-ui", "UI uses shared tally type")], room }).start).toBe(true);
   });
 });

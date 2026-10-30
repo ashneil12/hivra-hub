@@ -558,6 +558,29 @@ export function filesNamed(text: string): string[] {
   return [...found];
 }
 
+// The Lead briefs within two minutes, before anyone has read the code, so a brief rarely names a file (c02 r87 run 1:
+// none of five did, and two UI jobs met in packages/ui/src/App.tsx again). Its area does: "Change only the API server",
+// "UI only", "on the board". One job per area runs at a time in a project; the next waits for it to land.
+const AREAS: readonly (readonly [string, RegExp])[] = [
+  ["ui", /\b(ui|board|front[- ]?end|screen|component|layout|css|button)s?\b/i],
+  ["api", /\b(api|endpoint|route|server|handler|backend)s?\b/i],
+  ["docs", /\b(readme|docs?|documentation|todo|backlog|changelog)\b/i],
+];
+export const AREA_PREFIX = "area:";
+const AREA_WORDS: Record<string, string> = { ui: "the UI", api: "the API", docs: "the docs" };
+
+/** A brief's areas: from its title and its "only" lines when they name one, else from what it asks (not what it rules out, nor Ash's quoted words). */
+export function areasNamed(title: string, brief: string): string[] {
+  const own = brief
+    .replace(/<worker_rules>[\s\S]*?(<\/worker_rules>|$)/g, " ")
+    .replace(/"[^"]*"|“[^”]*”/g, " ")
+    .split(/(?<=[.!?\n])\s+/)
+    .filter((sentence) => !/\b(do not|don't|never|not|leave|without|another job|other job)\b/i.test(sentence));
+  const of = (texts: string[]) => AREAS.filter(([, word]) => texts.some((t) => word.test(t))).map(([area]) => area);
+  const pinned = of([title, ...own.filter((sentence) => /\bonly\b/i.test(sentence))]);
+  return (pinned.length ? pinned : of(own)).map((area) => `${AREA_PREFIX}${area}`);
+}
+
 /** The running job in the project that changes one of these files, and the file. */
 function sharedWith(
   job: Pick<AdmitInput, "id" | "project" | "files">,
@@ -579,7 +602,10 @@ function sharedWith(
 }
 
 export function filesWaitLine(shared: { title: string; file: string }): string {
-  return `Waiting for "${shared.title.split("\n")[0].slice(0, 60)}" to land: both change ${shared.file}. It starts by itself then, from the project with that work in.`;
+  const what = shared.file.startsWith(AREA_PREFIX)
+    ? (AREA_WORDS[shared.file.slice(AREA_PREFIX.length)] ?? shared.file.slice(AREA_PREFIX.length))
+    : shared.file;
+  return `Waiting for "${shared.title.split("\n")[0].slice(0, 60)}" to land: both change ${what}. It starts by itself then, from the project with that work in.`;
 }
 
 export type AdmitContext = {

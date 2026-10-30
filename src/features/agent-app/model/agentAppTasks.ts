@@ -44,7 +44,7 @@ import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview"
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
-import { filesNamed } from "../../monos/model/workerPool";
+import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import type { AgentAppHost } from "./agentApp";
 import {
   limitsLine,
@@ -618,9 +618,9 @@ async function delegate(
   // The job's size, as the Lead declared it, and its own "this one is hard": signals the model chooser reads (E7).
   const hard = input.hard === true;
   const scope = scopeList(input.scope);
-  // r87: the files or folders it will change, as the Lead named them and as its brief names them. A job that shares one
+  // r87: the files or folders it will change, as the Lead named them and as its brief names them, and its area (UI, API, docs). A job that shares one
   // with running work in the project waits for that work to land (workerPool.ts sharedWith).
-  const files = [...new Set([...fileList(input.files), ...filesNamed(brief)])];
+  const files = [...new Set([...fileList(input.files), ...filesNamed(brief), ...areasNamed(title, brief)])];
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
