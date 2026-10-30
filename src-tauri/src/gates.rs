@@ -39,11 +39,16 @@ pub(crate) fn safe_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
         && !id.starts_with('.')
-        && id.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
 }
 
 /// The project's check, if it has one: its config and its script's path, both inside `dir`.
-pub(crate) fn gate_for(dir: &Path, project_id: &str) -> Result<Option<(GateConfig, PathBuf)>, String> {
+pub(crate) fn gate_for(
+    dir: &Path,
+    project_id: &str,
+) -> Result<Option<(GateConfig, PathBuf)>, String> {
     if !safe_id(project_id) {
         return Err("That project id can't name a check.".into());
     }
@@ -51,8 +56,8 @@ pub(crate) fn gate_for(dir: &Path, project_id: &str) -> Result<Option<(GateConfi
     let Ok(text) = std::fs::read_to_string(&file) else {
         return Ok(None);
     };
-    let config: GateConfig =
-        serde_json::from_str(&text).map_err(|e| format!("The check's settings couldn't be read: {e}"))?;
+    let config: GateConfig = serde_json::from_str(&text)
+        .map_err(|e| format!("The check's settings couldn't be read: {e}"))?;
     if !safe_id(&config.script) || config.script.ends_with(".json") {
         return Err("The check's script has to be a file beside its settings.".into());
     }
@@ -65,7 +70,8 @@ pub(crate) fn gate_for(dir: &Path, project_id: &str) -> Result<Option<(GateConfi
 
 /// A worker's own checkout: a folder inside the project's sibling `<project>-worktrees/` folder.
 pub(crate) fn worker_checkout(checkout: &str) -> Result<PathBuf, String> {
-    let path = std::fs::canonicalize(checkout).map_err(|_| "The worker's checkout isn't there.".to_string())?;
+    let path = std::fs::canonicalize(checkout)
+        .map_err(|_| "The worker's checkout isn't there.".to_string())?;
     let in_worktrees = path
         .parent()
         .and_then(|p| p.file_name())
@@ -101,7 +107,8 @@ pub(crate) fn run_script(
     let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mut cmd = if matches!(ext, "mjs" | "js" | "ts" | "cjs") {
         let mut c = Command::new("node");
-        c.args(["--experimental-strip-types", "--no-warnings"]).arg(script);
+        c.args(["--experimental-strip-types", "--no-warnings"])
+            .arg(script);
         c
     } else {
         Command::new(script)
@@ -153,7 +160,13 @@ pub(crate) fn run_script(
     };
     // Stopped: its pipes may stay open in a process it left behind, so its words aren't waited for.
     let Some(status) = status else {
-        return (false, format!("The check ran past {} seconds and was stopped.", timeout.as_secs()));
+        return (
+            false,
+            format!(
+                "The check ran past {} seconds and was stopped.",
+                timeout.as_secs()
+            ),
+        );
     };
     let stdout = out_reader.join().unwrap_or_default();
     let stderr = err_reader.join().unwrap_or_default();
@@ -162,7 +175,11 @@ pub(crate) fn run_script(
 }
 
 fn gates_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("gates"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("gates"))
 }
 
 /// Run the project's check on a worker's checkout. `Ok(None)`: the project has no check.
@@ -179,9 +196,23 @@ pub async fn run_worker_gate(
             return Ok(None);
         };
         let checkout = worker_checkout(&checkout)?;
-        let items = if signed_off { config.sign_off.clone() } else { Vec::new() };
-        let (ok, output) = run_script(&script, &checkout, &items, crate::harness::login_shell_path(), GATE_TIMEOUT);
-        Ok(Some(GateRun { name: config.name.unwrap_or_else(|| "Check".into()), ok, output }))
+        let items = if signed_off {
+            config.sign_off.clone()
+        } else {
+            Vec::new()
+        };
+        let (ok, output) = run_script(
+            &script,
+            &checkout,
+            &items,
+            crate::harness::login_shell_path(),
+            GATE_TIMEOUT,
+        );
+        Ok(Some(GateRun {
+            name: config.name.unwrap_or_else(|| "Check".into()),
+            ok,
+            output,
+        }))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -192,7 +223,8 @@ mod tests {
     use super::*;
 
     fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("monocode-gates-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("monocode-gates-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -214,7 +246,11 @@ mod tests {
         assert_eq!(gate_for(&dir, "tally").unwrap(), None);
         std::fs::write(dir.join("tally.json"), r#"{"script":"../evil.sh"}"#).unwrap();
         assert!(gate_for(&dir, "tally").is_err());
-        std::fs::write(dir.join("tally.json"), r#"{"name":"Routes check","script":"routes.sh","signOff":["DELETE /x"]}"#).unwrap();
+        std::fs::write(
+            dir.join("tally.json"),
+            r#"{"name":"Routes check","script":"routes.sh","signOff":["DELETE /x"]}"#,
+        )
+        .unwrap();
         assert!(gate_for(&dir, "tally").is_err(), "missing script");
         std::fs::write(dir.join("routes.sh"), "#!/bin/sh\nexit 0\n").unwrap();
         let (config, script) = gate_for(&dir, "tally").unwrap().unwrap();
@@ -245,10 +281,22 @@ mod tests {
         let script = dir.join("check.sh");
         std::fs::write(&script, "#!/bin/sh\necho \"on $1 signed $3\"\n[ \"$3\" = \"DELETE /x\" ] && exit 0\necho 'DELETE /x is not signed off'\nexit 1\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (ok, said) = run_script(&script, Path::new("/tmp/co"), &[], None, Duration::from_secs(10));
+        let (ok, said) = run_script(
+            &script,
+            Path::new("/tmp/co"),
+            &[],
+            None,
+            Duration::from_secs(10),
+        );
         assert!(!ok);
         assert!(said.contains("DELETE /x is not signed off"), "{said}");
-        let (ok, said) = run_script(&script, Path::new("/tmp/co"), &["DELETE /x".into()], None, Duration::from_secs(10));
+        let (ok, said) = run_script(
+            &script,
+            Path::new("/tmp/co"),
+            &["DELETE /x".into()],
+            None,
+            Duration::from_secs(10),
+        );
         assert!(ok, "{said}");
         assert!(said.contains("on /tmp/co signed DELETE /x"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -262,7 +310,13 @@ mod tests {
         let script = dir.join("slow.sh");
         std::fs::write(&script, "#!/bin/sh\nexec sleep 5\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (ok, said) = run_script(&script, Path::new("/tmp"), &[], None, Duration::from_millis(300));
+        let (ok, said) = run_script(
+            &script,
+            Path::new("/tmp"),
+            &[],
+            None,
+            Duration::from_millis(300),
+        );
         assert!(!ok);
         assert!(said.contains("was stopped"));
         let _ = std::fs::remove_dir_all(&dir);
