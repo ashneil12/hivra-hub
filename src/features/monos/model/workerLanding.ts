@@ -37,9 +37,9 @@ export function landingLine(landing: Landing): string {
     case "landed":
       return `[MonoCode landed] The app put this worker's changes into the project (not committed): ${files(landing.files)}.`;
     case "already":
-      return "[MonoCode landed] The project already had this worker's changes.";
+      return "[MonoCode nothing to land] The project already had this worker's changes.";
     case "nothing":
-      return "[MonoCode landed] This worker changed no files, so nothing went into the project.";
+      return "[MonoCode nothing to land] This worker changed no files, so nothing went into the project.";
     case "conflict":
       return `[MonoCode not landed] This worker's changes (${files(landing.files)}) clash with the project as it is now, so the app left the project alone: ${landing.why || "they don't apply cleanly"}. Ask the worker to bring its copy up to date, or land it yourself.`;
   }
