@@ -1209,9 +1209,15 @@ mod tests {
     fn a_delegation_passes_back_the_jobs_name_for_its_row() {
         let clock = Arc::new(FakeClock::default());
         let app = FakeApp::new(clock, |_, _, _| {
-            Ok(json!({ "taskId": "t-1", "childSessionId": "c", "status": "running", "title": "API health and negative bump" }))
+            Ok(
+                json!({ "taskId": "t-1", "childSessionId": "c", "status": "running", "title": "API health and negative bump" }),
+            )
         });
-        let (outcome, _) = run_tool(&app, "delegate_task", json!({ "brief": "Add GET /health", "title": "API health and negative bump" }));
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Add GET /health", "title": "API health and negative bump" }),
+        );
         assert_eq!(outcome.unwrap()["title"], "API health and negative bump");
     }
 
