@@ -31,3 +31,19 @@ describe("Ash's answer reaches a busy Lead", () => {
     expect(enqueueMonoSessionCompletion(lead([report]), report).queuedMessages).toHaveLength(1);
   });
 });
+
+describe("a job Ash already answered is not redone or started twice", () => {
+  const row = { id: "t-1", title: "Delete a tally and drop it from the board", state: "running" as const };
+  it("turns back a redo or a like job once, quoting his words", async () => {
+    const { noteAshAnswer, answeredJobRefusal, forgetAshAnswers } = await import("./ashAnswersWorker");
+    forgetAshAnswers();
+    noteAshAnswer("t-1", "keep them 30 days so i can undo, then gone for good");
+    const again = answeredJobRefusal([row], { requestId: "r2", title: "Delete a tally and drop it from the board" });
+    expect(again).toContain('"keep them 30 days so i can undo, then gone for good"');
+    expect(again).toContain("Don't start another or redo it");
+    expect(answeredJobRefusal([row], { requestId: "r2", title: "Delete a tally" })).toBeUndefined();
+    expect(answeredJobRefusal([row], { requestId: "r3", title: "Finish it", redoes: { id: "t-1" } })).toContain("Not started");
+    expect(answeredJobRefusal([row], { requestId: "r4", title: "Update the README endpoints table" })).toBeUndefined();
+    expect(answeredJobRefusal([{ ...row, state: "completed" }], { requestId: "r5", title: row.title })).toBeUndefined();
+  });
+});

@@ -33,6 +33,50 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
   };
 }
 
+/**
+ * r86 (s14 r85 run 1, +285s: the Lead, not yet told, started a second worker on "gone for good" after Ash had said "keep
+ * them 30 days"): the jobs Ash answered in their worker's chat, with his words, for this window. A redo of such a job, or
+ * a new one like it while it is still open, is turned back once with his words (agentAppTasks.ts delegate).
+ */
+const answered = new Map<string, { words: string; refused: Set<string> }>();
+export function noteAshAnswer(rowId: string, words: string): void {
+  answered.set(rowId, { words: short(words, 400), refused: new Set() });
+}
+export function forgetAshAnswers(): void {
+  answered.clear();
+}
+
+const significant = (title: string) =>
+  new Set(title.toLowerCase().split(/[^a-z0-9]+/).filter((word) => word.length >= 4));
+/** Two job titles name the same work: half or more of the shorter one's words are in the other. */
+export function sameJob(a: string, b: string): boolean {
+  const [x, y] = [significant(a), significant(b)];
+  const small = x.size <= y.size ? x : y;
+  const big = small === x ? y : x;
+  if (!small.size) return false;
+  let shared = 0;
+  for (const word of small) if (big.has(word)) shared++;
+  return shared * 2 >= small.size;
+}
+
+/**
+ * Why a delegate_task call is turned back, if it is: it redoes a job Ash answered that is still open, or starts one like
+ * it. Once per job and caller's request, so a second call that really is other work still starts.
+ */
+export function answeredJobRefusal(
+  open: readonly Pick<Delegation, "id" | "title" | "state">[],
+  call: { requestId: string; title: string; redoes?: Pick<Delegation, "id"> },
+): string | undefined {
+  for (const row of open) {
+    const record = answered.get(row.id);
+    if (!record || !isOpenDelegation(row) || record.refused.has(call.requestId)) continue;
+    if (call.redoes?.id !== row.id && !sameJob(row.title ?? "", call.title)) continue;
+    record.refused.add(call.requestId);
+    return forUser`Not started: Ash already answered "${short(row.title || "that job", 80)}" in its worker's chat: "${record.words}". That worker is carrying on from his words, and its report comes to you. Don't start another or redo it; tell him in one line what happens next. If this really is other work, call delegate_task again and it starts.`;
+  }
+  return undefined;
+}
+
 /** What the worker's turn on Ash's own message carries. */
 export function ashWordsNote(): string {
   return forUser`<monocode_app>\nThis message is Ash's own, typed in your chat. His words decide: they outrank your brief and any pick from your Lead. Build what he asked, run the checks, and report in a few lines (each check as one line, no pasted output).\n</monocode_app>`;

@@ -42,6 +42,7 @@ import {
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
+import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import type { AgentAppHost } from "./agentApp";
 import {
@@ -678,6 +679,9 @@ async function delegate(
   }
   // The workers this chat still has out: each holds a port, and one working in the same project shares its repo.
   const out = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+  // r86: a job Ash already answered in its worker's chat is his: no redo, no second worker on it (once per request).
+  const refusal = answeredJobRefusal(out, { requestId, title, ...(redoes ? { redoes } : {}) });
+  if (refusal) throw new Error(refusal);
   // Every chat's workers, where the app knows them: a Lead's and its coding-team chats' share one repo and the ports.
   const everyone = [...out, ...(tasks.pool?.openRows() ?? []).filter((row) => row.childSession !== id)];
   const port = workerPort(

@@ -44,7 +44,7 @@ import {
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
-import { ashAnsweredLeadNote, ashWordsNote, openJobOf } from "../features/monos/model/ashAnswersWorker";
+import { ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
@@ -7764,6 +7764,7 @@ function Workspace({
       // His answer is the answer: the job reads Working again, and its resumed turn reports to the Lead.
       if (answeredJob?.state === "question")
         void delegationsRef.current?.setQuestion(answeredJob, null, "ash", { answers: "ash-in-chat" }).catch(() => undefined);
+      if (answeredJob) noteAshAnswer(answeredJob.id, text);
       if (answeredJob)
         void queueMonoSessionCompletionRef.current(
           answeredJob.ownerSession,
