@@ -395,7 +395,7 @@ export function gapLine(ask: Pick<LedgerAsk, "title" | "words">, evidence: reado
 const DONE = /\b(?:done|fixed|finished|shipped|complete|completed|all set)\b/i;
 
 const TALKS_ABOUT_DONE =
-  /\b(?:done|fixed|finished|complete)[- ](?:claims?|line|check)\b|\b(?:call(?:s|ed|ing)?|say(?:s|ing)?|mark(?:s|ed|ing)?|claim(?:s|ed|ing)?|before|until)\b[^.!?]{0,30}\b(?:done|fixed|finished|complete)\b/i;
+  /\b(?:done|fixed|finished|complete)[- ](?:claims?|line|check)\b|\b(?:call(?:s|ed|ing)?|say(?:s|ing)?|mark(?:s|ed|ing)?|claim(?:s|ed|ing)?|before|until)\b[^.!?]{0,30}\b(?:done|fixed|finished|complete|shipped)\b|\b(?:stopped|halted|paused|blocked)\b/i;
 
 /** The words outside quotes and code spans. */
 function unquoted(text: string): string {

@@ -13,7 +13,8 @@ export type Lander = (input: { checkout: string; project: string }) => Promise<L
  * waits for his answer) and not failed.
  */
 /** A report that stopped to ask (a "Needs Ash:" line, a pick put to him, or "Stopped."): its work isn't finished. */
-const STOPPED_TO_ASK = /^\s*Stopped\b|\bNeeds (?:Ash|the user)\s*:|^\s*My pick\s*:/im;
+const STOPPED_TO_ASK =
+  /^\s*Stopped\b|\bNeeds? (?:Ash|the user)\s*:|^\s*My pick\s*:|\bNeeds? (?:a |an |the )?(?:decision|answer|call|choice|pick) from (?:Ash|the user)\b|\b(?:that|this) (?:choice|call|decision) is (?:his|Ash's|Ash’s)\b/im;
 
 /** r84 (s14): the worker stopped on a choice that is Ash's; its decided work isn't built yet. */
 export function stoppedForAsh(result: MonoSessionCompletionResult): boolean {

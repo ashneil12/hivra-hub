@@ -12958,6 +12958,15 @@ function Workspace({
               settle.discard();
               return;
             }
+            // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
+            // completed) for his answer; his message in the worker's chat picks it back up (resumeMonitor). Before the
+            // self-review ask and the routes check, which failed the held job in s14 blind 2.
+            if (row && stoppedForAsh(result)) {
+              settled = true;
+              void delegationsRef.current?.setQuestion(row, stopQuestion(result), `worker:${sessionId}`).catch(() => undefined);
+              settle(withStopHeld(result, row.id));
+              return;
+            }
             if (result.status === "completed" && result.reviewProblem && !asked) {
               asked = true;
               firstReport = result.result;
@@ -12993,14 +13002,6 @@ function Workspace({
                 finish(gateFailedResult(result, run));
                 return;
               }
-            }
-            // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
-            // completed) for his answer; his message in the worker's chat picks it back up (resumeMonitor).
-            if (row && stoppedForAsh(result)) {
-              settled = true;
-              void delegationsRef.current?.setQuestion(row, stopQuestion(result), `worker:${sessionId}`).catch(() => undefined);
-              settle(withStopHeld(result, row.id));
-              return;
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
             const landing = landingDue(result, sessionsRef.current.find((session) => session.id === sessionId));

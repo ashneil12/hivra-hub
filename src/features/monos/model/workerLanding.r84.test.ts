@@ -46,3 +46,9 @@ describe("a stop on Ash's choice holds the job as a question (r84 s14 blind)", (
     expect(held).toContain("Needs Ash: when a tally");
   });
 });
+
+it("s14 blind 2's stop without the word Stopped still holds", () => {
+  const text = "DELETE currently removes the tally for good. That choice is his, so I did not switch it.\nNeed a decision from Ash before this ships: gone for good, or kept 30 days?";
+  expect(landingDue(done({ result: text }), copy)).toBeUndefined();
+  expect(stopQuestion(done({ result: text }))).toBe("Need a decision from Ash before this ships: gone for good, or kept 30 days?");
+});
