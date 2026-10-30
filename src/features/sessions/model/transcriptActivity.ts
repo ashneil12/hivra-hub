@@ -1179,6 +1179,8 @@ export function activityPhaseTitle(phase: ActivityPhase, live = false): string {
   const failure = subagentFailureSummary(phase.steps);
   if (failure) return failure;
   if (phase.headline) {
+    // r88 (Ash): the model's reasoning is never shown while the turn runs; the line stays "Thinking".
+    if (live && phase.headline.role === "reasoning") return "Thinking";
     const summary = proseSummary(phase.headline.text);
     if (hasReadableText(summary)) return summary;
     if (!summary)
