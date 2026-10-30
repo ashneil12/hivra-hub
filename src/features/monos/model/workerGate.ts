@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Session } from "../../sessions/model/session";
 import { gateLog } from "../../hub/model/waitingChats";
+import { ashAnsweredWorkerSince } from "./ashAnswersWorker";
 import { waitsOnAshCall, type MonoSessionCompletionResult } from "./monoSessionCompletion";
 
 export type GateRun = { name: string; ok: boolean; output: string };
@@ -69,6 +70,26 @@ export function signOffFrom(
         ? r.createdAt
         : from,
     workerStarted,
+  );
+}
+
+/**
+ * Whether Ash has signed the check's items off for this worker: an answer of his in the Lead's chat (a card or Today),
+ * or (r88, Ash) his words typed straight into the chat of one of this Lead's jobs on the project, since `signOffFrom`.
+ */
+export function signedOffFor(
+  workerStarted: number,
+  owner: string,
+  project: string | null | undefined,
+  rows: readonly { id: string; ownerSession: string; project: string | null; createdAt: number }[],
+  log = gateLog(),
+): boolean {
+  const from = signOffFrom(workerStarted, owner, project, rows);
+  if (signedOffSince(owner, from, log)) return true;
+  const jobs = rows.filter((r) => r.ownerSession === owner && (!project || r.project === project) && r.createdAt >= from);
+  return ashAnsweredWorkerSince(
+    jobs.map((r) => r.id),
+    from,
   );
 }
 
