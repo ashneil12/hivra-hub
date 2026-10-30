@@ -8,17 +8,29 @@ const FENCE = /^[ \t]*(`{3,}|~{3,})/;
 const TRAILING_LABEL =
   /([.!?])[ \t]+((?:Grok|DeepSeek|Claude|Haiku|Sonnet|Opus|GPT|Gemini|Kimi|Qwen)\b[^\n·`]{0,24} · [^\n`]*)$/;
 
+/**
+ * r94 (Critiquito d, s15 3cde): the Lead wrote the label on the next line with a single newline ("That's running now.\n
+ * Grok 4.7 · High · ..."). Markdown reads one newline as a soft break, so the label rendered inline again. A label line
+ * straight under a prose line gets a blank line before it, so it is a paragraph of its own.
+ */
+const LABEL_LINE = /^[ \t]*(?:Grok|DeepSeek|Claude|Haiku|Sonnet|Opus|GPT|Gemini|Kimi|Qwen)\b[^\n·`]{0,24} · [^\n`]*$/;
+
 export function engineLabelOnOwnLine(text: string): string {
   if (!text || !text.includes(" · ")) return text;
   let inFence = false;
+  let prev = "";
   return text
     .split("\n")
     .map((line) => {
       if (FENCE.test(line)) {
         inFence = !inFence;
+        prev = line;
         return line;
       }
-      return inFence ? line : line.replace(TRAILING_LABEL, "$1\n\n$2");
+      if (inFence) return line;
+      const out = LABEL_LINE.test(line) && prev.trim() && !LABEL_LINE.test(prev) ? `\n${line}` : line.replace(TRAILING_LABEL, "$1\n\n$2");
+      prev = line;
+      return out;
     })
     .join("\n");
 }

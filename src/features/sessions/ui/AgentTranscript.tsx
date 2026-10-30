@@ -3934,7 +3934,7 @@ export function MonoActivityTrail({
               className="mono-activity-prose min-w-0 px-1 text-content/80"
             >
               <AgentMarkdown
-                text={withoutEmDashes(first.text)}
+                text={engineLabelOnOwnLine(withoutEmDashes(first.text))}
                 cwd={cwd}
                 onOpenFile={onOpenFile}
                 className="mono-run-report"

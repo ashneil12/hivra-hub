@@ -9,7 +9,7 @@ describe("engineLabelOnOwnLine", () => {
     );
   });
   it("leaves a label already on its own line, plain prose and code alone", () => {
-    const own = "That work is running.\nGrok 4.7 · High";
+    const own = "That work is running.\n\nGrok 4.7 · High";
     expect(engineLabelOnOwnLine(own)).toBe(own);
     expect(engineLabelOnOwnLine("Done. Board shows 3 · 4 tallies")).toBe("Done. Board shows 3 · 4 tallies");
     const code = "```\nok. Grok 4.7 · High\n```";
