@@ -20,6 +20,10 @@ describe("stepsWithoutBareThinking", () => {
     const steps = [thought("t1", "", true)];
     expect(stepsWithoutBareThinking(steps, true)).toEqual(steps);
   });
+  it("keeps one Thinking, the latest, when the list is only thoughts (c02 blind 0176 showed three)", () => {
+    const steps = [thought("t1", "Checking jobs."), thought("t2", "Reading."), thought("t3", "", true)];
+    expect(stepsWithoutBareThinking(steps, true).map((b) => b.id)).toEqual(["t3"]);
+  });
   it("is what the chat's step list renders", () => {
     const src = readFileSync(new URL("../ui/AgentTranscript.tsx", import.meta.url), "utf8");
     expect(src).toMatch(/stepsWithoutBareThinking\(phase\.steps, turnLive\)\.map/);

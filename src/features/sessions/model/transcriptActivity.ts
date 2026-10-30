@@ -213,13 +213,14 @@ export function hasReadableText(text: string): boolean {
 /**
  * r92 (Critiquito d, s19 blind run d452): a thought that would only say "Thinking" between two steps (its turn still
  * runs, so its words stay hidden, or it has none) folds away in the step list, as a settled "Thought" does; the group's
- * own title and the live line already say it is thinking. A step list of only that thought keeps it.
+ * own title and the live line already say it is thinking. A step list of only such thoughts keeps the latest one.
  */
 export function stepsWithoutBareThinking(steps: Block[], turnLive: boolean): Block[] {
   const kept = steps.filter(
     (block) => !(block.role === "reasoning" && (turnLive || !!block.streaming || !proseSummary(block.text))),
   );
-  return kept.length ? kept : steps;
+  // A list of only bare thoughts keeps one "Thinking", the latest (c02 blind 0176 showed three in a row).
+  return kept.length ? kept : steps.slice(-1);
 }
 
 export function proseSummary(text: string): string {
