@@ -10,6 +10,7 @@ import {
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
+import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
 import { leafName } from "../../files/model/fileName";
 import {
   displayPath,
@@ -769,7 +770,7 @@ export function turnCopyText(blocks: Block[]): string {
     .map((block) => {
       const text = block.text.replace(/\r\n?/g, "\n").trim();
       // r74: Copy gives what the reply shows, without em dashes.
-      return block.role === "assistant" ? engineLabelOnOwnLine(withoutDoubledAllClear(withoutEmDashes(text))) : text;
+      return block.role === "assistant" ? engineLabelOnOwnLine(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(text)))) : text;
     })
     .filter(Boolean)
     .join("\n\n");
