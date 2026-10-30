@@ -70,6 +70,12 @@
         },
         {
           "view": {
+            "mono": "lead"
+          },
+          "name": "lead-worker-card"
+        },
+        {
+          "view": {
             "project": "tally",
             "item": "inbox"
           },

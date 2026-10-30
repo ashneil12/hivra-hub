@@ -183,9 +183,12 @@ export async function runScenario(scenario, ctx) {
   };
 
   const view = async (step) => {
-    const name = step.name ?? `${step.view.project}-${step.view.item}`;
+    const name = step.name ?? (step.view.mono ? `mono-${step.view.mono}` : `${step.view.project}-${step.view.item}`);
     try {
-      const answer = await act("open", { hub: step.view, settleMs: 2000 }, 30_000);
+      // r90: a view can be a Mono's own chat ({ mono: "lead" }), for its worker cards, as well as a hub page.
+      const answer = step.view.mono
+        ? await act("open", { mono: step.view.mono }, 30_000).then(async (a) => (await sleep(2000), a))
+        : await act("open", { hub: step.view, settleMs: 2000 }, 30_000);
       const shot = await ctx.screenshot(`${scenario.id}-${name}`);
       // r73: read the page again after the screenshot. The 2 s settle can miss a list that draws late (blind s06: the
       // shot showed Today's Waiting-on-you row while the text the grader read still said "Nothing new here").
