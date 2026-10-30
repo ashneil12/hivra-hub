@@ -13,4 +13,4 @@ Sources: each run's `claude/claude/<pid>.ndjson` start record (`args` = what the
 | a20e | s14-3 blind | grok-4.7 -> grok-4.7, 2 procs (x47) | 1: deepseek-v4.1-flash -> grok-4.7 (x73) | 3x grok-4.7 |
 | ea1b | c02-3 blind | grok-4.7 -> grok-4.7 (x35) | 4: deepseek-v4.1-flash -> grok-4.7 (x94) | 6x grok-4.7 |
 
-Shot 00 (evidence/r89/critiquito/00, taken 10:34:30 GMT, since deleted for privacy) falls in run 5849 (live 10:33:29-10:39:10 GMT): Lead pid 93251 (started 10:33:47) asked grok-4.7, ran grok-4.7; worker pid 94139 (started 10:34:21) asked deepseek-v4.1-flash, ran grok-4.7; the provider answered grok-4.7-build on all 27 requests.
+Shot 00 (evidence/r89/critiquito/00, taken 10:34:30 GMT) falls in run 5849 (live 10:33:29-10:39:10 GMT): Lead pid 93251 (started 10:33:47) asked grok-4.7, ran grok-4.7; worker pid 94139 (started 10:34:21) asked deepseek-v4.1-flash, ran grok-4.7; the provider answered grok-4.7-build on all 27 requests.
