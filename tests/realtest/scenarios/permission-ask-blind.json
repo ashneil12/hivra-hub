@@ -51,7 +51,7 @@
         },
         {
           "wait": {
-            "snapshotText": "\"approvals\":[1-9]",
+            "approved": "perm",
             "maxSec": 300
           }
         },
