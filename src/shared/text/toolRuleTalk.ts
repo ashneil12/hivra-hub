@@ -11,6 +11,12 @@ const RULE_TALK = [
   /(?:^|(?<=[.!?]\s))(?:My (?:rules?|instructions?)|The (?:hub|app|team(?:-chat)? rules?)) (?:says?|requires?|wants?|asks?)\b[^.!?\n]{0,80}\b(?:tools?|delegate(?:_task)?)\b[^.!?\n]{0,60}(?:[.!]|$)\s*/gi,
   // "Loading the hub tools first." (a tool lookup, said out loud)
   /(?:^|(?<=[.!?]\s))(?:Loading|Fetching|Looking up) (?:the )?(?:hub |MonoCode |MCP )?tools?(?: first)?[.!]?\s*(?=$|\n)/gi,
+  // r97 (frank e, c02 BLIND 242d +23s): "I'll load the delegate and memory tools first, then hand each area off …":
+  // the lookup clause goes and the rest of the sentence stays ("I'll hand each area off …").
+  /\b(?:load|fetch|look up|pull in|grab)(?:ing)? (?:the |my )?(?:[\w-]+(?:,| and)? ){0,5}tools?(?: first)?,? (?:and )?then /gi,
+  // "I'll load the delegate and memory tools first." / "Let me load the tools." / "Loading the delegate and memory tools."
+  /(?:^|(?<=[.!?]\s))(?:(?:First,? )?I(?:'ll| will| need to| have to|'m going to| am going to)|Let me|First,?) (?:load|fetch|look up|pull in|grab)\b[^.!?\n]{0,60}\btools?\b[^.!?\n]{0,30}(?:[.!]|$)\s*/gi,
+  /(?:^|(?<=[.!?]\s))(?:Loading|Fetching|Looking up|Pulling in) (?:the |my )?(?:[\w-]+(?:,| and)? ){0,5}tools?(?: first)?(?:[.!]\s*|\s*$)/gi,
 ];
 const FENCE = /^[ \t]*(`{3,}|~{3,})/;
 
