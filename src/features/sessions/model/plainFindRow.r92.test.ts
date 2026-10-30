@@ -1,6 +1,7 @@
 // r92 (Critiquito a, c; s19 blind run d452): shell search rows read in plain words in "Exploring the project".
 import { describe, expect, it } from "vitest";
 import { toolCallLabel, toolCategory } from "./transcriptActivity";
+import { plainFindRow } from "../../../shared/lib/plainSearch";
 import type { Block } from "./session";
 
 const shell = (text: string, command: string): Block => ({
@@ -23,5 +24,8 @@ describe("plain search rows from shell commands", () => {
   });
   it("keeps a plain one-word find as it was", () => {
     expect(toolCallLabel(shell("Find median", 'rg -n "median"'), "/repo")).toBe("Find median");
+  });
+  it("drops a character class and stray quotes (c02 0176 foot)", () => {
+    expect(plainFindRow(String.raw`Find Tally|from ['\"].*shared`)).toBe("Searched for Tally, from shared");
   });
 });

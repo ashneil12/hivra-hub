@@ -9,7 +9,9 @@ export function plainSearchLabel(query: string): string | undefined {
     ...new Set(
       query
         .replace(/\\[bwsdBWSD]/g, " ")
-        .replace(/[()^$*+?[\]{}\\.]/g, " ")
+        // r92 (c02 0176 foot, "Tally|from ['\"].*shared"): a character class and stray quotes are not words.
+        .replace(/\[[^\]]*\]/g, " ")
+        .replace(/[()^$*+?[\]{}\\.'"`]/g, " ")
         .split("|")
         .map((part) => part.replace(/\s+/g, " ").trim())
         .filter(Boolean),
