@@ -118,6 +118,8 @@ export function LaunchedSessionCard({
     launch.harness,
   );
   const status = view ? STATUS[view.state] : undefined;
+  const ran = modelLabel(launch.harness, launch.model);
+  const ranLine = `Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`;
   return (
     <button
       type="button"
@@ -125,7 +127,7 @@ export function LaunchedSessionCard({
       data-state={view?.state}
       aria-label={`Open session ${title}${status ? `, ${status.label.toLowerCase()}` : ""}`}
       aria-pressed={open}
-      title={status?.label}
+      title={[status?.label, ranLine].filter(Boolean).join(" · ")}
       onClick={onOpen}
       disabled={!onOpen}
       className={`@container/card flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
@@ -136,7 +138,8 @@ export function LaunchedSessionCard({
           strokeWidth={1.75}
         />
       )}
-      <span data-launched-title className="min-w-[4.5rem] flex-1 truncate text-[13px] text-content">{title}</span>
+      {/* r95 (PM): the job's name in full, never cut off: a long one wraps onto a second line. */}
+      <span data-launched-title className="min-w-0 flex-1 whitespace-normal break-words text-[13px] leading-snug text-content">{title}</span>
       {view?.state === "waiting" ? (
         <span
           data-launched-waiting
@@ -145,37 +148,8 @@ export function LaunchedSessionCard({
           Waiting for a free worker
         </span>
       ) : null}
-      {/* Which model (and effort) this worker runs on (E7), quiet, before the project chip. */}
-      {/* r90: squeezed, the model's name stays whole and the grey reason after it gives way first (s15: "Grok ..."). */}
-      {/* r92 (s15 dcf4): in a narrow chat the card never runs under the Stalled chip beside it: the card clips, the
-          title keeps a few words, and the model (reason first, then the name) is what gives way. */}
-      {(() => {
-        const ran = modelLabel(launch.harness, launch.model);
-        return (
-          <span
-            data-launched-model
-            className={`${ran.note ? "flex max-w-[50%]" : "max-w-[30%] truncate"} min-w-0 shrink overflow-hidden text-[12px] text-content/55`}
-            title={`Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`}
-          >
-            {ran.note ? (
-              <>
-                <span className="min-w-0 shrink-[0.01] truncate">
-                  {ran.name}
-                  {launch.effort ? ` · ${launch.effort}` : ""}
-                </span>
-                <span data-launched-model-note className="min-w-0 truncate text-content/40">
-                  {` · ${ran.note}`}
-                </span>
-              </>
-            ) : (
-              <>
-                {ran.name}
-                {launch.effort ? ` · ${launch.effort}` : ""}
-              </>
-            )}
-          </span>
-        );
-      })()}
+      {/* r95 (PM, worker card a): no engine chip on the card. The title has the room, and which model ran (E7) is in
+          the card's tooltip. */}
       {/* Squeezed, the title gives way first and the project after it. r93 (s15 3cde): the chip shrinks to its icon
           inside a whole pill instead of running off the card's clipped edge. r94 (s15 SCRIPTED 8c60): live, a narrow
           card (beside Stalled and Stop) still cut the pill in half, and on the Grok bridge the icon is blank, so it read
