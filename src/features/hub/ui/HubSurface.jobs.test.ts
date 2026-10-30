@@ -465,7 +465,7 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     await until(() => container.querySelector('[data-hub-worker="j_mail"] [data-hub-job-state="stuck"]'), "the job");
     act(() => container.querySelector<HTMLElement>('[data-hub-worker="j_mail"]')!.click());
     await until(() => container.querySelector("[data-hub-job-stuck-heading]"), "the activity");
-    expect(container.querySelector("[data-hub-job-stuck-heading]")?.textContent).toBe("With Hivra lead");
+    expect(container.querySelector("[data-hub-job-stuck-heading]")?.textContent).toBe("Stalled");
     expect(text()).not.toMatch(/\bStuck\b|Open chat\b/);
   });
 
@@ -498,7 +498,7 @@ describe("a stuck worker under a job (H4: a running sibling never hides it)", ()
     await until(() => container.querySelector('[data-hub-today-job="j_mail"]') && container.querySelector('[data-stuck-worker="w-f"]'), "Being built on Today");
     expect(container.querySelector("[data-hub-stuck]")).toBeNull();
     expect(container.querySelector('[data-hub-stuck-today="red"]')).toBeNull();
-    expect(container.querySelector('[data-hub-today-job="j_mail"] [data-hub-chip]')?.textContent).toBe("With Hivra lead");
+    expect(container.querySelector('[data-hub-today-job="j_mail"] [data-hub-chip]')?.textContent).toBe("Stalled");
     // The stalled worker is the j_mail row's; it isn't listed again.
     expect(container.querySelector('[data-stuck-worker="w-s"]')).toBeNull();
     const row = container.querySelector<HTMLElement>('[data-hub-stuck-today="grey"] [data-stuck-worker="w-f"]')!;

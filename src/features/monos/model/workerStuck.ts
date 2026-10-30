@@ -171,12 +171,25 @@ export function plainReason(reason: string): string {
   return out.replace(/\b(the tests|the build|an install|the code checks|a push)(?:\s+\1)+/g, "$1");
 }
 
+/**
+ * r91 (Critiquito): a worker stalled on its AI service's error, in Ash's words: "Stalled: the AI service is overloaded
+ * and stopped answering. Retrying didn't help." No status code, no "API", no time (its row shows that once).
+ */
+export function serviceStallLine(reason: string): string {
+  const overloaded = /\b(overloaded|529|503|capacity)\b/i.test(reason);
+  const retried = /\bretry\b|\bretrying\b/i.test(reason);
+  return `Stalled: the AI service ${overloaded ? "is overloaded and stopped answering" : "stopped answering"}.${retried ? " Retrying didn't help." : ""}`;
+}
+
 /** How a stalled worker is stuck, with how long ("No output for 9 min · still running the tests"). */
 export function stallLine(row: Pick<Delegation, "stallKind" | "stallReason" | "stalledAt">, now: number): string {
   const since = row.stalledAt ?? now;
   const reason = plainReason(row.stallReason?.trim() ?? "");
   switch (row.stallKind) {
     case "quiet":
+      // r91 (Critiquito, s15 shots): an AI service error is one plain line, no codes and no second clock (the row
+      // already says how long).
+      if (/^provider error\b/i.test(row.stallReason?.trim() ?? "")) return serviceStallLine(row.stallReason ?? "");
       return `No output for ${minutes(now - since)}${reason ? ` · ${lowerFirst(reason)}` : ""}`;
     case "loop":
       return reason || "Repeating the same step";

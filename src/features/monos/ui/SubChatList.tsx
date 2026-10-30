@@ -146,7 +146,7 @@ export function SubChatList({
                 {/* r88 (s15 scripted run 2: the rail showed the sub-chat with no word that it was stalled); grey, as its mark (r27b). */}
                 {stalled ? (
                   <span data-sub-chat-stalled className="shrink-0 text-[11px] text-content/45">
-                    stalled
+                    Stalled
                   </span>
                 ) : null}
                 {ran ? (

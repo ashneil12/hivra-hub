@@ -16,6 +16,8 @@ export type Chip = { word: string; tone: ChipTone };
 
 export const NEEDS_YOU: Chip = { word: "Needs you", tone: "red" };
 export const RETRYING: Chip = { word: "Retrying", tone: "grey" };
+/** r91 (Critiquito): a worker that stopped making progress, the same word on its card, the rail and the rows. Grey. */
+export const STALLED: Chip = { word: "Stalled", tone: "grey" };
 /** Its Lead's last turn failed: the words Today has always used for it. */
 export const CANT_ANSWER: Chip = { word: "Can't answer", tone: "grey" };
 /** "With Hivra lead"; a job with no Lead yet reads "With its lead". */
@@ -57,7 +59,9 @@ export function workerChip(w: Pick<Worker, "stuck" | "who" | "stuckWorker" | "fi
   // sign-in refusal, grey Retrying while a retry has it, else grey With <Lead>.
   if (w.stuck !== "lead_gave_up" && w.stuckWorker) {
     const owner = w.stuckWorker.kind === "asking" ? "with-lead" : stuckOwner(w.stuckWorker);
-    return owner === "needs-you" ? NEEDS_YOU : owner === "retrying" ? RETRYING : withLead(w.who);
+    if (owner === "needs-you") return NEEDS_YOU;
+    if (owner === "retrying") return RETRYING;
+    return w.stuckWorker.kind === "stalled" ? STALLED : withLead(w.who);
   }
   return stuckChip(w.stuck, w.who);
 }

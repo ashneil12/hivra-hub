@@ -58,7 +58,9 @@ describe("a worker stuck after a provider error", () => {
     // r88: the Lead's chat says it from the app at once, once per stall.
     const line = providerStallChatLine(row, told[0]);
     expect(line).toMatchObject({ role: "system", id: `provider-stall-d1-${told[0].since}` });
-    expect(line.text).toContain("is stalled: its provider errored");
-    expect(line.text).toContain("Today, Being built and the Monos rail");
+    // r91 (Critiquito): plain words, no codes or "provider".
+    expect(line.text).toContain("has stalled. The AI service");
+    expect(line.text).toContain("Stalled on Inbox, Being built and the rail");
+    expect(line.text).not.toMatch(/provider|API|529|\(/);
   });
 });

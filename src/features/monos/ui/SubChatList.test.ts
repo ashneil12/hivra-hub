@@ -84,7 +84,7 @@ describe("a worker only waiting on its Lead's answer (Ash, 22 Oct: one word for 
     expect(row("w1").getAttribute("title")).toBe("Job w1, waiting on its Lead");
     expect(row("w2").querySelector("svg")!.getAttribute("class")).toContain("text-content/60"); // grey, never amber (r27b)
     // r88: the rail says it in a word, grey too.
-    expect(row("w2").querySelector("[data-sub-chat-stalled]")!.textContent).toBe("stalled");
+    expect(row("w2").querySelector("[data-sub-chat-stalled]")!.textContent).toBe("Stalled");
     expect(row("w1").querySelector("[data-sub-chat-stalled]")).toBeNull();
     // Folded: "2 sub-chats · 1 waiting · 1 with its Lead", never "2 stuck".
     act(() => toggle.click());

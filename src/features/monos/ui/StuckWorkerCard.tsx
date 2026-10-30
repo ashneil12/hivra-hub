@@ -122,7 +122,7 @@ export function StuckList({
   const held = Object.values(done).filter((d) => !stuck.some((s) => s.key === d.stuck.key));
   if (!stuck.length && !held.length) return null;
   // r70: above a Lead's composer, stopped workers are one line until Ash opens it.
-  const folded = variant === "chat" ? foldStopped(stuck, stoppedOpen) : { cards: [...stuck], stopped: 0 };
+  const folded = variant === "chat" ? foldStopped(stuck, stoppedOpen) : { cards: [...stuck], stopped: 0, stalled: 0 };
   const shownCards = folded.cards;
   const more = variant === "chat" && !all ? Math.max(0, shownCards.length - CHAT_CARDS_SHOWN) : 0;
   const cards = more ? shownCards.slice(0, CHAT_CARDS_SHOWN) : shownCards;
@@ -131,7 +131,7 @@ export function StuckList({
     <div data-stuck-list={variant} aria-label={label} className={variant === "chat" ? "flex flex-col gap-1.5 pb-1.5" : "flex flex-col"}>
       {folded.stopped ? (
         <div data-stuck-stopped-fold={stoppedOpen ? "open" : "closed"} className="flex items-center gap-1 px-2 font-sans text-[12px] text-content/55">
-          <span>{stoppedLine(folded.stopped)}</span>
+          <span>{stoppedLine(folded.stopped, folded.stalled)}</span>
           <span aria-hidden>·</span>
           <button
             type="button"
