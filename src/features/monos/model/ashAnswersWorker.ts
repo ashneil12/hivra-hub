@@ -27,7 +27,7 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
     id: `ash-answered-${row.id}-${answerId}`.slice(0, 200),
     attachments: [],
     waitForIdle: true,
-    text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your worker on "${short(row.title || "its job", 80)}" in its chat: "${short(words, 400)}". The worker carries on from his words, not from any pick of yours. Save his call now with ash_remember, in his words, then tell him in one line what happens next. Its report comes to you when it is done. This is an app notification, not a new message from Ash.`,
+    text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your worker on "${short(row.title || "its job", 80)}" in its chat: "${short(words, 400)}". The worker carries on from his words, not from any pick of yours. Save his call now with ash_remember, in his words, then tell him in one line what happens next (if you asked him this too, that line says it is answered; don't ask it again). Its report comes to you when it is done. This is an app notification, not a new message from Ash.`,
   };
 }
 

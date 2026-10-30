@@ -5,6 +5,7 @@
 // - a "Needs Ash:" line in the agent's last turn (it ended its turn to ask): the recommendation is its "My pick:" line;
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
+import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
 import { plainCommandQuestion } from "./plainCommand";
 import {
   freeTextReply,
@@ -286,6 +287,17 @@ export function lastTurnText(blocks: readonly Pick<Block, "role" | "text" | "int
   return parts.join("\n\n");
 }
 
+/**
+ * r85 (s14 r84 run 3): the chat's blocks after Ash's answer to one of its workers reached it ("[MonoCode Ash answered]",
+ * ashAnswersWorker.ts). A "Needs Ash" line before it was answered in the worker's chat, so it waits on nobody; the
+ * app note is hidden, so lastTurnText would otherwise read on past it.
+ */
+export function sinceAshAnswered<B extends Pick<Block, "role" | "text">>(blocks: readonly B[]): readonly B[] {
+  for (let i = blocks.length - 1; i >= 0; i--)
+    if (blocks[i].role === "user" && blocks[i].text?.startsWith(ASH_ANSWERED_PREFIX)) return blocks.slice(i + 1);
+  return blocks;
+}
+
 /** A live AskUserQuestion, as one waiting question. */
 export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
   const first = prompt.questions[0];
@@ -327,6 +339,8 @@ export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
 export type ChatLike = {
   busy?: boolean;
   pendingQuestion?: UserQuestionPrompt;
+  /** App messages waiting for the chat's turn to end (r85: Ash's answer to its worker may be one). */
+  queuedMessages?: readonly { text: string }[];
   blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion"> & Partial<Pick<Block, "tool" | "streaming" | "approval">>)[];
 };
 
@@ -428,9 +442,11 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   // r80: only while the turn runs; a card left from a turn that is over waits on nobody.
   const permission = chat.busy === false ? null : permissionQuestion(chat.blocks);
   if (permission) return permission;
-  const blocks = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
+  const blocks = sinceAshAnswered(chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks);
   const turnText = lastTurnText(blocks);
-  const marker = parseNeedsAsh(turnText);
+  // r85 (s14 r84 run 3): a Lead's "Needs Ash" written while his answer to its worker was on its way is already answered.
+  const answered = (chat.queuedMessages ?? []).some((m) => m.text.startsWith(ASH_ANSWERED_PREFIX));
+  const marker = answered ? null : parseNeedsAsh(turnText);
   if (chat.busy && !marker) return null;
   const secret = marker ? undefined : secretActionTried(chat.blocks);
   if (secret)
