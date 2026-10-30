@@ -429,7 +429,7 @@ export function completionMessage(
   // announced the hard remove the second Ash chose 30 days. The question goes first, short, after reading his newest word.
   const waitsOnAsh = results.filter((result) => waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure)));
   const ashLine = waitsOnAsh.length
-    ? ` ${nameList(waitsOnAsh.map((result) => result.title))} stopped on a choice only Ash can make. First read his newest message: if he has answered it, act on his answer and never announce the option he didn't pick. If not, before any check, your reply starts with \`Needs Ash:\` and the question in one line, then \`My pick:\` in one line; no files, no test output, nothing before it, and start nothing his answer would decide.`
+    ? ` ${nameList(waitsOnAsh.map((result) => result.title))} stopped on a choice only Ash can make. First read his newest message: if he has answered it, act on his answer and never announce the option he didn't pick. If not, and no \`[MonoCode Ash answered]\` note for it reaches you during this turn, before any check, your reply starts with \`Needs Ash:\` and the question in one line, then \`My pick:\` in one line; no files, no test output, nothing before it, and start nothing his answer would decide.`
     : "";
   // r83 (c02 r82: a shared-type mismatch and an API built unlike TODO.md were in the workers' reports, not the Lead's
   // reply): the app lifts the worker's own sentence about it, so the Lead passes it on instead of dropping it.
