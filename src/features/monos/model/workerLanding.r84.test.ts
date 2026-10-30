@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { landingDue, landingLine, withLanding } from "./workerLanding";
+import { landingDue, landingLine, refreshAsk, withLanding } from "./workerLanding";
 import type { MonoSessionCompletionResult } from "./monoSessionCompletion";
 
 const done = (over: Partial<MonoSessionCompletionResult> = {}): MonoSessionCompletionResult =>
@@ -22,5 +22,14 @@ describe("a finished worker's changes land in the project (r84)", () => {
     expect(r.result.split("\n")[0]).toBe("[MonoCode landed] The app put this worker's changes into the project (not committed): packages/shared/src/validate.ts, packages/api/test/server.test.ts.");
     expect(landingLine({ outcome: "conflict", files: ["a.ts"], why: "patch failed: a.ts:3" })).toMatch(/^\[MonoCode not landed\].*a\.ts.*patch failed/);
     expect(withLanding(done(), null).result).toBe("A negative bump is rejected.");
+  });
+
+  it("work that didn't land is not done, and its worker is asked once to settle the clash", () => {
+    const clash = { outcome: "conflict" as const, files: ["packages/ui/src/App.tsx", "packages/ui/src/format.ts"], why: "patch failed" };
+    const r = withLanding(done(), clash);
+    expect(r.status).toBe("failed");
+    expect(r.reason).toBe("failed: its changes clash with the project");
+    expect(refreshAsk(clash, ["packages/ui/src/App.tsx"])).toContain("packages/ui/src/App.tsx now carry conflict markers");
+    expect(refreshAsk(clash, [])).toContain("They merged cleanly.");
   });
 });

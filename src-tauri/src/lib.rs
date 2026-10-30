@@ -502,6 +502,7 @@ pub fn run() {
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             land::land_worker_copy,
+            land::refresh_worker_copy,
             worker_queue::worker_queue_list,
             worker_queue::worker_queue_add,
             worker_queue::worker_queue_take,

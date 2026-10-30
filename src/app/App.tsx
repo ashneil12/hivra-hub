@@ -43,7 +43,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
-import { landingDue, landWorkerCopy, stoppedForAsh, withLanding } from "../features/monos/model/workerLanding";
+import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, withLanding } from "../features/monos/model/workerLanding";
 import { ashAnsweredLeadNote, ashWordsNote, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
@@ -12923,6 +12923,8 @@ function Workspace({
           // r82: the project's routes check (gates.rs) on the worker's copy when it reports done; two failed runs and
           // its Lead hears it failed, with the check's words.
           let gateFailures = 0;
+          // r84: a clashed copy is brought up to date once.
+          let refreshed = false;
           const workerStarted = Date.now();
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
@@ -12998,7 +13000,23 @@ function Workspace({
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
             const landing = landingDue(result, sessionsRef.current.find((session) => session.id === sessionId));
-            finish(landing ? withLanding(result, await landWorkerCopy(landing)) : result);
+            const landed = landing ? await landWorkerCopy(landing) : null;
+            // A clash with work that landed first: once, the project is merged into its copy and it settles the rest.
+            if (landing && landed?.outcome === "conflict" && !refreshed) {
+              refreshed = true;
+              const marked = await refreshWorkerCopy(landing);
+              const accepted =
+                marked &&
+                (await submitSessionRef.current(sessionId, refreshAsk(landed, marked), [], {
+                  monoNote: refreshAskNote(),
+                  onSettled: (next) => void turnEnded(next, true),
+                }));
+              if (accepted) {
+                firstReport = undefined;
+                return;
+              }
+            }
+            finish(withLanding(result, landed));
           };
           return Object.assign(
             (outcome: ControlOutcome) => {

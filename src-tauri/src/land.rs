@@ -70,7 +70,7 @@ pub(crate) fn project_of(checkout: &Path, project: &Path) -> bool {
 }
 
 /// The worker's whole change against where its copy started, as a binary patch, and the files it touches.
-fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>), String> {
+fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>, String), String> {
     let (ok, head, why) = git(project, &["rev-parse", "HEAD"], None, None)?;
     if !ok {
         return Err(format!("the project's commit couldn't be read: {why}"));
@@ -118,7 +118,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
             .map(str::to_string)
             .filter(|l| !l.is_empty())
             .collect();
-        Ok((patch, files))
+        Ok((patch, files, base.clone()))
     })();
     let _ = std::fs::remove_file(&index);
     result
@@ -128,7 +128,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
     if !project_of(checkout, project) {
         return Err("Only a worker's own copy of this project lands in it.".into());
     }
-    let (patch, files) = worker_patch(checkout, project)?;
+    let (patch, files, base) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(Landing {
             outcome: "nothing".into(),
@@ -151,10 +151,34 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
                 why: "the project already has these changes".into(),
             });
         }
-        return Ok(Landing {
-            outcome: "conflict".into(),
-            files,
-            why: crate::gates::tail(&why, 600),
+        // Another worker changed the same files first: a three-way merge per file, written only if every file merges.
+        return Ok(match merged(checkout, project, &base, &files)? {
+            Ok(writes) => {
+                for (path, content) in writes {
+                    let target = project.join(&path);
+                    match content {
+                        Some(bytes) => {
+                            if let Some(dir) = target.parent() {
+                                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                            }
+                            std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+                        }
+                        None => {
+                            let _ = std::fs::remove_file(&target);
+                        }
+                    }
+                }
+                Landing {
+                    outcome: "landed".into(),
+                    files,
+                    why: "merged with changes already in the project".into(),
+                }
+            }
+            Err(clashing) => Landing {
+                outcome: "conflict".into(),
+                files: clashing,
+                why: crate::gates::tail(&why, 300),
+            },
         });
     }
     let (ok, _, why) = git(project, &["apply", "-"], None, Some(&patch))?;
@@ -170,6 +194,168 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
         files,
         why: String::new(),
     })
+}
+
+/// A file at the copy's starting point, if it was there.
+fn at_base(checkout: &Path, base: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let (ok, bytes, _) = git(checkout, &["show", &format!("{base}:{path}")], None, None)?;
+    Ok(ok.then_some(bytes))
+}
+
+/// Where `refresh` keeps the project's version of each file it merged into the copy: from then on that is the file's
+/// starting point, so the worker's settled file is its change on top of the project's, not a clash with it.
+fn snapshot_dir(checkout: &Path) -> Result<PathBuf, String> {
+    let (ok, dir, why) = git(checkout, &["rev-parse", "--absolute-git-dir"], None, None)?;
+    if !ok {
+        return Err(format!("the copy's git folder couldn't be found: {why}"));
+    }
+    Ok(PathBuf::from(String::from_utf8_lossy(&dir).trim()).join("monocode-refreshed"))
+}
+
+/// A file's starting point: the project's version `refresh` merged in, else the copy's starting commit's.
+fn start_of(checkout: &Path, base: &str, path: &str) -> Result<Option<Vec<u8>>, String> {
+    let kept = snapshot_dir(checkout)?.join(path);
+    if kept.exists() {
+        return Ok(read(&kept));
+    }
+    at_base(checkout, base, path)
+}
+
+fn read(path: &Path) -> Option<Vec<u8>> {
+    std::fs::read(path).ok()
+}
+
+/// Three-way merge of one file's three versions: the merged bytes, or None when they clash (or aren't text).
+fn merge3(ours: &[u8], base: &[u8], theirs: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    let dir = std::env::temp_dir().join(format!(
+        "monocode-merge-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let result = (|| {
+        let (o, b, t) = (dir.join("ours"), dir.join("base"), dir.join("theirs"));
+        std::fs::write(&o, ours).map_err(|e| e.to_string())?;
+        std::fs::write(&b, base).map_err(|e| e.to_string())?;
+        std::fs::write(&t, theirs).map_err(|e| e.to_string())?;
+        let out = Command::new("git")
+            .arg("merge-file")
+            .arg("-p")
+            .arg(&o)
+            .arg(&b)
+            .arg(&t)
+            .output()
+            .map_err(|e| e.to_string())?;
+        Ok(out.status.success().then_some(out.stdout))
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+type Writes = Vec<(String, Option<Vec<u8>>)>;
+
+/// What each changed file becomes in the project when the worker's change and the project's own since the copy's
+/// start are merged; Err with the files that clash.
+fn merged(
+    checkout: &Path,
+    project: &Path,
+    base: &str,
+    files: &[String],
+) -> Result<Result<Writes, Vec<String>>, String> {
+    let mut writes = Vec::new();
+    let mut clashing = Vec::new();
+    for path in files {
+        let start = start_of(checkout, base, path)?;
+        let worker = read(&checkout.join(path));
+        let now = read(&project.join(path));
+        if worker == now || worker == start {
+            continue;
+        }
+        if now == start {
+            writes.push((path.clone(), worker));
+            continue;
+        }
+        match (&now, &start, &worker) {
+            (Some(now), Some(start), Some(worker)) => match merge3(now, start, worker)? {
+                Some(bytes) => writes.push((path.clone(), Some(bytes))),
+                None => clashing.push(path.clone()),
+            },
+            _ => clashing.push(path.clone()),
+        }
+    }
+    Ok(if clashing.is_empty() {
+        Ok(writes)
+    } else {
+        Err(clashing)
+    })
+}
+
+/// r84 (c02: the last-week worker clashed with the shared-type one in App.tsx): the project's changes merged into the
+/// worker's own copy, conflict markers left where both changed the same lines, so the worker can settle them and report
+/// again. Returns the files that now carry markers. The project is never touched.
+pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, String> {
+    if !project_of(checkout, project) {
+        return Err("Only a worker's own copy of this project is brought up to date.".into());
+    }
+    let (_, files, base) = worker_patch(checkout, project)?;
+    let mut marked = Vec::new();
+    let kept = snapshot_dir(checkout)?;
+    for path in &files {
+        let start = start_of(checkout, base.as_str(), path)?;
+        let (worker, now) = (read(&checkout.join(path)), read(&project.join(path)));
+        if worker == now || now == start {
+            continue;
+        }
+        let (Some(_), Some(start), Some(now)) = (worker, start, now) else {
+            marked.push(path.clone());
+            continue;
+        };
+        let target = checkout.join(path);
+        let tag = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let b = std::env::temp_dir().join(format!("monocode-base-{}-{tag}", std::process::id()));
+        let n = std::env::temp_dir().join(format!("monocode-now-{}-{tag}", std::process::id()));
+        std::fs::write(&b, &start).map_err(|e| e.to_string())?;
+        std::fs::write(&n, &now).map_err(|e| e.to_string())?;
+        let out = Command::new("git")
+            .arg("merge-file")
+            .args([
+                "-L",
+                "your copy",
+                "-L",
+                "where you started",
+                "-L",
+                "the project now",
+            ])
+            .arg(&target)
+            .arg(&b)
+            .arg(&n)
+            .output();
+        let _ = std::fs::remove_file(&b);
+        let _ = std::fs::remove_file(&n);
+        let out = out.map_err(|e| e.to_string())?;
+        if !out.status.success() {
+            marked.push(path.clone());
+        }
+        let snapshot = kept.join(path);
+        if let Some(dir) = snapshot.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::write(&snapshot, &now).map_err(|e| e.to_string())?;
+    }
+    Ok(marked)
+}
+
+/// Bring a worker's copy up to date with its project after its changes clashed (see `refresh`).
+#[tauri::command]
+pub async fn refresh_worker_copy(checkout: String, project: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let checkout = crate::gates::worker_checkout(&checkout)?;
+        let project = std::fs::canonicalize(&project)
+            .map_err(|_| "The project folder isn't there.".to_string())?;
+        refresh(&checkout, &project)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Put a finished worker's changes into its project (see the module note).
@@ -264,6 +450,56 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(project.join("a.txt")).unwrap(),
             "three\n"
+        );
+    }
+
+    #[test]
+    fn two_workers_in_one_file_both_land_when_their_lines_differ() {
+        let (project, copy) = repo("merge");
+        let lines = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+        std::fs::write(project.join("a.txt"), lines).unwrap();
+        sh(&project, &["commit", "-qam", "lines"]);
+        sh(&copy, &["checkout", "-q", "--detach", "HEAD"]);
+        let main = String::from_utf8(
+            Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap();
+        sh(&copy, &["checkout", "-q", "--detach", main.trim()]);
+        std::fs::write(project.join("a.txt"), lines.replace("2\n", "two\n")).unwrap();
+        std::fs::write(copy.join("a.txt"), lines.replace("8\n", "eight\n")).unwrap();
+        let landing = land(&copy, &project).unwrap();
+        assert_eq!(landing.outcome, "landed");
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "1\ntwo\n3\n4\n5\n6\n7\neight\n9\n"
+        );
+    }
+
+    #[test]
+    fn a_clash_is_brought_into_the_copy_with_markers_and_then_lands() {
+        let (project, copy) = repo("refresh");
+        std::fs::write(copy.join("a.txt"), "two\n").unwrap();
+        std::fs::write(project.join("a.txt"), "three\n").unwrap();
+        assert_eq!(land(&copy, &project).unwrap().outcome, "conflict");
+        assert_eq!(refresh(&copy, &project).unwrap(), vec!["a.txt".to_string()]);
+        let marked = std::fs::read_to_string(copy.join("a.txt")).unwrap();
+        assert!(marked.contains("<<<<<<< your copy") && marked.contains(">>>>>>> the project now"));
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "three\n"
+        );
+        // The worker settles it keeping both.
+        std::fs::write(copy.join("a.txt"), "three\ntwo\n").unwrap();
+        assert_eq!(land(&copy, &project).unwrap().outcome, "landed");
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "three\ntwo\n"
         );
     }
 

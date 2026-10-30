@@ -45,8 +45,37 @@ export function landingLine(landing: Landing): string {
   }
 }
 
+/**
+ * The report with the landing first. r84 (c02: the inbox called a clashed job done): work that didn't land is not done;
+ * its report settles failed with the clash as the reason.
+ */
 export function withLanding(result: MonoSessionCompletionResult, landing: Landing | null): MonoSessionCompletionResult {
-  return landing ? { ...result, result: `${landingLine(landing)}\n\n${result.result}` } : result;
+  if (!landing) return result;
+  const line = landingLine(landing);
+  const told = { ...result, result: `${line}\n\n${result.result}` };
+  return landing.outcome === "conflict" ? { ...told, status: "failed", error: line, reason: "failed: its changes clash with the project" } : told;
+}
+
+/** r84: after a clash, once: the project's changes are merged into the worker's copy (refresh_worker_copy). */
+export const refreshWorkerCopy = async ({ checkout, project }: { checkout: string; project: string }): Promise<string[] | null> => {
+  try {
+    return await invoke<string[]>("refresh_worker_copy", { checkout, project });
+  } catch (error) {
+    console.warn("worker's copy couldn't be brought up to date", error);
+    return null;
+  }
+};
+
+/** What the worker is told after its copy was brought up to date. */
+export function refreshAsk(landing: Landing, marked: readonly string[]): string {
+  const where = marked.length
+    ? `${files(marked)} now carry conflict markers (<<<<<<< your copy / >>>>>>> the project now) where you and another worker changed the same lines: keep what both meant and remove the markers.`
+    : "They merged cleanly.";
+  return `[MonoCode land] Your changes (${files(landing.files)}) clashed with changes other workers already put into the project, so the app merged the project's versions into your copy. ${where} Then run your check again and report done again, ending with your self-review as before. Change nothing else.`;
+}
+
+export function refreshAskNote(): { kind: "message"; from: string; line: string } {
+  return { kind: "message", from: "MonoCode", line: "its changes clashed with the project; the app merged the project in and asked it to settle them" };
 }
 
 export const landWorkerCopy: Lander = async ({ checkout, project }) => {
