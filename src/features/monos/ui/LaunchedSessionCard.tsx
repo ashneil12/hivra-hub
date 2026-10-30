@@ -94,6 +94,12 @@ const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
     },
   };
 
+/** The stalled circle (the Sessions panel's SubChatList uses the same mark). The spinner is only for running work. */
+const STALLED = {
+  label: "Stalled",
+  icon: <CircleAlert data-launched-stalled className="size-4 shrink-0 text-content/60" strokeWidth={1.75} />,
+};
+
 /**
  * A session the Mono started, as a line under its reply like an artifact:
  * a spinner while it works, a check once it is done, and the project it runs
@@ -105,10 +111,13 @@ export function LaunchedSessionCard({
   launch,
   view,
   open = false,
+  stalled = false,
   onOpen,
 }: {
   launch: MonoSpawnedSession;
   view?: LaunchedSessionView;
+  /** r97 (Critiquito a): its row stalled while its chat still reads as working: the stalled circle, never a spinner. */
+  stalled?: boolean;
   /** Shown in the sidebar right now. */
   open?: boolean;
   onOpen?: () => void;
@@ -117,14 +126,14 @@ export function LaunchedSessionCard({
     view?.title ?? launch.title,
     launch.harness,
   );
-  const status = view ? STATUS[view.state] : undefined;
+  const status = stalled ? STALLED : view ? STATUS[view.state] : undefined;
   const ran = modelLabel(launch.harness, launch.model);
   const ranLine = `Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`;
   return (
     <button
       type="button"
       data-launched-session={launch.sessionId}
-      data-state={view?.state}
+      data-state={stalled ? "stalled" : view?.state}
       aria-label={`Open session ${title}${status ? `, ${status.label.toLowerCase()}` : ""}`}
       aria-pressed={open}
       title={[status?.label, ranLine].filter(Boolean).join(" · ")}
