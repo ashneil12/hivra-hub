@@ -144,6 +144,8 @@ export function parseArgs(argv) {
       .filter(Boolean),
     build: !argv.includes("--no-build"),
     keep: argv.includes("--keep"),
+    // r82: the scenario's check is installed in the app (gates.rs runs it when a worker reports done); the bench's own loop is off.
+    appGate: argv.includes("--app-gate"),
     grade: !argv.includes("--no-grade"),
     gradeOnly: value("--grade-only", null),
     slot: value("--slot", `${path.basename(ROOT)}-realtest`),
@@ -802,7 +804,7 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump };
+    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
