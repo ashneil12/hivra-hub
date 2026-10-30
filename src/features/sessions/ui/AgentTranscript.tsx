@@ -5040,7 +5040,9 @@ function ActivityToolRow({
       ) : (
         <div
           aria-label={`Tool call: ${label}`}
-          className="flex min-w-0 items-center gap-1.5 py-1"
+          // r96 (Critiquito): a row waiting on Allow is a question to Ash, so it reads in the app's normal font.
+          data-approval-row={pending ? "" : undefined}
+          className={`flex min-w-0 items-center gap-1.5 py-1${pending ? " font-sans [&_*]:font-sans" : ""}`}
         >
           {bare ? null : <ActivityToolIcon state={state} live={live} />}
           {summary}
@@ -5534,7 +5536,7 @@ function ApprovalControls({
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
   return (
-    <div className="mt-1.5 flex gap-2">
+    <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
         className="rounded-md bg-content px-2.5 py-0.5 text-[11px] hover:bg-content/80     text-background-base"
