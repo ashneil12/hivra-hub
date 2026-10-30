@@ -45,6 +45,15 @@ function labelTask(name: string): string | undefined {
   return name.match(/"(.+)"\s*$/)?.[1]?.trim();
 }
 
+// A file path in a finished job's line: `packages/api/src/stats.ts`, ./src/a.ts, /Users/ash/x/y.ts (anything with a slash
+// and a file ending), with the "in"/"at" that leads into it.
+const PATH = /\s*(?:\b(?:in|at|inside|within|to|from|under)\s+)?`?(?:~|\.{1,2})?\/?(?:[\w.@-]+\/)+[\w.@-]+\.\w{1,6}`?(?::\d+)*/gi;
+
+/** r97 (Critiquito i, c02 BLIND 242d): the job's name says what was done; the done line carries no file path. */
+export function withoutPaths(line: string): string {
+  return line.replace(PATH, "").replace(/\s+([.,;:!?])/g, "$1").replace(/\s{2,}/g, " ").trim();
+}
+
 const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").trim().toLowerCase();
 
 /**
@@ -53,7 +62,7 @@ const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").tri
  */
 export function detailOf(note: AgentNote): string | undefined {
   // r96: the landed words are in the head of a finished job's line, so the detail is the result alone.
-  const line = (note.kind === "reported" ? note.line?.trim().replace(LANDED, "") : note.line)?.trim();
+  const line = (note.kind === "reported" ? withoutPaths(note.line?.trim().replace(LANDED, "") ?? "") : note.line)?.trim();
   if (!line) return undefined;
   const d = same(line);
   for (const side of [note.from, note.to]) {
