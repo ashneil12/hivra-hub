@@ -68,16 +68,20 @@ export function LiveAgentsPreview({
     expanded || extra <= 0 ? agents : agents.slice(0, LIVE_AGENT_CAP);
 
   return (
+    // r94 (Critiquito b, PM spec): the card takes its own slot at the bottom of the sidebar column, capped at 45% of it,
+    // so the rail above always keeps the rest and scrolls there; when the card has more than fits, its own list
+    // scrolls. It never sits over the rail at any window height.
     <section
       aria-label="Working agents"
-      className={`shrink-0 px-2 ${bottomSpacing ? "pb-2" : ""}`}
+      className={`flex max-h-[45%] min-h-0 shrink-0 flex-col px-2 ${bottomSpacing ? "pb-2" : ""}`}
       data-live-agents-preview="full"
+      data-sidebar-foot-card
     >
       <span className="sr-only" aria-live="polite" aria-atomic="true">
         {agents.length} working agents
       </span>
-      <div className="overflow-hidden rounded-lg bg-content/5">
-        <div className="flex items-center gap-2 px-3.5 py-1.5">
+      <div className="flex min-h-0 flex-col overflow-hidden rounded-lg bg-content/5">
+        <div className="flex shrink-0 items-center gap-2 px-3.5 py-1.5">
           <span
             aria-hidden
             className="size-1.5 shrink-0 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)] motion-safe:animate-pulse"
@@ -90,10 +94,11 @@ export function LiveAgentsPreview({
           </span>
         </div>
         <div
-          ref={expanded ? lockList : undefined}
-          className={`flex flex-col gap-px px-1 ${
+          ref={lockList}
+          data-live-agents-list
+          className={`flex min-h-0 flex-col gap-px overflow-y-auto overscroll-none px-1 ${
             extra > 0 ? "" : "pb-1"
-          } ${expanded ? "max-h-[45vh] overflow-y-auto overscroll-none" : ""}`}
+          }`}
         >
           {visible.map((agent) => (
             <LiveAgentCard
@@ -114,7 +119,7 @@ export function LiveAgentsPreview({
             type="button"
             aria-expanded={expanded}
             onClick={() => setExpanded((open) => !open)}
-            className="flex w-full items-center justify-center gap-1 px-2 py-1.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content"
+            className="flex w-full shrink-0 items-center justify-center gap-1 px-2 py-1.5 text-[11px] text-content/50 hover:bg-content/8 hover:text-content"
           >
             {expanded ? (
               <ChevronUp className="size-3" strokeWidth={1.75} />
@@ -179,7 +184,7 @@ function LiveAgentCard({
       aria-current={selected ? "true" : undefined}
       data-live-agent-card={agent.id}
       onClick={() => onSelect?.(agent.id)}
-      className={`relative flex w-full flex-col rounded-md px-2 py-1.5 text-left ${
+      className={`relative flex w-full shrink-0 flex-col rounded-md px-2 py-1.5 text-left ${
         selected ? "bg-selection" : "hover:bg-content/8"
       }`}
     >
