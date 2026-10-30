@@ -193,6 +193,13 @@
           }
         },
         {
+          "wait": {
+            "chatText": "dump",
+            "pattern": "Test run in the project itself",
+            "maxSec": 150
+          }
+        },
+        {
           "view": {
             "project": "tally",
             "item": "coding-team"
