@@ -393,7 +393,7 @@ export function ProjectRail({
     <nav
       ref={resize.setPaneRef}
       aria-label="Projects"
-      className={`sidebar-glass relative shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
+      className={`sidebar-glass relative min-h-0 shrink-0 flex-col border-r border-stroke ${visible ? "flex" : "hidden"}`}
     >
       {headerless ? null : (
         <div

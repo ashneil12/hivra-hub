@@ -1,4 +1,5 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
+import { formatGitLabel } from "./gitLabel";
 import { chatOnGrokBridge, ranModel, ranModelText, shownModelName } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   type WorktreeFocus,
@@ -6185,11 +6186,6 @@ function TightDiffNumber({ value }: { value: number }) {
       ))}
     </>
   );
-}
-
-function formatGitLabel(repo?: string, branch?: string): string {
-  if (repo && branch) return `${repo}/${branch}`;
-  return branch || repo || "";
 }
 
 function formatRelative(value: number, now: number): string {

@@ -123,3 +123,19 @@ describe("LiveAgentsPreview", () => {
     expect(container.querySelector("[role=status]")).toBeNull();
   });
 });
+
+describe("r94 sidebar foot card takes its own slot (Critiquito b)", () => {
+  it("is capped below the rail and scrolls its own list (the short-window layout is measured in tests/browser/sidebar-foot.spec.ts)", () => {
+    render({ agents: ["a", "b", "c", "d"].map((id) => agent(id, "/p/tally")) });
+    const card = container.querySelector("[data-sidebar-foot-card]")!;
+    // A flex slot of its own, capped at 45% of the sidebar column, never absolutely placed over the rail.
+    expect(card.className).toMatch(/\bshrink-0\b/);
+    expect(card.className).toContain("max-h-[45%]");
+    expect(card.className).toContain("min-h-0");
+    expect(card.className).not.toMatch(/\b(absolute|fixed|sticky)\b/);
+    const list = container.querySelector("[data-live-agents-list]")!;
+    expect(list.className).toContain("overflow-y-auto");
+    expect(list.className).toContain("min-h-0");
+    for (const row of list.querySelectorAll("[data-live-agent-card]")) expect(row.className).toMatch(/\bshrink-0\b/);
+  });
+});

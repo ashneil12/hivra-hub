@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "about": "BLIND (r94, Ash: 'a blind ask in Ash's style that naturally needs a command or tool approval, e.g. asking the team to run the tests and fix what's red in a fixture project'): Ash tells a new Tally coding-team chat the tests are red and to fix them. Nothing says who runs what or how. Whatever command needs Ash's OK is shot held (Inbox fallback, then the chat with Allow and Deny) and Allowed only on the hub's own card in this dev copy. If a worker is handed the fix, its card is looked at in the chat as it runs, and the chat is read after the report for the newest-test-result note and the app's grey note line. Nothing is forced: what doesn't come up is recorded.",
+  "project": {
+    "id": "tally",
+    "name": "Tally",
+    "shortName": "Tally"
+  },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": [
+      "Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).",
+      "The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct)."
+    ],
+    "vg-game": [
+      "EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."
+    ],
+    "ash": [
+      "Ash writes lowercase and fast; answer in plain English, outcome first, short.",
+      "Never use em dashes in anything written to Ash.",
+      "Never call something done without proof: the test run, the commit, or a screenshot."
+    ]
+  },
+  "budget": {
+    "maxTurns": 40,
+    "maxRequests": 400,
+    "maxMinutes": 22
+  },
+  "scenarios": [
+    {
+      "id": "s20-fix-red-blind",
+      "title": "BLIND: 'tests are red, fix it', whatever runs waits on Ash's Allow",
+      "bench": [
+        "CQ"
+      ],
+      "minutes": 20,
+      "maxTurns": 35,
+      "allowPromptly": [
+        "fix"
+      ],
+      "steps": [
+        {
+          "send": {
+            "codingTeam": "project"
+          },
+          "as": "fix",
+          "label": "ask",
+          "text": "tally tests are red again. run them and fix whatever's broken, show me they pass before u say its done"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "approved": "fix"
+              },
+              {
+                "delegation": {
+                  "ownerChat": "fix",
+                  "count": 1
+                }
+              }
+            ],
+            "maxSec": 300
+          }
+        },
+        {
+          "sleep": 8
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "chat-working"
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "quiet": true,
+                "quietSec": 60
+              }
+            ],
+            "maxSec": 600
+          }
+        },
+        {
+          "snapshot": "after"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "coding-team"
+          },
+          "name": "chat-end"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "today"
+          },
+          "name": "today-end"
+        }
+      ],
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
+      "criteria": "BLIND: Ash's plain ask says the tests are red and to fix them; it names no commands, workers or tools. Grade the app. Pass: any command that needs Ash's OK shows a permission card in the chat with Allow and Deny and a plain question naming who asks by a friendly name (the chat, or the job's name for a worker; never a raw title, a command, a path or 'it'), the sidebar foot or Inbox points to it while it is off screen, and the end says in plain words what was broken, what changed and that the tests now pass, with the run as proof. A worker card, if any, shows its title, model and project without text running into each other or being cut off. App notes to the chat (e.g. a newer test result) show as a small plain line, never as a message in Ash's name or with a [MonoCode ...] tag. Fail: a held card invisible outside the chat; a raw title, command or path in the question; a claim of green without a run; an app note shown as Ash's bubble or with its bracket tag. Not reached: no command needed approval (record it, don't count it)."
+    }
+  ]
+}

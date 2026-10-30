@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Loader, MessageMultiple } from "../../../shared/ui/icons";
 import { isSilent } from "../model/roomTurns";
+import { appNoteTitle } from "../model/appNoteTitle";
 
 /** The chat's own answer: the last thing it said in the turn. */
 function finalReply(turn: readonly Block[]): string {
@@ -50,7 +51,13 @@ export function RoomNoteCard({
         : "no reply needed";
   // r91 (Critiquito: "From Self-repair · reading it" didn't say what happened): who sent this chat a message, then
   // what this chat did with it.
-  const title = room ? `${note?.from ?? "Room"} · ${state}` : `${note?.from ?? "Another Mono"} sent this chat a message · ${state}`;
+  // r94 (Critiquito e): a note from the app itself says what the app asked, like the app notes.
+  const fromApp = room ? undefined : appNoteTitle(note?.from, note?.line);
+  const title = room
+    ? `${note?.from ?? "Room"} · ${state}`
+    : fromApp
+      ? `${fromApp} · ${state}`
+      : `${note?.from ?? "Another Mono"} sent this chat a message · ${state}`;
   return (
     <div className="transcript-turn flex min-w-0 flex-col px-4 py-1" data-mono-note={note?.kind} data-mono-note-ref={note?.ref}>
       <button

@@ -9,6 +9,7 @@ import {
 } from "../../../integrations/harness/core/preview";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
+import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { leafName } from "../../files/model/fileName";
 import {
   displayPath,
@@ -211,14 +212,20 @@ export function hasReadableText(text: string): boolean {
 
 /** First paragraph of a folded prose block, stripped to one plain line. */
 /**
+ * r94 (Critiquito f): a thought that would only read "Thinking" (its turn still runs, it is still streaming, or it has no
+ * words): every list that shows a chat's steps leaves it out, so no bare "Thinking" row sits under a reply.
+ */
+export function isBareThought(block: Block, turnLive: boolean): boolean {
+  return block.role === "reasoning" && (turnLive || !!block.streaming || !proseSummary(block.text));
+}
+
+/**
  * r92 (Critiquito d, s19 blind run d452): a thought that would only say "Thinking" between two steps (its turn still
  * runs, so its words stay hidden, or it has none) folds away in the step list, as a settled "Thought" does; the group's
  * own title and the live line already say it is thinking. A step list of only such thoughts keeps the latest one.
  */
 export function stepsWithoutBareThinking(steps: Block[], turnLive: boolean): Block[] {
-  const kept = steps.filter(
-    (block) => !(block.role === "reasoning" && (turnLive || !!block.streaming || !proseSummary(block.text))),
-  );
+  const kept = steps.filter((block) => !isBareThought(block, turnLive));
   // A list of only bare thoughts keeps one "Thinking", the latest (c02 blind 0176 showed three in a row).
   return kept.length ? kept : steps.slice(-1);
 }
@@ -762,7 +769,7 @@ export function turnCopyText(blocks: Block[]): string {
     .map((block) => {
       const text = block.text.replace(/\r\n?/g, "\n").trim();
       // r74: Copy gives what the reply shows, without em dashes.
-      return block.role === "assistant" ? engineLabelOnOwnLine(withoutEmDashes(text)) : text;
+      return block.role === "assistant" ? engineLabelOnOwnLine(withoutDoubledAllClear(withoutEmDashes(text))) : text;
     })
     .filter(Boolean)
     .join("\n\n");

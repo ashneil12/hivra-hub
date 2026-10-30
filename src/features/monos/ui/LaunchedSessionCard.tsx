@@ -128,7 +128,7 @@ export function LaunchedSessionCard({
       title={status?.label}
       onClick={onOpen}
       disabled={!onOpen}
-      className={`flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
+      className={`@container/card flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
     >
       {status?.icon ?? (
         <Chatting
@@ -177,10 +177,12 @@ export function LaunchedSessionCard({
         );
       })()}
       {/* Squeezed, the title gives way first and the project after it. r93 (s15 3cde): the chip shrinks to its icon
-          inside a whole pill instead of running off the card's clipped edge. */}
+          inside a whole pill instead of running off the card's clipped edge. r94 (s15 SCRIPTED 8c60): live, a narrow
+          card (beside Stalled and Stop) still cut the pill in half, and on the Grok bridge the icon is blank, so it read
+          as an empty pill. Below 14rem the card has no room for it, so the chip is not drawn at all. */}
       <span
         data-launched-project
-        className="flex min-w-[2.125rem] max-w-[45%] shrink overflow-hidden items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
+        className="hidden @[14rem]/card:flex min-w-[2.125rem] max-w-[45%] shrink overflow-hidden items-center gap-1 rounded-full border border-content/10 bg-content/5 px-2 py-0.5 text-[12px] text-content/65"
         title={launch.cwd}
       >
         <ModelInUseIcon harness={launch.harness} className="size-3.5 shrink-0" />
