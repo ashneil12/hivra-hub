@@ -8,7 +8,7 @@ const held = (tool: string, paths?: string[], command?: string) =>
 it("says what the step does in plain words; the raw command stays behind Open", () => {
   expect(permissionQuestion(held("Read", ["/tmp/x/packages/shared/src/validate.ts"]))?.question).toBe("Allow it to look at validate.ts?");
   expect(permissionQuestion(held("Edit", ["/tmp/x/server.ts"]))?.question).toBe("Allow it to change server.ts?");
-  expect(permissionQuestion(held("Grep", ["/tmp/x/src"]))?.question).toBe("Allow it to look through src?");
+  expect(permissionQuestion(held("Grep", ["/tmp/x/src"]))?.question).toBe("Allow it to search its files?");
   const q = permissionQuestion(held("Bash", undefined, "cd /tmp/p/tally-worktrees/mc-1 && npm test"))?.question ?? "";
   expect(q).not.toMatch(/\/tmp|mc-1|npm/);
 });
@@ -20,7 +20,7 @@ it("never names a tool, and says who is asking", async () => {
   expect(permissionQuestion(held("NotebookRead", ["/tmp/x/a.ipynb"]))?.question).toBe("Allow it to look at a.ipynb?");
   expect(permissionQuestion(held("mcp__x__thing"))?.question).toBe("Allow it to take its next step?");
   expect(permissionQuestion(held("WebFetch"))?.question).toBe("Allow it to look something up online?");
-  expect(askedBy("Allow it to run the tests?", whoAsks({ title: "Health" }))).toBe("Allow the health worker to run the tests?");
+  expect(askedBy("Allow it to run the tests?", whoAsks({ title: "Health" }))).toBe("Allow the Health worker to run the tests?");
   expect(askedBy("Allow it to look at App.tsx?", whoAsks({ monoName: "Tally Lead" }))).toBe("Allow the Tally Lead to look at App.tsx?");
   expect(askedBy("Allow it to look at App.tsx?", whoAsks({ monoName: "Pip" }))).toBe("Allow Pip to look at App.tsx?");
   expect(askedBy("Allow it to run the tests?", whoAsks({ title: "mc-89dad719" }))).toBe("Allow it to run the tests?");
@@ -28,7 +28,7 @@ it("never names a tool, and says who is asking", async () => {
 
 it("r82 (c02): no harness in the name, and a coding-team chat is a chat, not a worker", async () => {
   const { askedBy, whoAsks } = await import("./chatQuestions");
-  expect(whoAsks({ title: "claude · Health" })).toBe("the health worker");
+  expect(whoAsks({ title: "claude · Health" })).toBe("the Health worker");
   expect(askedBy("Allow it to look at App.tsx?", whoAsks({ title: "claude · Tally health, bumps, and totals", orchestrator: true }))).toBe(
     "Allow the Tally health, bumps, and totals chat to look at App.tsx?",
   );
@@ -38,4 +38,13 @@ it("r82 (c02 #2): a coding-team chat is the chat even before its workers are in 
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("./waitingChats.ts", import.meta.url), "utf8");
   expect(src).toMatch(/orchestrator: isCodingTeamChat\(chat\.id\) \|\|/);
+});
+
+it("r83 (Critiquito): the job's name keeps its capital, 'worker' once, and a search is 'search its files'", async () => {
+  const { askedBy, whoAsks } = await import("./chatQuestions");
+  expect(askedBy(permissionQuestion(held("Grep", ["/tmp/x/src"]))!.question, whoAsks({ title: "claude · Tally health, validation and board", orchestrator: true }))).toBe(
+    "Allow the Tally health, validation and board chat to search its files?",
+  );
+  expect(whoAsks({ title: "Worker: Board type" })).toBe("the Board type worker");
+  expect(whoAsks({ title: "Board type worker" })).toBe("the Board type worker");
 });

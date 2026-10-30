@@ -79,7 +79,10 @@ export function appSinceText({ sinceMs, rows, stuck, changes, nameOf, jobs = [],
   // waits on Ash stopped on his choice; it is not done.
   const onAsh = finished.filter((r) => awaitingAsh?.(r)).length;
   const yours = onAsh === 1 ? "it stopped on a choice that is yours" : `${onAsh} stopped on a choice that is yours`;
-  const titles = list(finished.map((r) => r.title?.trim() || "a job"));
+  // r83 (Critiquito: "…GET /health, Last week total…"): mid-sentence a title's first word drops its capital, unless it is
+  // an acronym or a name-like word with more capitals (GET, BoardTally).
+  const midSentence = (title: string, i: number) => (i > 0 && /^[A-Z][a-z]+\b/.test(title) ? title[0].toLowerCase() + title.slice(1) : title);
+  const titles = list(finished.map((r, i) => midSentence(r.title?.trim() || "a job", i)));
   const byMono = new Map<string, number>();
   for (const r of handed) byMono.set(leadName(nameOf(r)), (byMono.get(leadName(nameOf(r))) ?? 0) + 1);
   const monos = [...byMono.entries()];

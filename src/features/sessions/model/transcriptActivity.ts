@@ -64,8 +64,33 @@ export function toolCallState(block: Block): ToolCallState {
   return "pending";
 }
 
+/**
+ * r83 (Critiquito, c02): a search step reads in plain words ("Search for BoardTally, Tally, title and count"), not the
+ * raw pattern ("BoardTally|\\bTally\\b|title|count"). A plain one-word search keeps the usual "Find" row.
+ */
+export function plainSearchLabel(query: string): string | undefined {
+  if (!/[|\\()^$*+?[\]{}]/.test(query)) return undefined;
+  const parts = [
+    ...new Set(
+      query
+        .replace(/\\[bwsdBWSD]/g, " ")
+        .replace(/[()^$*+?[\]{}\\.]/g, " ")
+        .split("|")
+        .map((part) => part.replace(/\s+/g, " ").trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (!parts.length) return undefined;
+  const shown = parts.length > 4 ? [...parts.slice(0, 3), `${parts.length - 3} more`] : parts;
+  const words = shown.length === 1 ? shown[0] : `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+  return `Search for ${words}`;
+}
+
 export function toolCallLabel(block: Block, cwd?: string): string {
   const preview = block.tool?.preview;
+  const searching = preview?.kind === "search" || /^(search|grep|glob)$/i.test(block.tool?.kind ?? "");
+  const plain = searching && preview?.query ? plainSearchLabel(preview.query) : undefined;
+  if (plain) return plain;
   const path = preview?.path
     ? displayPath(preview.path, cwd)
     : preview?.fileName;
