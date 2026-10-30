@@ -48,3 +48,14 @@ it("says the effort a hard job's worker runs at, in the same words the composer 
   expect(model.textContent).toMatch(/ · High$/);
   expect(model.getAttribute("title")).toMatch(/^Runs on .+, High effort$/);
 });
+
+it("r90: off the Grok bench a DeepSeek worker's card shows its own name and no reason", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  r = createRoot(host);
+  const launch = { sessionId: "w2", cwd: "/repo/tally", title: "Show tally count", harness: "claude" as const, model: "claude:deepseek-v4.1-flash", effort: "High" };
+  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
+  const model = host.querySelector("[data-launched-model]")!;
+  // Off the bench the record is what ran: no note.
+  expect(model.querySelector("[data-launched-model-note]")).toBeNull();
+});
