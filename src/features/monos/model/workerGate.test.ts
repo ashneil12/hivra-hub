@@ -102,7 +102,7 @@ describe("the seam: a fake runner through the two tries", () => {
 it("App runs the check before a finished worker's report goes out, and sends its words to that worker", () => {
   const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
   expect(app).toMatch(/if \(gateDue\(result\)\) \{/);
-  expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffSince\(monoId, workerStarted\) \}\)/);
+  expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffSince\(monoId, signOffFrom\(workerStarted, monoId, /);
   expect(app).toMatch(/submitSessionRef\.current\(sessionId, gateAsk\(run\), \[\], \{/);
   expect(app).toMatch(/finish\(gateFailedResult\(result, run\)\)/);
 });

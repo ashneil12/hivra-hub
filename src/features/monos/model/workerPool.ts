@@ -188,6 +188,8 @@ export type QueuedWorker = {
   queuedAt: number;
   /** delegate_task's own input, to start it with exactly as asked. */
   input: Record<string, unknown>;
+  /** r87: the files or folders it will change (declared or named in its brief); one that shares them with running work waits. */
+  files?: readonly string[];
   /** A window is starting it until then (its lease); free again after, in its place. From the store only. */
   claimedUntil?: number;
 };
@@ -481,7 +483,7 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit";
+export type WaitReason = "workers" | "heavy" | "limit" | "files";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -500,9 +502,114 @@ export function waitLine(reason: WaitReason, projectName: string, limits: Worker
     : `Waiting for a free worker: all ${limits.workers} of ${projectName}'s are busy.`;
 }
 
-export type AdmitInput = { id: string; project: string; projectName: string; heavy: boolean; harness: string };
+export type AdmitInput = {
+  id: string;
+  project: string;
+  projectName: string;
+  heavy: boolean;
+  harness: string;
+  /** r87: the files or folders it will change, when known. */
+  files?: readonly string[];
+};
+
+// ---- r87: two jobs never change the same files at once ------------------------------------------------------------
+// c02 r86 run 3: the shared-type worker and the last-week worker both changed packages/ui/src/App.tsx at once; landing
+// settled the clash after the fact. Now a job whose files are known (delegate_task `files`, or paths its brief names)
+// waits while a running job in the same project changes any of them, and starts by itself once that one has landed,
+// from the project with that work in (r86 step 2b).
+
+/** The files each running worker is known to change, from its start. */
+const touching = new Map<string, Set<string>>();
+export function declareFiles(childSession: string, files: readonly string[]): void {
+  if (!files.length) return;
+  const set = touching.get(childSession) ?? new Set<string>();
+  for (const file of files) set.add(normalFile(file));
+  touching.set(childSession, set);
+}
+export function filesOf(childSession: string): readonly string[] {
+  return [...(touching.get(childSession) ?? [])];
+}
+export function forgetFiles(): void {
+  touching.clear();
+}
+
+const normalFile = (file: string) => file.trim().replace(/^\.?\/+/, "").replace(/\/+$/, "");
+/** One names the other, or a folder holding it. */
+export function sameFiles(a: string, b: string): boolean {
+  const [x, y] = [normalFile(a), normalFile(b)];
+  if (!x || !y) return false;
+  return x === y || x.startsWith(`${y}/`) || y.startsWith(`${x}/`);
+}
+
+const PATHISH = /(?:^|[\s`'"(\[])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]{1,6}|[\w.-]+\.(?:tsx?|jsx?|mjs|cjs|rs|py|go|rb|md|json|css|scss|html|vue|svelte|toml|ya?ml))(?=[\s`'",.:;)\]]|$)/g;
+/** Files a brief names ("packages/ui/src/App.tsx", "README.md"); a URL or a bare word is not one. */
+export function filesNamed(text: string): string[] {
+  const found = new Set<string>();
+  // "Do not touch README.md" names a file it won't change; a <worker_rules> block is the hub's, not the job's.
+  const own = text
+    .replace(/<worker_rules>[\s\S]*?(<\/worker_rules>|$)/g, " ")
+    .split(/(?<=[.!?\n])\s+/)
+    .filter((sentence) => !/\b(do not|don't|never|leave)\b|^\s*not\b/i.test(sentence))
+    .join(" ");
+  for (const match of own.matchAll(PATHISH)) {
+    const file = normalFile(match[1]);
+    if (!/^https?:/i.test(file) && !/^\d+(\.\d+)+$/.test(file)) found.add(file);
+  }
+  return [...found];
+}
+
+// The Lead briefs within two minutes, before anyone has read the code, so a brief rarely names a file (c02 r87 run 1:
+// none of five did, and two UI jobs met in packages/ui/src/App.tsx again). Its area does: "Change only the API server",
+// "UI only", "on the board". One job per area runs at a time in a project; the next waits for it to land.
+const AREAS: readonly (readonly [string, RegExp])[] = [
+  ["ui", /\b(ui|board|front[- ]?end|screen|component|layout|css|button)s?\b/i],
+  ["api", /\b(api|endpoint|route|server|handler|backend)s?\b/i],
+  ["docs", /\b(readme|docs?|documentation|todo|backlog|changelog)\b/i],
+];
+export const AREA_PREFIX = "area:";
+const AREA_WORDS: Record<string, string> = { ui: "the UI", api: "the API", docs: "the docs" };
+
+/** A brief's areas: from its title and its "only" lines when they name one, else from what it asks (not what it rules out, nor Ash's quoted words). */
+export function areasNamed(title: string, brief: string): string[] {
+  const own = brief
+    .replace(/<worker_rules>[\s\S]*?(<\/worker_rules>|$)/g, " ")
+    .replace(/"[^"]*"|“[^”]*”/g, " ")
+    .split(/(?<=[.!?\n])\s+/)
+    .filter((sentence) => !/\b(do not|don't|never|leave|another job|other job)\b|^\s*not\b/i.test(sentence));
+  const of = (texts: string[]) => AREAS.filter(([, word]) => texts.some((t) => word.test(t))).map(([area]) => area);
+  const pinned = of([title, ...own.filter((sentence) => /\bonly\b/i.test(sentence))]);
+  return (pinned.length ? pinned : of(own)).map((area) => `${AREA_PREFIX}${area}`);
+}
+
+/** The running job in the project that changes one of these files, and the file. */
+function sharedWith(
+  job: Pick<AdmitInput, "id" | "project" | "files">,
+  rows: AdmitContext["rows"],
+  starting: readonly Pick<QueuedWorker, "id" | "project" | "files" | "title">[] = [],
+): { title: string; file: string } | undefined {
+  if (!job.files?.length) return undefined;
+  for (const row of rows) {
+    if (row.childSession === job.id || (row.project ?? "") !== job.project || row.follow === "lead") continue;
+    if (row.state !== "running" && row.state !== "question") continue;
+    for (const theirs of filesOf(row.childSession))
+      for (const mine of job.files) if (sameFiles(mine, theirs)) return { title: row.title ?? "another job", file: mine };
+  }
+  for (const other of starting) {
+    if (other.id === job.id || other.project !== job.project) continue;
+    for (const theirs of other.files ?? []) for (const mine of job.files) if (sameFiles(mine, theirs)) return { title: other.title, file: mine };
+  }
+  return undefined;
+}
+
+export function filesWaitLine(shared: { title: string; file: string }): string {
+  const what = shared.file.startsWith(AREA_PREFIX)
+    ? (AREA_WORDS[shared.file.slice(AREA_PREFIX.length)] ?? shared.file.slice(AREA_PREFIX.length))
+    : shared.file;
+  return `Waiting for "${shared.title.split("\n")[0].slice(0, 60)}" to land: both change ${what}. It starts by itself then, from the project with that work in.`;
+}
+
 export type AdmitContext = {
-  rows: readonly Pick<Delegation, "project" | "state" | "childSession" | "follow">[];
+  rows: readonly (Pick<Delegation, "project" | "state" | "childSession" | "follow"> & Partial<Pick<Delegation, "title">>)[];
   room: (harness: string) => ProviderRoom;
   limits?: (project: string) => WorkerLimits;
   heavy?: (childSession: string) => boolean;
@@ -532,6 +639,8 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
   const ahead = (ctx.queue ?? queuedWorkers()).filter(
     (q) => q.project === job.project && q.id !== job.id && !(q.heavy && heavyFull),
   );
+  const shared = sharedWith(job, ctx.rows, ahead);
+  if (shared) return { start: false, reason: "files", line: filesWaitLine(shared) };
   return decide(job, { running: load.running + ahead.length, heavy: load.heavy + ahead.filter((q) => q.heavy).length }, limits, room);
 }
 
@@ -546,6 +655,7 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     const limits = (ctx.limits ?? workerLimits)(job.project);
     // Another window is starting it: it takes its place, but isn't this window's to start.
     const claimed = isClaimed(job);
+    if (!claimed && sharedWith(job, ctx.rows, start)) continue;
     if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
     if (!claimed) start.push(job);
     loads.set(job.project, { running: load.running + 1, heavy: load.heavy + (job.heavy ? 1 : 0) });
@@ -558,6 +668,8 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   const limits = (ctx.limits ?? workerLimits)(job.project);
   const load = projectLoad(job.project, ctx.rows, ctx.heavy);
   const room = ctx.room(job.harness);
+  const shared = sharedWith(job, ctx.rows);
+  if (shared) return filesWaitLine(shared);
   const why = decide(job, load, limits, room);
   return why.start ? "Starting now." : why.line;
 }
@@ -658,8 +770,9 @@ export function workerPoolHost(deps: {
       enqueueWorker(job);
       deps.card?.(job, launch);
     },
-    started: ({ id, heavy }) => {
+    started: ({ id, heavy, files }) => {
       if (heavy) markHeavy(id);
+      if (files?.length) declareFiles(id, files);
       void dequeueWorker(id);
     },
     queued: (owner) => {

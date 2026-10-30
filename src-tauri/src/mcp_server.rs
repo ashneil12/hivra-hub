@@ -223,7 +223,8 @@ fn tools() -> Value {
                     "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
                     "lead": { "type": "string", "description": "Leadership team only: brief a project's Lead instead of starting a worker (its id, or the project's id or name). The brief goes into the Lead's own long-running chat; the Lead delegates to its workers and its final report comes back to you (and to the project's Leadership room) as a new turn." },
                     "whenBusy": { "type": "string", "enum": ["queue", "steer"], "default": "queue", "description": "With lead: if the Lead is mid-turn, queue the brief behind its current work (default) or steer it into that work." },
-                    "redoes": { "type": "string", "description": "The taskId of one of your tasks that failed or stopped moving that this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. It works in that task's own checkout (its worktree, with the half-done work still there), or a fresh one, never the shared checkout unless you say isolation shared. The old task keeps going until you stop it with task_cancel." }
+                    "redoes": { "type": "string", "description": "The taskId of one of your tasks that failed or stopped moving that this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. It works in that task's own checkout (its worktree, with the half-done work still there), or a fresh one, never the shared checkout unless you say isolation shared. The old task keeps going until you stop it with task_cancel." },
+                    "files": { "type": "array", "items": { "type": "string" }, "maxItems": 30, "description": "The project files or folders this job will change (e.g. packages/ui/src/App.tsx), when you know them. A job that shares one with a job still running in the project waits and starts by itself once that one has landed, from the project with its work in, so two workers never edit the same file at once. If it belongs with the running job instead, send that job a follow-up rather than a second job." }
                 },
                 "required": ["brief"],
                 "additionalProperties": false
@@ -490,7 +491,7 @@ fn tools() -> Value {
     tools
 }
 
-const DELEGATE_APP_FIELDS: [&str; 14] = [
+const DELEGATE_APP_FIELDS: [&str; 15] = [
     "brief",
     "title",
     "asks",
@@ -505,6 +506,7 @@ const DELEGATE_APP_FIELDS: [&str; 14] = [
     "lead",
     "whenBusy",
     "redoes",
+    "files",
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one

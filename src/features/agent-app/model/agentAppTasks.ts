@@ -44,6 +44,7 @@ import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview"
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
+import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import type { AgentAppHost } from "./agentApp";
 import {
   limitsLine,
@@ -76,8 +77,8 @@ export type WorkerPoolHost = {
   admit(job: AdmitInput): Admission;
   /** It waits: kept in order with what starts it later (and its card shows in the chat that asked). */
   enqueue(job: QueuedWorker, launch: QuickLaunch): void;
-  /** It started: out of the queue, and counted as heavy if it is. */
-  started(job: { id: string; heavy: boolean }): void;
+  /** It started: out of the queue, counted as heavy if it is, and holding the files it changes (r87). */
+  started(job: { id: string; heavy: boolean; files?: readonly string[] }): void;
   /** The chat's waiting workers, with why each waits now. */
   queued(owner: string): { job: QueuedWorker; line: string }[];
   /** The chat took back one of its waiting workers (task_cancel). */
@@ -107,6 +108,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "lead",
       "whenBusy",
       "redoes",
+      "files",
     ],
   ],
   ["tasks.workers", ["project", "workers", "heavy"]],
@@ -332,6 +334,14 @@ function taskIds(value: unknown): string[] | undefined {
 
 /** The files or areas a job covers, as the Lead declares them (delegate_task `scope`): a size signal, never prose. */
 const SCOPE_MAX = 50;
+
+/** delegate_task's `files`: up to 30 paths, each a file or folder in the project. */
+function fileList(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.length > 400))
+    throw new Error("files must be a list of the project's file or folder paths it will change");
+  return value.slice(0, 30).map((item: string) => item.trim());
+}
 
 function scopeList(value: unknown): string[] {
   if (value === undefined) return [];
@@ -608,6 +618,9 @@ async function delegate(
   // The job's size, as the Lead declared it, and its own "this one is hard": signals the model chooser reads (E7).
   const hard = input.hard === true;
   const scope = scopeList(input.scope);
+  // r87: the files or folders it will change, as the Lead named them and as its brief names them, and its area (UI, API, docs). A job that shares one
+  // with running work in the project waits for that work to land (workerPool.ts sharedWith).
+  const files = [...new Set([...fileList(input.files), ...filesNamed(brief), ...areasNamed(title, brief)])];
   const named =
     input.project === undefined ? undefined : text(input.project, "project", 4096);
   // A coding-team chat works on its own project only: naming it is fine, naming another is not.
@@ -667,7 +680,7 @@ async function delegate(
   // asked again after a window died mid-start (its claim ran out) or a retried call only reads it back.
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
-    tasks.pool?.started({ id, heavy });
+    tasks.pool?.started({ id, heavy, files });
     return {
       taskId: already.id,
       childSessionId: id,
@@ -732,6 +745,7 @@ async function delegate(
       projectName: ownTeam?.name ?? projectName(launch.cwd),
       heavy,
       harness: launch.harness,
+      ...(files.length ? { files } : {}),
     };
     const admission = tasks.pool.admit(job);
     if (!admission.start) {
@@ -759,7 +773,7 @@ async function delegate(
         ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
         ...(route ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
-        note: forUser`${admission.line} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; name its model as modelName says, never the raw model id), then end your turn.`,
+        note: forUser`${admission.line}${admission.reason === "files" ? " If this work belongs with that job, cancel this one (task_cancel) and send that job a follow-up instead; otherwise leave it." : ""} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; name its model as modelName says, never the raw model id), then end your turn.`,
       };
     }
   }
@@ -778,7 +792,7 @@ async function delegate(
     launch = launchWith("current");
     await host.start(launch, id, undefined, source.id, meta);
   }
-  tasks.pool?.started({ id, heavy });
+  tasks.pool?.started({ id, heavy, files });
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).

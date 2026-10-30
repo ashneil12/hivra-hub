@@ -1,4 +1,5 @@
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { withoutTurnRepeats } from "./turnRepeats";
 import { isCliNotice } from "./cliNotices";
 import type {
   AgentRunMeta,
@@ -66,8 +67,12 @@ export function applyHarnessEvent(
   switch (event.type) {
     case "message.delta":
       return patchStreaming(session, "assistant", event.text, true);
-    case "message.completed":
-      return finishRole(session, "assistant");
+    case "message.completed": {
+      // r87: a reply that repeats, word for word, one already given this turn is dropped (turnRepeats.ts).
+      const finished = finishRole(session, "assistant");
+      const blocks = withoutTurnRepeats(finished.blocks);
+      return blocks === finished.blocks ? finished : { ...finished, blocks };
+    }
     case "image.generated":
       if (!("path" in event)) return session;
       return appendImage(session, event);
@@ -606,9 +611,11 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     turnReady: false,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
-      settled.blocks
-        .filter((block) => !isBareProseStream(block))
-        .map(stopBlockProgress),
+      withoutTurnRepeats(
+        settled.blocks
+          .filter((block) => !isBareProseStream(block))
+          .map(stopBlockProgress),
+      ),
       endedAt,
     ),
   };

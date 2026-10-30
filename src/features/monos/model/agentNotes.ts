@@ -45,6 +45,13 @@ const firstLine = (text: string | null | undefined, max = 140): string | undefin
  * sentence in plain words, markdown and list marks off, a trailing colon (a paste's lead-in) dropped, cut at a word.
  */
 export const summaryLine = (text: string | null | undefined, max = 100): string | undefined => {
+  // r87 (c02 run 1, "a raw land blob"): the app's own [MonoCode landed] line is for the Lead; the note says it plainly.
+  const tag = (text ?? "").match(/^\s*\[MonoCode (not )?landed\][^\n]*\n*/);
+  if (tag) {
+    const rest = summaryLine((text ?? "").slice(tag[0].length), max);
+    const said = tag[1] ? "Not in the project yet" : "In the project";
+    return rest ? `${said}. ${rest}` : `${said}.`;
+  }
   const plain = (text ?? "")
     .replace(/```[\s\S]*?(```|$)/g, "\n")
     .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")

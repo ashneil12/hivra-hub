@@ -27,6 +27,8 @@ const MIN = 60_000;
 
 export type StallOptions = {
   quietMs: number;
+  /** r87: busy with no progress this long after a provider error ("API Error: Server error", "API retry 3 of 10"). */
+  providerErrorMs?: number;
   longToolMs: number;
   idleMs: number;
   loopRepeats: number;
@@ -34,6 +36,7 @@ export type StallOptions = {
 
 export const STALL_DEFAULTS: StallOptions = {
   quietMs: 6 * MIN,
+  providerErrorMs: MIN,
   longToolMs: 20 * MIN,
   idleMs: 6 * MIN,
   loopRepeats: 6,
@@ -84,7 +87,36 @@ export type WorkerLook = {
   repeat?: { title: string; count: number };
   /** How many different steps this turn has taken (progress is this number growing). */
   steps: number;
+  /** r87: the provider error the turn's newest step is, while nothing has followed it but retries and thinking. */
+  providerError?: string;
 };
+
+/** r87 (s14 r86 run 3): the reason a provider-error stall carries; the Lead is told once, with a retry offered. */
+export const PROVIDER_STALL_PREFIX = "Provider error";
+const PROVIDER_ERROR = /^\s*(?:API Error\b|API retry \d+ of \d+|.*\b(?:server error|overloaded|503|529)\b.*retry)/i;
+
+/** The provider error at the end of a turn: an error line, then only retries, notices and thinking since. */
+export function providerErrorAtEnd(turn: readonly Block[]): string | undefined {
+  for (let i = turn.length - 1; i >= 0; i--) {
+    const block = turn[i];
+    if (block.role === "reasoning") continue;
+    const text = (block.text ?? "").trim();
+    if ((block.role === "assistant" || block.role === "system") && PROVIDER_ERROR.test(text)) {
+      // The first error line of this run of retries names it best ("API Error: Server error mid-response").
+      for (let j = i - 1; j >= 0; j--) {
+        const earlier = turn[j];
+        if (earlier.role === "reasoning") continue;
+        if ((earlier.role === "assistant" || earlier.role === "system") && PROVIDER_ERROR.test((earlier.text ?? "").trim()) && /^API Error/i.test(earlier.text.trim()))
+          return earlier.text.trim().split("\n")[0].slice(0, 120);
+        if (!(earlier.role === "system" && PROVIDER_ERROR.test((earlier.text ?? "").trim()))) break;
+      }
+      return text.split("\n")[0].slice(0, 120);
+    }
+    if (block.role === "system" && !text) continue;
+    return undefined;
+  }
+  return undefined;
+}
 
 /** The blocks of the turn running now (or the last one): everything after its user message. */
 function currentTurn(blocks: readonly Block[]): readonly Block[] {
@@ -116,6 +148,7 @@ export function lookAt(chat: WorkerChat): WorkerLook {
   const said = turn.filter((block) => block.role === "assistant" && block.text.trim()).length;
   const approval = turn.some((block) => !!block.approval && !block.approval.decided);
   const lastBlock = chat.blocks[chat.blocks.length - 1];
+  const providerError = chat.busy ? providerErrorAtEnd(turn) : undefined;
   return {
     busy: !!chat.busy,
     asking: !!chat.pendingQuestion || approval,
@@ -125,6 +158,7 @@ export function lookAt(chat: WorkerChat): WorkerLook {
     ...(running ? { runningTool: toolCallLabel(running, chat.cwd) } : {}),
     ...(repeat ? { repeat } : {}),
     steps: distinct.size + said,
+    ...(providerError ? { providerError } : {}),
   };
 }
 
@@ -139,6 +173,8 @@ export type Presence = {
   steps: number;
   /** When the current run of repeats was first seen. */
   repeatSince?: number;
+  /** r87: when the provider error at the end of its turn was first seen (retry lines that follow don't reset it). */
+  errorSince?: number;
 };
 
 /** Whether this worker is stuck right now, and how. */
@@ -149,6 +185,15 @@ export function judgeStall(
   options: StallOptions = STALL_DEFAULTS,
 ): Stall | null {
   const lastActive = presence.lastChangeAt ?? presence.watchedSince;
+  if (look.busy && look.providerError && presence.errorSince !== undefined) {
+    const quiet = now - presence.errorSince;
+    if (quiet >= (options.providerErrorMs ?? MIN))
+      return {
+        kind: "quiet",
+        reason: `${PROVIDER_STALL_PREFIX}, no progress for ${Math.round(quiet / 1000)}s: ${look.providerError}`,
+        since: presence.errorSince,
+      };
+  }
   if (look.busy) {
     if (look.repeat && look.repeat.count >= options.loopRepeats)
       return {
@@ -176,6 +221,15 @@ export function judgeStall(
   return null;
 }
 
+/**
+ * r87: the Lead's line for a worker stuck after a provider error: what happened, that it is flagged on Today and Being
+ * built, and the retry it can make. Never Ash's words.
+ */
+export function providerStallNote(row: Pick<Delegation, "id" | "title">, stall: Stall): string {
+  const title = row.title?.trim().split("\n")[0].slice(0, 80) || "its job";
+  return `Your worker on "${title}" hit a provider error and has made no progress since (${stall.reason.replace(`${PROVIDER_STALL_PREFIX}, `, "")}). It shows as stuck on Today and Being built. It may recover by itself; if it doesn't, retry it with delegate_task redoes "${row.id}" and the same brief. Tell Ash in one line that it stalled on a provider error and what you're doing about it.`;
+}
+
 /** What the watcher needs from the app. */
 export type StallWatchHost = {
   tracker(): DelegationTracker | null;
@@ -187,6 +241,8 @@ export type StallWatchHost = {
   options?(): StallOptions;
   /** The hourly progress check's verdict on a row, while it holds one (selfRepair.ts). */
   hourly?(row: Delegation): Stall | null;
+  /** r87: a worker stuck after a provider error, once per error: its Lead is told and offered a retry. */
+  providerStall?(row: Delegation, stall: Stall): void;
 };
 
 type Seen = Presence & { fingerprint: readonly unknown[] };
@@ -198,6 +254,7 @@ type Seen = Presence & { fingerprint: readonly unknown[] };
 export class StallWatch {
   private seen = new Map<string, Seen>();
   private writing = new Set<string>();
+  private toldProvider = new Map<string, number>();
 
   constructor(private host: StallWatchHost) {}
 
@@ -249,6 +306,8 @@ export class StallWatch {
     // Between looks only a stalled worker that moved is judged (to clear it at once); the rest wait for the look.
     if (mode === "clear" && !(stored && moved)) return;
     const look = lookAt(chat);
+    if (look.providerError) seen.errorSince ??= now;
+    else delete seen.errorSince;
     if (mode === "both") this.progress(seen, look, now);
     const waitsOnWorkers = this.host.openOwned(row.childSession) > 0;
     const own = waitsOnWorkers ? null : judgeStall(look, seen, now, this.host.options?.() ?? stallOptions());
@@ -257,6 +316,10 @@ export class StallWatch {
     const stall = hourly?.final ? hourly : own && own.kind !== "loop" ? own : (hourly ?? own);
     const changed = !!stall && (stall.kind !== stored || stall.reason !== (row.stallReason ?? ""));
     if (stall && changed && mode === "both") this.write(row, stall);
+    if (stall && mode === "both" && stall.reason.startsWith(PROVIDER_STALL_PREFIX) && this.toldProvider.get(row.id) !== stall.since) {
+      this.toldProvider.set(row.id, stall.since);
+      this.host.providerStall?.(row, stall);
+    }
     // A stall only clears on something seen: activity after it began, or the worker now waiting on its own workers.
     else if (!stall && stored && (moved || waitsOnWorkers)) this.write(row, null);
   }
