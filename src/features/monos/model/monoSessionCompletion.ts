@@ -1,3 +1,4 @@
+import { isOwnMessage } from "../../sessions/model/messageQueue";
 import { cutTestOutput } from "./testOutput";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
@@ -803,9 +804,12 @@ export function enqueueMonoSessionCompletion(
     mono.blocks.some((block) => block.appRequestId === message.id)
   )
     return mono;
+  const queue = mono.queuedMessages ?? [];
+  // r86: Ash's answer to a held question goes ahead of the other app deliveries, behind only his own messages.
+  const at = message.steerWhenBusy ? queue.findIndex((entry) => !isOwnMessage(entry)) : -1;
   return {
     ...mono,
-    queuedMessages: [...(mono.queuedMessages ?? []), message],
+    queuedMessages: at < 0 ? [...queue, message] : [...queue.slice(0, at), message, ...queue.slice(at)],
     queueStatus: mono.queueStatus === "paused" ? "paused" : "active",
   };
 }
