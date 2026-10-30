@@ -42,6 +42,8 @@ export type HubChecksHost = {
   ): SubmissionAcceptance;
   /** The one cheap look after a dump; defaults to an isolated Claude Code prompt on the runtime's own model. */
   look?(prompt: string): Promise<string>;
+  /** r85: titles of a chat's own jobs still being built, so a "now does X" before they land is checked. */
+  openJobs?(sessionId: string): readonly string[];
 };
 
 const LOOK_TIMEOUT_MS = 90_000;
@@ -132,7 +134,10 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
     ).then(() =>
       // Then every open ask is settled against what was built (I6): a "fixed" or a done claim with nothing behind it
       // stays open and one private check says what is missing.
-      settleAsks(latest.current.sessionsRef.current, hubEvidenceSource, (checks) => delivery.offer(checks), { skip }),
+      settleAsks(latest.current.sessionsRef.current, hubEvidenceSource, (checks) => delivery.offer(checks), {
+        skip,
+        openJobs: (id) => latest.current.openJobs?.(id) ?? [],
+      }),
     ).catch((error: unknown) => console.warn("The dump check failed", error));
   }, [on, delivery, idle]);
 }

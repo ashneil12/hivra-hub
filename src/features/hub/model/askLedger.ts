@@ -402,6 +402,25 @@ function unquoted(text: string): string {
   return text.replace(/"[^"\n]*"|“[^”\n]*”|`[^`\n]*`|(?<![\w])'[^'\n]*'(?![\w])|‘[^’\n]*’/g, " ");
 }
 
+/**
+ * r85 (s14 r84 run 4: "Delete now keeps a tally for 30 days so you can undo it", said 6s after Ash answered and minutes
+ * before the worker built it): a sentence saying the product now does something. Its job still moving ("the job now
+ * carries on", "is now running") is not a claim, and nor is a plan ("will now", "I'll now").
+ */
+const NOW_DOES = /\bnow\s+(?:[a-z]+s|is|are|has|have)\b/i;
+const NOW_MOVING =
+  /\bnow\s+(?:carries|continues|runs|starts|goes|moves|heads|picks|works on|is (?:running|being|working|building|underway|in progress|on it|carrying|starting)|has (?:his|your|Ash['’]s|the) (?:words|answer|call|decision))\b|\b(?:will|['’]ll|going to|to)\s+now\b|\bright now\b/i;
+export function nowClaimOf(reply: string): string | undefined {
+  for (const raw of reply.split(/(?<=[.!?])\s+|\n+/)) {
+    const sentence = oneLine(raw);
+    const text = unquoted(raw);
+    if (!sentence || !NOW_DOES.test(text) || NOW_MOVING.test(text)) continue;
+    if (/\b(?:not|never|nothing)\b|n['’]t\b/i.test(sentence)) continue;
+    return sentence.slice(0, 160);
+  }
+  return undefined;
+}
+
 export function doneClaimOf(reply: string): string | undefined {
   for (const raw of reply.split(/(?<=[.!?])\s+|\n+/)) {
     const sentence = oneLine(raw);

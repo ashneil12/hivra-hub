@@ -696,7 +696,7 @@ export const MONO_WORKING: MonoState = {
 export function monoState(
   session: Pick<
     Session,
-    "blocks" | "busy" | "pendingQuestion" | "worktreeRemoved" | "usageLimit"
+    "blocks" | "busy" | "pendingQuestion" | "worktreeRemoved" | "usageLimit" | "queuedMessages"
   >,
 ): MonoState {
   const { blocks, pendingQuestion: question } = session;
@@ -745,7 +745,7 @@ export function monoState(
   // r65 (PM's r63 run): a Lead that ended its turn on a "Needs Ash:" ask the gate lets into Waiting on you is waiting on
   // Ash, red like a live question, never a grey idle row while the Inbox counts it.
   if (!session.busy && !session.worktreeRemoved) {
-    const asked = chatQuestion({ busy: false, blocks });
+    const asked = chatQuestion({ busy: false, blocks, queuedMessages: session.queuedMessages });
     if (asked && gateQuestion(asked).admit)
       return { status: "needs-you", activity: asked.provide ? forUser`Ash needs to provide ${asked.provide}` : asked.question };
   }

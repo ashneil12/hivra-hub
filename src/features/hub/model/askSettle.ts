@@ -10,6 +10,7 @@ import {
   coveringEvidence,
   doneClaimOf,
   evidenceSince,
+  nowClaimOf,
   gapLine,
   handleAsk,
   openAsks,
@@ -84,6 +85,21 @@ function holdClaim(ask: LedgerAsk, claim: string, gap: string): HubCheck {
 }
 
 /**
+ * r85: the chat said the work is in or now does something while its own job for it is still being built: one check
+ * asks it to say so plainly, instead of running the verification itself (the job's report brings that).
+ */
+function holdEarly(ask: LedgerAsk, claim: string, jobs: readonly string[]): HubCheck {
+  patchAsk(ask.id, { held: { claim, at: Date.now() } });
+  const named = jobs.slice(0, 3).map((title) => `"${title}"`).join(", ");
+  return askCheck(
+    ask,
+    `- "${ask.title}" was said to be in while ${named} is still being built`,
+    `This chat said "${claim}", but ${named} ${jobs.length > 1 ? "are" : "is"} still being built and nothing of it has landed in the project. Tell Ash in one line that it is under way, not in yet, and say it is in only when its report says it landed. Don't run the work or its checks yourself.`,
+    `dc-${ask.blockId}-early`,
+  );
+}
+
+/**
  * Compare every open ask with the build in its chat: the tool blocks after his message, the commits in the chat's
  * folder since he said it (whoever made them), and the Bot changes rows (askEvidence.ts). Runs after each idle flush,
  * next to the dump look. A chat that is busy or has a message waiting is left until it is done, so nothing is read
@@ -93,7 +109,11 @@ export async function settleAsks(
   sessions: readonly Session[],
   source: EvidenceSource,
   offer: (checks: HubCheck[]) => unknown,
-  options: { skip?: (sessionId: string) => boolean } = {},
+  options: {
+    skip?: (sessionId: string) => boolean;
+    /** r85: the titles of the chat's own jobs still being built (open delegations it owns). */
+    openJobs?: (sessionId: string) => readonly string[];
+  } = {},
 ): Promise<void> {
   const asks = openAsks();
   if (!asks.length) return;
@@ -129,7 +149,15 @@ export async function settleAsks(
       checks.push(holdFixed(ask, gapLine(ask, evidence)));
       continue;
     }
-    const claim = doneClaimOf(replyUntil(session.blocks, index));
+    const reply = replyUntil(session.blocks, index);
+    const jobs = options.openJobs?.(session.id) ?? [];
+    // r85: while its job is still out, "now does X" counts as a claim too, and the check says to wait for the report.
+    const early = jobs.length ? (doneClaimOf(reply) ?? nowClaimOf(reply)) : undefined;
+    if (early && !askCovered(ask, evidence)) {
+      if (ask.held?.claim !== early) checks.push(holdEarly(ask, early, jobs));
+      continue;
+    }
+    const claim = doneClaimOf(reply);
     if (!claim) continue;
     if (askCovered(ask, evidence)) {
       handleAsk(ask.id, evidenceLineOf(ask, evidence, "called done, and the build shows"));

@@ -17,6 +17,7 @@ import {
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
+import { mismatchFixNudge } from "../model/mismatchFixNudge";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -99,6 +100,7 @@ export function useFollowedBriefs(options: {
   const asked = useRef(new Map<string, number>());
   const noted = useRef(new Set<string>());
   const nudged = useRef(new Set<string>());
+  const fixNudged = useRef(new Set<string>());
   const ruleNudged = useRef(new Set<string>());
   // Agent-to-agent notes (model/agentNotes.ts): moves from this run on, each once; which worker chats exist, once each.
   const notesSince = useRef<number | undefined>(undefined);
@@ -201,7 +203,16 @@ export function useFollowedBriefs(options: {
         }
         // r84: one app message, not two turns back to back.
         const request = joinNudges(save, start);
-        if (request) await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
+        if (request) {
+          await Promise.resolve(ask(chat.id, request)).catch(() => undefined);
+          continue;
+        }
+        // r85: a mismatch it flagged gets a worker or a Needs Ash line, not just a mention.
+        const fix = mismatchFixNudge(chat, fixNudged.current);
+        if (fix) {
+          fixNudged.current.add(fix.id.replace(/^fix-mismatch-/, ""));
+          await Promise.resolve(ask(chat.id, fix)).catch(() => undefined);
+        }
       }
     }
     const onLeadReport = latest.current.onLeadReport;

@@ -76,7 +76,7 @@ export type WaitingChatsHost = {
 /** H4 (hub/questions-and-tree): return true when this chat is a worker and its question went to its Lead. */
 export type WorkerQuestionRouter = (chat: WaitingEntry) => boolean;
 
-type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pendingQuestion" | "inboxAsk" | "ephemeral" | "orchestrationLeadId"> & {
+type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pendingQuestion" | "inboxAsk" | "ephemeral" | "orchestrationLeadId" | "queuedMessages"> & {
   blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool" | "monoSpawnedSessions">>)[];
 };
 
@@ -219,12 +219,12 @@ function answeredThisTurn(chat: Pick<ChatInput, "id" | "blocks">, question: stri
 
 // The app calls noteChats on every change to any chat (each streamed word): a chat whose transcript, turn and live
 // question are the same objects as last time is not read again.
-const reads = new WeakMap<object, { busy: boolean; pending: unknown; q: ChatQuestion | null }>();
+const reads = new WeakMap<object, { busy: boolean; pending: unknown; queued: unknown; q: ChatQuestion | null }>();
 function readChat(chat: ChatInput): ChatQuestion | null {
   const seen = reads.get(chat.blocks);
-  if (seen && seen.busy === !!chat.busy && seen.pending === chat.pendingQuestion) return seen.q;
+  if (seen && seen.busy === !!chat.busy && seen.pending === chat.pendingQuestion && seen.queued === chat.queuedMessages) return seen.q;
   const q = chatQuestion(chat);
-  reads.set(chat.blocks, { busy: !!chat.busy, pending: chat.pendingQuestion, q });
+  reads.set(chat.blocks, { busy: !!chat.busy, pending: chat.pendingQuestion, queued: chat.queuedMessages, q });
   return q;
 }
 
