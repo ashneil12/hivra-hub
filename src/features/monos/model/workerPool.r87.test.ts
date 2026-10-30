@@ -106,6 +106,8 @@ describe("a brief's area, when it names no file (c02 r87 run 1)", () => {
     ["Reject negative bump", 'Ash\'s words: "the api should reject a negative bump with a plain english error."  Reject a negative bump with a plain-English error (not a code or stack trace). Change only the bump handler. Do not add /health, do not edit the README or the UI.', ["area:api"]],
     ["UI uses shared tally type", 'Ash\'s words: "the ui has its own copy of the tally type, make it use the shared package."  Delete the UI\'s local tally type and import it from the shared package. Change only that type wiring. Do not change the board layout or the API.', ["area:ui"]],
     ["Last week on the board", 'Ash\'s words: "show last weeks total next to this week on the board." Show last week\'s total beside this week\'s on the board, with weeks starting Monday.', ["area:ui"]],
+    // c02 r87 run 2: "not a stack trace" is not a sentence about what to leave alone.
+    ["Reject negative bump", 'Their words: "the api should reject a negative bump with a plain english error."  The API must reject a negative bump with a plain-English error (not a stack trace, not a silent accept). Do not add /health, and do not change the UI or README.', ["area:api"]],
     ["README documents /health", 'Ash\'s words: "put the new endpoint in the readme."  Document GET /health (says the service is alive) in the README. Change only the README. Do not add the route yourself.', ["area:docs"]],
   ];
   it.each(briefs)("%s", (title, brief, areas) => {

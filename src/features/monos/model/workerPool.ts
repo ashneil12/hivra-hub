@@ -549,7 +549,7 @@ export function filesNamed(text: string): string[] {
   const own = text
     .replace(/<worker_rules>[\s\S]*?(<\/worker_rules>|$)/g, " ")
     .split(/(?<=[.!?\n])\s+/)
-    .filter((sentence) => !/\b(do not|don't|never|not|leave|without)\b/i.test(sentence))
+    .filter((sentence) => !/\b(do not|don't|never|leave)\b|^\s*not\b/i.test(sentence))
     .join(" ");
   for (const match of own.matchAll(PATHISH)) {
     const file = normalFile(match[1]);
@@ -575,7 +575,7 @@ export function areasNamed(title: string, brief: string): string[] {
     .replace(/<worker_rules>[\s\S]*?(<\/worker_rules>|$)/g, " ")
     .replace(/"[^"]*"|“[^”]*”/g, " ")
     .split(/(?<=[.!?\n])\s+/)
-    .filter((sentence) => !/\b(do not|don't|never|not|leave|without|another job|other job)\b/i.test(sentence));
+    .filter((sentence) => !/\b(do not|don't|never|leave|another job|other job)\b|^\s*not\b/i.test(sentence));
   const of = (texts: string[]) => AREAS.filter(([, word]) => texts.some((t) => word.test(t))).map(([area]) => area);
   const pinned = of([title, ...own.filter((sentence) => /\bonly\b/i.test(sentence))]);
   return (pinned.length ? pinned : of(own)).map((area) => `${AREA_PREFIX}${area}`);
