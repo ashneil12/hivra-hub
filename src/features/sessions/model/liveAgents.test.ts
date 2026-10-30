@@ -239,3 +239,21 @@ describe("formatLiveElapsed", () => {
     expect(formatLiveElapsed(0, 3_720_000)).toBe("1h 2m");
   });
 });
+
+// r92 (c02 blind run 0176): the sidebar foot never shows a raw tool name or a path outside the project.
+describe("r92 sidebar foot activity", () => {
+  const busy = (block: Block) =>
+    chat("/p/tally", { busy: true, blocks: [{ id: "u1", role: "user", text: "go", startedAt: 1_000 }, block] });
+  it("says what a MonoCode tool does instead of its raw name", () => {
+    const block: Block = { id: "t", role: "tool", text: "mcp__monocode__task_wait", tool: { kind: "other", status: "in_progress", title: "mcp__monocode__task_wait" } };
+    const [agent] = liveAgentsFromSessions([busy(block)]);
+    expect(agent.activity).not.toMatch(/mcp__/);
+    expect(agent.activity).toBe("Waiting on a worker");
+  });
+  it("reads a worker's file by name, not its /private/var path", () => {
+    const path = "/private/var/folders/x/T/w/packages/ui/src/format.ts";
+    const block: Block = { id: "r", role: "tool", text: `Read ${path}`, tool: { kind: "read", status: "in_progress", title: `Read ${path}`, preview: { kind: "read", path, fileName: "format.ts" } } };
+    const [agent] = liveAgentsFromSessions([busy(block)]);
+    expect(agent.activity).toBe("Reading format.ts");
+  });
+});

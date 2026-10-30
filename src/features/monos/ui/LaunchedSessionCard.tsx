@@ -128,7 +128,7 @@ export function LaunchedSessionCard({
       title={status?.label}
       onClick={onOpen}
       disabled={!onOpen}
-      className={`flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
+      className={`flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
     >
       {status?.icon ?? (
         <Chatting
@@ -136,7 +136,7 @@ export function LaunchedSessionCard({
           strokeWidth={1.75}
         />
       )}
-      <span className="min-w-0 flex-1 truncate text-[13px] text-content">{title}</span>
+      <span data-launched-title className="min-w-[4.5rem] flex-1 truncate text-[13px] text-content">{title}</span>
       {view?.state === "waiting" ? (
         <span
           data-launched-waiting
@@ -147,17 +147,19 @@ export function LaunchedSessionCard({
       ) : null}
       {/* Which model (and effort) this worker runs on (E7), quiet, before the project chip. */}
       {/* r90: squeezed, the model's name stays whole and the grey reason after it gives way first (s15: "Grok ..."). */}
+      {/* r92 (s15 dcf4): in a narrow chat the card never runs under the Stalled chip beside it: the card clips, the
+          title keeps a few words, and the model (reason first, then the name) is what gives way. */}
       {(() => {
         const ran = modelLabel(launch.harness, launch.model);
         return (
           <span
             data-launched-model
-            className={`${ran.note ? "flex max-w-[50%]" : "max-w-[30%] truncate"} min-w-0 shrink-0 text-[12px] text-content/55`}
+            className={`${ran.note ? "flex max-w-[50%]" : "max-w-[30%] truncate"} min-w-0 shrink overflow-hidden text-[12px] text-content/55`}
             title={`Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`}
           >
             {ran.note ? (
               <>
-                <span className="shrink-0 whitespace-nowrap">
+                <span className="min-w-0 shrink-[0.01] truncate">
                   {ran.name}
                   {launch.effort ? ` · ${launch.effort}` : ""}
                 </span>

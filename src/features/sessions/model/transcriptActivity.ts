@@ -19,7 +19,7 @@ import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
-import { plainSearchLabel } from "../../../shared/lib/plainSearch";
+import { plainFindRow, plainSearchLabel } from "../../../shared/lib/plainSearch";
 
 export { plainSearchLabel };
 
@@ -77,7 +77,7 @@ export function toolCallLabel(block: Block, cwd?: string): string {
   const path = preview?.path
     ? displayPath(preview.path, cwd)
     : preview?.fileName;
-  return (
+  return plainFindRow(
     composeToolTitle({
       kind: block.tool?.kind,
       title: block.text || block.tool?.title,
@@ -85,7 +85,7 @@ export function toolCallLabel(block: Block, cwd?: string): string {
       query: preview?.query,
       previewKind: preview?.kind,
       cwd,
-    }) || "Working"
+    }) || "Working",
   );
 }
 
@@ -107,12 +107,29 @@ export function isIncompleteTool(
   return !label || isWeakToolTitle(label);
 }
 
+/**
+ * r92 (s19 blind run d452): the harness looking up its own tools ("Find select:mcp__monocode__delegate_task,…", a
+ * ToolSearch call) is plumbing, not work on Ash's project, so it shows no row at all. Only a lookup whose words are
+ * tool names (select:…, mcp__…) or a ToolSearch call; a real search of the project keeps its row.
+ */
+export function isToolLookup(block: Block): boolean {
+  const kind = block.tool?.kind?.toLowerCase() ?? "";
+  const title = (block.tool?.title ?? block.text ?? "").trim();
+  const named = [title, block.tool?.preview?.title ?? "", block.tool?.detail ?? ""];
+  if (/^tool_?search$/.test(kind) || named.some((name) => /^ToolSearch\b/i.test(name.trim()))) return true;
+  const query = (block.tool?.preview?.query ?? title.replace(/^(?:find|search)\s+/i, "")).trim();
+  if (/^select:/i.test(query)) return true;
+  const words = query.split(/[\s,]+/).filter(Boolean);
+  return words.length > 0 && words.every((word) => /^mcp__[\w-]+__[\w-]+$/.test(word));
+}
+
 export function isHiddenTool(block: Block): boolean {
   if (block.role !== "tool" && block.role !== "approval") return false;
   // Harnesses also publish todo mutations as ordinary tool calls. The
   // canonical tasks block is the user-facing representation, so keep the
   // provider-internal call out of the activity stack.
   if (block.tool?.kind?.toLowerCase() === "tasks") return true;
+  if (block.role === "tool" && isToolLookup(block)) return true;
   if (
     isEditTool(
       block.tool?.kind,
@@ -193,6 +210,19 @@ export function hasReadableText(text: string): boolean {
 }
 
 /** First paragraph of a folded prose block, stripped to one plain line. */
+/**
+ * r92 (Critiquito d, s19 blind run d452): a thought that would only say "Thinking" between two steps (its turn still
+ * runs, so its words stay hidden, or it has none) folds away in the step list, as a settled "Thought" does; the group's
+ * own title and the live line already say it is thinking. A step list of only such thoughts keeps the latest one.
+ */
+export function stepsWithoutBareThinking(steps: Block[], turnLive: boolean): Block[] {
+  const kept = steps.filter(
+    (block) => !(block.role === "reasoning" && (turnLive || !!block.streaming || !proseSummary(block.text))),
+  );
+  // A list of only bare thoughts keeps one "Thinking", the latest (c02 blind 0176 showed three in a row).
+  return kept.length ? kept : steps.slice(-1);
+}
+
 export function proseSummary(text: string): string {
   const body = text.replace(/```[\s\S]*?(?:```|$)/g, " ");
   const paragraph =
@@ -910,7 +940,7 @@ export function toolCategory(block: Block): ActivityWorkKind {
   if (isSearchTool(kind, title, preview)) return "research";
   if (isReadTool(kind, title, preview)) return "research";
   if (/^(?:Edit|Write)\s+\S/i.test(label)) return "edit";
-  if (/^(?:Read|List|Find)\b/i.test(label)) return "research";
+  if (/^(?:Read|List|Find|Searched for|Search the)\b/i.test(label)) return "research";
   if (isExecuteTool(kind, title)) return "run";
   return "other";
 }
@@ -1065,7 +1095,7 @@ function tallySteps(steps: Block[]): PhaseTally {
         } else tally.runs += 1;
         break;
       case "research":
-        if (/^Find\b/i.test(label) || isSearchTool(kind, title, preview)) {
+        if (/^(?:Find|Searched for|Search the)\b/i.test(label) || isSearchTool(kind, title, preview)) {
           tally.searches += 1;
         } else tally.reads.add(target);
         break;

@@ -276,6 +276,40 @@ test("allowPromptly taps Allow in the named chat as soon as a card shows, with n
   fs.rmSync(evidence, { recursive: true, force: true });
 });
 
+test("an approved wait counts an Allow the bench tapped before the wait began (r92, s19 d452)", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-approved-"));
+  let cards = 0;
+  const ctx = {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind) => {
+      if (kind === "send") {
+        cards = 1;
+        return { ok: true, at: Date.now(), session: "chat-1" };
+      }
+      if (kind === "approve") {
+        const approved = cards;
+        cards = 0;
+        return { ok: true, approved };
+      }
+      return { sessions: [], rooms: [] };
+    },
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [], claudeTexts: () => [],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  };
+  const started = Date.now();
+  const record = await runScenario({ id: "ap", title: "ap", minutes: 1, allowPromptly: ["perm"], steps: [
+    { send: { codingTeam: "project" }, as: "perm", text: "check it properly" },
+    { wait: { approved: "perm", maxSec: 20 } },
+  ] }, ctx);
+  assert.ok(Date.now() - started < 10_000, "met at once, not after maxSec");
+  assert.equal(record.waits.at(-1)?.met, true);
+  fs.rmSync(evidence, { recursive: true, force: true });
+});
+
 test("a room turn or a Mono's private message is a hidden turn, whose NO_REPLY the app folds away", async () => {
   const { hiddenTurnOf } = await import("./hub-realtest-claude.mjs");
   assert.equal(hiddenTurnOf("<monocode_context>…</monocode_context>\n[MonoCode room] You are frank, in the group chat"), "room");

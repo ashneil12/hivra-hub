@@ -36,6 +36,7 @@ import type { MonoLook } from "../model/mono";
 import { EmptyState, PageHeader } from "./monoPanelParts";
 import { forgetWorkSession, noteGoneWorkSessions, noteWorkSessions, seenWorkSession, shownWorkSessionIds, useWorkSessionsVersion, workSessionView } from "../model/monoWorkSessions";
 import { useDelegationRows } from "../model/delegationStore";
+import { delegationOf, sessionStalled } from "../model/delegationView";
 import { waitingOnLeadLabel } from "../model/workerStuck";
 
 /** A launched session open over the overview, live and fully usable. */
@@ -345,6 +346,8 @@ export function MonoSessionList({
             },
             agent.name,
           );
+          // r92: Stalled here when the worker's card in the chat says Stalled, never "Working...".
+          const stalled = sessionStalled(!!live?.busy, delegationOf(launch.sessionId, delegationRows));
           if (summary)
             return (
               <div key={launch.sessionId} data-mono-session={launch.sessionId}>
@@ -353,14 +356,16 @@ export function MonoSessionList({
                   modelInFooter
                   isActive={false}
                   isSelected={false}
-                  busy={!!live?.busy && !waitingOn}
+                  busy={!!live?.busy && !waitingOn && !stalled}
                   done={workView(launch.sessionId) === "done"}
                   statusLabel={
                     workView(launch.sessionId) === "stopped"
                       ? "Stopped"
                       : workView(launch.sessionId) === "failed"
                         ? "Failed"
-                        : waitingOn
+                        : stalled
+                          ? "Stalled"
+                          : waitingOn
                   }
                   linkedUpdate={false}
                   needsApproval={

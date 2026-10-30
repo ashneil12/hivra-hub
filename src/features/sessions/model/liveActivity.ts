@@ -135,6 +135,11 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
   }
 }
 
+/** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing work to a worker"). */
+export function plainToolStep(block: Block, cwd?: string): string {
+  return toolStep(block, cwd, "name");
+}
+
 /** The turn's current step, from its latest block that says anything. */
 export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDetail = "full"): LiveStep {
   const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft);

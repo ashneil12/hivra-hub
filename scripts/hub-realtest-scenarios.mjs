@@ -106,6 +106,14 @@ export async function runScenario(scenario, ctx) {
       const last = Math.max(ref, ...all.map((m) => m.t), typing?.t ?? 0);
       return replies.length > 0 && !typing?.who && Date.now() - last >= (cond.quietSec ?? 40) * 1000;
     }
+    // r92 (s19 d452): "a permission card came up in <as>" counts the Allow the bench already tapped (allowPromptly runs
+    // before every wait, so a card can be gone before the wait starts), or a card still held in that chat.
+    if (cond.approved) {
+      if (record.marks.some((m) => m.approve?.chat === cond.approved && m.answer?.approved > 0)) return true;
+      const session = chatSession(cond.approved);
+      if (!session) return false;
+      return (((await act("snapshot").catch(() => null))?.sessions ?? []).find((x) => x.id === session)?.approvals ?? 0) > 0;
+    }
     // r88: words anywhere the window shows (its snapshot), app lines too (e.g. "Test run in the project itself").
     if (cond.snapshotText) return new RegExp(cond.snapshotText, "i").test(JSON.stringify(await act("snapshot")));
     if (cond.monoReply || cond.monoText) {
