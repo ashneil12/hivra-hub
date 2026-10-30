@@ -12,6 +12,7 @@ import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
 import { leafName } from "../../files/model/fileName";
+import { plainInterim } from "../../../shared/text/plainInterim";
 import {
   displayPath,
   pathKey,
@@ -1251,7 +1252,8 @@ export function activityPhaseTitle(phase: ActivityPhase, live = false): string {
   if (phase.headline) {
     // r88 (Ash): the model's reasoning is never shown while the turn runs; the line stays "Thinking".
     if (live && phase.headline.role === "reasoning") return "Thinking";
-    const summary = proseSummary(phase.headline.text);
+    // r97 (Critiquito j): "Preparing a consolidated rollup" reads "Putting the summary together".
+    const summary = plainInterim(proseSummary(phase.headline.text));
     if (hasReadableText(summary)) return summary;
     if (!summary)
       return phase.headline.role === "reasoning" ? "Thinking" : "Working";
