@@ -167,6 +167,7 @@ import {
   workflowKeepsRow,
   isThinkingBlock,
   stepsWithoutBareThinking,
+  isBareThought,
   lastActivityIndex,
   isProseBlock,
   isMonoCheckPrompt,
@@ -3911,9 +3912,16 @@ export function MonoActivityTrail({
         block.taskList ||
         block.plan),
   );
+  // r94 (Critiquito f): a thought that would only say "Thinking" never sits under
+  // a reply. Between tools it stays: there it is the live step (r88).
+  let lastReply = -1;
+  steps.forEach((block, at) => {
+    if (isProseBlock(block)) lastReply = at;
+  });
+  const shown = steps.filter((block, at) => !(at > lastReply && lastReply >= 0 && isBareThought(block, !!live)));
   // What it said reads as text; the work between hangs on a short timeline.
   const segments: { prose: boolean; blocks: Block[] }[] = [];
-  for (const block of steps) {
+  for (const block of shown) {
     const prose = isProseBlock(block);
     const last = segments[segments.length - 1];
     if (last && !prose && !last.prose) last.blocks.push(block);
@@ -4071,6 +4079,8 @@ function ActivityPhaseGroup({
   // A lone call the agent never introduced is not a group: a header repeating
   // the single row under it says nothing twice.
   if (!phase.headline && phase.steps.length === 1) {
+    // r94 (Critiquito f): a lone thought that would only say "Thinking" (under a reply, say) is not a row at all.
+    if (isBareThought(phase.steps[0], turnLive)) return null;
     return (
       <div className="flex min-w-0 items-start gap-1.5">
         {monoCodePhase ? null : (
