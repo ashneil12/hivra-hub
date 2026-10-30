@@ -44,7 +44,7 @@ const SAYS_GREEN = /\b(?:suite is green|all (?:the )?tests pass|tests? (?:all )?
  * The quiet line a Lead or coding-team chat gets for its newest test run in the project, when that run comes after a
  * worker's report: what it printed, said as the newer word on the suite. Once per run (its block id).
  */
-export function projectTestNote(chat: Session, noted: ReadonlySet<string>): Block | undefined {
+export function projectTestNote(chat: Session, noted: ReadonlySet<string>, now = Date.now()): Block | undefined {
   let reportAt = -1;
   let found: { index: number; totals: TestTotals } | undefined;
   chat.blocks.forEach((block, index) => {
@@ -66,6 +66,7 @@ export function projectTestNote(chat: Session, noted: ReadonlySet<string>): Bloc
     id,
     role: "system",
     text: `Test run in the project itself, after the workers' reports: ${verdict}. This is newer than any worker's own run in its copy.`,
-    ...(run.startedAt !== undefined ? { startedAt: run.startedAt } : {}),
+    // Timed, so the line sits where it was said (a stored note with no time drops out of a timed read of the chat).
+    startedAt: now,
   } as Block;
 }

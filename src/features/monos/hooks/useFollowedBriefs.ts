@@ -182,7 +182,7 @@ export function useFollowedBriefs(options: {
           if (change && "remove" in change) latest.current.unnote?.(chat.id, change.remove);
           else if (change) latest.current.renote?.(chat.id, change.update);
           // r86: its own test run in the project, after the workers' reports, is the newer word on the suite.
-          const tests = projectTestNote(chat, noted.current);
+          const tests = projectTestNote(chat, noted.current, now);
           if (tests) {
             noted.current.add(tests.id);
             note(chat.id, tests);
