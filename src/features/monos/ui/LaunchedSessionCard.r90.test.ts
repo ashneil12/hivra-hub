@@ -58,3 +58,16 @@ it("r93 (s15 3cde): squeezed, the project chip shrinks to a whole pill with its 
   expect(chip.className).toContain("overflow-hidden");
   expect(chip.textContent).toBe("tally");
 });
+
+it("r94 (s15 SCRIPTED 8c60): on a card too narrow for it the project chip is not drawn, never half a blank pill", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  r = createRoot(host);
+  const launch = { sessionId: "w6", cwd: "/repo/tally", title: "Show tally count on the board", harness: "claude" as const, model: "claude:grok-4.7", effort: "High" };
+  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "stuck", title: launch.title }, onOpen: () => undefined })));
+  expect(host.querySelector("[data-launched-session]")!.className).toContain("@container/card");
+  const chip = host.querySelector("[data-launched-project]")!;
+  expect(chip.className.split(" ")).toContain("hidden");
+  expect(chip.className).toContain("@[14rem]/card:flex");
+  // The layout itself is proven in tests/browser/launched-card.spec.ts (260 to 700px).
+});
