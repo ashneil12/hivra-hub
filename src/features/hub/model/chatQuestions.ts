@@ -427,16 +427,24 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
  * r81 (Critiquito): who is asking, instead of "it": "the Tally Lead", "the health worker". A name that is already a
  * person's (a Mono called Pip) stays bare; a chat's title becomes "the <title> worker".
  */
-export function whoAsks(input: { monoName?: string; title?: string; orchestrator?: boolean }): string {
+export function whoAsks(input: { monoName?: string; title?: string; orchestrator?: boolean; project?: string }): string {
   const name = input.monoName?.trim();
   if (name) return /\b(lead|worker|team|chat|bot)$/i.test(name) ? `the ${name}` : name;
   // r82 (c02): a stored title can carry its harness ("claude · Tally health…"); Ash never sees that part.
   const title = input.title?.trim().replace(/^[a-z][\w-]* · /i, "").replace(/\s+(worker|chat)$/i, "");
   if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
-  // r82 (c02): a coding-team chat that sends out workers is not one of them: "the Tally health chat".
-  if (input.orchestrator) return `the ${title} chat`;
+  // r82 (c02): a coding-team chat that sends out workers is not one of them. r91 (Critiquito: "Allow the Run tally npm
+  // test totals chat …" read the raw title back): it is named by its project, "the Tally team chat", never its title.
+  if (input.orchestrator) return teamChatName(input.project);
   // r83 (Critiquito): the job's name as written, capital kept, and "worker" said once.
   return `the ${title.replace(/^(?:the\s+)?worker\s*[:·-]?\s*/i, "")} worker`;
+}
+
+/** r91: a coding-team chat's friendly name, from its project folder ("tally" → "the Tally team chat"). */
+export function teamChatName(project: string | undefined): string {
+  const name = (project ?? "").trim().split(/[\\/]/).filter(Boolean).pop()?.replace(/[-_]+/g, " ").trim();
+  if (!name || name.length > 30) return "the team chat";
+  return `the ${name.charAt(0).toUpperCase()}${name.slice(1)} team chat`;
 }
 
 /** The permission question with "it" swapped for who asks. */

@@ -250,7 +250,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const mono = monoForSession(chat.id);
     const q =
       read?.source === "permission"
-        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, orchestrator: isCodingTeamChat(chat.id) || chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, project: chat.cwd, orchestrator: isCodingTeamChat(chat.id) || chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
         : read?.source === "marker" && answeredThisTurn(chat, read.question)
           ? null
           : read;
