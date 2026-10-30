@@ -8,6 +8,7 @@ import { isOpenDelegation, type Delegation } from "../../monos/model/delegations
 import { questionWithoutOptions } from "../../monos/model/stuckActions";
 import { jobRowsFinishedAt, newestPerChild, rowsUnderJob, stuckForJob, stuckOf } from "../../monos/model/workerStuck";
 import { clockLabel } from "./liveJobs";
+import { plainAskedLine } from "./plainAsked";
 import { plainStuckLine } from "../../monos/model/stuckChip";
 import type { Worker } from "./types";
 
@@ -24,7 +25,7 @@ export function withStuckWorkers(rows: readonly Worker[], delegations: readonly 
     if (w.stuck) return { ...w, stuckWorker: stuck };
     // A worker's question waits on its Lead however long it sits (D5): the Lead asks Ash in its own chat.
     if (stuck.kind === "asking")
-      return { ...w, state: "waiting", stateReason: `Asked: ${questionWithoutOptions(stuck.line)}`, stuckWorker: stuck };
+      return { ...w, state: "waiting", stateReason: `Asked: ${plainAskedLine(questionWithoutOptions(stuck.line))}`, stuckWorker: stuck };
     // The app's own words for its worker (r30b): one plain line, never the raw fault or a file path (stuckChip.ts).
     return { ...w, stuck: "stuck", stuckReason: plainStuckLine(stuck), stuckWorker: stuck };
   });
