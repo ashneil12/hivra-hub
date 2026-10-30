@@ -272,5 +272,7 @@ export function activityLine(activity: LiveActivity, now: number): { text: strin
     const on = activity.lastStep ? ` on ${activity.lastStep.charAt(0).toLowerCase()}${activity.lastStep.slice(1)}` : "";
     return { text: `Still working${on} · ${formatElapsed(now - activity.since)}`, stalled: false };
   }
+  // r96 (Critiquito): under a second there is no time worth showing ("Thinking · 0s"), so the step stands alone.
+  if (now - activity.since < 1000) return { text: activity.label, stalled: false };
   return { text: `${activity.label} · ${formatElapsed(now - activity.since)}`, stalled: false };
 }

@@ -13,7 +13,7 @@ const think = (id: string, text: string): Block => ({ id, role: "reasoning", tex
 it("a 1:1 or room turn names its tool step, and after 60 s thinking with no tool says what it is still on", () => {
   const t0 = 1_000_000;
   const npm = { kind: "execute", title: "Bash", command: "npm test" } as NonNullable<Block["tool"]>;
-  expect(activityLine(trackActivity("r66-a", [user, running("c", npm)], t0, "/repo", undefined, undefined, { detail: "name" }), t0).text).toBe("Running npm test · 0s");
+  expect(activityLine(trackActivity("r66-a", [user, running("c", npm)], t0, "/repo", undefined, undefined, { detail: "name" }), t0).text).toBe("Running npm test") // r96: no "· 0s" under a second;
   // The tool finished; it thinks. The stream keeps beating (new blocks or words), so it never reads stalled.
   let blocks: Block[] = [user, done("c", npm), think("k", "hm")];
   let a = trackActivity("r66-a", blocks, t0 + 1_000, "/repo", undefined, undefined, { detail: "name" });
