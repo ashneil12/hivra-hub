@@ -129,8 +129,22 @@ export function stoppedWords(note: Pick<AgentNote, "owner" | "to">): string {
   return ` is with ${note.to.name}`;
 }
 
+const SERVICE_STALL = /^Stalled: the AI service (.+?)\.(\s+Retrying didn't help\.)?\s*$/i;
+
+/**
+ * r97 (Critiquito c, r95): a worker stalled on its AI service reads as one sentence about it, never "Worker "X" is
+ * with This chat: Stalled: …": ` stalled. The AI service stopped answering, and retrying didn't help.`
+ */
+export function serviceStallWords(note: Pick<AgentNote, "kind" | "line">): string | undefined {
+  const m = note.kind === "stuck" ? SERVICE_STALL.exec(note.line?.trim() ?? "") : null;
+  if (!m) return undefined;
+  return ` stalled. The AI service ${m[1]}${m[2] ? ", and retrying didn't help" : ""}.`;
+}
+
 /** The note in plain words (the Block's text, and what a screen reader hears). */
 export function agentNoteText(note: AgentNote): string {
+  const stall = serviceStallWords(note);
+  if (stall) return `${note.from.name}${stall}`;
   const head =
     note.kind === "stuck"
       ? `${note.from.name}${stoppedWords(note)}`

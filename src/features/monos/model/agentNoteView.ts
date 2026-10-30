@@ -1,7 +1,7 @@
 // How an agent-to-agent note reads on screen (PM's half of the notes; CoS's agentNotes.ts is the data). Pure, so the
 // look can change without touching the events: the note's words split into parts, the one agent with a chat to open
 // marked as the link, and notes landing together grouped so a burst shows as one line that expands.
-import { messagedWords, stoppedWords, type AgentNote } from "./agentNotes";
+import { messagedWords, serviceStallWords, stoppedWords, type AgentNote } from "./agentNotes";
 
 /** Notes this close together fold into one line (a Lead handing out three jobs at once). */
 export const FOLD_MS = 2 * 60_000;
@@ -18,6 +18,8 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
     text: side.name,
     opens: note.target && side.session === note.target ? note.target : null,
   });
+  const stall = serviceStallWords(note);
+  if (stall) return { head: [name(note.from), { kind: "text", text: stall }], line: detailOf(note) };
   const head: NotePart[] =
     note.kind === "stuck"
       ? note.owner === "needs-you" || note.owner === "retrying"
@@ -61,6 +63,7 @@ const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").tri
  * its job has the brief's first line as the detail, which is that same label (cut short or not), so it is left off.
  */
 export function detailOf(note: AgentNote): string | undefined {
+  if (serviceStallWords(note)) return undefined; // r97 (c): the stall sentence is the whole head
   // r96: the landed words are in the head of a finished job's line, so the detail is the result alone.
   const line = (note.kind === "reported" ? withoutPaths(note.line?.trim().replace(LANDED, "") ?? "") : note.line)?.trim();
   if (!line) return undefined;
