@@ -1351,6 +1351,30 @@ describe("parallel workers per project, with throttling (H8)", () => {
     expect(rows.at(-1)).toMatchObject({ ownerSession: source.id, childSession: "app-mono-exo-r21", title: "Part 21" });
   });
 
+  // r87 step 2: two jobs on the same file never run at once; the second waits, then starts by itself.
+  it("holds a job whose files a running job changes, offers folding it in, and starts it once that one is done", async () => {
+    const rows: Delegation[] = [];
+    const { source, host, started, pump } = pooled(rows);
+    const first = (await handleAgentApp(source, "ui", "tasks.delegate", { brief: "Use the shared type.", title: "UI uses shared type", files: ["src/App.tsx"] }, host)) as Record<string, unknown>;
+    expect(first.status).toBe("running");
+    const second = (await handleAgentApp(source, "week", "tasks.delegate", { brief: "Show last week's total in src/App.tsx.", title: "Last week" }, host)) as Record<string, unknown>;
+    expect(second.status).toBe("waiting");
+    expect(second.waiting).toContain('Waiting for "UI uses shared type" to land: both change src/App.tsx');
+    expect(second.note).toContain("send that job a follow-up");
+    const other = (await handleAgentApp(source, "api", "tasks.delegate", { brief: "Add /health.", files: ["api/server.ts"] }, host)) as Record<string, unknown>;
+    expect(other.status).toBe("running");
+    expect(started).toHaveLength(2);
+    rows[0].state = "completed";
+    await pump();
+    expect(started).toHaveLength(3);
+    expect((started[2] as unknown[])[1]).toBe("app-mono-exo-week");
+  });
+
+  it("refuses files that aren't a list of paths", async () => {
+    const { source, host } = pooled([]);
+    await expect(handleAgentApp(source, "bad", "tasks.delegate", { brief: "x", files: "src/App.tsx" }, host)).rejects.toThrow(/files must be a list/);
+  });
+
   it("starts with a sensible default of 6 at once in a project Ash hasn't set", async () => {
     const rows: Delegation[] = [];
     const { source, host, started } = pooled(rows);
