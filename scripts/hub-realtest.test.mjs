@@ -378,7 +378,8 @@ test("r73: every scenario view opens a real project (no central Today since 23 O
       for (const step of scenario.steps ?? [])
         if (step.view) {
           assert.notEqual(step.view.project, "today", `${file} ${scenario.id}: view opens "today"`);
-          if (own) assert.equal(step.view.project, own, `${file} ${scenario.id}: view opens another project`);
+          // r98: a Mono view ({mono}) opens that Mono's chat, not a project.
+          if (own && !step.view.mono) assert.equal(step.view.project, own, `${file} ${scenario.id}: view opens another project`);
         }
   }
 });
