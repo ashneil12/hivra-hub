@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { appNoteText } from "../model/appNote";
 import {
   Check,
   CornerDownRight,
@@ -106,7 +107,7 @@ export function MessageQueue({
                 : message.monoSessionCompletion.sessionCount
                   ? `${message.monoSessionCompletion.sessionCount} sessions finished`
                   : `Session ${message.monoSessionCompletion.status}: ${message.monoSessionCompletion.title}`
-              : message.text.trim()) ||
+              : (appNoteText(message.text) ?? message.text.trim())) ||
             message.noteCard?.title ||
             message.handoffCard?.brief ||
             `${message.attachments.length} attachment${message.attachments.length === 1 ? "" : "s"}`;
