@@ -637,7 +637,7 @@
           "snapshot": "after-dump"
         }
       ],
-      "criteria": "ONE reply that lists every ask (40, none dropped, none invented), starts the independent work in parallel (workers), and groups the discussion points with recommendations. First reply under 60 s; workers started under 2 min.",
+      "criteria": "ONE reply that lists every ask (40, none dropped, none invented), starts the independent work in parallel (workers), and groups the discussion points with recommendations. Timing is only a note, never a fail (Ash, 30 Oct: \"Timing isn't a problem like 60s lol\"); no reply may claim work started that hasn't.",
       "takePendingPick": true
     },
     {
