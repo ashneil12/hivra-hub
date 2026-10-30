@@ -50,7 +50,7 @@ function checkTurnFor(blocks: readonly Block[], blockId: string): Block[] | unde
 }
 
 /** The private check sent into the chat that owns an ask. */
-function askCheck(ask: LedgerAsk, finding: string, body: string, id: string): HubCheck {
+function askCheck(ask: LedgerAsk, finding: string, body: string, id: string, rules: string = CHECK_RULES): HubCheck {
   return {
     id,
     dumpId: ask.blockId,
@@ -58,7 +58,7 @@ function askCheck(ask: LedgerAsk, finding: string, body: string, id: string): Hu
     chatId: ask.chatId,
     finding,
     askIds: [ask.id],
-    prompt: forUser`${CHECK_PREFIX} ${body}\n${CHECK_RULES}`,
+    prompt: forUser`${CHECK_PREFIX} ${body}\n${rules}`,
   };
 }
 
@@ -88,6 +88,12 @@ function holdClaim(ask: LedgerAsk, claim: string, gap: string): HubCheck {
  * r85: the chat said the work is in or now does something while its own job for it is still being built: one check
  * asks it to say so plainly, instead of running the verification itself (the job's report brings that).
  */
+/**
+ * r99 (B5 df53, +423s to +470s): "Fixed: ... under way" then "Right: that Fixed line was ..." four times in a row: the
+ * correction carried the checker's label, and its "Fixed" read as a new done claim. A correction is said plainly.
+ */
+export const EARLY_RULES = `Reply in one plain line, with no "Right:" or "Fixed:" label: it's a correction, not a fix.`;
+
 function holdEarly(ask: LedgerAsk, claim: string, jobs: readonly string[]): HubCheck {
   patchAsk(ask.id, { held: { claim, at: Date.now() } });
   const named = jobs.slice(0, 3).map((title) => `"${title}"`).join(", ");
@@ -96,6 +102,7 @@ function holdEarly(ask: LedgerAsk, claim: string, jobs: readonly string[]): HubC
     `- "${ask.title}" was said to be in while ${named} is still being built`,
     `This chat said "${claim}", but ${named} ${jobs.length > 1 ? "are" : "is"} still being built and nothing of it has landed in the project. Tell Ash in one line that it is under way, not in yet, and say it is in only when its report says it landed. Don't run the work or its checks yourself.`,
     `dc-${ask.blockId}-early`,
+    EARLY_RULES,
   );
 }
 

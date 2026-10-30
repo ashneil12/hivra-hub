@@ -33,6 +33,9 @@ describe("a 'now does X' before its job lands", () => {
     expect(offered[0].id).toBe("dc-u1-early");
     expect(offered[0].prompt).toContain('"Delete tallies" is still being built');
     expect(offered[0].prompt).toContain("under way, not in yet");
+    // r99: said plainly, without the checker's "Right:" / "Fixed:" label.
+    expect(offered[0].prompt).not.toContain('starting "Right:" or "Fixed:"');
+    expect(offered[0].prompt).toContain("one plain line");
     await settleAsks([chat], source, (checks) => offered.push(...checks), { openJobs: () => ["Delete tallies"] });
     expect(offered).toHaveLength(1);
   });
