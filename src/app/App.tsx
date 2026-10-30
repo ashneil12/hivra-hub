@@ -10018,6 +10018,10 @@ function Workspace({
           add: (created) => updateSessionState(sessionsRef, setSessions, (current) => [...current, created]),
         }),
       submit: (sessionId, text, options) => submitSession(sessionId, text, [], options),
+      openJobs: (sessionId) =>
+        (delegationsRef.current?.known() ?? [])
+          .filter((row) => row.ownerSession === sessionId && !row.follow && isOpenDelegation(row))
+          .map((row) => row.title || "its job"),
     },
     IS_HUB_BUNDLE,
   );
