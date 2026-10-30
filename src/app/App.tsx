@@ -8731,6 +8731,10 @@ function Workspace({
             false,
           );
           workCwd = tree.path;
+          // r86 (c02 run 2, +364s: the README worker's copy was the last commit, so it never saw the health route or the
+          // shared type that had already landed, uncommitted, in the project): a delegated worker's new copy starts from
+          // the project as it is now, landed work included, and that is its starting point for its own landing.
+          if (sessionId.startsWith("app-")) await refreshWorkerCopy({ checkout: tree.path, project: current.cwd });
           workspacePins.current.set(sessionId, currentWorkspace(current.cwd));
           if (proposalDraft)
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
