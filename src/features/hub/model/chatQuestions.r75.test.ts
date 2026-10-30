@@ -18,7 +18,7 @@ describe("r75: a finished question shows while the turn still runs", () => {
     expect(chatQuestion({ busy: true, blocks: [user, { role: "assistant", text: ask }] })).toMatchObject({
       source: "marker",
       question: "everyone sees every tally, or private unless shared?",
-      pick: "private unless shared.",
+      pick: "Private unless shared", // r97 (g): the pick reads as the option it names
     });
     expect(chatQuestion({ busy: true, blocks: [user, { role: "assistant", text: ask, streaming: true }] })).toBeNull();
     expect(chatQuestion({ busy: true, blocks: [user, { role: "assistant", text: "Looking at the readme now." }] })).toBeNull();

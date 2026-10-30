@@ -236,10 +236,13 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   const all = needsAshPattern();
   for (let m = all.exec(text); m; m = all.exec(text)) found = m;
   if (!found?.groups?.q) return null;
-  const question = oneLine(found.groups.q);
+  // r97 (Critiquito g, c02 BLIND 242d): "Needs Ash: keep that all-time order, or sort by this week? My pick is to keep
+  // the all-time order." The pick on the same line is the pick, and the question reads to Ash ("Do you want to …?").
+  const inline = splitInlinePick(oneLine(found.groups.q, 1000));
+  const question = oneLine(toAsh(inline.question));
   if (!question) return null;
   const after = text.slice(found.index + found[0].length);
-  const pick = MY_PICK.exec(after)?.groups?.p;
+  const pick = inline.pick ?? MY_PICK.exec(after)?.groups?.p;
   const flagged = /red/i.test(found.groups.flag ?? "");
   const flag = !flagged && found.groups.flag?.trim() ? { flag: found.groups.flag.trim() } : {};
   const provide = provideNeeded(question, found.groups.flag);
@@ -250,6 +253,48 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
     ...flag,
     ...(provide ? { provide } : {}),
   };
+}
+
+/** "…? My pick is to keep the all-time order." / "…? My pick: B." / "…? I'd go with B." after the question mark. */
+const INLINE_PICK =
+  /^(?<q>.*\?)\s*(?:[-–—]\s*)?(?:my\s+(?:pick|recommendation)(?:\s+is|\s*:)|i(?:'d|\s+would)\s+(?:go\s+with|pick|choose)|i\s+recommend)\s*:?\s*(?:to\s+)?(?<p>.+?)[\s.!]*$/i;
+
+export function splitInlinePick(text: string): { question: string; pick?: string } {
+  const m = INLINE_PICK.exec(text.trim());
+  if (!m?.groups?.p?.trim()) return { question: text };
+  return { question: m.groups.q!.trim(), pick: m.groups.p.trim() };
+}
+
+/** Words that already ask Ash something; anything else that starts with a verb ("keep that …, or sort …?") gets "Would you rather" (a choice, not an approval). */
+// A bare ask that opens on a plain verb ("keep …, or sort …?"); "private or shared?" is left as it is.
+const ASK_VERB = /^(?:keep|sort|use|ship|drop|add|remove|leave|make|go|change|move|fix|split|merge|show|hide|rename|delete|switch|stay|wait|start|stop|put|let|cut|bump|land|revert|rewrite|skip|try)\b/;
+
+const ASKS_ALREADY = /^(?:do|does|did|should|shall|can|could|would|will|is|are|was|were|which|what|whether|when|where|who|how|may|ok|okay|approve|pick|choose|want|you|your|either)\b/i;
+
+/** r97 (Critiquito g): a bare "keep A, or sort by B?" reads as a question to Ash: "Would you rather keep A, or sort by B?" */
+export function toAsh(question: string): string {
+  const q = question.trim();
+  if (!/\?$/.test(q) || !/\bor\b/i.test(q) || !ASK_VERB.test(q) || ASKS_ALREADY.test(q)) return q;
+  return `Would you rather ${q}`;
+}
+
+/** "Would you rather keep that all-time order, or sort by this week?": its two choices, when it puts exactly two. */
+export function orOptions(question: string): string[] {
+  const m = /^(?:would you rather\s+|do you want to\s+|should i\s+|which:?\s+)?(?<a>[^?]+?),?\s+or\s+(?<b>[^?]+?)\?$/i.exec(question.trim());
+  if (!m?.groups) return [];
+  const [a, b] = [m.groups.a!, m.groups.b!].map((part) => part.trim());
+  if (/\bor\b/i.test(a) || /\bor\b/i.test(b)) return [];
+  if (a.split(/\s+/).length > 10 || b.split(/\s+/).length > 10) return [];
+  return [optionText(a), optionText(b)];
+}
+
+/** The option a pick names ("keep the all-time order" → "Keep that all-time order"), when one option clearly matches. */
+export function optionForPick(pick: string, options: readonly string[]): string | undefined {
+  const want = stems(pick);
+  const scores = options.map((option) => shared(stems(option), want));
+  const best = Math.max(0, ...scores);
+  if (!best || scores.filter((score) => score === best).length > 1) return undefined;
+  return options[scores.indexOf(best)];
 }
 
 // ---- Ash's red lines -------------------------------------------------------------------------------------------
@@ -541,8 +586,8 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
         source: "marker",
         question: marker.question,
         more: 0,
-        ...markerOptions(marker.question, turnText),
-        ...(marker.pick ? { pick: marker.pick } : {}),
+        ...markerOptions(marker.question, turnText, !!marker.pick),
+        ...(marker.pick ? { pick: optionForPick(marker.pick, markerOptions(marker.question, turnText, !!marker.pick).options ?? []) ?? marker.pick } : {}),
         redLine: marker.redLine,
         ...(marker.flag ? { flag: marker.flag } : {}),
         ...(marker.provide ? { provide: marker.provide } : {}),
@@ -571,8 +616,13 @@ function afterLanding(blocks: ChatLike["blocks"], question: string): { afterLand
   return title ? { afterLanding: title } : {};
 }
 
-function markerOptions(question: string, turnText: string): { options?: string[] } {
-  if (!pointsBack(question)) return {};
+function markerOptions(question: string, turnText: string, hasPick: boolean): { options?: string[] } {
+  // r97 (Critiquito g): "Would you rather keep A, or sort by B? My pick is A" puts its own two options. Without a pick
+  // the question already names them, so none are added (r76).
+  if (!pointsBack(question)) {
+    const own = hasPick ? orOptions(question) : [];
+    return own.length ? { options: own } : {};
+  }
   const options = optionsBefore(turnText);
   return options.length ? { options } : {};
 }
