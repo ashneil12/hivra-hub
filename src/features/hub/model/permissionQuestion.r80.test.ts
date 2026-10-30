@@ -33,3 +33,9 @@ it("r82 (c02): no harness in the name, and a coding-team chat is a chat, not a w
     "Allow the Tally health, bumps, and totals chat to look at App.tsx?",
   );
 });
+
+it("r82 (c02 #2): a coding-team chat is the chat even before its workers are in its blocks", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./waitingChats.ts", import.meta.url), "utf8");
+  expect(src).toMatch(/orchestrator: isCodingTeamChat\(chat\.id\) \|\|/);
+});

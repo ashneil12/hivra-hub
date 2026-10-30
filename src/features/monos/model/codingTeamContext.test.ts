@@ -56,3 +56,9 @@ describe("who owns delegated work", () => {
     expect(questionGoesToLead("app-team-1-r1", rows)).toBe(true);
   });
 });
+
+it("r82 (c02): a team chat looks in a worker's checkout with Read, Grep, Glob, never a shell command waiting on Ash", () => {
+  const text = codingTeamContext({ projectId: "tally", projectName: "Tally", folder: "/work/tally" });
+  expect(text).toMatch(/Its checkout: Read, Grep, Glob only \(shell waits on Ash\)\./);
+  expect(text).not.toMatch(/Run each job's check in its worker's checkout/);
+});

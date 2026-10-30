@@ -10,6 +10,7 @@
 //   prunes any whose saved conversation is gone (`pruneWaitingChats`), since `noteChats` only sees open chats.
 // - Hooks for the parallel packages: Autopilot reads the list and calls `takePick(id, { by: "autopilot" })` (red lines
 //   refused); H4 routes a worker's question to the Lead that delegated it with `setWorkerQuestionRouter`.
+import { isCodingTeamChat } from "./codingTeam";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { findMono, monoForSession } from "../../monos/model/mono";
@@ -249,7 +250,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const mono = monoForSession(chat.id);
     const q =
       read?.source === "permission"
-        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, orchestrator: chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, orchestrator: isCodingTeamChat(chat.id) || chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
         : read?.source === "marker" && answeredThisTurn(chat, read.question)
           ? null
           : read;
