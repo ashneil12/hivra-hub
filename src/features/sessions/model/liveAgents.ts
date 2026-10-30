@@ -1,8 +1,5 @@
-import { composeToolTitle } from "../../../integrations/harness/core/preview";
 import { isInFlightSession } from "./inFlight";
 import { plainToolStep } from "./liveActivity";
-import { plainFindRow } from "../../../shared/lib/plainSearch";
-import { displayPath } from "../../../shared/lib/paths";
 import {
   sessionDisplayTitle,
   type Block,
@@ -144,22 +141,7 @@ function activityLabel(block: Block | undefined, cwd: string): string {
   if (block.role === "handoff" && block.handoff?.status === "preparing") {
     return "Preparing a handoff";
   }
-  const preview = block.tool?.preview;
-  const path = preview?.path
-    ? displayPath(preview.path, cwd)
-    : preview?.fileName;
-  const label = plainFindRow(
-    composeToolTitle({
-      kind: block.tool?.kind,
-      title: block.text || block.tool?.title,
-      path,
-      query: preview?.query,
-      previewKind: preview?.kind,
-      cwd,
-    }) || "Working",
-  );
-  // r92 (c02 blind run 0176, sidebar foot): a raw tool name ("mcp__monocode__task_wait") or a path outside the
-  // project ("Read /private/var/folders/…", a worker's own checkout) reads as the plain step instead.
-  if (/mcp__|\s\/(?:private|var|tmp|Users|home)\//.test(label)) return plainToolStep(block, cwd);
-  return label;
+  // r94 (Critiquito a): the sidebar foot's rows go through the chat's own plain-words step, every time, not only when a
+  // raw tool name or a temp path slips through: no paths outside the file's name, no mcp__ names, no regex.
+  return plainToolStep(block, cwd);
 }

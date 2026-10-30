@@ -97,7 +97,7 @@ describe("liveAgentsFromSessions", () => {
         cwd: "/tmp/agent-terminal",
         title: "Fix the sidebar",
         harness: "claude",
-        activity: "Edited src/App.tsx",
+        activity: "Editing App.tsx",
         startedAt: 1_000,
         durationMs: undefined,
         needsApproval: false,
@@ -255,5 +255,27 @@ describe("r92 sidebar foot activity", () => {
     const block: Block = { id: "r", role: "tool", text: `Read ${path}`, tool: { kind: "read", status: "in_progress", title: `Read ${path}`, preview: { kind: "read", path, fileName: "format.ts" } } };
     const [agent] = liveAgentsFromSessions([busy(block)]);
     expect(agent.activity).toBe("Reading format.ts");
+  });
+});
+
+describe("r94 sidebar foot rows read like the chat (Critiquito a)", () => {
+  const busy = (block: Block) =>
+    chat("/p/tally", { busy: true, blocks: [{ id: "u1", role: "user", text: "go", startedAt: 1_000 }, block] });
+  it("a regex search names its words, never the pattern", () => {
+    const block: Block = { id: "g", role: "tool", text: "grep weekStart|monday\\b", tool: { kind: "search", status: "in_progress", title: "grep", preview: { kind: "search", query: "weekStart|monday\\b|rollover" } } };
+    const [agent] = liveAgentsFromSessions([busy(block)]);
+    expect(agent.activity).not.toMatch(/[|\\]/);
+    expect(agent.activity).toMatch(/^Search/);
+  });
+  it("an edit outside the project names just the file, never a temp path", () => {
+    const path = "/tmp/mc-w2/packages/api/src/stats.ts";
+    const block: Block = { id: "e", role: "tool", text: `Edit ${path}`, tool: { kind: "edit", status: "in_progress", title: `Edit ${path}`, preview: { kind: "edit", path, fileName: "stats.ts" } } };
+    const [agent] = liveAgentsFromSessions([busy(block)]);
+    expect(agent.activity).toBe("Editing stats.ts");
+  });
+  it("any other MCP tool reads in words", () => {
+    const block: Block = { id: "m", role: "tool", text: "mcp__linear__list_issues", tool: { kind: "other", status: "in_progress", title: "mcp__linear__list_issues" } };
+    const [agent] = liveAgentsFromSessions([busy(block)]);
+    expect(agent.activity).toBe("Using Linear: list issues");
   });
 });
