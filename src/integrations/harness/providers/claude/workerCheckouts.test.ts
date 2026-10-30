@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { withDevCopiesOff } from "./devCopies";
-import { withWorkerCheckoutsReadable, workerCheckoutsRule } from "./workerCheckouts";
+import { readFileSync } from "node:fs";
+import { workerCheckoutsArgs, workerCheckoutsRule } from "./workerCheckouts";
 
 describe("a Lead reads its workers' checkouts without asking Ash (r82, c02)", () => {
   it("allows reads in the project's sibling -worktrees folder", () => {
@@ -15,10 +15,11 @@ describe("a Lead reads its workers' checkouts without asking Ash (r82, c02)", ()
     expect(workerCheckoutsRule("relative/tally")).toBeUndefined();
   });
 
-  it("only reads: no edit rule, and the dev-copy deny rules stay", () => {
-    const settings = withWorkerCheckoutsReadable(withDevCopiesOff({}, "/Users/ash/Projects/tally"), "/Users/ash/Projects/tally");
-    expect(settings.permissions?.allow).toEqual(["Read(//Users/ash/Projects/tally-worktrees/**)"]);
-    expect(settings.permissions?.allow?.some((r) => /^(Edit|Write|Bash)/.test(r))).toBe(false);
-    expect(settings.permissions?.deny?.length).toBeGreaterThan(0);
+  it("only reads, as a flag every Claude chat process gets (the dev copy drops settings rules)", () => {
+    expect(workerCheckoutsArgs("/Users/ash/Projects/tally")).toEqual(["--allowedTools", "Read(//Users/ash/Projects/tally-worktrees/**)"]);
+    expect(workerCheckoutsArgs("/Users/ash/Projects/tally-worktrees/mc-1")).toEqual([]);
+    const src = readFileSync(new URL("./claude.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/\.\.\.workerCheckoutsArgs\(input\.cwd\)/);
+    expect(src).not.toMatch(/withWorkerCheckoutsReadable/);
   });
 });

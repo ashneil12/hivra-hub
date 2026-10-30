@@ -86,7 +86,7 @@ export type ClaudeCliSettings = {
   /** Tokens at which Claude Code compacts (100K-1M); it uses the smaller of this and the model window. */
   autoCompactWindow?: number;
   /** Claude Code permission rules; deny rules hold even in bypassPermissions (devCopies.ts uses them). */
-  permissions?: { deny?: string[]; allow?: string[] };
+  permissions?: { deny?: string[] };
   /** Env for this process only. Flag settings outrank ~/.claude/settings.json, so these win over the user's own. */
   env?: Record<string, string>;
 };
