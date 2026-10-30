@@ -298,6 +298,39 @@ export function sinceAshAnswered<B extends Pick<Block, "role" | "text">>(blocks:
   return blocks;
 }
 
+const NOT_TELLING = new Set(["that", "this", "with", "from", "your", "them", "what", "have", "will", "they", "when", "should", "which", "would", "there", "their", "into", "about", "worker", "needs"]);
+const stems = (text: string) =>
+  new Set(
+    text
+      .toLowerCase()
+      .split(/[^a-z0-9]+/)
+      .filter((w) => (/^\d+$/.test(w) ? w.length >= 2 : w.length >= 4) && !NOT_TELLING.has(w))
+      .map((w) => w.slice(0, 5)),
+  );
+const shared = (a: Set<string>, b: Set<string>) => [...a].filter((w) => b.has(w)).length;
+
+/**
+ * r86 (step 4: answering one job hid every other job's question): whether a "Needs Ash" question is the one Ash's answer
+ * note settles, by the job it names ("on "<title>"") or by his own words ("in its chat: "<words>"").
+ */
+export function answerSettles(note: string, question: string): boolean {
+  const title = /answered your worker on "([^"]*)"/.exec(note)?.[1] ?? "";
+  const words = /in its chat: "([^"]*)"/.exec(note)?.[1] ?? "";
+  const asked = stems(question);
+  const job = stems(title);
+  if (job.size && shared(job, asked) * 2 >= job.size) return true;
+  return shared(stems(words), asked) >= 2;
+}
+
+/** The Ash-answered notes the chat has, delivered or still queued. */
+function answerNotes(chat: ChatLike): string[] {
+  const isNote = (text: string | undefined) => !!text?.startsWith(ASH_ANSWERED_PREFIX);
+  return [
+    ...chat.blocks.filter((b) => b.role === "user" && isNote(b.text)).map((b) => b.text ?? ""),
+    ...(chat.queuedMessages ?? []).filter((m) => isNote(m.text)).map((m) => m.text),
+  ];
+}
+
 /** A live AskUserQuestion, as one waiting question. */
 export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
   const first = prompt.questions[0];
@@ -442,11 +475,16 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   // r80: only while the turn runs; a card left from a turn that is over waits on nobody.
   const permission = chat.busy === false ? null : permissionQuestion(chat.blocks);
   if (permission) return permission;
-  const blocks = sinceAshAnswered(chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks);
-  const turnText = lastTurnText(blocks);
-  // r85 (s14 r84 run 3): a Lead's "Needs Ash" written while his answer to its worker was on its way is already answered.
-  const answered = (chat.queuedMessages ?? []).some((m) => m.text.startsWith(ASH_ANSWERED_PREFIX));
-  const marker = answered ? null : parseNeedsAsh(turnText);
+  const shown = chat.busy ? chat.blocks.filter((b) => !(b.role === "assistant" && b.streaming)) : chat.blocks;
+  // r85 (s14 r84 run 3): a Lead's "Needs Ash" written before, or while, his answer to its worker was on its way is
+  // already answered. r86: only that job's question; another job's stays (the note is skipped, not a turn boundary).
+  const since = lastTurnText(sinceAshAnswered(shown));
+  const notes = answerNotes(chat);
+  const before = notes.length ? lastTurnText(shown.filter((b) => !(b.role === "user" && b.text?.startsWith(ASH_ANSWERED_PREFIX)))) : since;
+  const sinceMarker = parseNeedsAsh(since);
+  const queued = (chat.queuedMessages ?? []).some((m) => m.text.startsWith(ASH_ANSWERED_PREFIX));
+  const [turnText, found] = sinceMarker && !queued ? [since, sinceMarker] : [before, parseNeedsAsh(before)];
+  const marker = found && notes.some((note) => answerSettles(note, found.question)) ? null : found;
   if (chat.busy && !marker) return null;
   const secret = marker ? undefined : secretActionTried(chat.blocks);
   if (secret)

@@ -18,6 +18,7 @@ import { answeredReport, currentLeadBrief, followStep } from "../model/followedB
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
+import { projectTestNote } from "../model/projectTestRun";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -180,6 +181,12 @@ export function useFollowedBriefs(options: {
           const change = statusReplyChange(chat, known, notesSince.current, now);
           if (change && "remove" in change) latest.current.unnote?.(chat.id, change.remove);
           else if (change) latest.current.renote?.(chat.id, change.update);
+          // r86: its own test run in the project, after the workers' reports, is the newer word on the suite.
+          const tests = projectTestNote(chat, noted.current, now);
+          if (tests) {
+            noted.current.add(tests.id);
+            note(chat.id, tests);
+          }
           if (!chat.busy) continue;
           const block = statusReply(chat, known, noted.current, notesSince.current, now);
           if (!block) continue;

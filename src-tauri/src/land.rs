@@ -12,6 +12,15 @@ use serde::Serialize;
 /// One throwaway index per landing, so two workers finishing together never share one.
 static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// r86 (c02 r85 run 1: two jobs finishing close together both wrote `App.tsx`): one landing or refresh at a time, so
+/// each reads the project as the one before it left it.
+static LANDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    LANDING
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Landing {
@@ -128,6 +137,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
     if !project_of(checkout, project) {
         return Err("Only a worker's own copy of this project lands in it.".into());
     }
+    let _turn = one_at_a_time();
     let (patch, files, base) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(Landing {
@@ -290,6 +300,29 @@ fn merged(
     })
 }
 
+/// The files the project changed since `base`: committed or not, and new ones it doesn't ignore.
+fn project_changes(project: &Path, base: &str) -> Result<Vec<String>, String> {
+    let (ok, changed, why) = git(project, &["diff", "--name-only", base], None, None)?;
+    if !ok {
+        return Err(format!("the project's changes couldn't be read: {why}"));
+    }
+    let (_, added, _) = git(
+        project,
+        &["ls-files", "--others", "--exclude-standard"],
+        None,
+        None,
+    )?;
+    let mut paths: Vec<String> = String::from_utf8_lossy(&changed)
+        .lines()
+        .chain(String::from_utf8_lossy(&added).lines())
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
+}
+
 /// r84 (c02: the last-week worker clashed with the shared-type one in App.tsx): the project's changes merged into the
 /// worker's own copy, conflict markers left where both changed the same lines, so the worker can settle them and report
 /// again. Returns the files that now carry markers. The project is never touched.
@@ -297,9 +330,41 @@ pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, St
     if !project_of(checkout, project) {
         return Err("Only a worker's own copy of this project is brought up to date.".into());
     }
+    let _turn = one_at_a_time();
     let (_, files, base) = worker_patch(checkout, project)?;
     let mut marked = Vec::new();
     let kept = snapshot_dir(checkout)?;
+    // r86 (c02 r85 run 1: the copy got the project's App.tsx calling `weekTotals`, but not the format.ts that defines
+    // it): every file the project changed since the copy's start that the worker left alone comes in as the project
+    // has it, and becomes that file's starting point, so the copy is the project plus the worker's own change.
+    for path in project_changes(project, base.as_str())? {
+        if files.contains(&path) {
+            continue;
+        }
+        let now = read(&project.join(&path));
+        if now == start_of(checkout, base.as_str(), &path)? {
+            continue;
+        }
+        let target = checkout.join(&path);
+        match &now {
+            Some(bytes) => {
+                if let Some(dir) = target.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                }
+                std::fs::write(&target, bytes).map_err(|e| e.to_string())?;
+            }
+            None => {
+                let _ = std::fs::remove_file(&target);
+            }
+        }
+        if let Some(bytes) = now {
+            let snapshot = kept.join(&path);
+            if let Some(dir) = snapshot.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            std::fs::write(&snapshot, bytes).map_err(|e| e.to_string())?;
+        }
+    }
     for path in &files {
         let start = start_of(checkout, base.as_str(), path)?;
         let (worker, now) = (read(&checkout.join(path)), read(&project.join(path)));
@@ -500,6 +565,78 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(project.join("a.txt")).unwrap(),
             "three\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn a_refresh_brings_in_the_project_files_the_worker_left_alone() {
+        // r86 (c02 r85 run 1): the copy got App.tsx calling weekTotals but not the format.ts defining it.
+        let (project, copy) = repo("whole");
+        std::fs::write(copy.join("a.txt"), "two\n").unwrap();
+        std::fs::write(project.join("a.txt"), "three\n").unwrap();
+        std::fs::write(project.join("format.txt"), "weekTotals\n").unwrap();
+        assert_eq!(land(&copy, &project).unwrap().outcome, "conflict");
+        assert_eq!(refresh(&copy, &project).unwrap(), vec!["a.txt".to_string()]);
+        assert_eq!(
+            std::fs::read_to_string(copy.join("format.txt")).unwrap(),
+            "weekTotals\n"
+        );
+        // The project moves on in that file; the worker's landing doesn't take it back.
+        std::fs::write(project.join("format.txt"), "weekTotals\nlastWeek\n").unwrap();
+        std::fs::write(copy.join("a.txt"), "three\ntwo\n").unwrap();
+        assert_eq!(land(&copy, &project).unwrap().outcome, "landed");
+        assert_eq!(
+            std::fs::read_to_string(project.join("format.txt")).unwrap(),
+            "weekTotals\nlastWeek\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "three\ntwo\n"
+        );
+    }
+
+    #[test]
+    fn landings_into_one_file_at_once_both_get_in() {
+        let (project, first) = repo("together");
+        let lines = "1\n2\n3\n4\n5\n6\n7\n8\n9\n";
+        std::fs::write(project.join("a.txt"), lines).unwrap();
+        sh(&project, &["commit", "-qam", "lines"]);
+        let head = git(&project, &["rev-parse", "HEAD"], None, None).unwrap().1;
+        let head = String::from_utf8(head).unwrap();
+        sh(&first, &["checkout", "-q", "--detach", head.trim()]);
+        let second = project
+            .parent()
+            .unwrap()
+            .join("tally-worktrees")
+            .join("mc-2");
+        sh(
+            &project,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                second.to_str().unwrap(),
+            ],
+        );
+        let second = std::fs::canonicalize(second).unwrap();
+        std::fs::write(first.join("a.txt"), lines.replace("2\n", "two\n")).unwrap();
+        std::fs::write(second.join("a.txt"), lines.replace("8\n", "eight\n")).unwrap();
+        let (p1, c1, p2, c2) = (
+            project.clone(),
+            first.clone(),
+            project.clone(),
+            second.clone(),
+        );
+        let a = std::thread::spawn(move || land(&c1, &p1).unwrap().outcome);
+        let b = std::thread::spawn(move || land(&c2, &p2).unwrap().outcome);
+        assert_eq!(
+            (a.join().unwrap(), b.join().unwrap()),
+            ("landed".to_string(), "landed".to_string())
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "1\ntwo\n3\n4\n5\n6\n7\neight\n9\n"
         );
     }
 

@@ -325,6 +325,12 @@ export type QueuedMessage = {
   appRequestId?: string;
   /** The sender asked for it to wait behind the current work: sent as its own turn once the chat is idle, never steered. */
   waitForIdle?: boolean;
+  /**
+   * r86 (s14 r85 run 1: Ash answered a held worker while its Lead was mid-turn; the Lead decided without him and started
+   * a second worker before the note went in): the one app note that may cut into a busy chat's turn, ahead of the other
+   * app deliveries. Only Ash's answer to a held question carries it.
+   */
+  steerWhenBusy?: boolean;
   /** A room's wake or another Mono's message: goes in hidden, as a quiet line, and never shows as a pending bubble. */
   monoNote?: MonoNote;
   /** Delivery failed; the message remains available to retry or edit. */
