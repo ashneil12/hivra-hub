@@ -1,7 +1,7 @@
 import { Fragment } from "react";
 import { getChat, roomTurnsByMono, useHubChatsVersion } from "../../features/hub/model/hubChats";
 import { withRoomTurns } from "../../features/monos/model/roomBusy";
-import { StuckMark } from "../../features/monos/ui/SubChatList";
+import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
 import { dismissWaitingSoul, isDiskFullError, plainAddProblem, seatWaitingSoul, useWaitingSoulsVersion, waitingSouls } from "../../features/hub/model/setupSouls";
 import { plainName, roleNamesUndecided, setRoleNames, useRoleNamesVersion } from "../../features/hub/model/roleNames";
 import {
@@ -12,12 +12,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
-import { useDelegationRows } from "../../features/monos/model/delegationStore";
+import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
 import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
-import { subChatAttention } from "../../features/monos/model/subChats";
+import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
@@ -122,8 +122,8 @@ export function openTeam(team: TeamTarget): void {
  * their own and the shaded mascot rather than a project's flat one.
  *
  * The hub's rail shows people, not work (Ash, 20 Oct: "monos shouldn't really have sub chats"): a Mono's workers live in
- * its team (monoTeams.ts), so its row says only what it has out ("2 working · 1 needs you", red only for what Ash must act on) on
- * one line under it, and opens its team.
+ * its team (monoTeams.ts), so its row says what it has out ("2 working · 1 needs you", red only for what Ash must act on) on
+ * one line under it, and opens its team. r88 (Ash, B13): its workers' chats also nest under it, folded unless one needs a look.
  */
 export function MonoRailSection({
   activeId,
@@ -148,10 +148,11 @@ export function MonoRailSection({
   // r67 (Alfred A9): a Mono writing a room turn reads busy here too, with the room's name.
   useHubChatsVersion();
   const states = withRoomTurns(ownStates, roomTurnsByMono(), (chatId) => getChat(chatId)?.name);
-  // What each Mono has out, from the work it delegated (its workers live in its team, never here: Ash, 20 Oct).
+  // What each Mono has out, from the work it delegated (its workers live in its team, and nest under it here: r88).
   const delegationRows = useDelegationRows();
   const now = useClock();
   useStuckDismissalsVersion();
+  useSubChatFolds();
   useMonoTeamsVersion();
   useHubDataVersion();
   const hubSel = useHubSelection();
@@ -572,6 +573,21 @@ export function MonoRailSection({
                 onOpen={() => (team ? openTeam(team) : onOpen(mono.id))}
                 onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
+            ) : null}
+            {(childChats.get(mono.id) ?? []).length ? (
+              // r88 (Ash, B13): its workers' chats nest under it here too, folded under a count and opening by
+              // themselves when one asks, is stuck or failed (subChats.ts); one click opens a worker's chat.
+              <div data-mono-sub-chats={mono.id}>
+                <SubChatList
+                  foldKey={`rail:${mono.id}`}
+                  owner={mono.id}
+                  children={childChats.get(mono.id) ?? []}
+                  attention={attention}
+                  leadName={look.name}
+                  now={now}
+                  onOpen={(chat) => delegationActions()?.openChild(chat.ownerSession, chat.sessionId)}
+                />
+              </div>
             ) : null}
             </Fragment>
           );

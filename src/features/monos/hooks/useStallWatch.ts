@@ -15,7 +15,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type DelegationTracker } from "../model/delegations";
-import { providerStallNote, StallWatch } from "../model/workerStall";
+import { providerStallChatLine, providerStallNote, StallWatch } from "../model/workerStall";
 import { careFaults, type DatabaseHealth } from "../model/careFaults";
 import { HarnessCare, resumeStoppedNote, SAFE_FIXES } from "../model/harnessCare";
 import { addHarnessIssue, clearHarnessIssue } from "../../hub/model/harnessIssues";
@@ -268,8 +268,16 @@ export function useStallWatch(options: {
   watch.current ??= new StallWatch({
     hourly: (row) => repair.current!.stallFor(row),
     // r87 (s14 r86 run 3: a worker sat three minutes on "API Error: Server error" and nobody heard): its Lead is told.
-    providerStall: (row, stall) =>
-      void latest.current.queueWake?.(row.ownerSession, repairNoteMessage(row, providerStallNote(row, stall), Date.now())),
+    providerStall: (row, stall) => {
+      // r88: the Lead's chat says it at once, from the app; the Lead's own line follows when it has woken.
+      const line = providerStallChatLine(row, stall);
+      latest.current.setSessions?.((previous) =>
+        previous.map((chat) =>
+          chat.id === row.ownerSession && !chat.blocks.some((block) => block.id === line.id) ? { ...chat, blocks: [...chat.blocks, line] } : chat,
+        ),
+      );
+      void latest.current.queueWake?.(row.ownerSession, repairNoteMessage(row, providerStallNote(row, stall), Date.now()));
+    },
     tracker: () => latest.current.tracker(),
     session,
     openOwned,

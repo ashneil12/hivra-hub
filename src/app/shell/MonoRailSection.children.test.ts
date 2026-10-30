@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
-// The Monos rail shows people, not work (Ash, 20 Oct: "monos shouldn't really have sub chats"): a Mono's delegated work
-// lives in its team (a Lead's coding team, or its own: monoTeams.ts), so its row lists no sub-chats. One line under it
+// The Monos rail shows people first (Ash, 20 Oct): a Mono's delegated work lives in its team (a Lead's coding team, or its
+// own: monoTeams.ts). r88 (Ash, B13): its workers' chats also nest under its row, folded under a count and opening by
+// themselves when one asks, is stuck or failed. One line under it
 // says what it has out ("2 working · 1 stuck", with the red or amber mark) and opens its team; "Open team" sits on the
 // row (on hover) and in its menu.
 import { act, createElement } from "react";
@@ -114,7 +115,34 @@ const lead = () => {
 };
 const work = (id: string) => container.querySelector<HTMLElement>(`[data-mono-work="${id}"]`);
 
-it("lists no sub-chats under a Mono: one line says what it has out, the row's label too", () => {
+it("nests a Lead's worker chats under its row (r88, B13): folded, open on its own when one asks, one click opens it", () => {
+  const mono = lead();
+  setDelegationRows([
+    row("t-1", "w1", mono.id, "lead-chat", "running"),
+    row("t-2", "w2", mono.id, "lead-chat", "question"),
+  ]);
+  const actions = { openOwner: vi.fn(), openChild: vi.fn(), stopTree: vi.fn(), stopRow: vi.fn(), noteAnswer: vi.fn() };
+  setDelegationActions(actions as never);
+  mount();
+  const nest = container.querySelector<HTMLElement>(`[data-mono-sub-chats="${mono.id}"]`);
+  expect(nest).not.toBeNull();
+  // One asks its Lead, so the fold opened by itself and both workers show under the Lead.
+  const children = [...nest!.querySelectorAll<HTMLElement>("[data-sub-chat]")];
+  expect(children.map((c) => c.dataset.subChat).sort()).toEqual(["w1", "w2"]);
+  act(() => children.find((c) => c.dataset.subChat === "w2")!.click());
+  expect(actions.openChild).toHaveBeenCalledWith("lead-chat", "w2");
+});
+
+it("keeps a Lead's worker chats folded under a count while none needs a look", () => {
+  const mono = lead();
+  setDelegationRows([row("t-1", "w1", mono.id, "lead-chat", "running"), row("t-2", "w2", mono.id, "lead-chat", "running")]);
+  mount();
+  const nest = container.querySelector<HTMLElement>(`[data-mono-sub-chats="${mono.id}"]`);
+  expect(nest?.querySelector("[data-sub-chats-toggle]")?.textContent).toContain("2 sub-chats");
+  expect(nest?.querySelector("[data-sub-chat]")).toBeNull();
+});
+
+it("one line under a Mono says what it has out, the row's label too", () => {
   const mono = lead();
   const other = createMono();
   setDelegationRows([
@@ -123,7 +151,7 @@ it("lists no sub-chats under a Mono: one line says what it has out, the row's la
     row("t-3", "w3", mono.id, "lead-chat", "completed", { settledAt: Date.now() }),
   ]);
   mount();
-  // People, not work: no sub-chat lists, no fold.
+  // The old per-Mono children list stays gone; the nest is SubChatList's (data-mono-sub-chats).
   expect(container.querySelector("[data-mono-children]")).toBeNull();
   expect(container.querySelector("[data-mono-child]")).toBeNull();
   expect(container.querySelector("[data-mono-children-toggle]")).toBeNull();

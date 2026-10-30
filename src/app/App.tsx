@@ -45,7 +45,7 @@ import {
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
-import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince, signOffFrom } from "../features/monos/model/workerGate";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -12993,7 +12993,7 @@ function Workspace({
               const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               const run = checkout && projectId
-                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffSince(monoId, signOffFrom(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? [])) })
+                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []) })
                 : null;
               if (run && !run.ok) gateFailures += 1;
               const verdict = gateVerdict(run, gateFailures);

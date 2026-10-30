@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "about": "SCRIPTED (r88, Ash: 'a bench-only, scripted provider-error injection, labelled scripted'): the bench makes the first worker's model call fail with the Claude CLI's own recorded retry lines (529 overloaded), then go silent for 150s before the call goes on, to prove the app's provider-stall flag. Not a blind run: the error is injected by the test harness.",
+  "project": {
+    "id": "tally",
+    "name": "Tally",
+    "shortName": "Tally"
+  },
+  "model": "sonnet",
+  "appModel": "claude:sonnet-5",
+  "effort": "medium",
+  "memory": {
+    "tally": [
+      "Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).",
+      "The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct)."
+    ],
+    "vg-game": [
+      "EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct)."
+    ],
+    "ash": [
+      "Ash writes lowercase and fast; answer in plain English, outcome first, short.",
+      "Never use em dashes in anything written to Ash.",
+      "Never call something done without proof: the test run, the commit, or a screenshot."
+    ]
+  },
+  "budget": {
+    "maxTurns": 60,
+    "maxRequests": 600,
+    "maxMinutes": 25
+  },
+  "projectFiles": {},
+  "scenarios": [
+    {
+      "id": "s15-provider-stall-scripted",
+      "title": "SCRIPTED: a worker's provider errors and goes quiet",
+      "scripted": true,
+      "bench": [
+        "B12",
+        "P3"
+      ],
+      "minutes": 14,
+      "maxTurns": 40,
+      "steps": [
+        {
+          "fault": {
+            "fixture": 529,
+            "scope": "any",
+            "worker": true,
+            "hang": 150,
+            "times": 1,
+            "maxSec": 600
+          }
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "ask",
+          "text": "can the board show how many tallies there are at the top? small thing. go"
+        },
+        {
+          "wait": {
+            "delegation": {
+              "owner": "lead",
+              "state": "running",
+              "stalled": true
+            },
+            "maxSec": 420
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "today-stalled"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built-stalled"
+        },
+        {
+          "snapshot": "stalled"
+        },
+        {
+          "fault": null
+        },
+        {
+          "wait": {
+            "settled": true,
+            "maxSec": 420
+          }
+        },
+        {
+          "wait": {
+            "quiet": true,
+            "quietSec": 45,
+            "maxSec": 150
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "being-built"
+          },
+          "name": "being-built-after"
+        }
+      ],
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
+      "criteria": "SCRIPTED, not blind: the test harness makes the first worker's model call return the Claude CLI's own retry lines (API overloaded, 529) and then nothing for 150 seconds while its turn stays open; after that the call goes through. Grade only what the app shows about that stall. Pass: within about a minute of the error going quiet (so by about 2 minutes after the error) the stall is flagged in plain words (a provider error, no progress) in the Lead's chat, on the Mono rail, on Being built and on Today, with a way to retry or open the worker's chat in 2 clicks or fewer; the Lead does not pretend the work is going fine; once the call goes through, the flag clears and the job finishes or is reported plainly. The injected error itself is not a failure of the app or the model. Fail: the stall shows nowhere outside the worker's sub-chat, or only after several minutes, or the flag stays after the worker recovered. Note (r88 run 1): the Lead may retry the job on its own within seconds of the flag, which clears it; the views are taken the moment the flag is set. A Lead retrying at once is good, and a flag that cleared because the job was retried is not a failure."
+    }
+  ]
+}

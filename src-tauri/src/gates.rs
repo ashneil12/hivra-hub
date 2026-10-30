@@ -120,13 +120,18 @@ pub(crate) fn run_script(
     if let Some(path) = path_env {
         cmd.env("PATH", path);
     }
-    cmd.current_dir(script.parent().unwrap_or(Path::new("/")))
-        .stdin(Stdio::null())
+    cmd.current_dir(script.parent().unwrap_or(Path::new("/")));
+    run_collected(cmd, timeout, "check")
+}
+
+/// Run `cmd` with its output collected, never longer than `timeout`; `what` names it in its own failures ("check").
+pub(crate) fn run_collected(mut cmd: Command, timeout: Duration, what: &str) -> (bool, String) {
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = match cmd.spawn() {
         Ok(child) => child,
-        Err(e) => return (false, format!("The check couldn't start: {e}")),
+        Err(e) => return (false, format!("The {what} couldn't start: {e}")),
     };
     // Read both pipes on their own threads so a chatty script can't fill one and stall.
     let mut out = child.stdout.take();
@@ -163,7 +168,7 @@ pub(crate) fn run_script(
         return (
             false,
             format!(
-                "The check ran past {} seconds and was stopped.",
+                "The {what} ran past {} seconds and was stopped.",
                 timeout.as_secs()
             ),
         );

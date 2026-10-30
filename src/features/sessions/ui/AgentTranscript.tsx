@@ -3466,6 +3466,7 @@ const ActivityPhases = memo(function ActivityPhases({
           phase={phase}
           cwd={cwd}
           active={!done && index === phases.length - 1}
+          turnLive={!done}
           onApproval={onApproval}
           onOpenFile={onOpenFile}
           onOpenDiff={onOpenDiff}
@@ -3989,6 +3990,7 @@ function ActivityPhaseGroup({
   phase,
   cwd,
   active,
+  turnLive = active,
   onApproval,
   onOpenFile,
   onOpenDiff,
@@ -3996,6 +3998,8 @@ function ActivityPhaseGroup({
   phase: ActivityPhase;
   cwd?: string;
   active: boolean;
+  /** Its turn is still running (any group of it, not only the newest): r88, reasoning stays hidden until it settles. */
+  turnLive?: boolean;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -4030,13 +4034,20 @@ function ActivityPhaseGroup({
     for (const step of phase.steps) settled.current?.add(step.id);
   }, [phase.steps]);
   const turnFor = useStepQueue();
-  const title = activityPhaseTitle(phase, active);
+  const title =
+    turnLive && phase.headline?.role === "reasoning"
+      ? "Thinking"
+      : activityPhaseTitle(phase, active);
   const monoCodePhase = !!monoCodeWorkSummary(phase.steps, active);
   // Opening a group on purpose is also how you read the line that titled it,
   // whole. The auto-open while it runs is a live view, not a reading one, and
   // a one-line note the header already shows in full has nothing to add.
   const headline =
-    override === true && phase.headline && headlineHasMore(phase.headline)
+    override === true &&
+    phase.headline &&
+    headlineHasMore(phase.headline) &&
+    // r88: reasoning is read only once the turn has settled, never while it runs.
+    !(turnLive && phase.headline.role === "reasoning")
       ? phase.headline
       : undefined;
   const inert = phase.steps.length === 0 && !headlineHasMore(phase.headline);
@@ -4054,6 +4065,7 @@ function ActivityPhaseGroup({
             block={phase.steps[0]}
             cwd={cwd}
             live={active}
+            turnLive={turnLive}
             onApproval={onApproval}
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
@@ -4152,6 +4164,7 @@ function ActivityPhaseGroup({
                       block={block}
                       cwd={cwd}
                       live={active}
+                      turnLive={turnLive}
                       onApproval={onApproval}
                       onOpenFile={onOpenFile}
                       onOpenDiff={onOpenDiff}
@@ -4623,6 +4636,7 @@ function ActivityRow({
   block,
   cwd,
   live = false,
+  turnLive = live,
   onApproval,
   onOpenFile,
   onOpenDiff,
@@ -4630,6 +4644,8 @@ function ActivityRow({
   block: Block;
   cwd?: string;
   live?: boolean;
+  /** Its turn is still running: a thought stays "Thinking" (r88). */
+  turnLive?: boolean;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onOpenFile?: (path: string) => void;
   onOpenDiff?: (path: string) => void;
@@ -4641,6 +4657,7 @@ function ActivityRow({
         cwd={cwd}
         expandable
         bare
+        live={turnLive}
         onOpenFile={onOpenFile}
       />
     );
@@ -4779,16 +4796,20 @@ function ActivityThinkingRow({
   cwd,
   expandable = false,
   bare = false,
+  live = false,
   onOpenFile,
 }: {
   block: Block;
   cwd?: string;
   expandable?: boolean;
   bare?: boolean;
+  /** The turn is still running: r88 (Ash), its reasoning stays hidden behind "Thinking" until it settles. */
+  live?: boolean;
   onOpenFile?: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const text = proseSummary(block.text) || "Thinking";
+  const hidden = live || !!block.streaming;
+  const text = (hidden ? "" : proseSummary(block.text)) || "Thinking";
   // In a group the rail is the bullet, so there is nothing to breathe while
   // reasoning streams in — the line itself does.
   const pulse = block.streaming ? "zen-thinking-pulse" : "";
@@ -4808,10 +4829,10 @@ function ActivityThinkingRow({
     </span>
   );
 
-  if (!expandable) {
+  if (!expandable || hidden) {
     return (
       <div
-        aria-label={`Thinking: ${text}`}
+        aria-label={hidden ? "Thinking" : `Thinking: ${text}`}
         className="flex min-w-0 items-center gap-1.5 py-1"
       >
         {icon}

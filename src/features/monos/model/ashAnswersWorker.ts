@@ -38,9 +38,21 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
  * them 30 days"): the jobs Ash answered in their worker's chat, with his words, for this window. A redo of such a job, or
  * a new one like it while it is still open, is turned back once with his words (agentAppTasks.ts delegate).
  */
-const answered = new Map<string, { words: string; refused: Set<string> }>();
-export function noteAshAnswer(rowId: string, words: string): void {
-  answered.set(rowId, { words: short(words, 400), refused: new Set() });
+const answered = new Map<string, { words: string; refused: Set<string>; at: number }>();
+export function noteAshAnswer(rowId: string, words: string, at = Date.now()): void {
+  answered.set(rowId, { words: short(words, 400), refused: new Set(), at });
+}
+
+/**
+ * r88 (Ash): his words typed straight into a worker's chat sign the routes check off like a card answer does. True when
+ * he answered one of these jobs in its worker's chat at or after `since`.
+ */
+export function ashAnsweredWorkerSince(rowIds: Iterable<string>, since: number): boolean {
+  for (const id of rowIds) {
+    const record = answered.get(id);
+    if (record && record.at >= since) return true;
+  }
+  return false;
 }
 export function forgetAshAnswers(): void {
   answered.clear();

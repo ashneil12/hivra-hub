@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import type { Block } from "../../sessions/model/session";
 import type { Delegation } from "./delegations";
-import { judgeStall, lookAt, providerErrorAtEnd, providerStallNote, PROVIDER_STALL_PREFIX, StallWatch, type Stall } from "./workerStall";
+import { judgeStall, lookAt, providerErrorAtEnd, providerStallChatLine, providerStallNote, PROVIDER_STALL_PREFIX, StallWatch, type Stall } from "./workerStall";
 
 const b = (role: Block["role"], text: string, extra: Partial<Block> = {}) => ({ id: `${role}-${text}`, role, text, ...extra }) as Block;
 const turn: Block[] = [
@@ -55,5 +55,10 @@ describe("a worker stuck after a provider error", () => {
     const note = providerStallNote(row, told[0]);
     expect(note).toContain('delegate_task redoes "d1"');
     expect(note).toContain("Today and Being built");
+    // r88: the Lead's chat says it from the app at once, once per stall.
+    const line = providerStallChatLine(row, told[0]);
+    expect(line).toMatchObject({ role: "system", id: `provider-stall-d1-${told[0].since}` });
+    expect(line.text).toContain("is stalled: its provider errored");
+    expect(line.text).toContain("Today, Being built and the Monos rail");
   });
 });

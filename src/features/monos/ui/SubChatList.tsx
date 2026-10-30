@@ -1,8 +1,8 @@
 // The chats a chat started, folded under it (Ash, 20 Oct: "if need be it can be setup sort of like claude code with sub
 // chats if needed but usually hidden"): a count that opens them, by itself when one is stuck, asking or failed
-// (subChats.ts), and one row per chat with its state's mark. Sub-chats only ever live in a team's Sessions list (a
-// project's coding team or a Mono's own team: hub/model/codingTeamList.ts, monoTeams.ts), never in the Monos rail,
-// which shows people, not work (Ash, 20 Oct).
+// (subChats.ts), and one row per chat with its state's mark. Sub-chats live in a team's Sessions list (a project's
+// coding team or a Mono's own team: hub/model/codingTeamList.ts, monoTeams.ts) and, since r88 (Ash, B13), nested under
+// their Lead in the Monos rail too (MonoRailSection.tsx, its own fold).
 import { useState } from "react";
 import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader, Trash2 } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
@@ -143,6 +143,12 @@ export function SubChatList({
               >
                 <ChildChatMark state={chat.state} stalled={stalled} />
                 <span className="min-w-0 truncate">{chat.title}</span>
+                {/* r88 (s15 scripted run 2: the rail showed the sub-chat with no word that it was stalled); grey, as its mark (r27b). */}
+                {stalled ? (
+                  <span data-sub-chat-stalled className="shrink-0 text-[11px] text-content/45">
+                    stalled
+                  </span>
+                ) : null}
                 {ran ? (
                   <span data-sub-chat-ran className="ml-auto shrink-0 text-[11px] tabular-nums text-content/35">
                     {ran}

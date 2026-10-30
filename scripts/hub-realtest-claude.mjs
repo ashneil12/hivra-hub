@@ -13,7 +13,8 @@
 //   - plays a recorded outage on demand: while REALTEST_STATE/fault.json says so ({fixture: 529|402|429, scope: "any" |
 //     "new" (only chats started after it was set), times: n}), the next prompt is not sent to the model and the CLI's
 //     own recorded output (fixtures/claude-cli-2.1.302) comes back instead, with this session's id: what Claude Code
-//     prints when the model is down or the account is out of credit;
+//     prints when the model is down or the account is out of credit; r88: with `worker: true` only a worker's chat, and
+//     with `hang: n` (SCRIPTED provider stall) only the retry lines, then n seconds of nothing before the prompt goes on;
 //   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
 //   - on the Grok bridge (REALTEST_GROK_BRIDGE=1, `--grok-sub`) holds every call, helpers too, to REALTEST_MODEL;
 //   - on Haiku test workers (REALTEST_HAIKU_TEST=1, `--agents haiku-test`) runs every call on Haiku with Ash's Anthropic
@@ -329,6 +330,8 @@ function main() {
       const spec = JSON.parse(fs.readFileSync(path.join(STATE, "fault.json"), "utf8"));
       if (spec.until && Date.now() > spec.until) return null;
       if (spec.cwd && !process.cwd().startsWith(spec.cwd)) return null;
+      // r88: only a worker's chat (it runs in its copy under <project>-worktrees/).
+      if (spec.worker && !/-worktrees\//.test(`${process.cwd()}/`)) return null;
       if (spec.scope === "new" && startedAt < (spec.set ?? 0)) return null;
       if (spec.times) {
         const hits = fs.existsSync(path.join(STATE, "fault-hits.ndjson"))
@@ -345,10 +348,12 @@ function main() {
   const writeOut = (line) => process.stdout.write(`${line}\n`);
   const playOutage = (spec) => {
     const now = new Date().toISOString();
-    fs.appendFileSync(path.join(STATE, "fault-hits.ndjson"), `${JSON.stringify({ t: Date.now(), pid: process.pid, set: spec.set ?? 0, fixture: spec.fixture ?? 529, session })}\n`);
+    fs.appendFileSync(path.join(STATE, "fault-hits.ndjson"), `${JSON.stringify({ t: Date.now(), pid: process.pid, set: spec.set ?? 0, fixture: spec.fixture ?? 529, session, ...(spec.hang ? { hang: spec.hang } : {}) })}\n`);
     const file = path.join(FIXTURES, FIXTURE_FILES[spec.fixture ?? 529] ?? FIXTURE_FILES[529]);
     for (const raw of fs.readFileSync(file, "utf8").split("\n").filter(Boolean)) {
       const message = JSON.parse(raw);
+      // r88 (SCRIPTED provider stall): only the CLI's retry lines, then nothing: the turn stays open, as when a provider hangs.
+      if (spec.hang && !(message.type === "system" && message.subtype === "api_retry")) continue;
       if (session) message.session_id = session;
       if (message.timestamp) message.timestamp = now;
       const line = JSON.stringify(message);
@@ -391,8 +396,14 @@ function main() {
         }
         const spec = fault();
         if (spec) {
-          usage({ kind: "fault", session, fixture: spec.fixture ?? 529 });
+          usage({ kind: "fault", session, fixture: spec.fixture ?? 529, ...(spec.hang ? { hang: spec.hang } : {}) });
           playOutage(spec);
+          // r88: a scripted hang: after `hang` seconds of silence the prompt goes on to the model, as when it recovers.
+          if (spec.hang)
+            setTimeout(() => {
+              usage({ kind: "turn", session, model, cwd: process.cwd() });
+              child.stdin.write(`${line}\n`);
+            }, spec.hang * 1000);
           return;
         }
         usage({ kind: "turn", session, model, cwd: process.cwd() });

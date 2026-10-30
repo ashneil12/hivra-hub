@@ -18,7 +18,7 @@ import { answeredReport, currentLeadBrief, followStep } from "../model/followedB
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
-import { projectTestNote } from "../model/projectTestRun";
+import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -186,6 +186,14 @@ export function useFollowedBriefs(options: {
           if (tests) {
             noted.current.add(tests.id);
             note(chat.id, tests);
+          }
+          // r88 (Ash, step 4): the Lead rolled up without running the tests in the project: the app runs them itself.
+          const due = hubTestRunDue(chat, known, noted.current);
+          if (due) {
+            noted.current.add(due.key);
+            void runProjectTests(due.project).then((run) => {
+              if (run) latest.current.note?.(chat.id, hubTestNote(due.key, run, chat));
+            });
           }
           if (!chat.busy) continue;
           const block = statusReply(chat, known, noted.current, notesSince.current, now);

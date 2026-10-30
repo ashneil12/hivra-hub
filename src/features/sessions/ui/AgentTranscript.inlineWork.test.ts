@@ -1078,3 +1078,31 @@ it("does not repeat a thought's first paragraph above it once opened", () => {
   );
   expect(container.textContent).toContain("Then run the tests.");
 });
+
+// r88 (Ash): c02 showed "The user is checking in to see how things are going…" in the coding team while the Lead
+// worked. While a turn runs its reasoning stays behind the "Thinking" line; it can be read once the turn settles.
+it("keeps a running turn's reasoning behind Thinking, and shows it once settled", () => {
+  const blocks: Block[] = [
+    tool("before"),
+    { id: "thought", role: "reasoning", text: "The user is checking in to see how things are going." },
+    tool("after", "running"),
+  ];
+  act(() => root.render(createElement(MonoActivityTrail, { blocks, live: true })));
+  expect(container.textContent).not.toContain("The user is checking in");
+  expect(container.textContent).toContain("Thinking");
+  expect(container.querySelector('[aria-label^="Show thinking"]')).toBeNull();
+
+  act(() => root.render(createElement(MonoActivityTrail, { blocks: [blocks[0], blocks[1], tool("after")], live: false })));
+  expect(container.querySelector('[aria-label="Show thinking: The user is checking in to see how things are going."]')).not.toBeNull();
+});
+
+it("never titles a streaming thought with its words", () => {
+  act(() =>
+    root.render(
+      createElement(MonoActivityTrail, {
+        blocks: [tool("before"), { id: "t", role: "reasoning", text: "Weighing the options.", streaming: true }],
+      }),
+    ),
+  );
+  expect(container.textContent).not.toContain("Weighing the options.");
+});
