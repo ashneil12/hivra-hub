@@ -42,6 +42,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
+import { gateAsk, gateAskNote, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -12885,6 +12886,10 @@ function Workspace({
           let asked = false;
           // r82: the report the re-ask was about; the re-ask's turn sends back only the self-review.
           let firstReport: string | undefined;
+          // r82: the project's routes check (gates.rs) on the worker's copy when it reports done; two failed runs and
+          // its Lead hears it failed, with the check's words.
+          let gateFailures = 0;
+          const workerStarted = Date.now();
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
             settled = true;
@@ -12926,6 +12931,29 @@ function Workspace({
               });
               if (!accepted) finish(result);
               return;
+            }
+            if (gateDue(result)) {
+              const checkout = sessionsRef.current.find((session) => session.id === sessionId)?.cwd;
+              const projectId = delegation?.project ?? hubProjectIdFor(project);
+              const run = checkout && projectId
+                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffSince(monoId, workerStarted) })
+                : null;
+              if (run && !run.ok) gateFailures += 1;
+              const verdict = gateVerdict(run, gateFailures);
+              if (verdict === "resend" && run) {
+                // The worker's next report is a whole one again, not a self-review joined to this one.
+                firstReport = undefined;
+                const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
+                  monoNote: gateAskNote(run),
+                  onSettled: (next) => void turnEnded(next, true),
+                });
+                if (!accepted) finish(gateFailedResult(result, run));
+                return;
+              }
+              if (verdict === "deliver-failed" && run) {
+                finish(gateFailedResult(result, run));
+                return;
+              }
             }
             finish(result);
           };
