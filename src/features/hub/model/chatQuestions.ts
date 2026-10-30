@@ -30,6 +30,8 @@ export type ChatQuestion = {
   more: number;
   /** The agent's recommended answer, plain words. Absent when it didn't recommend one (then only Open and a reply). */
   pick?: string;
+  /** r82 (Critiquito): the short reason for the pick ("You called them junk…"), shown after it; never part of the reply. */
+  why?: string;
   /** Touches one of Ash's red lines (said by the agent, or the words do): Autopilot never answers it. */
   redLine: boolean;
   /** The "(sign in)" style flag on a "Needs Ash" line, as written, when it named one other than a red line. */
@@ -357,11 +359,14 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
  * r81 (Critiquito): who is asking, instead of "it": "the Tally Lead", "the health worker". A name that is already a
  * person's (a Mono called Pip) stays bare; a chat's title becomes "the <title> worker".
  */
-export function whoAsks(input: { monoName?: string; title?: string }): string {
+export function whoAsks(input: { monoName?: string; title?: string; orchestrator?: boolean }): string {
   const name = input.monoName?.trim();
   if (name) return /\b(lead|worker|team|chat|bot)$/i.test(name) ? `the ${name}` : name;
-  const title = input.title?.trim().replace(/\s+worker$/i, "");
+  // r82 (c02): a stored title can carry its harness ("claude · Tally health…"); Ash never sees that part.
+  const title = input.title?.trim().replace(/^[a-z][\w-]* · /i, "").replace(/\s+(worker|chat)$/i, "");
   if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
+  // r82 (c02): a coding-team chat that sends out workers is not one of them: "the Tally health chat".
+  if (input.orchestrator) return `the ${title} chat`;
   const plain = /^[A-Z][a-z]/.test(title) ? title[0].toLowerCase() + title.slice(1) : title;
   return `the ${plain} worker`;
 }
@@ -414,7 +419,10 @@ function safeCommand(command: string): string {
  * question may be half written).
  */
 export function chatQuestion(chat: ChatLike): ChatQuestion | null {
-  if (chat.pendingQuestion) return fromPrompt(chat.pendingQuestion);
+  if (chat.pendingQuestion) {
+    const asked = fromPrompt(chat.pendingQuestion);
+    return asked?.pick ? withWhy(asked, chat.pendingQuestion, parseNeedsAsh(lastTurnText(chat.blocks))?.pick) : asked;
+  }
   // A held tool call waits on Ash even mid-turn: the turn can't go on until he allows or denies it.
   // r80: only while the turn runs; a card left from a turn that is over waits on nobody.
   const permission = chat.busy === false ? null : permissionQuestion(chat.blocks);
@@ -445,6 +453,21 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
         ...(marker.provide ? { provide: marker.provide } : {}),
       }
     : null;
+}
+
+/**
+ * r82 (Critiquito: "Suggests: Gone for good" lost r80's "You called them junk…"): a live question's pick keeps its
+ * reason, from the "My pick:" line the agent wrote with it when that line names the same pick, else from the
+ * recommended option's own description.
+ */
+function withWhy(q: ChatQuestion, prompt: UserQuestionPrompt, markerPick: string | undefined): ChatQuestion {
+  const pick = q.pick!;
+  const said = markerPick?.trim();
+  const fromMarker = said && said.toLowerCase().startsWith(pick.toLowerCase()) ? said.slice(pick.length) : undefined;
+  const option = prompt.questions.length === 1 ? recommendedOption(prompt.questions[0]!) : undefined;
+  const fromOption = option?.description?.replace(/^\s*\(?recommended\)?\s*[:.,\u2014-]?\s*/i, "");
+  const why = oneLine((fromMarker ?? fromOption ?? "").replace(/^[\s.,:;\u2014-]+/, "")).trim();
+  return why ? { ...q, why } : q;
 }
 
 function markerOptions(question: string, turnText: string): { options?: string[] } {

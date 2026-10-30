@@ -25,3 +25,17 @@ it("never names a tool, and says who is asking", async () => {
   expect(askedBy("Allow it to look at App.tsx?", whoAsks({ monoName: "Pip" }))).toBe("Allow Pip to look at App.tsx?");
   expect(askedBy("Allow it to run the tests?", whoAsks({ title: "mc-89dad719" }))).toBe("Allow it to run the tests?");
 });
+
+it("r82 (c02): no harness in the name, and a coding-team chat is a chat, not a worker", async () => {
+  const { askedBy, whoAsks } = await import("./chatQuestions");
+  expect(whoAsks({ title: "claude · Health" })).toBe("the health worker");
+  expect(askedBy("Allow it to look at App.tsx?", whoAsks({ title: "claude · Tally health, bumps, and totals", orchestrator: true }))).toBe(
+    "Allow the Tally health, bumps, and totals chat to look at App.tsx?",
+  );
+});
+
+it("r82 (c02 #2): a coding-team chat is the chat even before its workers are in its blocks", async () => {
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("./waitingChats.ts", import.meta.url), "utf8");
+  expect(src).toMatch(/orchestrator: isCodingTeamChat\(chat\.id\) \|\|/);
+});

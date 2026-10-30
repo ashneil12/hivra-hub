@@ -144,6 +144,8 @@ export function parseArgs(argv) {
       .filter(Boolean),
     build: !argv.includes("--no-build"),
     keep: argv.includes("--keep"),
+    // r82: the scenario's check is installed in the app (gates.rs runs it when a worker reports done); the bench's own loop is off.
+    appGate: argv.includes("--app-gate"),
     grade: !argv.includes("--no-grade"),
     gradeOnly: value("--grade-only", null),
     slot: value("--slot", `${path.basename(ROOT)}-realtest`),
@@ -552,6 +554,10 @@ export async function runBench(options, hooks = {}) {
     stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
     // Today is about this run: the stub's invented Needs go; the test project is listed with its folder.
     stub.state.needs.length = 0;
+    // r82: Today's "Since …" is this run's start in the Mac's own clock (Europe/London for Ash), not the stub's
+    // invented six hours ago, which read as a wrong time zone on every Today shot.
+    const runStart = Date.now();
+    Object.assign(stub.state.activity, { lastActive: runStart, since: runStart, sessionStart: runStart });
     stub.state.since.overall = `${spec.project.name} is the test project for this run.`;
     stub.addProject({ id: spec.project.id, name: spec.project.name, shortName: spec.project.shortName ?? spec.project.name, iconShape: "chart", folder: project });
     for (const copy of copies) {
@@ -798,7 +804,7 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump };
+    const ctx = { runStarted: started, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");

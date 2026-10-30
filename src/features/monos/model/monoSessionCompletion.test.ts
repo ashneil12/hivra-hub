@@ -321,6 +321,7 @@ describe("Mono session completion notifications", () => {
     });
     expect(message.text).toContain('"truncated":true');
     expect(message.text).toContain("app sessions.read");
-    expect(message.text.length).toBeLessThan(13_000);
+    // r82: +100 for the Lead's "read a worker's copy, no shell there" line; the result itself is still cut (truncated).
+    expect(message.text.length).toBeLessThan(13_100);
   });
 });

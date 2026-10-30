@@ -1,0 +1,67 @@
+// r82: the routes check, run by the app (gates.rs) when a delegated worker reports done, instead of by the bench. Its
+// words go back to the worker; a worker that still fails it after two tries reaches its Lead as failed, with them.
+import { invoke } from "@tauri-apps/api/core";
+import type { Session } from "../../sessions/model/session";
+import { gateLog } from "../../hub/model/waitingChats";
+import { waitsOnAshCall, type MonoSessionCompletionResult } from "./monoSessionCompletion";
+
+export type GateRun = { name: string; ok: boolean; output: string };
+export type GateRunner = (input: { projectId: string; checkout: string; signedOff: boolean }) => Promise<GateRun | null>;
+
+/** How many failed runs a worker gets before its Lead hears it failed. */
+export const GATE_TRIES = 2;
+
+export type GateVerdict = "deliver" | "resend" | "deliver-failed";
+
+/** What happens to a finished worker's report after its check ran (`failures`: failed runs so far, this one included). */
+export function gateVerdict(run: GateRun | null, failures: number): GateVerdict {
+  if (!run || run.ok) return "deliver";
+  return failures < GATE_TRIES ? "resend" : "deliver-failed";
+}
+
+/**
+ * A report the check runs on: a delegated worker's finished one with its self-review. A worker that stopped on a choice
+ * only Ash can make goes to its Lead as it is: the check would only say again what it is waiting on.
+ */
+export function gateDue(result: MonoSessionCompletionResult): boolean {
+  if (result.status !== "completed" || !result.reviewRequired || result.reviewProblem) return false;
+  return !(waitsOnAshCall(result.result) || (!!result.review && waitsOnAshCall(result.review.unsure)));
+}
+
+/** The words the worker gets back, as a MonoCode note, not as Ash. */
+export function gateAsk(run: GateRun): string {
+  return `[MonoCode check] ${run.name} failed on your copy. It runs from outside your copy, so it can't be edited to pass; fix the work, or stop and ask your Lead if it needs a decision that isn't yours. Then report done again, ending with your self-review as before.\n\n${run.output || "(it said nothing)"}`;
+}
+
+export function gateAskNote(run: GateRun): { kind: "message"; from: string; line: string } {
+  return { kind: "message", from: "MonoCode", line: `${run.name} failed; its words went back to the worker` };
+}
+
+/** The report its Lead gets when the check still fails after the worker's tries. */
+export function gateFailedResult(result: MonoSessionCompletionResult, run: GateRun): MonoSessionCompletionResult {
+  const said = run.output || "it said nothing";
+  return { ...result, status: "failed", error: `${run.name} still failed after ${GATE_TRIES} tries: ${said}` };
+}
+
+/** Ash signs the check's items off by answering: an answer of his in the Lead's chat since the worker started. */
+export function signedOffSince(ownerSession: string, since: number, log = gateLog()): boolean {
+  return log.some((r) => r.sessionId === ownerSession && !!r.answer && r.answer.at >= since);
+}
+
+/**
+ * The worker's own copy: an isolated worker keeps the project as its `cwd` and its checkout in `worktreeCwd` (s14 r82 #2:
+ * the check was handed the project folder, refused it, and never ran).
+ */
+export function gateCheckout(session: Pick<Session, "cwd" | "worktreeCwd"> | undefined): string | undefined {
+  return session?.worktreeCwd || session?.cwd || undefined;
+}
+
+export const runWorkerGate: GateRunner = async ({ projectId, checkout, signedOff }) => {
+  try {
+    return await invoke<GateRun | null>("run_worker_gate", { projectId, checkout, signedOff });
+  } catch (error) {
+    // A check that can't run (bad settings, not a worker's copy) never blocks the report: it says so.
+    console.warn("worker check couldn't run", error);
+    return null;
+  }
+};

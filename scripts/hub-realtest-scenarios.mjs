@@ -199,7 +199,14 @@ export async function runScenario(scenario, ctx) {
   // decision (in r79 a worker added its own route to the repo's signed-off list). Its words go back to that worker's
   // chat when they change. Ash signs a route off by answering (`signedOffAfter` labels), never the worker.
   const gate = scenario.gate;
-  const gateCopy = gate && ctx.project ? path.join(path.dirname(path.dirname(String(ctx.project))), "bench-gates", path.basename(gate.script)) : null;
+  // r82 (--app-gate): the app runs the check, not the bench. Its settings and a copy of the script go into the test
+  // copy's app data (never the project), and the bench loop below stays off. Without the flag, any left there goes.
+  const appGate = gate && ctx.dataDir && ctx.project ? appGateFiles(gate, ctx.dataDir, path.basename(String(ctx.project))) : null;
+  if (appGate && ctx.appGate) {
+    installAppGate(gate, appGate);
+    log(`  ${gate.name ?? "check"} installed in the app (${appGate.config}); the bench won't run it`);
+  } else if (appGate) fs.rmSync(appGate.config, { force: true });
+  const gateCopy = gate && ctx.project && !ctx.appGate ? path.join(path.dirname(path.dirname(String(ctx.project))), "bench-gates", path.basename(gate.script)) : null;
   if (gateCopy) {
     fs.mkdirSync(path.dirname(gateCopy), { recursive: true });
     fs.copyFileSync(path.resolve(gate.script), gateCopy);
@@ -420,6 +427,20 @@ export async function runScenario(scenario, ctx) {
 }
 
 /** The workers of the rows: the port each brief gave it, whether those ports are all different, and their checkouts. */
+/** Where the app looks for a project's check (src-tauri/src/gates.rs): <app data>/gates/<project id>.json and its script beside it. */
+export function appGateFiles(gate, dataDir, projectId) {
+  const dir = path.join(dataDir, "gates");
+  return { dir, config: path.join(dir, `${projectId}.json`), script: path.join(dir, path.basename(gate.script)) };
+}
+
+export function installAppGate(gate, files) {
+  fs.mkdirSync(files.dir, { recursive: true });
+  fs.copyFileSync(path.resolve(gate.script), files.script);
+  const config = { name: gate.name ?? "Check", script: path.basename(gate.script), signOff: gate.signOff ?? [] };
+  fs.writeFileSync(files.config, `${JSON.stringify(config, null, 2)}\n`);
+  return config;
+}
+
 export function workerSpread(rows, sessions) {
   const workers = rows.filter((row) => !row.follow && String(row.brief ?? "").startsWith("[MonoCode brief from "));
   const ports = workers.map((row) => {

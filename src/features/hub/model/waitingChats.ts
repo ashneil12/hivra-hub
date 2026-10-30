@@ -10,6 +10,7 @@
 //   prunes any whose saved conversation is gone (`pruneWaitingChats`), since `noteChats` only sees open chats.
 // - Hooks for the parallel packages: Autopilot reads the list and calls `takePick(id, { by: "autopilot" })` (red lines
 //   refused); H4 routes a worker's question to the Lead that delegated it with `setWorkerQuestionRouter`.
+import { isCodingTeamChat } from "./codingTeam";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { findMono, monoForSession } from "../../monos/model/mono";
@@ -76,7 +77,7 @@ export type WaitingChatsHost = {
 export type WorkerQuestionRouter = (chat: WaitingEntry) => boolean;
 
 type ChatInput = Pick<Session, "id" | "cwd" | "title" | "harness" | "busy" | "pendingQuestion" | "inboxAsk" | "ephemeral" | "orchestrationLeadId"> & {
-  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool">>)[];
+  blocks: readonly (Pick<Block, "role" | "text" | "internal" | "monoSessionCompletion" | "startedAt"> & Partial<Pick<Block, "approval" | "tool" | "monoSpawnedSessions">>)[];
 };
 
 const KEY = "monocode:hub-waiting-chats";
@@ -187,7 +188,7 @@ function recordAnswer(sessionId: string, question: string, answer: NonNullable<G
 }
 
 const sameQuestion = (a: WaitingEntry, b: ChatQuestion) =>
-  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.more === b.more && a.flag === b.flag &&
+  a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.why === b.why && a.more === b.more && a.flag === b.flag &&
   (a.options ?? []).join("\u0000") === (b.options ?? []).join("\u0000");
 
 /** The time of Ash's last real message in the chat, if the blocks say. */
@@ -249,7 +250,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     const mono = monoForSession(chat.id);
     const q =
       read?.source === "permission"
-        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title })) }
+        ? { ...read, question: askedBy(read.question, whoAsks({ monoName: mono?.name, title: chat.title, orchestrator: isCodingTeamChat(chat.id) || chat.blocks.some((b) => !!b.monoSpawnedSessions?.length) })) }
         : read?.source === "marker" && answeredThisTurn(chat, read.question)
           ? null
           : read;

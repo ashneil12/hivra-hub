@@ -42,6 +42,7 @@ import {
   type MonoSessionCompletionResult,
 } from "../features/monos/model/monoSessionCompletion";
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffSince } from "../features/monos/model/workerGate";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -741,6 +742,7 @@ import {
 import { syncDockBadge } from "../features/notifications/model/dockBadge";
 import { liveAgentsFromSessions } from "../features/sessions/model/liveAgents";
 import { hiddenApprovalNotices } from "../features/notifications/model/approvalToast";
+import { hubToastNotices, hubToastView } from "../features/hub/model/hubApprovalToasts";
 import { useSessionReminders } from "../features/notifications/hooks/useSessionReminders";
 import { ReminderNotices } from "../features/sessions/ui/ReminderNotices";
 import { useUnseenFinishedSessions } from "../features/sessions/hooks/useUnseenFinishedSessions";
@@ -12882,6 +12884,12 @@ function Workspace({
           const reviewRequired = !!delegation;
           let settled = false;
           let asked = false;
+          // r82: the report the re-ask was about; the re-ask's turn sends back only the self-review.
+          let firstReport: string | undefined;
+          // r82: the project's routes check (gates.rs) on the worker's copy when it reports done; two failed runs and
+          // its Lead hears it failed, with the check's words.
+          let gateFailures = 0;
+          const workerStarted = Date.now();
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
             settled = true;
@@ -12902,6 +12910,7 @@ function Workspace({
               ),
               // The re-ask's answer is the session's latest turn, not the block the request named.
               ...(latestTurn ? { latestTurn: true } : {}),
+              ...(latestTurn && firstReport ? { earlierReport: firstReport } : {}),
               ...(reviewRequired ? { reviewRequired: true } : {}),
             });
             // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
@@ -12912,6 +12921,7 @@ function Workspace({
             }
             if (result.status === "completed" && result.reviewProblem && !asked) {
               asked = true;
+              firstReport = result.result;
               // Sending it now carries the worker on into the second turn; `onSettled` keeps that turn's own report
               // on this same row, with the review it is asked for.
               const accepted = await submitSessionRef.current(sessionId, reviewAsk(result.reviewProblem), [], {
@@ -12921,6 +12931,29 @@ function Workspace({
               });
               if (!accepted) finish(result);
               return;
+            }
+            if (gateDue(result)) {
+              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
+              const projectId = delegation?.project ?? hubProjectIdFor(project);
+              const run = checkout && projectId
+                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffSince(monoId, workerStarted) })
+                : null;
+              if (run && !run.ok) gateFailures += 1;
+              const verdict = gateVerdict(run, gateFailures);
+              if (verdict === "resend" && run) {
+                // The worker's next report is a whole one again, not a self-review joined to this one.
+                firstReport = undefined;
+                const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
+                  monoNote: gateAskNote(run),
+                  onSettled: (next) => void turnEnded(next, true),
+                });
+                if (!accepted) finish(gateFailedResult(result, run));
+                return;
+              }
+              if (verdict === "deliver-failed" && run) {
+                finish(gateFailedResult(result, run));
+                return;
+              }
             }
             finish(result);
           };
@@ -16938,7 +16971,8 @@ function Workspace({
             insetChip={insetLayout}
           />
           <ApprovalToasts
-            notices={hiddenApprovalToasts}
+            notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
+            hubView={IS_HUB_BUNDLE ? hubToastView : undefined}
             topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
             onFocusSession={onOpenApprovalSession}
             onApproval={onApproval}
