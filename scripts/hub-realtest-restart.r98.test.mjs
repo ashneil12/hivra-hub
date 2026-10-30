@@ -40,3 +40,26 @@ test("a refused quit reopens nothing", async () => {
   assert.match(result.why, /unknown op quit/);
   assert.equal(launched, false);
 });
+
+test("while chats still run, Ash waits and asks again; it never quits into a dialog", async () => {
+  const answers = [{ ok: false, busy: 2, error: "2 chat(s) still running" }, { ok: false, busy: 1, error: "1 chat(s) still running" }, { ok: true }];
+  let up = true;
+  const asked = [];
+  const act = async (op) => {
+    asked.push(op);
+    const answer = answers.shift();
+    if (answer.ok) up = false;
+    return answer;
+  };
+  const result = await quitThenReopen({ act, pid: 11, alive: () => up, until, launch: async () => ({ pid: 22 }), waitMs: 100, idleMs: 1000, everyMs: 5 });
+  assert.deepEqual(asked, ["quit", "quit", "quit"]);
+  assert.equal(result.ok, true);
+});
+
+test("still busy when Ash's wait runs out: no quit, nothing reopened", async () => {
+  let launched = false;
+  const result = await quitThenReopen({ act: async () => ({ ok: false, busy: 1, error: "1 chat(s) still running" }), pid: 11, alive: () => true, until, launch: async () => ((launched = true), { pid: 22 }), idleMs: 20, everyMs: 5 });
+  assert.equal(result.ok, false);
+  assert.match(result.why, /still running/);
+  assert.equal(launched, false);
+});

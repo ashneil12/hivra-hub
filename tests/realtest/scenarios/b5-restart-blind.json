@@ -24,9 +24,9 @@
     ]
   },
   "budget": {
-    "maxTurns": 90,
-    "maxRequests": 900,
-    "maxMinutes": 45
+    "maxTurns": 140,
+    "maxRequests": 2500,
+    "maxMinutes": 85
   },
   "scenarios": [
     {
@@ -35,8 +35,8 @@
       "bench": [
         "B5"
       ],
-      "minutes": 40,
-      "maxTurns": 90,
+      "minutes": 80,
+      "maxTurns": 140,
       "allowPromptly": [
         "dump-1",
         "dump-2",
@@ -98,7 +98,7 @@
                 "quietSec": 90
               }
             ],
-            "maxSec": 900
+            "maxSec": 1500
           }
         },
         {
@@ -106,7 +106,8 @@
         },
         {
           "restart": {
-            "settleSec": 20
+            "settleSec": 20,
+            "waitIdleSec": 900
           }
         },
         {

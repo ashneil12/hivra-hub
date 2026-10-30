@@ -607,10 +607,10 @@ export async function runBench(options, hooks = {}) {
     };
     const first = await launchApp();
     if (!first.pid) throw new Error(first.why);
-    const restart = async () => {
+    const restart = async ({ idleMs = 0 } = {}) => {
       const { quitThenReopen } = await import("./hub-realtest-scenarios.mjs");
       const front = () => spawnSync("lsappinfo", ["info", "-only", "pid", spawnSync("lsappinfo", ["front"], { encoding: "utf8" }).stdout.trim()], { encoding: "utf8" }).stdout;
-      const result = await quitThenReopen({ act, pid: app.pid, alive, until, launch: launchApp });
+      const result = await quitThenReopen({ act, pid: app.pid, alive, until, launch: launchApp, idleMs });
       // Read-only check that the reopened copy didn't take the front (it is an accessory app; this proves it).
       if (result.ok) result.front = new RegExp(`=\\s*${result.pid}\\b`).test(front()) ? "the reopened copy is in front" : "not in front";
       return result;
