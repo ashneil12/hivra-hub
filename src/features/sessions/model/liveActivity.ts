@@ -6,7 +6,8 @@ import { isReadTool } from "../../../integrations/harness/core/preview";
 import { displayPath } from "../../../shared/lib/paths";
 import { delegateToolName } from "./monocodeToolCall";
 import type { Block } from "./session";
-import { isProseBlock, isThinkingBlock, isToolBlock, needsApproval, toolCategory } from "./transcriptActivity";
+import { plainCommandRow } from "../../../shared/lib/plainCommand";
+import { isProseBlock, isThinkingBlock, isToolBlock, isToolSearchStep, needsApproval, toolCategory } from "./transcriptActivity";
 
 /** `lastStep`: on a "Thinking" step, the last tool step of the turn, for "Still working on …" (r66). */
 export type LiveStep = { key: string; label: string; lastStep?: string };
@@ -135,14 +136,29 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
   }
 }
 
+/**
+ * r97 items 1 and k (Critiquito, c02 BLIND 242d sidebar foot: "Searching for *select:…", "Running npm test"): a step reads
+ * in the same plain words the chat rows use (r96 plainCommandRow): "Run the tests", "Look at the changes". The harness
+ * looking up its own tools is no step at all ("Getting ready"); callers skip it where they can.
+ */
+function plainWordsStep(block: Block, step: string): string {
+  if (isToolSearchStep(block)) return "Getting ready";
+  const command = block.tool?.command?.replace(/\s+/g, " ").trim();
+  if (toolCategory(block) !== "run" || !command) return step;
+  const plain = plainCommandRow(command);
+  if (plain === command) return step;
+  return plain.length > MAX_COMMAND + 12 ? `${plain.slice(0, MAX_COMMAND + 11)}…` : plain;
+}
+
 /** r92: a tool step in plain words with just the file's name ("Reading format.ts", "Handing work to a worker"). */
 export function plainToolStep(block: Block, cwd?: string): string {
-  return toolStep(block, cwd, "name");
+  return plainWordsStep(block, toolStep(block, cwd, "name"));
 }
 
 /** The turn's current step, from its latest block that says anything. */
 export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDetail = "full"): LiveStep {
-  const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft);
+  // r97: the harness looking up its own tools is no step Ash sees.
+  const seen = blocks.filter((b) => b.role !== "user" && !b.internal && !b.draft && !(isToolBlock(b) && isToolSearchStep(b)));
   const waiting = seen.find(needsApproval);
   if (waiting) return { key: `approval:${waiting.id}`, label: "Waiting for your OK" };
   const workflow = seen.find((b) => b.workflowRun?.status === "running");

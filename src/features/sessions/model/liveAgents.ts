@@ -1,5 +1,6 @@
 import { isInFlightSession } from "./inFlight";
 import { plainToolStep } from "./liveActivity";
+import { isToolSearchStep } from "./transcriptActivity";
 import {
   sessionDisplayTitle,
   type Block,
@@ -114,7 +115,8 @@ function compareLiveAgents(a: LiveAgent, b: LiveAgent): number {
 function lastActivityBlock(blocks: Block[]): Block | undefined {
   for (let i = blocks.length - 1; i >= 0; i--) {
     const block = blocks[i];
-    if (block.role === "tool" || block.role === "approval") return block;
+    // r97 item 1: the harness looking up its own tools ("select:mcp__…") is no row; the step before it is.
+    if ((block.role === "tool" || block.role === "approval") && !isToolSearchStep(block)) return block;
     if (block.role === "handoff" && block.handoff?.status === "preparing") {
       return block;
     }

@@ -129,6 +129,17 @@ export function isToolLookup(block: Block): boolean {
   return words.length > 0 && words.every((word) => /^mcp__[\w-]+__[\w-]+$/.test(word));
 }
 
+/**
+ * r97: a tool lookup that is a search ("Find select:…", ToolSearch), not a call of an MCP tool by its own name
+ * (mcp__linear__list_issues runs a real tool): the live line and the sidebar's Working list skip it.
+ */
+export function isToolSearchStep(block: Block): boolean {
+  if (!isToolLookup(block)) return false;
+  const kind = block.tool?.kind?.toLowerCase() ?? "";
+  const title = (block.tool?.title ?? block.text ?? "").trim();
+  return /^(?:tool_?search|search)$/.test(kind) || /^(?:find|search|toolsearch)\b/i.test(title) || /select:/i.test(title) || /select:/i.test(block.tool?.preview?.query ?? "");
+}
+
 export function isHiddenTool(block: Block): boolean {
   if (block.role !== "tool" && block.role !== "approval") return false;
   // Harnesses also publish todo mutations as ordinary tool calls. The
