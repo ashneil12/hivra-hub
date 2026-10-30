@@ -257,7 +257,7 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
 
 /** "…? My pick is to keep the all-time order." / "…? My pick: B." / "…? I'd go with B." after the question mark. */
 const INLINE_PICK =
-  /^(?<q>.*\?)\s*(?:[-–—]\s*)?(?:my\s+(?:pick|recommendation)(?:\s+is|\s*:)|i(?:'d|\s+would)\s+(?:go\s+with|pick|choose)|i\s+recommend)\s*:?\s*(?:to\s+)?(?<p>.+?)[\s.!]*$/i;
+  /^(?<q>.*\?)\s*(?:[-–—]\s*)?(?:my\s+(?:pick|recommendation)(?:\s+is|\s*:)|i(?:'d|’d|\s+would)\s+(?:go\s+with|pick|choose|(?=(?:keep|sort|use|ship|drop|add|leave|make|switch|stay|wait|start|stop|fix|revert|skip|try|move|change)\b))|i\s+recommend)\s*:?\s*(?:to\s+)?(?<p>.+?)[\s.!]*$/i;
 
 export function splitInlinePick(text: string): { question: string; pick?: string } {
   const m = INLINE_PICK.exec(text.trim());

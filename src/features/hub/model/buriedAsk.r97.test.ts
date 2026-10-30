@@ -43,3 +43,14 @@ it("leaves a question that already asks, and a plain pick line, as they were", (
   expect(parseNeedsAsh("Needs Ash: Keep the old waitlist page?\nMy pick: Archive it.")).toMatchObject({ question: "Keep the old waitlist page?", pick: "Archive it." });
   expect(parseNeedsAsh("Needs Ash: should I keep A or B?\nMy pick: A.")?.question).toBe("should I keep A or B?");
 });
+
+// c02 BLIND 1533 (r97 rerun): "…, or switch health to `{ ok: true, version }`? I'd keep alive." The pick was a plain
+// "I'd keep …" and was missed, so it stayed in the chat.
+it("an \"I'd keep …\" after the question is the pick too", () => {
+  const text = "Not fixed: those week edges are UTC.\nNeeds Ash: keep the alive body and correct the backlog, or switch health to `{ ok: true, version }`? I'd keep alive.";
+  const q = chatQuestion({ busy: false, blocks: [{ role: "user", text: "go" }, { role: "assistant", text }] })!;
+  expect(q.question).toBe("Would you rather keep the alive body and correct the backlog, or switch health to { ok: true, version }?");
+  expect(q.options).toEqual(["Keep the alive body and correct the backlog", "Switch health to { ok: true, version }"]);
+  expect(q.pick).toBe("Keep the alive body and correct the backlog");
+  expect(gateQuestion(q)).toMatchObject({ admit: true, kind: "choice" });
+});
