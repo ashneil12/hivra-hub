@@ -210,6 +210,18 @@ export function hasReadableText(text: string): boolean {
 }
 
 /** First paragraph of a folded prose block, stripped to one plain line. */
+/**
+ * r92 (Critiquito d, s19 blind run d452): a thought that would only say "Thinking" between two steps (its turn still
+ * runs, so its words stay hidden, or it has none) folds away in the step list, as a settled "Thought" does; the group's
+ * own title and the live line already say it is thinking. A step list of only that thought keeps it.
+ */
+export function stepsWithoutBareThinking(steps: Block[], turnLive: boolean): Block[] {
+  const kept = steps.filter(
+    (block) => !(block.role === "reasoning" && (turnLive || !!block.streaming || !proseSummary(block.text))),
+  );
+  return kept.length ? kept : steps;
+}
+
 export function proseSummary(text: string): string {
   const body = text.replace(/```[\s\S]*?(?:```|$)/g, " ");
   const paragraph =

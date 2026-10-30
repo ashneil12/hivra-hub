@@ -165,6 +165,7 @@ import {
   isWorkflowBlock,
   workflowKeepsRow,
   isThinkingBlock,
+  stepsWithoutBareThinking,
   lastActivityIndex,
   isProseBlock,
   isMonoCheckPrompt,
@@ -4153,7 +4154,7 @@ function ActivityPhaseGroup({
                   />
                 </div>
               ) : null}
-              {phase.steps.map((block) => {
+              {stepsWithoutBareThinking(phase.steps, turnLive).map((block) => {
                 const arriving =
                   active && !returning && !settled.current?.has(block.id);
                 return (
