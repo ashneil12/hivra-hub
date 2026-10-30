@@ -154,7 +154,9 @@ export async function runScenario(scenario, ctx) {
           (!cond.delegation.owner || row.owner_mono === resolveMono(cond.delegation.owner)) &&
           (!cond.delegation.ownerChat || row.owner_session === chatSession(cond.delegation.ownerChat)) &&
           (!cond.delegation.state || [].concat(cond.delegation.state).includes(row.state)) &&
-          (!cond.delegation.title || new RegExp(cond.delegation.title, "i").test(`${row.title ?? ""} ${row.brief ?? ""}`)),
+          (!cond.delegation.title || new RegExp(cond.delegation.title, "i").test(`${row.title ?? ""} ${row.brief ?? ""}`)) &&
+          // r88: the app's stall watcher marked it (workerStall.ts), e.g. after a scripted provider error.
+          (!cond.delegation.stalled || !!row.stall_kind),
       );
       return match.length >= (cond.delegation.count ?? 1);
     }
@@ -627,7 +629,7 @@ export function transcript(scenario, result, t0) {
     timeline.push({ t: a.t, line: a.answers ? `(the app answered the question in Claude: ${JSON.stringify(a.answers).slice(0, 400)})` : `(the app declined the question in Claude: ${a.message ?? a.behavior})` });
   for (const s of result.sends) if (s.retry) timeline.push({ t: s.t, line: `**Ash tapped Try again** on ${s.retry.mono}: ${s.answer?.ok ? "ok" : `not possible: ${s.answer?.error}`}` });
   for (const m of result.marks ?? []) if (String(m.mark).startsWith("reload")) timeline.push({ t: m.t, line: `(test harness: ${m.mark === "reload" ? "the window reloads" : m.mark})` });
-  for (const f of result.faults) timeline.push({ t: f.t, line: f.off ? "(test harness: outage off)" : `(test harness: model outage on, ${f.on.fixture ?? "529"})` });
+  for (const f of result.faults) timeline.push({ t: f.t, line: f.off ? "(test harness: outage off)" : f.on.hang ? `(test harness, SCRIPTED: provider error ${f.on.fixture ?? "529"} on ${f.on.worker ? "a worker" : "a chat"}, then no output for ${f.on.hang}s)` : `(test harness: model outage on, ${f.on.fixture ?? "529"})` });
   for (const v of result.views) timeline.push({ t: v.t, line: `(looked at ${v.name}${v.screenshot?.ok ? `, screenshot ${v.screenshot.file}` : ""})` });
   timeline.sort((a, b) => a.t - b.t);
   lines.push("## Timeline", "");

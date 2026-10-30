@@ -719,7 +719,7 @@ export async function runBench(options, hooks = {}) {
     const delegationRows = () =>
       query(
         db,
-        "SELECT id, owner_session, owner_mono, parent_id, root_id, child_session, project, title, brief, goal, state, error_class, error, result, pending_question, delivery, follow, created_at, updated_at, settled_at FROM delegations ORDER BY created_at",
+        "SELECT id, owner_session, owner_mono, parent_id, root_id, child_session, project, title, brief, goal, state, error_class, error, result, pending_question, delivery, follow, stall_kind, stall_reason, created_at, updated_at, settled_at FROM delegations ORDER BY created_at",
       );
     const sessionBlocks = async (sessionId) => {
       const rows = await query(db, "SELECT block_json FROM mono_blocks WHERE session_id = ? ORDER BY seq", sessionId);
