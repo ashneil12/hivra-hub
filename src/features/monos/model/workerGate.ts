@@ -48,6 +48,30 @@ export function signedOffSince(ownerSession: string, since: number, log = gateLo
   return log.some((r) => r.sessionId === ownerSession && !!r.answer && r.answer.at >= since);
 }
 
+/** How far back a job of the same Lead and project still counts as the same piece of work for Ash's sign-off. */
+export const SIGN_OFF_REACH_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Where Ash's sign-off counts from (s14 r87 #1): the earliest job the same Lead started on the same project within
+ * reach, not only this worker's start. Ash answered the first job's question; the Lead then started a second job for
+ * the 30-day version, and its check never counted that answer, so it failed after two tries.
+ */
+export function signOffFrom(
+  workerStarted: number,
+  owner: string,
+  project: string | null | undefined,
+  rows: readonly { ownerSession: string; project: string | null; createdAt: number }[],
+): number {
+  if (!project) return workerStarted;
+  return rows.reduce(
+    (from, r) =>
+      r.ownerSession === owner && r.project === project && r.createdAt >= workerStarted - SIGN_OFF_REACH_MS && r.createdAt < from
+        ? r.createdAt
+        : from,
+    workerStarted,
+  );
+}
+
 /**
  * The worker's own copy: an isolated worker keeps the project as its `cwd` and its checkout in `worktreeCwd` (s14 r82 #2:
  * the check was handed the project folder, refused it, and never ran).
