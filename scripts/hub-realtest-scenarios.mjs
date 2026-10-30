@@ -201,6 +201,22 @@ export async function runScenario(scenario, ctx) {
     for (const as of scenario.allowPromptly ?? []) {
       const session = chatSession(as);
       if (!session) continue;
+      // r83 (Critiquito 6): the first live card is shot twice before Allow: from the Inbox, where the ask is off screen
+      // and the sidebar foot's neutral card stands in for it, then in the chat itself with its Allow and Deny.
+      if (!record.permissionShots) {
+        const held = ((await act("snapshot").catch(() => null))?.sessions ?? []).find((x) => x.id === session)?.approvals ?? 0;
+        if (held > 0) {
+          record.permissionShots = [];
+          const project = ctx.project ? path.basename(String(ctx.project)) : "tally";
+          await act("open", { hub: { project, item: "inbox" }, settleMs: 2500 }, 30_000).catch(() => null);
+          record.permissionShots.push({ name: "permission-fallback", shot: await ctx.screenshot(`${scenario.id}-permission-fallback`) });
+          await act("open", { session }, 30_000).catch(() => null);
+          await new Promise((resolve) => setTimeout(resolve, 2500));
+          const dom = (await act("snapshot").catch(() => null))?.dom;
+          record.permissionShots.push({ name: "permission-ask", shot: await ctx.screenshot(`${scenario.id}-permission-ask`), text: String(dom?.bodyText ?? dom?.mainText ?? "").slice(0, 4000) });
+          log(`  shot the live permission card (fallback and in the chat) before Allow`);
+        }
+      }
       const answer = await act("approve", { session }).catch((error) => ({ ok: false, error: error.message }));
       if (!answer.ok || !answer.approved) continue;
       record.marks.push({ t: Date.now(), approve: { chat: as, promptly: true }, answer });

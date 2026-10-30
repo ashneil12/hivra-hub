@@ -780,7 +780,12 @@ export async function runBench(options, hooks = {}) {
       const shot = spawnSync("screencapture", ["-x", "-o", "-l", String(window.id), file], { encoding: "utf8" });
       if (shot.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 2000)
         return { ok: false, why: `screencapture failed (${shot.status}): ${(shot.stderr || "").trim().slice(0, 200)}` };
-      return { ok: true, file: path.relative(evidence, file), window: { id: window.id, onscreen: window.onscreen } };
+      // r83 (Critiquito): the whole main screen too, so a macOS banner (top right) from anything the run started shows.
+      // -x: no sound; nothing is clicked.
+      const whole = file.replace(/\.png$/, "-screen.png");
+      const full = spawnSync("screencapture", ["-x", "-m", whole], { encoding: "utf8" });
+      const screen = full.status === 0 && fs.existsSync(whole) ? path.relative(evidence, whole) : null;
+      return { ok: true, file: path.relative(evidence, file), screen, window: { id: window.id, onscreen: window.onscreen } };
     };
 
     const memoryCalls = () => readNdjson(path.join(state, "memory-calls.ndjson"));
