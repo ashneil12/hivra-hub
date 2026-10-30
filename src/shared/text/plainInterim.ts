@@ -15,8 +15,13 @@ const SWAPS: [RegExp, string][] = [
 
 const capFirst = (s: string) => s.replace(/(^|[.!?]\s+)(\p{Ll})/gu, (_, lead: string, c: string) => lead + c.toUpperCase());
 
+// c02 BLIND 1533 (r97 rerun): a thought about the harness's own tool plumbing ("The tool reports it loaded, but the
+// schemas are not visible.") says nothing to Ash; it reads as getting ready.
+const TOOL_PLUMBING = /\b(?:tools?|schemas?|mcp|deferred tools?)\b[^.]*\b(?:loaded|load|loading|visible|available|schemas?|deferred|registered)\b/i;
+
 /** The interim line in plain words. */
 export function plainInterim(text: string): string {
+  if ((TOOL_PLUMBING.test(text) || /\bschemas?\b[^.]*\b(?:prompt|tools?)\b/i.test(text)) && !/\b(?:api|endpoint|test|board|readme|ui)\b/i.test(text)) return "Getting ready";
   let out = text;
   for (const [rx, to] of SWAPS) out = out.replace(rx, (m) => (/^\p{Lu}/u.test(m) ? to[0]!.toUpperCase() + to.slice(1) : to));
   return out === text ? text : capFirst(out);

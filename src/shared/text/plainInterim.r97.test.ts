@@ -28,3 +28,10 @@ it("the group header Ash sees uses it", () => {
     "Checking the health endpoint and negative bump in the code. Putting the summary together.",
   );
 });
+
+it("a thought about tool plumbing reads as getting ready (c02 BLIND 1533)", () => {
+  expect(plainInterim("The tool reports it loaded, but the schemas are not visible.")).toBe("Getting ready");
+  expect(plainInterim("The schema was present in the original prompt.")).toBe("Getting ready");
+  expect(plainInterim("The UI uses shared Tally.")).toBe("The UI uses shared Tally.");
+  expect(plainInterim("The README job is blocked because the system thinks both the README and health changes modify the API.")).toMatch(/^The README job/);
+});
