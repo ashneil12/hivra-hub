@@ -14,8 +14,9 @@ import { isCodingTeamChat } from "./codingTeam";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { findMono, monoForSession } from "../../monos/model/mono";
-import type { UserQuestionPrompt, UserQuestionReply } from "../../sessions/model/userQuestion";
-import type { Block, HarnessId, Session } from "../../sessions/model/session";
+import { CUSTOM_OPTION_ID, type UserQuestionPrompt, type UserQuestionReply } from "../../sessions/model/userQuestion";
+import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
+import type { Block, HarnessId, QueuedMessage, Session } from "../../sessions/model/session";
 import { sessionDisplayTitle } from "../../sessions/model/session";
 import {
   askedBy,
@@ -23,15 +24,17 @@ import {
   gateQuestion,
   pickMessage,
   pickReply,
+  plainOptionLabel,
   wordsMessage,
   wordsReply,
+  type AskRow,
   type ChatQuestion,
   type GateKind,
   whoAsks,
 } from "./chatQuestions";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
-import { forYou } from "./userName";
+import { forUser, forYou } from "./userName";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -69,6 +72,11 @@ export type WaitingChatsHost = {
   send(sessionId: string, text: string): Promise<boolean>;
   /** Show the chat (its hub project, when it has one, so the hub can step aside for that project's coding view). */
   open(sessionId: string, projectId: string | null): void;
+  /**
+   * r99 (Critiquito 3): an app note into the chat (hidden, not a message from Ash): one row of a card answered. Falls
+   * back to \`send\` when the host has no notes.
+   */
+  note?(sessionId: string, message: QueuedMessage): Promise<boolean>;
   /** r77: Allow or Deny the chat's held tool call (its permission card), in place. */
   decide?(sessionId: string, requestId: number, decision: "allow" | "deny"): void;
 };
@@ -188,6 +196,7 @@ function recordAnswer(sessionId: string, question: string, answer: NonNullable<G
 }
 
 const sameQuestion = (a: WaitingEntry, b: ChatQuestion) =>
+  (a.rows ?? []).map((r) => r.question).join("\u0000") === (b.rows ?? []).map((r) => r.question).join("\u0000") &&
   a.source === b.source && a.question === b.question && a.requestId === b.requestId && a.pick === b.pick && a.why === b.why && a.more === b.more && a.flag === b.flag &&
   (a.options ?? []).join("\u0000") === (b.options ?? []).join("\u0000");
 
@@ -414,6 +423,82 @@ export async function answerInWords(sessionId: string, text: string): Promise<Ta
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, text) : undefined;
   return answer(chat, reply && { reply, words: text.trim() }, wordsMessage(chat, text), { words: text.trim(), by: "words" });
+}
+
+/** r99: a live question's rows answered so far from the card, by session and request, until every row has one. */
+const partial = new Map<string, Record<string, string>>();
+
+/** The rows of a waiting chat still open (a live question's rows already answered here are left out). */
+export function openRows(chat: Pick<WaitingChat, "sessionId" | "requestId" | "rows">): AskRow[] {
+  const given = partial.get(`${chat.sessionId}:${chat.requestId}`) ?? {};
+  return (chat.rows ?? []).filter((row) => !(row.questionId && row.questionId in given));
+}
+
+/** The app note that answers one row of a "Needs Ash" card, so only that decision settles (answerSettles). */
+export function rowAnswerNote(question: string, words: string): QueuedMessage {
+  const flat = (t: string, max: number) => t.replace(/\s+/g, " ").replace(/"/g, "'").trim().slice(0, max);
+  return {
+    id: `ash-row-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
+    attachments: [],
+    waitForIdle: true,
+    text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your question "${flat(question, 300)}" from his Inbox: "${flat(words, 400)}". This settles that one only: no \`Needs Ash:\` line for it again; the others you asked him still wait on him. Act on it, and tell him in one line what happens next. This is an app notification, not a new message from Ash.`,
+  };
+}
+
+/**
+ * r99 (Critiquito 3): answer one decision of a card with several. A "Needs Ash" row goes as an app note, so the other
+ * rows stay open on the Inbox and the rail; a live question's row is kept here until every row has an answer, then
+ * the question is answered in place, all at once.
+ */
+export async function answerRow(sessionId: string, row: AskRow, words: string, by: "words" | "pick" = "words"): Promise<TakeResult> {
+  const chat = findWaitingChat(sessionId);
+  if (!chat?.rows?.some((r) => r.question === row.question)) return { ok: false, reason: "That chat isn't waiting any more." };
+  const text = words.trim();
+  if (!text) return { ok: false, reason: "Type an answer first." };
+  const h = host;
+  if (!h) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
+  if (chat.source === "ask" && row.questionId) {
+    const prompt = h.liveQuestion(sessionId);
+    if (!prompt || prompt.requestId !== chat.requestId) return answer(chat, undefined, `About your question "${row.question}": ${text}`, { words: text, by });
+    const key = `${sessionId}:${chat.requestId}`;
+    const given = { ...(partial.get(key) ?? {}), [row.questionId]: text };
+    partial.set(key, given);
+    const open = prompt.questions.filter((q) => !(q.id in given));
+    if (open.length) {
+      save({ ...load() });
+      return { ok: true, sent: text, chatName: chat.chatName };
+    }
+    const reply: UserQuestionReply = { kind: "answered", answers: {}, custom: {} };
+    for (const q of prompt.questions) {
+      const option = q.options.find((o) => plainOptionLabel(o.label).toLowerCase() === given[q.id]!.toLowerCase());
+      if (option) reply.answers[q.id] = [option.id];
+      else {
+        reply.answers[q.id] = [CUSTOM_OPTION_ID];
+        reply.custom![q.id] = given[q.id]!;
+      }
+    }
+    partial.delete(key);
+    return answer(chat, { reply, words: text }, text, { words: text, by });
+  }
+  const note = rowAnswerNote(row.question, text);
+  const sent =
+    (h.note ? await h.note(sessionId, note).catch(() => false) : false) ||
+    (await h.send(sessionId, `About your question "${row.question}": ${text}`).catch(() => false));
+  if (!sent) return { ok: false, reason: `${chat.chatName} couldn't take a message right now. Open the chat to answer.` };
+  recordAnswer(sessionId, row.question, { words: text, by, at: Date.now() });
+  // The card loses that row at once; the chat's next read agrees (answerSettles), and the rest stay open.
+  const prev = load()[sessionId];
+  if (prev?.rows) {
+    const rest = prev.rows.filter((r) => r.question !== row.question);
+    const next = { ...load() };
+    if (rest.length > 1) next[sessionId] = { ...prev, rows: rest, more: rest.length - 1, ...(prev.question === row.question ? { question: rest[rest.length - 1]!.question } : {}) };
+    else if (rest.length === 1) {
+      const { rows: _rows, ...one } = prev;
+      next[sessionId] = { ...one, question: rest[0]!.question, more: 0, ...(rest[0]!.options ? { options: rest[0]!.options } : { options: undefined }), pick: rest[0]!.pick, redLine: rest[0]!.redLine };
+    } else delete next[sessionId];
+    save(next);
+  }
+  return { ok: true, sent: text, chatName: chat.chatName };
 }
 
 /** A red-line ask's two explicit choices (port map idea 3; no default, no "this session", no "always"). */

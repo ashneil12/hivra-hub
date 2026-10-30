@@ -8,6 +8,8 @@ import {
   answerApproval,
   answerPermission,
   answerInWords,
+  answerRow,
+  openRows,
   openWaitingChat,
   takePick,
   useWaitingChatsVersion,
@@ -15,6 +17,7 @@ import {
   type TakeResult,
   type WaitingChat,
 } from "../model/waitingChats";
+import type { AskRow } from "../model/chatQuestions";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-60";
 const PRIMARY = "shrink-0 rounded-md bg-content px-2.5 py-1 text-xs font-medium text-background-base hover:opacity-90 disabled:opacity-60";
@@ -97,6 +100,29 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
   };
   // A row with no project shows just its chat's name: no "No project ·" in front.
   const where = [showProject ? chat.projectName : null, chat.chatName].filter(Boolean).join(" · ");
+  // r99 (Critiquito 3): several decisions in one ask: one row each, its own answer, under the shared heading if any.
+  const rows = chat.source === "permission" || chat.provide ? [] : openRows(chat);
+  if (rows.length > 1)
+    return (
+      <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId} {...redRowProps(true)}>
+        <div className="flex items-center gap-2 text-[12px] text-content/60">
+          <span data-hub-waiting-red><ChipMark chip={NEEDS_YOU} /></span>
+          {where ? <span className="min-w-0 truncate" data-hub-waiting-where>{where}</span> : null}
+          {where ? <span className="shrink-0" aria-hidden>·</span> : null}
+          <span className="shrink-0" data-hub-waiting-reason data-hub-gate={chat.gate?.kind} title={chat.gate?.reason}>{rows.length} decisions</span>
+          <span className="flex-1" />
+          <button type="button" className={BTN} data-hub-open-chat onClick={() => openWaitingChat(chat.sessionId)}>
+            Open
+          </button>
+        </div>
+        {chat.heading ? <div className="text-[13px] font-medium leading-5 text-content" data-hub-waiting-heading>{askText(chat.heading)}</div> : null}
+        <ol className="flex list-none flex-col gap-2" data-hub-waiting-rows>
+          {rows.map((row) => (
+            <DecisionRow key={row.question} chat={chat} row={row} />
+          ))}
+        </ol>
+      </div>
+    );
   return (
     <div className="flex flex-col gap-1 rounded-md px-2 py-2 hover:bg-content/5" data-hub-waiting-chat={chat.sessionId} {...redRowProps(true)}>
       <div className="flex items-center gap-2 text-[12px] text-content/60">
@@ -197,6 +223,78 @@ export function WaitingRow({ chat, showProject, answer }: { chat: WaitingChat; s
       </div>
       {problem ? <div className="text-[13px] text-content/60" data-hub-waiting-problem>{problem}</div> : null}
     </div>
+  );
+}
+
+/** r99 (Critiquito 3): one decision of a card with several, answered on its own. */
+function DecisionRow({ chat, row }: { chat: WaitingChat; row: AskRow }) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const run = async (words: string, by: "words" | "pick") => {
+    setBusy(true);
+    setProblem(null);
+    // Not the whole card's tick: the other decisions stay open (the store drops this row at once).
+    const res = await answerRow(chat.sessionId, row, words, by);
+    setBusy(false);
+    if (!res.ok) setProblem(res.reason);
+  };
+  return (
+    <li className="flex flex-col gap-0.5 border-l border-content/10 pl-2" data-hub-waiting-row>
+      <div className="whitespace-normal break-words text-[13px] leading-5 text-content" data-hub-waiting-question>
+        {askText(row.question)}
+      </div>
+      {row.options?.length ? (
+        <ol className="flex list-none flex-col gap-0.5 text-[13px] leading-5 text-content/85" data-hub-waiting-options>
+          {row.options.map((option, i) => (
+            <li key={i} className="flex gap-1.5" data-hub-waiting-option>
+              <span className="shrink-0 text-content/50" aria-hidden>{i + 1}.</span>
+              <span className="min-w-0 break-words">{option}</span>
+              {row.pick && option.trim().toLowerCase() === row.pick.trim().toLowerCase() ? (
+                <span className="shrink-0 text-content/50" data-hub-waiting-option-pick>(its pick)</span>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {row.pick ? (
+        <div className="whitespace-normal break-words text-[13px] leading-5 text-content/60" data-hub-waiting-pick>
+          Suggests: {row.pick}
+        </div>
+      ) : null}
+      <div className="mt-1 flex items-center gap-2">
+        {row.redLine ? (
+          <span className="flex shrink-0 items-center gap-2" data-hub-approval role="group" aria-label="Approve or deny">
+            <button type="button" className={BTN} disabled={busy} data-hub-approve-once onClick={() => void run(`Approved, this once: ${row.pick ?? row.question}`, "words")}>
+              Approve once
+            </button>
+            <button type="button" className={BTN} disabled={busy} data-hub-deny onClick={() => void run(`Denied: don't do this. (${row.question})`, "words")}>
+              Deny
+            </button>
+          </span>
+        ) : row.pick ? (
+          <button type="button" className={PRIMARY} disabled={busy} data-hub-take-pick onClick={() => void run(row.pick!, "pick")}>
+            Take the pick
+          </button>
+        ) : null}
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && text.trim() && !busy) void run(text, "words");
+          }}
+          placeholder="Or answer in your words…"
+          aria-label={`Answer "${row.question}" in your words`}
+          maxLength={4000}
+          data-hub-waiting-reply
+          className="min-w-0 flex-1 rounded-md bg-content/5 px-2.5 py-1 text-[13px] text-content outline-none placeholder:text-content/50 focus:bg-content/10"
+        />
+        <button type="button" className={BTN} disabled={busy || !text.trim()} data-hub-waiting-send onClick={() => void run(text, "words")}>
+          {busy ? "Sending…" : "Send"}
+        </button>
+      </div>
+      {problem ? <div className="text-[13px] text-content/60" data-hub-waiting-problem>{problem}</div> : null}
+    </li>
   );
 }
 
