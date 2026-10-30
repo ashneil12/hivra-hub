@@ -12,27 +12,20 @@ const { LaunchedSessionCard } = await import("./LaunchedSessionCard");
 let r: Root | undefined;
 afterEach(() => act(() => r?.unmount()));
 
-it("names Grok 4.7 and the effort whole, then 'DeepSeek wasn't available' in grey, truncating first", async () => {
+// r95 (PM, worker card a): the engine chip is gone from the card; what ran, and why, is in its tooltip.
+it("names Grok 4.7, the effort and 'DeepSeek wasn't available' in the card's tooltip, with no engine chip", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   r = createRoot(host);
   const launch = { sessionId: "w3", cwd: "/repo/tally", title: "Show tally count", harness: "claude" as const, model: "claude:deepseek-v4.1-flash", effort: "High" };
   await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
-  const model = host.querySelector("[data-launched-model]")!;
-  expect(model.textContent).toBe("Grok 4.7 · High · DeepSeek wasn't available");
-  expect(model.getAttribute("title")).toBe("Runs on Grok 4.7 · DeepSeek wasn't available, High effort");
-  const name = model.firstElementChild!;
-  expect(name.textContent).toBe("Grok 4.7 · High");
-  // r92: the name gives way only after the reason (a tiny shrink weight), and both clip rather than overflow.
-  expect(name.className).toContain("shrink-[0.01]");
-  expect(name.className).toContain("truncate");
-  const note = model.querySelector("[data-launched-model-note]")!;
-  expect(note.className).toContain("truncate");
-  expect(note.className).toContain("text-content/40");
-  expect(note.textContent).not.toMatch(/key|provider|bridge/i);
+  expect(host.querySelector("[data-launched-model]")).toBeNull();
+  const card = host.querySelector("[data-launched-session]")!;
+  expect(card.getAttribute("title")).toMatch(/ · Runs on Grok 4\.7 · DeepSeek wasn't available, High effort$/);
+  expect(card.getAttribute("title")).not.toMatch(/key|provider|bridge/i);
 });
 
-it("r92 (s15 dcf4): squeezed beside 'Stalled', the card clips, the title keeps room and the model gives way", async () => {
+it("r92/r95 (s15 dcf4): squeezed beside 'Stalled', the card clips and the title wraps instead of being cut", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   r = createRoot(host);
@@ -40,34 +33,7 @@ it("r92 (s15 dcf4): squeezed beside 'Stalled', the card clips, the title keeps r
   await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
   const card = host.querySelector("[data-launched-session]")!;
   expect(card.className).toContain("overflow-hidden");
-  expect(host.querySelector("[data-launched-title]")!.className).toContain("min-w-[4.5rem]");
-  const model = host.querySelector("[data-launched-model]")!;
-  expect(model.className).not.toContain("shrink-0");
-  expect(model.className).toContain("overflow-hidden");
-});
-
-it("r93 (s15 3cde): squeezed, the project chip shrinks to a whole pill with its icon instead of being cut off", async () => {
-  const host = document.createElement("div");
-  document.body.append(host);
-  r = createRoot(host);
-  const launch = { sessionId: "w5", cwd: "/repo/tally", title: "Show tally count at the top", harness: "claude" as const, model: "claude:deepseek-v4.1-flash", effort: "High" };
-  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
-  const chip = host.querySelector("[data-launched-project]")!;
-  expect(chip.className).not.toContain("shrink-0");
-  expect(chip.className).toContain("min-w-[2.125rem]");
-  expect(chip.className).toContain("overflow-hidden");
-  expect(chip.textContent).toBe("tally");
-});
-
-it("r94 (s15 SCRIPTED 8c60): on a card too narrow for it the project chip is not drawn, never half a blank pill", async () => {
-  const host = document.createElement("div");
-  document.body.append(host);
-  r = createRoot(host);
-  const launch = { sessionId: "w6", cwd: "/repo/tally", title: "Show tally count on the board", harness: "claude" as const, model: "claude:grok-4.7", effort: "High" };
-  await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "stuck", title: launch.title }, onOpen: () => undefined })));
-  expect(host.querySelector("[data-launched-session]")!.className).toContain("@container/card");
-  const chip = host.querySelector("[data-launched-project]")!;
-  expect(chip.className.split(" ")).toContain("hidden");
-  expect(chip.className).toContain("@[14rem]/card:flex");
-  // The layout itself is proven in tests/browser/launched-card.spec.ts (260 to 700px).
+  const title = host.querySelector("[data-launched-title]")!.className.split(/\s+/);
+  expect(title).toEqual(expect.arrayContaining(["flex-1", "min-w-0", "whitespace-normal", "break-words"]));
+  expect(title).not.toContain("truncate");
 });

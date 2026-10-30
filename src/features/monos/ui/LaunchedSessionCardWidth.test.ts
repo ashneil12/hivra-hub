@@ -31,11 +31,9 @@ it("a worker's card fills up to the 640px reading width, title first and the pro
   const title = [...card.querySelectorAll("span")].find((s) => s.textContent === launch.title)!;
   expect(title.className.split(/\s+/)).toContain("flex-1");
   expect(card.lastElementChild!.textContent).toBe("monocode-hub");
-  // E7: the card says which model the worker runs on, quietly, just before the project chip.
-  const model = card.querySelector("[data-launched-model]")!;
-  expect(model.textContent).toBe("Opus");
-  expect(model.getAttribute("title")).toBe("Runs on Opus");
-  expect(model.nextElementSibling).toBe(card.lastElementChild);
+  // E7, r95: which model ran is in the card's tooltip, not a chip on the card.
+  expect(card.querySelector("[data-launched-model]")).toBeNull();
+  expect(card.getAttribute("title")).toBe("Done · Runs on Opus");
 });
 
 it("says the effort a hard job's worker runs at, in the same words the composer uses", async () => {
@@ -44,9 +42,7 @@ it("says the effort a hard job's worker runs at, in the same words the composer 
   r = createRoot(host);
   const launch = { sessionId: "w2", cwd: "/repo/monocode-hub", title: "Migration", harness: "claude" as const, model: "claude:opus-5-5", effort: "High" };
   await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
-  const model = host.querySelector("[data-launched-model]")!;
-  expect(model.textContent).toMatch(/ · High$/);
-  expect(model.getAttribute("title")).toMatch(/^Runs on .+, High effort$/);
+  expect(host.querySelector("[data-launched-session]")!.getAttribute("title")).toMatch(/ · Runs on .+, High effort$/);
 });
 
 it("r90: off the Grok bench a DeepSeek worker's card shows its own name and no reason", async () => {
@@ -55,7 +51,6 @@ it("r90: off the Grok bench a DeepSeek worker's card shows its own name and no r
   r = createRoot(host);
   const launch = { sessionId: "w2", cwd: "/repo/tally", title: "Show tally count", harness: "claude" as const, model: "claude:deepseek-v4.1-flash", effort: "High" };
   await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
-  const model = host.querySelector("[data-launched-model]")!;
   // Off the bench the record is what ran: no note.
-  expect(model.querySelector("[data-launched-model-note]")).toBeNull();
+  expect(host.querySelector("[data-launched-session]")!.getAttribute("title")).not.toMatch(/wasn't available/);
 });
