@@ -50,7 +50,7 @@ it("shows who is writing with a Stop, and after Stop the team waits with Keep go
     await new Promise((r) => setTimeout(r, 10));
   });
   // Not "is writing…": what it is doing, from its stream, and for how long. Nothing from the stream yet: Thinking.
-  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking · \d+s/);
+  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking(?! · 0s)/); // r96: no time under 1s
   expect(q("[data-hub-member-working]")!.textContent).toContain("Chief of Staff");
   await act(async () => {
     q("[data-hub-room-stop]")!.click();
@@ -108,7 +108,7 @@ it("the host's answer fills in where it will stay: a live message while it write
     await new Promise((r) => setTimeout(r, 10));
   });
   // Not started yet: the line above the composer says what it is doing.
-  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking · \d+s/);
+  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking(?! · 0s)/); // r96: no time under 1s
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 14_000, lastEventAt: Date.now() }));
   expect(q("[data-hub-typing]")!.textContent).toContain("Chief of Staff · Reading src/app.tsx · 14s");
   // r62 (Critiquito): before its words show, the status line is the live line, the runner right after the timer.

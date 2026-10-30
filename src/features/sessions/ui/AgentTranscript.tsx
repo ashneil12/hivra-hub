@@ -1,3 +1,4 @@
+import { plainCommandRow } from "../../../shared/lib/plainCommand";
 import {
   ArrowUp,
   Check,
@@ -4744,7 +4745,7 @@ function ActivityStatusRow({ block }: { block: Block }) {
       <span
         title={text}
         {...(still ? { "data-still-running": true } : {})}
-        className={`min-w-0 flex-1 truncate font-sans text-sm ${still ? "text-content/85" : "text-content/50"}`}
+        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${still ? "text-content/85" : "text-content/50"}`}
       >
         {text}
       </span>
@@ -5040,7 +5041,9 @@ function ActivityToolRow({
       ) : (
         <div
           aria-label={`Tool call: ${label}`}
-          className="flex min-w-0 items-center gap-1.5 py-1"
+          // r96 (Critiquito): a row waiting on Allow is a question to Ash, so it reads in the app's normal font.
+          data-approval-row={pending ? "" : undefined}
+          className={`flex min-w-0 items-center gap-1.5 py-1${pending ? " font-sans [&_*]:font-sans" : ""}`}
         >
           {bare ? null : <ActivityToolIcon state={state} live={live} />}
           {summary}
@@ -5414,6 +5417,21 @@ function ToolCallSummary({
 }) {
   const { action, target, fileName, filePath, isFile, previewMatchesFile } =
     resolveToolCallDisplay(label, preview, cwd);
+  // r96 (Critiquito): a raw command row reads in plain words; the command itself stays in the row's tooltip.
+  const plain = plainCommandRow(label);
+  if (plain !== label) {
+    return (
+      <span
+        data-plain-command
+        className={`min-w-0 flex-1 truncate font-mono text-[13px] ${
+          failed ? "text-red-400" : chip ? "text-content/65" : "text-content/80"
+        }`}
+        title={label}
+      >
+        {plain}
+      </span>
+    );
+  }
   if (!action || !target) {
     return (
       <span
@@ -5534,7 +5552,7 @@ function ApprovalControls({
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
   return (
-    <div className="mt-1.5 flex gap-2">
+    <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
         className="rounded-md bg-content px-2.5 py-0.5 text-[11px] hover:bg-content/80     text-background-base"

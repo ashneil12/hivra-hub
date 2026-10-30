@@ -24,10 +24,20 @@ export function noteParts(note: AgentNote): { head: NotePart[]; line: string | u
         ? [name(note.from), { kind: "text", text: stoppedWords(note) }]
         : [name(note.from), { kind: "text", text: " is with " }, name(note.to)]
       : note.kind === "reported"
-        ? // r78 (Critiquito, c02): a finished worker is a short "X is back" line in the chat, named by its job.
-          [{ ...name(note.from), text: labelTask(note.from.name) ?? note.from.name }, { kind: "text", text: " is back" }]
+        ? // r78 (Critiquito, c02): a finished worker is a short "X is back" line in the chat, named by its job. r96
+          // (Critiquito, c02 6968 "API health … is back: In the project. GET /health …"): a landed job says it plainly.
+          [{ ...name(note.from), text: labelTask(note.from.name) ?? note.from.name }, { kind: "text", text: backWords(note) }]
         : [name(note.from), { kind: "text", text: messagedWords(note) }, name(note.to)];
   return { head, line: detailOf(note) };
+}
+
+const LANDED = /^(Not )?In the project(?: yet)?\.\s*/i;
+
+/** " is done and in the project" for a landed job, " is back, not in the project yet" for one that didn't land. */
+function backWords(note: AgentNote): string {
+  const landed = note.line?.trim().match(LANDED);
+  if (!landed) return " is back";
+  return landed[1] ? " is back, not in the project yet" : " is done and in the project";
 }
 
 /** What a worker's label says about its task: `Worker "Fix the login page"` → `Fix the login page`. */
@@ -42,7 +52,8 @@ const same = (a: string) => a.replace(/[\s.…]+$/, "").replace(/\s+/g, " ").tri
  * its job has the brief's first line as the detail, which is that same label (cut short or not), so it is left off.
  */
 export function detailOf(note: AgentNote): string | undefined {
-  const line = note.line?.trim();
+  // r96: the landed words are in the head of a finished job's line, so the detail is the result alone.
+  const line = (note.kind === "reported" ? note.line?.trim().replace(LANDED, "") : note.line)?.trim();
   if (!line) return undefined;
   const d = same(line);
   for (const side of [note.from, note.to]) {

@@ -20,6 +20,12 @@ export function extractToolPreview(
     coerceString(tool.title) ??
     coerceString(update.name) ??
     coerceString(tool.name);
+  // r96 (c02 BLIND 6968): MonoCode's own tools (delegate_task and the rest) take a brief, a job name and a "Done when"
+  // goal, not files. Reading a path out of those words turned the goal "GET /health says it is alive, … and npm test
+  // passed." into a file row "Read health says … npm test passed.", which Ash read as a result. Their rows are drawn
+  // from the tool itself (monocodeToolCall), never from a preview.
+  if ([title, update.name, tool.name, update.kind, tool.kind].some((v) => typeof v === "string" && MONOCODE_TOOL.test(v.trim())))
+    return undefined;
   const rawKind = (
     coerceString(update.kind) ??
     coerceString(tool.kind) ??
@@ -924,9 +930,14 @@ function findPathInUnknown(value: unknown, depth: number): string | undefined {
   return undefined;
 }
 
+const MONOCODE_TOOL = /^mcp__monocode__[a-z_]+$/;
+
 function looksLikeToolPath(value: string): boolean {
   const text = value.trim();
   if (!text || text.length > 400 || /[\n\r]/.test(text)) return false;
+  // r96: a sentence with a slash in it ("GET /health says it is alive, and npm test passed.") is not a path: a
+  // relative path has at most a couple of spaces and no ", " between words.
+  if (!looksLikeAbsPath(text) && (/\S, \S/.test(text) || (text.match(/\s+/g)?.length ?? 0) >= 3)) return false;
   if (isWeakToolTitle(text)) return false;
   if (/^(\/\/|\/\*|\*)/.test(text)) return false;
   if (/^https?:/i.test(text)) return false;
