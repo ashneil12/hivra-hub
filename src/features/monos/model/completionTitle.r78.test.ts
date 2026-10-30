@@ -8,7 +8,7 @@ describe("a finished worker's row names the model that ran", () => {
 
   // r90 (Ash): the label comes from the hub's own model record; the bench's Grok routing is named beside it.
   it("on the Grok bench a worker recorded as DeepSeek reads DeepSeek, with the bench's Grok run named", () => {
-    expect(completionTitle(worker, { kind: "grok", benchGrok: true })).toBe("DeepSeek V4.1 Flash (bench ran Grok 4.7) · Last week total on the board");
+    expect(completionTitle(worker, { kind: "grok", benchGrok: true })).toBe("Grok 4.7 · DeepSeek wasn't available · Last week total on the board");
     expect(completionTitle({ ...worker, model: "claude:grok-4.7" }, { kind: "grok", benchGrok: true })).toBe("Grok 4.7 · Last week total on the board");
   });
 

@@ -62,6 +62,7 @@ import {
   bridgeFamily,
   GROK_BRIDGE_MODEL_ID,
   GROK_BRIDGE_NAME,
+  unavailableNote,
   isClaudeAliasModel,
   WORKER_BRIDGE_MODEL_ID,
 } from "../../sessions/model/bridgeModels";
@@ -375,10 +376,12 @@ export function launchModelName(
   // call to Grok 4.7, DeepSeek-named workers too (monoSessionCompletion.ts completionTitle), so a start says so.
   // r90 (Ash): the name comes from the hub's own model record; on the Grok bench a non-Grok record says what ran beside it.
   const recorded = launch.harness === "claude" ? claudePillName(name) : name;
-  const shown =
-    launch.harness === "claude" && benchGrok && recorded !== GROK_BRIDGE_NAME ? `${recorded} (bench ran ${GROK_BRIDGE_NAME})` : recorded;
+  const fellBack = launch.harness === "claude" && benchGrok && recorded !== GROK_BRIDGE_NAME;
+  const shown = fellBack ? GROK_BRIDGE_NAME : recorded;
   const effort = launchEffort(launch);
-  return effort ? `${shown} · ${effort}` : shown;
+  // r90 (Critiquito): what ran, its effort, then the quiet reason, as the worker card shows it.
+  const line = effort ? `${shown} · ${effort}` : shown;
+  return fellBack ? `${line} · ${unavailableNote(recorded)}` : line;
 }
 
 /** A model id from any harness, or a family ("sonnet") among the caller's own harness's models. */

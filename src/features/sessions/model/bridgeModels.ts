@@ -17,6 +17,14 @@ export const DEEPSEEK_BRIDGE_MODEL_ID = `claude:${DEEPSEEK_BRIDGE_NATIVE}`;
 export const GROK_BRIDGE_NAME = "Grok 4.7";
 export const DEEPSEEK_BRIDGE_NAME = "DeepSeek V4.1 Flash";
 
+/**
+ * r90 (Critiquito): the quiet reason shown after the model that really ran when the chat asked for another one
+ * ("Grok 4.7 · DeepSeek wasn't available"). Neutral words only: what was asked for, and that it wasn't there.
+ */
+export function unavailableNote(asked: string): string {
+  return `${asked.trim().split(/\s+/)[0]} wasn't available`;
+}
+
 /** Monos and Leads run on Grok 4.7; workers on DeepSeek. */
 export const MONO_BRIDGE_MODEL_ID = GROK_BRIDGE_MODEL_ID;
 export const WORKER_BRIDGE_MODEL_ID = DEEPSEEK_BRIDGE_MODEL_ID;

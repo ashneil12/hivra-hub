@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { projectName } from "../../../shared/lib/paths";
-import { claudePillName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudePillName, ranModel, ranModelText, type RanModel } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { resolveModel } from "../../sessions/model/models";
 import {
   Chatting,
@@ -21,10 +21,13 @@ import type {
   LaunchedSessionView,
 } from "../model/monoSpawnedSessions";
 
-/** The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). */
-function modelLabel(harness: MonoSpawnedSession["harness"], model: string): string {
+/**
+ * The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). r90: what really ran, with
+ * the quiet reason when the chat asked for another ("Grok 4.7" then "DeepSeek wasn't available").
+ */
+function modelLabel(harness: MonoSpawnedSession["harness"], model: string): RanModel {
   const name = resolveModel(harness, model).name;
-  return harness === "claude" ? claudePillName(name) : name;
+  return ranModel(harness, harness === "claude" ? claudePillName(name) : name);
 }
 
 const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
@@ -146,12 +149,17 @@ export function LaunchedSessionCard({
       <span
         data-launched-model
         className="min-w-0 max-w-[30%] shrink-0 truncate text-[12px] text-content/55"
-        title={`Runs on ${modelLabel(launch.harness, launch.model)}${
+        title={`Runs on ${ranModelText(modelLabel(launch.harness, launch.model))}${
           launch.effort ? `, ${launch.effort} effort` : ""
         }`}
       >
-        {modelLabel(launch.harness, launch.model)}
+        {modelLabel(launch.harness, launch.model).name}
         {launch.effort ? ` · ${launch.effort}` : ""}
+        {modelLabel(launch.harness, launch.model).note ? (
+          <span data-launched-model-note className="text-content/40">
+            {` · ${modelLabel(launch.harness, launch.model).note}`}
+          </span>
+        ) : null}
       </span>
       {/* Squeezed, the title gives way first and the project after it. */}
       <span

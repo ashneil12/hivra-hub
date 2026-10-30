@@ -16,7 +16,7 @@ import {
   type QueuedMessage,
   type Session,
 } from "../../sessions/model/session";
-import { bridgeModelName, GROK_BRIDGE_NAME, type BridgeKind } from "../../sessions/model/bridgeModels";
+import { bridgeModelName, GROK_BRIDGE_NAME, unavailableNote, type BridgeKind } from "../../sessions/model/bridgeModels";
 import { claudeBridgeKind } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { appIdentity } from "../../../app/model/appIdentity";
 
@@ -49,9 +49,10 @@ export function completionTitle(
     session.harness === "claude" && bridge.kind
       ? bridgeModelName(session.model, bridge.kind)
       : session.model?.trim() || undefined;
+  // r90 (Critiquito): what ran comes first, the reason after it, in the same words as the card and the sub-chat row.
   const name =
     recorded && session.harness === "claude" && bridge.benchGrok && recorded !== GROK_BRIDGE_NAME
-      ? `${recorded} (bench ran ${GROK_BRIDGE_NAME})`
+      ? `${GROK_BRIDGE_NAME} · ${unavailableNote(recorded)}`
       : recorded;
   return name ? `${name} · ${title.slice(prefix.length)}` : title;
 }
