@@ -1,4 +1,4 @@
-// A chat's sub-chats in a team's Sessions list (a project's coding team or a Mono's own team; never the Monos rail),
+// A chat's sub-chats in a team's Sessions list (a project's coding team or a Mono's own team) and, since r88, under its Lead in the Monos rail,
 // like Claude Code's grouped sessions but usually hidden (Ash, 20 Oct): folded under a count ("3 sub-chats") unless Ash
 // opened them, opened by themselves when one is stuck, asking or failed, and six at a time with "Show N more". The fold
 // is remembered per chat on this Mac. Folding a chat whose sub-chats opened for a stuck one keeps it folded until
