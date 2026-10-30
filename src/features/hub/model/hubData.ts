@@ -274,19 +274,34 @@ export function sinceHeading(title: string, label: string): string {
   return /^since\b/i.test(title.trim()) ? label : `${title} · ${label.toLowerCase()}`;
 }
 
-export function sinceLabel(iso: string, now = new Date()): string {
+/** A moment's wall clock in a zone: the Mac's own (Europe/London for Ash) unless one is named. */
+function wallClock(at: Date, timeZone?: string): { y: number; mo: number; d: number; h: number; m: number } {
+  if (!timeZone) return { y: at.getFullYear(), mo: at.getMonth(), d: at.getDate(), h: at.getHours(), m: at.getMinutes() };
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", { timeZone, year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", hourCycle: "h23" })
+      .formatToParts(at)
+      .map((part) => [part.type, Number(part.value)]),
+  );
+  return { y: parts.year, mo: parts.month - 1, d: parts.day, h: parts.hour, m: parts.minute };
+}
+
+/**
+ * r83: Today's "Since …" reads Ash's own clock. With no zone named it is the Mac's (Europe/London), so 13:30 UTC in
+ * July reads "Since 2:30pm" (BST); a test names the zone to prove it.
+ */
+export function sinceLabel(iso: string, now = new Date(), timeZone?: string): string {
   const then = new Date(iso);
-  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  const days = Math.round((day(now) - day(then)) / 86_400_000);
+  const a = wallClock(then, timeZone);
+  const b = wallClock(now, timeZone);
+  const days = Math.round((Date.UTC(b.y, b.mo, b.d) - Date.UTC(a.y, a.mo, a.d)) / 86_400_000);
   if (days <= 0) {
-    const h = then.getHours();
-    const m = then.getMinutes();
-    const hour = h % 12 || 12;
-    return `Since ${hour}${m ? `:${String(m).padStart(2, "0")}` : ""}${h < 12 ? "am" : "pm"}`;
+    const hour = a.h % 12 || 12;
+    return `Since ${hour}${a.m ? `:${String(a.m).padStart(2, "0")}` : ""}${a.h < 12 ? "am" : "pm"}`;
   }
   if (days === 1) return "Since yesterday";
-  if (days < 7) return `Since ${then.toLocaleDateString("en-GB", { weekday: "long" })}`;
-  return `Since ${then.toLocaleDateString("en-GB", { day: "numeric", month: "short" })}`;
+  const zone = timeZone ? { timeZone } : {};
+  if (days < 7) return `Since ${then.toLocaleDateString("en-GB", { weekday: "long", ...zone })}`;
+  return `Since ${then.toLocaleDateString("en-GB", { day: "numeric", month: "short", ...zone })}`;
 }
 
 /**
