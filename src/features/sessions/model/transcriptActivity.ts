@@ -8,6 +8,7 @@ import {
   isWeakToolTitle,
 } from "../../../integrations/harness/core/preview";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { leafName } from "../../files/model/fileName";
 import {
   displayPath,
@@ -731,7 +732,7 @@ export function turnCopyText(blocks: Block[]): string {
     .map((block) => {
       const text = block.text.replace(/\r\n?/g, "\n").trim();
       // r74: Copy gives what the reply shows, without em dashes.
-      return block.role === "assistant" ? withoutEmDashes(text) : text;
+      return block.role === "assistant" ? engineLabelOnOwnLine(withoutEmDashes(text)) : text;
     })
     .filter(Boolean)
     .join("\n\n");
