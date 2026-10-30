@@ -7764,7 +7764,7 @@ function Workspace({
       // His answer is the answer: the job reads Working again, and its resumed turn reports to the Lead.
       if (answeredJob?.state === "question")
         void delegationsRef.current?.setQuestion(answeredJob, null, "ash", { answers: "ash-in-chat" }).catch(() => undefined);
-      if (answeredJob) noteAshAnswer(answeredJob.id, text);
+      if (answeredJob) noteAshAnswer(answeredJob.id, text, Date.now(), { owner: answeredJob.ownerSession, project: answeredJob.project });
       // r89 (Ash): his answer drops the Lead's queued wake with this worker's question, so the Lead never asks it.
       if (answeredJob) {
         const owner = sessionsRef.current.find((s) => s.id === answeredJob.ownerSession);

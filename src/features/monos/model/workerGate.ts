@@ -3,7 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Session } from "../../sessions/model/session";
 import { gateLog } from "../../hub/model/waitingChats";
-import { ashAnsweredWorkerSince } from "./ashAnswersWorker";
+import { ashAnsweredOnProject, ashAnsweredWorkerSince } from "./ashAnswersWorker";
 import { waitsOnAshCall, type MonoSessionCompletionResult } from "./monoSessionCompletion";
 
 export type GateRun = { name: string; ok: boolean; output: string };
@@ -86,6 +86,8 @@ export function signedOffFor(
 ): boolean {
   const from = signOffFrom(workerStarted, owner, project, rows);
   if (signedOffSince(owner, from, log)) return true;
+  // r89: his answer to an earlier job whose row the window already let go still counts, within reach.
+  if (project && ashAnsweredOnProject(owner, project, Math.min(from, workerStarted - SIGN_OFF_REACH_MS))) return true;
   const jobs = rows.filter((r) => r.ownerSession === owner && (!project || r.project === project) && r.createdAt >= from);
   return ashAnsweredWorkerSince(
     jobs.map((r) => r.id),
