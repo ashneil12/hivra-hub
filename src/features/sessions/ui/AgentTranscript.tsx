@@ -1430,6 +1430,7 @@ function AgentTranscriptComponent({
                 }
                 background={backgroundTasks}
                 modelName={turnModelName}
+                approvalAtButtons={!!onApproval && !managed && !pendingQuestion}
               />
             ) : agentMascot && agentName ? (
               // A Mono signs its settled turns with just its mascot and name.
@@ -2097,17 +2098,20 @@ function LiveFoldTitle({
   waitingLabel,
   background,
   modelName,
+  approvalAtButtons,
 }: {
   startedAt?: number;
   paused: boolean;
   waitingLabel?: string;
   background?: string[];
   modelName?: string;
+  /** r83 (Critiquito): "Waiting for approval" sits beside Allow and Deny, so the fold line keeps its clock. */
+  approvalAtButtons?: boolean;
 }) {
   const elapsedMs = useElapsedFrom(startedAt, paused);
   // Yielding with a command still going is not the end of the turn. The clock
   // keeps running and the line says what it is waiting on.
-  const text = paused
+  const text = paused && !(approvalAtButtons && !waitingLabel)
     ? (waitingLabel ?? "Waiting for approval")
     : background?.length
       ? `${formatWorkingDuration(elapsedMs, modelName)} · ${backgroundLabel(background)}`
@@ -5496,6 +5500,7 @@ function ApprovalControls({
       >
         Deny
       </button>
+      <span className="self-center text-[11px] text-content/50">Waiting for approval</span>
     </div>
   );
 }

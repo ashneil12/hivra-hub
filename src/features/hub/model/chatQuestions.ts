@@ -348,7 +348,8 @@ function permissionText(call: ApprovalCall | undefined, toolName: string | undef
   const file = call?.paths?.[0]?.split("/").pop();
   if (file) {
     if (/^(edit|write|multiedit|notebookedit)$/i.test(tool)) return `Allow it to change ${file}?`;
-    if (/^(grep|glob|ls)$/i.test(tool)) return `Allow it to look through ${file}?`;
+    // r83 (Critiquito: "Allow the Tally health, validation and board chat to search its files?"): short, no folder.
+    if (/^(grep|glob|ls)$/i.test(tool)) return "Allow it to search its files?";
     // r81 (Critiquito): never a tool's name; reading or anything else unnamed on a file is looking at it.
     return `Allow it to look at ${file}?`;
   }
@@ -367,8 +368,8 @@ export function whoAsks(input: { monoName?: string; title?: string; orchestrator
   if (!title || /^(new chat|untitled|a chat)$/i.test(title) || /^mc-[0-9a-f]+$/i.test(title) || title.length > 40) return "it";
   // r82 (c02): a coding-team chat that sends out workers is not one of them: "the Tally health chat".
   if (input.orchestrator) return `the ${title} chat`;
-  const plain = /^[A-Z][a-z]/.test(title) ? title[0].toLowerCase() + title.slice(1) : title;
-  return `the ${plain} worker`;
+  // r83 (Critiquito): the job's name as written, capital kept, and "worker" said once.
+  return `the ${title.replace(/^(?:the\s+)?worker\s*[:·-]?\s*/i, "")} worker`;
 }
 
 /** The permission question with "it" swapped for who asks. */

@@ -83,6 +83,10 @@ export type ClaudeCliSettings = {
   fastMode?: boolean;
   ultracode?: boolean;
   disableAllHooks?: boolean;
+  /** r83 (quietWorkers.ts): Claude Code's own phone pushes and done/needs-input pings, off for hub workers. */
+  agentPushNotifEnabled?: boolean;
+  inputNeededNotifEnabled?: boolean;
+  taskCompleteNotifEnabled?: boolean;
   /** Tokens at which Claude Code compacts (100K-1M); it uses the smaller of this and the model window. */
   autoCompactWindow?: number;
   /** Claude Code permission rules; deny rules hold even in bypassPermissions (devCopies.ts uses them). */

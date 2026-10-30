@@ -226,7 +226,8 @@ export function ResourcePressureNotice({
                 strokeWidth={1.75}
                 aria-hidden
               />
-              <span>Mac busy: {busyParts.join(", ")}</span>
+              {/* r83 (Critiquito): what's busy and what a click does, in the footer itself. */}
+              <span>Your Mac is busy ({busyParts.join(", ")})… click to see what's running</span>
             </button>,
             chipHost,
           )

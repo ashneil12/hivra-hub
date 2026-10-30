@@ -771,6 +771,9 @@ export async function runBench(options, hooks = {}) {
       return out.sort((a, b) => a.t - b.t);
     };
 
+    // r83 (Critiquito 7): no two shots may be the same picture; a repeat (a locked screen, a window that didn't draw)
+    // is reported as a failed shot, never passed off as a new one.
+    const shotHashes = new Map();
     const screenshot = async (name) => {
       const file = path.join(evidence, "screens", `${name}.png`);
       fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -780,7 +783,16 @@ export async function runBench(options, hooks = {}) {
       const shot = spawnSync("screencapture", ["-x", "-o", "-l", String(window.id), file], { encoding: "utf8" });
       if (shot.status !== 0 || !fs.existsSync(file) || fs.statSync(file).size < 2000)
         return { ok: false, why: `screencapture failed (${shot.status}): ${(shot.stderr || "").trim().slice(0, 200)}` };
-      return { ok: true, file: path.relative(evidence, file), window: { id: window.id, onscreen: window.onscreen } };
+      // r83 (Critiquito): the whole main screen too, so a macOS banner (top right) from anything the run started shows.
+      // -x: no sound; nothing is clicked.
+      const whole = file.replace(/\.png$/, "-screen.png");
+      const full = spawnSync("screencapture", ["-x", "-m", whole], { encoding: "utf8" });
+      const screen = full.status === 0 && fs.existsSync(whole) ? path.relative(evidence, whole) : null;
+      const hash = crypto.createHash("sha1").update(fs.readFileSync(file)).digest("hex");
+      const same = shotHashes.get(hash);
+      shotHashes.set(hash, shotHashes.get(hash) ?? name);
+      if (same) return { ok: false, why: `same picture as ${same} (the screen may be locked or the window didn't redraw)`, file: path.relative(evidence, file), screen };
+      return { ok: true, file: path.relative(evidence, file), screen, window: { id: window.id, onscreen: window.onscreen } };
     };
 
     const memoryCalls = () => readNdjson(path.join(state, "memory-calls.ndjson"));

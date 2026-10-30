@@ -1,5 +1,5 @@
 // r81 (c02 r80): "Five workers start now" stood with none started, and "always run npm test" was saved 3 minutes late.
-import { expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import { notStartedNote, SAVE_RULE_PREFIX, standingRuleNudge, workerStartNudge } from "./workerStartNudge";
 
@@ -32,4 +32,15 @@ it("not when it was saved, while it works, once nudged, before it replied, or wi
   expect(standingRuleNudge(chat(replied), new Set(["u1"]))).toBeUndefined();
   expect(standingRuleNudge(chat([ash(dump)]), new Set())).toBeUndefined();
   expect(standingRuleNudge(chat([ash("the board always shows this week"), said("Got it.")]), new Set())).toBeUndefined();
+});
+
+describe("r83: the standing rule goes out flagged with Ash's message", () => {
+  it("flags his rule so the first turn saves it, and nothing else", async () => {
+    const { standingRuleSendNote } = await import("./workerStartNudge");
+    const note = standingRuleSendNote("fix the board. from now on always run npm test before u say anything is done");
+    expect(note).toContain("ash_remember");
+    expect(note).toContain("from now on always run npm test");
+    expect(standingRuleSendNote("fix the board and the readme")).toBeUndefined();
+    expect(standingRuleSendNote("[MonoCode save rule] from now on always run npm test")).toBeUndefined();
+  });
 });

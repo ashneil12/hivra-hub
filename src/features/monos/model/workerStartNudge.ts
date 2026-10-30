@@ -93,7 +93,7 @@ export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): Q
   }
   if (index < 0) return undefined;
   const ask = chat.blocks[index];
-  const rule = ask.text.split(/(?<=[.!?\n])\s*/).find((line) => STANDING_RULE.test(line))?.trim();
+  const rule = standingRuleIn(ask.text);
   if (!rule || nudged.has(ask.id)) return undefined;
   const after = chat.blocks.slice(index + 1);
   if (!after.some((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim())) return undefined;
@@ -104,4 +104,20 @@ export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): Q
     waitForIdle: true,
     text: forUser`${SAVE_RULE_PREFIX} From the app: Ash gave a standing rule ("${rule.slice(0, 200)}") and it isn't saved yet. Save it now with ash_remember, in his words, then carry on; one line to him at most. This is an app notification, not a new message from Ash.`,
   };
+}
+
+/** The first line of Ash's message that is a standing rule, if any. */
+export function standingRuleIn(text: string): string | undefined {
+  if (/^\s*\[MonoCode /.test(text)) return undefined;
+  return text.split(/(?<=[.!?\n])\s*/).find((line) => STANDING_RULE.test(line))?.trim() || undefined;
+}
+
+/**
+ * r83 (c02 r82: the rule was saved only after the post-turn nudge): the app spots the rule when Ash's message goes out
+ * and hands it with that message, so the first turn saves it. The nudge above stays as the backstop.
+ */
+export function standingRuleSendNote(text: string): string | undefined {
+  const rule = standingRuleIn(text);
+  if (!rule) return undefined;
+  return forUser`<monocode_app>\nThis message holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it with ash_remember in his words as your first step this turn, before you reply or start work.\n</monocode_app>`;
 }

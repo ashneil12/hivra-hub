@@ -18,6 +18,9 @@ import { INTERRUPT_MESSAGE } from "./inFlight";
 import type { Block, ToolPreview } from "./session";
 import { allModels } from "./models";
 import { monoCodeWorkSummary } from "./monocodeToolCall";
+import { plainSearchLabel } from "../../../shared/lib/plainSearch";
+
+export { plainSearchLabel };
 
 export type ToolCallState = "pending" | "accepted" | "rejected";
 
@@ -64,8 +67,12 @@ export function toolCallState(block: Block): ToolCallState {
   return "pending";
 }
 
+
 export function toolCallLabel(block: Block, cwd?: string): string {
   const preview = block.tool?.preview;
+  const searching = preview?.kind === "search" || /^(search|grep|glob)$/i.test(block.tool?.kind ?? "");
+  const plain = searching && preview?.query ? plainSearchLabel(preview.query) : undefined;
+  if (plain) return plain;
   const path = preview?.path
     ? displayPath(preview.path, cwd)
     : preview?.fileName;

@@ -10,7 +10,7 @@ describe("plainCommandQuestion (Critiquito, 29 Oct: say what the step does, neve
     [`git -C ${T}/mc-89dad719 diff -- packages/api/src/server.ts`, "Allow it to check what's changed in a worker's copy of Tally?"],
     ["npm test", "Allow it to run the tests?"],
     ["git worktree add ../tally-health-board", "Allow it to make a worker's copy?"],
-    ["rg -n -g '*.{ts,tsx}' 'week|Monday' packages", "Allow it to look through the files?"],
+    ["rg -n -g '*.{ts,tsx}' 'week|Monday' packages", "Allow it to search its files?"],
     ["jq '.x' data.json", "Allow it to run a command?"],
   ])("%s", (command, question) => {
     expect(plainCommandQuestion(command)).toBe(question);

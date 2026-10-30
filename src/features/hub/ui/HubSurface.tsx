@@ -32,7 +32,7 @@ import { OlderQuestions } from "./OlderQuestions";
 import { appSinceText, sinceGlance, sinceParagraph, withoutStuckTalk } from "../model/appSince";
 import { leadNameOf } from "../../monos/ui/StuckWorkerCard";
 import { openLead } from "../../monos/model/stuckActions";
-import { chatBusy, useChatsBusyVersion, useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
+import { chatBusy, findWaitingChat, useChatsBusyVersion, useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
 import { BuildsView } from "./BuildsView";
 import { BeingBuiltView } from "./BeingBuiltView";
 import { DecisionsPage } from "./DecisionsPage";
@@ -185,6 +185,8 @@ function TodayBody({ projectId }: { projectId: string }) {
         changes: [],
         nameOf: (row) => leadNameOf({ row }),
         checking: (row) => chatBusy(row.ownerSession),
+        // A choice put to Ash, not a permission card (that is a step to allow, not a decision on the work).
+        awaitingAsh: (row) => { const w = findWaitingChat(row.ownerSession); return !!w && w.source !== "permission"; },
         // Ash OS's stuck and gave-up jobs join the app's own in one count and one list (appSince.ts).
         jobs: data
           .listProjects()

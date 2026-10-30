@@ -76,7 +76,14 @@ export async function runScenario(scenario, ctx) {
       const rows = await ctx.delegationRows();
       const leadSession = await ctx.monoSession(leadId);
       const open = rows.filter((row) => (row.owner_mono === leadId || row.owner_session === leadSession) && (to.worker === "any" || ["running", "question"].includes(row.state)));
-      const pick = to.worker === "question" ? open.filter((row) => row.state === "question").at(-1) : open.at(-1);
+      let pick = to.worker === "question" ? open.filter((row) => row.state === "question").at(-1) : open.at(-1);
+      // r83 (s14 r82: "no such target yet"): a worker that stopped on Ash's choice ends its turn, so its row is completed,
+      // not "question", while its Lead shows the Needs you. That stopped worker's chat is the one Ash opens to answer.
+      if (!pick && to.worker === "question") {
+        const snap = await act("snapshot");
+        const asking = (snap.sessions ?? []).some((x) => x.id === leadSession && x.question);
+        if (asking) pick = rows.filter((row) => (row.owner_mono === leadId || row.owner_session === leadSession) && row.state === "completed").at(-1);
+      }
       if (!pick) return null;
       return { session: pick.child_session, owner: pick.owner_session };
     }
@@ -153,7 +160,13 @@ export async function runScenario(scenario, ctx) {
     }
     if (cond.settled) {
       const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000);
-      return rows.length > 0 && rows.every((row) => !["running", "question"].includes(row.state));
+      if (!rows.length || rows.some((row) => ["running", "question"].includes(row.state))) return false;
+      // r83 (c02 r82: the board came back at +197s and the run ended at +210s, before its Lead said so): settled means
+      // every report is handed over and the chats that own them have answered it, not only that the workers stopped.
+      if (rows.some((row) => ["pending", "queued"].includes(row.delivery))) return false;
+      const owners = new Set(rows.map((row) => row.owner_session).filter(Boolean));
+      const snap = await act("snapshot");
+      return !(snap.sessions ?? []).some((x) => owners.has(x.id) && (x.busy || x.queued));
     }
     if (cond.quiet) {
       const snap = await act("snapshot");
@@ -188,6 +201,28 @@ export async function runScenario(scenario, ctx) {
     for (const as of scenario.allowPromptly ?? []) {
       const session = chatSession(as);
       if (!session) continue;
+      // r83 (Critiquito 6): the first live card is shot twice before Allow: from the Inbox, where the ask is off screen
+      // and the sidebar foot's neutral card stands in for it, then in the chat itself with its Allow and Deny.
+      if (!record.permissionShots) {
+        const held = ((await act("snapshot").catch(() => null))?.sessions ?? []).find((x) => x.id === session)?.approvals ?? 0;
+        if (held > 0) {
+          record.permissionShots = [];
+          const project = ctx.project ? path.basename(String(ctx.project)) : "tally";
+          await act("open", { hub: { project, item: "inbox" }, settleMs: 2500 }, 30_000).catch(() => null);
+          record.permissionShots.push({ name: "permission-fallback", shot: await ctx.screenshot(`${scenario.id}-permission-fallback`) });
+          // The chat's own place: its project's coding team view for a coding-team chat (the main pane shows its card),
+          // else the chat itself.
+          const inTeam = ((await act("snapshot").catch(() => null))?.sessions ?? []).find((x) => x.id === session)?.codingTeam;
+          if (inTeam) await act("open", { hub: { project: inTeam, item: "coding-team" }, settleMs: 2500 }, 30_000).catch(() => null);
+          else {
+            await act("open", { session }, 30_000).catch(() => null);
+            await new Promise((resolve) => setTimeout(resolve, 2500));
+          }
+          const dom = (await act("snapshot").catch(() => null))?.dom;
+          record.permissionShots.push({ name: "permission-ask", shot: await ctx.screenshot(`${scenario.id}-permission-ask`), text: String(dom?.bodyText ?? dom?.mainText ?? "").slice(0, 4000) });
+          log(`  shot the live permission card (fallback and in the chat) before Allow`);
+        }
+      }
       const answer = await act("approve", { session }).catch((error) => ({ ok: false, error: error.message }));
       if (!answer.ok || !answer.approved) continue;
       record.marks.push({ t: Date.now(), approve: { chat: as, promptly: true }, answer });
