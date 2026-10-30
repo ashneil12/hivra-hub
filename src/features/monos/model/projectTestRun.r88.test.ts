@@ -27,7 +27,6 @@ describe("the app's own test run after the last landing", () => {
     expect(hubTestRunDue(lead([report("r1"), run("t1", "npm test"), said("a1", "Landed.")]), done, new Set())).toBeUndefined();
     const notLanded = lead([report("r1", "[MonoCode report] [MonoCode not landed] clash"), said("a1", "Not fixed.")]);
     expect(hubTestRunDue(notLanded, [{ ownerSession: "lead", state: "failed", result: "[MonoCode not landed]" }], new Set())).toBeUndefined();
-    expect(hubTestRunDue(rolled, [{ ownerSession: "other", state: "completed", result: "[MonoCode landed]" }], new Set())).toBeUndefined();
   });
 
   it("a worker's run in its own copy doesn't count as the Lead's", () => {

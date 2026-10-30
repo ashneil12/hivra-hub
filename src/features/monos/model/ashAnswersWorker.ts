@@ -5,6 +5,7 @@
 // at once to save his call and say what happens next; and the worker's turn carries a note that his words decide.
 import { forUser } from "../../hub/model/userName";
 import type { QueuedMessage } from "../../sessions/model/session";
+import { isQuestionWakeFor } from "./delegationQuestions";
 import { isOpenDelegation, type Delegation } from "./delegations";
 
 export const ASH_ANSWERED_PREFIX = "[MonoCode Ash answered]";
@@ -34,13 +35,36 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
 }
 
 /**
+ * r89 (Ash): once he has answered in the worker's chat, the Lead's queued wake carrying that worker's question is
+ * dropped, so the Lead never puts the answered question to him. The ids to take out of the Lead's queue.
+ */
+export function answeredQuestionWakes(lead: { queuedMessages?: readonly Pick<QueuedMessage, "id">[] } | undefined, workerChat: string): string[] {
+  return (lead?.queuedMessages ?? []).filter((message) => isQuestionWakeFor(message, workerChat)).map((message) => message.id);
+}
+
+/**
  * r86 (s14 r85 run 1, +285s: the Lead, not yet told, started a second worker on "gone for good" after Ash had said "keep
  * them 30 days"): the jobs Ash answered in their worker's chat, with his words, for this window. A redo of such a job, or
  * a new one like it while it is still open, is turned back once with his words (agentAppTasks.ts delegate).
  */
-const answered = new Map<string, { words: string; refused: Set<string>; at: number }>();
-export function noteAshAnswer(rowId: string, words: string, at = Date.now()): void {
-  answered.set(rowId, { words: short(words, 400), refused: new Set(), at });
+const answered = new Map<string, { words: string; refused: Set<string>; at: number; owner?: string; project?: string | null }>();
+export function noteAshAnswer(
+  rowId: string,
+  words: string,
+  at = Date.now(),
+  where?: { owner: string; project: string | null | undefined },
+): void {
+  answered.set(rowId, { words: short(words, 400), refused: new Set(), at, owner: where?.owner, project: where?.project });
+}
+
+/**
+ * r89 (s14 run 1: the follow-up job's routes check still called delete "unsigned" after Ash had answered the first
+ * job in its worker's chat; that job's row had been delivered and let go, so the check never saw it): whether he
+ * answered a job of this Lead on this project, in its worker's chat, at or after `since`.
+ */
+export function ashAnsweredOnProject(owner: string, project: string, since: number): boolean {
+  for (const record of answered.values()) if (record.owner === owner && record.project === project && record.at >= since) return true;
+  return false;
 }
 
 /**

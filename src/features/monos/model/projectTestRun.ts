@@ -72,6 +72,8 @@ export function projectTestNote(chat: Session, noted: ReadonlySet<string>, now =
   } as Block;
 }
 
+const STALE_REPORT_MS = 2 * 60 * 60 * 1000;
+
 /**
  * r88 (Ash, step 4: "if the Lead didn't run the tests in the project before its roll-up, the hub runs them itself after
  * the last landing and posts the 'Test run in the project' note"): when that run is due. Its jobs have all settled, one
@@ -82,10 +84,13 @@ export function hubTestRunDue(
   chat: Pick<Session, "id" | "blocks" | "cwd" | "busy">,
   rows: readonly { ownerSession: string; state: string; result?: string | null }[],
   done: ReadonlySet<string>,
+  now = Date.now(),
 ): { key: string; project: string } | undefined {
   if (chat.busy || !chat.cwd || /-worktrees\//.test(chat.cwd)) return undefined;
+  // r89 (s16 run 1): a delivered job's row is let go by the window (delegations.ts retained), so its rows are often
+  // gone by the roll-up; the landing is then read from the chat's own reports. Only a job still open holds the run.
   const mine = rows.filter((r) => r.ownerSession === chat.id);
-  if (!mine.length || mine.some((r) => r.state === "running" || r.state === "question")) return undefined;
+  if (mine.some((r) => r.state === "running" || r.state === "question")) return undefined;
   const landed = (text: string | null | undefined) => (text ?? "").includes("[MonoCode landed]");
   if (!mine.some((r) => landed(r.result)) && !chat.blocks.some((b) => isReport(b) && landed(b.text))) return undefined;
   let reportAt = -1;
@@ -93,9 +98,12 @@ export function hubTestRunDue(
     if (isReport(block)) reportAt = index;
   });
   if (reportAt < 0) return undefined;
+  // An old roll-up (a chat reopened hours later) doesn't start a run on its own.
+  const reportTime = chat.blocks[reportAt].startedAt ?? chat.blocks[reportAt].sentAt;
+  if (reportTime !== undefined && now - reportTime > STALE_REPORT_MS) return undefined;
   const after = chat.blocks.slice(reportAt + 1);
   if (!after.some((b) => b.role === "assistant" && !b.tool && b.text.trim() && !b.streaming)) return undefined;
-  if (after.some((b) => projectRun(b) || b.id.startsWith("hub-tests-"))) return undefined;
+  if (after.some((b) => projectRun(b) || b.id?.startsWith("hub-tests-"))) return undefined;
   const key = `hub-tests-${chat.blocks[reportAt].id}`;
   return done.has(key) ? undefined : { key, project: chat.cwd };
 }
