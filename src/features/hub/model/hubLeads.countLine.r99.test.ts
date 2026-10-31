@@ -25,5 +25,5 @@ it("the count line matches its detail, and decisions on his card are pointed to,
   if (!lead) return;
   const soul = leadSoul(lead, "/code/x");
   expect(soul).toContain("each one matches what you then list under it");
-  expect(soul).toContain("instead of pasting them again");
+  expect(soul).toContain("Never relist his Inbox decisions in a recap");
 });
