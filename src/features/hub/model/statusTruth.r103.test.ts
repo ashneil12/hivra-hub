@@ -75,6 +75,10 @@ it("r103 (Critiquito b, c, d; 7): the status shape keeps holds on the Inbox, par
   expect(STATUS_SHAPE).toMatch(/needs his yes or his pick is never parked/);
   expect(STATUS_SHAPE).toMatch(/Parked: the settings scroll, because that page needs a real build from the Hub lead\./);
   expect(STATUS_SHAPE).toMatch(/never a numbered list/);
+  // B5 7db4: a 457-character "Done" line, a preview awaiting Apply counted done, and CoS's "waits for your wording" told as a no.
+  expect(STATUS_SHAPE).toMatch(/each line under 30 words/);
+  expect(STATUS_SHAPE).toMatch(/preview he has not applied is not done.*`Needs Ash:` line for the Apply/);
+  expect(STATUS_SHAPE).toMatch(/never turned into a no/);
   expect(STATUS_SHAPE).toMatch(/Chief of Staff already made a call/);
   const msg = "[MonoCode message from Chief of Staff]\n<message>Stripe: check and report only.</message>";
   expect(withInboxCount("lead1", msg, () => true)).toContain(COS_CALL_NOTE);
