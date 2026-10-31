@@ -195,7 +195,9 @@ export function plainOptionLabel(label: string): string {
  */
 function needsAshPattern(): RegExp {
   const name = userName()?.trim();
-  const who = ["ash", "the\\s+user", ...(name && !/^ash$/i.test(name) ? [name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")] : [])];
+  // r103 (8, B5 82ea: Chief of Staff's "**Needs you:** reconnect Hivra and Nibbii" never reached the rail): "Needs you:"
+  // in an agent's reply to Ash is the same ask.
+  const who = ["ash", "you", "the\\s+user", ...(name && !/^ash$/i.test(name) ? [name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replace(/\s+/g, "\\s+")] : [])];
   return new RegExp(`^[\\s>*_\\-•]*needs\\s+(?:${who.join("|")})\\s*(\\((?<flag>[^)]*)\\))?\\s*[*_]*\\s*[:\\-—]\\s*[*_]*\\s*(?<q>.+)$`, "gim");
 }
 const MY_PICK = /^[\s>*_\-•]*(?:my\s+pick|my\s+recommendation|recommend(?:ation|ed)?|suggested|i\s+recommend)\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<p>.+)$/im;

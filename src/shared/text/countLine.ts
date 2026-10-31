@@ -43,7 +43,9 @@ export function withCountLineChecked(text: string): string {
     .filter((b): b is RegExpExecArray => !!b)
     .map((b) => ({ n: Number(b[1]), label: b[2]!.trim() }));
   if (!buckets.length) return text;
-  // "already there" folds into done.
+  // "already there" folds into done; r103 (5, B5 0255: the reply said "14 done, 2 already there" and the screen "16
+  // done") the done bucket still says how many of them were already there.
+  const already = buckets.filter((b) => /^already/i.test(b.label.trim())).reduce((sum, b) => sum + b.n, 0);
   const merged: Bucket[] = [];
   for (const b of buckets) {
     const k = key(b.label);
@@ -58,7 +60,9 @@ export function withCountLineChecked(text: string): string {
     for (const b of merged) b.n = listed.get(key(b.label))!;
   const total = merged.reduce((sum, b) => sum + b.n, 0);
   const of = listed && merged.every((b) => listed.has(key(b.label))) ? total : Math.max(Number(m[1]), total);
-  const line = `Of ${of}: ${merged.map((b) => `${b.n} ${b.label}`).join(", ")}.`;
+  const recounted = !!listed && merged.every((b) => listed.has(key(b.label)));
+  const label = (b: Bucket) => (key(b.label) === "done" && already > 0 && !recounted && already < b.n ? `done (${already} already there)` : b.label);
+  const line = `Of ${of}: ${merged.map((b) => `${b.n} ${label(b)}`).join(", ")}.`;
   // The count line opens the reply.
   const before = text.slice(0, m.index).trim();
   // Each status line is its own paragraph (run d71c: single newlines rendered as one long paragraph); list items stay.
@@ -66,5 +70,20 @@ export function withCountLineChecked(text: string): string {
     .slice(m.index + m[0].length)
     .replace(/^\n+/, "")
     .replace(/([^\n])\n(?![ \t]*(?:[-*•]|\d+[.)])[ \t])(?=[ \t]*\S)/g, "$1\n\n");
-  return [line, before, after].filter(Boolean).join("\n\n");
+  // r103 (Critiquito c, B5 82ea: "Of 40: 13 done, 5 waiting on you" with "Nothing from me is in your Inbox"): with asks
+  // waiting on him, a sentence saying his Inbox is empty is untrue, so it goes.
+  const held = merged.some((b) => (key(b.label) === "waiting" || key(b.label) === "blocked") && b.n > 0);
+  const said = (part: string) => (held ? withoutEmptyInbox(part) : part);
+  return [line, said(before), said(after)].filter(Boolean).join("\n\n");
+}
+
+const EMPTY_INBOX = /[^.!?\n]*\b(?:nothing|no asks?|none)\b[^.!?\n]*\b(?:in|on) (?:your|his) inbox\b[^.!?\n]*[.!?]?/gi;
+/** The text without any sentence saying his Inbox has nothing (a paragraph left empty goes too). */
+export function withoutEmptyInbox(text: string): string {
+  return text
+    .replace(EMPTY_INBOX, "")
+    .split(/\n{2,}/)
+    .map((p) => p.replace(/[ \t]{2,}/g, " ").trim())
+    .filter(Boolean)
+    .join("\n\n");
 }

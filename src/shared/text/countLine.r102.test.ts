@@ -10,7 +10,7 @@ describe("r102 (3, 9): the count line matches the groups it sums up and opens th
     expect(out.split("\n")[0]).toBe("Of 39: 10 done, 1 blocked by your answer, 28 parked.");
   });
   it("already there folds into done when there is no list to recount from", () => {
-    expect(withCountLineChecked("Of 40: 11 done, 1 already there, 28 parked.\n\nThe hub fixes are in.").split("\n")[0]).toBe("Of 40: 12 done, 28 parked.");
+    expect(withCountLineChecked("Of 40: 11 done, 1 already there, 28 parked.\n\nThe hub fixes are in.").split("\n")[0]).toBe("Of 40: 12 done (1 already there), 28 parked.");
   });
   it("the count line moves to the top", () => {
     const out = withCountLineChecked("Here is where things stand.\n\nOf 5: 2 done, 3 parked.");
