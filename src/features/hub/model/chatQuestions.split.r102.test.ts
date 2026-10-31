@@ -13,7 +13,7 @@ describe("r102 (2): one decision per row, in code", () => {
       "Whether notes sync is the notes panel on the same chat?",
       "Whether pin is one chat or several?",
     ]);
-    expect(q.rows?.map((r) => r.pick)).toEqual(["Cmd+N", "match the chat font", "sync the notes panel across windows of the same chat", "Several"]); // the last row is "one chat or several", so its pick is that option);
+    expect(q.rows?.map((r) => r.pick)).toEqual(["Cmd+N", "match the chat font", "sync the notes panel across windows of the same chat", "Several"]); // the last row is "one chat or several", so its pick is that option
     expect(q.more).toBe(3);
   });
   it("an either-or question stays one decision", () => {
