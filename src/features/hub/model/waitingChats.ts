@@ -297,6 +297,19 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
         ...(mono ? { monoId: mono.id } : {}),
         askedAt: old && old.question === q.question ? old.askedAt : now,
       };
+      // r103 (B5 e46f: "1 decision is waiting for you in the Inbox: overnight on Today" while the card showed only the
+      // new "Apply the hub preview" ask): a status reply that asks something new doesn't answer what it asked before,
+      // so the earlier rows stay on the same card beside the new ones.
+      if (q.source === "marker" && old?.source === "marker" && !old.routedToLead && onlyAskedHowThingsStand(chat.blocks, old.askedAt)) {
+        const rowsOf = (c: ChatQuestion): AskRow[] => c.rows ?? [{ question: c.question, options: c.options, pick: c.pick, redLine: !!c.redLine }];
+        const fresh = rowsOf(q);
+        const kept = rowsOf(old).filter((r) => !fresh.some((f) => f.question === r.question));
+        if (kept.length) {
+          const rows = [...kept, ...fresh];
+          if (old.rows && old.rows.map((r) => r.question).join("\u0000") === rows.map((r) => r.question).join("\u0000")) continue;
+          Object.assign(entry, { rows, more: rows.length - 1, askedAt: old.askedAt });
+        }
+      }
       // A held tool call only Ash can allow (r77): never a Lead's to answer.
       if (q.source !== "permission" && router?.(entry)) entry.routedToLead = true;
       // A worker's question is its Lead's, not Ash's, so the gate doesn't judge it. Everything else must be admitted.

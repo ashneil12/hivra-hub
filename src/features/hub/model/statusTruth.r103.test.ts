@@ -55,6 +55,8 @@ it("r103 (2): a dump gets a first reply in two short lines before any tool call;
   expect(isDump(dump)).toBe(true);
   expect(withInboxCount("lead1", dump, () => true)).toContain(FIRST_REPLY_NOTE);
   expect(FIRST_REPLY_NOTE).toMatch(/before any tool call/);
+  // B5 e46f: four red-line asks (privacy page, Stripe, refunds FAQ, reviewer reply) went under parked with no card.
+  expect(FIRST_REPLY_NOTE).toMatch(/needs his yes or his pick .* is never parked: give it its own "Needs Ash:" line/);
   expect(isDump("can you fix the send button")).toBe(false);
   expect(withInboxCount("w1", dump, () => false)).toBe(dump);
 });
@@ -79,6 +81,8 @@ it("r103 (Critiquito b, c, d; 7): the status shape keeps holds on the Inbox, par
   expect(STATUS_SHAPE).toMatch(/each line under 30 words/);
   expect(STATUS_SHAPE).toMatch(/preview he has not applied is not done.*`Needs Ash:` line for the Apply/);
   expect(STATUS_SHAPE).toMatch(/never turned into a no/);
+  // B5 e46f: a launch thread and a kids-mode writeup called done with no report and no draft shown.
+  expect(STATUS_SHAPE).toMatch(/Count as done only what a worker's report or your own earlier reply shows finished/);
   expect(STATUS_SHAPE).toMatch(/Chief of Staff already made a call/);
   const msg = "[MonoCode message from Chief of Staff]\n<message>Stripe: check and report only.</message>";
   expect(withInboxCount("lead1", msg, () => true)).toContain(COS_CALL_NOTE);
