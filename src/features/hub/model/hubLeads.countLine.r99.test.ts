@@ -9,7 +9,8 @@ it("every Lead's soul opens a status answer with one plain count line", () => {
     if (!lead) continue;
     const soul = leadSoul(lead, "/code/x");
     expect(soul).toMatch(/When he asks how things stand .*open with one plain count line/);
-    expect(soul).toContain("`Of 40: 1 running, 5 waiting on you, 34 parked.`");
+    expect(soul).toContain("`Of 40: 0 done, 1 running, 5 waiting on you, 34 parked.`");
+    expect(soul).toContain("always name done, running and waiting, even at 0");
   }
 });
 
