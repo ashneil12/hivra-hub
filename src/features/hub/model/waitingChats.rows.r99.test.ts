@@ -6,7 +6,7 @@ import { mockHubData } from "./mockData";
 import { setHubDataSource } from "./hubData";
 import type { HubProject } from "./types";
 import { chatQuestion } from "./chatQuestions";
-import { answerRow, noteChats, openRows, resetWaitingChats, setWaitingChatsHost, setWorkerQuestionRouter, waitingChats } from "./waitingChats";
+import { NOT_ANSWERED_YET, answerRow, noteChats, openRows, resetWaitingChats, setWaitingChatsHost, setWorkerQuestionRouter, waitingChats } from "./waitingChats";
 import type { QueuedMessage } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 
@@ -99,7 +99,7 @@ describe("a card with several decisions", () => {
     expect(chatQuestion(lead(notes))?.question).toBe("Send the store reply as drafted, or hold it?");
   });
 
-  it("a live question with several parts keeps each part's answer until all have one, then answers once", async () => {
+  it("a live question with several parts: each part's answer goes through on its own (r100 f)", async () => {
     const replies: UserQuestionReply[] = [];
     const prompt = {
       requestId: 4,
@@ -118,9 +118,8 @@ describe("a card with several decisions", () => {
     expect(card.heading).toBe("Two calls on the launch");
     expect(card.rows?.map((r) => r.question)).toEqual(["Which day?", "Which list?"]);
     await answerRow("lead1", card.rows![0]!, "Tuesday", "pick");
-    expect(replies).toEqual([]);
-    expect(openRows(waitingChats("tally")[0]!).map((r) => r.question)).toEqual(["Which list?"]);
-    await answerRow("lead1", card.rows![1]!, "only the beta folks");
-    expect(replies).toEqual([{ kind: "answered", answers: { a: ["tue"], b: ["__custom__"] }, custom: { b: "only the beta folks" } }]);
+    // It goes at once, without waiting for "Which list?"; that one goes back as not answered yet, to be asked again.
+    expect(replies).toEqual([{ kind: "answered", answers: { a: ["tue"], b: ["__custom__"] }, custom: { b: NOT_ANSWERED_YET } }]);
+    expect(NOT_ANSWERED_YET).toMatch(/Needs Ash:/);
   });
 });
