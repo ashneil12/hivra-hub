@@ -15,3 +15,18 @@
 [realtest 03:52:48] owner name: Ash
 [realtest 03:52:48] == b5-dump-restart-blind: BLIND: Ash dumps about 40 asks into the Lead, quits the app, opens it again and asks what happened
 [realtest 03:52:49]   Ash -> tally-lead: ok brain dump before i forget, hub stuff first. inbox rows r still too tall on the laptop.
+[realtest 03:53:10]   Ash -> tally-lead: hivra: onboarding copy is too long cut it in half. the price page still says beta remove t
+[realtest 03:53:36]   Ash -> tally-lead: nibbii next. the colour picker shud remember recent colours. export to png cuts off the ed
+[realtest 03:53:52]   Ash -> tally-lead: x stuff, dont post anything just draft. draft a thread about the hub launch. find who was 
+[realtest 03:57:55]   wait {"monoReply":"lead","maxSec":240}: NOT met after 243s
+[realtest 04:22:56]   wait {"any":[{"settled":true},{"quiet":true,"quietSec":90}],"maxSec":1500}: NOT met after 1501s
+[realtest 04:27:04] app pid 80883
+[realtest 04:27:04]   Ash quits the app and opens it again: back as pid 80883
+[realtest 04:27:29]   Ash -> tally-lead: wat happened to the stuff i dumped earlier
+[realtest 04:28:38]   wait {"monoReply":"lead","maxSec":300}: met after 69s
+[realtest 04:28:55]   b5-dump-restart-blind: 11 turns, 0 room messages, 1 delegations, 36.11 min
+[realtest 04:28:56] account 1 use after: 5-hour ?, 7-day ?
+[realtest 04:28:56] done: 11 turns, 634 model requests, 36 min
+[realtest grade] b5-dump-restart-blind ...
+[realtest grade] b5-dump-restart-blind: PARTIAL
+[realtest grade] report: evidence/realtest/20261031-035242-571a/report.md
