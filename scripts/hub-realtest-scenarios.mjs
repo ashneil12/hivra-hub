@@ -646,6 +646,34 @@ function chatLine(text) {
   return text.length <= CHAT_LINE_MAX ? text : `${text.slice(0, CHAT_LINE_MAX)} [${text.length - CHAT_LINE_MAX} more characters clipped by the test harness, not by the chat]`;
 }
 
+// r101 (5): the Lead re-states open asks every reply so the card stays up; the app shows each once (askMarkers.ts),
+// and the raw transcript now does too: a "Needs Ash:" line (and its "My pick:") a chat already asked is dropped.
+const NEEDS_LINE = /^[\s>*_\-•]*needs\s+(?:ash|the\s+user|you)\s*(?:\([^)]*\))?\s*[*_]*\s*[:\-—]\s*[*_]*\s*(.+)$/i;
+const PICK_LINE = /^[\s>*_\-•]*my\s+(?:pick|recommendation)\s*[*_]*\s*[:\-—]/i;
+export function withoutRepeatedAsks(text, seen) {
+  if (!text || !/\bneeds\b/i.test(text)) return text;
+  const out = [];
+  let dropping = false;
+  let dropped = 0;
+  for (const line of text.split("\n")) {
+    const needs = NEEDS_LINE.exec(line);
+    if (needs) {
+      const key = needs[1].replace(/^[*_]+|[*_]+$/g, "").trim().toLowerCase().replace(/\s+/g, " ");
+      dropping = seen.has(key);
+      seen.add(key);
+      if (dropping) dropped++;
+      else out.push(line);
+      continue;
+    }
+    if (dropping && (PICK_LINE.test(line) || !line.trim())) continue;
+    dropping = false;
+    out.push(line);
+  }
+  if (!dropped) return text;
+  const kept = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  return `${kept}${kept ? " " : ""}(${dropped} ask${dropped === 1 ? "" : "s"} it asked before left out)`;
+}
+
 export function transcript(scenario, result, t0) {
   const lines = [`# ${scenario.id}: ${scenario.title}`, "", `Benchmark: ${(scenario.bench ?? []).join(", ")}`, "", "## What this checks", "", scenario.criteria ?? "", ""];
   const timeline = [];
@@ -663,7 +691,13 @@ export function transcript(scenario, result, t0) {
   }
   for (const m of result.room) if (m.from !== ASH) timeline.push({ t: m.t, line: `[room] **${m.from}**${m.quiet ? " (quiet)" : ""}: ${m.text}` });
   for (const m of result.otherRooms) timeline.push({ t: m.t, line: `[room ${m.room}] **${m.from}**: ${m.text}` });
-  for (const line of result.texts) {
+  const askedBy = new Map();
+  for (const raw of result.texts) {
+    let line = raw;
+    if (!line.result && line.text) {
+      if (!askedBy.has(line.who)) askedBy.set(line.who, new Set());
+      line = { ...line, text: withoutRepeatedAsks(line.text, askedBy.get(line.who)) };
+    }
     if (line.result) {
       if (line.isError) timeline.push({ t: line.t, line: `[${line.who}] turn ended with an ERROR: ${line.text}` });
       continue;
