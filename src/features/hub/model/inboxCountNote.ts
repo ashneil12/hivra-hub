@@ -2,17 +2,12 @@
 // again). When Ash asks a Lead how things stand, the app adds, on the wire only, the live count of this chat's asks on
 // his Inbox with their short names, so the count line's "waiting on you" is that number and the recap points to them
 // in one line instead of relisting options or picks.
-import { isStatusQuestion } from "../../monos/model/statusReply";
+import { asksHowThingsStand } from "./statusAsk";
 import { openRows, waitingChats, type WaitingChat } from "./waitingChats";
 
 export const INBOX_COUNT_PREFIX = "[MonoCode inbox count]";
 
-/** "wat happened to the stuff i dumped", "where are we", "hows it going": a question about how things stand. */
-export function asksHowThingsStand(text: string): boolean {
-  const t = text.trim();
-  if (!t || t.length > 200 || t.startsWith("[MonoCode")) return false;
-  return isStatusQuestion(t) || /\bw(?:h)?at\s+(?:happened|happend)\b|\bwhere\s+(?:are|r)\s+we\b|\bwhat'?s\s+(?:left|open|done)\b/i.test(t);
-}
+export { asksHowThingsStand };
 
 /** A decision's short name: its first few words, without the asking ("May Hivra publish a privacy page" → "Hivra publish a privacy page"). */
 export function shortName(question: string): string {
