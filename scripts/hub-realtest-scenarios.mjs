@@ -142,7 +142,7 @@ export async function runScenario(scenario, ctx) {
       const monoId = resolveMono(cond.monoReply ?? cond.monoText);
       const session = await ctx.monoSession(monoId);
       if (!session) return false;
-      const since = cond.monoText ? t0 : (lastSendTo.get(monoId) ?? ref);
+      const since = cond.monoText ? t0 : replySince(lastSendTo, monoId, ref);
       const lines = (await ctx.claudeTexts(since)).filter((line) => line.session === session);
       if (cond.monoText) return lines.some((line) => line.text && new RegExp(cond.pattern, "i").test(line.text));
       return lines.some((line) => line.result);
@@ -410,7 +410,9 @@ export async function runScenario(scenario, ctx) {
       }
     } else if (step.answer) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text, ...(typeof step.answer.row === "number" ? { row: step.answer.row } : {}) }).catch((error) => ({ ok: false, error: error.message }));
-      record.sends.push({ t: Date.now(), label: step.label, todayAnswer: step.answer, result: answer });
+      const at = Date.now();
+      record.sends.push({ t: at, label: step.label, todayAnswer: step.answer, result: answer });
+      noteAnswerSent(lastSendTo, step.answer, resolveMono, at);
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.reload) {
       // The window reloads (a vite full reload, View > Reload): whatever runs is cut the way that cuts it.
@@ -730,4 +732,19 @@ export function transcript(scenario, result, t0) {
   lines.push("## Metrics", "", "```json", JSON.stringify(result.metrics, null, 2), "```", "");
   if (result.notes.length) lines.push("## Harness notes", "", ...result.notes.map((n) => `- ${n}`), "");
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * r102 (run 0266: "wat happened" got no count): answering a pick from the Inbox is a message to that Mono too, so the
+ * next monoReply wait starts there. Before this, that wait took the reply to an earlier send, the pick's own reply
+ * landed after Ash's next question, and was taken as the answer to it.
+ */
+export function noteAnswerSent(lastSendTo, answer, resolveMono, at) {
+  if (answer.mono) lastSendTo.set(resolveMono(answer.mono), at);
+  if (answer.session) lastSendTo.set(answer.session, at);
+}
+
+/** Where a monoReply wait starts looking for a finished reply: the last thing Ash sent that Mono, else the step's start. */
+export function replySince(lastSendTo, monoId, ref) {
+  return lastSendTo.get(monoId) ?? ref;
 }

@@ -297,7 +297,7 @@ export function UsageProviderChip({
                     <span className="text-content/25">·</span>
                   ) : null}
                   <span data-usage-window={entry.key}>
-                    {usageChipLabel(entry.key, entry.window, now, showRemaining)}
+                    {usageChipLabel(entry.key, entry.window, now, showRemaining, providerLabel)}
                   </span>
                 </span>
               ))}

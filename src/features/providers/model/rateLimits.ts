@@ -227,14 +227,17 @@ export function usageChipLabel(
   window: RateLimitWindow,
   now = Date.now(),
   showRemaining = false,
+  /** r102: the provider the chip measures ("Claude week: 40% used"), so the label names what it counts. */
+  provider?: string,
 ): string {
   const pct = clampUsedPercent(window.usedPercent);
-  const prefix =
+  const bare =
     kind === "weekly" ? "Week: "
     : kind === "monthly" ? "Month: "
     : window.windowMinutes === DAILY_WINDOW_MINUTES ? "Today: "
     : window.windowMinutes === SESSION_WINDOW_MINUTES ? "5h: "
     : "";
+  const prefix = provider ? (bare ? `${provider} ${bare.charAt(0).toLowerCase()}${bare.slice(1)}` : `${provider}: `) : bare;
   const amount = `${formatUsagePercent(showRemaining ? 100 - pct : pct)} ${showRemaining ? "left" : "used"}`;
   const nearly = !showRemaining && pct >= NEARLY_USED_PERCENT;
   const when =
@@ -244,7 +247,8 @@ export function usageChipLabel(
         ? "· resets now"
         : `· resets in ${formatResetDuration(window.resetsAt - now)}`;
   // r102 (10): near the limit, plain words in a neutral colour ("Weekly limit nearly used, resets in 5d 15h").
-  if (nearly) return `${nearlyName(kind, window)} limit nearly used${when.startsWith("·") ? `, ${when.slice(2)}` : ""}`;
+  const name = provider ? `${provider} ${nearlyName(kind, window).charAt(0).toLowerCase()}${nearlyName(kind, window).slice(1)}` : nearlyName(kind, window);
+  if (nearly) return `${name} limit nearly used${when.startsWith("·") ? `, ${when.slice(2)}` : ""}`;
   return `${prefix}${amount} ${when}`;
 }
 
