@@ -201,7 +201,7 @@ function TodayBody({ projectId }: { projectId: string }) {
   const projects = data.listProjects().filter((p) => p.id === projectId);
   // Two groups once chats are waiting: "Waiting on you" (agents' questions) above "Needs you" (gates and failures).
   const chatsWaiting =
-    waitingChats(projectId).length > 0 ||
+    waitingChats(projectId, { leadership: true }).length > 0 ||
     failedMonosFor(projectId).length > 0 ||
     stuckWorkersNow.some((s) => stuckProject(s)?.id === projectId);
   const needsShown = projects.some((p) => waiting.some((w) => w.projectId === p.id) || laterItems(p.id).length);

@@ -338,11 +338,13 @@ function admitted(entry: WaitingEntry): boolean {
 }
 
 /** The chats waiting on Ash, oldest question first; one project's when `projectId` is given. Workers routed to a Lead are not his. */
-export function waitingChats(projectId?: string): WaitingChat[] {
+export function waitingChats(projectId?: string, { leadership = false }: { leadership?: boolean } = {}): WaitingChat[] {
+  // r100 (c, B5 936c): a Mono over several projects (Chief of Staff) has no one project, so a project's Inbox dropped
+  // its asks while the rail showed them. With `leadership`, a project's list carries those Monos' asks too.
   return Object.values(load())
     .filter(admitted)
     .map(describe)
-    .filter((c) => !projectId || c.projectId === projectId)
+    .filter((c) => !projectId || c.projectId === projectId || (leadership && c.projectId === null && !!c.monoId))
     .sort((a, b) => a.askedAt - b.askedAt);
 }
 

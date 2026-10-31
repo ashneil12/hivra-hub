@@ -36,7 +36,7 @@ export function WaitingOnYou({ projectId }: { projectId: string | undefined }) {
   // Rows being answered stay put (the store drops a chat the moment its answer goes) until they turn into a tick.
   const [held, setHeld] = useState<Record<string, WaitingChat>>({});
   const [busyAll, setBusyAll] = useState(false);
-  const waiting = waitingChats(projectId);
+  const waiting = waitingChats(projectId, { leadership: true });
   const extra = [...Object.values(held), ...Object.values(sent).map((s) => s.chat)];
   const shown = [...waiting, ...extra.filter((c, i) => !waiting.some((w) => w.sessionId === c.sessionId) && extra.findIndex((e) => e.sessionId === c.sessionId) === i)].sort(
     (a, b) => a.askedAt - b.askedAt,
