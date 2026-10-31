@@ -184,7 +184,7 @@ export function UsageMeter({
           {title} · <span className="tabular-nums">{reset}</span>
         </span>
         <span
-          className={`shrink-0 tabular-nums ${full ? "font-medium text-red-400" : "text-content/60"}`}
+          className={`shrink-0 tabular-nums ${full ? "font-medium text-content/80" : "text-content/60"}`}
         >
           {showRemaining
             ? `${formatUsagePercent(remaining)} left`
@@ -220,8 +220,7 @@ function MeterSkeleton() {
 }
 
 /** Bar colour by percent used; shared with the footer usage chip. */
-export function barClass(pct: number): string {
-  if (pct >= 90) return "bg-red-400";
-  if (pct >= 80) return "bg-amber-400";
+/** r102 (10, Critiquito): the usage bar is never red or amber; a full window is said in plain words instead. */
+export function barClass(_pct: number): string {
   return "bg-content/45";
 }

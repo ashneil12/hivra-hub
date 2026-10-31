@@ -211,6 +211,17 @@ export function formatRateLimitWindowChipLabel(
  * `resetsAt` when it starts over. "5h: 3% used · resets in 2h 45m" for the 5-hour session window, "Week: 99% used · resets
  * in 5d 15h" for the weekly one. With "show remaining" on it says "left" instead.
  */
+/** From here the chip says the limit is nearly used instead of a percentage. */
+export const NEARLY_USED_PERCENT = 90;
+
+function nearlyName(kind: "session" | "weekly" | "monthly", window: RateLimitWindow): string {
+  if (kind === "weekly") return "Weekly";
+  if (kind === "monthly") return "Monthly";
+  if (window.windowMinutes === DAILY_WINDOW_MINUTES) return "Daily";
+  if (window.windowMinutes === SESSION_WINDOW_MINUTES) return "5-hour";
+  return "Usage";
+}
+
 export function usageChipLabel(
   kind: "session" | "weekly" | "monthly",
   window: RateLimitWindow,
@@ -225,12 +236,15 @@ export function usageChipLabel(
     : window.windowMinutes === SESSION_WINDOW_MINUTES ? "5h: "
     : "";
   const amount = `${formatUsagePercent(showRemaining ? 100 - pct : pct)} ${showRemaining ? "left" : "used"}`;
+  const nearly = !showRemaining && pct >= NEARLY_USED_PERCENT;
   const when =
     window.resetsAt == null
       ? `of ${formatWindowLabel(window.windowMinutes)}`
       : window.resetsAt - now <= 0
         ? "· resets now"
         : `· resets in ${formatResetDuration(window.resetsAt - now)}`;
+  // r102 (10): near the limit, plain words in a neutral colour ("Weekly limit nearly used, resets in 5d 15h").
+  if (nearly) return `${nearlyName(kind, window)} limit nearly used${when.startsWith("·") ? `, ${when.slice(2)}` : ""}`;
   return `${prefix}${amount} ${when}`;
 }
 
