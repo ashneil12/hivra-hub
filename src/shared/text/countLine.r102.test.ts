@@ -20,3 +20,8 @@ describe("r102 (3, 9): the count line matches the groups it sums up and opens th
     expect(withCountLineChecked("Done. Nothing new for you.")).toBe("Done. Nothing new for you.");
   });
 });
+
+it("r102 (d71c): each status line is its own paragraph, list items stay together", () => {
+  const out = withCountLineChecked("Of 3: 2 done, 1 parked.\nNothing is in your Inbox.\nDone:\n- a\n- b\nParked: c");
+  expect(out).toBe("Of 3: 2 done, 1 parked.\n\nNothing is in your Inbox.\n\nDone:\n- a\n- b\n\nParked: c");
+});

@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { HarnessIcon, notClaudeRun } from "../../features/sessions/ui/HarnessIcon";
 import { onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
@@ -491,7 +491,8 @@ export function UsageChips({
           limits={claude}
           now={now}
           variant={variant}
-          meterIcon={meterIcon}
+          // r102 (11): a Grok or DeepSeek chat's chip never wears the Claude starburst.
+          meterIcon={meterIcon || notClaudeRun(session?.harness, session?.model)}
           {...claudeAccountProps}
           onReconnect={reconnectClaude}
         />

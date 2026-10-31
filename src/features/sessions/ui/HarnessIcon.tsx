@@ -12,6 +12,7 @@ import antigravity from "../../../assets/providers/antigravity.svg";
 import type { HarnessId } from "../model/session";
 import { MessageSquare } from "../../../shared/ui/icons";
 import { onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { bridgeFamily } from "../model/bridgeModels";
 
 export const HARNESS_ICONS: Record<HarnessId, string> = {
   claude,
@@ -148,12 +149,20 @@ export function HarnessIcon({
   );
 }
 
+/** A Claude Code chat that doesn't run on Claude (the Grok bridge, or a Grok/DeepSeek model name). */
+export function notClaudeRun(harness: string | undefined, model?: string): boolean {
+  if (harness !== "claude") return false;
+  const family = bridgeFamily(model);
+  return onGrokBridge(harness, model) || family === "grok" || family === "deepseek";
+}
+
 /**
  * A chat's mark for the model it really runs. On the Grok bridge a neutral grey chat mark the same size (no Claude
  * starburst, and no Grok mark, whose slashed circle reads as "disabled"). Off the bridge, the harness's own mark.
  */
-export function ModelInUseIcon({ harness, className = "size-3.5" }: { harness: HarnessId; className?: string }) {
-  // r102 (11, Critiquito): a neutral grey session mark, never the Claude starburst on a non-Claude run.
-  if (onGrokBridge(harness)) return <MessageSquare aria-hidden data-model-mark-neutral className={`block text-content/45 ${className}`} />;
+export function ModelInUseIcon({ harness, model, className = "size-3.5" }: { harness: HarnessId; model?: string; className?: string }) {
+  // r102 (11, Critiquito): a neutral grey session mark, never the Claude starburst on a non-Claude run: on the bridge,
+  // or a Claude Code chat whose model is a Grok or DeepSeek name.
+  if (notClaudeRun(harness, model)) return <MessageSquare aria-hidden data-model-mark-neutral className={`block text-content/45 ${className}`} />;
   return <HarnessIcon harness={harness} className={className} />;
 }

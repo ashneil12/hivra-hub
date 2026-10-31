@@ -61,6 +61,10 @@ export function withCountLineChecked(text: string): string {
   const line = `Of ${of}: ${merged.map((b) => `${b.n} ${b.label}`).join(", ")}.`;
   // The count line opens the reply.
   const before = text.slice(0, m.index).trim();
-  const after = text.slice(m.index + m[0].length).replace(/^\n+/, "");
+  // Each status line is its own paragraph (run d71c: single newlines rendered as one long paragraph); list items stay.
+  const after = text
+    .slice(m.index + m[0].length)
+    .replace(/^\n+/, "")
+    .replace(/([^\n])\n(?![ \t]*(?:[-*•]|\d+[.)])[ \t])(?=[ \t]*\S)/g, "$1\n\n");
   return [line, before, after].filter(Boolean).join("\n\n");
 }

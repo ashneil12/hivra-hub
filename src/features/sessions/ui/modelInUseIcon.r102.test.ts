@@ -24,3 +24,14 @@ it("keeps Claude's own mark on a real Claude run", () => {
   expect(html).not.toContain("data-model-mark-neutral");
   expect(html).toContain("<img");
 });
+
+it("a Claude Code chat on a Grok or DeepSeek model is neutral even off the bridge", async () => {
+  bridge.on = false;
+  const { notClaudeRun } = await import("./HarnessIcon");
+  expect(notClaudeRun("claude", "claude:grok-4.7")).toBe(true);
+  expect(notClaudeRun("claude", "deepseek-v4.1-flash")).toBe(true);
+  expect(notClaudeRun("claude", "opus")).toBe(false);
+  expect(notClaudeRun("codex", "grok-4.7")).toBe(false);
+  const html = renderToStaticMarkup(createElement(ModelInUseIcon, { harness: "claude", model: "claude:grok-4.7" }));
+  expect(html).toContain("data-model-mark-neutral");
+});
