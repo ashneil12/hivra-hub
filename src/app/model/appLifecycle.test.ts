@@ -6,6 +6,7 @@ import { killAllChildren } from "../../integrations/harness/core/child";
 import { newSession } from "../../features/sessions/model/session";
 import { newTab } from "../../features/workspace/model/layout";
 import {
+  armBenchQuit,
   askQuitConfirmation,
   closeBusyWindow,
   commitQuit,
@@ -411,6 +412,33 @@ describe("coordinated quit", () => {
     vi.mocked(ask).mockResolvedValue(false);
     await askQuitConfirmation(3, 2);
     expect(invokedWith("quit_decision")).toEqual({ id: 3, confirmed: false });
+  });
+
+  it("r99: a bench quit that meets running work is called off with no Mac dialog, once", async () => {
+    armBenchQuit();
+    await askQuitConfirmation(5, 1);
+    expect(ask).not.toHaveBeenCalled();
+    expect(invokedWith("quit_decision")).toEqual({ id: 5, confirmed: false });
+    // Ash's own Quit afterwards still asks him.
+    await askQuitConfirmation(6, 1);
+    expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  it("r99: a chat waiting only on Ash's answer doesn't count for Quit", async () => {
+    const asking = { ...newSession("claude", "/tmp/cos"), busy: true, pendingQuestion: { requestId: 1, questions: [] } };
+    asking.blocks = [{ id: "u1", role: "user", text: "park the rest" }];
+    const release = setQuitWorkspace(() => [asking], () => [newTab(asking.id)], () => null, () => asking.cwd, () => [], () => new Map(), vi.fn());
+    try {
+      await reportQuitPoll(7);
+      expect(invokedWith("quit_poll_reply")).toEqual({ id: 7, inFlight: 0 });
+      // The same chat with its turn really running does count.
+      vi.mocked(invoke).mockClear();
+      delete (asking as { pendingQuestion?: unknown }).pendingQuestion;
+      await reportQuitPoll(8);
+      expect(invokedWith("quit_poll_reply")).toEqual({ id: 8, inFlight: 1 });
+    } finally {
+      release();
+    }
   });
 
   it("asks once using the count from every window", async () => {

@@ -12193,6 +12193,12 @@ function Workspace({
     return setWaitingChatsHost({
       liveQuestion: (id) => sessionsRef.current.find((s) => s.id === id)?.pendingQuestion,
       respond: (id, requestId, reply) => onQuestionReply(id, requestId, reply),
+      // r99 (Critiquito 3): one row of a card answered, as an app note into a Lead or Mono chat (hidden from Ash).
+      note: async (id, message) => {
+        if (!isOrchestratorChat(id)) return false;
+        await queueMonoSessionCompletionRef.current(id, message);
+        return true;
+      },
       // r77: a held tool call answered from the Waiting card, the same as its own Allow/Deny.
       decide: (id, requestId, decision) => onApproval(id, requestId, decision),
       send: async (id, text) => {

@@ -30,7 +30,8 @@ import { monoFailure, retryMonoFailure } from "../../features/monos/model/monoFa
 import { customModelEfforts, importCustomModels, listCustomModels } from "../../features/sessions/model/customModels";
 import type { RuntimeMode, Session } from "../../features/sessions/model/session";
 import { appIdentity } from "./appIdentity";
-import { isInFlightSession } from "../../features/sessions/model/inFlight";
+import { isRunningWork } from "../../features/sessions/model/inFlight";
+import { armBenchQuit } from "./appLifecycle";
 import { benchAshTeam } from "./benchAshTeam";
 import { teamPack } from "../../features/hub/model/teamPack";
 import { setUserName, userName } from "../../features/hub/model/userName";
@@ -567,8 +568,10 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       // r98 (B5): Ash quits the way the app menu's Quit MonoCode does (verify_live_quit -> window::request_quit), once
       // this answer is written. Never a kill: the windows save their work first. A busy chat would make that Quit ask
       // in a Mac dialog (run df53 left one up for 90s), and the bench never puts a dialog in front of Ash: refuse.
-      const busy = host.sessions().filter(isInFlightSession).length;
+      const busy = host.sessions().filter(isRunningWork).length;
       if (busy) return { ok: false, busy, error: `${busy} chat(s) still running; Quit would ask in a Mac dialog` };
+      // r99: should work start before the quit lands, the quit is called off with no dialog (appLifecycle.ts).
+      armBenchQuit();
       setTimeout(() => void invoke("verify_live_quit").catch((error) => console.error("verify driver quit", error)), Number(action.afterMs ?? 300));
       return { ok: true, at: Date.now() };
     }

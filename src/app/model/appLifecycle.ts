@@ -14,7 +14,7 @@ import {
 import {
   hasInFlightSessions,
   inFlightRefs,
-  isInFlightSession,
+  isRunningWork,
   markTurnInterrupted,
   quitWhileBusyMessage,
   wasTurnInterrupted,
@@ -167,12 +167,23 @@ export async function reportQuitPoll(
   if (liveWorkspace) {
     liveWorkspace.flush();
     // Every running turn, not just the resumable ones `inFlightRefs` keeps:
-    // an Inbox Ask still counts as work nobody agreed to throw away.
+    // an Inbox Ask still counts as work nobody agreed to throw away. r99 (Ash): a
+    // chat only waiting on his answer isn't running; its ask is kept and asked again.
     inFlight = liveWorkspace
       .sessions()
-      .filter((session) => isInFlightSession(session) && session.id !== exempt).length;
+      .filter((session) => isRunningWork(session) && session.id !== exempt).length;
   }
   await invoke("quit_poll_reply", { id, inFlight }).catch(() => undefined);
+}
+
+/**
+ * r99 (Ash: "the bench must never trigger the app's 'chats still running' Mac dialog on Ash's screen again"): a quit the
+ * verify driver asked for. If real work started running between its check and the quit, the quit is called off without
+ * a dialog, and the bench reports it. Disarmed after one quit decision or a minute.
+ */
+let benchQuitUntil = 0;
+export function armBenchQuit(now = Date.now()): void {
+  benchQuitUntil = now + 60_000;
 }
 
 /** The one quit dialog, shown by whichever window the coordinator picked. */
@@ -181,6 +192,12 @@ export async function askQuitConfirmation(
   inFlight: number,
 ): Promise<void> {
   let confirmed = false;
+  if (benchQuitUntil > Date.now()) {
+    benchQuitUntil = 0;
+    console.warn(`verify driver quit called off: ${inFlight} chat(s) started running; no dialog`);
+    await invoke("quit_decision", { id, confirmed: false }).catch(() => undefined);
+    return;
+  }
   if (!quitDialogOpen) {
     quitDialogOpen = true;
     try {

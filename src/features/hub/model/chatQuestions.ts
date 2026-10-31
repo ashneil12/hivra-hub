@@ -5,6 +5,7 @@
 // - a "Needs Ash:" line in the agent's last turn (it ended its turn to ask): the recommendation is its "My pick:" line;
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
+import { toSecondPerson } from "../../../shared/text/askMarkers";
 import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
 import { plainCommandQuestion } from "./plainCommand";
 import {
@@ -52,6 +53,23 @@ export type ChatQuestion = {
    * question's options; so the card can be answered without opening the chat. Capitalised, in the agent's words.
    */
   options?: string[];
+  /**
+   * r99 (Critiquito 3): several decisions in one ask, one row each with its own answer, in the order asked. Only set
+   * when there are two or more still open; \`question\` is then the newest of them and \`more\` counts the others.
+   */
+  rows?: AskRow[];
+  /** r99: the shared heading over the rows (a live question's title), when it gave one. */
+  heading?: string;
+};
+
+/** r99 (Critiquito 3): one decision on a card with several. */
+export type AskRow = {
+  question: string;
+  options?: string[];
+  pick?: string;
+  redLine: boolean;
+  /** A live question's own id for this decision (source "ask"). */
+  questionId?: string;
 };
 
 // ---- why Ash is needed ---------------------------------------------------------------------------------------
@@ -239,10 +257,12 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   // r97 (Critiquito g, c02 BLIND 242d): "Needs Ash: keep that all-time order, or sort by this week? My pick is to keep
   // the all-time order." The pick on the same line is the pick, and the question reads to Ash ("Do you want to …?").
   const inline = splitInlinePick(oneLine(found.groups.q, 1000));
-  const question = oneLine(toAsh(inline.question));
+  // r99 (Critiquito 1): the card speaks to Ash, never about him ("the user's wording" -> "your wording").
+  const question = oneLine(toAsh(toSecondPerson(inline.question)));
   if (!question) return null;
   const after = text.slice(found.index + found[0].length);
-  const pick = inline.pick ?? MY_PICK.exec(after)?.groups?.p;
+  const rawPick = inline.pick ?? MY_PICK.exec(after)?.groups?.p;
+  const pick = rawPick ? toSecondPerson(rawPick) : rawPick;
   const flagged = /red/i.test(found.groups.flag ?? "");
   const flag = !flagged && found.groups.flag?.trim() ? { flag: found.groups.flag.trim() } : {};
   const provide = provideNeeded(question, found.groups.flag);
@@ -253,6 +273,24 @@ export function parseNeedsAsh(text: string): NeedsAshMarker | null {
     ...flag,
     ...(provide ? { provide } : {}),
   };
+}
+
+/** r99 (Critiquito 3): every "Needs Ash" line in the text, in order, each with its own pick; one per question. */
+export function parseNeedsAshAll(text: string): NeedsAshMarker[] {
+  const starts: number[] = [];
+  const all = needsAshPattern();
+  for (let m = all.exec(text); m; m = all.exec(text)) starts.push(m.index);
+  const out: NeedsAshMarker[] = [];
+  starts.forEach((start, i) => {
+    const marker = parseNeedsAsh(text.slice(start, starts[i + 1] ?? text.length));
+    if (!marker) return;
+    const key = marker.question.toLowerCase();
+    const seen = out.findIndex((m) => m.question.toLowerCase() === key);
+    // Asked again later in the turn (a repeat after a status question): the later wording and pick stand, in its first place.
+    if (seen >= 0) out[seen] = marker;
+    else out.push(marker);
+  });
+  return out;
 }
 
 /** "…? My pick is to keep the all-time order." / "…? My pick: B." / "…? I'd go with B." after the question mark. */
@@ -364,6 +402,9 @@ const shared = (a: Set<string>, b: Set<string>) => [...a].filter((w) => b.has(w)
  * note settles, by the job it names ("on "<title>"") or by his own words ("in its chat: "<words>"").
  */
 export function answerSettles(note: string, question: string): boolean {
+  // r99 (Critiquito 3): one row of a card answered from his Inbox names its question exactly.
+  const row = /answered your question "([^"]*)"/.exec(note)?.[1];
+  if (row !== undefined) return oneLine(row).toLowerCase() === oneLine(question).toLowerCase();
   const title = /answered your worker on "([^"]*)"/.exec(note)?.[1] ?? "";
   const words = /in its chat: "([^"]*)"/.exec(note)?.[1] ?? "";
   const asked = stems(question);
@@ -418,6 +459,22 @@ export function fromPrompt(prompt: UserQuestionPrompt): ChatQuestion | null {
     ...(pick ? { pick } : {}),
     redLine: flagged || looksRedLine(`${words} ${pick ?? ""}`),
     ...(provideFrom(first.prompt || first.header || "") ?? {}),
+    // r99 (Critiquito 3): several questions, one row each with its own answer.
+    ...(prompt.questions.length > 1
+      ? {
+          rows: prompt.questions.map((q) => {
+            const recommended = recommendedOption(q);
+            return {
+              question: oneLine(q.prompt || q.header || "A question"),
+              questionId: q.id,
+              ...(q.options.length >= 2 ? { options: q.options.slice(0, OPTIONS_MAX).map((o) => optionText(plainOptionLabel(o.label))) } : {}),
+              ...(recommended ? { pick: plainOptionLabel(recommended.label) } : {}),
+              redLine: /red\s*line/i.test(q.header ?? "") || looksRedLine(`${q.header ?? ""} ${q.prompt} ${q.options.map((o) => o.label).join(" ")}`),
+            };
+          }),
+          ...(prompt.title?.trim() ? { heading: oneLine(prompt.title) } : {}),
+        }
+      : {}),
   };
 }
 
@@ -569,7 +626,21 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   const sinceMarker = parseNeedsAsh(since);
   const queued = (chat.queuedMessages ?? []).some((m) => m.text.startsWith(ASH_ANSWERED_PREFIX));
   const [turnText, found] = sinceMarker && !queued ? [since, sinceMarker] : [before, parseNeedsAsh(before)];
-  const marker = found && notes.some((note) => answerSettles(note, found.question)) ? null : found;
+  // r99 (Critiquito 3): every decision still open, one row each; answering one leaves the others open.
+  const open = found ? parseNeedsAshAll(turnText).filter((m) => !notes.some((note) => answerSettles(note, m.question))) : [];
+  const marker = found && notes.some((note) => answerSettles(note, found.question)) ? (open[open.length - 1] ?? null) : found;
+  const rows: AskRow[] | undefined =
+    marker && open.length > 1
+      ? open.map((m) => {
+          const options = markerOptions(m.question, turnText, !!m.pick).options;
+          return {
+            question: m.question,
+            ...(options ? { options } : {}),
+            ...(m.pick ? { pick: optionForPick(m.pick, options ?? []) ?? m.pick } : {}),
+            redLine: m.redLine,
+          };
+        })
+      : undefined;
   if (chat.busy && !marker) return null;
   const secret = marker ? undefined : secretActionTried(chat.blocks);
   if (secret)
@@ -585,7 +656,8 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
     ? {
         source: "marker",
         question: marker.question,
-        more: 0,
+        more: rows ? rows.length - 1 : 0,
+        ...(rows ? { rows } : {}),
         ...markerOptions(marker.question, turnText, !!marker.pick),
         ...(marker.pick ? { pick: optionForPick(marker.pick, markerOptions(marker.question, turnText, !!marker.pick).options ?? []) ?? marker.pick } : {}),
         redLine: marker.redLine,
