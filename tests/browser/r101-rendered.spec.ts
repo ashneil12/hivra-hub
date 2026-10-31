@@ -13,12 +13,16 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 const RUN = process.env.R101_RUN ?? "";
 const SCENARIO = process.env.R101_SCENARIO ?? "b5-dump-restart-blind";
 const OUT = process.env.R101_OUT ?? "test-results/r101-rendered";
+// r103 (Critiquito a): shots are named for the round that rendered them (R101_ROUND, else the rN in R101_OUT).
+const ROUND = process.env.R101_ROUND ?? /(r\d+)/.exec(OUT)?.[1] ?? "r101";
 const W = 1512;
 const H = 982;
 
 type Snap = { storage: Record<string, string>; sessions: { id: string; cwd: string; title?: string; harness?: string; mono?: string }[] };
 type Ev = { sends: { t: number; to?: { mono?: string }; text?: string }[]; texts: { t: number; session?: string; who?: string; text?: string }[] };
 
+// r103 (Critiquito e): Ash's Retina window, so the rail's grey/red is judged at full size.
+test.use({ deviceScaleFactor: 2 });
 test.skip(!RUN, "R101_RUN names a realtest run folder");
 
 let stub: { url: string; close(): Promise<void>; addProject(p: Record<string, unknown>): void };
@@ -45,7 +49,9 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
       !all.some((o, j) => j !== i && o.role === b.role && Math.abs(o.t - b.t) < 120_000 && (o.text.length > b.text.length ? o.text.includes(b.text) : o.text === b.text && j > i)),
     )
     .map(({ t: _t, ...b }) => b);
-  const sessions = snap.sessions.map((s) => ({ id: s.id, cwd: s.cwd, title: s.title ?? "", harness: s.harness ?? "claude", ...(s.id === lead.id ? { blocks } : {}) }));
+  // r103 (Critiquito f): a session with no title (the snapshot only names its harness, "claude") that no Mono owns was the app's empty new-chat placeholder; it showed
+  // as a bare "New session" row under Older, which the run never made for Ash, so it is not seeded.
+  const sessions = snap.sessions.filter((s) => s.title?.replace(/^(?:claude|codex|grok)\b\s*(?:·\s*)?/i, "").trim() || s.mono || s.id === lead.id).map((s) => ({ id: s.id, cwd: s.cwd, title: s.title ?? "", harness: s.harness ?? "claude", ...(s.id === lead.id ? { blocks } : {}) }));
   const storage = { ...snap.storage };
   delete storage["monocode:hub-nav"];
   await page.addInitScript(
@@ -81,7 +87,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   await expect(page.getByRole("navigation", { name: "Projects" })).toBeVisible({ timeout: 60_000 });
   await page.getByRole("navigation", { name: "Projects" }).getByRole("button", { name: /^Tally/ }).first().click();
   fs.mkdirSync(OUT, { recursive: true });
-  const name = (view: string) => path.join(OUT, `r101-${id}-${view}-RENDERED-from-run-not-live.png`);
+  const name = (view: string) => path.join(OUT, `${ROUND}-${id}-${view}-RENDERED-from-run-not-live.png`);
   const label = async (view: string) =>
     page.evaluate((text) => {
       document.querySelector("[data-r101-label]")?.remove();
@@ -106,15 +112,23 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   const rail = page.getByRole("complementary").first();
   await label("rail");
   await rail.screenshot({ path: name("rail") });
-  console.log(`r101 rendered ${id}: inbox text: ${(await page.getByRole("region", { name: "Inbox" }).first().innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 600)}`);
-  console.log(`r101 rendered ${id}: rail text: ${(await rail.innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 400)}`);
+  // r103 (Critiquito e): an unread count is grey; only a Needs you is red. No red-tinted unread chip on the rail.
+  const unreadColours = await rail.locator("[data-mono-unread]").evaluateAll((els) => els.map((el) => getComputedStyle(el).backgroundColor));
+  console.log(`${ROUND} rendered ${id}: rail unread chip colours: ${unreadColours.join(" | ") || "none"}`);
+  for (const colour of unreadColours) {
+    const [r, g, b] = (colour.match(/[\d.]+/g) ?? []).map(Number);
+    expect(r - Math.max(g, b), `unread chip ${colour} is red-tinted`).toBeLessThan(40);
+  }
+  await expect(rail.getByText(/^New session$/)).toHaveCount(0);
+  console.log(`${ROUND} rendered ${id}: inbox text: ${(await page.getByRole("region", { name: "Inbox" }).first().innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 600)}`);
+  console.log(`${ROUND} rendered ${id}: rail text: ${(await rail.innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 400)}`);
 
   const open = page.getByRole("button", { name: /Tally lead/i }).first();
   if (await open.isVisible().catch(() => false)) await open.click();
-  else console.log(`r101 rendered ${id}: no "Tally lead" button; buttons: ${(await page.getByRole("complementary").first().innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 400)}`);
+  else console.log(`${ROUND} rendered ${id}: no "Tally lead" button; buttons: ${(await page.getByRole("complementary").first().innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(0, 400)}`);
   await page.waitForTimeout(2500);
   await label("Lead chat");
   await settle();
   await page.screenshot({ path: name("lead-chat") });
-  console.log(`r101 rendered ${id}: chat text tail: ${(await page.locator("body").innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(-600)}`);
+  console.log(`${ROUND} rendered ${id}: chat text tail: ${(await page.locator("body").innerText({ timeout: 5000 }).catch(() => "")).replace(/\s+/g, " ").slice(-600)}`);
 });
