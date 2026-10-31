@@ -65,7 +65,7 @@ export function WaitingOnYou({ projectId }: { projectId: string | undefined }) {
         <span className="flex-1" />
         {takeable.length > 1 ? (
           <button type="button" className={BTN} disabled={busyAll} onClick={() => void takeAll()} data-hub-take-all>
-            {busyAll ? "Sending…" : `Take all ${takeable.length} picks`}
+            {busyAll ? "Sending…" : takeAllLabel(takeable.length)}
           </button>
         ) : null}
       </div>
@@ -315,4 +315,9 @@ function nextReply(from: HTMLElement): HTMLInputElement | null {
   let next = from.closest("[data-hub-waiting-chat]")?.nextElementSibling;
   while (next && !next.querySelector("[data-hub-waiting-reply]")) next = next.nextElementSibling;
   return (next?.querySelector("[data-hub-waiting-reply]") as HTMLInputElement | null) ?? null;
+}
+
+/** r102 (12, Critiquito): "Take both picks" for two, "Take all N picks" from three. */
+export function takeAllLabel(count: number): string {
+  return count === 2 ? "Take both picks" : `Take all ${count} picks`;
 }

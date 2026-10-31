@@ -5653,6 +5653,7 @@ export const SessionCard = memo(function SessionCard({
                 ) : (
                   <ModelInUseIcon
                     harness={session.harness}
+                    model={session.model}
                     className={`${nested ? "size-3.5" : "size-4"} shrink-0${markHover}`}
                   />
                 )}
@@ -5749,6 +5750,7 @@ export const SessionCard = memo(function SessionCard({
                   ) : (
                     <ModelInUseIcon
                       harness={session.harness}
+                      model={session.model}
                       className="size-3.5 shrink-0"
                     />
                   )}
@@ -5838,6 +5840,7 @@ export const SessionCard = memo(function SessionCard({
                     </span>
                     <ModelInUseIcon
                       harness={session.harness}
+                      model={session.model}
                       className="size-3.5 shrink-0"
                     />
                   </span>

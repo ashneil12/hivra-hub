@@ -25,6 +25,7 @@ import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
 import { repeatedAsks, withoutAskMarkers } from "../../../shared/text/askMarkers";
+import { withCountLineChecked } from "../../../shared/text/countLine";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
@@ -129,7 +130,7 @@ import {
   type ToolPreview,
   type TurnMetrics,
 } from "../model/session";
-import { HarnessIcon } from "./HarnessIcon";
+import { HarnessIcon, ModelInUseIcon } from "./HarnessIcon";
 import { TurnActivityLine } from "./LiveActivity";
 import {
   modelInUseLabel,
@@ -2248,7 +2249,7 @@ function TurnDuration({
           {dot}
           <span className="flex min-w-0 items-center gap-1.5">
             {harness ? (
-              <HarnessIcon harness={harness} className="size-3.5 shrink-0" />
+              <ModelInUseIcon harness={harness} className="size-3.5 shrink-0" />
             ) : null}
             <span className="min-w-0 truncate" title={label}>
               {label}
@@ -2734,7 +2735,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   // r74: no em dashes in a reply Ash reads (his rule), swapped here as room posts are when saved; code keeps its own.
   // r91: the engine label after a launch goes on its own line (Critiquito 8).
   // r99 (Critiquito 1): no "Needs Ash:" / "My pick:" markers or "the user" about Ash in the reply he reads.
-  const shown = engineLabelOnOwnLine(withoutAskMarkers(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(withoutNoReply(block.text)))), askedBefore ? new Set(askedBefore.split("\n")) : undefined));
+  const shown = engineLabelOnOwnLine(withoutAskMarkers(withoutDoubledAllClear(withoutToolRuleTalk(withCountLineChecked(withoutEmDashes(withoutNoReply(block.text))))), askedBefore ? new Set(askedBefore.split("\n")) : undefined));
   if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (
@@ -3381,7 +3382,7 @@ function WorkFoldLine({
               className={`size-3.5 shrink-0 ${expandable ? "group-hover:opacity-0" : ""}`}
             />
           ) : harness ? (
-            <HarnessIcon
+            <ModelInUseIcon
               harness={harness}
               className={`size-3.5 shrink-0 ${expandable ? "group-hover:opacity-0" : ""}`}
             />
@@ -3743,7 +3744,7 @@ function MonoTurnHeader({
       className="size-3.5 shrink-0"
     />
   ) : harness ? (
-    <HarnessIcon harness={harness} className="size-3.5 shrink-0" />
+    <ModelInUseIcon harness={harness} className="size-3.5 shrink-0" />
   ) : (
     <ActivityPhaseIcon kind={status.kind} />
   );

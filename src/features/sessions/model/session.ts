@@ -947,13 +947,33 @@ export function removeSessionDraft(
   };
 }
 
-/** Title without the harness prefix stored for the tab strip. */
-export function sessionDisplayTitle(title: string, harness: HarnessId): string {
+/**
+ * Title without the harness prefix stored for the tab strip. r102 (12, Critiquito): an untitled chat is named by its
+ * first ask's short title (`firstAsk`) rather than "New session", when there is one.
+ */
+export function sessionDisplayTitle(title: string, harness: HarnessId, firstAsk?: string): string {
+  const untitled = () => (firstAsk ? shortAskTitle(firstAsk) : "") || "New session";
   if (title === HARNESS_LABEL[harness] || title === HARNESS_TITLE[harness]) {
-    return "New session";
+    return untitled();
   }
   // r51: a title saved with markdown before this shows plain; r52: without its label or a [MonoCode …] tag either.
-  return listTitle(title) || "New session";
+  return listTitle(title) || untitled();
+}
+
+/** A short title from an ask: its first line with words, cut to the first sentence and at most 48 characters. */
+export function shortAskTitle(text: string): string {
+  const line = text.trim().split(/\r?\n/).map((part) => listTitle(part)).find(Boolean) ?? "";
+  const sentence = (line.match(/^.+?[.?!](?=\s|$)/)?.[0] ?? line).replace(/[.!]$/, "").trim();
+  const max = 48;
+  if (sentence.length <= max) return sentence;
+  const cut = sentence.slice(0, max - 1);
+  const word = cut.lastIndexOf(" ");
+  return `${(word > 24 ? cut.slice(0, word) : cut).trimEnd()}…`;
+}
+
+/** The text of a chat's first message from Ash, for `sessionDisplayTitle`'s fallback. */
+export function firstAskOf(session: { blocks?: readonly { role: string; text?: string }[] }): string | undefined {
+  return session.blocks?.find((block) => block.role === "user" && block.text?.trim())?.text;
 }
 
 /** Working copy the agent and session git UIs should use. */

@@ -56,7 +56,12 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
       let real: ((cmd: string, args?: unknown, opts?: unknown) => Promise<unknown>) | undefined;
       Object.defineProperty(internals, "invoke", {
         configurable: true,
-        get: () => (cmd: string, args?: unknown, opts?: unknown) => real!(cmd === "mono_session_get" ? "session_get" : cmd, args, opts),
+        get: () => (cmd: string, args?: unknown, opts?: unknown) =>
+          // r102 (Critiquito): set up like the bench's dev copy on the Grok bridge, so the Claude usage chip is hidden
+          // (UsageChips' wantClaude) and no stub sample numbers reach a rendered shot.
+          cmd === "harness_runtime_binary_paths"
+            ? Promise.resolve({ ...((args as { paths?: object } | undefined)?.paths ?? {}), claude: "/Users/ash/.local/bin/claude-grok" })
+            : real!(cmd === "mono_session_get" ? "session_get" : cmd, args, opts),
         set: (fn) => (real = fn),
       });
       if (sessionStorage.getItem("seeded")) return;
@@ -95,6 +100,8 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   await page.waitForTimeout(2500);
   await label("Inbox");
   await settle();
+  // No stub sample usage in a rendered shot: on the bridge the Claude chip is hidden.
+  await expect(page.locator("[data-usage-window]")).toHaveCount(0);
   await page.screenshot({ path: name("inbox") });
   const rail = page.getByRole("complementary").first();
   await label("rail");

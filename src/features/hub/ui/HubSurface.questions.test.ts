@@ -227,7 +227,7 @@ describe("Waiting on you", () => {
     act(() => root.render(today("hivra")));
     await until(() => waitingRows().length === 3, "three waiting");
     expect(q('[data-hub-waiting-chat="red-chat"] [data-hub-red-line]')?.textContent).toBe("Red line");
-    expect(q("[data-hub-take-all]")?.textContent).toBe("Take all 2 picks");
+    expect(q("[data-hub-take-all]")?.textContent).toBe("Take both picks");
     await act(async () => q("[data-hub-take-all]")!.click());
     await until(() => container.querySelectorAll("[data-hub-waiting-sent]").length === 2, "two cleared");
     expect(waitingRows()).toEqual(["red-chat"]);

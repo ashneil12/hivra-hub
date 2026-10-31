@@ -33,6 +33,7 @@ import {
   whoAsks,
 } from "./chatQuestions";
 import { hubData } from "./hubData";
+import { asksHowThingsStand } from "./statusAsk";
 import { leadFor } from "./hubLeads";
 import { forUser, forYou } from "./userName";
 
@@ -167,7 +168,7 @@ function recordGate(chat: ChatInput, q: ChatQuestion, gate: ReturnType<typeof ga
     {
       at: now,
       sessionId: chat.id,
-      title: sessionDisplayTitle(chat.title, chat.harness as HarnessId),
+      title: sessionDisplayTitle(chat.title, chat.harness as HarnessId, q.question),
       question: q.question,
       ...(q.pick ? { pick: q.pick } : {}),
       admit: gate.admit,
@@ -209,6 +210,24 @@ function lastAshMessageAt(blocks: ChatInput["blocks"]): number | undefined {
     if (b.role === "user" && !b.internal && !b.monoSessionCompletion) return b.startedAt;
   }
   return undefined;
+}
+
+/**
+ * r102 (B5 a0ba, 82ea: Ash asked "wat happened to the stuff i dumped earlier" with 5 decisions on his Inbox; the row
+ * cleared the moment he sent it, so the Lead was told "his Inbox holds no asks from you" and the rail's Needs you went
+ * too): asking how things stand answers nothing. A Lead's "Needs Ash" rows stay while every message Ash sent since they
+ * were asked is a status question, through that turn and after its reply, until he answers or the Lead asks anew.
+ */
+function onlyAskedHowThingsStand(blocks: ChatInput["blocks"], since: number): boolean {
+  let any = false;
+  for (let i = blocks.length - 1; i >= 0; i--) {
+    const b = blocks[i];
+    if (b.role !== "user" || b.internal || b.monoSessionCompletion) continue;
+    if ((b.startedAt ?? 0) <= since) break;
+    if (!asksHowThingsStand(b.text ?? "")) return false;
+    any = true;
+  }
+  return any;
 }
 
 /**
@@ -274,7 +293,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
         ...q,
         sessionId: chat.id,
         cwd: chat.cwd,
-        title: sessionDisplayTitle(chat.title, chat.harness as HarnessId),
+        title: sessionDisplayTitle(chat.title, chat.harness as HarnessId, q.question),
         ...(mono ? { monoId: mono.id } : {}),
         askedAt: old && old.question === q.question ? old.askedAt : now,
       };
@@ -295,6 +314,14 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
     if (!old) continue;
     // r101 (6): rows Ash hasn't answered stay while the Lead's turn runs on his partial answer.
     if (old.heldUntilReply && chat.busy) continue;
+    const dead = old.source === "ask" && !seenLive.has(liveKey(chat.id, old.requestId));
+    if ((old.source === "marker" || dead) && onlyAskedHowThingsStand(chat.blocks, old.askedAt)) {
+      if (dead && old.requestId !== undefined) {
+        const { requestId: _gone, ...rest } = old;
+        edit()[chat.id] = rest;
+      }
+      continue;
+    }
     // Seen asking in this run and now not: it was answered, skipped or stopped. Only a question from before a restart
     // (its turn died with it) still waits, as long as nothing was said and no turn runs since.
     const said = lastAshMessageAt(chat.blocks);

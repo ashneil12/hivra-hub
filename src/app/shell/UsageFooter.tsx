@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { HarnessIcon } from "../../features/sessions/ui/HarnessIcon";
+import { HarnessIcon, notClaudeRun } from "../../features/sessions/ui/HarnessIcon";
 import { onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
@@ -66,6 +66,14 @@ export type UsageFooterSession = {
   authRequired?: boolean;
   providerAccountId?: string;
 };
+
+/**
+ * r102: the Claude usage chip shows only when Claude Code really runs on Ash's Claude plan. On the Grok bridge (the
+ * bench's dev copy) Claude's plan isn't what a chat spends, so the chip is hidden, as are its numbers.
+ */
+export function wantsClaudeChip(providers: readonly string[], bridge: boolean = onGrokBridge("claude")): boolean {
+  return providers.includes("claude") && !bridge;
+}
 
 export function UsageFooter({
   providers,
@@ -229,7 +237,7 @@ export function UsageChips({
 }) {
   // On the Grok bridge there is no Claude usage to show: its numbers come from the Claude plan's feed, and Grok 4.7
   // runs on Ash's Grok subscription, so the chip and its popover are left out entirely. Off the bridge, unchanged.
-  const wantClaude = providers.includes("claude") && !onGrokBridge("claude");
+  const wantClaude = wantsClaudeChip(providers);
   const wantCodex = providers.includes("codex");
   const wantOpencode = providers.includes("opencode");
   const wantDevin = providers.includes("devin");
@@ -491,7 +499,8 @@ export function UsageChips({
           limits={claude}
           now={now}
           variant={variant}
-          meterIcon={meterIcon}
+          // r102 (11): a Grok or DeepSeek chat's chip never wears the Claude starburst.
+          meterIcon={meterIcon || notClaudeRun(session?.harness, session?.model)}
           {...claudeAccountProps}
           onReconnect={reconnectClaude}
         />

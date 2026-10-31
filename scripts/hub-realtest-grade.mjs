@@ -71,8 +71,30 @@ function graderSays(stdout = "") {
   }
 }
 
+export const BLOCKED_BEFORE_QUESTION = "BLOCKED-BEFORE-QUESTION";
+
+/**
+ * r102 (6): a run whose Quit was refused because a chat was still running at the cap never reached Ash's question, so
+ * it counts neither way: BLOCKED-BEFORE-QUESTION, not PARTIAL, and no grader call.
+ */
+export function blockedGrade(evidence) {
+  if (!evidence?.blockedBeforeQuestion) return null;
+  return {
+    grade: BLOCKED_BEFORE_QUESTION,
+    items: [],
+    summary: `Not graded: ${evidence.blockedBeforeQuestion}. It counts neither for nor against.`,
+    problems: [],
+    grader: { model: "none", effort: "none", exit: 0 },
+  };
+}
+
 export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir(), ".local/bin/claude"), model = "sonnet", effort = "medium" } = {}) {
   const evidence = JSON.parse(fs.readFileSync(path.join(dir, "evidence.json"), "utf8"));
+  const blocked = blockedGrade(evidence);
+  if (blocked) {
+    fs.writeFileSync(path.join(dir, "grade.json"), JSON.stringify(blocked, null, 2));
+    return blocked;
+  }
   let transcript = fs.readFileSync(path.join(dir, "transcript.md"), "utf8");
   if (transcript.length > 90_000) transcript = `${transcript.slice(0, 60_000)}\n\n[... cut ...]\n\n${transcript.slice(-28_000)}`;
   const prompt = [

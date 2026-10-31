@@ -33,7 +33,7 @@ export async function quitThenReopen({ act, pid, alive, until, launch, waitMs = 
     if (asked?.ok || !asked?.busy || Date.now() + everyMs > idleBy) break;
     await sleep(everyMs);
   }
-  if (!asked?.ok) return { ok: false, step: "quit", why: `the app didn't take the quit: ${asked?.error ?? "no answer"}` };
+  if (!asked?.ok) return { ok: false, step: "quit", ...(asked?.busy ? { busy: true } : {}), why: `the app didn't take the quit: ${asked?.error ?? "no answer"}` };
   const gone = await until(() => !alive(pid), waitMs, 250);
   if (!gone) return { ok: false, step: "quit", why: `the app was still open ${Math.round(waitMs / 1000)}s after Quit (nothing was killed, nothing reopened)` };
   const reopened = await launch();
@@ -142,7 +142,7 @@ export async function runScenario(scenario, ctx) {
       const monoId = resolveMono(cond.monoReply ?? cond.monoText);
       const session = await ctx.monoSession(monoId);
       if (!session) return false;
-      const since = cond.monoText ? t0 : (lastSendTo.get(monoId) ?? ref);
+      const since = cond.monoText ? t0 : replySince(lastSendTo, monoId, ref);
       const lines = (await ctx.claudeTexts(since)).filter((line) => line.session === session);
       if (cond.monoText) return lines.some((line) => line.text && new RegExp(cond.pattern, "i").test(line.text));
       return lines.some((line) => line.result);
@@ -410,7 +410,9 @@ export async function runScenario(scenario, ctx) {
       }
     } else if (step.answer) {
       const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text, ...(typeof step.answer.row === "number" ? { row: step.answer.row } : {}) }).catch((error) => ({ ok: false, error: error.message }));
-      record.sends.push({ t: Date.now(), label: step.label, todayAnswer: step.answer, result: answer });
+      const at = Date.now();
+      record.sends.push({ t: at, label: step.label, todayAnswer: step.answer, result: answer });
+      noteAnswerSent(lastSendTo, step.answer, resolveMono, at);
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.reload) {
       // The window reloads (a vite full reload, View > Reload): whatever runs is cut the way that cuts it.
@@ -423,11 +425,15 @@ export async function runScenario(scenario, ctx) {
       log(`  ${back?.ok ? "the reloaded window answers the driver" : "the reloaded window never answered"}`);
     } else if (step.restart) {
       // r98 (B5): Ash quits the app (its own Quit, never a kill) and opens it again in the background.
-      const result = ctx.restart ? await ctx.restart({ idleMs: Math.max(0, Math.min((step.restart.waitIdleSec ?? 0) * 1000, stop - Date.now())) }) : { ok: false, why: "this run can't restart the app" };
+      // r102 (6, run 7274: Quit refused with 1 chat running, graded PARTIAL): Ash waits for running chats up to the
+      // step's own cap, even past the scenario's minutes.
+      const result = ctx.restart ? await ctx.restart({ idleMs: Math.max(0, (step.restart.waitIdleSec ?? 0) * 1000) }) : { ok: false, why: "this run can't restart the app" };
       record.marks.push({ t: Date.now(), mark: "restart", result });
       log(`  Ash quits the app and opens it again: ${result.ok ? `back as pid ${result.pid}` : `NOT DONE (${result.why})`}`);
       if (!result.ok) {
         record.notes.push(`restart: ${result.why}`);
+        // Still running at the cap: the question never got asked, so the run counts neither way.
+        if (result.busy) record.blockedBeforeQuestion = `a chat was still running after ${step.restart.waitIdleSec ?? 0}s, so Ash never quit and never asked (${result.why})`;
         break;
       }
       const back = await act("ping", {}, 120_000).catch(() => null);
@@ -726,4 +732,19 @@ export function transcript(scenario, result, t0) {
   lines.push("## Metrics", "", "```json", JSON.stringify(result.metrics, null, 2), "```", "");
   if (result.notes.length) lines.push("## Harness notes", "", ...result.notes.map((n) => `- ${n}`), "");
   return `${lines.join("\n")}\n`;
+}
+
+/**
+ * r102 (run 0266: "wat happened" got no count): answering a pick from the Inbox is a message to that Mono too, so the
+ * next monoReply wait starts there. Before this, that wait took the reply to an earlier send, the pick's own reply
+ * landed after Ash's next question, and was taken as the answer to it.
+ */
+export function noteAnswerSent(lastSendTo, answer, resolveMono, at) {
+  if (answer.mono) lastSendTo.set(resolveMono(answer.mono), at);
+  if (answer.session) lastSendTo.set(answer.session, at);
+}
+
+/** Where a monoReply wait starts looking for a finished reply: the last thing Ash sent that Mono, else the step's start. */
+export function replySince(lastSendTo, monoId, ref) {
+  return lastSendTo.get(monoId) ?? ref;
 }

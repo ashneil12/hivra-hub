@@ -17,7 +17,7 @@ import {
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
-import { progressNote } from "../model/progressNote";
+import { progressNote, workerLineOf } from "../model/progressNote";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
 import { staleTestClaimNudge } from "../model/staleTestClaim";
 import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
@@ -184,7 +184,7 @@ export function useFollowedBriefs(options: {
           if (change && "remove" in change) latest.current.unnote?.(chat.id, change.remove);
           else if (change) latest.current.renote?.(chat.id, change.update);
           // r101 (5): work out for ~10 quiet minutes and something moved: one grey line ("Still working: 2 of 5 jobs done.").
-          const progress = progressNote(chat, known, now);
+          const progress = progressNote(chat, known, now, (child) => workerLineOf(sessionsRef.current.find((s) => s.id === child)));
           if (progress) {
             noted.current.add(progress.id);
             note(chat.id, progress);

@@ -148,7 +148,8 @@ mockIPC(
       return { path, identity: `dev:${path}` };
     }
     if (cmd === "fetch_claude_usage") {
-      // Dev only: a plan 3% into its 5-hour window and 99% into its week, so the usage bar shows both words and red.
+      // Dev only, sample data (not a real account): a plan 3% into its 5-hour window and 99% into its week, so the chip shows both
+      // labels and the "nearly used" wording. Never shown on the Grok bridge, where the Claude chip is hidden.
       const at = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
       return { status: "ok", body: JSON.stringify({ five_hour: { utilization: 3, resets_at: at(165) }, seven_day: { utilization: 99, resets_at: at((5 * 24 + 15) * 60) } }) };
     }

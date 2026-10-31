@@ -284,15 +284,52 @@ export function parseNeedsAshAll(text: string): NeedsAshMarker[] {
   for (let m = all.exec(text); m; m = all.exec(text)) starts.push(m.index);
   const out: NeedsAshMarker[] = [];
   starts.forEach((start, i) => {
-    const marker = parseNeedsAsh(text.slice(start, starts[i + 1] ?? text.length));
-    if (!marker) return;
+    const whole = parseNeedsAsh(text.slice(start, starts[i + 1] ?? text.length));
+    if (!whole) return;
+    for (const marker of splitDecisions(whole)) add(marker);
+  });
+  return out;
+
+  function add(marker: NeedsAshMarker) {
     const key = marker.question.toLowerCase();
     const seen = out.findIndex((m) => m.question.toLowerCase() === key);
     // Asked again later in the turn (a repeat after a status question): the later wording and pick stand, in its first place.
     if (seen >= 0) out[seen] = marker;
     else out.push(marker);
+  }
+}
+
+/** A list item that can't stand as a decision of its own ("or show me a draft", "red"). */
+const NOT_ITS_OWN = /^(?:or|but|so|then|because|which|that|if|when|than|nor)\b/i;
+const listParts = (text: string) =>
+  text
+    .replace(/[\s?.!]+$/, "")
+    .split(/\s*;\s*|,\s+(?:and\s+)?/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+
+/**
+ * r102 (2, ad89: "Needs Ash: new-chat shortcut, terminal font size, whether notes sync …, and whether pin is one chat or
+ * several." was one card, so one could not be answered on its own): one decision per row, enforced here. A question
+ * that lists several decisions becomes one marker each, and a pick listed the same way gives each its own pick.
+ */
+export function splitDecisions(marker: NeedsAshMarker): NeedsAshMarker[] {
+  const parts = listParts(marker.question);
+  if (parts.length < 2 || parts.some((p) => p.split(/\s+/).length < 2 || NOT_ITS_OWN.test(p))) return [marker];
+  const picks = marker.pick ? listParts(marker.pick) : [];
+  const paired = picks.length === parts.length;
+  if (parts.length < 3 && !paired) return [marker];
+  // A red flag on the whole stays on every row unless the red one can be told apart.
+  const redKnown = parts.some((p, i) => looksRedLine(`${p} ${paired ? picks[i] : ""}`));
+  return parts.map((part, i) => {
+    const question = `${part[0]!.toUpperCase()}${part.slice(1)}?`;
+    return {
+      question,
+      ...(paired ? { pick: picks[i]! } : {}),
+      redLine: looksRedLine(`${part} ${paired ? picks[i] : ""}`) || (marker.redLine && !redKnown),
+      ...(marker.flag ? { flag: marker.flag } : {}),
+    };
   });
-  return out;
 }
 
 /** "…? My pick is to keep the all-time order." / "…? My pick: B." / "…? I'd go with B." after the question mark. */
@@ -624,10 +661,25 @@ const ASKS_ASH =
  */
 export function plainQuestionToAsh(text: string): string | undefined {
   const last = text.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
-  if (!last.endsWith("?")) return undefined;
-  const sentence = (last.split(/(?<=[.!?])\s+(?=[A-Z*"])/).pop() ?? last).replace(/^[*_\s]+|[*_\s]+(?=\?$)/g, "").trim();
+  const asked = last.endsWith("?");
+  // r102 (1, 05bc: "Still your call on the privacy page: have Tally draft it for you to OK, or leave all three parked."
+  // never reached his card): a question is known by its meaning, not only by its "?".
+  if (!asked && !/[.!]$/.test(last)) return undefined;
+  const sentence = (last.split(/(?<=[.!?])\s+(?=[A-Z*"])/).pop() ?? last).replace(/^[*_\s]+|[*_\s]+(?=[?.!]$)/g, "").trim();
   if (sentence.split(/\s+/).length < 3 || sentence.length > 300) return undefined;
-  return ASKS_ASH.test(sentence) ? sentence : undefined;
+  if (asked) return ASKS_ASH.test(sentence) ? sentence : undefined;
+  return asksByMeaning(sentence) ? sentence.replace(/[.!]$/, "") : undefined;
+}
+
+/** "your call", "up to you", "let me know which", or a choice put to him ("say if you want A, or B"), without a "?". */
+const LEAVES_IT_TO_ASH =
+  /\b(?:(?:still |that's |it's |this is )?your (?:call|decision|choice|pick)|up to you|you decide|let me know (?:if|whether|which|what|how)|tell me (?:if|whether|which|what)|say (?:if|whether|which)|(?:i|we) need (?:your|a) (?:answer|decision|yes or no|go-ahead|ok))\b/i;
+
+export function asksByMeaning(sentence: string): boolean {
+  const s = sentence.trim();
+  if (LEAVES_IT_TO_ASH.test(s)) return true;
+  // "Do you want A, or B." / "Should I keep it, or drop it." written with a full stop.
+  return /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|which\b)/i.test(s);
 }
 
 /**
@@ -656,7 +708,8 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
   const [turnText, found] = sinceMarker && !queued ? [since, sinceMarker] : [before, parseNeedsAsh(before)];
   // r99 (Critiquito 3): every decision still open, one row each; answering one leaves the others open.
   const open = found ? parseNeedsAshAll(turnText).filter((m) => !notes.some((note) => answerSettles(note, m.question))) : [];
-  const marker = found && notes.some((note) => answerSettles(note, found.question)) ? (open[open.length - 1] ?? null) : found;
+  const split = !!found && open.length > 1 && !open.some((m) => m.question.toLowerCase() === found.question.toLowerCase());
+  const marker = found && (split || notes.some((note) => answerSettles(note, found.question))) ? (open[open.length - 1] ?? null) : found;
   const rows: AskRow[] | undefined =
     marker && open.length > 1
       ? open.map((m) => {

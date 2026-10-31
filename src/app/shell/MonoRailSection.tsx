@@ -86,6 +86,13 @@ export type MonoRailProps = {
 
 const IDLE: MonoState = { status: "idle" };
 
+/**
+ * r102 (12, Critiquito): a rail unread count is grey and smaller than the red "needs you" badge, so new replies never
+ * read as an ask (asks live in the Inbox).
+ */
+export const RAIL_UNREAD_CLASS =
+  "grid h-3.5 min-w-3.5 shrink-0 place-items-center rounded-full bg-content/12 px-1 text-[9px] font-medium tabular-nums leading-none text-content/70";
+
 /** A Mono's unread count as its badge shows it. */
 export function unreadBadge(count: number): string {
   return count > 99 ? "99+" : String(count);
@@ -520,7 +527,7 @@ export function MonoRailSection({
                   <span
                     aria-hidden
                     data-mono-unread={unseen}
-                    className="grid h-4 min-w-4 shrink-0 place-items-center rounded-full bg-accent px-1 text-[10px] font-medium tabular-nums leading-none text-white group-hover:hidden group-has-[button:focus-visible]:hidden"
+                    className={`${RAIL_UNREAD_CLASS} group-hover:hidden group-has-[button:focus-visible]:hidden`}
                   >
                     {unreadBadge(unseen)}
                   </span>
