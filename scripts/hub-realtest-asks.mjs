@@ -2,13 +2,15 @@
 // Lead's status answer gives it, so a missing one shows at once. And (g): what the rendered chat shows next to the raw
 // transcript, so repeats that are only in the transcript are labelled. Report-only; the grader's rules are untouched.
 
+// r100 run 4 (571a): a paragraph may open with its number ("14 done. ...", "1 waiting on you.").
+const N = String.raw`(?:\*\*)?(?:\d+\s+)?`;
 const BUCKETS = [
-  ["done", /^(?:\*\*)?(?:done|finished|also done)\b/i],
-  ["running", /^(?:\*\*)?(?:running|under way|in progress|still running)\b/i],
-  ["waiting on you", /^(?:\*\*)?(?:waiting(?: on you)?|needs you)\b/i],
-  ["blocked by your answers", /^(?:\*\*)?blocked\b/i],
-  ["parked", /^(?:\*\*)?(?:parked|held|not started)\b/i],
-  ["lost", /^(?:\*\*)?lost\b/i],
+  ["done", new RegExp(`^${N}(?:done|finished|also done)\\b`, "i")],
+  ["running", new RegExp(`^${N}(?:running|under way|in progress|still running)\\b`, "i")],
+  ["waiting on you", new RegExp(`^${N}(?:waiting(?: on you)?|needs you)\\b`, "i")],
+  ["blocked by your answers", new RegExp(`^${N}blocked\\b`, "i")],
+  ["parked", new RegExp(`^${N}(?:parked|held|not started)\\b`, "i")],
+  ["lost", new RegExp(`^${N}lost\\b`, "i")],
 ];
 
 /** The Lead's answer to the status question: the rendered text after it in the view that shows it, else "". */

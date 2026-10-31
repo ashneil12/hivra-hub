@@ -13,3 +13,8 @@ it("a 'My pick:' in the middle of a line reads to Ash too (B5 fc68)", () => {
   expect(shown).not.toMatch(/my pick/i);
   expect(shown).toContain("? I'd go with a toast, a few seconds.");
 });
+
+it("drops a subject before the last comma: no option repeats the question's opening words (B5 842b)", () => {
+  const options = orOptions("Share link on Nibbii, view-only or editable?");
+  expect(options.map((o) => o.toLowerCase())).toEqual(["view-only", "editable"]);
+});

@@ -226,6 +226,8 @@
           "place": "hub",
           "ask": "today shows finished overnight",
           "keys": [
+            "overnight",
+            "what finished",
             "overnight"
           ]
         },

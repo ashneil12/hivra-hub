@@ -323,7 +323,11 @@ export function orOptions(question: string): string[] {
   const last = question.trim().split(/(?<=[.!:])\s+(?=[A-Z])/).pop() ?? question;
   const m = /^(?:would you rather\s+|do you want to\s+|should i\s+|which:?\s+)?(?<a>[^?]+?),?\s+or\s+(?<b>[^?]+?)\?$/i.exec(last.trim());
   if (!m?.groups) return [];
-  const [a, b] = [m.groups.a!, m.groups.b!].map((part) => part.trim());
+  // r100 (e, B5 842b): "Share link on Nibbii, view-only or editable?" read "Share link on Nibbii, view-only"; the words
+  // before the last comma name the subject, not the first choice, when the choice after it is short like the other.
+  const lead = /^(?<subject>.+),\s+(?<choice>[^,]+)$/.exec(m.groups.a!.trim());
+  const first = lead?.groups && lead.groups.choice!.split(/\s+/).length <= 4 && m.groups.b!.trim().split(/\s+/).length <= 4 ? lead.groups.choice! : m.groups.a!;
+  const [a, b] = [first, m.groups.b!].map((part) => part.trim());
   if (/\bor\b/i.test(a) || /\bor\b/i.test(b)) return [];
   if (a.split(/\s+/).length > 10 || b.split(/\s+/).length > 10) return [];
   return [optionText(a), optionText(b)];

@@ -38,3 +38,10 @@ test("an ask shown only on the Inbox card is waiting on you there, not missing (
   const [row] = askLedger(asks, "Of 1: 1 waiting on you.\\n1 decision is on your Inbox card.", "Waiting on you\\nMay Hivra publish a privacy page?");
   assert.equal(row.state, "waiting on you (on the Inbox card)");
 });
+
+test("a paragraph that opens with its number takes that bucket (run 571a: '14 done.')", async () => {
+  const { askLedger } = await import("./hub-realtest-asks.mjs");
+  const asks = [{ n: 1, place: "hub", ask: "terminal font", keys: ["terminal"] }, { n: 2, place: "x", ask: "hivra lookup", keys: ["hivra"] }];
+  const rows = askLedger(asks, "Of 2: 1 done, 1 lost.\n1 done. Larger terminal text.\n1 lost. Who was asking about Hivra.");
+  assert.deepEqual(rows.map((r) => r.state), ["done", "lost"]);
+});
