@@ -318,7 +318,10 @@ export function toAsh(question: string): string {
 
 /** "Would you rather keep that all-time order, or sort by this week?": its two choices, when it puts exactly two. */
 export function orOptions(question: string): string[] {
-  const m = /^(?:would you rather\s+|do you want to\s+|should i\s+|which:?\s+)?(?<a>[^?]+?),?\s+or\s+(?<b>[^?]+?)\?$/i.exec(question.trim());
+  // r100 (e, B5 936c): "Today at the top. Add a section, or move an existing one?" puts its choices in the last
+  // sentence; the lead-in ("Today at the top.") is not part of the first option.
+  const last = question.trim().split(/(?<=[.!:])\s+(?=[A-Z])/).pop() ?? question;
+  const m = /^(?:would you rather\s+|do you want to\s+|should i\s+|which:?\s+)?(?<a>[^?]+?),?\s+or\s+(?<b>[^?]+?)\?$/i.exec(last.trim());
   if (!m?.groups) return [];
   const [a, b] = [m.groups.a!, m.groups.b!].map((part) => part.trim());
   if (/\bor\b/i.test(a) || /\bor\b/i.test(b)) return [];

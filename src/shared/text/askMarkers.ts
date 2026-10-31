@@ -6,6 +6,7 @@
  */
 const NEEDS = /^(?<lead>[\s>*_\-•]*)needs\s+(?:ash|the\s+user|you)\s*(?:\([^)]*\))?\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<rest>.+)$/i;
 const PICK = /^(?<lead>[\s>*_\-•]*)my\s+(?:pick|recommendation)\s*[*_]*\s*[:\-—]\s*[*_]*\s*(?<rest>.+)$/i;
+const INLINE_PICK = /([?.!]\s+|:\s+)my\s+(?:pick|recommendation)\s*[*_]*\s*:\s*[*_]*\s*/gi;
 const FENCE = /^[ \t]*(`{3,}|~{3,})/;
 
 /** "the user" / "Ash" / "Ash's" in a line spoken to Ash become "you" / "your". */
@@ -88,7 +89,8 @@ export function withoutAskMarkers(text: string, askedBefore?: ReadonlySet<string
     }
     if (dropping && !line.trim()) continue;
     dropping = false;
-    lines.push(line);
+    // r100 (B5 fc68): "Undo after archive: a toast, or a longer window? My pick: a toast." mid-line, in a list.
+    lines.push(line.replace(INLINE_PICK, (_m, pre: string) => `${pre}I'd go with `));
   }
   // A reply that was only repeats reads as nothing new rather than an empty bubble.
   if (!dropped) return lines.join("\n");
