@@ -35,6 +35,7 @@ import {
   type RecentProject,
 } from "../../projects/model/recents";
 import {
+  firstAskOf,
   sessionDisplayTitle,
   sessionDraftBlock,
   sessionWorkCwd,
@@ -404,7 +405,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       (run.status === "active" || run.status === "paused") &&
       sameCheckout(orchestrationCheckoutCwd(run), sessionWorkCwd(session)),
   );
-  const title = sessionDisplayTitle(session.title, session.harness);
+  const title = sessionDisplayTitle(session.title, session.harness, firstAskOf(session));
   const isEmpty = session.blocks.length === 0;
   const editedPaths = useMemo(
     () => (session.busy ? undefined : sessionEditPaths(session.blocks)),

@@ -167,7 +167,7 @@ function recordGate(chat: ChatInput, q: ChatQuestion, gate: ReturnType<typeof ga
     {
       at: now,
       sessionId: chat.id,
-      title: sessionDisplayTitle(chat.title, chat.harness as HarnessId),
+      title: sessionDisplayTitle(chat.title, chat.harness as HarnessId, q.question),
       question: q.question,
       ...(q.pick ? { pick: q.pick } : {}),
       admit: gate.admit,
@@ -274,7 +274,7 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
         ...q,
         sessionId: chat.id,
         cwd: chat.cwd,
-        title: sessionDisplayTitle(chat.title, chat.harness as HarnessId),
+        title: sessionDisplayTitle(chat.title, chat.harness as HarnessId, q.question),
         ...(mono ? { monoId: mono.id } : {}),
         askedAt: old && old.question === q.question ? old.askedAt : now,
       };
