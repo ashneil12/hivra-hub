@@ -19,6 +19,8 @@ import { forUser, userName } from "./userName";
 import { secretActionBlock } from "../../../integrations/harness/core/credentialGuard";
 
 export type ChatQuestion = {
+  /** r101 (3): a Lead's plain-text question to Ash (no "Needs Ash:" line); it waits for him like a marker. */
+  plain?: boolean;
   /**
    * "ask": a live AskUserQuestion; "marker": a "Needs Ash:" line ending the agent's last turn; "permission" (r77): a tool
    * call held on Ash's Allow (the chat's permission card), which nothing else answers.
@@ -500,6 +502,8 @@ export function waitingOnAshLine(prompt: UserQuestionPrompt): string {
 
 export type ChatLike = {
   busy?: boolean;
+  /** r101 (3): a Lead's (any Mono's) plain-text question to Ash counts as an ask even without a "Needs Ash:" line. */
+  plainQuestions?: boolean;
   pendingQuestion?: UserQuestionPrompt;
   /** App messages waiting for the chat's turn to end (r85: Ash's answer to its worker may be one). */
   queuedMessages?: readonly { text: string }[];
@@ -609,6 +613,23 @@ function safeCommand(command: string): string {
   return words.length > 5 ? `${head} …` : head;
 }
 
+/** Words that put a question to Ash: a choice or a go-ahead only he can give. */
+const ASKS_ASH =
+  /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|ok(?:ay)? (?:to|if)\b|can i\b|may i\b|which\b|is it ok(?:ay)?|are you ok(?:ay)? with|happy (?:for me )?to\b|go ahead\b|keep\b.*\bor\b|leave\b.*\bor\b)/i;
+
+/**
+ * r101 (3, B5 571a: "Do you want to decide the Stripe staging check first, or leave all five parked?" was never on his
+ * card): the question a finished turn ends on when it is put to Ash, else undefined. Only the last paragraph's last
+ * sentence, so a question quoted mid-reply or a rhetorical one earlier doesn't count.
+ */
+export function plainQuestionToAsh(text: string): string | undefined {
+  const last = text.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
+  if (!last.endsWith("?")) return undefined;
+  const sentence = (last.split(/(?<=[.!?])\s+(?=[A-Z*"])/).pop() ?? last).replace(/^[*_\s]+|[*_\s]+(?=\?$)/g, "").trim();
+  if (sentence.split(/\s+/).length < 3 || sentence.length > 300) return undefined;
+  return ASKS_ASH.test(sentence) ? sentence : undefined;
+}
+
 /**
  * What the chat is waiting on Ash for, if anything: its live AskUserQuestion, or a "Needs Ash:" line in this turn.
  * r75 (CoS call: Ash sees an ask right away): a turn still running counts once the message carrying the question is
@@ -659,6 +680,13 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
       flag: "provide",
       provide: `the key or secret action it tried (\`${secret}\`)`,
     };
+  if (!marker && !chat.busy && chat.plainQuestions) {
+    const plain = plainQuestionToAsh(lastTurnText(shown));
+    if (plain && !notes.some((note) => answerSettles(note, plain))) {
+      const options = orOptions(plain);
+      return { source: "marker", plain: true, question: plain, more: 0, ...(options.length ? { options } : {}), redLine: false };
+    }
+  }
   return marker
     ? {
         source: "marker",
@@ -733,7 +761,7 @@ const ERLANDS = new Set(["sign in", "enter a code", "pay"]);
  * stays in the chat, and the reason says why in words Ash could act on.
  */
 export function gateQuestion(
-  q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag" | "provide"> & Partial<Pick<ChatQuestion, "afterLanding">>,
+  q: Pick<ChatQuestion, "source" | "question" | "pick" | "redLine" | "flag" | "provide"> & Partial<Pick<ChatQuestion, "afterLanding" | "plain">>,
 ): GateDecision {
   const question = q.question.trim();
   const asks = ASKS.test(question) || APPROVAL.test(question) || CHOICE.test(question);
@@ -746,6 +774,8 @@ export function gateQuestion(
   if (q.afterLanding)
     return { admit: false, reason: `It asks about "${q.afterLanding}", which has already landed, so it is held for review instead of shown as blocking.` };
 
+  // r101 (3, B5 571a): a Lead put a question to Ash in plain words and ended its turn on it: nothing goes on without him.
+  if (q.plain) return { admit: true, kind: "choice", reason: "A Lead asked Ash this in plain words and is waiting for his answer." };
   if (q.redLine) {
     return q.pick
       ? { admit: true, kind: "red line", reason: "Touches one of Ash's red lines, and suggests an answer." }

@@ -232,7 +232,7 @@ const reads = new WeakMap<object, { busy: boolean; pending: unknown; queued: unk
 function readChat(chat: ChatInput): ChatQuestion | null {
   const seen = reads.get(chat.blocks);
   if (seen && seen.busy === !!chat.busy && seen.pending === chat.pendingQuestion && seen.queued === chat.queuedMessages) return seen.q;
-  const q = chatQuestion(chat);
+  const q = chatQuestion({ ...chat, plainQuestions: !!monoForSession(chat.id) });
   reads.set(chat.blocks, { busy: !!chat.busy, pending: chat.pendingQuestion, queued: chat.queuedMessages, q });
   return q;
 }
