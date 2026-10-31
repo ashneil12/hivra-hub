@@ -49,6 +49,8 @@ export type WaitingEntry = ChatQuestion & {
   routedToLead?: boolean;
   /** Why the gate let it through (D3): a choice, an approval, a red line or an errand only Ash can run. */
   gate?: { kind: GateKind; reason: string };
+  /** r101 (6): rows of a live ask Ash hasn't answered yet, kept on his card until the Lead's next reply asks them again. */
+  heldUntilReply?: boolean;
 };
 
 /** A waiting chat as Today shows it. */
@@ -232,7 +234,7 @@ const reads = new WeakMap<object, { busy: boolean; pending: unknown; queued: unk
 function readChat(chat: ChatInput): ChatQuestion | null {
   const seen = reads.get(chat.blocks);
   if (seen && seen.busy === !!chat.busy && seen.pending === chat.pendingQuestion && seen.queued === chat.queuedMessages) return seen.q;
-  const q = chatQuestion(chat);
+  const q = chatQuestion({ ...chat, plainQuestions: !!monoForSession(chat.id) });
   reads.set(chat.blocks, { busy: !!chat.busy, pending: chat.pendingQuestion, queued: chat.queuedMessages, q });
   return q;
 }
@@ -291,6 +293,8 @@ export function noteChats(chats: readonly ChatInput[], now = Date.now()): void {
       continue;
     }
     if (!old) continue;
+    // r101 (6): rows Ash hasn't answered stay while the Lead's turn runs on his partial answer.
+    if (old.heldUntilReply && chat.busy) continue;
     // Seen asking in this run and now not: it was answered, skipped or stopped. Only a question from before a restart
     // (its turn died with it) still waits, as long as nothing was said and no turn runs since.
     const said = lastAshMessageAt(chat.blocks);
@@ -486,7 +490,26 @@ export async function answerRow(sessionId: string, row: AskRow, words: string, b
       }
     }
     partial.delete(key);
-    return answer(chat, { reply, words: text }, text, { words: text, by });
+    const done = await answer(chat, { reply, words: text }, text, { words: text, by });
+    // r101 (6): the live question is gone once answered, and the Lead asks the other rows again only in its next
+    // reply; until then they stay on his card, as plain asks (each answer goes as a note).
+    const rest = (chat.rows ?? []).filter((r) => r.questionId && !(r.questionId in given)).map(({ questionId: _id, ...r }) => r);
+    if (done.ok && rest.length) {
+      const { projectId: _p, projectName: _n, chatName: _c, requestId: _r, ...entry } = chat;
+      const last = rest[rest.length - 1]!;
+      save({
+        ...load(),
+        [sessionId]: {
+          ...entry,
+          source: "marker",
+          question: last.question,
+          more: rest.length - 1,
+          ...(rest.length > 1 ? { rows: rest } : { rows: undefined, options: last.options, pick: last.pick, redLine: last.redLine }),
+          heldUntilReply: true,
+        },
+      });
+    }
+    return done;
   }
   const note = rowAnswerNote(row.question, text);
   const sent =

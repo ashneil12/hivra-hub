@@ -21,7 +21,7 @@ import {
   startConversation,
   typingIn,
 } from "../../features/hub/model/hubChats";
-import { answerInWords, findWaitingChat, takePick } from "../../features/hub/model/waitingChats";
+import { answerInWords, answerRow, findWaitingChat, openRows, takePick } from "../../features/hub/model/waitingChats";
 import { listMonos, monoForSession, monoState, removeMono, updateMono } from "../../features/monos/model/mono";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { openCodingTeam, openMonoTeam } from "../../features/hub/model/hubNav";
@@ -536,6 +536,15 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (!sessionId) throw new Error("answer: no chat");
       const waiting = findWaitingChat(sessionId);
       if (!waiting) return { ok: false, error: "nothing waiting on Ash in that chat", session: sessionId };
+      // r101: `row` answers one decision of a card with several (its pick, or his words), as the row's own Send does.
+      if (typeof action.row === "number") {
+        const rows = openRows(waiting);
+        const row = rows[action.row];
+        if (!row || rows.length < 2) return { ok: false, error: `no row ${action.row} on a multi-row card (${rows.length} rows)`, session: sessionId, question: waiting.question ?? null };
+        const words = typeof action.text === "string" && action.text.trim() ? action.text.trim() : (row.pick ?? "");
+        const result = await answerRow(sessionId, row, words, typeof action.text === "string" && action.text.trim() ? "words" : "pick");
+        return { ok: result.ok, at: Date.now(), session: sessionId, question: row.question, recommended: row.pick ?? null, decision: result.ok ? words : null, rows: rows.length, result };
+      }
       const result = typeof action.text === "string" && action.text.trim() ? await answerInWords(sessionId, action.text) : await takePick(sessionId);
       // r80: `recommended` is only the agent's suggestion; `decision` is what Ash actually gave (his typed words win).
       const decision = result.ok ? (typeof action.text === "string" && action.text.trim() ? action.text.trim() : (waiting.pick ?? null)) : null;

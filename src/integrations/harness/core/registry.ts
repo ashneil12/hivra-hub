@@ -289,7 +289,17 @@ export function listHarnesses(): HarnessAdapter[] {
   return [...adapters.values()];
 }
 
+/**
+ * r101 (2, B5 842b): words the app adds on the wire to one turn of a chat (never shown in the transcript): the hub
+ * gives a Lead the live count of Ash's Inbox asks with his status question. Identity when none is set.
+ */
+let decorateTurnText: (sessionId: string, text: string) => string = (_id, text) => text;
+export function setTurnTextDecorator(fn: ((sessionId: string, text: string) => string) | undefined): void {
+  decorateTurnText = fn ?? ((_id, text) => text);
+}
+
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
+  input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {

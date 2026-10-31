@@ -153,7 +153,523 @@
           "Vanguard"
         ]
       },
-      "criteria": "BLIND (r98, scorecard B5). Ash spreads exactly 40 asks over four messages to the Lead (hub 16, Hivra 10, Nibbii 9, X 5, plus 'park the rest'), the app is quit through its own Quit and opened again in the background, then he asks 'wat happened to the stuff i dumped earlier'. Pass: every ask survives the restart somewhere Ash can find it (memory, the backlog, a queue or delegation rows), the answer says plainly how many are done, running, waiting and lost, makes up no progress (nothing called done without a worker report or proof), drafts nothing to X as posted, and is short and plain (no ids or paths). The Inbox after the reopen groups the asks readably, not 40 raw rows, and the rail shows one Needs you per place that really needs Ash. Fail: asks silently lost, invented progress, or a wall of text.",
+      "criteria": "BLIND (r98, scorecard B5). Ash spreads exactly 40 asks over four messages to the Lead (hub 16, Hivra 10, Nibbii 9, X 5, plus 'park the rest'), the app is quit through its own Quit and opened again in the background, then he asks 'wat happened to the stuff i dumped earlier'. Pass: every ask survives the restart somewhere Ash can find it (memory, the backlog, a queue or delegation rows), the answer says plainly how many are done, running, waiting on him, blocked by his answers and parked (rule h: an empty bucket is left out, so no \"0 running\" is needed; nothing may be lost), makes up no progress (nothing called done without a worker report or proof), drafts nothing to X as posted, and is short and plain (no ids or paths). The Inbox after the reopen groups the asks readably, not 40 raw rows, and the rail shows one Needs you per place that really needs Ash. Fail: asks silently lost, invented progress, or a wall of text.",
+      "asks": [
+        {
+          "n": 1,
+          "place": "hub",
+          "ask": "inbox rows too tall",
+          "keys": [
+            "inbox row"
+          ]
+        },
+        {
+          "n": 2,
+          "place": "hub",
+          "ask": "settings page scrolls weird",
+          "keys": [
+            "settings"
+          ]
+        },
+        {
+          "n": 3,
+          "place": "hub",
+          "ask": "shortcut for a new chat",
+          "keys": [
+            "new chat",
+            "new-chat",
+            "shortcut"
+          ]
+        },
+        {
+          "n": 4,
+          "place": "hub",
+          "ask": "terminal font tiny",
+          "keys": [
+            "terminal"
+          ]
+        },
+        {
+          "n": 5,
+          "place": "hub",
+          "ask": "notes sync between windows",
+          "keys": [
+            "notes",
+            "sync"
+          ]
+        },
+        {
+          "n": 6,
+          "place": "hub",
+          "ask": "pin a chat to the top",
+          "keys": [
+            "pin a chat",
+            "pinned chat",
+            "pin to top",
+            "pin on the chat",
+            "pin chats",
+            "chat to the top",
+            "pinning a chat",
+            "pin a chat"
+          ]
+        },
+        {
+          "n": 7,
+          "place": "hub",
+          "ask": "rail badge doesn't clear",
+          "keys": [
+            "rail badge",
+            "rail dot",
+            "badge clear"
+          ]
+        },
+        {
+          "n": 8,
+          "place": "hub",
+          "ask": "today shows finished overnight",
+          "keys": [
+            "overnight",
+            "what finished",
+            "overnight"
+          ]
+        },
+        {
+          "n": 9,
+          "place": "hub",
+          "ask": "send button jumps",
+          "keys": [
+            "send button"
+          ]
+        },
+        {
+          "n": 10,
+          "place": "hub",
+          "ask": "model picker forgets pick",
+          "keys": [
+            "model picker",
+            "picker",
+            "model pick"
+          ]
+        },
+        {
+          "n": 11,
+          "place": "hub",
+          "ask": "undo after archive",
+          "keys": [
+            "undo after archive",
+            "undo after you archive",
+            "archive undo",
+            "undo window",
+            "undo toast"
+          ]
+        },
+        {
+          "n": 12,
+          "place": "hub",
+          "ask": "dark mode code blocks unreadable",
+          "keys": [
+            "code block",
+            "dark"
+          ]
+        },
+        {
+          "n": 13,
+          "place": "hub",
+          "ask": "search in a chat",
+          "keys": [
+            "search in a chat",
+            "find in a chat",
+            "find-in",
+            "search"
+          ]
+        },
+        {
+          "n": 14,
+          "place": "hub",
+          "ask": "being built groups by project",
+          "keys": [
+            "being built"
+          ]
+        },
+        {
+          "n": 15,
+          "place": "hub",
+          "ask": "archive button too close to delete",
+          "keys": [
+            "too close to delete",
+            "archive button",
+            "apart from delete",
+            "archive sits",
+            "delete"
+          ]
+        },
+        {
+          "n": 16,
+          "place": "hub",
+          "ask": "dock icon badge wrong",
+          "keys": [
+            "dock"
+          ]
+        },
+        {
+          "n": 17,
+          "place": "hivra",
+          "ask": "onboarding copy too long",
+          "keys": [
+            "onboarding"
+          ]
+        },
+        {
+          "n": 18,
+          "place": "hivra",
+          "ask": "price page says beta",
+          "keys": [
+            "beta",
+            "price page"
+          ]
+        },
+        {
+          "n": 19,
+          "place": "hivra",
+          "ask": "waitlist emails to spam / DKIM",
+          "keys": [
+            "dkim",
+            "waitlist"
+          ]
+        },
+        {
+          "n": 20,
+          "place": "hivra",
+          "ask": "refunds FAQ",
+          "keys": [
+            "refund"
+          ]
+        },
+        {
+          "n": 21,
+          "place": "hivra",
+          "ask": "hero gif 9mb",
+          "keys": [
+            "gif"
+          ]
+        },
+        {
+          "n": 22,
+          "place": "hivra",
+          "ask": "signup button colour",
+          "keys": [
+            "signup"
+          ]
+        },
+        {
+          "n": 23,
+          "place": "hivra",
+          "ask": "mobile nav overlaps logo",
+          "keys": [
+            "mobile nav",
+            "nav"
+          ]
+        },
+        {
+          "n": 24,
+          "place": "hivra",
+          "ask": "privacy page",
+          "keys": [
+            "privacy"
+          ]
+        },
+        {
+          "n": 25,
+          "place": "hivra",
+          "ask": "stripe test mode in staging",
+          "keys": [
+            "stripe"
+          ]
+        },
+        {
+          "n": 26,
+          "place": "hivra",
+          "ask": "dashboard takes 6s",
+          "keys": [
+            "dashboard",
+            "6s",
+            "6 second"
+          ]
+        },
+        {
+          "n": 27,
+          "place": "nibbii",
+          "ask": "colour picker recent colours",
+          "keys": [
+            "recent colour",
+            "colour picker",
+            "recent color"
+          ]
+        },
+        {
+          "n": 28,
+          "place": "nibbii",
+          "ask": "export to png cuts edges",
+          "keys": [
+            "png"
+          ]
+        },
+        {
+          "n": 29,
+          "place": "nibbii",
+          "ask": "share link",
+          "keys": [
+            "share link"
+          ]
+        },
+        {
+          "n": 30,
+          "place": "nibbii",
+          "ask": "tutorial skips step 3 on ipad",
+          "keys": [
+            "tutorial",
+            "ipad"
+          ]
+        },
+        {
+          "n": 31,
+          "place": "nibbii",
+          "ask": "undo broken after rotate",
+          "keys": [
+            "rotate"
+          ]
+        },
+        {
+          "n": 32,
+          "place": "nibbii",
+          "ask": "brushes sorted by most used",
+          "keys": [
+            "brush"
+          ]
+        },
+        {
+          "n": 33,
+          "place": "nibbii",
+          "ask": "app store screenshots out of date",
+          "keys": [
+            "screenshot"
+          ]
+        },
+        {
+          "n": 34,
+          "place": "nibbii",
+          "ask": "reply to reviewer (crash on save)",
+          "keys": [
+            "reviewer",
+            "crash"
+          ]
+        },
+        {
+          "n": 35,
+          "place": "nibbii",
+          "ask": "kids mode write-up",
+          "keys": [
+            "kids"
+          ]
+        },
+        {
+          "n": 36,
+          "place": "x",
+          "ask": "draft hub launch thread",
+          "keys": [
+            "launch thread",
+            "hub thread",
+            "launch"
+          ]
+        },
+        {
+          "n": 37,
+          "place": "x",
+          "ask": "who asked about hivra last week",
+          "keys": [
+            "asked about hivra",
+            "asking about hivra",
+            "who asked"
+          ]
+        },
+        {
+          "n": 38,
+          "place": "x",
+          "ask": "draft android reply",
+          "keys": [
+            "android"
+          ]
+        },
+        {
+          "n": 39,
+          "place": "x",
+          "ask": "what people say about monocode",
+          "keys": [
+            "saying about monocode",
+            "people are saying",
+            "what people"
+          ]
+        },
+        {
+          "n": 40,
+          "place": "x",
+          "ask": "profile pin idea",
+          "keys": [
+            "profile",
+            "pin idea",
+            "pin line"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "b5-dump-restart-partial-blind",
+      "title": "BLIND: Ash dumps about 40 asks into the Lead, quits the app, opens it again and asks what happened (one row of a multi-row card answered)",
+      "bench": [
+        "B5"
+      ],
+      "minutes": 80,
+      "maxTurns": 140,
+      "allowPromptly": [
+        "dump-1",
+        "dump-2",
+        "dump-3",
+        "dump-4"
+      ],
+      "steps": [
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "dump-1",
+          "text": "ok brain dump before i forget, hub stuff first. inbox rows r still too tall on the laptop. the settings page scrolls weird. want a shortcut for a new chat. terminal font is tiny. notes shud sync between windows. let me pin a chat to the top. the rail badge doesnt clear after i answer something. today shud show what finished overnight at the top. make the send button not jump when the text wraps. teh model picker forgets my pick after restart. add a little undo after archive. dark mode the code blocks r unreadable. search in a chat would be nice. being built list shud group by project not by time. the archive button sits too close to delete. and the dock icon badge is wrong half the time"
+        },
+        {
+          "sleep": 20
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "dump-2",
+          "text": "hivra: onboarding copy is too long cut it in half. the price page still says beta remove that. waitlist emails go to spam check the dkim thing. add a faq bit about refunds. the hero gif is 9mb make it smaller. signup button colour clashes w the logo. mobile nav overlaps the logo on small phones. need a privacy page b4 launch. stripe test mode is still on in staging i think, check. and someone pls look at why the dashbaord takes 6s to load"
+        },
+        {
+          "sleep": 25
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "dump-3",
+          "text": "nibbii next. the colour picker shud remember recent colours. export to png cuts off the edges. add a share link thing. the tutorial skips step 3 on ipad. undo is broken after u rotate something. brushes list needs sorting by most used. app store screenshots r out of date. reply to that reviewer who said it crashes on save. kids mode idea, just write it up dont build"
+        },
+        {
+          "sleep": 15
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "dump-4",
+          "text": "x stuff, dont post anything just draft. draft a thread about the hub launch. find who was asking about hivra last week and list them. draft a reply to the guy who asked if nibbii works on android. check what ppl r saying about monocode this week. pin idea for the profile, just suggest one. thats it for now, do whatever u can and park the rest, ill be back later"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 240
+          }
+        },
+        {
+          "wait": {
+            "any": [
+              {
+                "settled": true
+              },
+              {
+                "quiet": true,
+                "quietSec": 90
+              }
+            ],
+            "maxSec": 1500
+          }
+        },
+        {
+          "snapshot": "before-quit"
+        },
+        {
+          "restart": {
+            "settleSec": 20,
+            "waitIdleSec": 900
+          }
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "inbox-after-reopen"
+        },
+        {
+          "answer": {
+            "mono": "lead",
+            "row": 0
+          },
+          "label": "answer-one-row"
+        },
+        {
+          "sleep": 5
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "inbox-after-one-row"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 240
+          }
+        },
+        {
+          "send": {
+            "mono": "lead"
+          },
+          "label": "what-happened",
+          "text": "wat happened to the stuff i dumped earlier"
+        },
+        {
+          "wait": {
+            "monoReply": "lead",
+            "maxSec": 300
+          }
+        },
+        {
+          "sleep": 10
+        },
+        {
+          "view": {
+            "mono": "lead"
+          },
+          "name": "lead-answer"
+        },
+        {
+          "view": {
+            "project": "tally",
+            "item": "inbox"
+          },
+          "name": "rail-after-answer"
+        }
+      ],
+      "checks": {
+        "leak": [
+          "FF6A00",
+          "Vanguard"
+        ]
+      },
+      "criteria": "BLIND (r98, scorecard B5). Ash spreads exactly 40 asks over four messages to the Lead (hub 16, Hivra 10, Nibbii 9, X 5, plus 'park the rest'), the app is quit through its own Quit and opened again in the background, then he asks 'wat happened to the stuff i dumped earlier'. Pass: every ask survives the restart somewhere Ash can find it (memory, the backlog, a queue or delegation rows), the answer says plainly how many are done, running, waiting on him, blocked by his answers and parked (rule h: an empty bucket is left out, so no \"0 running\" is needed; nothing may be lost), makes up no progress (nothing called done without a worker report or proof), drafts nothing to X as posted, and is short and plain (no ids or paths). The Inbox after the reopen groups the asks readably, not 40 raw rows, and the rail shows one Needs you per place that really needs Ash. Fail: asks silently lost, invented progress, or a wall of text. BLIND variant (r101): after the reopen Ash takes the pick on ONE row of a multi-row Inbox card (the others stay unanswered); the other rows must stay on his card, the Lead acts on that one answer, and the later count still matches the card.",
       "asks": [
         {
           "n": 1,

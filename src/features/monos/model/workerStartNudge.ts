@@ -25,6 +25,13 @@ export function asksIn(text: string): number {
   return next - 1 >= 2 ? next - 1 : 0;
 }
 
+/**
+ * r101 (4): "Starting now" must start a worker or not be said. Ash's dumps are unnumbered, so asksIn missed them; a
+ * reply that says work starts right now is checked on any Ash message.
+ */
+export const STARTS_NOW =
+  /\b(?:starting (?:now|on (?:it|them|these|those|that|this) now|(?:the |all )?(?:workers|jobs) now)|(?:i'?m |i am )?on it now|kicking (?:it|them|these) off now|(?:workers?|jobs?) (?:start|are starting|go out) now)\b/i;
+
 /** Says work starts, is handed out or goes to workers: now or next. */
 const PROMISES_WORK =
   /\b(?:start(?:s|ing|ed)?|kick(?:s|ing)? off|hand(?:s|ing|ed)? (?:it |them |that |this )?(?:off|out|over)|sending|send(?:s)? (?:it|them|out)|going out|fan(?:ning)? out|spin(?:ning)? up|workers?|jobs?)\b/i;
@@ -52,12 +59,14 @@ export function workerStartNudge(
   const ask = lastAsk(chat);
   if (!ask || nudged.has(ask.block.id)) return undefined;
   // Our own nudge's turn, an app report or a brief from another Mono: not Ash's list.
-  if (/^\s*\[MonoCode /.test(ask.block.text) || !asksIn(ask.block.text)) return undefined;
+  if (/^\s*\[MonoCode /.test(ask.block.text)) return undefined;
   // Workers it already has out are the work in hand, not work it forgot to start.
   if (rows.some((row) => row.ownerSession === chat.id && !!row.state && isOpen({ state: row.state }))) return undefined;
   const turn = chat.blocks.slice(ask.index + 1);
   const reply = [...turn].reverse().find((b) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim())?.text;
-  if (!reply || !listsAsks(reply) || !PROMISES_WORK.test(reply)) return undefined;
+  if (!reply) return undefined;
+  const listed = !!asksIn(ask.block.text) && listsAsks(reply) && PROMISES_WORK.test(reply);
+  if (!listed && !STARTS_NOW.test(reply)) return undefined;
   if (turn.some((b) => delegateToolName(b) === "delegate_task" && !delegateToolFailed(b))) return undefined;
   const since = ask.block.startedAt ?? ask.block.sentAt;
   if (since !== undefined && rows.some((row) => row.ownerSession === chat.id && row.createdAt >= since)) return undefined;

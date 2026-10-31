@@ -1,0 +1,12 @@
+{
+  "n": 1,
+  "config": "/Users/ash/.monocode-hub-dev/claude-config",
+  "loggedIn": false,
+  "accounts": [
+    {
+      "n": 1,
+      "config": "/Users/ash/.monocode-hub-dev/claude-config",
+      "loggedIn": false
+    }
+  ]
+}

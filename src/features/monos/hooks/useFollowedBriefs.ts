@@ -17,6 +17,7 @@ import {
 import { answeredReport, currentLeadBrief, followStep } from "../model/followedBriefs";
 import { stillRunningNote } from "../model/leadFlow";
 import { statusReply, statusReplyChange } from "../model/statusReply";
+import { progressNote } from "../model/progressNote";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
 import { staleTestClaimNudge } from "../model/staleTestClaim";
 import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
@@ -182,6 +183,12 @@ export function useFollowedBriefs(options: {
           const change = statusReplyChange(chat, known, notesSince.current, now);
           if (change && "remove" in change) latest.current.unnote?.(chat.id, change.remove);
           else if (change) latest.current.renote?.(chat.id, change.update);
+          // r101 (5): work out for ~10 quiet minutes and something moved: one grey line ("Still working: 2 of 5 jobs done.").
+          const progress = progressNote(chat, known, now);
+          if (progress) {
+            noted.current.add(progress.id);
+            note(chat.id, progress);
+          }
           // r86: its own test run in the project, after the workers' reports, is the newer word on the suite.
           const tests = projectTestNote(chat, noted.current, now);
           if (tests) {

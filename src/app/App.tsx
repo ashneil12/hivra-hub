@@ -1,3 +1,5 @@
+import { setTurnTextDecorator } from "../integrations/harness/core/registry";
+import { withInboxCount } from "../features/hub/model/inboxCountNote";
 import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
 import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
 import { monoChatModelFix } from "../features/monos/model/monoModels";
@@ -12149,6 +12151,12 @@ function Workspace({
         : undefined,
     [delegationQuestions],
   );
+  // r101 (2, 8): a Mono asked how things stand gets the live count of its Inbox asks with the question (wire only).
+  useEffect(() => {
+    if (!IS_HUB_BUNDLE) return;
+    setTurnTextDecorator((id, text) => withInboxCount(id, text, (sid) => !!monoForSession(sid)));
+    return () => setTurnTextDecorator(undefined);
+  }, []);
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
     // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.

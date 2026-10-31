@@ -20,7 +20,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, "..");
 export const BENCHMARK = JSON.parse(fs.readFileSync(path.join(ROOT, "tests/realtest/benchmark.json"), "utf8"));
 
-const SYSTEM = `You grade one scenario of a real end-to-end test of "MonoCode Hub", an app where AI agents (Monos) work for one person, Ash.
+export const SYSTEM = `You grade one scenario of a real end-to-end test of "MonoCode Hub", an app where AI agents (Monos) work for one person, Ash.
 Ash has a leadership room (group chat: Chief of Staff, Projects Manager, frank, Alfred), a project Lead per project (here "tally-lead"), a coding team per project (chats Ash starts in the project's code folder, each an orchestrator like the Lead, shown as "coding-team chat"), and temporary workers the Lead or a coding-team chat delegates to.
 You get: the benchmark items this scenario covers (Ash's own standard, from a team he liked), the scenario's intent, a timeline (times are seconds after the scenario started; "Ash ->" lines are what the test sent as Ash), delegation rows, what the app's views showed, and metrics computed by the test (trust these numbers).
 Grade each item strictly against what the timeline shows, never against what an agent claims. Use:
@@ -31,6 +31,7 @@ Grade each item strictly against what the timeline shows, never against what an 
 Quote the evidence verbatim (short, with its +Ns time). Name concrete problems a developer could fix (what was seen, where).
 Answer with ONE JSON object and nothing else:
 {"grade":"PASS|PARTIAL|FAIL|NOT-TRIGGERED","items":[{"item":"<id>","grade":"...","why":"<one or two sentences>","evidence":["+12s ..."]}],"summary":"<two sentences>","problems":["<one line each>"]}
+A status count line follows Ash's rule (h): it leaves out a bucket that is empty, so never mark a run down for omitting "running" (or any other bucket) when nothing is in it; check only that the numbers it gives add up to the total and match the evidence. (r101: our bench grader, changed to agree with rule h.)
 The scenario's overall grade is the worst grade among items that were triggered.`;
 
 function benchText(ids) {
