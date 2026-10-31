@@ -624,10 +624,25 @@ const ASKS_ASH =
  */
 export function plainQuestionToAsh(text: string): string | undefined {
   const last = text.trim().split(/\n\s*\n/).pop()?.trim() ?? "";
-  if (!last.endsWith("?")) return undefined;
-  const sentence = (last.split(/(?<=[.!?])\s+(?=[A-Z*"])/).pop() ?? last).replace(/^[*_\s]+|[*_\s]+(?=\?$)/g, "").trim();
+  const asked = last.endsWith("?");
+  // r102 (1, 05bc: "Still your call on the privacy page: have Tally draft it for you to OK, or leave all three parked."
+  // never reached his card): a question is known by its meaning, not only by its "?".
+  if (!asked && !/[.!]$/.test(last)) return undefined;
+  const sentence = (last.split(/(?<=[.!?])\s+(?=[A-Z*"])/).pop() ?? last).replace(/^[*_\s]+|[*_\s]+(?=[?.!]$)/g, "").trim();
   if (sentence.split(/\s+/).length < 3 || sentence.length > 300) return undefined;
-  return ASKS_ASH.test(sentence) ? sentence : undefined;
+  if (asked) return ASKS_ASH.test(sentence) ? sentence : undefined;
+  return asksByMeaning(sentence) ? sentence.replace(/[.!]$/, "") : undefined;
+}
+
+/** "your call", "up to you", "let me know which", or a choice put to him ("say if you want A, or B"), without a "?". */
+const LEAVES_IT_TO_ASH =
+  /\b(?:(?:still |that's |it's |this is )?your (?:call|decision|choice|pick)|up to you|you decide|let me know (?:if|whether|which|what|how)|tell me (?:if|whether|which|what)|say (?:if|whether|which)|(?:i|we) need (?:your|a) (?:answer|decision|yes or no|go-ahead|ok))\b/i;
+
+export function asksByMeaning(sentence: string): boolean {
+  const s = sentence.trim();
+  if (LEAVES_IT_TO_ASH.test(s)) return true;
+  // "Do you want A, or B." / "Should I keep it, or drop it." written with a full stop.
+  return /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|which\b)/i.test(s);
 }
 
 /**
