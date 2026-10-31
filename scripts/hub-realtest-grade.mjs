@@ -9,6 +9,7 @@
 //
 // The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, never Claude unless named.
 
+import { asksSection } from "./hub-realtest-asks.mjs";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -210,6 +211,14 @@ export function report(evidenceDir, summary, grades) {
     for (const item of grade.items ?? []) lines.push(`- **${item.item}** ${item.grade}: ${item.why}${item.evidence?.length ? ` Evidence: ${item.evidence.map((e) => `"${e}"`).join("; ")}` : ""}`);
     if (grade.problems?.length) lines.push("", "Problems:", ...grade.problems.map((p) => `- ${p}`));
     lines.push("");
+    // r100: each ask by number with its state, and rendered chat vs raw transcript (report only, not the grade).
+    try {
+      const dir = path.join(evidenceDir, "scenarios", id);
+      const evidence = JSON.parse(fs.readFileSync(path.join(dir, "evidence.json"), "utf8"));
+      lines.push(...asksSection(evidence, fs.readFileSync(path.join(dir, "transcript.md"), "utf8")));
+    } catch {
+      // no evidence for this scenario
+    }
   }
   return `${lines.join("\n")}\n`;
 }
