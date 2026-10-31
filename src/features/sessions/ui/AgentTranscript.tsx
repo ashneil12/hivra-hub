@@ -24,7 +24,7 @@ import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
-import { withoutAskMarkers } from "../../../shared/text/askMarkers";
+import { repeatedAsks, withoutAskMarkers } from "../../../shared/text/askMarkers";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
@@ -863,6 +863,8 @@ function AgentTranscriptComponent({
     [messageDeliveries],
   );
   const turns = turnCache.group(blocks, managed, inlineWork);
+  // r99: an open ask re-stated in a later reply is shown once (the card keeps it up).
+  const askedBefore = useMemo(() => new Map([...repeatedAsks(blocks)].map(([id, qs]) => [id, [...qs]])), [blocks]);
   // After Ash has been away 3 h or more (our own number): one quiet line saying what came meanwhile (sinceYouWereHere.ts, our own idea).
   const awayLines = useMemo(
     () =>
@@ -1595,6 +1597,7 @@ function AgentTranscriptComponent({
                     : isCompactFollowUp(items[itemIndex - 1], itemIndex - 1)
                 }
                 delivery={messageDeliveries?.get(item.block.id)}
+                askedBefore={askedBefore.get(item.block.id)?.join("\n")}
                 onRetryMessage={onRetryMessage}
                 visible={item.block.role === "user" ? visible : undefined}
                 stickyIndex={firstVisibleTurn + turnIndex + 1}
@@ -2551,7 +2554,10 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
+  askedBefore,
 }: {
+  /** r99: questions an earlier reply already asked (one per line, a string so memo holds); left out of this one. */
+  askedBefore?: string;
   block: Block;
   layout: TranscriptLayout;
   bubbleTail?: boolean;
@@ -2728,7 +2734,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   // r74: no em dashes in a reply Ash reads (his rule), swapped here as room posts are when saved; code keeps its own.
   // r91: the engine label after a launch goes on its own line (Critiquito 8).
   // r99 (Critiquito 1): no "Needs Ash:" / "My pick:" markers or "the user" about Ash in the reply he reads.
-  const shown = engineLabelOnOwnLine(withoutAskMarkers(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(withoutNoReply(block.text))))));
+  const shown = engineLabelOnOwnLine(withoutAskMarkers(withoutDoubledAllClear(withoutToolRuleTalk(withoutEmDashes(withoutNoReply(block.text)))), askedBefore ? new Set(askedBefore.split("\n")) : undefined));
   if (block.text && (!shown || (block.streaming && isNoReplyPrefix(block.text)))) return null;
 
   return (

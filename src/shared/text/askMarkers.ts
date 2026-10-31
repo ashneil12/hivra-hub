@@ -20,22 +20,77 @@ function lowerFirst(text: string): string {
   return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
 }
 
-export function withoutAskMarkers(text: string): string {
+function askKey(question: string): string {
+  return question.replace(/^[*_]+|[*_]+$/g, "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/** The questions each reply's markers ask, in order. */
+export function askedQuestions(text: string): string[] {
+  if (!text || !/\bneeds\b/i.test(text)) return [];
+  let inFence = false;
+  const out: string[] = [];
+  for (const line of text.split("\n")) {
+    if (FENCE.test(line)) inFence = !inFence;
+    else if (!inFence) {
+      const needs = NEEDS.exec(line);
+      if (needs?.groups) out.push(askKey(needs.groups.rest!));
+    }
+  }
+  return out;
+}
+
+/**
+ * r99 (B5 7879: "the same three questions are pasted onto almost every later bubble"): for each reply, the questions an
+ * earlier reply in the chat already asked. The Lead re-states open asks so the card stays up; Ash reads each once.
+ */
+export function repeatedAsks(blocks: readonly { id: string; role: string; text?: string }[]): Map<string, Set<string>> {
+  const seen = new Set<string>();
+  const out = new Map<string, Set<string>>();
+  for (const block of blocks) {
+    if (block.role !== "assistant" || !block.text) continue;
+    const asked = askedQuestions(block.text);
+    const repeats = new Set(asked.filter((q) => seen.has(q)));
+    if (repeats.size) out.set(block.id, repeats);
+    for (const q of asked) seen.add(q);
+  }
+  return out;
+}
+
+export function withoutAskMarkers(text: string, askedBefore?: ReadonlySet<string>): string {
   if (!text || !/\b(?:needs|my\s+(?:pick|recommendation))\b/i.test(text)) return text;
   let inFence = false;
-  return text
-    .split("\n")
-    .map((line) => {
-      if (FENCE.test(line)) {
-        inFence = !inFence;
-        return line;
-      }
-      if (inFence) return line;
-      const needs = NEEDS.exec(line);
-      if (needs?.groups) return `${needs.groups.lead}${toSecondPerson(needs.groups.rest!.replace(/^[*_]+|[*_]+$/g, "").trim())}`;
-      const pick = PICK.exec(line);
-      if (pick?.groups) return `${pick.groups.lead}I'd go with ${lowerFirst(toSecondPerson(pick.groups.rest!.replace(/^[*_]+|[*_]+$/g, "").trim()))}`;
-      return line;
-    })
-    .join("\n");
+  let dropping = false;
+  let dropped = false;
+  const lines: string[] = [];
+  for (const line of text.split("\n")) {
+    if (FENCE.test(line)) {
+      inFence = !inFence;
+      dropping = false;
+      lines.push(line);
+      continue;
+    }
+    if (inFence) {
+      lines.push(line);
+      continue;
+    }
+    const needs = NEEDS.exec(line);
+    if (needs?.groups) {
+      dropping = !!askedBefore?.has(askKey(needs.groups.rest!));
+      dropped ||= dropping;
+      if (!dropping) lines.push(`${needs.groups.lead}${toSecondPerson(needs.groups.rest!.replace(/^[*_]+|[*_]+$/g, "").trim())}`);
+      continue;
+    }
+    const pick = PICK.exec(line);
+    if (pick?.groups) {
+      if (!dropping) lines.push(`${pick.groups.lead}I'd go with ${lowerFirst(toSecondPerson(pick.groups.rest!.replace(/^[*_]+|[*_]+$/g, "").trim()))}`);
+      dropping = false;
+      continue;
+    }
+    if (dropping && !line.trim()) continue;
+    dropping = false;
+    lines.push(line);
+  }
+  // A reply that was only repeats reads as nothing new rather than an empty bubble.
+  if (!dropped) return lines.join("\n");
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim() || "Still waiting on your answers on the card.";
 }
