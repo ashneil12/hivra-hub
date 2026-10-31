@@ -10,6 +10,7 @@ import opencode from "../../../assets/providers/opencode.svg";
 import pi from "../../../assets/providers/pi.svg";
 import antigravity from "../../../assets/providers/antigravity.svg";
 import type { HarnessId } from "../model/session";
+import { MessageSquare } from "../../../shared/ui/icons";
 import { onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 
 export const HARNESS_ICONS: Record<HarnessId, string> = {
@@ -148,11 +149,11 @@ export function HarnessIcon({
 }
 
 /**
- * A chat's mark for the model it really runs. On the Grok bridge there is none: an empty slot the same size, so rows
- * keep their alignment (no Claude starburst, and no Grok mark, whose slashed circle reads as "disabled"). Off the
- * bridge, the harness's own mark as before.
+ * A chat's mark for the model it really runs. On the Grok bridge a neutral grey chat mark the same size (no Claude
+ * starburst, and no Grok mark, whose slashed circle reads as "disabled"). Off the bridge, the harness's own mark.
  */
 export function ModelInUseIcon({ harness, className = "size-3.5" }: { harness: HarnessId; className?: string }) {
-  if (onGrokBridge(harness)) return <span aria-hidden data-model-mark-empty className={`inline-block ${className}`} />;
+  // r102 (11, Critiquito): a neutral grey session mark, never the Claude starburst on a non-Claude run.
+  if (onGrokBridge(harness)) return <MessageSquare aria-hidden data-model-mark-neutral className={`block text-content/45 ${className}`} />;
   return <HarnessIcon harness={harness} className={className} />;
 }

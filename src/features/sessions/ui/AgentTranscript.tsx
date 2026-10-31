@@ -130,7 +130,7 @@ import {
   type ToolPreview,
   type TurnMetrics,
 } from "../model/session";
-import { HarnessIcon } from "./HarnessIcon";
+import { HarnessIcon, ModelInUseIcon } from "./HarnessIcon";
 import { TurnActivityLine } from "./LiveActivity";
 import {
   modelInUseLabel,
@@ -2249,7 +2249,7 @@ function TurnDuration({
           {dot}
           <span className="flex min-w-0 items-center gap-1.5">
             {harness ? (
-              <HarnessIcon harness={harness} className="size-3.5 shrink-0" />
+              <ModelInUseIcon harness={harness} className="size-3.5 shrink-0" />
             ) : null}
             <span className="min-w-0 truncate" title={label}>
               {label}
@@ -3382,7 +3382,7 @@ function WorkFoldLine({
               className={`size-3.5 shrink-0 ${expandable ? "group-hover:opacity-0" : ""}`}
             />
           ) : harness ? (
-            <HarnessIcon
+            <ModelInUseIcon
               harness={harness}
               className={`size-3.5 shrink-0 ${expandable ? "group-hover:opacity-0" : ""}`}
             />
@@ -3744,7 +3744,7 @@ function MonoTurnHeader({
       className="size-3.5 shrink-0"
     />
   ) : harness ? (
-    <HarnessIcon harness={harness} className="size-3.5 shrink-0" />
+    <ModelInUseIcon harness={harness} className="size-3.5 shrink-0" />
   ) : (
     <ActivityPhaseIcon kind={status.kind} />
   );
