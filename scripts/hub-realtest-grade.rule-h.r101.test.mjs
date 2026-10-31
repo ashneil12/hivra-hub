@@ -16,3 +16,13 @@ test("B5's criteria no longer ask for a running or lost count", () => {
   assert.match(b5.criteria, /an empty bucket is left out/);
   assert.match(b5.criteria, /nothing may be lost/);
 });
+
+test("the partial-answer B5 variant answers one row of a multi-row card after the reopen", () => {
+  const raw = JSON.parse(fs.readFileSync(new URL("../tests/realtest/scenarios/b5-restart-blind.json", import.meta.url), "utf8"));
+  const v = (Array.isArray(raw) ? raw : raw.scenarios).find((s) => s.id === "b5-dump-restart-partial-blind");
+  const at = (pred) => v.steps.findIndex(pred);
+  assert.equal(v.asks.length, 40);
+  assert.ok(at((s) => s.answer?.row === 0) > at((s) => s.name === "inbox-after-reopen"));
+  assert.ok(at((s) => s.answer?.row === 0) < at((s) => s.label === "what-happened"));
+  assert.match(v.criteria, /^BLIND/);
+});

@@ -409,7 +409,7 @@ export async function runScenario(scenario, ctx) {
         log("  outage off");
       }
     } else if (step.answer) {
-      const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text }).catch((error) => ({ ok: false, error: error.message }));
+      const answer = await act("answer", { mono: step.answer.mono ? resolveMono(step.answer.mono) : undefined, session: step.answer.session, text: step.answer.text, ...(typeof step.answer.row === "number" ? { row: step.answer.row } : {}) }).catch((error) => ({ ok: false, error: error.message }));
       record.sends.push({ t: Date.now(), label: step.label, todayAnswer: step.answer, result: answer });
       log(`  Ash answered from Today (${step.answer.text ? "in his words" : "Take the pick"}): ${answer.ok ? `"${String(answer.question ?? "").slice(0, 80)}"` : `not possible: ${answer.error}`}`);
     } else if (step.reload) {
