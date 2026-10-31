@@ -10,4 +10,4 @@
 - Count line (+1942s, raw): "Of 40: 15 done, 3 already there, 22 parked." On screen the checker folds it to "Of 40: 18 done, 22 parked."
 - Ledger: evidence/r102/b5-0266-ledger.md. It reads 37 missing because it scores the last Lead reply, which was the pick answer.
 - (1) holds: the Inbox shows the CoS row "Stripe is still your call: look only, or look and switch test mode off if it is still on", with no "?".
-- Rendered (stub, not live): r101-0266-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png. The footer chip has the neutral meter mark and grey "Weekly limit nearly used, resets in 5d 15h". The stub's own blank tab ("New session", Older) still has the Claude mark: it is the stub's empty fixture session, not a run chat.
+- Rendered (stub, not live): r102-0266-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png. The footer chip has the neutral meter mark and grey "Weekly limit nearly used, resets in 5d 15h". The stub's own blank tab ("New session", Older) still has the Claude mark: it is the stub's empty fixture session, not a run chat.

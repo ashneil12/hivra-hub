@@ -15,6 +15,6 @@ test("an ask a chat already asked shows once in transcript.md", () => {
   ];
   const md = transcript(scenario, { ...empty, texts }, 0);
   assert.equal(md.match(/May Hivra publish a privacy page\?/g)?.length, 2, "once per chat");
-  assert.match(md, /Privacy draft is done\. \(1 ask it asked before left out\)/);
+  assert.match(md, /Privacy draft is done\. \[transcript note, not in the chat: 1 Needs Ash line it asked before not repeated here\]/);
   assert.equal(md.match(/My pick: Yes, a short one\./g)?.length, 2);
 });

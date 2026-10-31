@@ -14,4 +14,4 @@
   - The Lead's 3 decisions ("new-chat shortcut, terminal font size, store screenshots") were not on the Inbox when it answered. The transcript notes "(3 asks it asked before left out)".
   - Because of that it said "Nothing from me is on your Inbox" and then listed them under Blocked. The rail's Needs you also cleared while they were still open.
 - Ledger: evidence/r102/b5-a0ba-ledger.md (9 named only through their group, 0 lost by count).
-- Rendered (stub): r101-a0ba-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png.
+- Rendered (stub): r102-a0ba-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png.

@@ -350,7 +350,9 @@ function cutWorkLines(work: CutWork[]): string[] {
  * restart it by, bounded to `CUT_NOTE_MAX_ENTRIES` lines. Null when nothing was running in the background.
  */
 export function cutWorkNote(work: CutWork[]): string | null {
-  const lines = cutWorkLines(work.filter((entry) => entry.kind !== "ask"));
+  // r103 (6, B5 0255: "- task: Which shortcut should open a new chat? … (id ask-1)" in the Lead's thread): Ash's own
+  // question is never background work to restart by id, whatever kind it was saved as; the resume asks it again.
+  const lines = cutWorkLines(work.filter((entry) => entry.kind !== "ask" && !/^ask-/.test(entry.id)));
   if (!lines.length) return null;
   return [
     "Note: MonoCode Hub restarted while this turn was running, and this background work was cut before it finished. It will not report back on its own, so restart or resume what you still need (by its id) and wait for its result:",

@@ -677,7 +677,8 @@ export function withoutRepeatedAsks(text, seen) {
   }
   if (!dropped) return text;
   const kept = out.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-  return `${kept}${kept ? " " : ""}(${dropped} ask${dropped === 1 ? "" : "s"} it asked before left out)`;
+  // r103 (B5 e46f: the grader read this note as the Lead's own words to Ash): it says it is the transcript's, not the chat's.
+  return `${kept}${kept ? " " : ""}[transcript note, not in the chat: ${dropped} Needs Ash line${dropped === 1 ? "" : "s"} it asked before not repeated here]`;
 }
 
 export function transcript(scenario, result, t0) {

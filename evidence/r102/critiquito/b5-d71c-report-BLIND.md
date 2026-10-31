@@ -9,6 +9,6 @@
 - Status reply (count line first, 17+2+21=40, short groups):
   "Of 40: 17 done, 2 blocked by your answers, 21 parked. / Nothing is in your Inbox. / Done: 14 hub fixes ... / Blocked: the store-review reply and the hub launch thread ... / Parked: ..."
 - Ledger: evidence/r102/b5-d71c-ledger.md (17 named only through their group, 0 lost by count).
-- Rendered (stub, not live): r101-d71c-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png in this folder.
+- Rendered (stub, not live): r102-d71c-{inbox,rail,lead-chat}-RENDERED-from-run-not-live.png in this folder.
   - Usage chip reads "Weekly limit nearly used, resets in 5d 15h" with a grey bar (10 holds).
   - Found: the Lead's separate lines render as one paragraph (markdown soft breaks), and the stub still shows the starburst on the footer chip and an Older row (stub isn't on the bridge); fixed before run 3.
