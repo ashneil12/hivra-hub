@@ -21,8 +21,19 @@ export function statusAnswer(evidence, question = "wat happened") {
   return "";
 }
 
+/** The Inbox's "Waiting on you" text after the reopen, else "". */
+export function inboxCard(evidence) {
+  const view = (evidence.views ?? []).find((v) => v.name === "inbox-after-reopen") ?? (evidence.views ?? []).find((v) => (v.mainText ?? "").includes("Waiting on you"));
+  const text = view?.mainText ?? "";
+  const at = text.indexOf("Waiting on you");
+  return at >= 0 ? text.slice(at) : "";
+}
+
 /** Each ask with the bucket its paragraph sits under in the answer ("missing" when no key word appears). */
-export function askLedger(asks, answer) {
+export function askLedger(asks, answer, inbox = "") {
+  // r100 run 1 (9882): the answer points to "4 decisions on your Inbox card" instead of pasting them, so an ask
+  // found only on the Inbox's Waiting on you card is waiting on you there, not missing.
+  const card = inbox.toLowerCase();
   const paras = answer.split(/\n+/).map((p) => p.trim()).filter(Boolean);
   let bucket = "mentioned";
   const tagged = paras.map((para) => {
@@ -32,7 +43,8 @@ export function askLedger(asks, answer) {
   });
   return asks.map((ask) => {
     const found = tagged.find((t) => ask.keys.some((k) => t.para.includes(k.toLowerCase())));
-    return { n: ask.n, place: ask.place, ask: ask.ask, state: found ? found.bucket : "MISSING" };
+    const onCard = !found && card && ask.keys.some((k) => card.includes(k.toLowerCase()));
+    return { n: ask.n, place: ask.place, ask: ask.ask, state: found ? found.bucket : onCard ? "waiting on you (on the Inbox card)" : "MISSING" };
   });
 }
 
@@ -58,7 +70,7 @@ export function renderedVsRaw(evidence, transcript) {
 export function asksSection(evidence, transcript) {
   const lines = [];
   if (evidence.asks?.length) {
-    const ledger = askLedger(evidence.asks, statusAnswer(evidence));
+    const ledger = askLedger(evidence.asks, statusAnswer(evidence), inboxCard(evidence));
     const missing = ledger.filter((a) => a.state === "MISSING").length;
     lines.push(`Asks Ash sent: ${ledger.length}; missing from the status answer: ${missing}.`, "");
     for (const a of ledger) lines.push(`${a.n}. [${a.place}] ${a.ask}: ${a.state}`);

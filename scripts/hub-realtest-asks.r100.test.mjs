@@ -31,3 +31,10 @@ test("repeats only in the raw transcript are labelled as such", () => {
   assert.match(note, /transcript-only/);
   assert.ok(asksSection({ asks: [], views: [] }, "").length > 0);
 });
+
+test("an ask shown only on the Inbox card is waiting on you there, not missing (run 9882)", async () => {
+  const { askLedger } = await import("./hub-realtest-asks.mjs");
+  const asks = [{ n: 1, place: "hivra", ask: "privacy page", keys: ["privacy"] }];
+  const [row] = askLedger(asks, "Of 1: 1 waiting on you.\\n1 decision is on your Inbox card.", "Waiting on you\\nMay Hivra publish a privacy page?");
+  assert.equal(row.state, "waiting on you (on the Inbox card)");
+});

@@ -243,7 +243,8 @@
           "ask": "model picker forgets pick",
           "keys": [
             "model picker",
-            "picker"
+            "picker",
+            "model pick"
           ]
         },
         {
@@ -292,7 +293,9 @@
           "ask": "archive button too close to delete",
           "keys": [
             "too close to delete",
-            "archive button"
+            "archive button",
+            "apart from delete",
+            "archive sits"
           ]
         },
         {
