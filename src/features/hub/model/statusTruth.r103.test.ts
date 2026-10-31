@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import { openPartsOf, runningWorkers, statusTruthLine } from "./statusTruth";
-import { COS_CALL_NOTE, FIRST_REPLY_NOTE, STATUS_SHAPE, isDump, withInboxCount } from "./inboxCountNote";
+import { shortName, COS_CALL_NOTE, FIRST_REPLY_NOTE, STATUS_SHAPE, isDump, withInboxCount } from "./inboxCountNote";
 import { withCountLineChecked } from "../../../shared/text/countLine";
 import { cutWorkNote } from "../../sessions/model/inFlight";
 import { parseNeedsAsh } from "./chatQuestions";
@@ -101,4 +101,9 @@ it("r103 (6): Ash's question cut by a restart never shows as a task with an ask 
 
 it("r103 (8): Chief of Staff's \"Needs you:\" line is an ask like \"Needs Ash:\"", () => {
   expect(parseNeedsAsh("Both bounced.\n\n**Needs you:** reconnect Hivra and Nibbii on this machine.\nMy pick: reconnect both.")?.question).toMatch(/reconnect Hivra and Nibbii/);
+});
+
+it("r103 (B5 4aa9): an ask is named by its subject, never cut to \"a key or secret action only\"", () => {
+  expect(shortName("A key or secret action only you can do: it tried `stripe login` and MonoCode stopped it")).toBe("A key or secret action only you can do");
+  expect(shortName("Which list, beta or everyone?")).toBe("list, beta or everyone");
 });

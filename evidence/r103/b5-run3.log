@@ -19,3 +19,17 @@
 [realtest 14:41:05]   Ash -> tally-lead: nibbii next. the colour picker shud remember recent colours. export to png cuts off the ed
 [realtest 14:41:21]   Ash -> tally-lead: x stuff, dont post anything just draft. draft a thread about the hub launch. find who was 
 [realtest 14:45:21]   wait {"monoReply":"lead","maxSec":240}: NOT met after 240s
+[realtest 15:10:15]   wait {"any":[{"settled":true},{"quiet":true,"quietSec":90}],"maxSec":1500}: met after 1495s
+[realtest 15:10:18] app pid 45456
+[realtest 15:10:18]   Ash quits the app and opens it again: back as pid 45456
+[realtest 15:10:43]   Ash answered from Today (Take the pick): "new-chat shortcut. Which keys?"
+[realtest 15:10:58]   wait {"monoReply":"lead","maxSec":240}: met after 7s
+[realtest 15:10:59]   Ash -> tally-lead: wat happened to the stuff i dumped earlier
+[realtest 15:12:38]   wait {"monoReply":"lead","maxSec":300}: met after 99s
+[realtest 15:12:55]   b5-dump-restart-partial-blind: 20 turns, 0 room messages, 2 delegations, 32.62 min
+[realtest 15:12:56] account 1 use after: 5-hour ?, 7-day ?
+[realtest 15:12:56] done: 20 turns, 644 model requests, 33 min
+[realtest 15:12:56] stopped 1 leftover process(es) of this run
+[realtest grade] b5-dump-restart-partial-blind ...
+[realtest grade] b5-dump-restart-partial-blind: PARTIAL
+[realtest grade] report: evidence/realtest/20261031-143957-4aa9/report.md

@@ -13,11 +13,14 @@ export { asksHowThingsStand };
 
 /** A decision's short name: its first few words, without the asking ("May Hivra publish a privacy page" → "Hivra publish a privacy page"). */
 export function shortName(question: string): string {
-  const words = question
+  // r103 (B5 4aa9: "a key or secret action only" in the Lead's Inbox line): a question that names its subject before a
+  // colon is named by that part, and a name is never cut inside its first ten words.
+  const head = question.split(/:\s/)[0]!;
+  const words = (head.trim().split(/\s+/).length >= 3 ? head : question)
     .replace(/[?.!]+$/, "")
     .replace(/^(?:may|can|should|shall|do you want(?: me)? to|would you like(?: me)? to|which|what|is it ok(?:ay)? to)\s+/i, "")
     .split(/\s+/);
-  return words.length > 6 ? `${words.slice(0, 6).join(" ")}…` : words.join(" ");
+  return words.length > 10 ? `${words.slice(0, 10).join(" ")}…` : words.join(" ");
 }
 
 /** The asks from this chat on his Inbox right now, one per open decision row. */
