@@ -12154,7 +12154,12 @@ function Workspace({
   // r101 (2, 8): a Mono asked how things stand gets the live count of its Inbox asks with the question (wire only).
   useEffect(() => {
     if (!IS_HUB_BUNDLE) return;
-    setTurnTextDecorator((id, text) => withInboxCount(id, text, (sid) => !!monoForSession(sid)));
+    setTurnTextDecorator((id, text) => {
+      // r103 (3, 4): "running" and "done" from the app: the Lead's own chat and every chat as they are now.
+      const all = sessionsRef.current;
+      const chat = all.find((s) => s.id === id);
+      return withInboxCount(id, text, (sid) => !!monoForSession(sid), undefined, chat ? { blocks: chat.blocks, sessions: all } : undefined);
+    });
     return () => setTurnTextDecorator(undefined);
   }, []);
   useEffect(() => {
