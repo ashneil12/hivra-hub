@@ -504,7 +504,7 @@ export async function runScenario(scenario, ctx) {
     postChars: room.filter((m) => m.from !== ASH && m.text).map((m) => m.text.length),
   };
   if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, saved: await savedChatTexts(ctx, texts, t0), events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
-  const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "" };
+  const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "", ...(scenario.asks ? { asks: scenario.asks } : {}) };
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);

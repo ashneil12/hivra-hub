@@ -338,11 +338,13 @@ function admitted(entry: WaitingEntry): boolean {
 }
 
 /** The chats waiting on Ash, oldest question first; one project's when `projectId` is given. Workers routed to a Lead are not his. */
-export function waitingChats(projectId?: string): WaitingChat[] {
+export function waitingChats(projectId?: string, { leadership = false }: { leadership?: boolean } = {}): WaitingChat[] {
+  // r100 (c, B5 936c): a Mono over several projects (Chief of Staff) has no one project, so a project's Inbox dropped
+  // its asks while the rail showed them. With `leadership`, a project's list carries those Monos' asks too.
   return Object.values(load())
     .filter(admitted)
     .map(describe)
-    .filter((c) => !projectId || c.projectId === projectId)
+    .filter((c) => !projectId || c.projectId === projectId || (leadership && c.projectId === null && !!c.monoId))
     .sort((a, b) => a.askedAt - b.askedAt);
 }
 
@@ -450,6 +452,10 @@ export function rowAnswerNote(question: string, words: string): QueuedMessage {
  * rows stay open on the Inbox and the rail; a live question's row is kept here until every row has an answer, then
  * the question is answered in place, all at once.
  */
+/** What an unanswered row of a live ask returns when Ash answers another row first (r100 f). */
+export const NOT_ANSWERED_YET =
+  "Not answered yet: it stays on Ash's Inbox card. Don't guess or act on it; ask it again as a `Needs Ash:` line in your reply.";
+
 export async function answerRow(sessionId: string, row: AskRow, words: string, by: "words" | "pick" = "words"): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat?.rows?.some((r) => r.question === row.question)) return { ok: false, reason: "That chat isn't waiting any more." };
@@ -463,13 +469,15 @@ export async function answerRow(sessionId: string, row: AskRow, words: string, b
     const key = `${sessionId}:${chat.requestId}`;
     const given = { ...(partial.get(key) ?? {}), [row.questionId]: text };
     partial.set(key, given);
-    const open = prompt.questions.filter((q) => !(q.id in given));
-    if (open.length) {
-      save({ ...load() });
-      return { ok: true, sent: text, chatName: chat.chatName };
-    }
+    // r100 (f): each row's answer goes through at once. The open prompt takes it now; the rows Ash hasn't answered
+    // go back as "not answered yet", so the lead asks them again as Needs Ash lines and they stay on his card.
     const reply: UserQuestionReply = { kind: "answered", answers: {}, custom: {} };
     for (const q of prompt.questions) {
+      if (!(q.id in given)) {
+        reply.answers[q.id] = [CUSTOM_OPTION_ID];
+        reply.custom![q.id] = NOT_ANSWERED_YET;
+        continue;
+      }
       const option = q.options.find((o) => plainOptionLabel(o.label).toLowerCase() === given[q.id]!.toLowerCase());
       if (option) reply.answers[q.id] = [option.id];
       else {

@@ -62,7 +62,9 @@ export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean
 
 /** Everything waiting on Ash for this project (the card and the strip badge read this one number): grey rows aren't. */
 export function attentionCount(projectId: string, now = Date.now()): number {
-  return waitingCount(projectId) + stuckWorkersFor(projectId, now).filter(stuckNeedsAsh).length + failedMonosFor(projectId).length;
+  // r100 (d, B5 fc68): a failed Mono (its folder missing after a reopen) is not an ask; it stays in its own Stuck
+  // row, but the badge counts only what waits on Ash's answer, so Hivra and Nibbii no longer show a stray "1".
+  return waitingCount(projectId) + stuckWorkersFor(projectId, now).filter(stuckNeedsAsh).length;
 }
 
 /** Re-render when anything the count reads changes (the Needs and proposals have their own versions at the caller). */
