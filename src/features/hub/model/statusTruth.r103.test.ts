@@ -78,7 +78,9 @@ it("r103 (Critiquito b, c, d; 7): the status shape keeps holds on the Inbox, par
   expect(STATUS_SHAPE).toMatch(/Parked: the settings scroll, because that page needs a real build from the Hub lead\./);
   expect(STATUS_SHAPE).toMatch(/never a numbered list/);
   // B5 7db4: a 457-character "Done" line, a preview awaiting Apply counted done, and CoS's "waits for your wording" told as a no.
-  expect(STATUS_SHAPE).toMatch(/each line under 30 words/);
+  expect(STATUS_SHAPE).toMatch(/each line under 45 words/);
+  // B5 e46f: "and 7 more" left 22 of the 40 asks unnamed in the answer.
+  expect(STATUS_SHAPE).toMatch(/naming every ask in two or three words, never "and N more"/);
   expect(STATUS_SHAPE).toMatch(/preview he has not applied is not done.*`Needs Ash:` line for the Apply/);
   expect(STATUS_SHAPE).toMatch(/never turned into a no/);
   // B5 e46f: a launch thread and a kids-mode writeup called done with no report and no draft shown.
