@@ -152,7 +152,7 @@ describe("Waiting on you", () => {
     expect(badge("EXO")).toBe("2");
   });
 
-  it("a project's badge counts what its Today shows, a Mono whose last turn failed included", async () => {
+  it("a project's badge counts its open asks; a Mono whose last turn failed shows on Today but is not an ask (r100 d)", async () => {
     twoWaitingChats();
     act(() => root.render(today("vg-game")));
     await until(() => waitingRows().length === 1, "waiting rows");
@@ -174,7 +174,7 @@ describe("Waiting on you", () => {
     );
     await until(() => q("[data-mono-failure]"), "the failed Mono on Today");
     expect(q("[data-mono-failure-line]")?.textContent).toContain("EXO lead can't answer: Out of credits");
-    expect(badge("EXO")).toBe("3");
+    expect(badge("EXO")).toBe("2");
   });
 
   it("a project with nothing waiting shows no badge and no needs count, never \"0 needs\"", async () => {
