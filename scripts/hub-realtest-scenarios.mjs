@@ -33,7 +33,7 @@ export async function quitThenReopen({ act, pid, alive, until, launch, waitMs = 
     if (asked?.ok || !asked?.busy || Date.now() + everyMs > idleBy) break;
     await sleep(everyMs);
   }
-  if (!asked?.ok) return { ok: false, step: "quit", why: `the app didn't take the quit: ${asked?.error ?? "no answer"}` };
+  if (!asked?.ok) return { ok: false, step: "quit", ...(asked?.busy ? { busy: true } : {}), why: `the app didn't take the quit: ${asked?.error ?? "no answer"}` };
   const gone = await until(() => !alive(pid), waitMs, 250);
   if (!gone) return { ok: false, step: "quit", why: `the app was still open ${Math.round(waitMs / 1000)}s after Quit (nothing was killed, nothing reopened)` };
   const reopened = await launch();
@@ -423,11 +423,15 @@ export async function runScenario(scenario, ctx) {
       log(`  ${back?.ok ? "the reloaded window answers the driver" : "the reloaded window never answered"}`);
     } else if (step.restart) {
       // r98 (B5): Ash quits the app (its own Quit, never a kill) and opens it again in the background.
-      const result = ctx.restart ? await ctx.restart({ idleMs: Math.max(0, Math.min((step.restart.waitIdleSec ?? 0) * 1000, stop - Date.now())) }) : { ok: false, why: "this run can't restart the app" };
+      // r102 (6, run 7274: Quit refused with 1 chat running, graded PARTIAL): Ash waits for running chats up to the
+      // step's own cap, even past the scenario's minutes.
+      const result = ctx.restart ? await ctx.restart({ idleMs: Math.max(0, (step.restart.waitIdleSec ?? 0) * 1000) }) : { ok: false, why: "this run can't restart the app" };
       record.marks.push({ t: Date.now(), mark: "restart", result });
       log(`  Ash quits the app and opens it again: ${result.ok ? `back as pid ${result.pid}` : `NOT DONE (${result.why})`}`);
       if (!result.ok) {
         record.notes.push(`restart: ${result.why}`);
+        // Still running at the cap: the question never got asked, so the run counts neither way.
+        if (result.busy) record.blockedBeforeQuestion = `a chat was still running after ${step.restart.waitIdleSec ?? 0}s, so Ash never quit and never asked (${result.why})`;
         break;
       }
       const back = await act("ping", {}, 120_000).catch(() => null);
