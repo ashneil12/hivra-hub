@@ -493,6 +493,8 @@ fn repo(name: &str) -> Repo {
     let dir = std::env::temp_dir().join(format!("hivra-guard-{name}-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
     run(&dir, &["init", "-q"]);
+    // Byte-exact checkouts on every OS (Windows runners default to autocrlf, which a restore would apply).
+    run(&dir, &["config", "core.autocrlf", "false"]);
     std::fs::write(dir.join("README.md"), "hello\n").unwrap();
     std::fs::write(dir.join("notes.md"), "mine\n").unwrap();
     run(&dir, &["add", "."]);
