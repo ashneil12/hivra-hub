@@ -276,6 +276,13 @@ function normalizeImageMime(mime: string): string {
   return mime;
 }
 
+/**
+ * Hivra WP-10: a first mate never edits the project. Claude Code's deny rules hold in every permission mode (bypass
+ * included), so its session starts without the tools that write files. Bash stays (it reads git and runs the app's
+ * tools); a write made through it is caught by the checkout check after the turn (src-tauri/src/firstmate/).
+ */
+export const FIRST_MATE_DENY_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
 export function buildClaudeSpawnArgs(input: {
   model?: string;
   effort?: string;
@@ -295,6 +302,8 @@ export function buildClaudeSpawnArgs(input: {
   offBridge?: boolean;
   /** A routed Other model's id (the hub's loopback router): not Anthropic, so its sub-agents run on it too (r69). */
   routedModel?: string;
+  /** Hivra WP-10: a first mate's session, which has no file-editing tools (FIRST_MATE_DENY_TOOLS). */
+  firstMate?: boolean;
 }): string[] {
   const args = [
     "--output-format",
@@ -352,7 +361,10 @@ export function buildClaudeSpawnArgs(input: {
     args.push("--allow-dangerously-skip-permissions");
   }
   // r65 (#13): no Claude process reads a saved password or key, Full access included (deny rules hold in bypass mode).
-  args.push("--disallowedTools", CREDENTIAL_DENY_RULES.join(","));
+  args.push(
+    "--disallowedTools",
+    [...CREDENTIAL_DENY_RULES, ...(input.firstMate ? FIRST_MATE_DENY_TOOLS : [])].join(","),
+  );
   if (input.resume) args.push("--resume", input.resume);
   if (input.sessionId) args.push("--session-id", input.sessionId);
   if (input.maxTurns) args.push("--max-turns", String(input.maxTurns));

@@ -19,6 +19,7 @@ mod devin_config;
 mod devin_usage;
 pub mod disclaim;
 mod external_editor;
+mod firstmate;
 mod fs;
 mod gates;
 mod gitlab;
@@ -496,6 +497,13 @@ pub fn run() {
             delegations::delegations_list_open,
             delegations::delegations_followed_into,
             delegations::delegations_tree,
+            // Hivra WP-10: the first mate contract.
+            firstmate::firstmate_check_depth,
+            firstmate::firstmate_set_question_owner,
+            firstmate::firstmate_parse_report,
+            firstmate::firstmate_checkout_snapshot,
+            firstmate::firstmate_checkout_check,
+            firstmate::firstmate_checkout_revert,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,

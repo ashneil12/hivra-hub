@@ -2658,6 +2658,7 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
     hooks: options.settings?.disableAllHooks !== true,
     autoCompactWindow: options.settings?.autoCompactWindow,
     ...(claudeAppend(input.sessionId) ? { appendKey: claudeAppend(input.sessionId)!.key } : {}),
+    ...(options.firstMate ? { firstMate: true } : {}),
   };
 }
 
@@ -2790,6 +2791,7 @@ function launchOptions(
   sessionId?: string;
   settings?: ClaudeCliSettings;
   routedModel?: string;
+  firstMate?: boolean;
 } {
   const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
   const native = route ? route.modelId : nativeModelId(input.model);
@@ -2834,6 +2836,8 @@ function launchOptions(
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
     routedModel: route ? route.modelId : undefined,
+    // Hivra WP-10: a first mate starts without file-editing tools.
+    ...(input.firstMate ? { firstMate: true } : {}),
   };
 }
 

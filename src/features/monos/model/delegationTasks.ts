@@ -130,6 +130,10 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         .filter((row) => row.childSession === session && row.state === "running")
         .sort((a, b) => b.createdAt - a.createdAt)[0];
     },
+    // Hivra WP-10: the depth cap, checked by the store before anything starts.
+    ...(deps.backend.checkDepth
+      ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }
+      : {}),
     // Declared, not judged (workerStall.ts never overwrites it): the row is Ash's until it moves.
     cannot: async (by, row, reason) => {
       const change = await tracker().setStall(

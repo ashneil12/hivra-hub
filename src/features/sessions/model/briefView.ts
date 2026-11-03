@@ -6,6 +6,7 @@
  * shows the Lead's ask in plain words, never a tag, the injected memory or rules, or a path on the Mac.
  */
 import { listTitle, plainTitle } from "../../../shared/text/plainTitle";
+import { specOf, withoutTemplate } from "../../firstmate/model/brief";
 
 const BRIEF_HEAD = /^\s*\[MonoCode brief from ([^\]\n]{1,80})\]\s*/;
 /** A whole tagged block the app adds (<project_memory>, <worker_rules>, …), and any stray tag left after a cut. */
@@ -27,7 +28,8 @@ export type BriefView = {
 
 /** Plain words of a brief for showing, with nothing the app injected and no local path. */
 export function plainBriefText(text: string): string {
-  let body = text.replace(TAG_BLOCK, "");
+  // Hivra WP-10: a brief from the template shows the intent and spec, never its fixed sections.
+  let body = withoutTemplate(text).replace(TAG_BLOCK, "");
   // A block cut before its close (a long memory) still never shows: everything from its opening tag goes.
   body = body.replace(/<(project_memory|worker_rules|memory|rules)>[\s\S]*$/i, "");
   body = body.replace(SELF_REVIEW, "").replace(LOOSE_TAG, "").replace(LOCAL_PATH, "a local file");
@@ -43,8 +45,12 @@ export function briefView(text: string | undefined | null): BriefView | undefine
   if (!text) return undefined;
   const head = BRIEF_HEAD.exec(text);
   if (!head) return undefined;
-  const body = plainBriefText(text.slice(head[0].length));
-  const firstLine = body.split("\n").map((line) => listTitle(line)).find(Boolean) ?? "";
+  const rest = text.slice(head[0].length);
+  const body = plainBriefText(rest);
+  // The job is the spec's first line (Hivra WP-10's template), else the brief's own.
+  const spec = specOf(rest);
+  const from = spec ? plainBriefText(spec) : body;
+  const firstLine = from.split("\n").map((line) => listTitle(line)).find(Boolean) ?? "";
   const job = firstLine.length > 80 ? `${firstLine.slice(0, 79)}…` : firstLine;
   return { from: head[1].trim(), job: job || "Delegated work", body };
 }
