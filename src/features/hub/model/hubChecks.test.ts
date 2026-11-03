@@ -21,7 +21,7 @@ import {
   type HubCheck,
 } from "./hubChecks";
 
-/** One check as Ash OS's `ash-hub-checks` lists it (ashos/checker.py `listing`). */
+/** One check as Ash OS's `checks` call listed it (ashos/checker.py `listing`); WP-14 brings checks back. */
 function wire(id: string, extra: Record<string, unknown> = {}) {
   return {
     id,
@@ -62,7 +62,7 @@ describe("what Ash OS lists", () => {
     expect(checkTarget({ ...check, monoId: "someone-else" }, monos)).toEqual({ session: "chat-exo" });
     expect(checkTarget({ ...check, monoId: "checker", chatId: undefined }, monos)).toBeUndefined();
     expect(checkTarget({ ...check, monoId: undefined, chatId: "app-chat-exo-r1" }, monos)).toBeUndefined();
-    // Owner outside the hub: nothing to deliver here (Ash OS hands it back on that chat's next ash-os call).
+    // Owner outside the hub: nothing to deliver here (Ash OS handed it back on that chat's next call).
     expect(checkTarget({ ...check, owner: "claude:9f1c", monoId: undefined, chatId: undefined }, monos)).toBeUndefined();
   });
 });

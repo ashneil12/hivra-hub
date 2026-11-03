@@ -68,7 +68,7 @@ const lookups: HubChatLookups = {
 beforeEach(() => {
   localStorage.clear();
   resetSessionRuns();
-  setHubMcpServers({ ashOs: null, cli: null }, lookups);
+  setHubMcpServers({ cli: null }, lookups);
   setMonoHomeRoot("/Users/ash/agent-memory/monos");
 });
 

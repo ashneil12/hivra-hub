@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // The Checker (hubChecker.ts; docs/PHASE-2-DESIGN.md H6) can't start work, proved three ways, each on its own:
 // 1. the lane: the app refuses its chat and its habit runs every action but models.list, memory and soul.read;
-// 2. the tool list: its Claude Code session gets ash-os as role checker, no delegate tool, and only Bash and reading;
+// 2. the tool list: its Claude Code session gets no MCP entry, no delegate tool, and only Bash and reading;
 // 3. no delegate: tasks.* refuses it and its context never teaches delegation (or session starting).
 // Plus: it is made once, on the runtime's own model, with Alfred's slim soul and no schedule (it runs once after each
 // dump), an older install's hourly audit is switched off, and it never comes back over Ash's "remove".
@@ -155,7 +155,6 @@ const lookups: HubChatLookups = {
   habitRunMono: (id) => (id === "habit-run-checker" ? CHECKER_MONO_ID : undefined),
   isLead: (id) => id.endsWith("-lead"),
 };
-const ASH_OS = { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: { ASHOS_HOME: "/Users/ash/.ashos" } };
 const CLI = "/Users/ash/Applications/MonoCode Hub.app/Contents/MacOS/monocode";
 
 function flag(args: string[], name: string): string | undefined {
@@ -163,16 +162,13 @@ function flag(args: string[], name: string): string | undefined {
   return at < 0 ? undefined : args[at + 1];
 }
 
-describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash and reading", () => {
+describe("2. the tool list: no MCP entry, no delegate tool, only Bash and reading", () => {
   for (const session of ["chat-checker", "habit-run-checker"]) {
     it(`holds for ${session === "chat-checker" ? "its own chat" : "a habit run"}`, () => {
-      const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
-      const servers = (JSON.parse(flag(args, "--mcp-config")!) as { mcpServers: Record<string, { env: Record<string, string> }> }).mcpServers;
-      expect(Object.keys(servers)).toEqual(["ash-os"]);
-      expect(servers["ash-os"].env).toMatchObject({ ASH_MONO_ID: CHECKER_MONO_ID, ASH_ROLE: "checker", ASH_CHAT: session });
+      const args = hubMcpArgs(session, { cli: CLI }, lookups);
+      expect(flag(args, "--mcp-config")).toBeUndefined();
       expect(args).not.toContain(MONOCODE_ALLOWED_TOOLS);
-      // Only its own ash-os tools (the studio offers the checker its queue, its notes and reads) go unasked.
-      expect(flag(args, "--allowedTools")).toBe("mcp__ash-os__*");
+      expect(args).not.toContain("--allowedTools");
       expect(flag(args, "--tools")).toBe("Bash,Read,Grep,Glob");
       const denied = flag(args, "--disallowedTools")!.split(",");
       for (const tool of ["Agent", "Task", "Edit", "Write", "NotebookEdit", "Bash(ash:*)", "Bash(claude:*)"]) expect(denied).toContain(tool);
@@ -181,20 +177,18 @@ describe("2. the tool list: ash-os as the checker, no delegate tool, only Bash a
     });
   }
 
-  it("holds in a dev copy too, with no ash-os entry and before the entries are read", () => {
-    expect(hubMcpArgs("chat-checker", { ashOs: null, cli: null }, lookups)).toEqual([
+  it("holds in a dev copy too, and before the entries are read", () => {
+    expect(hubMcpArgs("chat-checker", { cli: null }, lookups)).toEqual([
       "--tools",
       "Bash,Read,Grep,Glob",
       "--disallowedTools",
       [...CHECKER_DENIED_TOOLS, "Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(","),
-      "--allowedTools",
-      "mcp__ash-os__*",
     ]);
-    expect(flag(hubMcpArgs("chat-checker", { ashOs: null, cli: CLI }, lookups), "--mcp-config")).toBeUndefined();
+    expect(flag(hubMcpArgs("chat-checker", { cli: CLI }, lookups), "--mcp-config")).toBeUndefined();
   });
 
   it("is the checker's alone: a Lead keeps all its tools and the delegate tool", () => {
-    const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+    const args = hubMcpArgs("chat-exo", { cli: CLI }, lookups);
     expect(args).not.toContain("--tools");
     // Its only deny rules are the ones every hub chat has (the Monos' home fence, no reading a saved login by hand) and
     // Claude Code's own worktree tools, since the app makes its workers' checkouts, and (r79) its settings skill, since a
@@ -208,7 +202,7 @@ describe("3. no delegate: the tool, the tasks and the teaching all stay away fro
   it("never gets the delegate tool", () => {
     expect(getsDelegateTool(hubChatIdentity("chat-checker", lookups))).toBe(false);
     expect(getsDelegateTool(hubChatIdentity("habit-run-checker", lookups))).toBe(false);
-    setHubMcpServers({ ashOs: ASH_OS, cli: CLI }, lookups);
+    setHubMcpServers({ cli: CLI }, lookups);
     expect(hasDelegateTool("chat-checker", "claude")).toBe(false);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(true);
   });

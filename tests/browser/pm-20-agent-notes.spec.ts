@@ -56,15 +56,11 @@ test("a stuck item's Open chat opens the Lead's chat, not the worker's", async (
 });
 
 // A8: a Mono's Sessions tab shows only running work; with none, it says so plainly (no ghost words).
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
 test("A8: an empty Sessions list says nothing is running right now", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const stub = await startStub({ jobs: true, dev: true });
-  try {
+  {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+    await openLocalHub(page);
     await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
     const notNow = page.getByRole("button", { name: "Not now" });
     await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
@@ -77,7 +73,5 @@ test("A8: an empty Sessions list says nothing is running right now", async ({ pa
     await page.mouse.move(5, 450);
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${SHOTS}/pm-20-sessions-empty.png` });
-  } finally {
-    await stub.close();
   }
 });

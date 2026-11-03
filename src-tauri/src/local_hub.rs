@@ -105,7 +105,8 @@ pub(crate) fn make_project_folder(projects: &Path, id: &str) -> Result<PathBuf, 
     if folder.exists() {
         return Ok(folder);
     }
-    std::fs::create_dir_all(&folder).map_err(|e| format!("Couldn't make {}: {e}", folder.display()))?;
+    std::fs::create_dir_all(&folder)
+        .map_err(|e| format!("Couldn't make {}: {e}", folder.display()))?;
     std::fs::write(folder.join("README.md"), format!("# {id}\n"))
         .map_err(|e| format!("Couldn't write its README: {e}"))?;
     // Git is optional: without it the folder is still a project, just not a repo yet.
@@ -208,7 +209,10 @@ mod tests {
         assert!(made.join("README.md").is_file());
         std::fs::write(made.join("README.md"), "mine").unwrap();
         assert_eq!(make_project_folder(&root, "exo-game").unwrap(), made);
-        assert_eq!(std::fs::read_to_string(made.join("README.md")).unwrap(), "mine");
+        assert_eq!(
+            std::fs::read_to_string(made.join("README.md")).unwrap(),
+            "mine"
+        );
         for bad in ["", "../x", "Exo", "a/b", "-x"] {
             assert!(make_project_folder(&root, bad).is_err(), "{bad}");
         }

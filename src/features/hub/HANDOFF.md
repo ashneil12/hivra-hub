@@ -1,3 +1,8 @@
+> **3 November 2026 (WP-04): the Ash OS bridge is retired.** Everything below that talks to Ash OS (the plugin's
+> `hub_call`, port 18767, the stub, the live proxy, the `ash-os` MCP entry) is history, kept for the design rules it
+> records (Unit 7's Being built rule, among others). The last commit with the bridge is tagged `archive/ash-os-bridge`;
+> what the app keeps itself is in `src/features/hub/model/localHub/` and `src-tauri/src/local_hub.rs`.
+
 # Update: 20 October 2026, one permanent home per Mono (branch cos/mono-homes)
 
 Decided 20 Oct (Grok Bot leadership, from Alfred's audit: 14 sets of Mono folders on the Mac, the live leads on the 15 Oct

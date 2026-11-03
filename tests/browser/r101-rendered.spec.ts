@@ -1,8 +1,7 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { EXAMPLE_PROJECTS, openLocalHub } from "./localHub";
 
 // r101: a B5 run's saved end state (snapshot-end.json: the app's localStorage, roster and chats; evidence.json: what
 // Ash sent the Lead and what it said) loaded into the real app in a browser, at Ash's window size in the dark glass
@@ -25,8 +24,6 @@ type Ev = { sends: { t: number; to?: { mono?: string }; text?: string }[]; texts
 test.use({ deviceScaleFactor: 2 });
 test.skip(!RUN, "R101_RUN names a realtest run folder");
 
-let stub: { url: string; close(): Promise<void>; addProject(p: Record<string, unknown>): void };
-test.afterAll(async () => stub?.close());
 
 test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ page }) => {
   test.setTimeout(300_000);
@@ -35,8 +32,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   const ev = JSON.parse(fs.readFileSync(path.join(dir, "evidence.json"), "utf8")) as Ev;
   const lead = snap.sessions.find((s) => s.mono === "tally-lead")!;
   const id = path.basename(RUN).split("-").pop();
-  stub = await startStub({ dev: true });
-  stub.addProject({ id: "tally", name: "Tally", shortName: "Tally", iconShape: "chart", folder: lead.cwd });
+  const projects = [...EXAMPLE_PROJECTS, { id: "tally", name: "Tally", shortName: "Tally", iconShape: "chart", folder: lead.cwd }];
   // The Lead's chat as the run had it: Ash's messages to it and its own replies, in order.
   const blocks = [
     ...ev.sends.filter((s) => s.to?.mono === "tally-lead" && s.text).map((s) => ({ id: `u${s.t}`, role: "user", text: s.text, startedAt: s.t, t: s.t })),
@@ -64,7 +60,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
         configurable: true,
         get: () => (cmd: string, args?: unknown, opts?: unknown) =>
           // r102 (Critiquito): set up like the bench's dev copy on the Grok bridge, so the Claude usage chip is hidden
-          // (UsageChips' wantClaude) and no stub sample numbers reach a rendered shot.
+          // (UsageChips' wantClaude) and no sample numbers reach a rendered shot.
           cmd === "harness_runtime_binary_paths"
             ? Promise.resolve({ ...((args as { paths?: object } | undefined)?.paths ?? {}), claude: "/Users/ash/.local/bin/claude-grok" })
             : real!(cmd === "mono_session_get" ? "session_get" : cmd, args, opts),
@@ -83,7 +79,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
     { storage, sessions, roster: storage["monocode:mono-roster"] ?? "[]" },
   );
   await page.setViewportSize({ width: W, height: H });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page, "", projects);
   await expect(page.getByRole("navigation", { name: "Projects" })).toBeVisible({ timeout: 60_000 });
   await page.getByRole("navigation", { name: "Projects" }).getByRole("button", { name: /^Tally/ }).first().click();
   fs.mkdirSync(OUT, { recursive: true });
@@ -106,7 +102,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   await page.waitForTimeout(2500);
   await label("Inbox");
   await settle();
-  // No stub sample usage in a rendered shot: on the bridge the Claude chip is hidden.
+  // No sample usage in a rendered shot: on the bridge the Claude chip is hidden.
   await expect(page.locator("[data-usage-window]")).toHaveCount(0);
   await page.screenshot({ path: name("inbox") });
   const rail = page.getByRole("complementary").first();

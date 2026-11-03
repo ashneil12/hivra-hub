@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { expect, it, vi } from "vitest";
-import { tauriHubTransport, HubCallError } from "../../hub/model/hubTransport";
+import { expect, it } from "vitest";
 import { HubChangeContent, NOT_ON_COPY } from "./HubChangeView";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -10,7 +9,6 @@ import { HubChangeContent, NOT_ON_COPY } from "./HubChangeView";
 it("the Not connected yet card has the plain copy and only Back", async () => {
   localStorage.clear();
   localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "projects-manager", name: "Projects Manager" }]));
-  vi.spyOn(tauriHubTransport, "call").mockRejectedValue(new HubCallError("unreachable", "down"));
   const host = document.createElement("div");
   document.body.append(host);
   await act(async () => createRoot(host).render(createElement(HubChangeContent, { flow: "hub", projectId: "hivra" })));

@@ -474,7 +474,7 @@ describe("soulTemplates", () => {
     expect(t.map((x) => x.monoId)).toEqual(["chief-of-staff", "hivra-lead", "hub-lead", "checker"]);
     expect(t[1].template).toContain("working in /Users/ash/Projects/Hivra");
     expect(t[1].template).toContain("Your workers ask you, not Ash");
-    expect(t[2].template).toContain("ASH_MONO_ID=hub-lead");
+    expect(t[2].template).toContain("You are hub-lead, the lead of hub.");
     expect(t[2].template).toContain("Developing the hub from inside the hub");
   });
 });

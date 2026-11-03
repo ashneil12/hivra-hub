@@ -34,7 +34,7 @@ import { ensureMonoSession } from "../../monos/model/monoWorkspace";
 import { newSession } from "../../sessions/model/session";
 import { defaultSoul } from "../../monos/model/monoFiles";
 import { completeLeadAdoption, ensureProjectLeads, leadFor, LEADS, leadSoul, leadWorkingFolder, reseedAdoptedLeadSoul } from "./hubLeads";
-import { CREDENTIAL_DENIED_TOOLS, HUB_WORKTREE_DENIED_TOOLS, hubMcpArgs, OLD_MONO_COPY_DENIED_TOOLS } from "./hubMcp";
+import { CREDENTIAL_DENIED_TOOLS, HUB_WORKTREE_DENIED_TOOLS, hubChatIdentity, hubMcpArgs, OLD_MONO_COPY_DENIED_TOOLS } from "./hubMcp";
 import type { HubProject } from "./types";
 
 // The four projects (what the live service returned on 15 Oct, with the harness now the project `hub`, 19 Oct).
@@ -103,27 +103,16 @@ describe("the project Leads", () => {
     expect(listMonos().find((m) => m.id === "vg-game-lead")?.sessionId).toBe(session?.id);
   });
 
-  it("talk to Ash OS as themselves: Ash's own ash-os entry, with ASH_MONO_ID, ASH_ROLE=lead and their chat", () => {
+  it("know who they are in their own chat: the Lead of their project, fenced round the Monos' home and nothing else", () => {
     ensureProjectLeads(PROJECTS);
-    const server = { command: "/opt/homebrew/bin/python3", args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"], env: {} };
     const lookups = {
       monoOf: (id: string) => (id === "chat-hivra" ? { id: "hivra-lead" } : undefined),
       habitRunMono: () => undefined,
       isLead: (id: string) => LEADS.some((lead) => lead.id === id),
     };
-    const args = hubMcpArgs("chat-hivra", { ashOs: server, cli: null }, lookups);
-    expect(args[0]).toBe("--mcp-config");
-    expect(JSON.parse(args[1])).toEqual({
-      mcpServers: {
-        "ash-os": {
-          command: "/opt/homebrew/bin/python3",
-          args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"],
-          env: { ASH_MONO_ID: "hivra-lead", ASH_ROLE: "lead", ASH_CHAT: "chat-hivra" },
-        },
-      },
-    });
+    expect(hubChatIdentity("chat-hivra", lookups)).toMatchObject({ kind: "mono", monoId: "hivra-lead", role: "lead", chat: "chat-hivra" });
     // Nothing but the fence round the Monos' home, which every hub chat has, and no Claude Code worktrees of its own.
-    expect(hubMcpArgs("chat-hivra", { ashOs: null, cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
+    expect(hubMcpArgs("chat-hivra", { cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
   });
 
   it("have a soul in Ash's words: orchestrator, short briefs in his words to workers (r77), DeepSeek workers and no Claude subscription, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {
@@ -142,7 +131,7 @@ describe("the project Leads", () => {
       "`ash_dump`, in Ash's words verbatim",
       "Verify your own work: tests, an independent check, proof",
       'Ask Ash for "Looks right" only on very critical work',
-      "ASH_MONO_ID=vg-game-lead, ASH_ROLE=lead, ASH_PROJECT=vg-game",
+      "## Who you are\n- You are vg-game-lead, the lead of vg-game.",
       "working in /Users/ash/Projects/boxin game?/vg-game",
     ])
       expect(soul).toContain(phrase);
@@ -203,13 +192,13 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
     expect(unregister.mock.calls).toEqual([["ash-lead", "ash"]]);
     expect(leadFor("ash-lead")?.projectId).toBe("hub");
     expect(leadWorkingFolder("ash-lead")).toBe("/Users/ash/Projects/monocode-hub");
-    // it acts in Ash OS under the id Ash OS already knows
-    const adopted = hubMcpArgs("s-harness-chat", { ashOs: { command: "x" }, cli: null }, {
+    // it keeps the id it already had
+    const adopted = hubChatIdentity("s-harness-chat", {
       monoOf: (id) => listMonos().find((m) => m.sessionId === id),
       habitRunMono: () => undefined,
       isLead: (id) => !!leadFor(id),
     });
-    expect(JSON.parse(adopted[1]).mcpServers["ash-os"].env).toEqual({ ASH_MONO_ID: "ash-lead", ASH_ROLE: "lead", ASH_CHAT: "s-harness-chat" });
+    expect(adopted).toMatchObject({ monoId: "ash-lead", role: "lead", chat: "s-harness-chat" });
     // with the app's own lookups (hubData.ts) it works on the project it now leads, `hub`, never the old `ash`; so do its workers
     const appLookups = {
       monoOf: (id: string) => listMonos().find((m) => m.sessionId === id),
@@ -218,7 +207,7 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
       leadProject: (id: string) => leadFor(id)?.projectId,
     };
     for (const chat of ["s-harness-chat", "app-s-harness-chat-r1"])
-      expect(JSON.parse(hubMcpArgs(chat, { ashOs: { command: "x" }, cli: null }, appLookups)[1]).mcpServers["ash-os"].env.ASH_PROJECT).toBe("hub");
+      expect(hubChatIdentity(chat, appLookups).projects).toEqual(["hub"]);
     await completeLeadAdoption("ash-lead", async () => {});
     expect(unregister).toHaveBeenCalledTimes(1);
     // once its soul is written: a second launch changes nothing and makes no second Lead
@@ -273,7 +262,7 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
     expect(await reseedAdoptedLeadSoul("ash-lead", "/Users/ash/Projects/monocode-hub", defaultSoul, read, write)).toBe(true);
     const soul = files.get("ash-lead/SOUL.md")!;
     expect(soul).toContain("You are MonoCode Hub lead, the lead for MonoCode Hub (Ash OS project `hub`), working in /Users/ash/Projects/monocode-hub.");
-    for (const rule of ["Never edit the main checkout directly", "`npm run hub:dev`", "`npm run hub:check-all && npm run hub:build && npm run hub:ship`", "Start-ack", "ASH_MONO_ID=ash-lead"])
+    for (const rule of ["Never edit the main checkout directly", "`npm run hub:dev`", "`npm run hub:check-all && npm run hub:build && npm run hub:ship`", "Start-ack", "You are ash-lead, the lead of hub."])
       expect(soul).toContain(rule);
     expect(files.get("ash-lead/memory/harness-lead-soul.md")).toContain("You are Harness lead");
     files.set("ash-lead/SOUL.md", "# Soul\n\nAsh's own words.\n");

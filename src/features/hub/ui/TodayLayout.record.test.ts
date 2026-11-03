@@ -1,15 +1,10 @@
 // @vitest-environment happy-dom
-// A project's Today is its template's board (G1): the cards the template names, drawn from live data, then Being built.
-// And, against the stub's own calls over real HTTP (scripts/hub-stub-studio.mjs), the Change the hub history with Undo
-// and Redo: a seated Mono's preview, Apply, the history and Bot changes, and a refused Undo said plainly.
+// A project's Today is its template's board (G1): the cards the template names, drawn from the app's own data, then
+// Being built. Since WP-04 there is no Ash OS: Needs you and Being built are empty states until WP-14's decision store.
 import { act, createElement, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startStub, type Stub } from "../../../../scripts/hub-stub-server.mjs";
-import { httpTransport } from "../../../dev/hubTestTransport";
-import { applyChange, requestChange, undoChange } from "../../hubChange/model/hubChange";
-import { HubChangeContent } from "../../hubChange/ui/HubChangeView";
-import { botChangeRows, redoBotChange, undoBotChange } from "../model/botChanges";
+import { localTestHub } from "../../../dev/hubTestTransport";
 import { setHubDataSource } from "../model/hubData";
 import { HubStore } from "../model/hubStore";
 import { createLiveHubData } from "../model/liveHubData";
@@ -21,8 +16,6 @@ import { HubSurface } from "./HubSurface";
 vi.setConfig({ testTimeout: 30_000 });
 
 const FAST = { coalesceMs: 5, minGapMs: 0, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 };
-const roster = [{ id: "projects-manager" }, { id: "hivra-lead" }];
-let stub: Stub;
 let store: HubStore;
 let root: Root;
 let container: HTMLElement;
@@ -39,7 +32,6 @@ async function until(read: () => unknown, what: string, ms = 15000) {
 const sections = () => [...container.querySelectorAll("[data-hub-today-section]")].map((s) => s.getAttribute("data-hub-today-section"));
 // A project is the unit of the hub (G1): a project's Today, never a board of all projects.
 const today = (project = "vg-game") => createElement(HubSurface, { selection: { project, item: "inbox" } });
-const ask = (flow: "hub" | "today", prompt: string) => requestChange({ flow, projectId: "today", monoId: "projects-manager", prompt }, { roster });
 
 /** A strip and the project's surface, as the app arranges them: picking a project opens that project's Today. */
 function Hub({ start }: { start: string }) {
@@ -57,8 +49,7 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "projects-manager", name: "Projects Manager" }, { id: "hivra-lead", name: "Hivra lead" }]));
-  stub = await startStub({ buildMs: 0, jobs: true });
-  store = new HubStore({ transport: httpTransport(() => stub.url, () => stub.token), ...FAST });
+  store = new HubStore({ transport: (await localTestHub()).transport, ...FAST });
   setHubDataSource(createLiveHubData(store), store);
   container = document.createElement("div");
   document.body.append(container);
@@ -70,28 +61,28 @@ afterEach(async () => {
   await new Promise((r) => setTimeout(r, 20));
   store.stop();
   setHubDataSource(undefined);
-  await stub.close();
 });
 
 describe("A project's Today draws its template's board", () => {
-  it("a game's: Since, Needs you and its latest build, then Being built", async () => {
+  it("a game's: Since, Needs you and its latest build (Being built hides with nothing in it)", async () => {
     act(() => root.render(today("vg-game")));
-    await until(() => sections().includes("being-built"), "being built");
-    expect(sections()).toEqual(["since", "needs", "latest-build", "being-built"]);
+    await until(() => sections().includes("needs"), "needs");
+    expect(sections()).toEqual(["since", "needs", "latest-build"]);
     expect(container.querySelector('[data-hub-today-section="latest-build"]')?.textContent).toContain("No build yet.");
-    expect(container.querySelector("[data-hub-today-being-built]")?.textContent).toContain("Example: adding the air dodge");
+    // Nothing is being built yet (the app's own delegations; none here), so that card hides.
+    expect(container.querySelector("[data-hub-today-being-built]")).toBeNull();
   });
 
   it("a product's: the same two, then its latest dashboard", async () => {
     act(() => root.render(today("hivra")));
     // Wait for the last section: Being built can land a tick after the dashboard under load (r61, a flake in the full run).
-    await until(() => sections().includes("being-built"), "being built");
+    await until(() => sections().includes("needs"), "needs");
     // r65: no dashboard kept yet, so its card hides rather than saying so.
-    expect(sections()).toEqual(["since", "needs", "being-built"]);
+    expect(sections()).toEqual(["since", "needs"]);
     expect(container.textContent).not.toContain("No dashboard yet");
   });
 
-  it("an ops hub's: just the two, no project card and nothing being built", async () => {
+  it("an ops hub's: just the two, no project card", async () => {
     act(() => root.render(today("hub")));
     await until(() => container.querySelector("[data-hub-since]"), "since");
     expect(sections()).toEqual(["since", "needs"]);
@@ -102,71 +93,23 @@ describe("A project's Today draws its template's board", () => {
     await until(() => sections().includes("latest-build"), "EXO's builds card");
     const hivra = [...container.querySelectorAll("[data-hub-strip] button")].find((b) => b.textContent?.includes("Hivra")) as HTMLButtonElement;
     await act(async () => hivra.click());
-    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "Hivra's board");
+    await until(() => !sections().includes("latest-build"), "Hivra's board");
     // r65: no dashboard kept for Hivra, so that card hides.
-    expect(sections()).toEqual(["since", "needs", "being-built"]);
+    expect(sections()).toEqual(["since", "needs"]);
   });
 
   it("Ash changing a project's template changes its board at once", async () => {
     act(() => root.render(today("hivra")));
-    await until(() => sections().includes("being-built"), "Hivra's board");
+    await until(() => sections().includes("needs"), "Hivra's board");
     act(() => setTemplate("hivra", "game-studio"));
     // Each section lands on its own render: wait for the last one, not the first (flaked in the full run under load).
-    await until(() => sections().includes("latest-build") && sections().includes("being-built"), "builds card");
-    expect(sections()).toEqual(["since", "needs", "latest-build", "being-built"]);
+    await until(() => sections().includes("latest-build"), "builds card");
+    expect(sections()).toEqual(["since", "needs", "latest-build"]);
     act(() => setTemplate("hivra", "org-ops"));
-    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "no project card");
-    expect(sections()).toEqual(["since", "needs", "being-built"]);
+    await until(() => !sections().includes("latest-build"), "no project card");
+    expect(sections()).toEqual(["since", "needs"]);
     act(() => setTemplate("hivra", "product-saas"));
-    await until(() => !sections().includes("latest-build") && sections().includes("being-built"), "back to its board");
-    expect(sections()).toEqual(["since", "needs", "being-built"]);
-  });
-});
-
-describe("the change history", () => {
-  it("lists each change with Undo or Redo under the ask box; Bot changes shows the same record rows", async () => {
-    act(() => root.render(createElement(HubChangeContent, { flow: "hub", projectId: "today" })));
-    await until(() => store.getSnapshot().changes, "history read");
-    const r = await ask("hub", "rename Nibbii to Nibbii Pet");
-    if (r.status !== "ready") throw new Error(r.status);
-    await applyChange("hub", r.preview);
-    expect(stub.state.projects.find((p) => p.id === "nibbii")?.name).toBe("Nibbii Pet");
-    await until(() => container.querySelector(`[data-hub-change-row="${r.preview.previewId}"][data-hub-change-state="applied"]`), "applied row");
-
-    const row = botChangeRows().find((x) => x.kind === "one" && x.change.hubChangeId === r.preview.previewId);
-    expect(row?.kind === "one" && row.change.line).toBe("Projects Manager changed the hub: Rename Nibbii to Nibbii Pet");
-    await undoBotChange([`hub:${r.preview.previewId}`]);
-    expect(stub.state.projects.find((p) => p.id === "nibbii")?.name).toBe("Nibbii");
-    await until(() => container.querySelector(`[data-hub-change-row="${r.preview.previewId}"][data-hub-change-state="undone"]`), "undone row");
-    await redoBotChange([`hub:${r.preview.previewId}`]);
-    expect(stub.state.projects.find((p) => p.id === "nibbii")?.name).toBe("Nibbii Pet");
-  });
-
-  it("an Undo that a later change blocks says which one, and changes nothing", async () => {
-    await store.start();
-    await until(() => store.getSnapshot().status === "ready", "ready");
-    const first = await ask("hub", "rename Hivra to Hivra One");
-    if (first.status !== "ready") throw new Error(first.status);
-    await applyChange("hub", first.preview);
-    const second = await ask("hub", "rename Hivra One to Hivra Two");
-    if (second.status !== "ready") throw new Error(second.status);
-    await applyChange("hub", second.preview);
-    await expect(undoChange(first.preview.previewId)).rejects.toThrow("A later change, “Rename Hivra One to Hivra Two”, changed the same thing too. Undo that one first.");
-    expect(stub.state.projects.find((p) => p.id === "hivra")?.name).toBe("Hivra Two");
-  });
-
-  it("a slow preview says 'still building' and Try again collects it; Connect data says it isn't wired", async () => {
-    await stub.close();
-    stub = await startStub({ buildMs: 300 });
-    const t = httpTransport(() => stub.url, () => stub.token);
-    const slow = { call: (a: string, p?: Record<string, unknown>) => t.call(a, { ...p, wait: 0 }), openFeed: t.openFeed };
-    const req = { flow: "today" as const, projectId: "today", monoId: "projects-manager", prompt: "hide setup" };
-    expect(await requestChange(req, { roster, transport: slow })).toEqual({ status: "building", reason: "Projects Manager is still building this preview. Press Try again in a moment to see it." });
-    await new Promise((r) => setTimeout(r, 350));
-    const again = await requestChange(req, { roster, transport: slow });
-    expect(again.status === "ready" && again.preview.title).toBe("Take Setup off Today");
-    expect(stub.studio.changes).toHaveLength(1);
-    const connect = await requestChange({ ...req, flow: "connect" }, { roster, transport: t });
-    expect(connect.status).toBe("not-connected");
+    await until(() => !sections().includes("latest-build"), "back to its board");
+    expect(sections()).toEqual(["since", "needs"]);
   });
 });

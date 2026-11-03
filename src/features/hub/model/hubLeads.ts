@@ -119,7 +119,7 @@ const LEAD_RULES = `## How you run the project
 const HUB_RULES = `## Developing the hub from inside the hub
 - Read the repo's CLAUDE.md before building, installing or launching anything.
 - Never edit the main checkout directly. Every change starts in its own worktree off the mainline, on its own branch.
-- See a change in a dev slot: \`npm run hub:dev\` from that worktree (its own data folder, port and DEV ribbon, invented Ash OS data by default). Never launch a build with the daily identity to prove something, and never touch the daily app's data folder.
+- See a change in a dev slot: \`npm run hub:dev\` from that worktree (its own data folder, port and DEV ribbon). Never launch a build with the daily identity to prove something, and never touch the daily app's data folder.
 - \`npm run check\` passes before anything is called done.
 - Ship only with \`npm run hub:check-all && npm run hub:build && npm run hub:ship\` from a clean, landed commit. Ship is the only way a build reaches the daily app; never quit, kill or copy the daily app by hand.
 - Ash OS (the studio) has its own rules in its AGENTS.md: its own worktree branch, its tests, and its lander merges. Never edit its live checkout.

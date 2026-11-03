@@ -33,7 +33,7 @@ it("tells Ash OS which chat each Claude session is: a Lead, another Mono, a work
     role: "worker",
     delegationId: "t-1",
   });
-  // Its task finished (no open row): still a worker, as its ash-os identity says.
+  // Its task finished (no open row): still a worker, as its chat identity says.
   expect(chatBinding(claude("app-lead-chat-1"))).toEqual({
     providerSession: "p-app-lead-chat-1",
     chatId: "app-lead-chat-1",

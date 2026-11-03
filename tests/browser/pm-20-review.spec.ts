@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Round 20 review fixes, a browser preview only (not Ash's Mac): a project's own Today keeps its ask rows in one
 // column even at 2560 wide (G1 took away the all-projects board and its 1800px two-column grid; the single shrinkable
@@ -10,15 +9,9 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 //   PM_PROOF_SPEC=pm-20-review.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-20";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 async function open(page: Page) {
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);

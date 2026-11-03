@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Round 30h proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:), from the blind D5 run on
 // r49: app workers with no Ash OS job are listed on Being built (their rows aren't sent to Ash OS). One is running. One
@@ -13,11 +12,6 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 //   PM_PROOF_SPEC=pm-30h-lead-done-red.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs/on-r47 npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-30h";
-let stub: { url: string; close(): Promise<void> };
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 function rows(owner: string) {
   const now = Date.now();
@@ -40,7 +34,7 @@ function rows(owner: string) {
 /** The Hivra lead's chat, held by this window and idle: open it from the rail, then read the id the roster records. */
 async function leadChatId(page: Page): Promise<string> {
   // The rail lists only the selected project's Monos (MonoRailSection's projectFilter), and a fresh page auto-selects
-  // the stub's first project (vg-game): select hivra first or its Lead's row is never in the rail.
+  // the first project (vg-game): select hivra first or its Lead's row is never in the rail.
   await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
   const row = page.locator("[data-mono-rail]").first().locator('button[aria-label^="Hivra lead"]').first();
   await expect(row).toBeVisible({ timeout: 30_000 });
@@ -59,7 +53,7 @@ async function leadChatId(page: Page): Promise<string> {
 test("Being built lists app workers; a failed one whose Lead is done is red Needs you", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1512, height: 982 });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
   await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });

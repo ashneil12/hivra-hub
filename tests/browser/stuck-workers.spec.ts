@@ -1,12 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Stuck workers everywhere Ash looks (H4; Ash 20 Oct: "easy to see when a subagent is stuck both from the main agent and
 // from other parts of the UI, being able to respond quickly or go into the chat"), under the r30/r51 red rule — red is
 // only "Needs you" (what Ash must sort); what its Lead or a retry is handling reads "With EXO lead" or "waiting",
-// never "Stuck". The real app in a browser (hub-dev.html: the hub reads the stub Ash OS through its real transport),
+// never "Stuck". The real app in a browser (hub-dev.html: the hub reads its own local store through its real transport),
 // with the EXO lead's delegation rows seeded as delegations.rs would return them: one worker running, one asking its
 // Lead, one stalled, one failed on a billing refusal, two done. Each surface is checked and photographed: the Monos
 // rail (the Mono's mark and one line with the split, never its sub-chats: Ash, 20 Oct, they live in its coding team),
@@ -25,12 +24,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 function rows(ownerSession: string) {
@@ -67,7 +60,7 @@ const rail = (page: Page) => page.locator("[data-mono-rail]").first();
 const leadRow = (page: Page) => rail(page).locator('button[aria-label^="EXO lead"]').first();
 
 test("a stuck worker shows on the rail, in its Lead's chat, in Being built and on Today, answerable from each", async ({ page }) => {
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(leadRow(page)).toBeVisible({ timeout: 30_000 });
 
   // Open the EXO lead's chat, so it has a chat the rows belong to.
@@ -141,7 +134,7 @@ test("a stuck worker shows on the rail, in its Lead's chat, in Being built and o
 
   // Being built: the job's row carries the red Needs you with the failed worker's plain reason and "Open EXO lead's
   // chat" under it (r27b/r51; no separate Open chat button) though a sibling runs.
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(leadRow(page)).toBeVisible({ timeout: 30_000 });
   await seed(page, ownerSession);
   const select = (selection: { project: string; item: string }) =>

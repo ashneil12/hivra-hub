@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { readFileSync } from "node:fs";
 import { beforeEach, expect, it } from "vitest";
 import { allPages, buildPreview, keepPage, pinnedPages, resetPagesForTest, setPinned } from "./pages";
-import { buildPage } from "./buildPage";
+import { checkBuiltSpec } from "./buildPage";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 beforeEach(() => { localStorage.clear(); resetPagesForTest(); });
@@ -22,8 +22,7 @@ it("Pages lists every page across projects; pins by Ash or a Mono show as pinned
 });
 
 it("a Mono can ask for its page to be pinned through the build result", async () => {
-  const transport = { call: (async () => ({ kind: "blocks", title: "Example: board", blocks: [{ kind: "note", title: "Note", text: "Example: hi" }], pin: true })) as never, openFeed: () => () => undefined };
-  const r = await buildPage({ projectId: "hivra", monoId: "projects-manager", prompt: "a board" }, { transport, roster: [{ id: "projects-manager" }], stub: false });
+  const r = checkBuiltSpec({ kind: "blocks", title: "Example: board", blocks: [{ kind: "note", title: "Note", text: "Example: hi" }], pin: true });
   expect(r.status === "ready" && r.pin).toBe(true);
 });
 

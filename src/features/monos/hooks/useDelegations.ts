@@ -1,5 +1,5 @@
 // The app's one hook for delegation rows (model/delegations.ts): one tracker per window, boot recovery in the main
-// window, and each chat's Claude session bound for Ash OS (`chat-bind`) whenever it binds or rotates.
+// window, and each chat's Claude session bound (`delegations_bind_chat`) whenever it binds or rotates.
 import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";

@@ -163,7 +163,10 @@ pub fn parse(text: &str) -> Result<Plan, String> {
     }
     if plan.projects.len() > 50
         || plan.projects.iter().any(|project| {
-            !project.get("id").and_then(Value::as_str).is_some_and(valid_run_id)
+            !project
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(valid_run_id)
                 || !project.get("name").is_some_and(Value::is_string)
         })
     {
@@ -249,7 +252,9 @@ const MESSAGES_MAX_BYTES: u64 = 1024 * 1024;
 pub fn messages_from(path: &Path) -> Result<Vec<Value>, String> {
     match std::fs::metadata(path) {
         Err(_) => return Ok(Vec::new()),
-        Ok(meta) if meta.len() > MESSAGES_MAX_BYTES => return Err("verify messages: the file is too large".into()),
+        Ok(meta) if meta.len() > MESSAGES_MAX_BYTES => {
+            return Err("verify messages: the file is too large".into())
+        }
         Ok(_) => {}
     }
     let text = std::fs::read_to_string(path).map_err(|e| format!("verify messages: {e}"))?;

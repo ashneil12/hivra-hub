@@ -13,9 +13,6 @@ vi.mock("../../integrations/harness", () => ({
   runHarnessTextPrompt: async () => "",
 }));
 vi.mock("../../platform/tauri/fs", () => ({ homeDir: async () => "/Users/ash" }));
-vi.mock("../../features/hub/model/hubTransport", () => ({
-  tauriHubTransport: { call: async (action: string) => Promise.reject(new Error(`no ${action} here`)) },
-}));
 
 let root: Root;
 let container: HTMLElement;

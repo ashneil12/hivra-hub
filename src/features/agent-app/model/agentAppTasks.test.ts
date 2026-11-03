@@ -442,7 +442,7 @@ describe("tasks.delegate", () => {
     expect(launch.prompt.startsWith(`[MonoCode brief from EXO lead]\n\nFix the save bug.\n\n${rules}\n\nDone when: It saves\n\n<project_memory>`)).toBe(true);
     // The memory after it is not part of the finish line the worker's /goal is set to (claudeGoal.ts).
     expect(goalFromBrief(launch.prompt)).toBe("It saves");
-    // a worker on another engine: its own engine decides how the block tells it to read more (no ash-os tools there)
+    // a worker on another engine: its own engine decides how the block tells it to read more (no memory tools there)
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     await handleAgentApp(source, "r-mem-2", "tasks.delegate", { brief: "Draw it.", model: "codex:gpt-5" }, host);
     expect(api.memoryBrief).toHaveBeenLastCalledWith("mono-exo", "codex");

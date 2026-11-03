@@ -1,4 +1,4 @@
-// The MCP entries each hub chat's Claude Code session gets (hubMcp.ts): who it is to Ash OS, and the delegate tool for a
+// The MCP entries each hub chat's Claude Code session gets (hubMcp.ts): who it is, and the delegate tool for a
 // Mono's own chat only, with its app connection passed as ${VAR} so the token never reaches argv.
 import { afterEach, describe, expect, it } from "vitest";
 import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
@@ -26,11 +26,6 @@ import {
 import { workerRules } from "../../agent-app/model/agentAppTasks";
 import { leadBriefPrompt } from "./leadershipDelegation";
 
-const ASH_OS = {
-  command: "/opt/homebrew/bin/python3",
-  args: ["/Users/ash/Projects/exo-cc-studio/bin/ash-os-mcp"],
-  env: { ASHOS_HOME: "/Users/ash/.ashos", ASH_ROLE: "lead", ASH_CHAT: "spoofed" },
-};
 const CLI = "/Users/ash/Applications/MonoCode Hub.app/Contents/MacOS/monocode";
 
 const lookups: HubChatLookups = {
@@ -75,21 +70,6 @@ describe("a hub chat's identity", () => {
     expect(hubChatIdentity("plain-1", lookups)).toEqual({ kind: "chat", chat: "plain-1" });
   });
 
-  it("goes in Ash's ash-os entry for every chat, over anything his own config says", () => {
-    for (const [session, env] of [
-      ["chat-exo", { ASH_MONO_ID: "vg-game-lead", ASH_ROLE: "lead", ASH_CHAT: "chat-exo" }],
-      ["habit-run-1", { ASH_MONO_ID: "frank", ASH_ROLE: "mono", ASH_CHAT: "habit-run-1" }],
-      ["chat-checker", { ASH_MONO_ID: "checker", ASH_ROLE: "checker", ASH_CHAT: "chat-checker" }],
-      ["app-chat-exo-r1", { ASH_ROLE: "worker", ASH_CHAT: "app-chat-exo-r1" }],
-      ["plain-1", { ASH_CHAT: "plain-1" }],
-    ] as const) {
-      const entry = config(hubMcpArgs(session, { ashOs: ASH_OS, cli: null }, lookups))!.mcpServers["ash-os"];
-      expect(entry.command).toBe(ASH_OS.command);
-      expect(entry.args).toEqual(ASH_OS.args);
-      // A plain chat or worker carries no role or Mono from Ash's config: only what it is.
-      expect(entry.env).toEqual({ ASHOS_HOME: "/Users/ash/.ashos", ...env });
-    }
-  });
 });
 
 describe("a chat's project (ASH_PROJECT): what memory it may reach", () => {
@@ -131,42 +111,24 @@ describe("a chat's project (ASH_PROJECT): what memory it may reach", () => {
     expect(hubChatIdentity("chat-exo", lookups).projects).toBeUndefined();
   });
 
-  it("goes in the ash-os entry as ASH_PROJECT, and a stray one in Ash's own config never does", () => {
-    const stray = { ...ASH_OS, env: { ...ASH_OS.env, ASH_PROJECT: "nibbii" } };
-    for (const [session, project] of [
-      ["chat-exo", "vg-game"],
-      ["app-chat-exo-r1", "vg-game"],
-      [`app-${LEAD_CHAT}-r1`, "hivra"],
-      ["habit-run-lead", "hivra"],
-      ["chat-cos", undefined],
-      ["app-chat-cos-r1", undefined],
-      ["plain-1", undefined],
-    ] as const) {
-      const env = config(hubMcpArgs(session, { ashOs: stray, cli: null }, withProjects))!.mcpServers["ash-os"]
-        .env as Record<string, string>;
-      expect(env.ASH_PROJECT, session).toBe(project);
-      expect(env.ASHOS_HOME).toBe("/Users/ash/.ashos");
-    }
-  });
-
-  it("is what the registered lookups say, and only Claude Code sessions have the ash-os tools to search further", () => {
+  it("is what the registered lookups say, and no chat has memory tools since Ash OS is retired", () => {
     expect(chatProjects("app-chat-exo-r1")).toEqual([]);
-    setHubMcpServers({ ashOs: null, cli: null }, withProjects);
+    setHubMcpServers({ cli: null }, withProjects);
     expect(chatProjects("app-chat-exo-r1")).toEqual(["vg-game"]);
     expect(chatProjects("chat-cos")).toEqual([]);
-    expect(hasMemoryTools("claude")).toBe(true);
+    expect(hasMemoryTools("claude")).toBe(false);
     expect(hasMemoryTools("codex")).toBe(false);
   });
 });
 
 describe("the delegate tool", () => {
-  it("is one --mcp-config with ash-os and monocode for a Mono's own chat, pre-approved, token as ${VAR}", () => {
-    const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+  it("is one --mcp-config with monocode for a Mono's own chat, pre-approved, token as ${VAR}", () => {
+    const args = hubMcpArgs("chat-exo", { cli: CLI }, lookups);
     expect(args.filter((arg) => arg === "--mcp-config")).toHaveLength(1);
     expect(args.slice(0, 2)).toEqual(["--allowedTools", MONOCODE_ALLOWED_TOOLS]);
     expect(MONOCODE_ALLOWED_TOOLS).toBe("mcp__monocode__*");
     const servers = config(args)!.mcpServers;
-    expect(Object.keys(servers)).toEqual(["ash-os", "monocode"]);
+    expect(Object.keys(servers)).toEqual(["monocode"]);
     expect(servers.monocode).toEqual({
       command: CLI,
       args: ["mcp"],
@@ -182,13 +144,13 @@ describe("the delegate tool", () => {
   it("pre-approves reading the hub docs the note points at, once their folder is known", () => {
     setHubDocsDir("/Applications/MonoCode Hub.app/Contents/Resources/hub-docs/");
     try {
-      const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+      const args = hubMcpArgs("chat-exo", { cli: CLI }, lookups);
       expect(args.slice(0, 2)).toEqual([
         "--allowedTools",
         "mcp__monocode__*,Read(//Applications/MonoCode Hub.app/Contents/Resources/hub-docs/**)",
       ]);
       // Nobody else gets a pre-approval for it.
-      expect(hubMcpArgs("plain-1", { ashOs: ASH_OS, cli: CLI }, lookups)).not.toContain("--allowedTools");
+      expect(hubMcpArgs("plain-1", { cli: CLI }, lookups)).not.toContain("--allowedTools");
     } finally {
       setHubDocsDir(undefined);
     }
@@ -198,7 +160,7 @@ describe("the delegate tool", () => {
     const previous = process.env.MONOCODE_APP_TOKEN;
     process.env.MONOCODE_APP_TOKEN = "f00dfeedcafe1234f00dfeedcafe1234";
     try {
-      const joined = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups).join(" ");
+      const joined = hubMcpArgs("chat-exo", { cli: CLI }, lookups).join(" ");
       expect(joined).toContain("${MONOCODE_APP_TOKEN}");
       expect(joined).not.toContain("f00dfeedcafe1234");
     } finally {
@@ -209,26 +171,25 @@ describe("the delegate tool", () => {
 
   it("is for Monos only: not habit runs, workers, plain chats or the checker", () => {
     for (const session of ["habit-run-1", "app-chat-exo-r1", "plain-1", "chat-checker", "habit-run-2"]) {
-      const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
+      const args = hubMcpArgs(session, { cli: CLI }, lookups);
       expect(args).not.toContain(MONOCODE_ALLOWED_TOOLS);
-      // The checker's own ash-os tools are its only pre-approval (hubChecker.test.ts has the rest of its tool list).
-      if (!session.includes("checker") && session !== "habit-run-2") expect(args).not.toContain("--allowedTools");
-      expect(Object.keys(config(args)!.mcpServers)).toEqual(["ash-os"]);
+      expect(args).not.toContain("--allowedTools");
+      expect(config(args)).toBeUndefined();
     }
-    // Without Ash's ash-os (a dev copy) a Mono still gets the delegate tool, and nobody else gets anything.
-    expect(Object.keys(config(hubMcpArgs("chat-frank", { ashOs: null, cli: CLI }, lookups))!.mcpServers)).toEqual([
+    // A Mono gets the delegate tool, and nobody else gets anything.
+    expect(Object.keys(config(hubMcpArgs("chat-frank", { cli: CLI }, lookups))!.mcpServers)).toEqual([
       "monocode",
     ]);
     // Only the fence round the Monos' home, which every hub chat has.
     const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(",")];
-    expect(hubMcpArgs("plain-1", { ashOs: null, cli: CLI }, lookups)).toEqual(fence);
+    expect(hubMcpArgs("plain-1", { cli: CLI }, lookups)).toEqual(fence);
     // A Mono's chat also has Claude Code's own worktree tools kept from it (the app makes its workers' checkouts).
-    expect(hubMcpArgs("chat-frank", { ashOs: null, cli: null }, lookups)).toEqual([
+    expect(hubMcpArgs("chat-frank", { cli: null }, lookups)).toEqual([
       "--disallowedTools",
       `${fence[1]},EnterWorktree,ExitWorktree`,
     ]);
     // r79 (c02): a chat that hands out work can't stall its turn on Claude Code's settings skill.
-    const withDelegate = hubMcpArgs("chat-frank", { ashOs: null, cli: CLI }, lookups);
+    const withDelegate = hubMcpArgs("chat-frank", { cli: CLI }, lookups);
     expect(withDelegate.at(-1)).toBe(`${fence[1]},EnterWorktree,ExitWorktree,Skill(update-config)`);
   });
 
@@ -236,13 +197,13 @@ describe("the delegate tool", () => {
     // Nothing registered yet: no servers, but the fence round the Monos' home is never left off.
     expect(registeredHubMcpArgs("chat-exo")).toEqual(["--disallowedTools", chatDeniedTools().join(",")]);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
-    setHubMcpServers({ ashOs: null, cli: CLI }, lookups);
+    setHubMcpServers({ cli: CLI }, lookups);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(true);
     expect(hasDelegateTool("chat-exo", "codex")).toBe(false);
     expect(hasDelegateTool("habit-run-1", "claude")).toBe(false);
     expect(hasDelegateTool("chat-checker", "claude")).toBe(false);
     expect(config(registeredHubMcpArgs("chat-exo"))!.mcpServers.monocode).toBeDefined();
-    setHubMcpServers({ ashOs: ASH_OS, cli: null }, lookups);
+    setHubMcpServers({ cli: null }, lookups);
     expect(hasDelegateTool("chat-exo", "claude")).toBe(false);
   });
 });
@@ -263,13 +224,12 @@ describe("a coding-team chat", () => {
     expect(hubChatIdentity("plain-1", team)).toEqual({ kind: "chat", chat: "plain-1" });
   });
 
-  it("gets the delegate tool and ASH_PROJECT, and no connectors (those are a Mono's)", () => {
-    const args = hubMcpArgs(TEAM_CHAT, { ashOs: ASH_OS, cli: CLI, connectors: () => ({ github: { command: "x" } }) }, team);
+  it("gets the delegate tool and its project, and no connectors (those are a Mono's)", () => {
+    const args = hubMcpArgs(TEAM_CHAT, { cli: CLI, connectors: () => ({ github: { command: "x" } }) }, team);
     const servers = config(args)!.mcpServers;
-    expect(Object.keys(servers).sort()).toEqual(["ash-os", "monocode"]);
-    expect(servers["ash-os"].env).toEqual({ ASHOS_HOME: "/Users/ash/.ashos", ASH_CHAT: TEAM_CHAT, ASH_PROJECT: "vg-game" });
+    expect(Object.keys(servers).sort()).toEqual(["monocode"]);
     expect(args).toContain(MONOCODE_ALLOWED_TOOLS);
-    setHubMcpServers({ ashOs: ASH_OS, cli: CLI }, team);
+    setHubMcpServers({ cli: CLI }, team);
     expect(hasDelegateTool(TEAM_CHAT, "claude")).toBe(true);
     expect(hasDelegateTool(TEAM_CHAT, "codex")).toBe(false);
     expect(hasDelegateTool("plain-1", "claude")).toBe(false);
@@ -280,9 +240,7 @@ describe("a coding-team chat", () => {
     const deeper = `app-${worker}-r2`;
     expect(hubChatIdentity(worker, team)).toEqual({ kind: "worker", chat: worker, role: "worker", projects: ["vg-game"] });
     expect(hubChatIdentity(deeper, team)).toEqual({ kind: "worker", chat: deeper, role: "worker", projects: ["vg-game"] });
-    const servers = config(hubMcpArgs(worker, { ashOs: ASH_OS, cli: CLI }, team))!.mcpServers;
-    expect(servers.monocode).toBeUndefined();
-    expect(servers["ash-os"].env).toMatchObject({ ASH_ROLE: "worker", ASH_PROJECT: "vg-game" });
+    expect(config(hubMcpArgs(worker, { cli: CLI }, team))).toBeUndefined();
   });
 
   it("never turns a Mono's chat, a habit run or a worker into one, whatever the lookup says", () => {
@@ -294,14 +252,14 @@ describe("a coding-team chat", () => {
 });
 
 function chatProjectsFor(sessionId: string, lookups: HubChatLookups): string[] {
-  setHubMcpServers({ ashOs: null, cli: null }, lookups);
+  setHubMcpServers({ cli: null }, lookups);
   return chatProjects(sessionId);
 }
 
 describe("the fence round the Monos' home (decided 20 Oct: only the app writes there)", () => {
   it("denies every hub chat edits under ~/agent-memory/monos, whatever its role", () => {
     for (const session of ["chat-exo", "chat-frank", "habit-run-1", "app-chat-exo-r1", "plain-1", "chat-checker"]) {
-      const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
+      const args = hubMcpArgs(session, { cli: CLI }, lookups);
       // One deny list per chat (a second flag could replace the first).
       expect(args.filter((a) => a === "--disallowedTools")).toHaveLength(1);
       const denied = args[args.indexOf("--disallowedTools") + 1].split(",");
@@ -346,7 +304,7 @@ describe("the fence round the Monos' home (decided 20 Oct: only the app writes t
 
 describe("worktrees (run dd7f, 27 Oct: a Lead made its own Claude worktree and its worker committed there)", () => {
   const denied = (session: string) => {
-    const args = hubMcpArgs(session, { ashOs: ASH_OS, cli: CLI }, lookups);
+    const args = hubMcpArgs(session, { cli: CLI }, lookups);
     return args[args.indexOf("--disallowedTools") + 1].split(",");
   };
 
@@ -358,7 +316,7 @@ describe("worktrees (run dd7f, 27 Oct: a Lead made its own Claude worktree and i
   it("leaves them to Ash's own plain chats, and the Monos' home fence stays in the same one deny list", () => {
     expect(denied("plain-1")).not.toContain("EnterWorktree");
     expect(denied("chat-exo")).toContain("Edit(~/agent-memory/monos/**)");
-    const args = hubMcpArgs("chat-exo", { ashOs: ASH_OS, cli: CLI }, lookups);
+    const args = hubMcpArgs("chat-exo", { cli: CLI }, lookups);
     expect(args.filter((a) => a === "--disallowedTools")).toHaveLength(1);
   });
 });
