@@ -175,6 +175,8 @@ test("on the Grok bridge: no Claude model name or logo anywhere, no usage chip, 
   await field.press("Enter");
   await expect(page.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first()).toBeVisible({ timeout: 15_000 });
   expect(await claudeTraces(page, "body")).toEqual([]);
+  // The fake holds the turn once it has said "On it."; release before that would end nothing.
+  await expect(page.getByText("On it.", { exact: true }).last()).toBeVisible({ timeout: 15_000 });
   await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
   const title = page.getByText(/^Grok 4\.7 worked/).last();
   await expect(title).toBeVisible({ timeout: 15_000 });
