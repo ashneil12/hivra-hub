@@ -1,3 +1,4 @@
+import "./macPlatform";
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { SessionPane, type SessionPaneProps } from "../../src/features/sessions/ui/SessionPane";

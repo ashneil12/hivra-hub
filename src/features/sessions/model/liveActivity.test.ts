@@ -25,6 +25,20 @@ describe("liveStep", () => {
     expect(liveStep([run("npm test -- room")]).label).toBe("Running a check");
     expect(liveStep([run("ls -la")]).label).toBe("Running a command");
   });
+  it("once a workflow ends, the words written as it started are not what the Lead does now", () => {
+    const run = (status: "running" | "completed"): Block => ({
+      id: "wf",
+      role: "tool",
+      text: "Workflow",
+      tool: { kind: "other", status: "completed" },
+      workflowRun: { taskId: "w1", status, phases: [], agents: [] },
+    });
+    const started: Block = { id: "p", role: "assistant", text: "Workflow started." };
+    expect(liveStep([user, run("running"), started]).label).toBe("Waiting on workers");
+    expect(liveStep([user, run("completed"), started]).label).toBe("Thinking");
+    // Words that come later are writing again.
+    expect(liveStep([user, run("completed"), started, read("completed"), { id: "p2", role: "assistant", text: "Found two bugs" }]).label).toBe("Writing");
+  });
   it("a delegated run is waiting on a worker", () => {
     const agent: Block = { id: "a", role: "tool", text: "Task", tool: { kind: "agent", title: "Task", status: "in_progress" } };
     expect(liveStep([agent]).label).toBe("Waiting on a worker");
