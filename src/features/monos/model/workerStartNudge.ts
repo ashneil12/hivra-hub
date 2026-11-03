@@ -97,13 +97,22 @@ export const SAVE_RULE_PREFIX = "[MonoCode save rule]";
 const STANDING_RULE =
   /\b(?:from now on|going forward|from here on|every time you|always (?:run|use|check|ask|write|test|keep|make|do|put|say|commit|add)|never (?:again|use|run|commit|push|ship|change|touch))\b/i;
 
+/**
+ * Where a standing rule is saved: the memory files (WP-04 retired Ash OS and its ash_remember tool). A chat that saved
+ * it wrote one of them; an older chat's ash_remember call still counts.
+ */
+export function saveRuleWhere(): string {
+  return forUser("in his words, in the project's ~/agent-memory/<project>/decisions.md (~/agent-memory/ash/decisions.md if it holds for every project)");
+}
+const SAVED = /ash_remember|agent-memory\/\S*decisions\.md/;
+
 const remembers = (block: Block) =>
   (block.role === "tool" || block.role === "approval") &&
-  [block.tool?.kind, block.tool?.title, block.text].some((t) => !!t && /ash_remember/.test(t));
+  [block.tool?.kind, block.tool?.title, block.text].some((t) => !!t && SAVED.test(t));
 
 /**
  * r81 (P9, c02 r80: "saved after these jobs are handed off", confirmed 3 minutes later): a chat that hands out work and
- * whose turn is over, with a standing rule in Ash's last message and no ash_remember since, gets one app message to save
+ * whose turn is over, with a standing rule in Ash's last message and no save since, gets one app message to save
  * it now in his words. Once per Ash message, never while it works.
  */
 export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): QueuedMessage | undefined {
@@ -124,7 +133,7 @@ export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): Q
     id: `save-rule-${ask.id}`,
     attachments: [],
     waitForIdle: true,
-    text: forUser`${SAVE_RULE_PREFIX} From the app: Ash gave a standing rule ("${rule.slice(0, 200)}") and it isn't saved yet. Save it now with ash_remember, in his words, then carry on; one line to him at most. This is an app notification, not a new message from Ash.`,
+    text: forUser`${SAVE_RULE_PREFIX} From the app: Ash gave a standing rule ("${rule.slice(0, 200)}") and it isn't saved yet. Save it now ${saveRuleWhere()}, then carry on; one line to him at most. This is an app notification, not a new message from Ash.`,
   };
 }
 
@@ -135,7 +144,7 @@ export function standingRuleNudge(chat: Session, nudged: ReadonlySet<string>): Q
 export function joinNudges(save: QueuedMessage | undefined, start: QueuedMessage | undefined): QueuedMessage | undefined {
   if (!save || !start) return save ?? start;
   const rule = save.text.match(/standing rule \("([^]*?)"\) and it isn't saved yet/)?.[1];
-  return { ...start, text: start.text.replace(" Start them now:", ` First save his standing rule${rule ? ` ("${rule}")` : ""} with ash_remember, in his words. Then start them:`) };
+  return { ...start, text: start.text.replace(" Start them now:", ` First save his standing rule${rule ? ` ("${rule}")` : ""} ${saveRuleWhere()}. Then start them:`) };
 }
 
 /** The first line of Ash's message that is a standing rule, if any. */
@@ -159,7 +168,7 @@ export function standingRuleSendNote(text: string): string | undefined {
           `This message numbers ${asks} asks. Keep your thinking short. First, before reading any file: one delegate_task per independent area, each a short brief that carries your pick on any open choice it depends on (so its worker doesn't ask again). Then reply in a few lines: every ask in his order, your pick on any choice, and which jobs started (only those whose call returned). Never say all are out, or that anything is done, before their reports come back.`,
         ]
       : []),
-    ...(rule ? [`It holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it with ash_remember in his words this turn, before you reply.`] : []),
+    ...(rule ? [`It holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it ${saveRuleWhere()} this turn, before you reply.`] : []),
   ];
   return forUser`<monocode_app>\n${lines.join("\n")}\n</monocode_app>`;
 }

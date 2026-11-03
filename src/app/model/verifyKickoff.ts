@@ -69,7 +69,7 @@ export async function verifyKickoffMono(
 const MESSAGES_KEY = "monocode:verify-live-messages";
 
 /**
- * One of Ash's messages the bench sends mid-run (the stub's `ash-hub-verify-messages`, scripts/hub-verify-live.mjs):
+ * One of Ash's messages the bench sends mid-run (the plan's messages file, scripts/hub-verify-live.mjs):
  * typed into that Mono's chat the way Ash types, so it takes his path (it goes first, and steers a running turn).
  */
 export type VerifyMessage = {

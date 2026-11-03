@@ -12,7 +12,7 @@ import type { HubProject } from "../../hub/model/types";
 import type { BridgeHandlers } from "./bridge";
 
 /** The action the hub's own project menu uses, so Undo and Redo run exactly what Ash's tap runs. */
-const RENAME = "ash-hub-project-rename";
+const RENAME = "project-rename";
 const MAX_NAME = 80;
 
 /** The stores a write touches; a test stands in for them. */

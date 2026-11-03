@@ -1,7 +1,7 @@
 /**
  * r96 (Critiquito, c02 BLIND 6968): a step's row showed the raw command it ran ("git diff --stat && echo '---' && git
  * diff -- packages/ui …", "node -e \"", "rg -n --heading 'BoardTally|…' packages/ui; npm test",
- * "mcp__ash-os__ash_remember"). Rows read in plain words: "Look at the changes", "Run a script", "Search the code, then
+ * "mcp__memory__ash_remember"). Rows read in plain words: "Look at the changes", "Run a script", "Search the code, then
  * run the tests", "Remember". The full command stays behind the row (its title and detail). A command we can't put
  * into words is left as it was, so nothing is guessed.
  */

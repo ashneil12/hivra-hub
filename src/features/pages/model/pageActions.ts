@@ -2,7 +2,7 @@
 // pick, send a Mono a message, stop work, open a chat. Each goes through the path Ash's own tap takes for the same thing:
 // - a chat waiting on him: Waiting on you's answerInWords / takePick / Open (hub/model/waitingChats.ts);
 // - a worker asking its Lead: the answer in the worker's own chat (the app's question reply), as when Ash answers there;
-// - an Ash OS question: Ash's answer call (`ash-hub-answer`, through hubData().answer);
+// - an Ash OS question: Ash's answer call (`answer`, through hubData().answer);
 // - a message: the composer's send into that Mono's chat (it steers or queues mid-turn, as typing would);
 // - Stop: the delegation tree's own Stop for that work (and everything it handed out), or Stop on a Mono's chat;
 // - Open: the tree's Open for handed-out work, the Mono's own view, or the waiting chat's Open.

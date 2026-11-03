@@ -1,11 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // The coding team is the main place Ash talks (Ash, 20 Oct: "mainly the coding team is the main place i want to talk
 // to"; "I don't talk to workers. I only talk to orchestrators."). The real app in a browser (hub-dev.html reading the
-// stub through its real transport), with chats seeded in EXO's folder as session_list_by_project returns them and
+// local store through its real transport), with chats seeded in EXO's folder as session_list_by_project returns them and
 // delegation rows as delegations.rs does: the Lead pinned on top and opened by default, its sub-chats folded until one
 // is stuck, Ash's own chats at the top level with theirs folded under them, one click into a chat or a sub-chat, and
 // "Open in coding team" landing on the Lead. Each step is photographed.
@@ -21,12 +20,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const FOLDER = "/Users/example/Projects/vg-game";
@@ -105,7 +98,7 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
     },
     { list: chats(now), team: TEAM_CHAT },
   );
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
 
   // Picking EXO lands in its coding team, on its Lead: the item reads Coding team, the Lead's row is pinned on top

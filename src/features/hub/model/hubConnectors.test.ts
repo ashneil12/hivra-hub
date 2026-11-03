@@ -120,7 +120,7 @@ async function chatArgs(sessionId: string): Promise<string[]> {
   const { monoForSession } = await import("../../monos/model/mono");
   return hubMcpArgs(
     sessionId,
-    { ashOs: { command: "ash-os-server" }, cli: "/app/monocode", connectors: connectorServersForMono },
+    { cli: "/app/monocode", connectors: connectorServersForMono },
     { monoOf: monoForSession, habitRunMono: (id) => (id === "habit-run-maya" ? "maya" : undefined), isLead: () => false },
   );
 }
@@ -131,7 +131,7 @@ function servers(args: string[]): Servers {
 }
 
 describe("a Mono's chat", () => {
-  it("gets one --mcp-config: ash-os, the delegate tool and only its allowed connectors, with no login", async () => {
+  it("gets one --mcp-config: the delegate tool and only its allowed connectors, with no login", async () => {
     const rust = fakeRust();
     roster([
       { id: "maya", name: "Maya", projects: [HIVRA], sessionId: "s-maya" },
@@ -141,29 +141,28 @@ describe("a Mono's chat", () => {
     const c = await import("./hubConnectors");
     c.setConnectorsBackend(rust.backend);
     await c.loadConnectors();
-    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["ash-os", "monocode"]);
+    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["monocode"]);
     await c.saveConnectorLogin("github", { token: SECRET }, [HIVRA]);
     await c.turnOnConnector("context7", [c.EVERYWHERE]);
 
     const maya = servers(await chatArgs("s-maya"));
-    expect(Object.keys(maya).sort()).toEqual(["ash-os", "context7", "github", "monocode"]);
+    expect(Object.keys(maya).sort()).toEqual(["context7", "github", "monocode"]);
     expect(maya.github).toEqual({
       command: rust.view.launcher,
       args: ["connector-run", "github", "--mono", "maya", "--project", HIVRA],
     });
-    expect(maya["ash-os"].env).toMatchObject({ ASH_MONO_ID: "maya", ASH_CHAT: "s-maya" });
     // Its habit runs work as Maya: her connectors, no delegate tool.
-    expect(Object.keys(servers(await chatArgs("habit-run-maya"))).sort()).toEqual(["ash-os", "context7", "github"]);
+    expect(Object.keys(servers(await chatArgs("habit-run-maya"))).sort()).toEqual(["context7", "github"]);
     // In Hivra and Nibbii: GitHub is off in Nibbii, so only what both allow.
-    expect(Object.keys(servers(await chatArgs("s-both"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
+    expect(Object.keys(servers(await chatArgs("s-both"))).sort()).toEqual(["context7", "monocode"]);
     // Outside any project: only what is allowed outside projects.
-    expect(Object.keys(servers(await chatArgs("s-cos"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
+    expect(Object.keys(servers(await chatArgs("s-cos"))).sort()).toEqual(["context7", "monocode"]);
     // A worker or a plain chat: no connectors.
-    expect(Object.keys(servers(await chatArgs("app-s-maya-r1"))).sort()).toEqual(["ash-os"]);
-    expect(Object.keys(servers(await chatArgs("some-other-chat"))).sort()).toEqual(["ash-os"]);
+    expect(await chatArgs("app-s-maya-r1")).not.toContain("--mcp-config");
+    expect(await chatArgs("some-other-chat")).not.toContain("--mcp-config");
     // Maya turned off GitHub.
     await c.setMonoConnectors("maya", c.toggledChoice(undefined, "github", false));
-    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["ash-os", "context7", "monocode"]);
+    expect(Object.keys(servers(await chatArgs("s-maya"))).sort()).toEqual(["context7", "monocode"]);
   });
 
   it("a connector can never take the hub's own entry names", async () => {
@@ -172,11 +171,10 @@ describe("a Mono's chat", () => {
     const { monoForSession } = await import("../../monos/model/mono");
     const args = hubMcpArgs(
       "s-maya",
-      { ashOs: { command: "ash-os-server" }, cli: "/app/monocode", connectors: () => ({ "ash-os": { command: "evil" }, monocode: { command: "evil" } }) },
+      { cli: "/app/monocode", connectors: () => ({ monocode: { command: "evil" } }) },
       { monoOf: monoForSession, habitRunMono: () => undefined, isLead: () => false },
     );
     const s = servers(args);
-    expect(s["ash-os"].command).toBe("ash-os-server");
     expect(s.monocode.command).toBe("/app/monocode");
   });
 });

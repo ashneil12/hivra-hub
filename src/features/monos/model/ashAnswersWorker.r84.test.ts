@@ -26,13 +26,14 @@ describe("a worker that stops on Ash's choice keeps its job open", () => {
 });
 
 describe("Ash's answer in the worker's chat reaches the Lead at once", () => {
-  it("his words, save with ash_remember, one line on what's next", () => {
+  it("his words, save in the project's decisions.md, one line on what's next", () => {
     const note = ashAnsweredLeadNote(row({}), "keep them 30 days so i can undo, then gone for good", "k1");
     expect(note.id).toBe("ash-answered-t1-k1");
     expect(note.waitForIdle).toBe(true);
     expect(note.text.startsWith(ASH_ANSWERED_PREFIX)).toBe(true);
     expect(note.text).toContain('"keep them 30 days so i can undo, then gone for good"');
-    expect(note.text).toContain("ash_remember");
+    expect(note.text).toContain("~/agent-memory/<project>/decisions.md, in his words");
+    expect(note.text).not.toContain("ash_remember");
     expect(note.text).toContain("not from any pick of yours");
   });
   it("the worker is told his words outrank its Lead", () => {
