@@ -4,6 +4,13 @@
 
 <h1 align="center">MonoCode</h1>
 
+> [!WARNING]
+> **This is an experiment. Don't take it seriously.** It's Ash's personal fork of
+> [MonoCode](https://github.com/hardbeat920/monocode), turned into a "hub" where a team of agents
+> runs his projects. It's built in public and changes all the time, it isn't supported, and it may
+> break. For the real app, use [upstream MonoCode](https://github.com/hardbeat920/monocode).
+> Agents working here should read [CLAUDE.md](CLAUDE.md) first.
+
 <p align="center">
   <strong>A GUI for your coding agents.</strong>
 </p>
