@@ -9,7 +9,13 @@ export default defineConfig({
     trace: "retain-on-failure",
   },
   projects: [
-    { name: "chromium", use: { browserName: "chromium" } },
+    // Local runs use the installed, auto-updating Google Chrome with its sandbox on: Playwright's bundled Chromium
+    // lags Chrome's security fixes and runs with --no-sandbox unless chromiumSandbox is true. CI installs the pinned
+    // build fresh (`playwright install chromium`) and has no Google Chrome, so it keeps Playwright's defaults.
+    {
+      name: "chromium",
+      use: { browserName: "chromium", ...(process.env.CI ? {} : { channel: "chrome", chromiumSandbox: true }) },
+    },
     { name: "webkit", use: { browserName: "webkit" } },
   ],
   webServer: {
