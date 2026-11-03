@@ -48,10 +48,16 @@ pub(crate) fn managed_skills_root() -> Option<&'static Path> {
     MANAGED_SKILLS.get().map(PathBuf::as_path)
 }
 
-fn scope(project: Option<String>) -> Scope {
+/// No project means everywhere. A project that is given must be a real folder path: an empty string is refused rather
+/// than read as "everywhere".
+fn scope(project: Option<String>) -> Result<Scope, String> {
     match project {
-        Some(project) if !project.is_empty() => Scope::Project(project),
-        _ => Scope::Global,
+        None => Ok(Scope::Global),
+        Some(project) => {
+            let path = crate::fs::expand_home(&project);
+            registry::project_key(&path.to_string_lossy())?;
+            Ok(Scope::Project(path.to_string_lossy().into_owned()))
+        }
     }
 }
 
@@ -81,7 +87,7 @@ pub fn plugins_enable(
     name: String,
     project: Option<String>,
 ) -> Result<registry::Outcome, String> {
-    registry::enable(&host(&app)?, &name, &scope(project))
+    registry::enable(&host(&app)?, &name, &scope(project)?)
 }
 
 #[tauri::command(async)]
@@ -90,7 +96,7 @@ pub fn plugins_disable(
     name: String,
     project: Option<String>,
 ) -> Result<registry::Outcome, String> {
-    registry::disable(&host(&app)?, &name, &scope(project))
+    registry::disable(&host(&app)?, &name, &scope(project)?)
 }
 
 #[tauri::command(async)]
@@ -108,5 +114,6 @@ pub fn plugins_session_wiring(
         .ok()
         .map(|exe| exe.to_string_lossy().into_owned());
     let cwd = crate::fs::expand_home(&cwd);
-    wiring::session_wiring(&host(&app)?, Some(&cwd), cli.as_deref())
+    let taken = crate::mcp::names_in_use(&cwd);
+    wiring::session_wiring(&host(&app)?, Some(&cwd), cli.as_deref(), &taken)
 }

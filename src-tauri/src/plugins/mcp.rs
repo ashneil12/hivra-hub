@@ -93,6 +93,13 @@ pub fn load_mcp(root: &Path, reports: &mut Vec<Report>) -> Vec<McpServer> {
     };
     let mut out = Vec::new();
     for (name, entry) in servers {
+        if let Some(why) = server_name_problem(name) {
+            reports.push(Report::new(
+                "mcp.json",
+                format!("Skipped the server \"{name}\": {why}"),
+            ));
+            continue;
+        }
         match parse_server(root, entry) {
             Ok(transport) => out.push(McpServer {
                 name: name.clone(),
@@ -105,6 +112,21 @@ pub fn load_mcp(root: &Path, reports: &mut Vec<Report>) -> Vec<McpServer> {
         }
     }
     out
+}
+
+/// Server names are 1-64 letters, digits, `-` and `_`: the characters every CLI accepts in a server name, so the
+/// name a session sees (`plugin__<plugin>__<server>`, wiring.rs) is the plugin's own, unchanged.
+pub(crate) fn server_name_problem(name: &str) -> Option<&'static str> {
+    if name.is_empty() || name.chars().count() > 64 {
+        return Some("its name must be 1 to 64 characters.");
+    }
+    if !name
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Some("its name may only use letters, digits, \"-\" and \"_\".");
+    }
+    None
 }
 
 fn closed(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), String> {

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,8 +10,9 @@ import type { PluginWiring } from "./pluginWiring";
  * WP-30 "done when": a Claude Code and a Codex session both see an installed plugin's skill and MCP server. The real
  * adapters build each CLI's command line and thread config; only the child process is swapped. What each CLI would
  * then see is read by scripts/fake-plugin-agent.mjs, which follows each CLI's own skill folders and really starts the
- * MCP server (scripts/fake-mcp-server.mjs) and lists its tools. The wiring itself is src-tauri/src/plugins/wiring.rs's
- * (its shape and the registry behind it are proved in src-tauri/src/plugins/tests.rs).
+ * MCP server (scripts/fake-mcp-server.mjs) and lists its tools. The wiring, the files and the server launch are all
+ * the Rust side's own: __fixtures__/rust-wiring.json is written and checked by src-tauri/src/plugins/tests.rs from a
+ * plugin it really installed and switched on, so this test can't drift from what wiring.rs hands out.
  */
 
 const claudeSent: string[] = [];
@@ -74,36 +75,53 @@ const { probeClaude, probeCodex } = (await import("../../../../scripts/fake-plug
   probeCodex(config: unknown, home: string): Promise<{ skills: string[]; tools: Record<string, Array<{ name: string; description: string }>> }>;
 };
 
-const SERVER = fileURLToPath(new URL("../../../../scripts/fake-mcp-server.mjs", import.meta.url));
+const SCRIPTS = new URL("../../../../scripts/", import.meta.url);
+const SERVER = fileURLToPath(new URL("fake-mcp-server.mjs", SCRIPTS));
+const LAUNCHER = fileURLToPath(new URL("fake-plugin-launcher.mjs", SCRIPTS));
+const NAME = "plugin__demo__tools";
+
+type Snapshot = {
+  wiring: PluginWiring;
+  launch: Record<string, unknown>;
+  files: Array<{ path: string; dir?: true; link?: string; text?: string }>;
+};
+const snapshot = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./__fixtures__/rust-wiring.json", import.meta.url)), "utf8"),
+) as Snapshot;
+
 let tmp = "";
 let home = "";
 let wiring: PluginWiring;
 const asked: string[] = [];
+const previousLaunches = process.env.HIVRA_FAKE_LAUNCHES;
 
 /**
- * What the registry leaves on disk for a plugin `demo` with one skill `demo-skill`, switched on everywhere: the
- * installed copy, Claude Code's skills-only plugin folder, and a link in ~/.agents/skills.
+ * Lay out what the registry left for plugin `demo` (skill `demo-skill`, stdio server `tools`) switched on everywhere,
+ * exactly as the Rust test recorded it, and hand the sessions the wiring Rust produced. The app binary (`<CLI>`)
+ * becomes the launcher stand-in, which replays the launch Rust's `prepare_launch` made for the same arguments.
  */
 beforeAll(() => {
   tmp = mkdtempSync(join(tmpdir(), "hivra-plugin-sessions-"));
   home = join(tmp, "home");
-  const installed = join(tmp, "plugins/installed/demo");
-  const skill = join(installed, "skills/demo-skill");
-  mkdirSync(skill, { recursive: true });
-  writeFileSync(join(skill, "SKILL.md"), "---\nname: demo-skill\ndescription: A skill from a plugin.\n---\n\nDo the thing.\n");
-  const shim = join(tmp, "plugins/claude/demo");
-  mkdirSync(join(shim, ".claude-plugin"), { recursive: true });
-  writeFileSync(join(shim, ".claude-plugin/plugin.json"), JSON.stringify({ name: "demo" }));
-  symlinkSync(join(installed, "skills"), join(shim, "skills"));
-  mkdirSync(join(home, ".agents/skills"), { recursive: true });
-  symlinkSync(skill, join(home, ".agents/skills/demo-skill"));
-  const server = { command: process.execPath, args: [SERVER] };
-  wiring = {
-    claudePluginDirs: [shim],
-    claudeMcpServers: { "demo-tools": server },
-    codexMcpServers: { "demo-tools": server },
-    reports: [],
-  };
+  const at = (text: string) => text.replaceAll("<TMP>", tmp);
+  // Inside JSON text the folder must be escaped (Windows' backslashes).
+  const atJson = (text: string) => text.replaceAll("<TMP>", JSON.stringify(tmp).slice(1, -1));
+  for (const file of snapshot.files) {
+    const path = join(tmp, file.path);
+    if (file.dir) mkdirSync(path, { recursive: true });
+    else if (file.link) symlinkSync(join(tmp, file.link), path, "junction");
+    else if (file.text === "<scripts/fake-mcp-server.mjs>") copyFileSync(SERVER, path);
+    else writeFileSync(path, file.path.endsWith(".json") ? atJson(file.text ?? "") : at(file.text ?? ""));
+  }
+  const launches = join(tmp, "launches.json");
+  writeFileSync(launches, atJson(JSON.stringify(snapshot.launch)));
+  process.env.HIVRA_FAKE_LAUNCHES = launches;
+  const json = atJson(JSON.stringify(snapshot.wiring));
+  wiring = JSON.parse(json, (key, value) => {
+    if (value && typeof value === "object" && value.command === "<CLI>")
+      return { ...value, command: process.execPath, args: [LAUNCHER, ...value.args] };
+    return value;
+  }) as PluginWiring;
   registerPluginSessions(async (cwd) => {
     asked.push(cwd);
     return wiring;
@@ -118,8 +136,15 @@ afterAll(async () => {
   setClaudePluginArgs(undefined);
   setCodexExtraConfig(undefined);
   setClaudeExtraArgs(undefined);
+  if (previousLaunches === undefined) delete process.env.HIVRA_FAKE_LAUNCHES;
+  else process.env.HIVRA_FAKE_LAUNCHES = previousLaunches;
   rmSync(tmp, { recursive: true, force: true });
 });
+
+/** What the fake server says it was started with (PLUGIN_ROOT, PLUGIN_DATA, its folder, any app token). */
+function startedWith(description: string) {
+  return JSON.parse(description.split("Started with ")[1]);
+}
 
 async function waitFor(check: () => boolean, what: string) {
   for (let i = 0; i < 200; i++) {
@@ -150,12 +175,17 @@ describe("installed plugins reach each agent CLI", () => {
     // One --mcp-config: the app's entry kept, the plugin's added.
     expect(args.filter((a) => a === "--mcp-config")).toHaveLength(1);
     const config = JSON.parse(args[args.indexOf("--mcp-config") + 1]);
-    expect(Object.keys(config.mcpServers).sort()).toEqual(["ash-os", "demo-tools"]);
+    expect(Object.keys(config.mcpServers).sort()).toEqual(["ash-os", NAME]);
     expect(args).toContain("--plugin-dir");
 
     const seen = await probeClaude(args);
     expect(seen.skills).toEqual(["demo-skill"]);
-    expect(seen.tools["demo-tools"].map((t) => t.name)).toEqual(["plugin_echo"]);
+    expect(seen.tools[NAME].map((t) => t.name)).toEqual(["plugin_echo"]);
+    expect(startedWith(seen.tools[NAME][0].description)).toMatchObject({
+      root: join(tmp, "app-data/plugins/installed/demo"),
+      data: join(tmp, "app-data/plugins/data/demo"),
+      appToken: null,
+    });
     lines.get("claude-plugins")!(JSON.stringify({ type: "result", subtype: "success", session_id: "sess_1" }));
     await Promise.race([turn.catch(() => undefined), new Promise((r) => setTimeout(r, 50))]);
   });
@@ -172,10 +202,15 @@ describe("installed plugins reach each agent CLI", () => {
     });
     const start = codexSent.find((m) => m.method === "thread/start")!;
     const config = start.params.config as { mcp_servers: Record<string, unknown> };
-    expect(Object.keys(config.mcp_servers)).toEqual(["demo-tools"]);
+    expect(Object.keys(config.mcp_servers)).toEqual([NAME]);
 
     const seen = await probeCodex(config, home);
     expect(seen.skills).toEqual(["demo-skill"]);
-    expect(seen.tools["demo-tools"].map((t) => t.name)).toEqual(["plugin_echo"]);
+    expect(seen.tools[NAME].map((t) => t.name)).toEqual(["plugin_echo"]);
+    expect(startedWith(seen.tools[NAME][0].description)).toMatchObject({
+      root: join(tmp, "app-data/plugins/installed/demo"),
+      data: join(tmp, "app-data/plugins/data/demo"),
+      appToken: null,
+    });
   });
 });

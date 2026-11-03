@@ -9,6 +9,8 @@
 //!   on, then starts the plugin's own program with `PLUGIN_ROOT`, `PLUGIN_DATA` and its working folder (§7.2, §9) and
 //!   none of the app's own connection variables. Remote servers go to the CLI as URLs.
 
+use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::Path;
 
 use serde::Serialize;
@@ -33,25 +35,26 @@ pub struct Wiring {
     pub reports: Vec<Report>,
 }
 
-/// The name a server goes by in a session: `<plugin>-<server>`, in the characters every CLI accepts.
+/// The prefix every plugin server's session name starts with. Nothing else the app writes uses it.
+pub const NAME_PREFIX: &str = "plugin__";
+
+/// The name a server goes by in a session: `plugin__<plugin>__<server>`. Plugin names never hold `_` (Agent Plugins
+/// §3.1), so their periods become `_` and the first `__` after the prefix always ends the plugin's part: two
+/// different (plugin, server) pairs never share a name. Server names are already in the characters CLIs accept
+/// (mcp.rs).
 pub fn native_name(plugin: &str, server: &str) -> String {
-    format!("{plugin}-{server}")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
+    format!("{NAME_PREFIX}{}__{server}", plugin.replace('.', "_"))
 }
 
 /// `cli` is this app's own executable (the launcher); without it stdio servers are left out.
+/// `taken` is every server name the person already has (crate::mcp::names_in_use): a plugin server with one of those
+/// names is left out and reported, because Codex would merge its own entry with the person's (their token or env
+/// reaching the plugin) and Claude would swap the person's entry for it.
 pub fn session_wiring(
     host: &Host,
     cwd: Option<&Path>,
     cli: Option<&str>,
+    taken: &BTreeSet<String>,
 ) -> Result<Wiring, String> {
     let registry = registry::read(host)?;
     let mut out = Wiring::default();
@@ -80,6 +83,16 @@ pub fn session_wiring(
             .filter(|s| wanted.contains(&s.name.as_str()))
         {
             let name = native_name(&entry.name, &server.name);
+            if taken.contains(&name) || out.claude_mcp_servers.contains_key(&name) {
+                out.reports.push(Report::new(
+                    format!("{}/mcp.json", entry.name),
+                    format!(
+                        "Left out \"{}\": a server called \"{name}\" is already set up.",
+                        server.name
+                    ),
+                ));
+                continue;
+            }
             let project = (!entry.enabled.global).then_some(cwd).flatten();
             match server_entries(host, &entry.name, server, cli, project) {
                 Ok((claude, codex)) => {
@@ -234,20 +247,60 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
     let plan = launch_plan(&loaded.root, &super::fsutil::resolved(&data), found)?;
     let mut command = std::process::Command::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.cwd);
-    // The session's own connection to the app (and anything else the app put in its env) is not the plugin's.
-    for (key, _) in std::env::vars_os() {
-        let key = key.to_string_lossy();
-        if key.starts_with("MONOCODE_")
-            || key.starts_with("ASH_")
-            || key.starts_with("CLAUDE_CODE_SSE")
-        {
-            command.env_remove(key.as_ref());
-        }
-    }
+    // A plugin server starts from a clean environment: only what a program needs to run (`passed_env`) plus its own
+    // `env` and PLUGIN_ROOT / PLUGIN_DATA. The session's tokens and the app's connection never reach it.
+    command.env_clear();
+    command.envs(passed_env(std::env::vars_os()));
     for (key, value) in &plan.env {
         command.env(key, value);
     }
     Ok(command)
+}
+
+/// Variables a plugin server inherits: the path, home, user, locale, time zone, terminal and temp folders, and on
+/// Windows the system folders a program needs to start. Everything else (API keys, auth tokens, the app's own
+/// MONOCODE_* connection) stays behind.
+const PASSED_ENV: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "TZ",
+    "LANG",
+    "LANGUAGE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    // Windows
+    "SYSTEMROOT",
+    "SYSTEMDRIVE",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PROGRAMDATA",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "COMMONPROGRAMFILES",
+    "NUMBER_OF_PROCESSORS",
+    "PROCESSOR_ARCHITECTURE",
+    "OS",
+];
+
+pub(crate) fn passed_env(
+    vars: impl Iterator<Item = (OsString, OsString)>,
+) -> Vec<(OsString, OsString)> {
+    vars.filter(|(key, _)| {
+        let key = key.to_string_lossy().to_ascii_uppercase();
+        PASSED_ENV.contains(&key.as_str()) || key.starts_with("LC_")
+    })
+    .collect()
 }
 
 /// `monocode plugin-mcp --root <dir> --plugin <name> --server <name> [--project <dir>]`: becomes the plugin's server

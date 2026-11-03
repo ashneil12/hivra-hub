@@ -129,14 +129,33 @@ pub enum Contribution {
 
 impl Contribution {
     /// Undo this contribution. Files and links are removed only when they are still what was made: a link someone
-    /// re-pointed, or a folder that is no longer where it was, is left alone.
-    pub fn dispose(&self) -> Result<(), String> {
+    /// re-pointed, or a folder that is no longer where it was, is left alone. A recorded path outside the host's own
+    /// folders (a registry edited by hand, say) is refused, never removed.
+    pub fn dispose(&self, host: &Host) -> Result<(), String> {
         match self {
             Contribution::Files { path }
             | Contribution::Data { path }
-            | Contribution::ClaudeShim { path } => fsutil::remove_tree(Path::new(path)),
+            | Contribution::ClaudeShim { path } => {
+                let path = Path::new(path);
+                if !strictly_inside(path, &host.root) {
+                    return Err(format!(
+                        "{} isn't in the plugin folder, so it was left alone.",
+                        path.display()
+                    ));
+                }
+                fsutil::remove_tree(path)
+            }
             Contribution::SkillLink { path, target, .. } => {
-                fsutil::remove_link_if_points_to(Path::new(path), Path::new(target))
+                let path = Path::new(path);
+                if path.parent() != Some(host.agents_skills.as_path())
+                    || !strictly_inside(path, &host.agents_skills)
+                {
+                    return Err(format!(
+                        "{} isn't in the skills folder, so it was left alone.",
+                        path.display()
+                    ));
+                }
+                fsutil::remove_link_if_points_to(path, Path::new(target))
             }
             Contribution::Skill { .. }
             | Contribution::McpServer { .. }
@@ -151,6 +170,27 @@ impl Contribution {
     fn lasts_while_installed(&self) -> bool {
         matches!(self, Contribution::Files { .. } | Contribution::Data { .. })
     }
+}
+
+/// `path` lies below `dir` (not `dir` itself) and has no `..` in it.
+fn strictly_inside(path: &Path, dir: &Path) -> bool {
+    path != dir
+        && path.starts_with(dir)
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// A project folder as the registry keeps it: absolute, links resolved. An empty or relative path is refused, since
+/// it would match nothing (or, worse, everything).
+pub fn project_key(project: &str) -> Result<String, String> {
+    let path = Path::new(project);
+    if project.trim().is_empty() || !path.is_absolute() {
+        return Err(format!(
+            "\"{project}\" isn't a project folder (it needs a full path)."
+        ));
+    }
+    Ok(fsutil::display(&fsutil::resolved(path)))
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
@@ -175,11 +215,14 @@ impl Entry {
     }
 
     fn project_match(&self, cwd: &Path) -> bool {
+        if !cwd.is_absolute() {
+            return false;
+        }
         let cwd = fsutil::resolved(cwd);
-        self.enabled
-            .projects
-            .iter()
-            .any(|project| cwd.starts_with(fsutil::resolved(Path::new(project))))
+        self.enabled.projects.iter().any(|project| {
+            let project = Path::new(project);
+            project.is_absolute() && cwd.starts_with(fsutil::resolved(project))
+        })
     }
 
     pub fn mcp_servers(&self) -> impl Iterator<Item = &str> {
@@ -239,9 +282,12 @@ pub fn read(host: &Host) -> Result<Registry, String> {
 
 fn write(host: &Host, registry: &mut Registry) -> Result<(), String> {
     registry.version = REGISTRY_VERSION;
-    registry
-        .created_dirs
-        .retain(|dir| !fsutil::remove_dir_if_empty(Path::new(dir)));
+    // Only folders on the way to the skills folder were ever recorded; anything else is dropped, not removed.
+    let skills = host.agents_skills.clone();
+    registry.created_dirs.retain(|dir| {
+        let dir = Path::new(dir);
+        skills.starts_with(dir) && !fsutil::remove_dir_if_empty(dir)
+    });
     for sub in ["installed", "data", "claude", "agents-skills"] {
         fsutil::remove_dir_if_empty(&host.root.join(sub));
     }
@@ -277,10 +323,12 @@ pub fn install_local(host: &Host, source_dir: &Path, source: Source) -> Result<O
     }
     let target = host.installed(&name);
     if std::fs::symlink_metadata(&target).is_ok() {
-        return Err(format!(
-            "A folder for \"{name}\" is already there; remove it first: {}",
-            target.display()
-        ));
+        // Not in the registry, so an install that stopped part way left it: it is the registry's own to clear.
+        fsutil::remove_tree(&target).map_err(|why| {
+            format!(
+                "An unfinished install of \"{name}\" is in the way and couldn't be cleared: {why}"
+            )
+        })?;
     }
     let staging = host
         .root
@@ -360,8 +408,9 @@ pub fn enable(host: &Host, name: &str, scope: &Scope) -> Result<Outcome, String>
     match scope {
         Scope::Global => entry.enabled.global = true,
         Scope::Project(project) => {
-            if !entry.enabled.projects.contains(project) {
-                entry.enabled.projects.push(project.clone());
+            let project = project_key(project)?;
+            if !entry.enabled.projects.contains(&project) {
+                entry.enabled.projects.push(project);
             }
         }
     }
@@ -381,13 +430,24 @@ pub fn enable(host: &Host, name: &str, scope: &Scope) -> Result<Outcome, String>
         Ok(())
     })();
     if let Err(why) = result {
-        dispose_all(made.iter().rev());
+        dispose_all(host, made.iter().rev());
         let _ = write(host, &mut registry);
         return Err(why);
     }
-    entry.contributions.extend(made);
-    registry.plugins.insert(name.to_string(), entry.clone());
-    write(host, &mut registry)?;
+    let before = registry.plugins.get(name).cloned();
+    let mut updated = entry.clone();
+    updated.contributions.extend(made.iter().cloned());
+    registry.plugins.insert(name.to_string(), updated.clone());
+    if let Err(why) = write(host, &mut registry) {
+        // Nothing recorded them, so nothing may be left: undo what was just made.
+        dispose_all(host, made.iter().rev());
+        if let Some(before) = before {
+            registry.plugins.insert(name.to_string(), before);
+        }
+        let _ = write(host, &mut registry);
+        return Err(why);
+    }
+    let entry = updated;
     Ok(Outcome {
         entry: Some(entry),
         reports,
@@ -400,7 +460,7 @@ fn activate(host: &Host, loaded: &LoadedPlugin) -> Result<Vec<Contribution>, Str
     let mut made = Vec::new();
     if !loaded.skills.is_empty() {
         let shim = host.claude_shim(name);
-        fsutil::make_claude_shim(&shim, &loaded.root.join("skills"), &loaded.manifest)?;
+        fsutil::make_claude_shim(&shim, &loaded.root, &loaded.skills, &loaded.manifest)?;
         made.push(Contribution::ClaudeShim {
             path: fsutil::display(&shim),
         });
@@ -485,7 +545,7 @@ fn link_skills(
             continue;
         }
         if let Err(why) = fsutil::link_dir(&target, &link) {
-            dispose_all(made.iter().rev());
+            dispose_all(host, made.iter().rev());
             return Err(why);
         }
         made.push(Contribution::SkillLink {
@@ -497,8 +557,13 @@ fn link_skills(
     Ok(made)
 }
 
-fn dispose_all<'a>(contributions: impl Iterator<Item = &'a Contribution>) -> Vec<String> {
-    contributions.filter_map(|c| c.dispose().err()).collect()
+fn dispose_all<'a>(
+    host: &Host,
+    contributions: impl Iterator<Item = &'a Contribution>,
+) -> Vec<String> {
+    contributions
+        .filter_map(|c| c.dispose(host).err())
+        .collect()
 }
 
 pub fn disable(host: &Host, name: &str, scope: &Scope) -> Result<Outcome, String> {
@@ -511,9 +576,14 @@ pub fn disable(host: &Host, name: &str, scope: &Scope) -> Result<Outcome, String
         .ok_or_else(|| format!("\"{name}\" isn't installed."))?;
     match scope {
         Scope::Global => entry.enabled.global = false,
-        Scope::Project(project) => entry.enabled.projects.retain(|p| p != project),
+        Scope::Project(project) => {
+            let project = project_key(project)?;
+            entry.enabled.projects.retain(|p| {
+                p != &project && fsutil::display(&fsutil::resolved(Path::new(p))) != project
+            });
+        }
     }
-    let failures = retire(&mut entry);
+    let failures = retire(host, &mut entry);
     registry.plugins.insert(name.to_string(), entry.clone());
     write(host, &mut registry)?;
     if !failures.is_empty() {
@@ -530,7 +600,7 @@ pub fn disable(host: &Host, name: &str, scope: &Scope) -> Result<Outcome, String
 
 /// Dispose what no longer applies: the skill links once it is off everywhere, the rest once it is off in every
 /// scope. Returns what couldn't be undone (those stay recorded so a retry can finish them).
-fn retire(entry: &mut Entry) -> Vec<String> {
+fn retire(host: &Host, entry: &mut Entry) -> Vec<String> {
     let global = entry.enabled.global;
     let any = entry.enabled.any();
     let mut failures = Vec::new();
@@ -542,7 +612,7 @@ fn retire(entry: &mut Entry) -> Vec<String> {
             _ => !any,
         };
         if goes {
-            if let Err(why) = contribution.dispose() {
+            if let Err(why) = contribution.dispose(host) {
                 failures.push(why);
                 kept.push(contribution);
             }
@@ -563,8 +633,8 @@ pub fn uninstall(host: &Host, name: &str) -> Result<Outcome, String> {
         .remove(name)
         .ok_or_else(|| format!("\"{name}\" isn't installed."))?;
     entry.enabled = Enablement::default();
-    let mut failures = retire(&mut entry);
-    failures.extend(dispose_all(entry.contributions.iter().rev()));
+    let mut failures = retire(host, &mut entry);
+    failures.extend(dispose_all(host, entry.contributions.iter().rev()));
     if failures.is_empty() {
         write(host, &mut registry)?;
         return Ok(Outcome {

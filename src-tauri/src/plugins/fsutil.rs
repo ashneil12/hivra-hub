@@ -3,7 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
-use super::manifest::Manifest;
+use super::manifest::{Manifest, PluginSkill};
 
 pub fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
@@ -31,8 +31,16 @@ pub fn resolved(path: &Path) -> PathBuf {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    use std::io::Write;
     let tmp = path.with_extension(format!("tmp-{}", std::process::id()));
-    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    let written = std::fs::File::create(&tmp).and_then(|mut file| {
+        file.write_all(bytes)?;
+        file.sync_all()
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.to_string());
+    }
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         e.to_string()
@@ -122,10 +130,17 @@ pub fn remove_link_if_points_to(link: &Path, target: &Path) -> Result<(), String
 /// (Agent Plugins §4.1), and copied as what it points to. Anything else is left out.
 pub fn copy_plugin_tree(root: &Path, to: &Path) -> Result<(), String> {
     let root = canonical(root).map_err(|e| e.to_string())?;
-    copy_dir(&root, &root, to)
+    let mut seen = std::collections::HashSet::from([root.clone()]);
+    copy_dir(&root, &root, to, &mut seen)
 }
 
-fn copy_dir(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
+/// `seen` holds every real folder copied so far, so links between folders (siblings included) can't loop.
+fn copy_dir(
+    root: &Path,
+    from: &Path,
+    to: &Path,
+    seen: &mut std::collections::HashSet<PathBuf>,
+) -> Result<(), String> {
     std::fs::create_dir_all(to).map_err(|e| format!("{} couldn't be made: {e}", to.display()))?;
     let entries =
         std::fs::read_dir(from).map_err(|e| format!("{} can't be read: {e}", from.display()))?;
@@ -143,10 +158,10 @@ fn copy_dir(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
         }
         let dest = to.join(&name);
         if real.is_dir() {
-            if real == root || from.starts_with(&real) {
-                continue; // a link back up the tree
+            if !seen.insert(real.clone()) {
+                continue; // a folder already copied: a link back up the tree or across to a sibling
             }
-            copy_dir(root, &real, &dest)?;
+            copy_dir(root, &real, &dest, seen)?;
         } else if real.is_file() {
             std::fs::copy(&real, &dest)
                 .map_err(|e| format!("{} couldn't be copied: {e}", path.display()))?;
@@ -155,10 +170,16 @@ fn copy_dir(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// A Claude Code plugin folder that carries only the plugin's skills: `.claude-plugin/plugin.json` and a `skills`
-/// link. Claude Code loads it with `--plugin-dir` for one session; nothing else of the plugin (hooks, agents, its own
-/// `.mcp.json`) comes along, so the plugin's MCP servers reach Claude only through the app's `--mcp-config`.
-pub fn make_claude_shim(dir: &Path, skills: &Path, manifest: &Manifest) -> Result<(), String> {
+/// A Claude Code plugin folder that carries only the plugin's checked skills: `.claude-plugin/plugin.json` and a
+/// `skills` folder with one link per skill that loaded (a skipped skill, say one with `hooks`, is not linked). Claude
+/// Code loads it with `--plugin-dir` for one session; nothing else of the plugin (hooks, agents, its own `.mcp.json`)
+/// comes along, so the plugin's MCP servers reach Claude only through the app's `--mcp-config`.
+pub fn make_claude_shim(
+    dir: &Path,
+    root: &Path,
+    skills: &[PluginSkill],
+    manifest: &Manifest,
+) -> Result<(), String> {
     remove_tree(dir)?;
     let meta = dir.join(".claude-plugin");
     std::fs::create_dir_all(&meta)
@@ -172,7 +193,15 @@ pub fn make_claude_shim(dir: &Path, skills: &Path, manifest: &Manifest) -> Resul
     }
     let result = std::fs::write(meta.join("plugin.json"), json.to_string())
         .map_err(|e| e.to_string())
-        .and_then(|_| link_dir(skills, &dir.join("skills")));
+        .and_then(|_| std::fs::create_dir_all(dir.join("skills")).map_err(|e| e.to_string()))
+        .and_then(|_| {
+            skills.iter().try_for_each(|skill| {
+                link_dir(
+                    &root.join(&skill.dir),
+                    &dir.join("skills").join(&skill.name),
+                )
+            })
+        });
     if result.is_err() {
         let _ = remove_tree(dir);
     }

@@ -408,11 +408,50 @@ fn discover_skills(root: &Path, reports: &mut Vec<Report>) -> Vec<PluginSkill> {
 
 /// The Agent Skills checks that matter for loading: frontmatter, a valid `name` equal to the folder, a
 /// `description` of 1-1024 characters.
+/// Frontmatter keys a skill-only plugin may not carry: Claude Code runs `hooks` as shell commands in the session, and
+/// `allowed-tools` pre-approves tools while the skill is in use. A plugin's skills are instructions, nothing more.
+const REFUSED_SKILL_KEYS: &[&str] = &["hooks", "allowed-tools", "allowed_tools", "allowedtools"];
+
+/// Why a skill's frontmatter asks for more than instructions, if it does. Forms that could smuggle a key in (a flow
+/// mapping, a `? key`, a `<<` merge) are refused as well.
+pub(crate) fn agent_power_problem(front: &str) -> Option<String> {
+    for line in front.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.len() != line.len() {
+            continue;
+        }
+        if trimmed.starts_with('{') || trimmed.starts_with('?') {
+            return Some("its frontmatter isn't plain \"key: value\" lines.".into());
+        }
+        let Some((key, _)) = trimmed.split_once(':') else {
+            continue;
+        };
+        let key = key
+            .trim()
+            .trim_matches(|c| c == '"' || c == '\'')
+            .to_ascii_lowercase();
+        if key == "<<" {
+            return Some("its frontmatter merges keys in with \"<<\".".into());
+        }
+        if REFUSED_SKILL_KEYS.contains(&key.as_str()) {
+            return Some(format!(
+                "it sets \"{key}\", which would let it run commands or approve tools; plugin skills can't."
+            ));
+        }
+    }
+    None
+}
+
 fn check_skill(skill_md: &Path, folder: &str) -> Result<(String, String), String> {
     let text = std::fs::read_to_string(skill_md)
         .map_err(|_| "SKILL.md isn't readable text.".to_string())?;
     let (name, description) =
         name_and_description(&text).ok_or("SKILL.md has no frontmatter block.")?;
+    if let Some((front, _)) = split_frontmatter(&text) {
+        if let Some(why) = agent_power_problem(front) {
+            return Err(why);
+        }
+    }
     if name.is_empty() {
         return Err("SKILL.md has no valid name.".into());
     }

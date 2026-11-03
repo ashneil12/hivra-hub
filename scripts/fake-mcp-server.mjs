@@ -9,6 +9,7 @@ const seen = {
   data: process.env.PLUGIN_DATA ?? null,
   cwd: process.cwd(),
   appToken: process.env.MONOCODE_APP_TOKEN ?? null,
+  anthropicToken: process.env.ANTHROPIC_AUTH_TOKEN ?? null,
 };
 
 createInterface({ input: process.stdin }).on("line", (line) => {
