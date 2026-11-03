@@ -1,10 +1,9 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // WP-03: Hivra has one layout (Classic; src/features/hub/model/hivraLayout.ts). The real app in a browser with the Hub
-// flag (hivra-layout.config.ts sets VITE_MONOCODE_HUB=1) reading the stub through its real transport, with Focused
+// flag (hivra-layout.config.ts sets VITE_MONOCODE_HUB=1) reading its own local store (WP-04: no Ash OS), with Focused
 // stored the way an earlier build or upstream's Settings left it: the app still opens in Classic, offers no layout
 // switch or invitation, and every main Hub screen renders there. Each screen is photographed.
 //
@@ -12,12 +11,6 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 
 const SHOTS = process.env.HIVRA_LAYOUT_PROOF_DIR ?? "test-results/hivra-layout";
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 async function shot(page: Page, name: string, engine: string) {
@@ -47,7 +40,7 @@ test("opens in Classic with Focused stored, and every main Hub screen renders th
   page.on("pageerror", (error) => errors.push(error.message));
   const engine = info.project.name;
 
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await expectClassic(page);
   // Classic's project rail and its sidebar, side by side.
@@ -60,7 +53,8 @@ test("opens in Classic with Focused stored, and every main Hub screen renders th
     ["Coding team", (p) => p.getByRole("main").getByRole("heading", { name: "EXO lead" })],
     ["Leadership team", (p) => p.getByPlaceholder("Message EXO's leadership team")],
     ["Builds & playtests", (p) => p.getByText("No builds of EXO yet.")],
-    ["Being built", (p) => p.getByText("Example: adding the air dodge").first()],
+    // WP-04: Being built reads the app's own delegations; with none it says so.
+    ["Being built", (p) => p.getByText(/Nobody's working on/).first()],
     ["Decisions", (p) => p.getByRole("region", { name: "Decisions" })],
     ["Pages", (p) => p.getByRole("region", { name: "Pages" })],
     ["Notes", (p) => p.getByRole("region", { name: "Notes" })],
