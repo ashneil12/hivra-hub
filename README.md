@@ -38,8 +38,9 @@ This list will grow.
 
 ## Status
 
-Early. The plan is still being worked out, so expect the code and this page to change a lot. Agents
-working in this repo should read [CLAUDE.md](CLAUDE.md) first.
+Early. Expect the code and this page to change a lot. The build plan, split into work packages for the
+agents that build it, is in [docs/hivra](docs/hivra/README.md). Agents working in this repo should read
+[CLAUDE.md](CLAUDE.md) first.
 
 ## Building
 
