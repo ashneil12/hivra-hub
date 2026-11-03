@@ -992,6 +992,7 @@ fn history_with_a_secret_in_an_old_commit_stays_behind() {
 
 /// A memory folder whose history holds `notes -> <somewhere else>`, and an export of it that carries files under
 /// `notes/`: restoring the history would check the link out and the files after it would be written through it.
+#[cfg(unix)]
 fn export_with_a_linked_memory_folder(source: &Env, outside: &Path, dest: &Path) {
     let dir = source.memory_root.join("evil");
     fs::create_dir_all(&dir).unwrap();
@@ -1017,6 +1018,7 @@ fn export_with_a_linked_memory_folder(source: &Env, outside: &Path, dest: &Path)
 }
 
 /// Everything in `dir`, as name → text.
+#[cfg(unix)]
 fn folder_texts(dir: &Path) -> BTreeMap<String, String> {
     fs::read_dir(dir)
         .unwrap()
@@ -1030,6 +1032,7 @@ fn folder_texts(dir: &Path) -> BTreeMap<String, String> {
         .collect()
 }
 
+#[cfg(unix)]
 #[test]
 fn memory_never_lands_outside_its_folder_through_a_link() {
     let source_dir = TestDir::new("source");

@@ -1863,7 +1863,9 @@ pub fn report_main(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use crate::fs::git_checked;
-    use crate::project_file::tests::{commit, repo, temp};
+    #[cfg(unix)]
+    use crate::project_file::tests::repo;
+    use crate::project_file::tests::{commit, temp};
 
     const NOW: u64 = 1_800_000_000_000;
 
