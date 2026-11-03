@@ -283,7 +283,7 @@ describe("a python script writing the soul file", () => {
     };
   }
   const pyWrite = (file: string, text: string) =>
-    execFileSync(python!, ["-c", "import sys; open(sys.argv[1], 'w').write(sys.argv[2])", file, text]);
+    execFileSync(python!, ["-c", "import sys; open(sys.argv[1], 'w', newline='').write(sys.argv[2])", file, text]);
 
   it.skipIf(!python)("during a worker's run is put back; with nothing running it is kept as Ash's", async () => {
     const root = mkdtempSync(join(tmpdir(), "soul-tamper-"));

@@ -1,5 +1,12 @@
+# Everything is checked out with LF: tests read source files and ?raw templates and expect LF, so a
+# Windows checkout must not turn them into CRLF. The rules below are more specific and win.
+* text=auto eol=lf
+
 # Shell scripts are also embedded in the desktop app and sent to Unix hosts.
 *.sh text eol=lf
 
 # Signature verification requires identical package bytes on every platform.
 crates/monocode-core/src/app_update/fixtures/package.txt text eol=lf
+
+# Upstream ships this one with a few CRLF lines (54 of 9,100); keep its bytes as they are.
+crates/monocode-gpui/assets/native-editor.LICENSE.txt -text

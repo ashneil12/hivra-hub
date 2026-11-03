@@ -397,7 +397,8 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     });
 
     it("a path with spaces (and EXO's '?'): found when it is there, the old folder kept when it isn't", async () => {
-      const spaced = join(root, "boxin game?", "vg game moved");
+      // Windows can't name a folder with "?", so there it is only the spaces.
+      const spaced = join(root, process.platform === "win32" ? "boxin game" : "boxin game?", "vg game moved");
       mkdirSync(spaced, { recursive: true });
       const found = swap(exo, "exo-spaced", spaced);
       expect((await found.run()).refreshed).toEqual(["exo-spaced"]);
