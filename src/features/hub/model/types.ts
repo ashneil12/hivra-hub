@@ -62,7 +62,7 @@ export type Need = {
   word?: string;
   /** Set for a Need that is a job's (target `job:<id>`): See options opens the job's sheet. */
   jobId?: string;
-  /** A "Looks right" row: the one action is to mark it seen (`ash-hub-need-seen`). */
+  /** A "Looks right" row: the one action is to mark it seen (`need-seen`). */
   canMarkSeen?: boolean;
 };
 
@@ -108,7 +108,7 @@ export type HubJob = {
 /** Jobs grouped under the Mono running them, in the order Ash OS lists them (it never re-sorts). */
 export type HubJobGroup = { leadId: string | null; leadName: string; projectId: string; jobs: HubJob[] };
 
-/** A question Ash is asked (`ash-hub-question`). Most have no options: then the recommendation and the quick answers. */
+/** A question Ash is asked (`question`). Most have no options: then the recommendation and the quick answers. */
 export type HubQuestion = {
   /** The Needs row id (`q:<question id>`), which both calls take. */
   id: string;
@@ -180,7 +180,7 @@ export type HubMono = {
 };
 
 /**
- * One section of the Today board, as Ash OS keeps it (`ash-hub-layout`): the shipped board unless a change moved it.
+ * One section of the Today board, as Ash OS keeps it (`layout`): the shipped board unless a change moved it.
  * `latest-build` and `latest-page` are a project's own cards, drawn from that project's builds and kept pages; Ash
  * OS's board never sends them.
  */
@@ -197,7 +197,7 @@ export const TODAY_DEFAULT: readonly TodaySection[] = [
 /** One side of a change's comparison: the hub as it is (`now`) or with the change (`preview`). */
 export type HubChangeSide = { image?: string; sections: { title: string; rows: string[] }[] };
 export type HubChangeState = "preview" | "applied" | "undone" | "discarded";
-/** A Change the hub / Edit Today change from Ash OS's history (`ash-hub-changes`), newest first. Never deleted. */
+/** A Change the hub / Edit Today change from Ash OS's history (`changes`), newest first. Never deleted. */
 export type HubChangeRecord = {
   previewId: string;
   title: string;
@@ -235,7 +235,7 @@ export interface HubDataSource {
   listOlder(projectId?: string): Need[];
   /**
    * Sweep the old question queue: close every open older question asked more than `olderThanDays` ago (one project's
-   * when given). Their asks are parked, never dropped. Live source only (`ash-hub-older-dismiss`).
+   * when given). Their asks are parked, never dropped. Live source only (`older-dismiss`).
    */
   dismissOlder?(olderThanDays: number, projectId?: string): Promise<OlderDismissed>;
   /** Mark a Looks-right row seen. Live source only. */
@@ -258,9 +258,9 @@ export interface HubDataSource {
   markJobsSeen?(jobIds: string[]): void;
   listStuck(projectId?: string): StuckItem[];
   listMonos(projectId?: string): HubMono[];
-  /** The Today board's sections in order (`ash-hub-layout`). Undefined until Ash OS has said (draw the shipped board). */
+  /** The Today board's sections in order (`layout`). Undefined until Ash OS has said (draw the shipped board). */
   todayLayout?(): TodaySection[] | undefined;
-  /** Change the hub / Edit Today history, newest first (`ash-hub-changes`). Live source only. */
+  /** Change the hub / Edit Today history, newest first (`changes`). Live source only. */
   listChanges?(): HubChangeRecord[];
 }
 

@@ -12,7 +12,7 @@
 //   waiting   -> swapping      the app quit (its data folder's lock came free); or -> cancelled (refused, too long)
 //   swapping  -> trial         database files and monos/ backed up, old app renamed to previous.app.off, the staged
 //                              build moved into place and opened
-//   trial     -> committed     the new build wrote committed.json (window, database and hub bridge up)
+//   trial     -> committed     the new build wrote committed.json (window and database up)
 //   trial     -> rolling-back  it didn't show up in running.json within 30 s, didn't commit within 120 s, or exited
 //   rolling-back -> rolled-back  stopped the verified new process, put the old app and the database copy back, reopened
 //

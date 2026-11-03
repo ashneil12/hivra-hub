@@ -2,13 +2,11 @@
 // `npm run hub:dev`: a dev copy of MonoCode Hub for this worktree, in its own slot (Phase 1b WP2,
 // docs/PHASE-1B-DEV-SETUP.md).
 //
-//   npm run hub:dev                      # this worktree's slot, invented Ash OS data (the stub)
-//   npm run hub:dev -- --hub live        # the real Ash OS, read-only (scripts/hub-live-proxy.mjs)
-//   npm run hub:dev -- --hub off         # no Ash OS at all
+//   npm run hub:dev                      # this worktree's slot
 //   npm run hub:dev -- --seed            # first copy a cleaned backup of the daily chats in (scripts/hub-seed-dev.mjs)
 //   npm run hub:dev -- --background      # never take focus (the default with no terminal, e.g. an agent); --foreground to override
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
-//   npm run hub:dev -- --memory <dir>    # read Ash OS project memory from <dir> for Export (default: the slot's own
+//   npm run hub:dev -- --memory <dir>    # read project memory from <dir> for Export (default: the slot's own
 //                                        # <data>/agent-memory; the app never writes the real ~/agent-memory from a dev copy)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
@@ -16,7 +14,7 @@
 // What a slot is. The identifier `com.ash.monocode-hub.dev.<slot>` is compiled into the dev copy, and Tauri keys
 // every folder off it (`~/Library/Application Support/<identifier>`, its WebKit storage, its logs), so each slot has
 // its own data. src-tauri/src/instance.rs reads the kind of copy from the same identifier: a dev copy never reaches the
-// daily app's chats, Keychain items, Claude config or the live Ash OS.
+// daily app's chats, Keychain items or Claude config.
 //
 // - Slot name: the worktree folder's name, as a-z0-9 and dashes (1-48 characters). If another worktree that still
 //   exists already uses that name, a 4-character hash of this worktree's path is added. The choice is remembered in
@@ -27,8 +25,8 @@
 //   the base devCsp in tauri.conf.json only allows port 1420.
 // - Rust build cache: CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build, shared by every worktree.
 //   Each worktree keeps its own target/ for the final binary and bundle, so builds never overwrite each other's app.
-// - Ash OS: the dev copy only talks to a server this script starts on a free port (the stub or the read-only proxy),
-//   through MONOCODE_HUB_PORT and MONOCODE_HUB_TOKEN_FILE. That token is a throwaway, never the live key.
+// - Hub data: the dev copy keeps its projects, Monos per project and Pages in its own database (WP-04 retired the
+//   Ash OS bridge, its stub and its read-only live proxy). Nothing outside the slot is read.
 //
 // Never the daily identity: every identifier this script builds is checked against src-tauri/src/instance.rs's kind
 // table (scripts/hub-bundle.mjs) before anything starts. Tests: scripts/hub-dev-loop.test.cjs.
@@ -56,7 +54,6 @@ export const DEV_HOME = ".monocode-hub-dev";
 export const REGISTRY_FILE = "slots.json";
 /** Under the home folder: cargo's intermediate build output, shared by every worktree. */
 export const SHARED_BUILD_DIR = "Library/Caches/monocode-hub/cargo-build";
-export const HUB_MODES = ["stub", "live", "off"];
 
 const SLOT_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,46}[a-z0-9])?$/;
 
@@ -332,7 +329,7 @@ export function tauriArgs(slotConfigFile, extra = [], root = ROOT) {
 }
 
 /** The environment `tauri dev` (and so cargo, vite and the app) runs with. */
-export function devEnvironment({ slot, hub, memory, background = false, home = os.homedir(), env = process.env }) {
+export function devEnvironment({ slot, memory, background = false, home = os.homedir(), env = process.env }) {
   const next = { ...env };
   // Whatever an enclosing dev copy or shell set is not this slot's: least of all the app and control credentials of a
   // chat in the daily app that ran hub:dev (control.rs `configure_child` hands them to that chat only).
@@ -349,10 +346,6 @@ export function devEnvironment({ slot, hub, memory, background = false, home = o
   next.CARGO_BUILD_BUILD_DIR = path.join(home, SHARED_BUILD_DIR);
   // The dev wrapper bundle's name (src-tauri/src/macos.rs): one per slot, so two slots never share an Info.plist.
   next.MONOCODE_DEV_APP_NAME = `${DEV_PRODUCT} ${slot}`;
-  if (hub) {
-    next.MONOCODE_HUB_PORT = String(hub.port);
-    next.MONOCODE_HUB_TOKEN_FILE = hub.tokenFile;
-  }
   // Only on request (--memory): where Export reads the project memory (src-tauri/src/portable.rs).
   if (memory) next.MONOCODE_HUB_MEMORY_ROOT = path.resolve(memory);
   // An accessory app that never takes focus (src-tauri/src/lib.rs), so an agent's test copy stays out of Ash's way.
@@ -418,34 +411,6 @@ export function registerSlot(plan, home = os.homedir()) {
       updatedAt: new Date().toISOString(),
     };
   });
-}
-
-/** Start the slot's Ash OS stand-in on a free port. Returns {port, tokenFile, label, close} or null for "off". */
-export async function startHubBridge(mode, tokenFile) {
-  if (mode === "off") return null;
-  fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
-  if (mode === "stub") {
-    const { startStub } = await import("./hub-stub-server.mjs");
-    // MONOCODE_HUB_STUB_SCENARIO adds invented scenarios to look at: "jobs", "questions" (the retired question queue).
-    const scenario = process.env.MONOCODE_HUB_STUB_SCENARIO ?? "";
-    const stub = await startStub({
-      port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex"), jobs: /\bjobs\b/.test(scenario), questions: /\bquestions\b/.test(scenario),
-      // MONOCODE_HUB_STUB_PROJECTS: a folder of throwaway repos for the invented projects, so coding-team chats can start.
-      projectsRoot: process.env.MONOCODE_HUB_STUB_PROJECTS || null,
-    });
-    return { port: stub.port, tokenFile, label: `stub on 127.0.0.1:${stub.port} (invented data)`, close: () => stub.close() };
-  }
-  if (mode === "live") {
-    const { startLiveProxy } = await import("./hub-live-proxy.mjs");
-    const proxy = await startLiveProxy({ port: 0, clientTokenFile: tokenFile });
-    return {
-      port: proxy.port,
-      tokenFile,
-      label: `read-only proxy to the live Ash OS on 127.0.0.1:${proxy.port}`,
-      close: () => proxy.close(),
-    };
-  }
-  throw new Error(`--hub must be one of ${HUB_MODES.join(", ")}`);
 }
 
 // ---- stopping ----------------------------------------------------------------------------------------------------------------
@@ -546,7 +511,6 @@ export function parseArgs(argv) {
   };
   const options = {
     slot: value("slot"),
-    hub: value("hub") ?? "stub",
     // --replace is what the seed's own refusal tells you to pass, so it works here too
     seed:
       own.includes("--seed") ||
@@ -559,7 +523,7 @@ export function parseArgs(argv) {
     background: own.includes("--background") || (!own.includes("--foreground") && !process.stdout.isTTY),
     extra,
   };
-  if (!HUB_MODES.includes(options.hub)) throw new Error(`--hub must be one of ${HUB_MODES.join(", ")}`);
+  if (own.includes("--hub")) throw new Error("--hub is gone: the dev copy keeps its hub data itself (WP-04)");
   return options;
 }
 
@@ -569,7 +533,7 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const plan = await planSlot({ requested: options.slot });
   if (options.print) {
-    console.log(JSON.stringify({ ...plan, hub: options.hub }, null, 2));
+    console.log(JSON.stringify(plan, null, 2));
     return 0;
   }
   // I8: at most once a day, reap what earlier runs left behind (scripts/hub-doctor.mjs). Imported here because the
@@ -596,13 +560,11 @@ async function main() {
   }
   registerSlot(plan);
   writeSlotConfig(plan);
-  const bridge = await startHubBridge(options.hub, plan.tokenFile);
 
   console.log(`hub:dev  slot ${plan.slot} (${plan.reason}${plan.clashWith ? `: ${tilde(plan.clashWith)} has the plain name` : ""})`);
   console.log(`  identifier  ${plan.identifier}`);
   console.log(`  data        ${tilde(plan.dataDir)}`);
   console.log(`  vite        http://localhost:${plan.port}`);
-  console.log(`  ash os      ${bridge ? bridge.label : "off"}`);
   console.log(`  rust cache  ${tilde(plan.buildDir)}`);
   if (options.memory) console.log(`  memory      ${tilde(path.resolve(options.memory))} (read for Export)`);
   console.log(`  config      ${path.relative(ROOT, plan.configFile)}`);
@@ -611,7 +573,7 @@ async function main() {
   const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
     cwd: ROOT,
     stdio: "inherit",
-    env: devEnvironment({ slot: plan.slot, hub: bridge, memory: options.memory, background: options.background }),
+    env: devEnvironment({ slot: plan.slot, memory: options.memory, background: options.background }),
   });
   const signalled = new Map();
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
@@ -629,8 +591,7 @@ async function main() {
     const left = await sweep([...signalled.values()]);
     if (left.length) console.error(`hub:dev: stopped what was still running: ${left.map(({ pid }) => pid).join(", ")}`);
   }
-  await bridge?.close();
-  // I8: this run's own scratch goes now: its generated config, its throwaway token and, when the main checkout already
+  // I8: this run's own scratch goes now: its generated config, a throwaway token an older run left and, when the main checkout already
   // has the branch, its target/. Never its data folder, its registry entry or the worktree.
   try {
     const { reapRun } = await import("./hub-doctor.mjs");

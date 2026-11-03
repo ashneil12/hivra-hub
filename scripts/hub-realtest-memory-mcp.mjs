@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The real-Claude bench's stand-in for Ash OS's memory tools (scripts/hub-realtest.mjs, docs/REALTEST.md). A dev copy's
-// chats have no ash-os server (src-tauri/src/harness.rs strips every MCP server but the app's own delegate tool, and the
+// chats have no memory server (src-tauri/src/harness.rs strips every MCP server but the app's own delegate tool, and the
 // stub has no memory), so the bench's `claude` wrapper (scripts/hub-realtest-claude.mjs) adds this one to each real chat
 // it starts. It keeps the run's own invented memory in REALTEST_MEMORY_DIR, never ~/agent-memory:
 //
@@ -101,7 +101,7 @@ rl.on("line", (line) => {
   }
   const { id, method, params } = message;
   if (method === "initialize")
-    send({ jsonrpc: "2.0", id, result: { protocolVersion: params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "ash-os", version: "realtest" } } });
+    send({ jsonrpc: "2.0", id, result: { protocolVersion: params?.protocolVersion ?? "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "memory", version: "realtest" } } });
   else if (method === "tools/list") send({ jsonrpc: "2.0", id, result: { tools: TOOLS } });
   else if (method === "tools/call") {
     try {

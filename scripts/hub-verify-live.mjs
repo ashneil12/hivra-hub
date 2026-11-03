@@ -13,7 +13,7 @@
 //   4. the worker's report wakes the Lead;
 //   5. the Lead's Claude transcript is deleted while the app is down: it starts fresh from its brief;
 //   6. the app is killed under the Lead's turn again and again: it resumes three times, then stops in Needs you.
-//   Then double delegation, in one more launch with a second plan: Ash OS (the stub) lists a scratch project, so the hub
+//   Then double delegation, in one more launch with a second plan: the plan lists a scratch project, so the hub
 //   makes that project's Lead and ties its built-in leadership team to it, and the kickoff goes to Chief of Staff, which
 //   briefs the Lead with `delegate_task {lead}`:
 //   7. the Lead's worker asks a question (AskUserQuestion): it reaches the Lead as a [MonoCode question] turn, not
@@ -34,7 +34,7 @@
 //   12. one more restart repeats nothing: no brief twice, no /goal again, no goal back.
 //   Then coding with a Lead (Ash, 20 Oct: "a good chat and delegate if needed ... and still chat"), on a fourth plan:
 //   Chief of Staff briefs the Verify lead, which hands the API and the UI to two workers and says it is done, and Ash
-//   writes to the Lead through his own path (the stub's ash-hub-verify-messages, sent by the window as he types):
+//   writes to the Lead through his own path (the plan's messages file, sent by the window as he types):
 //   13. the Lead's "done" while both workers run gets one "Still running: 2" note and the brief stays open;
 //   14. Ash's message to the Lead while both workers run is answered within one turn;
 //   15. the API worker's report reaches the Lead while the UI still runs, saying "1 of 2 back";
@@ -44,7 +44,7 @@
 //   17b. the Lead asks Ash a question (AskUserQuestion) and he types his answer in its chat, as he would: his words are
 //       the question's answer in place, never a message queued behind it (the realtest baseline's Lead sat 20+ min).
 //   Then the room (docs/leadership/ROOM.md), in the same launch: Ash writes in the Verify project's Leadership team the
-//   way he types there (a room message from the stub):
+//   way he types there (a room message from the messages file):
 //   18. the host answers him first, then the Monos hand off among themselves by naming each other (round, flag,
 //       retake, "pass from me") until nobody is named, with no digest; every message is a row in the app database,
 //       and each Mono's own chat shows its room turns as quiet lines;
@@ -74,7 +74,7 @@
 //
 // Never the daily app or its data: the copy is a dev slot (its identifier is checked against instance.rs's kind
 // table), HOME is a temporary folder (the app keeps its data, WebKit storage and Claude config there, and only then
-// reads the verify plan: src-tauri/src/verify_live.rs), Ash OS is the in-process stub with a throwaway token, and
+// reads the verify plan: src-tauri/src/verify_live.rs), the hub's projects and Ash's mid-run messages come from the plan (WP-04 retired Ash OS), and
 // Claude is the fake. Nothing here reads ~/Library/Application Support/com.ash.monocode-hub, ~/.claude or ~/Applications.
 //
 //   npm run hub:verify-live                      # build this worktree's verify slot, then walk
@@ -135,7 +135,7 @@ export const KICKOFF = "VERIFY-LEAD-KICKOFF";
 export const WORKER = "VERIFY-WORKER";
 export const QUEUED = "VERIFY-QUEUED-BRIEF";
 export const CONTINUE = "Continue from where you left off";
-/** Double delegation (checks 7 and 8): the built-in team Mono the second plan's kickoff opens, and the stub's project. */
+/** Double delegation (checks 7 and 8): the built-in team Mono the second plan's kickoff opens, and the plan's project. */
 export const TEAM_MONO = "chief-of-staff";
 export const TREE_PROJECT = { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket" };
 export const TREE_LEAD = "verify";
@@ -1138,7 +1138,17 @@ async function main() {
     if (options.failGate && checks.some((check) => check.status === "fail")) throw new Halt();
   };
   const children = [];
-  let stub = null;
+  let messagesFile = null;
+  const messages = [];
+  /** Ash's messages for the window (verify_live_messages reads the file; it sends each once). */
+  const sendMessages = (...list) => {
+    messages.push(...list);
+    fs.writeFileSync(messagesFile, `${JSON.stringify(messages, null, 2)}\n`);
+  };
+  /** Hub projects the copy's local store starts with (verify_live.rs `projects`), added once per launch. */
+  const benchProjects = [];
+  const writePlan = (next) =>
+    fs.writeFileSync(planFile, `${JSON.stringify({ ...next, messages: messagesFile, ...(benchProjects.length ? { projects: benchProjects } : {}) }, null, 2)}\n`);
   let app = null;
   let launches = 0;
   let slot;
@@ -1169,10 +1179,9 @@ async function main() {
         // gone
       }
     }
-    await stub?.close().catch(() => undefined);
   };
   // However the run ends (it returns, it throws, even while setting up, or it is killed with SIGINT/SIGTERM): the copy,
-  // the build, vite and the stub stop, the database is kept as evidence and the temporary HOME goes (unless --keep).
+  // the build and vite stop, the database is kept as evidence and the temporary HOME goes (unless --keep).
   const ending = cleanupOnExit(
     async () => {
       // Pass or fail: archive and remove what this run made (only its own ids, through the window's own Archive and
@@ -1248,7 +1257,8 @@ async function main() {
       autoResume: true,
       kickoff: { project, monoName: "Verify Lead", prompt: `${KICKOFF} run ${id}: delegate the verify worker, then wait for its report.` },
     };
-    fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
+    messagesFile = path.join(scratch, "verify-messages.json");
+    writePlan(plan);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`);
   } catch (error) {
     await ending.finish();
@@ -1286,7 +1296,7 @@ async function main() {
       throw new Error(`the built copy is ${version.identifier} (${version.kind}), not ${slot.identifier}`);
     log(`built ${version.identifier} at ${version.stamp?.branch} @ ${String(version.stamp?.sha).slice(0, 7)}${version.stamp?.dirty ? "-dirty" : ""}`);
 
-    // -- vite and the Ash OS stub ----------------------------------------------------------------------------------------
+    // -- vite ------------------------------------------------------------------------------------------------------------
     const viteLog = fs.openSync(path.join(evidence, "vite.log"), "w");
     const vite = spawn(path.join(ROOT, "node_modules/.bin/vite"), [], {
       cwd: ROOT,
@@ -1302,10 +1312,6 @@ async function main() {
       }
     }, 60_000);
     if (!served) throw new Error(`vite never answered on port ${slot.port} (see vite.log)`);
-    const { startStub } = await import("./hub-stub-server.mjs");
-    const tokenFile = path.join(home, ".monocode-hub-dev/slots", slot.slot, "hub-token");
-    fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
-    stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
 
     // -- the app -------------------------------------------------------------------------------------------------------
     const appEnv = Object.fromEntries(
@@ -1319,8 +1325,6 @@ async function main() {
       // An accessory app that never takes focus (src-tauri/src/lib.rs): the walk's launches stay out of Ash's way.
       MONOCODE_HUB_BACKGROUND: "1",
       MONOCODE_VERIFY_LIVE: planFile,
-      MONOCODE_HUB_PORT: String(stub.port),
-      MONOCODE_HUB_TOKEN_FILE: tokenFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       FAKE_CLAUDE_STATE: fake,
       FAKE_CLAUDE_SCENARIO: rulesFile,
@@ -1409,19 +1413,9 @@ async function main() {
     else
       fail("lead_delegated", "A Lead delegates (a stored H2 row)", `mark ${!!delegated}, call ${JSON.stringify(call?.response ?? null)}, rows ${JSON.stringify(rows)}`);
     const leadId = row?.owner_session;
-    // Delegations are the app's own rows since 21 Oct (src-tauri/src/delegations.rs, "No mirror"): every change bumps
-    // the row's version here, and Ash OS is never sent a copy. The walk pins that, so a copy reappearing on the stub
-    // (a half-restored mirror) is a failure rather than a silent change of contract.
-    const copied = row ? await until(() => stub.delegations.has(row.id), scale(5_000)) : false;
-    (copied ? fail : pass)(
-      "delegation_local",
-      "The delegation row stays in the app (no mirror to Ash OS)",
-      !row
-        ? "no row to check"
-        : copied
-          ? `the stub was sent ${row.id}, but delegations are the app's own rows since 21 Oct`
-          : `${row.id} is the app's row and the stub has no copy`,
-    );
+    // Delegations are the app's own rows since 21 Oct (src-tauri/src/delegations.rs, "No mirror"), and since WP-04 the
+    // app has no Ash OS to send a copy to at all.
+    (row ? pass : fail)("delegation_local", "The delegation row stays in the app (no mirror to Ash OS)", row ? `${row.id} is the app's row` : "no row to check");
 
     phase();
     // 2. The worker runs, with a subagent in the background, and its in-flight row says so.
@@ -1583,10 +1577,10 @@ async function main() {
     }
 
     phase();
-    // 7 and 8. Double delegation, in a fresh launch with a second plan. Ash OS (the stub) now lists a project on the
+    // 7 and 8. Double delegation, in a fresh launch with a second plan. The plan now lists a project on the
     // scratch folder, so the hub makes its Lead ("Verify lead") and ties the built-in team to it; the kickoff waits for
     // Chief of Staff to work on that folder and sends it the brief.
-    stub.state.projects.push({ ...TREE_PROJECT, folder: project, workOwner: "ash_os", status: "active" });
+    benchProjects.push({ id: TREE_PROJECT.id, name: TREE_PROJECT.name, folder: project });
     ledger.project = TREE_PROJECT.id;
     await kill("for the double-delegation plan");
     const treePlan = {
@@ -1601,7 +1595,7 @@ async function main() {
         prompt: `${TREE_KICKOFF} run ${id}: brief the Verify lead, then cancel that brief when told.`,
       },
     };
-    fs.writeFileSync(planFile, `${JSON.stringify(treePlan, null, 2)}\n`);
+    writePlan(treePlan);
     fs.writeFileSync(path.join(evidence, "plan-tree.json"), `${JSON.stringify(treePlan, null, 2)}\n`);
     await launch();
 
@@ -1825,7 +1819,7 @@ async function main() {
         prompt: `${DURABLE_KICKOFF} run ${id}: start the goal workers and brief the Verify lead.`,
       },
     };
-    fs.writeFileSync(planFile, `${JSON.stringify(durablePlan, null, 2)}\n`);
+    writePlan(durablePlan);
     fs.writeFileSync(path.join(evidence, "plan-durable.json"), `${JSON.stringify(durablePlan, null, 2)}\n`);
     await launch();
 
@@ -2075,7 +2069,7 @@ async function main() {
 
     phase();
     // 13 to 17. Coding with a Lead, on a fourth plan: Chief of Staff briefs the Verify lead, which starts two workers,
-    // and Ash writes to the Lead the way he types (the stub lists his messages; the window sends each once).
+    // and Ash writes to the Lead the way he types (the messages file lists them; the window sends each once).
     await kill("for the lead-flow plan");
     // This launch also reads the window (checks 22 and 23) through the driver the real-Claude bench uses
     // (verifyDriver.ts): its actions go into <driver>/inbox and its answers come back in <driver>/done.
@@ -2092,15 +2086,13 @@ async function main() {
         prompt: `${FLOW_KICKOFF} run ${id}: brief the Verify lead on the API and the UI.`,
       },
     };
-    fs.writeFileSync(planFile, `${JSON.stringify(flowPlan, null, 2)}\n`);
+    writePlan(flowPlan);
     fs.writeFileSync(path.join(evidence, "plan-flow.json"), `${JSON.stringify(flowPlan, null, 2)}\n`);
     await launch();
     /** Ash types into the Verify lead's chat: the window sends it within a second. Returns when it was listed. */
     const ashSays = (n, text) => {
-      stub.state.verifyMessages = [
-        ...(stub.state.verifyMessages ?? []),
-        { id: `flow-ash-${n}`, monoId: FLOW_LEAD_MONO, prompt: `${FLOW_ASH(n)} run ${id}: ${text}` },
-      ];
+      sendMessages({ id: `flow-ash-${n}`, monoId: FLOW_LEAD_MONO, prompt: `${FLOW_ASH(n)} run ${id}: ${text}` },
+      );
       return Date.now();
     };
     const busy = async (sessionId) => (await inFlight()).some((entry) => entry.session_id === sessionId);
@@ -2153,12 +2145,8 @@ async function main() {
         project,
       });
       const done = await act("cleanup", list, 90_000);
-      // The project this run listed goes from the stub too, so its sidebar group goes.
-      let projectDropped = null;
-      if (ledger.project && stub?.state?.projects) {
-        stub.state.projects = stub.state.projects.filter((entry) => entry.id !== ledger.project);
-        projectDropped = ledger.project;
-      }
+      // The project this run listed stays in the throwaway copy's local store; the temporary HOME goes with it.
+      const projectDropped = null;
       let leftovers = { sessions: list.sessions, monos: list.monos };
       await until(async () => {
         leftovers = teardownLeftovers(list, { rows: await rows(), windowMonos: await windowMonos() });
@@ -2421,10 +2409,8 @@ async function main() {
         rows.map((row) => ({ ...row, meta: JSON.parse(row.meta_json || "{}") })),
       );
     const ashInRoom = (n, text) => {
-      stub.state.verifyMessages = [
-        ...(stub.state.verifyMessages ?? []),
-        { id: `room-ash-${n}`, room: TREE_PROJECT.id, prompt: `${ROOM_ASH(n)}: ${text}` },
-      ];
+      sendMessages({ id: `room-ash-${n}`, room: TREE_PROJECT.id, prompt: `${ROOM_ASH(n)}: ${text}` },
+      );
       return Date.now();
     };
     const notesIn = async (kind) =>
@@ -2468,7 +2454,7 @@ async function main() {
 
     phase();
     // 19. frank works in its own chat; Ash asks the room; frank's room session answers in the room (its 1:1 untouched).
-    stub.state.verifyMessages = [...(stub.state.verifyMessages ?? []), { id: "room-busy", monoId: "frank", prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` }];
+    sendMessages({ id: "room-busy", monoId: "frank", prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` });
     const frankBusy = await waitMark("room-frank-busy", 60_000);
     const askSent = ashInRoom(2, "is the label in?");
     const cosAnswered2 = await waitMark("room-cos-answered-2", 60_000);
@@ -2553,12 +2539,10 @@ async function main() {
     else fail("live_activity_line", "The live line shows the step and its timer, with the MonoCode runner pinned right after the timer", JSON.stringify(liveVerdict.evidence));
 
     phase();
-    // 21. The coding team: Ash starts a new chat in the Verify project's coding team (the stub lists his message; the
+    // 21. The coding team: Ash starts a new chat in the Verify project's coding team (the messages file lists his message; the
     // window opens the coding team and starts the chat in the project's folder, as his New session there does).
-    stub.state.verifyMessages = [
-      ...(stub.state.verifyMessages ?? []),
-      { id: "ct-ash-1", codingTeam: TREE_PROJECT.id, prompt: `${CT_KICKOFF} run ${id}: have one worker check the verify widget.` },
-    ];
+    sendMessages({ id: "ct-ash-1", codingTeam: TREE_PROJECT.id, prompt: `${CT_KICKOFF} run ${id}: have one worker check the verify widget.` },
+    );
     const ctDelegated = await waitMark("ct-delegated", 60_000);
     const ctTask = savedCall("ct-task")?.response;
     const ctChild = ctTask?.result?.childSessionId ?? null;
@@ -2654,14 +2638,12 @@ async function main() {
     // 22 and 23. Teams, not sub-chats (Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it
     // should either do it itself or pick it up with the coding team ... something like coding team should be created for
     // that mono"). Ash makes a Mono of his own on the Verify project and asks it for a fix there and examples for him.
-    stub.state.verifyMessages = [
-      ...(stub.state.verifyMessages ?? []),
-      {
+    sendMessages({
         id: "mt-ash-1",
         newMono: { name: MT_MONO, project },
         prompt: `${MT_KICKOFF} run ${id}: the verify widget's copy is wrong, get it fixed, and find me three good examples.`,
       },
-    ];
+    );
     const mtDelegated = await waitMark("mt-delegated", 90_000);
     const mtLeadWorker = await waitMark("mt-lead-worker-started", 90_000);
     const mtOwnWorker = await waitMark("mt-own-started", 90_000);

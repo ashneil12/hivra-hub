@@ -1054,14 +1054,6 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
-    // The values behind the ash-os entry's `${MONOCODE_ASH_OS_*}` references in its --mcp-config (hub.rs), so
-    // they never go in argv. A dev copy's Claude gets none.
-    if binary_provider.as_deref() == Some("claude") && !dev_claude {
-        for (key, value) in crate::hub::live_ash_os_child_env() {
-            cmd.env(key, value);
-        }
-    }
-
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
     let pid = child.id();
@@ -4762,7 +4754,7 @@ mod dev_claude_tests {
     #[test]
     fn a_dev_copy_keeps_only_its_own_delegate_tool() {
         let config = serde_json::json!({ "mcpServers": {
-            "ash-os": { "command": "python3", "args": ["ash-os-mcp"], "env": { "ASH_ROLE": "lead" } },
+            "other-mcp": { "command": "python3", "args": ["other-mcp"], "env": { "ASH_ROLE": "lead" } },
             "monocode": monocode(OWN_EXE, "${MONOCODE_APP_TOKEN}"),
         }})
         .to_string();
@@ -4782,7 +4774,7 @@ mod dev_claude_tests {
             serde_json::json!({ "mcpServers": { "monocode": monocode(OWN_EXE, "${MONOCODE_APP_TOKEN}") } })
         );
         assert!(isolated.contains(&"mcp__monocode__*".into()));
-        assert!(!isolated.iter().any(|a| a.contains("ash-os")));
+        assert!(!isolated.iter().any(|a| a.contains("other-mcp")));
         assert_eq!(isolated.iter().filter(|a| *a == "--mcp-config").count(), 1);
         for wrong in [
             monocode("/usr/local/bin/other", "${MONOCODE_APP_TOKEN}"),
@@ -4838,7 +4830,7 @@ mod dev_claude_tests {
             "--settings",
             "{\"alwaysThinkingEnabled\":true,\"fastMode\":false,\"autoCompactWindow\":350000,\"statusLine\":{\"command\":\"x\"},\"apiKeyHelper\":\"y\"}",
             "--settings={\"ultracode\":true,\"env\":{\"A\":\"1\"}}",
-            "--mcp-config={\"mcpServers\":{\"ash-os\":{}}}",
+            "--mcp-config={\"mcpServers\":{\"other-mcp\":{}}}",
             "--strict-mcp-config",
             "--resume",
             "abc",
@@ -4878,7 +4870,7 @@ mod dev_claude_tests {
         );
         assert!(!isolated
             .iter()
-            .any(|a| a.contains("ash-os") || a.contains("project")));
+            .any(|a| a.contains("other-mcp") || a.contains("project")));
         assert!(isolated.contains(&"--setting-sources=user".into()));
     }
 

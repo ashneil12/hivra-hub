@@ -9,7 +9,7 @@ import { appIdentity } from "../../../app/model/appIdentity";
 import { listMonos } from "../../monos/model/mono";
 import { examplesOn } from "../../hub/model/examples";
 import { SHAPES } from "../../hub/model/hubProjects";
-import { tauriHubTransport } from "../../hub/model/hubTransport";
+import { appHubTransport } from "../../hub/model/localHub/localTransport";
 import { skillsOf } from "../../hub/model/setupSouls";
 import { parseSetup } from "../../hub/model/setupFile";
 import {
@@ -151,15 +151,13 @@ export function readImportText(name: string, text: string): PendingImport {
   return { name, path: null, doc: migrateV1(parseSetup(text)), inspection: null, fromV1: true, folders: {}, skillsHere: {} };
 }
 
-/** Registers a new project with Ash OS. A folder that is here is adopted where it is; none is ever made. */
+/** Registers a new project in the hub's local store. A folder that is here is adopted where it is; none is ever made. */
 async function registerProject(project: PortableProject, folderHere: boolean): Promise<boolean> {
   if (examplesOn()) return false;
-  await tauriHubTransport.call("ash-hub-project-create", {
+  await appHubTransport().call("project-create", {
     name: project.name,
     project_id: project.id,
-    one_line: "",
     folder: folderHere && project.folder ? project.folder : "",
-    code: folderHere && !!project.folder,
     short_name: project.shortName,
     ...(SHAPES.includes(project.iconShape) ? { icon_shape: project.iconShape } : {}),
   });

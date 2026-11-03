@@ -67,7 +67,7 @@ import {
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
-import { chatMonoOwner, hasAshOsTools, hasDelegateTool } from "../features/hub/model/hubMcp";
+import { chatMonoOwner, hasMemoryTools, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
 import {
   codingTeamChatProject,
@@ -828,7 +828,6 @@ import {
   verifyRun,
   watchVerifyMessages,
 } from "./model/verifyKickoff";
-import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import {
   delegationActions,
   delegationRows,
@@ -9191,7 +9190,7 @@ function Workspace({
           if (monosNow) appContext.push(monosNow);
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
-          const appended = hasAshOsTools(current.harness) && !rawCommand;
+          const appended = hasMemoryTools(current.harness) && !rawCommand;
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             const noteKey = handedFiles.soulHash;
@@ -9523,13 +9522,13 @@ function Workspace({
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
     });
   }, [onOpenMono, onSubmit, windowTransfer]);
-  // ...and Ash's messages the bench sends mid-run (the stub's ash-hub-verify-messages): each into its Mono's chat, as
+  // ...and Ash's messages the bench sends mid-run (the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
     const runId = verifyRun();
     if (!runId || windowTransfer) return;
     return watchVerifyMessages(runId, {
-      list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
+      list: () => invoke("verify_live_messages"),
       send: async (message) => {
         // Into a group room, as Ash writes there (hub/model/roomConductor.ts).
         if (message.room) return sendVerifyRoomMessage(message.room, message.prompt);

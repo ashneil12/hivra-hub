@@ -2,6 +2,7 @@ use tauri::Manager;
 
 mod account_identity;
 mod artifacts;
+mod ash_os_import;
 mod automations;
 pub mod autopilot;
 mod azure_devops;
@@ -25,8 +26,8 @@ mod gitlab;
 mod harness;
 mod harness_runs;
 mod harness_updates;
-mod hub;
 mod hub_keychain;
+mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 mod jira;
@@ -36,6 +37,7 @@ mod launch_guard;
 mod linear;
 mod link_preview;
 mod live_turns;
+mod local_hub;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -345,7 +347,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(hub::init())
+        .plugin(hub_plugin::init())
         .plugin(instance::plugin(&app_info))
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -702,6 +704,7 @@ pub fn run() {
             harness::harness_runtime_binary_paths,
             verify_live::verify_live_take,
             verify_live::verify_live_done,
+            verify_live::verify_live_messages,
             verify_live::verify_live_quit,
             harness::harness_resolve_claude,
             harness::harness_claude_grok_bridge,

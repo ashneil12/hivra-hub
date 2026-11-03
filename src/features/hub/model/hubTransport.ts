@@ -1,14 +1,11 @@
-// The app's only door to Ash OS is the Rust `hub` plugin (src-tauri/src/hub.rs). It holds Ash OS's key; the webview
-// never sees it. This file is the TypeScript end of that door, kept behind an interface so the stores can be tested
-// against a stand-in.
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { forUser } from "./userName";
+// The hub store's transport: one interface the store reads and writes through, so it can be tested against a
+// stand-in. The app's own transport answers everything locally (localHub/localTransport.ts, WP-04); the Ash OS bridge
+// that used to sit behind it is retired (tag the archive tag).
 
-/** `server`: Ash OS answered with a 5xx (running, but failing). */
+/** `server`: the answer was a failure on the other side (kept for stand-ins). */
 export type HubErrorKind = "unreachable" | "timeout" | "unauthorized" | "refused" | "server" | "error";
 
-/** A failed call, in plain words. `kind` tells "Ash OS isn't running" from "Ash OS said no". */
+/** A failed call, in plain words. `kind` tells "couldn't be reached" from "said no". */
 export class HubCallError extends Error {
   readonly kind: HubErrorKind;
   constructor(kind: HubErrorKind, message: string) {
@@ -16,7 +13,7 @@ export class HubCallError extends Error {
     this.name = "HubCallError";
     this.kind = kind;
   }
-  /** True when Ash OS could not be reached or did not take the app's key: the calm "isn't running" state. */
+  /** True when the other side could not be reached: the calm "isn't running" state. */
   get isDown(): boolean {
     return this.kind === "unreachable" || this.kind === "timeout" || this.kind === "unauthorized";
   }
@@ -24,7 +21,7 @@ export class HubCallError extends Error {
 
 const KINDS: readonly string[] = ["unreachable", "timeout", "unauthorized", "refused", "server", "error"];
 
-/** What the plugin rejects with is `{kind, message}`; anything else (no Tauri at all) means Ash OS can't be reached. */
+/** What a transport rejects with is `{kind, message}`; anything else means it couldn't be reached. */
 export function toHubError(raw: unknown): HubCallError {
   if (raw instanceof HubCallError) return raw;
   if (raw && typeof raw === "object" && "kind" in raw && "message" in raw) {
@@ -33,10 +30,10 @@ export function toHubError(raw: unknown): HubCallError {
       return new HubCallError(kind as HubErrorKind, message);
     }
   }
-  return new HubCallError("unreachable", forUser("Ash OS isn't running."));
+  return new HubCallError("unreachable", raw instanceof Error && raw.message ? raw.message : "The hub couldn't be read.");
 }
 
-/** One change from Ash OS's feed. */
+/** One change from the transport's feed. */
 export type HubFeedEvent = {
   seq: number;
   kind: string;
@@ -46,7 +43,7 @@ export type HubFeedEvent = {
   project?: string;
 };
 
-/** The feed's connection. `reset` means the app's cursor was ahead of Ash OS: read everything again. */
+/** The feed's connection. `reset` means the store's cursor was ahead: read everything again. */
 export type HubFeedState = { connected: boolean; latest?: number; reset?: boolean; message?: string; kind?: string };
 
 export type HubFeedHandlers = {
@@ -55,60 +52,8 @@ export type HubFeedHandlers = {
 };
 
 export interface HubTransport {
-  /** One `ash-hub-*` call; resolves with the answer's `result`. */
+  /** One call; resolves with its answer. */
   call<T = unknown>(action: string, payload?: Record<string, unknown>): Promise<T>;
   /** Open the live feed after `after`. Returns a function that closes it. */
   openFeed(after: number, handlers: HubFeedHandlers): () => void;
 }
-
-const PLUGIN = "plugin:hub|";
-
-/** Ash's own ash-os MCP entry (command, args, env) from Claude Code's config, read by the plugin; null without one. */
-export async function tauriAshOsServer(): Promise<{ command: string; args?: string[]; env?: Record<string, string> } | null> {
-  try {
-    return await invoke(`${PLUGIN}hub_ash_os_mcp`);
-  } catch {
-    return null;
-  }
-}
-
-/** The real transport: the Rust plugin's `hub_call` and `hub_events_open`, plus its `hub:event` / `hub:state` events. */
-export const tauriHubTransport: HubTransport = {
-  async call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
-    try {
-      return await invoke<T>(`${PLUGIN}hub_call`, { action, payload });
-    } catch (error) {
-      throw toHubError(error);
-    }
-  },
-  openFeed(after, handlers) {
-    let closed = false;
-    let opened = false;
-    const unlisten: Array<() => void> = [];
-    void (async () => {
-      try {
-        const offs = await Promise.all([
-          listen<HubFeedEvent>("hub:event", (e) => handlers.onEvent(e.payload)),
-          listen<HubFeedState>("hub:state", (e) => handlers.onState(e.payload)),
-        ]);
-        if (closed) {
-          offs.forEach((off) => off());
-          return;
-        }
-        unlisten.push(...offs);
-        await invoke(`${PLUGIN}hub_events_open`, { after });
-        opened = true;
-        // Closed while the open was still on its way: close it now, it is ours.
-        if (closed) void invoke(`${PLUGIN}hub_events_close`).catch(() => undefined);
-      } catch (error) {
-        if (!closed) handlers.onState({ connected: false, message: toHubError(error).message });
-      }
-    })();
-    return () => {
-      closed = true;
-      unlisten.splice(0).forEach((off) => off());
-      // Only a feed this window really opened is closed: another window may be sharing the running one.
-      if (opened) void invoke(`${PLUGIN}hub_events_close`).catch(() => undefined);
-    };
-  },
-};

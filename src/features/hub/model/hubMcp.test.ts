@@ -5,7 +5,7 @@ import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integratio
 import {
   chatProjects,
   CHECKER_MONO_ID,
-  hasAshOsTools,
+  hasMemoryTools,
   hasDelegateTool,
   hubChatIdentity,
   hubMcpArgs,
@@ -154,8 +154,8 @@ describe("a chat's project (ASH_PROJECT): what memory it may reach", () => {
     setHubMcpServers({ ashOs: null, cli: null }, withProjects);
     expect(chatProjects("app-chat-exo-r1")).toEqual(["vg-game"]);
     expect(chatProjects("chat-cos")).toEqual([]);
-    expect(hasAshOsTools("claude")).toBe(true);
-    expect(hasAshOsTools("codex")).toBe(false);
+    expect(hasMemoryTools("claude")).toBe(true);
+    expect(hasMemoryTools("codex")).toBe(false);
   });
 });
 

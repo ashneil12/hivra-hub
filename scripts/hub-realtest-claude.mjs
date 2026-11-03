@@ -209,7 +209,7 @@ export function haikuArgs(args) {
 }
 
 /**
- * A real chat's arguments with the bench's memory stand-in added as the `ash-os` server (a dev copy's chats otherwise
+ * A real chat's arguments with the bench's memory stand-in added as the `memory` server (a dev copy's chats otherwise
  * have none: harness.rs keeps only the app's own delegate tool) and its two tools allowed. Helper calls (no `monocode`
  * server) are left alone.
  */
@@ -224,7 +224,7 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
     return args;
   }
   if (!config?.mcpServers?.monocode) return args;
-  config.mcpServers["ash-os"] = {
+  config.mcpServers.memory = {
     command: node,
     args: [MEMORY_MCP],
     env: { REALTEST_MEMORY_DIR: memoryDir, REALTEST_STATE: state ?? "", REALTEST_CALLER_CWD: cwd },
@@ -232,8 +232,8 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
   const out = [...args];
   out[at + 1] = JSON.stringify(config);
   const allowed = out.indexOf("--allowedTools");
-  if (allowed >= 0 && allowed + 1 < out.length) out[allowed + 1] = `${out[allowed + 1]},mcp__ash-os__ash_recall,mcp__ash-os__ash_remember`;
-  else out.push("--allowedTools", "mcp__ash-os__ash_recall,mcp__ash-os__ash_remember");
+  if (allowed >= 0 && allowed + 1 < out.length) out[allowed + 1] = `${out[allowed + 1]},mcp__memory__ash_recall,mcp__memory__ash_remember`;
+  else out.push("--allowedTools", "mcp__memory__ash_recall,mcp__memory__ash_remember");
   return out;
 }
 

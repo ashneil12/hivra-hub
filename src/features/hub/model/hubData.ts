@@ -5,14 +5,14 @@ import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
 import { examplesOn } from "./examples";
-import { startActivityTracking } from "./hubActivity";
 import { HubStore } from "./hubStore";
-import { tauriAshOsServer, tauriHubTransport } from "./hubTransport";
+import { appHubTransport } from "./localHub/localTransport";
+import { startAshOsImport } from "./localHub/ashOsImport";
+import { appIdentity } from "../../../app/model/appIdentity";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
 import { registerClaudeGuards, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
-import { devAshOsStandIn } from "./devAshOs";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
 import { noteTeamEngines, seatLeadershipTeams, seedFrankAshAsks, seedTeamFiles, tieTeamToProjects } from "./hubTeam";
@@ -37,8 +37,7 @@ import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "
 seedHubBundleDefaults();
 
 /**
- * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): Ash's ash-os entry with the chat's identity,
- * for a Mono's own chat the delegate tool, and for a Mono's chat and its habit runs the connectors its projects allow
+ * Every hub chat's Claude Code session gets one --mcp-config (hubMcp.ts): for a Mono's own chat the delegate tool, and for a Mono's chat and its habit runs the connectors its projects allow
  * (hubConnectors.ts; read again whenever a window comes back to the front, and re-checked by the launcher at start). A session that starts before the entries are read waits for them (at
  * most a few seconds; then it starts without them).
  */
@@ -62,14 +61,11 @@ function startHubMcp(): void {
     })
     .catch(() => undefined);
   // Who a chat is is known at once: a chat that starts before the entries are read still gets the checker's limits.
-  setHubMcpServers({ ashOs: null, cli: null }, lookups);
-  const ashOs = tauriAshOsServer().then((server) => server ?? devAshOsStandIn());
+  setHubMcpServers({ cli: null }, lookups);
   const cli = invoke<string>("app_cli_path").catch(() => null);
   const connectors = loadConnectors();
   window.addEventListener("focus", () => void loadConnectors());
-  const read = Promise.all([ashOs, cli, connectors]).then(
-    ([ashOs, cli]): HubMcpServers => ({ ashOs, cli, connectors: connectorServersForMono }),
-  );
+  const read = Promise.all([cli, connectors]).then(([cli]): HubMcpServers => ({ cli, connectors: connectorServersForMono }));
   const ready = Promise.race([
     read.then((servers) => {
       setHubMcpServers(servers, lookups);
@@ -84,7 +80,7 @@ function startHubMcp(): void {
 }
 if (IS_HUB_BUNDLE) startHubMcp();
 
-// The app ships clean: it reads Ash OS. The example data answers only behind the dev flag
+// The app ships clean: it reads its own local store (localHub/, WP-04). The example data answers only behind the dev flag
 // (`monocode:hub-examples`, set by hub-dev.html), or when a source is swapped in with `setHubDataSource`.
 let override: { source: HubDataSource; store?: HubStore } | undefined;
 let chosen: { source: HubDataSource; store?: HubStore } | undefined;
@@ -94,21 +90,22 @@ function choose(): { source: HubDataSource; store?: HubStore } {
   if (examplesOn()) {
     chosen = { source: mockHubData };
   } else {
-    const store = new HubStore({
-      transport: tauriHubTransport,
-      whileRunning: (s) => startActivityTracking((at) => void s.reportActive(at)),
-    });
+    const store = new HubStore({ transport: appHubTransport() });
     chosen = { source: createLiveHubData(store), store };
+    // The fake-Claude bench's projects (its plan, verify_live.rs), added once; then the first start after the bridge was
+    // retired offers to bring Ash OS's projects and kept Pages over, once.
+    const benchProjects = appIdentity()?.verify?.projects;
+    if (benchProjects?.length) void appHubTransport().hub.importFrom({ projects: benchProjects, memberships: [], pages: [] });
+    startAshOsImport(appHubTransport().hub);
     if (makesProjectLeads()) startHubBundleLeads(store);
   }
   return chosen;
 }
 
 /**
- * The Hub bundle's project Leads and leadership team: once Ash OS has said which projects there are (and their
+ * The Hub bundle's project Leads and leadership team: once the local store has said which projects there are (and their
  * folders), make the Leads that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead
- * in place), give the team its souls, make it a member of every project and seat it in each Leadership team. Every
- * chat's Claude Code session carries its ash-os identity (startHubMcp).
+ * in place), give the team its souls, make it a member of every project and seat it in each Leadership team.
  */
 function startHubBundleLeads(store: HubStore): void {
   noteTeamEngines();
@@ -117,9 +114,9 @@ function startHubBundleLeads(store: HubStore): void {
   // New project: checked again whenever the strip's projects change (each step is idempotent; Leads register once).
   let seen = "";
   const register = (monoId: string, projectId: string) =>
-    tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" });
+    appHubTransport().call("mono-project-add", { mono_id: monoId, project_id: projectId, role: "lead" });
   const unregister = (monoId: string, projectId: string) =>
-    tauriHubTransport.call("ash-hub-mono-project-remove", { mono_id: monoId, project_id: projectId });
+    appHubTransport().call("mono-project-remove", { mono_id: monoId, project_id: projectId });
   const tryLeads = () => {
     const projects = store.getSnapshot().projects;
     const strip = stripProjects(projects);
@@ -136,7 +133,7 @@ function startHubBundleLeads(store: HubStore): void {
     // The team is normally on the roster already (the rail repairs it on render); make sure before tying and seating.
     ensureBuiltInMonos();
     tieTeamToProjects(strip, (monoId, projectId) =>
-      tauriHubTransport.call("ash-hub-mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
+      appHubTransport().call("mono-project-add", { mono_id: monoId, project_id: projectId, role: "member" }),
     );
     seatLeadershipTeams(strip);
     // Every Mono and Lead names Grok 4.7, the Monos made before that included (monoModels.ts); idempotent.
@@ -160,8 +157,8 @@ function startHubBundleLeads(store: HubStore): void {
 }
 
 /**
- * The hub project a folder belongs to (its Ash OS id), and the folder of a hub project id. A delegation records the hub
- * project id for Ash OS, which resolves it directly (docs/PHASE-2-DESIGN.md, H2/H3); a Mono may name one by its id.
+ * The hub project a folder belongs to (its id), and the folder of a hub project id. A delegation records the hub
+ * project id (docs/PHASE-2-DESIGN.md, H2/H3); a Mono may name one by its id.
  */
 export function hubProjectIdFor(folder: string): string | undefined {
   const key = pathKey(folder);
@@ -173,8 +170,7 @@ export function hubProjectFolder(id: string): string | undefined {
 }
 
 /**
- * The live store when the hub reads Ash OS (the app, a dev copy, the dev page with a stub or the live proxy); undefined
- * with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
+ * The live store when the hub reads its local store (the app, a dev copy); undefined with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
  * through it, so the slices they move are read again at once.
  */
 export function liveHubStore(): HubStore | undefined {
@@ -186,7 +182,7 @@ export function hubData(): HubDataSource {
   return withProjectPrefs((override ?? choose()).source);
 }
 
-/** The projects as Ash OS has them, before Ash's own names, order and "Remove from hub": what a setup export carries. */
+/** The projects as the local store has them, before Ash's own names, order and "Remove from hub": what a setup export carries. */
 export function registryProjects(): HubProject[] {
   return (override ?? choose()).source.listProjects();
 }

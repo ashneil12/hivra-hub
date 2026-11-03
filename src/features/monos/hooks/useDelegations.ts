@@ -1,5 +1,5 @@
 // The app's one hook for delegation rows (model/delegations.ts): one tracker per window, boot recovery in the main
-// window, and each chat's Claude session bound for Ash OS (`ash-hub-chat-bind`) whenever it binds or rotates.
+// window, and each chat's Claude session bound for Ash OS (`chat-bind`) whenever it binds or rotates.
 import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
@@ -33,7 +33,7 @@ function isMainWindow(): boolean {
 
 /**
  * Who a Claude session is, for Ash OS: a Mono's chat (a Lead, the checker, or another), a worker, or a plain chat. A
- * chat started through the app CLI (`app-<caller>-<request>`) stays a worker after its task finished, as its ash-os
+ * chat started through the app CLI (`app-<caller>-<request>`) stays a worker after its task finished, as its Ash OS
  * identity does (hub/model/hubMcp.ts), so a rebind at the next launch never drops the role.
  */
 export function chatBinding(
