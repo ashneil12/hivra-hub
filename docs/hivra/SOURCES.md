@@ -21,6 +21,10 @@ studies (read-only, Nov 2026) are in the project's research folder; the verdicts
 
 ## The sources
 
+Adding a source or vendoring a component? Add it to [credits.json](credits.json) as well, and its README line or
+`NOTICE` entry: the README, `NOTICE` and the app's Credits list (Settings, About) are drawn from it, and
+`src/features/settings/model/credits.test.ts` fails if they drift from this table.
+
 | Source | Licence | What Hivra takes | How | Packages |
 | --- | --- | --- | --- | --- |
 | [MonoCode](https://github.com/hardbeat920/monocode) | MIT | The app: projects, sessions on many CLIs, worktrees, Monos, Inbox, remote host, Focused layout | Fork, merge upstream | all |

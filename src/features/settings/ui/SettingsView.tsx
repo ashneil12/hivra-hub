@@ -75,6 +75,7 @@ import { McpSettings } from "./McpSettings";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
 import { WindowControls } from "../../../app/shell/WindowControls";
+import { CreditsList } from "./CreditsList";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import {
@@ -1108,6 +1109,7 @@ function GeneralPage({
 
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
+        <CreditsRow />
       </Group>
     </>
   );
@@ -1911,6 +1913,25 @@ function LinearSettings() {
           </div>
         </div>
       ) : null}
+    </>
+  );
+}
+
+/** WP-08: the projects Hivra learns from and the third-party code it carries (docs/hivra/credits.json). */
+function CreditsRow() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Row
+        id="credits"
+        label="Credits"
+        description="The projects Hivra takes ideas or code from, and the licences of the code it carries."
+      >
+        <SecondaryButton onClick={() => setOpen((shown) => !shown)}>
+          {open ? "Hide" : "Show"}
+        </SecondaryButton>
+      </Row>
+      {open ? <CreditsList /> : null}
     </>
   );
 }

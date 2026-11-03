@@ -1,0 +1,174 @@
+{
+  "inspirations": [
+    {
+      "name": "MonoCode",
+      "url": "https://github.com/hardbeat920/monocode",
+      "licence": "MIT",
+      "gave": "the app Hivra is built on (projects, sessions on many CLIs, worktrees, Monos and the Inbox)"
+    },
+    {
+      "name": "firstmate",
+      "url": "https://github.com/kunchenguid/firstmate",
+      "licence": "MIT",
+      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch"
+    },
+    {
+      "name": "pstack",
+      "url": "https://github.com/cursor/plugins/tree/main/pstack",
+      "licence": "MIT",
+      "gave": "Lauren Tan's (poteto) skills for rigour and verification, shipped as the default plugin"
+    },
+    {
+      "name": "DeepSeek super-agent prototype",
+      "url": "https://github.com/deepseek-ai/dsh-superagent-prototype",
+      "licence": "MIT",
+      "gave": "a router that never does the work itself, workers that follow threads, a watchdog"
+    },
+    {
+      "name": "DeepSeek Harness",
+      "url": "https://github.com/deepseek-ai/deepseek-harness",
+      "licence": "MIT (name is a trademark)",
+      "gave": "safe plugin installs, a static plugin index, Discover and Creator mode (ideas only)"
+    },
+    {
+      "name": "Agent Plugins standard",
+      "url": "https://agent-plugins.org/",
+      "licence": "open standard",
+      "gave": "the plugin format"
+    },
+    {
+      "name": "council-of-high-intelligence",
+      "url": "https://github.com/0xnyk/council-of-high-intelligence",
+      "licence": "MIT",
+      "gave": "the council protocol (blind round, cross-exam, dissent quota and a chairman)"
+    },
+    {
+      "name": "OpenMausBot",
+      "url": "https://github.com/milind-soni/OpenMausBot",
+      "licence": "Apache-2.0 core (`enterprise/` excluded)",
+      "gave": "rooms with responder modes, goal mode, teams and playbooks as one file"
+    },
+    {
+      "name": "OpenBot",
+      "url": "https://github.com/CopilotKit/openbot",
+      "licence": "MIT",
+      "gave": "approval gates, an audit trail, typed handoffs and quiet digests"
+    },
+    {
+      "name": "Rerun",
+      "url": "https://github.com/rerun-build/rerun",
+      "licence": "AGPL-3.0 + CLA",
+      "gave": "remote engine pairing, a memory curator and approval cards (ideas only)"
+    },
+    {
+      "name": "Puppetmaster",
+      "url": "https://github.com/professorpalmer/Puppetmaster",
+      "licence": "MIT",
+      "gave": "completion gates, typed artifacts with evidence, failure reroutes"
+    },
+    {
+      "name": "Raven",
+      "url": "https://github.com/EverMind-AI/Raven",
+      "licence": "Apache-2.0",
+      "gave": "\"finished\" is not \"succeeded\", status from the registry, provenance-required memory"
+    },
+    {
+      "name": "PandaCode",
+      "url": "https://github.com/aicodeking/pandacode",
+      "licence": "MIT + fork-notice clause",
+      "gave": "native protocol per CLI, warm processes, steering and a silence watchdog (ideas only)"
+    },
+    {
+      "name": "ROMA",
+      "url": "https://github.com/sentient-agi/ROMA",
+      "licence": "no licence file",
+      "gave": "a fast path for small tasks and planner rules (ideas only)"
+    },
+    {
+      "name": "AgentOS",
+      "url": "https://github.com/akua-dev/agentos",
+      "licence": "MIT",
+      "gave": "assignments as the unit of accountability and decision gates"
+    },
+    {
+      "name": "UniiChat",
+      "url": "https://github.com/VictorTaelin/uniichat",
+      "licence": "Apache-2.0",
+      "gave": "the long-chat summary tree behind monoTree"
+    },
+    {
+      "name": "OptMem",
+      "url": "https://github.com/VictorTaelin/OptMem",
+      "licence": "no licence",
+      "gave": "lessons on a distilled fact layer (ideas only)"
+    },
+    {
+      "name": "Mercury",
+      "url": "https://github.com/cosmicstack-labs/mercury-agent",
+      "licence": "MIT",
+      "gave": "soul files upgrades never overwrite and owner approval"
+    },
+    {
+      "name": "Agent Zero",
+      "url": "https://github.com/agent0ai/agent-zero",
+      "licence": "MIT",
+      "gave": "a memory screen with curation and chat importers"
+    },
+    {
+      "name": "Buzz",
+      "url": "https://github.com/block/buzz",
+      "licence": "Apache-2.0",
+      "gave": "the persona file format and room framing"
+    },
+    {
+      "name": "e2e",
+      "url": "https://github.com/tester-army/e2e",
+      "licence": "Apache-2.0",
+      "gave": "end-to-end testing as an optional Verify plugin"
+    },
+    {
+      "name": "agent-desktop",
+      "url": "https://github.com/vercel-labs/agent-desktop",
+      "licence": "Apache-2.0",
+      "gave": "desktop control for workers, headless first"
+    },
+    {
+      "name": "Crest",
+      "url": "https://github.com/pauljoda/Crest",
+      "licence": "MPL-2.0 (name not licensed)",
+      "gave": "per-agent browser profiles and browsing safety defaults (ideas only)"
+    },
+    {
+      "name": "CARL and PAUL",
+      "url": "https://github.com/ChristopherKahler",
+      "licence": "MIT",
+      "gave": "rule staging behind approval and a four-state worker status"
+    }
+  ],
+  "components": [
+    {
+      "name": "UniiChat's summary tree (Memory.ts, prompt.txt)",
+      "url": "https://github.com/VictorTaelin/UniiChat",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Higher Order Company",
+      "where": "src/features/monos/model/monoTree.ts, monoTreePrompt.txt",
+      "how": "Ported and changed; see src/features/monos/model/monoTree.NOTICE.md"
+    },
+    {
+      "name": "react-day-picker",
+      "url": "https://github.com/gpbl/react-day-picker",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2014-2026 Giampaolo Bellavite and contributors",
+      "where": "src/features/pages/ui/CalendarBlock.tsx",
+      "how": "npm package, restyled with the app's theme tokens"
+    },
+    {
+      "name": "Tremor BarList",
+      "url": "https://github.com/tremorlabs/tremor",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright Tremor Labs and the Tremor contributors",
+      "where": "src/features/pages/ui/PagesView.tsx",
+      "how": "Restyled copy of the component, no package"
+    }
+  ]
+}

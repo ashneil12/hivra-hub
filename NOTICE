@@ -1,11 +1,39 @@
+Hivra
+=====
+Hivra (https://github.com/ashneil12/hivra-hub) is a fork of MonoCode
+(https://github.com/hardbeat920/monocode), MIT. The projects it learns from are listed in
+docs/hivra/SOURCES.md and in the app (Settings, About, Credits).
+
+Third-party components Hivra adds:
+
+- UniiChat's summary tree (Memory.ts, prompt.txt)
+  Source: https://github.com/VictorTaelin/UniiChat
+  License: Apache-2.0
+  Copyright 2026 Higher Order Company
+  Used in: src/features/monos/model/monoTree.ts, monoTreePrompt.txt
+  Ported and changed; see src/features/monos/model/monoTree.NOTICE.md.
+
+- react-day-picker
+  Source: https://github.com/gpbl/react-day-picker
+  License: MIT
+  Copyright (c) 2014-2026 Giampaolo Bellavite and contributors
+  Used in: src/features/pages/ui/CalendarBlock.tsx
+  npm package, restyled with the app's theme tokens.
+
+- Tremor BarList
+  Source: https://github.com/tremorlabs/tremor
+  License: Apache-2.0
+  Copyright Tremor Labs and the Tremor contributors
+  Used in: src/features/pages/ui/PagesView.tsx
+  Restyled copy of the component, no package.
+
+MonoCode
+========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
 agent harnesses it can drive.
 
 Provider marks that appear in the UI (including Claude, Codex, Cursor, GitHub, GitLab, Linear, Grok, OpenCode, Pi, omp, fx, Hermes, Nous Research, Devin, and Cognition) are trademarks of their respective owners and are used only to identify those products.
 
-src/features/monos/model/monoTree.ts and monoTreePrompt.txt are adapted from UniiChat
-(https://github.com/VictorTaelin/UniiChat), Copyright 2026 Higher Order Company, licensed under the
-Apache License, Version 2.0. See src/features/monos/model/monoTree.NOTICE.md.
 The native UI uses Zed Industries' GPUI framework through gpui-pre and
 gpui-pre-platform 0.3.9 (Zed snapshot
 93d745668805029476e6d7fbb19652116fed51de), licensed under Apache-2.0.

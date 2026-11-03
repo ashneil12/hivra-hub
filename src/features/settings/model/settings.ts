@@ -288,6 +288,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "update upgrade release what's new build changelog",
   },
   {
+    id: "credits",
+    section: "general",
+    label: "Credits",
+    keywords: "about inspirations licences licenses notice open source thanks sources",
+  },
+  {
     id: "user-name",
     section: "general",
     label: "What should your team call you?",
