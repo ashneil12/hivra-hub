@@ -20,7 +20,7 @@ A red job hides real regressions from every other package.
   page most upstream specs load).
 - `src/features/hub/ui/HubOnboardingGate.tsx` (`onboardingGate`), `src/features/hub/model/onboarding.ts`
   (`monocode:hub-onboarded`), `src/features/hub/model/setupProof.ts` (`monocode:hub-setup-not-now`).
-- The failing list: the `browser` job log on PR #1 (`gh run view` on the latest `merge/upstream-2026-11-03` run).
+- The failing list: the `browser` job log of the latest CI run on `main` (`gh run list --branch main`).
 
 ## What fails today
 

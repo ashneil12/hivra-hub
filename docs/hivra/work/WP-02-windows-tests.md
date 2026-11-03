@@ -10,7 +10,7 @@
 
 ## Why
 
-Ash wants Windows. Once LF checkouts and the vitest fixes landed (PR #2, merged into #1), the job reached
+Ash wants Windows. Once LF checkouts and the vitest fixes landed (PR #2, merged with #1), the job reached
 `cargo test` for the first time and 25 Hub Rust tests fail there (run on commit 6b05b4cf). Some are real Windows bugs
 in the product, not just in tests.
 

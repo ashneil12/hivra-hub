@@ -8,7 +8,7 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 1. Read [README.md](README.md), [SPEC.md](SPEC.md), this file, then your package in [work/](work/).
 2. **Claim it** by opening a draft PR titled `WP-NN: <title>` as soon as you start. Open PRs are the status board;
    don't take a package that already has one.
-3. Branch from `main` as `wp/NN-short-name` (until PR #1 is merged, branch from `merge/upstream-2026-11-03`).
+3. Branch from `main` as `wp/NN-short-name`.
 4. Stay inside the paths your package owns. If you must touch another package's paths or a shared hotspot
    (`src/app/App.tsx`, `src-tauri/src/lib.rs`, `src/features/settings/ui/SettingsView.tsx`), keep it to a small hook
    and say so in the PR.
@@ -29,7 +29,9 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 - Native checks (anything only the real window shows) run in a dev copy on Ash's Mac (`npm run hub:dev`), started
   by Ash or through a Remote Control session. A package that needs one stays open until it is done; tests passing
   is not the same as verified in the app.
-- Ash merges. Nothing is shipped to the daily app until a wave is merged and checked in a dev copy.
+- The integrating Claude merges, with a merge commit, once the review passes and CI is green, or once the only
+  failures left are ones `main` already has and the PR says so. Ash doesn't need to be asked. Nothing is shipped to
+  the daily app until a wave is merged and checked in a dev copy.
 
 ## Upstream rules (every package)
 
