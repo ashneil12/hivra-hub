@@ -70,7 +70,7 @@ pub(crate) fn gate_for(
 
 /// A worker's own checkout: a folder inside the project's sibling `<project>-worktrees/` folder.
 pub(crate) fn worker_checkout(checkout: &str) -> Result<PathBuf, String> {
-    let path = std::fs::canonicalize(checkout)
+    let path = crate::fs::canonical(checkout)
         .map_err(|_| "The worker's checkout isn't there.".to_string())?;
     let in_worktrees = path
         .parent()
