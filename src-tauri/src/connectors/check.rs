@@ -169,6 +169,10 @@ fn talk(
     rx: &mpsc::Receiver<Value>,
     deadline: Instant,
 ) -> Result<usize, String> {
+    // A server that exits at once (a wrong key, a missing dependency) is one failure, whether it was
+    // gone before a request was written (the write fails) or after (its output ends). Which of the two
+    // we see is only timing, so both read the same.
+    let stopped = || format!("{command} stopped before it answered.");
     let wait_for = |id: i64| -> Result<Value, String> {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
@@ -178,14 +182,14 @@ fn talk(
             match rx.recv_timeout(left) {
                 Ok(value) if value.get("id") == Some(&serde_json::json!(id)) => return Ok(value),
                 Ok(_) => continue,
-                Err(_) => return Err(format!("{command} stopped before it answered.")),
+                Err(_) => return Err(stopped()),
             }
         }
     };
     let init = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
         "protocolVersion": super::remote::PROTOCOL_VERSION, "capabilities": {},
         "clientInfo": {"name": "monocode-hub-test", "version": env!("CARGO_PKG_VERSION")}}});
-    writeln!(stdin, "{init}").map_err(|_| format!("{command} closed its input."))?;
+    writeln!(stdin, "{init}").map_err(|_| stopped())?;
     let reply = wait_for(1)?;
     if let Some(error) = reply.pointer("/error/message").and_then(Value::as_str) {
         return Err(format!("{command}: {error}"));
@@ -200,7 +204,7 @@ fn talk(
             r#"{{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{{}}}}"#
         )
     })
-    .map_err(|_| format!("{command} closed its input."))?;
+    .map_err(|_| stopped())?;
     let listed = wait_for(2)?;
     if let Some(error) = listed.pointer("/error/message").and_then(Value::as_str) {
         return Err(format!("{command}: {error}"));

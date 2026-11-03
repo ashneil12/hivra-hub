@@ -5,6 +5,7 @@ import cursor from "../../../assets/providers/cursor.svg";
 import devin from "../../../assets/providers/devin.svg";
 import fx from "../../../assets/providers/fx.svg";
 import grok from "../../../assets/providers/grok.svg";
+import hermes from "../../../assets/providers/hermes.svg";
 import omp from "../../../assets/providers/omp.svg";
 import opencode from "../../../assets/providers/opencode.svg";
 import pi from "../../../assets/providers/pi.svg";
@@ -23,6 +24,7 @@ export const HARNESS_ICONS: Record<HarnessId, string> = {
   pi,
   omp,
   fx,
+  hermes,
   antigravity,
   devin,
 };
@@ -34,6 +36,7 @@ export const MONOCHROME_HARNESSES = new Set<HarnessId>([
   "opencode",
   "pi",
   "fx",
+  "hermes",
   "devin",
 ]);
 
@@ -85,7 +88,7 @@ export function HarnessIcon({
       </MonoIcon>
     );
   }
-  if (harness === "devin") {
+  if (harness === "hermes" || harness === "devin") {
     const mark = HARNESS_ICONS[harness];
     return (
       <span
@@ -93,7 +96,7 @@ export function HarnessIcon({
         className={`inline-flex items-center justify-center ${className}`}
       >
         <span
-          className="block size-[88%] bg-current"
+          className={`block ${harness === "hermes" ? "size-[72%]" : "size-[88%]"} bg-current`}
           style={{
             // Quoted: Vite inlines small SVGs as data URIs that contain spaces.
             maskImage: `url("${mark}")`,

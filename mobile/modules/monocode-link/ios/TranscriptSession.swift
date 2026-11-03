@@ -32,13 +32,17 @@ private final class TranscriptRequest {
   private let lock = NSLock()
   private var result: Result<[String: Any], Error>?
   private let discard: (([String: Any]) -> Void)?
-  init(discard: (([String: Any]) -> Void)? = nil, _ work: @escaping () throws -> [String: Any]) {
+  init(
+    discard: (([String: Any]) -> Void)? = nil, ready: @escaping () -> Void,
+    _ work: @escaping () throws -> [String: Any]
+  ) {
     self.discard = discard
     DispatchQueue.global(qos: .userInitiated).async {
       let result = autoreleasepool { Result { try work() } }
       self.lock.lock()
       self.result = result
       self.lock.unlock()
+      ready()
     }
   }
   deinit { if case .success(let value) = result { discard?(value) } }
@@ -56,7 +60,8 @@ private final class TranscriptRequest {
 final class TranscriptSession {
   var onFrame: ((TranscriptLayoutFrame) -> Void)?
   var onSelection: ((String) -> Void)?
-  private let lock = NSLock()
+  private let lock = NSCondition()
+  private var wakeRevision: UInt64 = 0
   private var running = true
   private var active = true
   private var watchID: Int?
@@ -91,17 +96,22 @@ final class TranscriptSession {
       self.style = style
       self.viewport = viewport
       dirtyLayout = true
+      signal()
     }
     lock.unlock()
   }
   func command(_ command: [String: Any]) {
     lock.lock()
     commands.append(command)
+    signal()
     lock.unlock()
   }
   func setActive(_ value: Bool) {
     lock.lock()
-    active = value
+    if active != value {
+      active = value
+      signal()
+    }
     let id = watchID
     lock.unlock()
     if !value, let id { closeWatch(id) }
@@ -109,11 +119,13 @@ final class TranscriptSession {
   func purge() {
     lock.lock()
     purgeLayouts = true
+    signal()
     lock.unlock()
   }
   func stop() {
     lock.lock()
     running = false
+    signal()
     let id = watchID
     lock.unlock()
     if let id { closeWatch(id) }
@@ -122,6 +134,29 @@ final class TranscriptSession {
     DispatchQueue.global(qos: .userInitiated).async {
       _ = try? TranscriptNative.call(["operation": "unwatch", "watchId": id])
     }
+  }
+
+  /// Called under the condition lock. A revision prevents a completion or
+  /// command arriving during layout from being lost just before we wait.
+  private func signal() {
+    wakeRevision &+= 1
+    lock.broadcast()
+  }
+  private func wake() {
+    lock.lock()
+    signal()
+    lock.unlock()
+  }
+  private func wait(after revision: UInt64, until deadline: Date? = nil) {
+    lock.lock()
+    while running && wakeRevision == revision {
+      if let deadline {
+        if !lock.wait(until: deadline) { break }
+      } else {
+        lock.wait()
+      }
+    }
+    lock.unlock()
   }
 
   private func run() {
@@ -159,7 +194,28 @@ final class TranscriptSession {
     var published = false
     var opening: TranscriptRequest?
     var reading: TranscriptRequest?
+    var receiving: TranscriptRequest?
     var older: TranscriptRequest?
+    let ready: () -> Void = { [weak self] in self?.wake() }
+    var revealScheduled: Date?
+    /// Builds a frame, and comes back to build again when a held-back
+    /// "Thinking…" line is due.
+    func build(_ style: TranscriptStyle, _ viewport: CGRect) -> TranscriptLayoutFrame {
+      let frame = engine.build(style: style, viewport: viewport)
+      if let at = engine.revealAt, at != revealScheduled {
+        revealScheduled = at
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+          deadline: .now() + max(0, at.timeIntervalSinceNow) + 0.01
+        ) { [weak self] in
+          guard let self else { return }
+          self.lock.lock()
+          self.dirtyLayout = true
+          self.signal()
+          self.lock.unlock()
+        }
+      }
+      return frame
+    }
     func update(_ command: [String: Any]) throws -> [String: Any] {
       let output =
         try TranscriptNative.call([
@@ -205,6 +261,7 @@ final class TranscriptSession {
     func iterate() -> Bool {
       lock.lock()
       let alive = running
+      let revision = wakeRevision
       let foreground = active
       let nextStyle = style
       let visible = viewport
@@ -246,7 +303,7 @@ final class TranscriptSession {
                 "conversationId": configuration["conversationId"] ?? "", "before": before,
                 "limit": 20,
               ]
-              older = TranscriptRequest {
+              older = TranscriptRequest(ready: ready) {
                 try exchange(
                   "conversation.older",
                   params)
@@ -265,7 +322,7 @@ final class TranscriptSession {
         }
       }
       if nextStyle.width > 0, changed || relayout || latest != nil && !published {
-        onFrame?(engine.build(style: nextStyle, viewport: visible))
+        onFrame?(build(nextStyle, visible))
         published = true
       }
       if !foreground {
@@ -278,23 +335,25 @@ final class TranscriptSession {
           watch = nil
           setWatch(nil)
         }
+        receiving = nil
         if !saved {
           save()
           saved = true
         }
-        Thread.sleep(forTimeInterval: 0.05)
+        wait(after: revision)
         return true
       }
       saved = false
       do {
         if watch == nil {
           if retryAt > Date() || reading != nil {
-            Thread.sleep(forTimeInterval: 0.02)
+            wait(after: revision, until: reading == nil ? retryAt : nil)
             return true
           }
           if opening == nil {
             var params: [String: Any] = [
               "conversationId": configuration["conversationId"] ?? "", "tail": 3,
+              "incremental": true,
             ]
             // Cached turns are only a preview; never use their old cursor.
             if !firstWatch, let cursor = latest?["watchFrom"] as? String {
@@ -304,22 +363,24 @@ final class TranscriptSession {
             var input = connectionInput("watch")
             input["request"] = request("conversation.watch", params)
             let request = input
-            opening = TranscriptRequest(discard: { [self] value in
-              if let id = value["watchId"] as? Int { closeWatch(id) }
-            }) { [self] in
-              let opened = try TranscriptNative.call(request) as? [String: Any] ?? [:]
-              lock.lock()
-              let keep = running && active
-              lock.unlock()
-              if !keep, let id = opened["watchId"] as? Int {
-                closeWatch(id)
-                throw TranscriptNative.failure("Conversation paused")
-              }
-              return opened
-            }
+            opening = TranscriptRequest(
+              discard: { [self] value in
+                if let id = value["watchId"] as? Int { closeWatch(id) }
+              }, ready: ready,
+              { [self] in
+                let opened = try TranscriptNative.call(request) as? [String: Any] ?? [:]
+                lock.lock()
+                let keep = running && active
+                lock.unlock()
+                if !keep, let id = opened["watchId"] as? Int {
+                  closeWatch(id)
+                  throw TranscriptNative.failure("Conversation paused")
+                }
+                return opened
+              })
           }
           guard let result = opening?.take() else {
-            Thread.sleep(forTimeInterval: 0.01)
+            wait(after: revision)
             return true
           }
           opening = nil
@@ -329,22 +390,39 @@ final class TranscriptSession {
           firstWatch = false
         }
         guard let watch else { throw TranscriptNative.failure("Could not open conversation") }
-        let response =
-          try TranscriptNative.call([
-            "operation": "transcriptNext", "transcriptId": transcriptID, "watchId": watch,
-            "timeoutMs": 20,
-          ]) as? [String: Any]
-        if response?["idle"] as? Bool == true { return true }
-        latest = response
-        if let latest { engine.accept(latest) }
-        if let cursor = from {
-          latest = try update(["type": "cursor", "from": cursor])
-          from = nil
+        if let result = receiving?.take() {
+          receiving = nil
+          let available = try result.get()
+          if available["ready"] as? Bool == true {
+            let response =
+              try TranscriptNative.call([
+                "operation": "transcriptNext", "transcriptId": transcriptID, "watchId": watch,
+                "timeoutMs": 0,
+              ]) as? [String: Any]
+            if response?["idle"] as? Bool != true {
+              latest = response
+              if let latest { engine.accept(latest) }
+              if let cursor = from {
+                latest = try update(["type": "cursor", "from": cursor])
+                from = nil
+              }
+              if latest != nil, nextStyle.width > 0 {
+                onFrame?(build(nextStyle, visible))
+              }
+            }
+          }
         }
-        if latest != nil, nextStyle.width > 0 {
-          onFrame?(engine.build(style: nextStyle, viewport: visible))
+        if receiving == nil {
+          // Wait for arrival off the layout worker. Projection stays on this
+          // worker so frame deltas and local commands cannot overtake each other.
+          receiving = TranscriptRequest(ready: ready) {
+            try TranscriptNative.call([
+              "operation": "wait", "watchId": watch,
+            ]) as? [String: Any] ?? [:]
+          }
         }
       } catch {
+        receiving = nil
         if let id = watch {
           closeWatch(id)
           watch = nil
@@ -357,9 +435,10 @@ final class TranscriptSession {
         guard stillActive else { return true }
         if reading == nil {
           let params: [String: Any] = ["conversationId": configuration["conversationId"] ?? ""]
-          reading = TranscriptRequest { try exchange("conversation.read", params) }
+          reading = TranscriptRequest(ready: ready) { try exchange("conversation.read", params) }
         }
       }
+      wait(after: revision)
       return true
     }
     // A long-lived DispatchQueue block needs a pool per iteration, otherwise

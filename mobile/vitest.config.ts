@@ -5,6 +5,8 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig({
   root,
+  // Metro supplies this React Native global when bundling the app.
+  define: { __DEV__: false },
   resolve: {
     alias: {
       "@": `${root}src`,
@@ -15,7 +17,12 @@ export default defineConfig({
   esbuild: { jsx: "automatic" },
   test: {
     environment: "happy-dom",
-    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
+    // Protocol round trips need both the desktop and mobile dependency trees.
+    include: [
+      "tests/**/*.test.ts",
+      "tests/**/*.test.tsx",
+      "../tests/mobile/**/*.test.ts",
+    ],
     maxWorkers: 1,
     minWorkers: 1,
   },

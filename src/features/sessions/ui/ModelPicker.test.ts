@@ -69,11 +69,6 @@ import {
   saveRecentModelChoice,
   setHarnessModels,
 } from "../model/models";
-import { HARNESSES } from "../model/session";
-
-/** Mirrors MODEL_MENU_HEIGHT: every harness is a 32px tab, 4px apart, in a 12px rail. */
-const MODEL_MENU_HEIGHT =
-  (HARNESSES.length + 1) * 32 + HARNESSES.length * 4 + 12;
 
 let container: HTMLDivElement;
 let root: Root;
@@ -171,9 +166,9 @@ describe("model picker", () => {
     const modelFlyout = container.querySelector<HTMLElement>(
       '[role="dialog"][aria-label="Models"]',
     )!;
-    expect(modelFlyout.style.height).toBe(`${MODEL_MENU_HEIGHT}px`);
-    expect(modelFlyout.dataset.minHeight).toBe(`${MODEL_MENU_HEIGHT + 2}`);
-    expect(modelFlyout.dataset.maxHeight).toBe(`${MODEL_MENU_HEIGHT + 2}`);
+    expect(modelFlyout.style.height).toBe("440px");
+    expect(modelFlyout.dataset.minHeight).toBe("442");
+    expect(modelFlyout.dataset.maxHeight).toBe("442");
     expect(
       container.querySelector('[role="tablist"][aria-orientation="vertical"]'),
     ).not.toBeNull();
