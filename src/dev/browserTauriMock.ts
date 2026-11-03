@@ -104,16 +104,24 @@ function emulateNativeGlass(a: GlassArgs | undefined) {
 export const LOCAL_HUB_PREFIX = "monocode:dev-local-hub:";
 function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {
   const key = String(args?.key ?? "");
+  // A document's revision sits beside it (`<key>#rev`); a seeded document with none is at revision 1.
+  const rev = () => {
+    const raw = localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}#rev`);
+    return raw ? Number(raw) : localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}`) !== null ? 1 : 0;
+  };
   if (cmd === "plugin:hub|local_hub_read") {
     const raw = localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}`);
-    return raw ? JSON.parse(raw) : null;
+    return { value: raw ? JSON.parse(raw) : null, rev: rev() };
   }
   if (cmd === "plugin:hub|local_hub_write") {
+    const current = rev();
+    if (typeof args?.expectRev === "number" && args.expectRev !== current) return null;
     localStorage.setItem(`${LOCAL_HUB_PREFIX}${key}`, JSON.stringify(args?.value ?? null));
-    return null;
+    localStorage.setItem(`${LOCAL_HUB_PREFIX}${key}#rev`, String(current + 1));
+    return current + 1;
   }
   if (cmd === "plugin:hub|local_hub_make_folder") return `/Users/example/Projects/${String(args?.id ?? "project")}`;
-  if (cmd === "plugin:hub|ash_os_import_fetch") return { reachable: false, message: "No Ash OS in the browser preview.", projects: [], memberships: [], pages: [] };
+  if (cmd === "plugin:hub|ash_os_import_fetch") return { state: "absent", message: "No Ash OS in the browser preview.", projects: [], memberships: [], pages: [] };
   return null;
 }
 

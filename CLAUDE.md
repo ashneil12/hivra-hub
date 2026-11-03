@@ -299,9 +299,13 @@ Hivra runs with no outside service. The Ash OS bridge (`hub.rs`, every `ash-hub-
 tagged `archive/ash-os-bridge`. What the app still needs lives in its own database (`src-tauri/src/local_hub.rs`,
 table `hub_local_docs`; the webview's shapes in `src/features/hub/model/localHub/`): projects, which Monos work on which
 project, and kept Pages (WP-33 takes Pages over). Being built reads the app's own open delegations; Needs, questions
-and checks are empty until WP-14's decision store (`localHub/decisions.ts` is the seam). On the first start after the
-change the app asks Ash OS once, read-only (`src-tauri/src/ash_os_import.rs`), and offers to import its projects,
-memberships and kept Pages; if nothing answers it starts clean and never asks again.
+and checks are empty until WP-14's decision store (`localHub/decisions.ts` is the seam). On a start after the change
+the app asks Ash OS, read-only (`src-tauri/src/ash_os_import.rs`), and offers once to import its projects, memberships
+and kept Pages. Only a sure answer is kept: no Ash OS on the Mac (no key file, or a dev copy with no stand-in) starts
+clean for good; Ash OS not answering this time decides nothing and the next start tries again. Settings → Export and
+import → "Bring over from Ash OS" runs it again at any time (it only adds). Every hub chat denies `mcp__ash-os`, so
+Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
+only on top of the latest one and every window hears `local-hub://changed`.
 
 ## Export and import (Phase 5, docs/PORTABLE.md)
 

@@ -112,7 +112,7 @@ describe("the project Leads", () => {
     };
     expect(hubChatIdentity("chat-hivra", lookups)).toMatchObject({ kind: "mono", monoId: "hivra-lead", role: "lead", chat: "chat-hivra" });
     // Nothing but the fence round the Monos' home, which every hub chat has, and no Claude Code worktrees of its own.
-    expect(hubMcpArgs("chat-hivra", { cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
+    expect(hubMcpArgs("chat-hivra", { cli: null }, lookups)).toEqual(["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...HUB_WORKTREE_DENIED_TOOLS].join(",")]);
   });
 
   it("have a soul in Ash's words: orchestrator, short briefs in his words to workers (r77), DeepSeek workers and no Claude subscription, memory loads by itself, dumps verbatim, verify, Looks right only when critical, identity", () => {
@@ -128,7 +128,7 @@ describe("the project Leads", () => {
       "Your project's memory loads by itself",
       "`vg-game`'s current decisions and never-do rules and Ash's global ones (`ash`)",
       "You read and write only `vg-game` and `ash` (how Ash works), never another project's memory",
-      "`ash_dump`, in Ash's words verbatim",
+      "search `~/agent-memory/vg-game/`",
       "Verify your own work: tests, an independent check, proof",
       'Ask Ash for "Looks right" only on very critical work',
       "## Who you are\n- You are vg-game-lead, the lead of vg-game.",
@@ -136,7 +136,9 @@ describe("the project Leads", () => {
     ])
       expect(soul).toContain(phrase);
     expect(soul).not.toMatch(/sonnet|done by Claude Code/i);
-    expect(leadSoul(LEADS[3], "/x")).toMatch(/^You are MonoCode Hub lead, the lead for MonoCode Hub \(Ash OS project `hub`\), working in \/x\./);
+    // WP-04: Ash OS and its tools are retired; the soul teaches none of them.
+    expect(soul).not.toMatch(/\bash_[a-z_]+|Ash OS project/);
+    expect(leadSoul(LEADS[3], "/x")).toMatch(/^You are MonoCode Hub lead, the lead for MonoCode Hub \(project `hub`\), working in \/x\./);
   });
 
   it("get their SOUL.md and MEMORY.md written into the app-data folder (monos/<id>/)", async () => {
@@ -261,7 +263,7 @@ describe("the MonoCode Hub lead (the harness moved from `ash` to `hub`, 19 Oct)"
     ensureProjectLeads(PROJECTS);
     expect(await reseedAdoptedLeadSoul("ash-lead", "/Users/ash/Projects/monocode-hub", defaultSoul, read, write)).toBe(true);
     const soul = files.get("ash-lead/SOUL.md")!;
-    expect(soul).toContain("You are MonoCode Hub lead, the lead for MonoCode Hub (Ash OS project `hub`), working in /Users/ash/Projects/monocode-hub.");
+    expect(soul).toContain("You are MonoCode Hub lead, the lead for MonoCode Hub (project `hub`), working in /Users/ash/Projects/monocode-hub.");
     for (const rule of ["Never edit the main checkout directly", "`npm run hub:dev`", "`npm run hub:check-all && npm run hub:build && npm run hub:ship`", "Start-ack", "You are ash-lead, the lead of hub."])
       expect(soul).toContain(rule);
     expect(files.get("ash-lead/memory/harness-lead-soul.md")).toContain("You are Harness lead");

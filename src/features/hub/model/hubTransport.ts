@@ -1,6 +1,6 @@
 // The hub store's transport: one interface the store reads and writes through, so it can be tested against a
 // stand-in. The app's own transport answers everything locally (localHub/localTransport.ts, WP-04); the Ash OS bridge
-// that used to sit behind it is retired (tag the archive tag).
+// that used to sit behind it is retired (its last code is tagged `archive/ash-os-bridge`).
 
 /** `server`: the answer was a failure on the other side (kept for stand-ins). */
 export type HubErrorKind = "unreachable" | "timeout" | "unauthorized" | "refused" | "server" | "error";

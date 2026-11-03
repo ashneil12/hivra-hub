@@ -94,9 +94,16 @@ export const OLD_MONO_COPY_DENIED_TOOLS = [
   "Bash(*com.ash.monocode-hub/monos*)",
 ];
 
-/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
+/**
+ * WP-04: the app's own `ash-os` entry used to replace, by name, the one in Ash's own Claude Code settings
+ * (~/.claude.json). With it retired, Claude Code would load Ash's, unscoped (no Mono, role or project), in every hub
+ * chat. Every tool of a server by that name is denied instead.
+ */
+export const ASH_OS_DENIED_TOOLS = ["mcp__ash-os"];
+
+/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, Ash's own Ash OS server (WP-04), reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
@@ -133,7 +140,7 @@ export type HubChatIdentity = {
   monoId?: string;
   role?: HubRole;
   /**
-   * The Ash OS projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
+   * The projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
    * under it, and a coding-team chat's project, for it and its workers. Absent for everyone else (the leadership team
    * reads every project, and names one when an ask does).
    */
@@ -147,7 +154,7 @@ export type HubChatLookups = {
   /** The Mono a habit run works for. */
   habitRunMono(sessionId: string): string | undefined;
   isLead(monoId: string): boolean;
-  /** The Ash OS project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
+  /** The project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
   leadProject?(monoId: string): string | undefined;
   /** The hub project whose coding team this chat is in (codingTeam.ts); undefined for any other chat. */
   codingTeamProject?(sessionId: string): string | undefined;
@@ -378,10 +385,3 @@ export function chatProjects(sessionId: string): string[] {
   return registered ? (hubChatIdentity(sessionId, registered.lookups).projects ?? []) : [];
 }
 
-/**
- * Whether a chat's session has memory tools (ash_recall and the rest). They came from the Ash OS entry, retired with
- * the bridge (WP-04), so no engine has them: every chat gets its memory in the prompt and reads the files.
- */
-export function hasMemoryTools(_harness: string): boolean {
-  return false;
-}

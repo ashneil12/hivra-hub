@@ -4,6 +4,7 @@
 // shapes. A call the bridge had and the app no longer makes (the Today ledger, Since, the change feed, building a page
 // or changing the hub through Ash OS) is refused in plain words.
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { tauriDelegations } from "../../../monos/model/delegations";
 import { HubCallError, type HubFeedHandlers, type HubTransport } from "../hubTransport";
 import { delegationDecisions, isDecisionAction, type DecisionSource } from "./decisions";
@@ -13,9 +14,30 @@ type Payload = Record<string, unknown>;
 
 /** The app's database, through the hub plugin (src-tauri/src/local_hub.rs). */
 export const tauriLocalHubDisk: LocalHubDisk = {
-  read: (key) => invoke("plugin:hub|local_hub_read", { key }),
-  write: (key, value) => invoke("plugin:hub|local_hub_write", { key, value }),
+  read: async (key) => (await tauriLocalHubDisk.readDoc(key)).value,
+  readDoc: async (key) => {
+    const doc = await invoke<{ value: unknown; rev: number }>("plugin:hub|local_hub_read", { key });
+    return { value: doc?.value ?? null, rev: typeof doc?.rev === "number" ? doc.rev : 0 };
+  },
+  write: (key, value, rev) => invoke<number | null>("plugin:hub|local_hub_write", { key, value, expectRev: rev ?? null }),
+  // Every window hears every write (local_hub.rs CHANGED_EVENT), its own included; LocalHub skips revisions it knows.
+  watch: (onChange) => {
+    let stop: (() => void) | undefined;
+    let stopped = false;
+    void listen<{ key?: unknown; rev?: unknown }>(LOCAL_HUB_CHANGED, ({ payload }) => {
+      if (typeof payload?.key === "string" && typeof payload.rev === "number") onChange(payload.key, payload.rev);
+    })
+      .then((unlisten) => (stopped ? unlisten() : (stop = unlisten)))
+      .catch(() => undefined);
+    return () => {
+      stopped = true;
+      stop?.();
+    };
+  },
 };
+
+/** The event local_hub.rs sends to every window after a write. */
+export const LOCAL_HUB_CHANGED = "local-hub://changed";
 
 export function createLocalTransport(hub: LocalHub, decisions: DecisionSource): HubTransport & { hub: LocalHub } {
   let seq = 0;

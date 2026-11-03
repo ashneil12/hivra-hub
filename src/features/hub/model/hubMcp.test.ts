@@ -5,7 +5,6 @@ import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integratio
 import {
   chatProjects,
   CHECKER_MONO_ID,
-  hasMemoryTools,
   hasDelegateTool,
   hubChatIdentity,
   hubMcpArgs,
@@ -111,13 +110,11 @@ describe("a chat's project (ASH_PROJECT): what memory it may reach", () => {
     expect(hubChatIdentity("chat-exo", lookups).projects).toBeUndefined();
   });
 
-  it("is what the registered lookups say, and no chat has memory tools since Ash OS is retired", () => {
+  it("is what the registered lookups say", () => {
     expect(chatProjects("app-chat-exo-r1")).toEqual([]);
     setHubMcpServers({ cli: null }, withProjects);
     expect(chatProjects("app-chat-exo-r1")).toEqual(["vg-game"]);
     expect(chatProjects("chat-cos")).toEqual([]);
-    expect(hasMemoryTools("claude")).toBe(false);
-    expect(hasMemoryTools("codex")).toBe(false);
   });
 });
 
@@ -181,7 +178,7 @@ describe("the delegate tool", () => {
       "monocode",
     ]);
     // Only the fence round the Monos' home, which every hub chat has.
-    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(",")];
+    const fence = ["--disallowedTools", ["Edit(~/agent-memory/monos/**)", ...OLD_MONO_COPY_DENIED_TOOLS, "mcp__ash-os", ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES].join(",")];
     expect(hubMcpArgs("plain-1", { cli: CLI }, lookups)).toEqual(fence);
     // A Mono's chat also has Claude Code's own worktree tools kept from it (the app makes its workers' checkouts).
     expect(hubMcpArgs("chat-frank", { cli: null }, lookups)).toEqual([
@@ -335,4 +332,23 @@ it("r48: no hub chat reads the daily app's frozen old Mono copy (ash-lead, no Ba
   // Edits in the live home are still denied; reading it is not.
   expect(chatDeniedTools()).toContain("Edit(~/agent-memory/monos/**)");
   expect(chatDeniedTools().some((r) => r.startsWith("Read(~/agent-memory"))).toBe(false);
+});
+
+describe("Ash's own Ash OS server (WP-04 review)", () => {
+  // Our ash-os entry used to replace Ash's user-scope one by name; with ours gone, Claude Code would load his, unscoped.
+  it("is denied in every Claude process the app starts: Mono, plain, worker, checker and helper chats", () => {
+    const denied = (args: string[]) =>
+      args.flatMap((a, i) => (args[i - 1] === "--disallowedTools" ? a.split(",") : []));
+    expect(chatDeniedTools()).toContain("mcp__ash-os");
+    for (const session of ["chat-exo", "chat-frank", "plain-1", "chat-checker"]) {
+      expect(denied(hubMcpArgs(session, { cli: CLI }, lookups))).toContain("mcp__ash-os");
+    }
+    expect(denied(monoHomeFenceArgs())).toContain("mcp__ash-os");
+  });
+
+  it("never comes back as an entry of ours", () => {
+    for (const session of ["chat-exo", "chat-frank", "plain-1"]) {
+      expect(hubMcpArgs(session, { cli: CLI }, lookups).join(" ")).not.toContain('"ash-os"');
+    }
+  });
 });

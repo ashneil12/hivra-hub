@@ -448,7 +448,7 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
 export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
-  const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (Ash OS project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
+  const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
   const rules = forUser(TEAM_CHAT_RULES.split("PROJECT_FOLDER").join(team.folder));
   const withRules = `${note}\n\n${rules}`;
   return options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;

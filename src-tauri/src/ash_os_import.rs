@@ -21,11 +21,25 @@ const TOKEN_SUBPATH: &str = ".local/share/exo-cc-studio/token";
 const READS: [&str; 3] = ["ash-hub-projects", "ash-hub-mono-projects", "ash-hub-pages"];
 const MAX_ANSWER: u64 = 32_000_000;
 
-/// What the import found. `reachable: false` (with a plain `message`) means start clean.
+/// Whether there is anything to ask about, and whether that answer is final.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ImportState {
+    /// Ash OS answered: its projects, memberships and kept Pages are below.
+    Found,
+    /// There is no Ash OS to import from, for good: no key file on this Mac, a dev copy with no stand-in named, or a
+    /// service there that has no projects call. The app starts clean and never asks again.
+    Absent,
+    /// Ash OS is set up here but didn't answer this time (not running, timed out, an error or an answer the app
+    /// couldn't read, or a pages or memberships read that failed). Nothing is decided: the app tries again next start.
+    Unreachable,
+}
+
+/// What the import found. Anything but `found` comes with a plain `message`.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportFound {
-    pub reachable: bool,
+    pub state: ImportState,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     pub projects: Value,
@@ -34,13 +48,32 @@ pub struct ImportFound {
 }
 
 impl ImportFound {
-    fn none(message: impl Into<String>) -> Self {
+    fn not_found(state: ImportState, message: impl Into<String>) -> Self {
         Self {
-            reachable: false,
+            state,
             message: Some(message.into()),
             projects: json!([]),
             memberships: json!([]),
             pages: json!([]),
+        }
+    }
+}
+
+/// Why a read gave nothing.
+#[derive(Debug, Clone, PartialEq)]
+enum ReadError {
+    /// No key file: there is no Ash OS here.
+    NoKey(String),
+    /// The service has no such call (404).
+    NoSuchCall(String),
+    /// Anything that may pass: not running, a timeout, another error, an unreadable answer.
+    Transient(String),
+}
+
+impl ReadError {
+    fn message(self) -> String {
+        match self {
+            Self::NoKey(m) | Self::NoSuchCall(m) | Self::Transient(m) => m,
         }
     }
 }
@@ -103,15 +136,17 @@ fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
 }
 
 /// One read. Only the three import reads are ever sent.
-fn read_call(endpoint: &Endpoint, action: &str, payload: Value) -> Result<Value, String> {
+fn read_call(endpoint: &Endpoint, action: &str, payload: Value) -> Result<Value, ReadError> {
     if !READS.contains(&action) {
-        return Err(format!("The import never sends {action}."));
+        return Err(ReadError::NoSuchCall(format!(
+            "The import never sends {action}."
+        )));
     }
     let token = std::fs::read_to_string(&endpoint.token_path)
         .ok()
         .map(|raw| raw.trim().to_string())
         .filter(|raw| !raw.is_empty())
-        .ok_or_else(|| "Ash OS isn't running.".to_string())?;
+        .ok_or_else(|| ReadError::NoKey("Ash OS isn't set up on this Mac.".to_string()))?;
     let agent = ureq::AgentBuilder::new()
         .try_proxy_from_env(false)
         .redirects(0)
@@ -124,25 +159,31 @@ fn read_call(endpoint: &Endpoint, action: &str, payload: Value) -> Result<Value,
         .set("Content-Type", "application/json")
         .send_string(&payload.to_string())
         .map_err(|error| match error {
-            ureq::Error::Status(code, _) => {
-                format!("Ash OS answered {action} with an error ({code}).")
+            ureq::Error::Status(404, _) => {
+                ReadError::NoSuchCall(format!("Ash OS has no {action}."))
             }
-            ureq::Error::Transport(_) => "Ash OS isn't running.".to_string(),
+            ureq::Error::Status(code, _) => {
+                ReadError::Transient(format!("Ash OS answered {action} with an error ({code})."))
+            }
+            ureq::Error::Transport(_) => ReadError::Transient("Ash OS isn't running.".to_string()),
         })?;
     let mut raw = Vec::new();
     response
         .into_reader()
         .take(MAX_ANSWER)
         .read_to_end(&mut raw)
-        .map_err(|_| "Ash OS's answer was cut short.".to_string())?;
-    let value: Value = serde_json::from_slice(&raw)
-        .map_err(|_| "Ash OS gave an answer the app couldn't read.".to_string())?;
+        .map_err(|_| ReadError::Transient("Ash OS's answer was cut short.".to_string()))?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|_| {
+        ReadError::Transient("Ash OS gave an answer the app couldn't read.".to_string())
+    })?;
     if value.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err(value
-            .get("error")
-            .and_then(Value::as_str)
-            .unwrap_or("Ash OS didn't answer.")
-            .to_string());
+        return Err(ReadError::Transient(
+            value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Ash OS didn't answer.")
+                .to_string(),
+        ));
     }
     Ok(value.get("result").cloned().unwrap_or(Value::Null))
 }
@@ -154,8 +195,18 @@ fn list(value: &Value, key: &str) -> Value {
     }
 }
 
-/// Everything the import takes, or `reachable: false`. Projects (archived ones too, so Ash keeps them), every Mono's
-/// projects, and kept Pages only (a removed page stays behind).
+/// An optional read: an older Ash OS without the call (404) gives an empty list; any other failure fails the import.
+fn optional(endpoint: &Endpoint, action: &str, key: &str) -> Result<Value, String> {
+    match read_call(endpoint, action, json!({})) {
+        Ok(value) => Ok(list(&value, key)),
+        Err(ReadError::NoSuchCall(_)) => Ok(json!([])),
+        Err(error) => Err(error.message()),
+    }
+}
+
+/// Everything the import takes. Projects (archived ones too, so Ash keeps them), every Mono's projects, and kept Pages
+/// only (a removed page stays behind). Never a partial answer: a failed pages or memberships read is `unreachable`,
+/// so a later try brings them too.
 fn fetch(endpoint: &Endpoint) -> ImportFound {
     let projects = match read_call(
         endpoint,
@@ -163,17 +214,22 @@ fn fetch(endpoint: &Endpoint) -> ImportFound {
         json!({"include_archived": true}),
     ) {
         Ok(projects) => projects,
-        Err(message) => return ImportFound::none(message),
+        Err(error @ (ReadError::NoKey(_) | ReadError::NoSuchCall(_))) => {
+            return ImportFound::not_found(ImportState::Absent, error.message())
+        }
+        Err(error) => return ImportFound::not_found(ImportState::Unreachable, error.message()),
     };
-    // The two others are optional: an older Ash OS without them still gives its projects.
-    let memberships = read_call(endpoint, "ash-hub-mono-projects", json!({}))
-        .map(|v| list(&v, "memberships"))
-        .unwrap_or_else(|_| json!([]));
-    let pages = read_call(endpoint, "ash-hub-pages", json!({}))
-        .map(|v| list(&v, "pages"))
-        .unwrap_or_else(|_| json!([]));
+    let (memberships, pages) = match (
+        optional(endpoint, "ash-hub-mono-projects", "memberships"),
+        optional(endpoint, "ash-hub-pages", "pages"),
+    ) {
+        (Ok(memberships), Ok(pages)) => (memberships, pages),
+        (Err(message), _) | (_, Err(message)) => {
+            return ImportFound::not_found(ImportState::Unreachable, message)
+        }
+    };
     ImportFound {
-        reachable: true,
+        state: ImportState::Found,
         message: None,
         projects: list(&projects, "projects"),
         memberships,
@@ -195,7 +251,8 @@ pub fn ash_os_import_fetch() -> ImportFound {
     );
     match endpoint {
         Ok(endpoint) => fetch(&endpoint),
-        Err(message) => ImportFound::none(message),
+        // A dev copy with no stand-in, or no home to find the key in: nothing to import from, for good.
+        Err(message) => ImportFound::not_found(ImportState::Absent, message),
     }
 }
 
@@ -255,7 +312,11 @@ mod tests {
                         .iter()
                         .find(|(name, _)| path == format!("/api/{name}"))
                     {
-                        Some((_, result)) => (200, json!({"ok": true, "result": result})),
+                        // A result of {"status": N} answers that HTTP status instead (a stand-in having a bad moment).
+                        Some((_, result)) => match result.get("status").and_then(Value::as_u64) {
+                            Some(code) => (code as u16, json!({"ok": false, "error": "busy"})),
+                            None => (200, json!({"ok": true, "result": result})),
+                        },
                         None => (404, json!({"ok": false, "error": "Unknown endpoint"})),
                     }
                 };
@@ -301,7 +362,7 @@ mod tests {
         )
         .unwrap();
         let found = fetch(&endpoint);
-        assert!(found.reachable, "{found:?}");
+        assert_eq!(found.state, ImportState::Found, "{found:?}");
         assert_eq!(found.projects[0]["id"], "exo");
         assert_eq!(found.memberships[0]["monoId"], "frank");
         assert_eq!(found.pages[0]["id"], "pg-1");
@@ -329,14 +390,54 @@ mod tests {
         )]);
         let endpoint = resolve(false, Some(port.to_string()), Some(token), None, None).unwrap();
         let found = fetch(&endpoint);
-        assert!(found.reachable);
+        assert_eq!(found.state, ImportState::Found);
         assert_eq!(found.memberships, json!([]));
         assert_eq!(found.pages, json!([]));
         let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
-    fn nothing_answering_means_start_clean() {
+    fn a_bad_moment_is_not_final_and_never_a_partial_import() {
+        let dir = temp_dir();
+        let token = dir.join("token");
+        std::fs::write(&token, SECRET).unwrap();
+        let projects = ("ash-hub-projects", json!({"projects": [{"id": "exo"}]}));
+        let endpoint_for = |port: u16| {
+            resolve(
+                false,
+                Some(port.to_string()),
+                Some(token.clone()),
+                None,
+                None,
+            )
+            .unwrap()
+        };
+        // Projects answer, pages fail with a 500: the whole import waits for next time (no projects without their pages).
+        let (port, _) = stand_in(vec![
+            projects.clone(),
+            ("ash-hub-mono-projects", json!({"memberships": []})),
+            ("ash-hub-pages", json!({"status": 500})),
+        ]);
+        let found = fetch(&endpoint_for(port));
+        assert_eq!(found.state, ImportState::Unreachable, "{found:?}");
+        assert_eq!(found.projects, json!([]));
+        // The same for memberships.
+        let (port, _) = stand_in(vec![
+            projects.clone(),
+            ("ash-hub-mono-projects", json!({"status": 503})),
+        ]);
+        assert_eq!(fetch(&endpoint_for(port)).state, ImportState::Unreachable);
+        // Projects themselves failing: not final either.
+        let (port, _) = stand_in(vec![("ash-hub-projects", json!({"status": 502}))]);
+        assert_eq!(fetch(&endpoint_for(port)).state, ImportState::Unreachable);
+        // A service with no projects call at all (404) is not an Ash OS to import from: final.
+        let (port, _) = stand_in(vec![]);
+        assert_eq!(fetch(&endpoint_for(port)).state, ImportState::Absent);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn nothing_answering_is_not_final_and_no_key_is() {
         let dir = temp_dir();
         let token = dir.join("token");
         std::fs::write(&token, SECRET).unwrap();
@@ -353,12 +454,13 @@ mod tests {
             None,
         )
         .unwrap();
+        // Set up here but not running: nothing is decided, the app tries again next start.
         let found = fetch(&endpoint);
-        assert!(!found.reachable);
+        assert_eq!(found.state, ImportState::Unreachable);
         assert_eq!(found.projects, json!([]));
-        // No key file: also clean.
+        // No key file: there is no Ash OS here, for good.
         std::fs::remove_file(&token).unwrap();
-        assert!(!fetch(&endpoint).reachable);
+        assert_eq!(fetch(&endpoint).state, ImportState::Absent);
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -421,6 +523,7 @@ mod tests {
         ] {
             assert!(read_call(&endpoint, write, json!({}))
                 .unwrap_err()
+                .message()
                 .contains("never sends"));
         }
     }

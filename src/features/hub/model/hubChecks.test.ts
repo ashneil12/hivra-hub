@@ -46,9 +46,10 @@ describe("what Ash OS lists", () => {
     expect(checks.map((c) => c.id)).toEqual(["ck_1", "ck_2"]);
     expect(checks[0].prompt.startsWith(CHECK_PREFIX)).toBe(true);
     expect(checks[0]).toMatchObject({ monoId: "vg-game-lead", chatId: "chat-exo", askIds: ["a_1020save01"] });
-    // Without a turn from Ash OS, one of our own, with the same answer instruction.
+    // Without a turn of its own, one of ours: answered in the reply, with no Ash OS tools (WP-04).
     expect(checks[1].prompt).toContain(CHECK_PREFIX);
-    expect(checks[1].prompt).toContain('ash_record check {"id": "ck_2", "verdict": "right"');
+    expect(checks[1].prompt).toContain('start your reply with "Right:"');
+    expect(checks[1].prompt).not.toMatch(/ash_\w+/);
     expect(mapChecks({})).toEqual([]);
     expect(mapChecks(null)).toEqual([]);
   });

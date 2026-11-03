@@ -7,7 +7,6 @@
 // the memory changed, or when the turn that carried it never went in. Without a primer (Ash OS unreachable, or no such
 // project) nothing is added and the seat reads memory as before.
 import { fetchMemoryPrimer, memoryPrimerBlock } from "./hubMemoryPrimer";
-import { hasMemoryTools } from "./hubMcp";
 
 /** A room turn never waits longer than this for the primer (it is cached for a minute after the first read). */
 export const ROOM_PRIMER_TIMEOUT_MS = 1_500;
@@ -35,6 +34,6 @@ export async function roomMemory(
   if (!primer) return undefined;
   const key = JSON.stringify([session.providerSessionId ?? "", project, primer.text]);
   if (read.get(session.id) === key) return undefined;
-  const block = `This room is the ${project} project's. Its memory, the same its Lead starts with: check what the others say against it before you challenge them.\n${memoryPrimerBlock(project, primer, { tools: hasMemoryTools(session.harness), worker: false })}`;
+  const block = `This room is the ${project} project's. Its memory, the same its Lead starts with: check what the others say against it before you challenge them.\n${memoryPrimerBlock(project, primer, { worker: false })}`;
   return { block, delivered: () => void read.set(session.id, key) };
 }

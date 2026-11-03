@@ -1,6 +1,6 @@
 // The memory a project's Lead and its workers start with (hubMemoryPrimer.ts): read through the caller's own reader
-// (none since Ash OS is retired, WP-04) for the chat's own project only, cached briefly, never holding a send up for long, and worded for what the chat can do next (search
-// with ash_recall on Claude Code, read the files on any other engine).
+// (none since Ash OS is retired, WP-04) for the chat's own project only, cached briefly, never holding a send up for long, and worded for what the chat can do next (read
+// more from its files: no chat has memory tools since Ash OS is retired).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setHubMcpServers, type HubChatLookups } from "./hubMcp";
 import {
@@ -75,36 +75,29 @@ describe("reading the primer", () => {
 });
 
 describe("the block a session reads", () => {
-  it("on Claude Code: the memory, then search further with ash_recall, own project and ash only", () => {
-    const lead = memoryPrimerBlock("hivra", PRIMER, { tools: true, worker: false });
+  it("the memory, then where its files are; own project and ash only; a Lead saves Ash's calls there", () => {
+    const lead = memoryPrimerBlock("hivra", PRIMER, { worker: false });
     expect(lead.startsWith("<project_memory>\n")).toBe(true);
     expect(lead.endsWith("\n</project_memory>")).toBe(true);
     expect(lead).toContain("Never delete a customer VM");
     expect(lead).toContain("Codex is for image generation only");
-    expect(lead).toContain('ash_recall: a query, project "hivra"');
+    expect(lead).toContain("For more, read never.md and decisions.md in /Users/ash/agent-memory/hivra");
     expect(lead).toContain("You read and write only hivra's memory and Ash's global memory (ash); never another project's.");
-    expect(lead).toContain("ash_remember");
-    // a worker reports what Ash decides; it can't save memory itself
-    const worker = memoryPrimerBlock("hivra", PRIMER, { tools: true, worker: true });
-    expect(worker).not.toContain("ash_remember");
+    expect(lead).toContain("Save to /Users/ash/agent-memory/hivra/decisions.md at once when Ash makes a call");
+    // no chat has memory tools since Ash OS is retired (WP-04)
+    expect(lead).not.toMatch(/ash_\w+/);
+    // a worker reports what Ash decides; it doesn't save memory itself
+    const worker = memoryPrimerBlock("hivra", PRIMER, { worker: true });
+    expect(worker).not.toContain("Save to");
     expect(worker).toContain("your report to whoever briefed you");
   });
 
-  it("on any other engine: the same memory, and where its files are instead of tools it doesn't have", () => {
-    const block = memoryPrimerBlock("hivra", PRIMER, { tools: false, worker: true });
-    expect(block).toContain("Never delete a customer VM");
-    expect(block).not.toContain("ash_recall");
-    expect(block).toContain("For more, read never.md");
-    expect(block).toContain("never.md and decisions.md in /Users/ash/agent-memory/hivra");
-  });
-
   it("says how to read the memory when none was loaded", () => {
-    expect(memoryPrimerBlock("hivra", undefined, { tools: true, worker: false })).toContain(
-      'ash_recall with project "hivra"',
-    );
-    expect(memoryPrimerBlock("hivra", undefined, { tools: false, worker: true })).toContain(
-      "~/agent-memory/hivra/MEMORY.md",
-    );
+    for (const worker of [false, true]) {
+      const block = memoryPrimerBlock("hivra", undefined, { worker });
+      expect(block).toContain("~/agent-memory/hivra/MEMORY.md");
+      expect(block).not.toMatch(/ash_\w+/);
+    }
   });
 });
 

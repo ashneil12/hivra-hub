@@ -1,5 +1,9 @@
 // Checks reach the chat that owns one of Ash's messages (docs/PHASE-2-DESIGN.md, decision 4 and H6).
 //
+// WP-04: Ash OS is retired, so no checks arrive until WP-14's decision store (localHub/decisions.ts); the history below
+// is how they were delivered, and a check's own prompt is used as given. The owner answers in its reply ("Right: ...",
+// "Fixed: ..."), with no Ash OS tools.
+//
 // The checker (hubChecker.ts) leaves its findings in Ash OS. The hub store pulls the ones not yet delivered
 // (`checks`, on feed topic `checks` and at boot) and the app hands each to its owner's chat as one
 // `[MonoCode check]` turn (app/hooks/useHubChecks.ts):
@@ -40,7 +44,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 
 /** A turn of our own when Ash OS sent none (it always does): the same answer instruction. */
 function fallbackPrompt(id: string, dumpId: string, finding: string): string {
-  return forUser`${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it (ash_dump_status ${dumpId}). If it was handled right as it is, answer with ash_record check {"id": "${id}", "verdict": "right", "note": "<why>"}. If not, fix it first, then answer with verdict "fixed" and say what you did.`;
+  return forUser`${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it here (check ${id}). If it was handled right as it is, start your reply with "Right:" and say why. If not, fix it first, then start your reply with "Fixed:" and say what you did.`;
 }
 
 export function mapCheck(raw: unknown): HubCheck | undefined {

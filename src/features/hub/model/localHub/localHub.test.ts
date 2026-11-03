@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LocalHub, memoryDisk } from "./localHub";
 import { createLocalTransport } from "./localTransport";
 import { delegationDecisions, delegationJobGroups } from "./decisions";
-import { runAshOsImport, IMPORT_KEY, type ImportFound } from "./ashOsImport";
+import { answerOf, importFromAshOsAgain, importOutcome, runAshOsImport, IMPORT_KEY, type ImportAnswer, type ImportFound } from "./ashOsImport";
 import type { Delegation } from "../../../monos/model/delegations";
 
 const blocks = (title: string) => ({ kind: "blocks", title, blocks: [{ kind: "note", title: "n", text: "t" }] });
@@ -87,9 +87,92 @@ describe("Being built from the app's own delegations", () => {
   });
 });
 
+describe("two windows on one database (WP-04 review)", () => {
+  it("neither overwrites the other's change: each starts from the disk, not its own copy", async () => {
+    const disk = memoryDisk();
+    const one = new LocalHub(disk);
+    const two = new LocalHub(disk);
+    // Both have read the record before either writes.
+    await one.projects();
+    await two.projects();
+    await one.projectCreate({ name: "EXO game", project_id: "exo" });
+    await two.projectCreate({ name: "Nibbii", project_id: "nibbii" });
+    await one.monoProjectAdd({ mono_id: "exo-lead", project_id: "exo", role: "lead" });
+    await two.monoProjectAdd({ mono_id: "frank", project_id: "exo" });
+    // two knew nothing of exo from its own copy, and adds to it all the same.
+    const fresh = new LocalHub(disk);
+    expect((await fresh.projects()).projects.map((p) => p.id)).toEqual(["exo", "nibbii"]);
+    expect((await fresh.monoProjects()).byProject).toEqual({ exo: ["exo-lead", "frank"] });
+  });
+
+  it("a write from an older copy is refused on disk and made again on top", async () => {
+    const disk = memoryDisk();
+    const one = new LocalHub(disk);
+    await one.projectCreate({ name: "EXO game", project_id: "exo" });
+    // Another window writes between one's read and its write, once.
+    const write = disk.write.bind(disk);
+    let raced = false;
+    disk.write = async (key, value, rev) => {
+      if (!raced && key === "projects") {
+        raced = true;
+        const now = (await disk.readDoc("projects")).value as { projects: unknown[] };
+        await write("projects", { projects: [...now.projects, { id: "nibbii", name: "Nibbii", shortName: "Nibbii", iconShape: "folder", folder: null }] });
+      }
+      return write(key, value, rev);
+    };
+    await one.projectRename({ project_id: "exo", name: "EXO" });
+    const names = (await new LocalHub(disk).projects()).projects.map((p) => p.name);
+    expect(names).toEqual(["EXO", "Nibbii"]);
+  });
+
+  it("changes in one window run in order, even when called together", async () => {
+    const disk = memoryDisk();
+    const hub = new LocalHub(disk);
+    await hub.projectCreate({ name: "EXO game", project_id: "exo" });
+    await Promise.all(["a", "b", "c", "d"].map((m) => hub.monoProjectAdd({ mono_id: m, project_id: "exo" })));
+    expect((await new LocalHub(disk).monoProjects()).byProject.exo).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("the other window hears the change and reads again; its own writes don't make it re-read", async () => {
+    const disk = memoryDisk();
+    const one = new LocalHub(disk);
+    const two = new LocalHub(disk);
+    await two.projects();
+    let heardByTwo = 0;
+    let heardByOne = 0;
+    two.onChange(() => (heardByTwo += 1));
+    one.onChange(() => (heardByOne += 1));
+    await one.projectCreate({ name: "EXO game", project_id: "exo" });
+    expect(heardByTwo).toBe(1);
+    expect(heardByOne).toBe(1); // its own change, once
+    expect((await two.projects()).projects.map((p) => p.id)).toEqual(["exo"]);
+  });
+
+  it("a change that fails leaves the record and the window's copy as they were", async () => {
+    const hub = new LocalHub(memoryDisk());
+    await hub.pageUpdate({ pageId: "pg-1", projectId: "today", spec: blocks("Builds"), kept: true });
+    await expect(hub.pageUpdate({ pageId: "pg-1", spec: blocks("New title"), permissions: ["camera"] })).rejects.toThrow(/didn't ask/);
+    expect((await hub.pages()).pages.map((p) => p.title)).toEqual(["Builds"]);
+  });
+
+  it("a first read that fails is tried again next time", async () => {
+    const disk = memoryDisk();
+    const readDoc = disk.readDoc.bind(disk);
+    let fail = true;
+    disk.readDoc = async (key) => {
+      if (fail) throw new Error("database busy");
+      return readDoc(key);
+    };
+    const hub = new LocalHub(disk);
+    await expect(hub.projects()).rejects.toThrow("database busy");
+    fail = false;
+    expect((await hub.projects()).projects).toEqual([]);
+  });
+});
+
 describe("the one-time Ash OS import", () => {
   const found: ImportFound = {
-    reachable: true,
+    state: "found",
     projects: [{ id: "exo", name: "EXO game", folder: "/tmp/exo", iconShape: "gamepad" }],
     memberships: [{ monoId: "exo-lead", projectId: "exo", role: "lead" }, { monoId: "x", projectId: "gone" }],
     pages: [
@@ -97,12 +180,13 @@ describe("the one-time Ash OS import", () => {
       { id: "pg-2", projectId: "exo", state: "removed", removed: true, spec: blocks("Old") },
     ],
   };
+  const yes = async (): Promise<ImportAnswer> => "import";
 
   it("asks once, imports what Ash OS held, and never asks again", async () => {
     const disk = memoryDisk();
     const hub = new LocalHub(disk);
     const asked: string[] = [];
-    const deps = { fetch: async () => found, ask: async (q: string) => (asked.push(q), true) };
+    const deps = { fetch: async () => found, ask: async (q: string) => (asked.push(q), "import" as const) };
     const decision = await runAshOsImport(hub, deps);
     expect(decision).toMatchObject({ decided: "imported", added: { projects: 1, memberships: 1, pages: 1 } });
     expect(asked[0]).toMatch(/1 project and 1 kept Page/);
@@ -113,21 +197,58 @@ describe("the one-time Ash OS import", () => {
     expect((await again.pages()).pages.map((p) => p.id)).toEqual(["pg-1"]);
   });
 
-  it("starts clean when Ash OS doesn't answer or Ash says no", async () => {
+  it("starts clean for good when there is no Ash OS here, or Ash says Start clean", async () => {
     const quiet = new LocalHub(memoryDisk());
-    const none = await runAshOsImport(quiet, { fetch: async () => ({ ...found, reachable: false }), ask: async () => true });
-    expect(none.decided).toBe("none");
+    let reads = 0;
+    const absent = { fetch: async () => (reads++, { ...found, state: "absent" as const, message: "Ash OS isn't set up on this Mac." }), ask: yes };
+    expect((await runAshOsImport(quiet, absent)).decided).toBe("none");
+    expect((await runAshOsImport(quiet, absent)).decided).toBe("none");
+    expect(reads).toBe(1);
     expect((await quiet.projects()).projects).toEqual([]);
     const declined = new LocalHub(memoryDisk());
-    expect((await runAshOsImport(declined, { fetch: async () => found, ask: async () => false })).decided).toBe("declined");
+    expect((await runAshOsImport(declined, { fetch: async () => found, ask: async () => "clean" })).decided).toBe("declined");
     expect((await declined.projects()).projects).toEqual([]);
     expect(await declined.disk.read(IMPORT_KEY)).toMatchObject({ decided: "declined" });
+  });
+
+  it("a bad moment decides nothing: not answering, an error, or the question closed; the next start tries again (review)", async () => {
+    const hub = new LocalHub(memoryDisk());
+    const unreachable = { fetch: async () => ({ ...found, state: "unreachable" as const, message: "Ash OS answered ash-hub-pages with an error (500)." }), ask: yes };
+    expect(await runAshOsImport(hub, unreachable)).toMatchObject({ decided: "later", message: expect.stringMatching(/500/) });
+    expect(await hub.disk.read(IMPORT_KEY)).toBeNull();
+    const thrown = { fetch: async (): Promise<ImportFound> => { throw new Error("plugin not ready"); }, ask: yes };
+    expect((await runAshOsImport(hub, thrown)).decided).toBe("later");
+    expect(await hub.disk.read(IMPORT_KEY)).toBeNull();
+    // Esc on the question.
+    expect((await runAshOsImport(hub, { fetch: async () => found, ask: async () => "later" })).decided).toBe("later");
+    expect(await hub.disk.read(IMPORT_KEY)).toBeNull();
+    expect((await hub.projects()).projects).toEqual([]);
+    // Next start, Ash OS answers: it asks, and imports.
+    expect((await runAshOsImport(hub, { fetch: async () => found, ask: yes })).decided).toBe("imported");
+    expect((await hub.projects()).projects.map((p) => p.id)).toEqual(["exo"]);
+  });
+
+  it("Settings runs it again whatever was decided, and it still only adds", async () => {
+    const hub = new LocalHub(memoryDisk());
+    await runAshOsImport(hub, { fetch: async () => found, ask: async () => "clean" });
+    const again = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
+    expect(again).toMatchObject({ decided: "imported", added: { projects: 1 } });
+    expect(importOutcome(again)).toBe("Brought over 1 project, 1 Mono's project and 1 kept Page.");
+    const twice = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
+    expect(importOutcome(twice)).toBe("Everything Ash OS held is already here.");
+    expect(importOutcome(await importFromAshOsAgain(hub, { fetch: async () => ({ ...found, state: "unreachable", message: "Ash OS isn't running." }), ask: yes }))).toBe(
+      "Ash OS didn't answer (Ash OS isn't running.). Try again when it's running.",
+    );
+  });
+
+  it("reads the dialog: Import, Start clean, and closing it", () => {
+    expect([answerOf("Import"), answerOf("Start clean"), answerOf("Not now"), answerOf("Cancel")]).toEqual(["import", "clean", "later", "later"]);
   });
 
   it("only adds: a project already here keeps its own name", async () => {
     const hub = new LocalHub(memoryDisk());
     await hub.projectCreate({ name: "My EXO", project_id: "exo" });
-    await runAshOsImport(hub, { fetch: async () => found, ask: async () => true });
+    await runAshOsImport(hub, { fetch: async () => found, ask: yes });
     expect((await hub.projects()).projects.map((p) => p.name)).toEqual(["My EXO"]);
   });
 });

@@ -6,7 +6,7 @@
 //
 // A chat's project is its ASH_PROJECT (hubMcp.ts chatProjects): a Lead's own, inherited by its workers. The leadership
 // team, other Monos and plain chats have none and get no primer: they read memory as before.
-import { chatProjects, hasMemoryTools } from "./hubMcp";
+import { chatProjects } from "./hubMcp";
 import { forUser } from "./userName";
 
 /** A composed primer (the shape Ash OS used to answer). */
@@ -80,31 +80,23 @@ export async function fetchMemoryPrimer(
 }
 
 export type PrimerReader = {
-  /** The chat has memory tools (ash_recall, ash_remember): it can search further itself. */
-  tools: boolean;
-  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it with ash_remember (r76: his answer to its own question too). */
+  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it in the memory files (r76: his answer to its own question too). */
   worker: boolean;
 };
 
 /**
  * The block a session reads: the primer and what to do for more. Without a primer it says how to read the memory
- * instead.
+ * instead. There are no memory tools since Ash OS is retired (WP-04): every engine reads and writes the files.
  */
 export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefined, reader: PrimerReader): string {
   const folder = primer?.memory_dir ?? `~/agent-memory/${project}`;
   const own = forUser`You read and write only ${project}'s memory and Ash's global memory (ash); never another project's.`;
   if (!primer) {
-    return forUser`<project_memory>\nBefore you act, read ${project}'s memory: ${
-      reader.tools
-        ? forUser`ash_recall with project "${project}" (its current decisions and never-do rules, plus Ash's global ones).`
-        : `${folder}/MEMORY.md and ~/agent-memory/ash/MEMORY.md.`
-    } ${own}\n</project_memory>`;
+    return forUser`<project_memory>\nBefore you act, read ${project}'s memory: ${folder}/MEMORY.md and ~/agent-memory/ash/MEMORY.md. ${own}\n</project_memory>`;
   }
-  const more = reader.tools
-    ? forUser`For anything not here (older lines, what Ash said, what changed and when), search with ash_recall: a query, project "${project}". ${own}${
-        reader.worker ? "" : forUser(" Save to it with ash_remember at once when Ash makes a call: he answers a question you asked him, or says remember, lock or from now on (project ash only for how Ash works in every project). A half-made or contested thought stays unsaved.")
-      }`
-    : forUser`For more, read never.md and decisions.md in ${folder}. ${own}`;
+  const more = forUser`For more, read never.md and decisions.md in ${folder}. ${own}${
+    reader.worker ? "" : forUser(` Save to ${folder}/decisions.md at once when Ash makes a call: he answers a question you asked him, or says remember, lock or from now on (~/agent-memory/ash/ only for how Ash works in every project). A half-made or contested thought stays unsaved.`)
+  }`;
   return forUser`<project_memory>\nThis was loaded at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
     reader.worker ? forUser(" Anything Ash decides while you work goes in your report to whoever briefed you.") : ""
   }\n\n${primer.text.trim()}\n\n${more}\n</project_memory>`;
@@ -116,13 +108,13 @@ export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefi
  */
 export async function leadMemoryBlock(
   sessionId: string,
-  harness: string,
+  _harness: string,
   options: { call?: Call } = {},
 ): Promise<string | undefined> {
   const [project] = chatProjects(sessionId);
   if (!project) return undefined;
   const primer = await fetchMemoryPrimer(project, options);
-  return memoryPrimerBlock(project, primer, { tools: hasMemoryTools(harness), worker: false });
+  return memoryPrimerBlock(project, primer, { worker: false });
 }
 
 /**
@@ -131,11 +123,11 @@ export async function leadMemoryBlock(
  */
 export async function workerMemoryBlock(
   ownerSessionId: string,
-  harness: string,
+  _harness: string,
   options: { call?: Call } = {},
 ): Promise<string | undefined> {
   const [project] = chatProjects(ownerSessionId);
   if (!project) return undefined;
   const primer = await fetchMemoryPrimer(project, options);
-  return memoryPrimerBlock(project, primer, { tools: hasMemoryTools(harness), worker: true });
+  return memoryPrimerBlock(project, primer, { worker: true });
 }

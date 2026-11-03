@@ -15,6 +15,7 @@ fn main() {
         println!("cargo::rustc-link-arg-cdylib=-Wl,--exclude-libs=ALL,--exclude-all-symbols");
     }
     // The hub plugin's commands get their permissions here (capabilities/default.json allows `hub:default`).
+    // WP-04: the Ash OS bridge's commands are gone; the local store and the one-time import took their place.
     let hub = tauri_build::InlinedPlugin::new()
         .commands(&[
             "local_hub_read",

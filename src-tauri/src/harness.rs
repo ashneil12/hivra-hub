@@ -1054,6 +1054,7 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
     let pid = child.id();
