@@ -2,6 +2,7 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { hslToRgb, isHexColor, type Rgb } from "../../../shared/lib/colorUtils";
 import { IS_LINUX, IS_MAC } from "../../../platform/tauri/platform";
 import { readFlag, writeFlag } from "./storageFlags";
+import { HIVRA_INSET_LAYOUT, HIVRA_LAYOUT_FIXED } from "../../hub/model/hivraLayout";
 import { applyUiScale, loadUiScale } from "./uiScale";
 import {
   WORKSPACE_THEME_DEFAULT,
@@ -689,6 +690,8 @@ export function saveInsetGlass(value: boolean) {
 }
 
 export function loadInsetLayout(): boolean {
+  // WP-03: Hivra has one layout; the stored value is ignored (src/features/hub/model/hivraLayout.ts).
+  if (HIVRA_LAYOUT_FIXED) return HIVRA_INSET_LAYOUT;
   return readFlag(INSET_LAYOUT_KEY) ?? INSET_LAYOUT_DEFAULT;
 }
 
