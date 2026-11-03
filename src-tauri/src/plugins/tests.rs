@@ -48,6 +48,11 @@ fn skill(root: &Path, folder: &str, name: &str, description: &str) {
     );
 }
 
+/// Where a link points, resolved (Windows junctions may drop the `\\?\` prefix the plugin's root carries).
+fn points_to(link: &Path) -> Option<PathBuf> {
+    fsutil::link_target(link).map(|target| fsutil::resolved(&target))
+}
+
 fn pstack() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack")
 }
@@ -608,7 +613,7 @@ fn install_enable_disable_uninstall_leave_no_trace() {
     registry::enable(&host, "demo", &Scope::Global).unwrap();
     assert!(host.agents_skills.join("alpha/SKILL.md").is_file());
     assert_eq!(
-        fsutil::link_target(&host.agents_skills.join("beta")),
+        points_to(&host.agents_skills.join("beta")),
         Some(host.installed("demo").join("skills/beta"))
     );
 
@@ -661,7 +666,7 @@ fn links_it_did_not_make_are_never_replaced_or_removed() {
         .iter()
         .any(|r| r.message.contains("already has a skill called \"alpha\"")));
     assert_eq!(
-        fsutil::link_target(&host.agents_skills.join("alpha")),
+        points_to(&host.agents_skills.join("alpha")),
         Some(theirs.clone())
     );
     assert!(host.agents_skills.join("beta").exists());
@@ -672,14 +677,8 @@ fn links_it_did_not_make_are_never_replaced_or_removed() {
     fsutil::remove_tree(&host.agents_skills.join("beta")).unwrap();
     fsutil::link_dir(&elsewhere, &host.agents_skills.join("beta")).unwrap();
     registry::uninstall(&host, "demo").unwrap();
-    assert_eq!(
-        fsutil::link_target(&host.agents_skills.join("alpha")),
-        Some(theirs)
-    );
-    assert_eq!(
-        fsutil::link_target(&host.agents_skills.join("beta")),
-        Some(elsewhere)
-    );
+    assert_eq!(points_to(&host.agents_skills.join("alpha")), Some(theirs));
+    assert_eq!(points_to(&host.agents_skills.join("beta")), Some(elsewhere));
     fsutil::remove_tree(&host.agents_skills.join("beta")).unwrap();
     assert_eq!(fsutil::tree(&watched), before);
 }
