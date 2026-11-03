@@ -27,6 +27,20 @@ Third-party components Hivra adds:
   Used in: src/features/pages/ui/PagesView.tsx
   Restyled copy of the component, no package.
 
+- firstmate's contract text
+  Source: https://github.com/kunchenguid/firstmate
+  License: MIT
+  Copyright (c) 2026 Kun Chen
+  Used in: src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/
+  Role rules, the brief scaffold, the isolation check, the status protocol and the steering section, adapted (WP-10).
+
+- pstack (test fixture)
+  Source: https://github.com/cursor/plugins/tree/main/pstack
+  License: MIT
+  Copyright (c) 2026 Lauren Tan
+  Used in: src-tauri/src/plugins/fixtures/pstack
+  Copied unchanged from cursor/plugins at commit 6ea74587 as a test fixture, with its LICENSE (WP-30).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

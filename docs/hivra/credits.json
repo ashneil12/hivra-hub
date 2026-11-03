@@ -169,6 +169,22 @@
       "copyright": "Copyright Tremor Labs and the Tremor contributors",
       "where": "src/features/pages/ui/PagesView.tsx",
       "how": "Restyled copy of the component, no package"
+    },
+    {
+      "name": "firstmate's contract text",
+      "url": "https://github.com/kunchenguid/firstmate",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Kun Chen",
+      "where": "src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/",
+      "how": "Role rules, the brief scaffold, the isolation check, the status protocol and the steering section, adapted (WP-10)"
+    },
+    {
+      "name": "pstack (test fixture)",
+      "url": "https://github.com/cursor/plugins/tree/main/pstack",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Lauren Tan",
+      "where": "src-tauri/src/plugins/fixtures/pstack",
+      "how": "Copied unchanged from cursor/plugins at commit 6ea74587 as a test fixture, with its LICENSE (WP-30)"
     }
   ]
 }
