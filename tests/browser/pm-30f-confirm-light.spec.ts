@@ -1,8 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { PNG } from "pngjs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 import { ringContrast } from "./contrastProbe";
 
 // Round 30f proof (the real app in a browser, light theme, not Ash's Mac; made-up data labelled Example:): the room
@@ -12,11 +11,6 @@ import { ringContrast } from "./contrastProbe";
 //   PM_PROOF_SPEC=pm-30f-confirm-light.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs/on-r47 npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-30f";
-let stub: { url: string; close(): Promise<void> };
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 const lum = ([r, g, b]: number[]) =>
   [r, g, b].map((v) => { const c = v! / 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; })
@@ -74,7 +68,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1512, height: 982 });
   await page.addInitScript(() => localStorage.setItem("monocode.colorScheme", "light"));
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("html")).toHaveClass(/theme-light/, { timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);

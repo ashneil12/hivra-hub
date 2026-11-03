@@ -1,11 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // F2 (r53): a worker chat's "Worked for … · Jump in" bar floats over its transcript on glass, so the last lines scroll
 // on under it, blurred, instead of stopping at a hard edge; and the tab strip is glass over the page under it. Dark and
-// light. The real app in a browser (hub-dev.html on the stub), a worker sub-chat with a long transcript.
+// light. The real app in a browser (hub-dev.html on the local store), a worker sub-chat with a long transcript.
 //
 //   STUCK_PROOF_PORT=1523 PROOF_SPEC=glass-dock.spec.ts npx playwright test -c tests/browser/stuck-workers.config.ts
 
@@ -18,12 +17,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const FOLDER = "/Users/example/Projects/vg-game";
@@ -89,7 +82,7 @@ test("a worker chat's bar and the tab strip are glass over the scrolling transcr
     },
     { list: chats(now), team: TEAM_CHAT },
   );
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: /^EXO/ }).first().click();
   await expect(page.locator(`[data-session-card="${TEAM_CHAT}"]`)).toBeVisible({ timeout: 15_000 });

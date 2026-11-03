@@ -256,6 +256,11 @@ export type HarnessSessionInput = {
   controlsAgents?: boolean;
   /** Grants this normal turn access to MonoCode's scoped app CLI. */
   appAccess?: boolean;
+  /**
+   * Hivra WP-10: this session is a first mate, which reads and never edits the project. CLIs that can run read-only do
+   * (src/features/firstmate/model/readOnly.ts); for every CLI the app also checks the checkout after each turn.
+   */
+  firstMate?: boolean;
   onEvent: (event: HarnessEvent) => void;
 };
 

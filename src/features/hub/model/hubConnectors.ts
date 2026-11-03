@@ -318,7 +318,7 @@ export function mcpServersFor(v: ConnectorsView, monoId: string, projects: strin
 }
 
 /**
- * A Mono's connector entries for its chat's one --mcp-config (hubMcp.ts adds them beside ash-os and the delegate tool):
+ * A Mono's connector entries for its chat's one --mcp-config (hubMcp.ts adds them beside the delegate tool):
  * what its projects and its own choices allow right now, or nothing (state not read yet, no such Mono).
  */
 export function connectorServersForMono(monoId: string): Record<string, { command: string; args: string[] }> {

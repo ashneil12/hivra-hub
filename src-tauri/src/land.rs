@@ -430,7 +430,12 @@ pub async fn land_worker_copy(checkout: String, project: String) -> Result<Landi
         let checkout = crate::gates::worker_checkout(&checkout)?;
         let project = crate::fs::canonical(&project)
             .map_err(|_| "The project folder isn't there.".to_string())?;
-        land(&checkout, &project)
+        let landing = land(&checkout, &project)?;
+        // Hivra WP-10: a landing explains these files to the first mate's checkout guard.
+        if landing.outcome == "landed" {
+            crate::firstmate::checkout_guard::note_landing(&project, &landing.files);
+        }
+        Ok(landing)
     })
     .await
     .map_err(|e| e.to_string())?

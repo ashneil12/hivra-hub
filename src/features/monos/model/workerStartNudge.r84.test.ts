@@ -35,7 +35,7 @@ describe("the start-workers nudge is only for his list, and only when nothing is
     const c = chat([ash(dump), said(listReply)]);
     const one = joinNudges(standingRuleNudge(c, new Set()), workerStartNudge(c, [], new Set()))!;
     expect(one.id).toBe("start-workers-u1");
-    expect(one.text).toContain('First save his standing rule ("and from now on always run npm test before u say anything is done.") with ash_remember');
+    expect(one.text).toContain('First save his standing rule ("and from now on always run npm test before u say anything is done.") in his words, in the project\'s ~/agent-memory/<project>/decisions.md');
     expect(one.text).toContain("Then start them:");
   });
 });
@@ -54,7 +54,7 @@ describe("his list is answered at once by the app, and the line follows the work
     expect(note).toContain("numbers 6 asks");
     expect(note).toContain("one delegate_task per independent area");
     expect(note).toContain("Never say all are out");
-    expect(note).toContain("ash_remember");
+    expect(note).toContain("decisions.md");
     expect(standingRuleSendNote("hows it going")).toBeUndefined();
   });
 });

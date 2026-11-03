@@ -14,8 +14,8 @@ const search = (text: string, query: string, extra: Partial<NonNullable<Block["t
 describe("tool lookups stay out of the chat", () => {
   it("hides the s19 row, as the app saved it", () => {
     const row = search(
-      "Find select:mcp__monocode__delegate_task,mcp__ash-os__ash_recall",
-      "select:mcp__monocode__delegate_task,mcp__ash-os__ash_recall",
+      "Find select:mcp__monocode__delegate_task,mcp__memory__ash_recall",
+      "select:mcp__monocode__delegate_task,mcp__memory__ash_recall",
       { detail: 'ToolSearch: {"query":"select:mcp__monocode__delegate_task"}' },
     );
     expect(isToolLookup(row)).toBe(true);

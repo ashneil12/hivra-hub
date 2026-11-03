@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
-// The chat-flow fixes (hub/9-chatflow) in the real app in a browser (hub-dev.html: the hub reads the stub Ash OS through
+// The chat-flow fixes (hub/9-chatflow) in the real app in a browser (hub-dev.html: the hub reads the app's own local store through
 // its real transport) with a stand-in for the Claude CLI behind the real Claude adapter (src/dev/fakeClaudeBackend.ts,
 // ?fakeClaude): the EXO lead asks Ash a question and his typed words answer it; EXO's own Today counts what waits on him
 // like its strip badge; a 402 makes the Lead "can't answer: Out of credits" (the red Needs you) on the rail, Today and
@@ -19,12 +18,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const rail = (page: Page) => page.locator("[data-mono-rail]").first();
@@ -80,7 +73,7 @@ test("a typed answer reaches the question; Today counts it; a failed turn shows 
       }),
     );
   });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(leadRow(page)).toBeVisible({ timeout: 30_000 });
 
   // 1. The Lead asks Ash with AskUserQuestion.

@@ -8,7 +8,7 @@ it("puts 6968's raw command rows into plain words", () => {
   expect(plainCommandRow('node -e "')).toBe("Run a script");
   expect(plainCommandRow("npm test")).toBe("Run the tests");
   expect(plainCommandRow("rg -n --heading 'BoardTally|title: string|count: number' packages/ui; npm test")).toBe("Search the code, then run the tests");
-  expect(plainCommandRow("mcp__ash-os__ash_remember")).toBe("Remember");
+  expect(plainCommandRow("mcp__memory__ash_remember")).toBe("Remember");
   expect(plainCommandRow("npm test 2>&1 | tail -20")).toBe("Run the tests");
 });
 

@@ -14,18 +14,6 @@ vi.mock("../../integrations/harness", () => ({
   runHarnessTextPrompt: async () => "",
 }));
 vi.mock("../../platform/tauri/fs", () => ({ homeDir: async () => "/Users/ash" }));
-// Ash OS, as the room turns read it: the room's project's memory primer.
-const primerCalls: Record<string, unknown>[] = [];
-vi.mock("../../features/hub/model/hubTransport", () => ({
-  tauriHubTransport: {
-    call: async (action: string, payload: Record<string, unknown>) => {
-      if (action !== "ash-hub-memory-primer") throw new Error(`no ${action} here`);
-      primerCalls.push(payload);
-      return { project: String(payload.project), name: "MonoCode Hub", text: "Current memory of MonoCode Hub (hub).\n- Rooms are per project [14 Oct]" };
-    },
-  },
-}));
-
 let root: Root;
 let container: HTMLElement;
 beforeEach(() => {
@@ -188,24 +176,14 @@ it("a reply written in two parts around a tool call keeps them apart in the room
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe("Nothing for you yet. Briefing the Tally lead now.\n\nThe Tally lead has the brief.");
 });
 
-it("each seat's room turn starts on the room's project memory, once per conversation of its chat", async () => {
+it("a seat's room turn carries no project memory block: nothing outside the app reads one since Ash OS is retired (WP-04)", async () => {
   const { chat, room, submitted, settle, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "wat now");
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
-  expect(primerCalls.at(-1)).toEqual({ project: "hub" });
   expect(submitted[0].text).toMatch(/^\[MonoCode room\] You are Chief of Staff/);
-  expect(submitted[0].text).toContain("This room is the hub project's.");
-  expect(submitted[0].text).toContain("<project_memory>");
-  expect(submitted[0].text).toContain("- Rooms are per project [14 Oct]");
-  expect(submitted[0].text.indexOf("<project_memory>")).toBeLessThan(submitted[0].text.indexOf("<room_conversation>"));
+  expect(submitted[0].text).not.toContain("<project_memory>");
   settle.get(chatOf("chief-of-staff"))!("Nothing needs you.");
-  await chat.roomIdle(room.id);
-  chat.sendMessage(room.id, "and now?", conv);
-  void chat.requestReply(room.id, conv);
-  await vi.waitFor(() => expect(submitted).toHaveLength(2));
-  expect(submitted[1].text).not.toContain("<project_memory>");
-  settle.get(chatOf("chief-of-staff"))!("Still nothing.");
   await chat.roomIdle(room.id);
 });
 

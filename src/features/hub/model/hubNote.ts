@@ -12,6 +12,14 @@ export function setHubNote(sessionId: string, note: ClaudeAppend | undefined): v
   else notes.delete(sessionId);
 }
 
+/**
+ * Whether a chat's hub note, soul and memory go on its engine's system prompt (only Claude Code takes an appended one)
+ * instead of ahead of the message. A raw slash command never carries them.
+ */
+export function appendsHubNote(harness: string, rawCommand = false): boolean {
+  return harness === "claude" && !rawCommand;
+}
+
 export function hubNoteFor(sessionId: string): ClaudeAppend | undefined {
   return notes.get(sessionId);
 }

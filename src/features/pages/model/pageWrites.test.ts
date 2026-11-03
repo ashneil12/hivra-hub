@@ -40,7 +40,7 @@ it("renames a project through the hub's own store, under the page's title, as a 
 
   const row = botChangesSince(0).find((c) => c.bot === "Scores" && c.write);
   expect(row?.line).toBe("The page “Scores” renamed Hivra to Hivra Studio");
-  expect(row?.write).toMatchObject({ action: "ash-hub-project-rename", payload: { project_id: "hivra" }, before: { name: "Hivra" }, after: { name: "Hivra Studio" } });
+  expect(row?.write).toMatchObject({ action: "project-rename", payload: { project_id: "hivra" }, before: { name: "Hivra" }, after: { name: "Hivra Studio" } });
 });
 
 it("finds a project by id or by its name", async () => {
@@ -98,13 +98,13 @@ it("runs any other page write through the hub's store, and says so when there is
     now: "",
     after: "",
     undoneText: "",
-    write: { action: "ash-hub-task-move", payload: { task_id: "t1" }, before: {}, after: {} },
+    write: { action: "task-move", payload: { task_id: "t1" }, before: {}, after: {} },
   });
   await undoBotChange([id]);
   expect(findBotChange(id)?.problem).toBe("Not connected to the harness service, so nothing changed.");
 
   world.live = true;
   await undoBotChange([id]);
-  expect(world.acts).toEqual([{ action: "ash-hub-task-move", payload: { task_id: "t1" } }]);
+  expect(world.acts).toEqual([{ action: "task-move", payload: { task_id: "t1" } }]);
   expect(findBotChange(id)?.undone).toBe(true);
 });

@@ -1,18 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
-// Idea 2 in the real app in a browser (hub-dev.html reading the stub Ash OS, ?fakeClaude for the Claude CLI): a coding
+// Idea 2 in the real app in a browser (hub-dev.html reading the app's own local store, ?fakeClaude for the Claude CLI): a coding
 // team's own chat gets the Mono chat's Stop and model line, and its turn header names the model really in use.
 // Example data only. A browser preview, not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-ui-ideas";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
 const FOLDER = "/Users/example/Projects/vg-game";
@@ -63,7 +56,7 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
     },
     { chat: TEAM_CHAT, folder: FOLDER, at: now },
   );
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await closeOffer(page);
   await page.getByRole("button", { name: /^EXO/ }).first().click();

@@ -2,13 +2,13 @@
 // `npm run hub:realtest`: real end-to-end tests of the Hub with REAL Claude (Sonnet, medium effort), on a demanding test
 // project, graded against Ash's benchmark (docs/REALTEST.md). It builds this worktree's dev copy, runs it under a
 // throwaway HOME (a dev slot: never the daily app, its data, ~/.claude or ~/Applications), makes the Tally test project
-// (tests/realtest/tally) as a fresh git repo, lists it in the dev copy's Ash OS stub so the hub makes its Lead and seats
+// (tests/realtest/tally) as a fresh git repo, lists it in the dev copy's plan so the hub makes its Lead and seats
 // the leadership team, and then plays Ash's side from a scenario file through the window's own handlers
 // (src/app/model/verifyDriver.ts: the room's composer, a chat's composer, the Stop button, the views).
 //
 // Claude is the real CLI behind scripts/hub-realtest-claude.mjs: the dev copies' shared login, every chat held to
-// Sonnet + medium, every line logged, a budget stop, and a recorded outage on demand. Ash OS is the stub plus one
-// stand-in for what the real service does and the stub doesn't: memory (scripts/hub-realtest-memory-mcp.mjs). Being
+// Sonnet + medium, every line logged, a budget stop, and a recorded outage on demand. One stand-in gives the chats
+// memory tools (scripts/hub-realtest-memory-mcp.mjs). Being
 // built needs no stand-in: since 21 Oct it is the app's own rows, which the app lists itself.
 //
 // Evidence: evidence/realtest/<run>/ (events, snapshots, DOM views, screenshots when capture works, every Claude line,
@@ -247,7 +247,7 @@ async function main() {
 }
 
 /**
- * The bench: a dev copy under a temporary HOME with the test project, the stub Ash OS and the window's driver, then the
+ * The bench: a dev copy under a temporary HOME with the test project and the window's driver, then the
  * scenarios, then the evidence. `hooks` let another runner use the same bench (scripts/hub-realconv.mjs):
  *  - spec: the run's spec object instead of reading options.scenarios;
  *  - evidenceDir: where under the repo the run's folder goes (default evidence/realtest);
@@ -279,7 +279,7 @@ export async function runBench(options, hooks = {}) {
   const evidence = path.resolve(ROOT, hooks.evidenceDir ?? "evidence/realtest", id);
   const state = path.join(evidence, "claude");
   fs.mkdirSync(state, { recursive: true });
-  // Canonical (macOS's /var is /private/var): the app, git and Claude all report real paths, and the stub's project
+  // Canonical (macOS's /var is /private/var): the app, git and Claude all report real paths, and the plan's project
   // folder has to match what they say.
   const scratch = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "monocode-realtest-")));
   const home = path.join(scratch, "home");
@@ -296,7 +296,6 @@ export async function runBench(options, hooks = {}) {
     fs.appendFileSync(path.join(evidence, "run.log"), `${text}\n`);
   };
   const children = [];
-  let stub = null;
   let app = null;
   let dataDir = null;
   let db = null;
@@ -330,7 +329,6 @@ export async function runBench(options, hooks = {}) {
         // gone
       }
     }
-    await stub?.close().catch(() => undefined);
     // Claude processes this run started that outlived the app (every real chat's arguments name this run's folder).
     const left = spawnSync("pgrep", ["-f", scratch], { encoding: "utf8" }).stdout.split("\n").map(Number).filter((pid) => pid && pid !== process.pid);
     for (const pid of left) {
@@ -530,7 +528,7 @@ export async function runBench(options, hooks = {}) {
     const stamp = `${version.stamp?.branch} @ ${String(version.stamp?.sha).slice(0, 7)}${version.stamp?.dirty ? "-dirty" : ""}`;
     log(`built ${version.identifier} at ${stamp}`);
 
-    // -- vite and the stub ----------------------------------------------------------------------------------------------------
+    // -- vite ------------------------------------------------------------------------------------------------------------------
     const viteLog = fs.openSync(path.join(evidence, "vite.log"), "w");
     // --mode stable: no hot reload and no file watching, so a checkout moving under a run never reloads its window
     // mid-scene (21 Oct: a fast-forward during S10 reloaded the page, cut frank's turn and lost a drain).
@@ -548,27 +546,16 @@ export async function runBench(options, hooks = {}) {
       }
     }, 60_000);
     if (!served) throw new Error(`vite never answered on port ${slot.port} (vite.log)`);
-    const { startStub } = await import("./hub-stub-server.mjs");
-    const tokenFile = path.join(home, ".monocode-hub-dev/slots", slot.slot, "hub-token");
-    fs.mkdirSync(path.dirname(tokenFile), { recursive: true, mode: 0o700 });
-    stub = await startStub({ port: 0, tokenFile, token: crypto.randomBytes(24).toString("hex") });
-    // Today is about this run: the stub's invented Needs go; the test project is listed with its folder.
-    stub.state.needs.length = 0;
-    // r82: Today's "Since …" is this run's start in the Mac's own clock (Europe/London for Ash), not the stub's
-    // invented six hours ago, which read as a wrong time zone on every Today shot.
-    const runStart = Date.now();
-    Object.assign(stub.state.activity, { lastActive: runStart, since: runStart, sessionStart: runStart });
-    stub.state.since.overall = `${spec.project.name} is the test project for this run.`;
-    stub.addProject({ id: spec.project.id, name: spec.project.name, shortName: spec.project.shortName ?? spec.project.name, iconShape: "chart", folder: project });
-    for (const copy of copies) {
-      // The stub's invented project of the same id now points at the throwaway copy.
-      const known = stub.state.projects.findIndex((p) => p.id === copy.id);
-      if (known >= 0) stub.state.projects.splice(known, 1);
-      stub.addProject({ id: copy.id, name: copy.name, shortName: copy.shortName ?? copy.name, iconShape: copy.iconShape ?? "folder", folder: copy.folder });
-    }
+    // The test project (and any copies) go in the plan: the dev copy's local store starts with them (WP-04 retired the
+    // Ash OS stub that used to list them).
+    const benchProjects = [
+      { id: spec.project.id, name: spec.project.name, folder: project },
+      ...copies.filter((copy) => copy.id !== spec.project.id).map((copy) => ({ id: copy.id, name: copy.name, folder: copy.folder })),
+    ];
+    fs.writeFileSync(planFile, `${JSON.stringify({ ...plan, projects: benchProjects }, null, 2)}\n`);
 
     // Being built is the app's own: delegation rows live in the app since 21 Oct (src-tauri/src/delegations.rs, "No
-    // mirror"), and the app lists them under the Mono that started them. Nothing is fed to the stub here.
+    // mirror"), and the app lists them under the Mono that started them.
 
     // -- the app ------------------------------------------------------------------------------------------------------------------
     const appEnv = Object.fromEntries(
@@ -579,8 +566,6 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_NO_ALERT: "1",
       MONOCODE_HUB_BACKGROUND: "1",
       MONOCODE_VERIFY_LIVE: planFile,
-      MONOCODE_HUB_PORT: String(stub.port),
-      MONOCODE_HUB_TOKEN_FILE: tokenFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       ...BENCH_GIT_ENV,
     });

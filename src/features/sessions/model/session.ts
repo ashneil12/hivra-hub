@@ -582,6 +582,11 @@ export type CutWork = {
 export type Session = {
   /** Saved and accessible by id, but omitted from the normal session sidebar. */
   sidebarHidden?: boolean;
+  /**
+   * Hivra WP-10: a first mate's chat (the coding team's, a Mono's; set by WP-20 and WP-21). It reads and never edits
+   * the project: CLIs that can start read-only do, and every turn's checkout is checked (features/firstmate/).
+   */
+  firstMate?: boolean;
   /** Receipt for an acknowledged floating-composer handoff. */
   quickLaunchAccepted?: boolean;
   /** Internal worker: displayed in its lead's panel rather than a workspace tab. */

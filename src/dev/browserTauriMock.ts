@@ -2,7 +2,6 @@
 // frontend can be run with vite and screenshotted. Never shipped.
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
 import { emit } from "@tauri-apps/api/event";
-import { createStubBridge } from "./hubStubBridge";
 import { configureChildBackend } from "../integrations/harness/core/child";
 import { fakeClaudeBackend } from "./fakeClaudeBackend";
 import { recordSetupFact, SETUP_FACT_IDS } from "../features/hub/model/setupProof";
@@ -29,12 +28,11 @@ Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 // which starts like a clean first launch (no projects, as the app ships) — apart from the setup checks, which need a
 // real CLI and are marked proved here (see markSetupProved).
 //
-// With `?stub=http://127.0.0.1:<port>` the hub reads a hub-stub-server (started with --dev) through the app's real
-// transport code, as it would read Ash OS through the Rust plugin: no example data, no onboarding.
-// With `?live=http://127.0.0.1:18869` it reads the REAL Ash OS through scripts/hub-live-proxy.mjs, which holds the key.
-const liveUrl = new URLSearchParams(location.search).get("live");
-const stubUrl = new URLSearchParams(location.search).get("stub") ?? liveUrl;
-if (stubUrl) {
+// With `?local` the hub reads its own local store through the app's real transport code (hub/model/localHub), kept in
+// this page's localStorage under `monocode:dev-local-hub:<key>` (a test seeds it first, see seedLocalHub below): no
+// example data, no onboarding. (The Ash OS stub and live proxy this used to read are retired: WP-04.)
+const localHub = new URLSearchParams(location.search).has("local");
+if (localHub) {
   for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
   localStorage.setItem("monocode:hub-onboarded", "1");
   markSetupProved();
@@ -104,25 +102,29 @@ function emulateNativeGlass(a: GlassArgs | undefined) {
   document.body.style.background = "transparent";
 }
 
-// The hub plugin's stand-in: the same three commands, served by the stub server.
-const stubBridge = stubUrl
-  ? createStubBridge(stubUrl, liveUrl ? () => "added-by-the-dev-proxy" : async () => ((await (await fetch(`${stubUrl}/__stub/token`)).json()) as { token: string }).token)
-  : undefined;
-let closeStubFeed: (() => void) | undefined;
+// The hub plugin's stand-in: the local store's documents in this page's localStorage (src-tauri/src/local_hub.rs keeps
+// them in the app's database). Everything else on the plugin (connectors, model keys) answers nothing here.
+export const LOCAL_HUB_PREFIX = "monocode:dev-local-hub:";
 function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {
-  if (!stubBridge) return Promise.reject({ kind: "unreachable", message: "Ash OS isn't running." });
-  if (cmd === "plugin:hub|hub_call") return stubBridge.call(String(args?.action), (args?.payload ?? {}) as Record<string, unknown>);
-  if (cmd === "plugin:hub|hub_events_open") {
-    closeStubFeed?.();
-    closeStubFeed = stubBridge.openFeed(
-      Number(args?.after ?? 0),
-      (e) => void emit("hub:event", e),
-      (s) => void emit("hub:state", s),
-    );
-    return null;
+  const key = String(args?.key ?? "");
+  // A document's revision sits beside it (`<key>#rev`); a seeded document with none is at revision 1.
+  const rev = () => {
+    const raw = localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}#rev`);
+    return raw ? Number(raw) : localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}`) !== null ? 1 : 0;
+  };
+  if (cmd === "plugin:hub|local_hub_read") {
+    const raw = localStorage.getItem(`${LOCAL_HUB_PREFIX}${key}`);
+    return { value: raw ? JSON.parse(raw) : null, rev: rev() };
   }
-  closeStubFeed?.();
-  closeStubFeed = undefined;
+  if (cmd === "plugin:hub|local_hub_write") {
+    const current = rev();
+    if (typeof args?.expectRev === "number" && args.expectRev !== current) return null;
+    localStorage.setItem(`${LOCAL_HUB_PREFIX}${key}`, JSON.stringify(args?.value ?? null));
+    localStorage.setItem(`${LOCAL_HUB_PREFIX}${key}#rev`, String(current + 1));
+    return current + 1;
+  }
+  if (cmd === "plugin:hub|local_hub_make_folder") return `/Users/example/Projects/${String(args?.id ?? "project")}`;
+  if (cmd === "plugin:hub|ash_os_import_fetch") return { state: "absent", message: "No Ash OS in the browser preview.", projects: [], memberships: [], pages: [] };
   return null;
 }
 

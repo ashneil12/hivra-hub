@@ -2,7 +2,7 @@
 //
 // Ash OS owns the strip (its `hub_project_set` setting): which projects, their order, names and shapes. A project Ash
 // makes from the New project flow joins the end of it; Change the hub can reorder or rename them; Ash can archive one.
-// The app shows exactly what `ash-hub-projects` lists, in its order, without parked projects. The harness is the
+// The app shows exactly what `projects` lists, in its order, without parked projects. The harness is the
 // project `hub` ("MonoCode Hub", this app's own repo). `ash` is not a project: it is Ash's global memory (how he works,
 // whatever the project), so it never shows as a tile and never gets a Lead, whatever Ash OS sends.
 import { PROJECT_SHAPES } from "./projectShapes";

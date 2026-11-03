@@ -1,7 +1,7 @@
 // A room belongs to a project, so each seat's room turn starts on that project's memory, the same primer its Lead gets
 // (hubMemoryPrimer.ts): in the 20 Oct baseline a reviewer challenged the Lead's memory-backed facts because the room
 // seats had never read them. Given once per conversation of the seat's chat, again when the memory changed, never when
-// Ash OS can't say.
+// nothing can say (and with no reader at all since Ash OS is retired, WP-04, there is none).
 import { afterEach, expect, it } from "vitest";
 import { forgetMemoryPrimers, type MemoryPrimer } from "./hubMemoryPrimer";
 import { forgetRoomMemory, roomMemory } from "./roomMemory";
@@ -28,7 +28,7 @@ it("a seat's first room turn in a project's room carries the project's memory; l
   let calls = 0;
   const call = async (action: string, payload: Record<string, unknown>) => {
     calls++;
-    expect(action).toBe("ash-hub-memory-primer");
+    expect(action).toBe("memory-primer");
     expect(payload).toEqual({ project: "tally" });
     return PRIMER;
   };
@@ -36,8 +36,8 @@ it("a seat's first room turn in a project's room carries the project's memory; l
   expect(first?.block).toContain("This room is the tally project's");
   expect(first?.block).toContain("<project_memory>");
   expect(first?.block).toContain("Brand colour is teal #0F766E");
-  // On Claude Code the seat can search further with ash_recall.
-  expect(first?.block).toContain('ash_recall: a query, project "tally"');
+  // No chat has memory tools now: it is told where the files are.
+  expect(first?.block).toContain("For more, read never.md");
   // Only once the turn went in does it count as read.
   expect((await roomMemory(seat(), "tally", { call }))?.block).toContain("<project_memory>");
   first!.delivered();
@@ -52,9 +52,10 @@ it("a seat's first room turn in a project's room carries the project's memory; l
   expect(calls).toBeGreaterThan(0);
 });
 
-it("no primer (Ash OS unreachable, or no such project) adds nothing; another engine is told where to read", async () => {
+it("no primer (no reader, an error, or no such project) adds nothing; another engine is told where to read", async () => {
+  expect(await roomMemory(seat(), "tally")).toBeUndefined();
   expect(await roomMemory(seat(), "tally", { call: async () => { throw new Error("offline"); } })).toBeUndefined();
   expect(await roomMemory(seat(), "tally", { call: async () => ({}) })).toBeUndefined();
   const codex = await roomMemory(seat({ harness: "codex" }), "tally", { call: async () => PRIMER });
-  expect(codex?.block).toContain("This chat has no Ash OS tools");
+  expect(codex?.block).toContain("For more, read never.md");
 });

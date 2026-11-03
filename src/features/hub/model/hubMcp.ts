@@ -1,17 +1,7 @@
 // The MCP servers a hub chat's Claude Code session gets (docs/PHASE-2-DESIGN.md, decisions 2 and 3; H3): ONE
 // `--mcp-config` per chat, through the extra-arguments seam (claudeExtraArgs.ts; MonoCode registers nothing there).
 //
-// - `ash-os`: Ash's own ash-os entry (read in Rust, `hub_ash_os_mcp`; none in a dev copy) with the chat's identity in its
-//   env, for every hub chat: ASH_CHAT always; a Mono's chat and its habit runs also ASH_MONO_ID and ASH_ROLE (lead,
-//   mono, or checker for the checker); a worker (a chat a Mono or another chat started) ASH_ROLE=worker. A project's
-//   Lead, its habit runs, a chat in its coding team (codingTeam.ts) and every worker under them (however deep) also
-//   carry ASH_PROJECT, so Ash OS lets them read and write only that project's memory and Ash's global memory, `ash`
-//   (Ash, 19 Oct: a project never reads another project's memory). The leadership team, other Monos, plain chats and
-//   their workers carry none. Claude Code
-//   doesn't hand MCP servers the chat's identity, so it has to be in the entry. This entry replaces a user-scope
-//   `ash-os` of the same name (checked with Claude Code 2.1.302 on 19 Oct: only the --mcp-config one started). The
-//   entry's own env arrives from Rust as `${MONOCODE_ASH_OS_<KEY>}` references that harness_spawn fills in the child's
-//   environment (hub.rs ash_os_server_from), so Ash's values never go in argv; only the identity is literal.
+// (The Ash OS entry every hub chat used to get is retired with the bridge: WP-04.)
 // - `monocode`: the delegate tool (`monocode mcp`, src-tauri/src/mcp_server.rs), for the chats Ash talks to: a Mono's
 //   own chat and a chat in a project's coding team (never a habit run, a worker, another plain chat or the checker),
 //   pre-approved with `--allowedTools mcp__monocode__*`. Its app
@@ -23,7 +13,6 @@
 // - connectors (hubConnectors.ts): for a Mono's own chat and its habit runs, one `<app> connector-run <id> --mono <id>
 //   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
-import type { AshOsServer } from "./hubLeads";
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 
@@ -39,17 +28,12 @@ export const CHECKER_MONO_ID = "checker";
  */
 export const CHECKER_TOOLS = ["Bash", "Read", "Grep", "Glob"];
 export const CHECKER_DENIED_TOOLS = ["Agent", "Task", "Edit", "Write", "NotebookEdit", "Bash(ash:*)", "Bash(claude:*)"];
-/** Its ash-os tools need no approval: Ash OS offers the checker only its queue, its notes and a few reads. */
-export const CHECKER_ALLOWED_TOOLS = "mcp__ash-os__*";
-
 export function checkerToolArgs(): string[] {
   return [
     "--tools",
     CHECKER_TOOLS.join(","),
     "--disallowedTools",
     [...CHECKER_DENIED_TOOLS, ...chatDeniedTools()].join(","),
-    "--allowedTools",
-    CHECKER_ALLOWED_TOOLS,
   ];
 }
 
@@ -110,9 +94,16 @@ export const OLD_MONO_COPY_DENIED_TOOLS = [
   "Bash(*com.ash.monocode-hub/monos*)",
 ];
 
-/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
+/**
+ * WP-04: the app's own `ash-os` entry used to replace, by name, the one in Ash's own Claude Code settings
+ * (~/.claude.json). With it retired, Claude Code would load Ash's, unscoped (no Mono, role or project), in every hub
+ * chat. Every tool of a server by that name is denied instead.
+ */
+export const ASH_OS_DENIED_TOOLS = ["mcp__ash-os"];
+
+/** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, Ash's own Ash OS server (WP-04), reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
@@ -149,7 +140,7 @@ export type HubChatIdentity = {
   monoId?: string;
   role?: HubRole;
   /**
-   * The Ash OS projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
+   * The projects it works on (ASH_PROJECT): a Lead's own project, for its chat, its habit runs and every worker
    * under it, and a coding-team chat's project, for it and its workers. Absent for everyone else (the leadership team
    * reads every project, and names one when an ask does).
    */
@@ -163,7 +154,7 @@ export type HubChatLookups = {
   /** The Mono a habit run works for. */
   habitRunMono(sessionId: string): string | undefined;
   isLead(monoId: string): boolean;
-  /** The Ash OS project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
+  /** The project a Lead leads (hubLeads.ts leadFor); undefined for any other Mono. */
   leadProject?(monoId: string): string | undefined;
   /** The hub project whose coding team this chat is in (codingTeam.ts); undefined for any other chat. */
   codingTeamProject?(sessionId: string): string | undefined;
@@ -306,22 +297,11 @@ export function monocodeServer(cli: string): Record<string, unknown> {
 }
 
 export type HubMcpServers = {
-  /** Ash's ash-os entry, or null (a dev copy, or Claude Code has none). */
-  ashOs: AshOsServer | null;
   /** This app's executable, or null when it couldn't be read. */
   cli: string | null;
   /** A Mono's connector entries (hubConnectors.connectorServersForMono); none when absent. */
   connectors?: (monoId: string) => Record<string, unknown>;
 };
-
-function identityEnv(identity: HubChatIdentity): Record<string, string> {
-  return {
-    ...(identity.monoId ? { ASH_MONO_ID: identity.monoId } : {}),
-    ...(identity.role ? { ASH_ROLE: identity.role } : {}),
-    ASH_CHAT: identity.chat,
-    ...(identity.projects?.length ? { ASH_PROJECT: identity.projects.join(",") } : {}),
-  };
-}
 
 /**
  * The extra Claude Code arguments for one chat: one --mcp-config, plus the delegate tool's approval, plus the fence
@@ -348,19 +328,6 @@ export function hubMcpArgs(
   // A Mono's connectors go in first, so the hub's own entries below always keep their names.
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
     Object.assign(mcpServers, servers.connectors(identity.monoId));
-  if (servers.ashOs) {
-    const { ashOs } = servers;
-    // The server's own settings stay (as references the child's environment fills); who is calling is only ever this
-    // chat's identity, never Ash's config's.
-    const {
-      ASH_MONO_ID: _mono,
-      ASH_ROLE: _role,
-      ASH_CHAT: _chat,
-      ASH_PROJECT: _project,
-      ...own
-    } = ashOs.env ?? {};
-    mcpServers["ash-os"] = { ...ashOs, env: { ...own, ...identityEnv(identity) } };
-  }
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
   if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [
@@ -410,7 +377,7 @@ export function hasDelegateTool(sessionId: string, harness: string): boolean {
 }
 
 /**
- * The Ash OS projects a chat works on (its ASH_PROJECT): a Lead's chat, its habit runs and its workers get their Lead's
+ * The projects a chat works on: a Lead's chat, its habit runs and its workers get their Lead's
  * project, a coding-team chat and its workers that team's project; anyone else none. What its memory primer
  * (hubMemoryPrimer.ts) and its workers' briefs are about.
  */
@@ -418,11 +385,3 @@ export function chatProjects(sessionId: string): string[] {
   return registered ? (hubChatIdentity(sessionId, registered.lookups).projects ?? []) : [];
 }
 
-/**
- * Whether a chat's session can call the ash-os tools (ash_recall and the rest): only Claude Code sessions take the
- * extra arguments that carry Ash's ash-os entry (claudeExtraArgs.ts), and it waits for the entry to be read before it
- * starts (hubData.ts). Any other engine gets its memory in the prompt only.
- */
-export function hasAshOsTools(harness: string): boolean {
-  return harness === "claude";
-}

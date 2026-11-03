@@ -50,11 +50,11 @@ export type HubSnapshot = {
   sinceAt?: string;
   /** The change feed's own number: the last event this store has seen. */
   seq: number;
-  /** Ash OS's pages (`ash-hub-pages`, kept and removed), as it sends them; the Pages store reads them. Undefined until read. */
+  /** Ash OS's pages (`pages`, kept and removed), as it sends them; the Pages store reads them. Undefined until read. */
   pages?: unknown[];
-  /** The Today board's sections (`ash-hub-layout`). Undefined until read, or on a service without it. */
+  /** The Today board's sections (`layout`). Undefined until read, or on a service without it. */
   today?: TodaySection[];
-  /** Change the hub / Edit Today history (`ash-hub-changes`), newest first. Undefined until read. */
+  /** Change the hub / Edit Today history (`changes`), newest first. Undefined until read. */
   changes?: HubChangeRecord[];
 };
 
@@ -168,15 +168,6 @@ export function mapNeed(raw: unknown, later = false): Need | undefined {
   return need;
 }
 
-function mapSummary(raw: unknown): SinceSummary & { detailLines: string[] } {
-  const r = obj(raw);
-  return {
-    plainText: str(r.plainText),
-    details: str(r.details),
-    detailLines: arr(r.detailLines).filter((l): l is string => typeof l === "string"),
-  };
-}
-
 const JOB_STATES: readonly JobWireState[] = ["working", "checking", "waiting", "stuck", "sent_to_lead", "lead_gave_up", "done", "parked"];
 
 export function mapJob(raw: unknown): HubJob | undefined {
@@ -270,7 +261,7 @@ function mapSide(raw: unknown): HubChangeSide {
   };
 }
 
-/** One change from Ash OS's history (`ash-hub-changes`). */
+/** One change from Ash OS's history (`changes`). */
 export function mapChange(raw: unknown): HubChangeRecord | undefined {
   const r = obj(raw);
   const previewId = str(r.previewId);
@@ -464,7 +455,7 @@ export class HubStore {
     const gen = this.gen;
     const run = async () => {
       try {
-        const [projects, needs] = await Promise.all([this.t.call("ash-hub-projects", {}), this.t.call("ash-hub-needs", {})]);
+        const [projects, needs] = await Promise.all([this.t.call("projects", {}), this.t.call("needs", {})]);
         if (!this.alive(gen)) return;
         this.applyProjects(projects);
         this.applyNeeds(needs);
@@ -492,7 +483,7 @@ export class HubStore {
   async loadNeeds(): Promise<void> {
     const gen = this.gen;
     try {
-      const needs = await this.t.call("ash-hub-needs", {});
+      const needs = await this.t.call("needs", {});
       if (this.alive(gen)) {
         this.applyNeeds(needs);
         this.patch({ seq: Math.max(this.snap.seq, Number(obj(needs).seq) || 0) });
@@ -505,51 +496,21 @@ export class HubStore {
   async loadProjects(): Promise<void> {
     const gen = this.gen;
     try {
-      const projects = await this.t.call("ash-hub-projects", {});
+      const projects = await this.t.call("projects", {});
       if (this.alive(gen)) this.applyProjects(projects);
     } catch (error) {
       if (this.alive(gen)) this.fail(error);
     }
   }
 
-  /** The summary. A short wait lets the model's text arrive in the same call when it is quick. */
-  async loadSince(wait = 1): Promise<void> {
-    const gen = this.gen;
-    try {
-      const raw = obj(await this.t.call("ash-hub-since", { wait }));
-      if (!this.alive(gen)) return;
-      const summary = obj(raw.summary);
-      const overall = mapSummary(summary);
-      const byProject: Record<string, SinceSummary> = {};
-      for (const [id, v] of Object.entries(obj(raw.projects))) {
-        const s = mapSummary(v);
-        byProject[id] = { plainText: s.plainText, details: s.details };
-      }
-      const pending = summary.pending === true;
-      this.patch({
-        since: {
-          sinceAt: optStr(raw.sinceAt),
-          assumed: raw.assumed === true,
-          pending,
-          overall: { plainText: overall.plainText, details: overall.details },
-          byProject,
-        },
-        sinceAt: optStr(raw.sinceAt),
-        lastActiveAt: optStr(raw.lastActiveAt) ?? this.snap.lastActiveAt,
-      });
-      this.cancel("pending");
-      // The event normally brings the finished text; this is the belt to that braces.
-      if (pending) this.timers.pending = setTimeout(() => void this.loadSince(0), 8_000);
-    } catch (error) {
-      if (this.alive(gen)) this.fail(error);
-    }
-  }
+  /** Since was Ash OS's summary of what changed while Ash was away. Retired with the bridge (WP-04): nothing to read. */
+  async loadSince(_wait = 1): Promise<void> {}
 
   /** Being built. A service without jobs yet ("Unknown hub action") just means nothing is being built. */
   async loadJobs(): Promise<void> {
     const gen = this.gen;
     try {
-      const raw = obj(await this.t.call("ash-hub-jobs", {}));
+      const raw = obj(await this.t.call("jobs", {}));
       if (!this.alive(gen)) return;
       const groups = arr(raw.groups).map((g): HubJobGroup => {
         const r = obj(g);
@@ -572,21 +533,18 @@ export class HubStore {
    * proxy of an older dev setup) leaves the slice unset: Pages and Today then draw what they have.
    */
   async loadPages(): Promise<void> {
-    await this.loadOptional("ash-hub-pages", { include_removed: true }, (raw) => this.patch({ pages: arr(obj(raw).pages) }));
+    await this.loadOptional("pages", { include_removed: true }, (raw) => this.patch({ pages: arr(obj(raw).pages) }));
   }
 
   async loadLayout(): Promise<void> {
-    await this.loadOptional("ash-hub-layout", {}, (raw) => {
+    await this.loadOptional("layout", {}, (raw) => {
       const today = mapToday(obj(raw).today);
       if (today.length) this.patch({ today });
     });
   }
 
-  async loadChanges(): Promise<void> {
-    await this.loadOptional("ash-hub-changes", { limit: 50 }, (raw) =>
-      this.patch({ changes: arr(obj(raw).changes).map(mapChange).filter((c): c is HubChangeRecord => !!c) }),
-    );
-  }
+  /** Change the hub's history was Ash OS's. Retired with the bridge (WP-04): nothing to read. */
+  async loadChanges(): Promise<void> {}
 
   private async loadOptional(action: string, payload: Record<string, unknown>, apply: (raw: unknown) => void): Promise<void> {
     const gen = this.gen;
@@ -612,7 +570,7 @@ export class HubStore {
 
   /** The checker's notes for the chats this app runs that Ash OS hasn't heard delivered. An older service has none. */
   async loadChecks(): Promise<void> {
-    await this.loadOptional("ash-hub-checks", { limit: 50 }, (raw) => {
+    await this.loadOptional("checks", { limit: 50 }, (raw) => {
       this.checks = mapChecks(raw);
       this.checkListeners.forEach((listener) => listener(this.checks));
     });
@@ -621,7 +579,7 @@ export class HubStore {
   /** The app handed these checks to their chats as turns: Ash OS marks each delivered once. */
   async checksDelivered(ids: readonly string[]): Promise<void> {
     if (!ids.length) return;
-    await this.t.call("ash-hub-check-delivered", { ids: [...ids] });
+    await this.t.call("check-delivered", { ids: [...ids] });
     this.checks = this.checks.filter((check) => !ids.includes(check.id));
   }
 
@@ -653,13 +611,13 @@ export class HubStore {
   // ---- Ash's choices ---------------------------------------------------------------------------------------------
   /** "Looks right" rows: Ash has seen it. Ash OS ticks the row off; the answer is read at once, the feed follows. */
   async markNeedSeen(id: string): Promise<void> {
-    await this.t.call("ash-hub-need-seen", { id });
+    await this.t.call("need-seen", { id });
     await this.loadNeeds();
   }
 
-  /** A question's sheet (`ash-hub-question`), by its Needs row id. */
+  /** A question's sheet (`question`), by its Needs row id. */
   async question(needId: string): Promise<HubQuestion> {
-    const raw = obj(await this.t.call("ash-hub-question", { id: needId }));
+    const raw = obj(await this.t.call("question", { id: needId }));
     const rec = obj(raw.recommendation);
     const status = raw.status === "answered" || raw.status === "expired" ? raw.status : "open";
     return {
@@ -691,7 +649,7 @@ export class HubStore {
     const set = (state: AnswerState) => this.patch({ answering: { ...this.snap.answering, [needId]: state } });
     set({ sending: true });
     void this.t
-      .call("ash-hub-answer", { id: needId, ...answer })
+      .call("answer", { id: needId, ...answer })
       .then(async (raw) => {
         const r = obj(raw);
         set({ sending: false, receipt: str(r.receipt, "Got it."), closed: r.rowDone === true });
@@ -700,26 +658,20 @@ export class HubStore {
       .catch((error) => set({ sending: false, problem: toHubError(error).message }));
   }
 
-  /**
-   * Sweep the old question queue (`ash-hub-older-dismiss`): Ash closes every older question asked more than N days ago.
-   * Ash OS parks their asks (saying one again brings it back) and the rows tick off; the list is read again at once.
-   */
-  async dismissOlder(olderThanDays: number, projectId?: string): Promise<OlderDismissed> {
-    const raw = obj(await this.t.call("ash-hub-older-dismiss", { older_than_days: olderThanDays, ...(projectId ? { project: projectId } : {}) }));
-    await this.loadNeeds();
-    const dismissed = Number(raw.dismissed) || 0;
-    return { dismissed, receipt: str(raw.receipt, dismissed ? `Closed ${dismissed} older questions.` : "Nothing that old was waiting.") };
+  /** Sweeping Ash OS's old question queue. Retired with the bridge (WP-04): nothing that old waits here. */
+  async dismissOlder(_olderThanDays: number, _projectId?: string): Promise<OlderDismissed> {
+    return { dismissed: 0, receipt: "Nothing that old was waiting." };
   }
 
   /** "Looks right": Ash accepts finished critical work. Ash OS ticks the row off; the answer is read at once. */
   async acceptNeed(id: string): Promise<void> {
-    await this.t.call("ash-hub-need-accept", { id });
+    await this.t.call("need-accept", { id });
     await this.loadNeeds();
   }
 
   /** The "See options" sheet for a job the Lead gave up on. */
   async jobOptions(jobId: string): Promise<JobOptions> {
-    const raw = obj(await this.t.call("ash-hub-job-options", { job_id: jobId }));
+    const raw = obj(await this.t.call("job-options", { job_id: jobId }));
     return {
       jobId: str(raw.jobId, jobId),
       projectId: str(raw.projectId),
@@ -734,7 +686,7 @@ export class HubStore {
 
   /** Ash's pick on a given-up job. The job moves and its Needs row ticks off. */
   async jobAct(jobId: string, option: string, hint?: string): Promise<void> {
-    await this.t.call("ash-hub-job-act", { job_id: jobId, option, ...(hint ? { hint } : {}) });
+    await this.t.call("job-act", { job_id: jobId, option, ...(hint ? { hint } : {}) });
     await Promise.all([this.loadNeeds(), this.loadJobs()]);
   }
 
@@ -742,7 +694,7 @@ export class HubStore {
   markJobsSeen(jobIds: string[]): void {
     if (!jobIds.length || !this.running) return;
     void this.t
-      .call("ash-hub-job-seen", { job_ids: jobIds })
+      .call("job-seen", { job_ids: jobIds })
       .then(() => this.loadJobs())
       .catch(() => undefined);
   }
@@ -828,26 +780,12 @@ export class HubStore {
     if (!this.timers.health) this.timers.health = setTimeout(() => void this.checkHealth(), this.healthMs);
   }
 
-  /** The feed is down: is Ash OS still there? Keep reading changes by polling while it is. */
+  /** The feed is down: read everything again, then keep checking while it stays down. */
   private async checkHealth(): Promise<void> {
     this.timers.health = 0;
     if (!this.running || this.feedUp) return;
-    const gen = this.gen;
-    try {
-      const out = obj(await this.t.call("ash-hub-events", { after: this.snap.seq, timeout: 0 }));
-      if (!this.alive(gen) || this.feedUp) return;
-      if (out.reset === true) {
-        this.lastEventSeq = 0;
-        this.patch({ seq: Number(out.latest) || 0 });
-        await this.loadAll();
-      } else {
-        for (const e of arr(out.events)) this.onEvent(e as HubFeedEvent);
-        if (this.snap.status !== "ready") await this.loadAll();
-      }
-      this.timers.health = setTimeout(() => void this.checkHealth(), this.pollMs);
-    } catch (error) {
-      if (this.alive(gen)) this.fail(error);
-    }
+    await this.loadAll();
+    if (this.running && !this.feedUp) this.timers.health = setTimeout(() => void this.checkHealth(), this.pollMs);
   }
 
   private onEvent(e: HubFeedEvent): void {
@@ -895,22 +833,5 @@ export class HubStore {
       this.timers.retry = 0;
       void this.loadAll();
     }, wait);
-  }
-
-  // ---- Ash's activity --------------------------------------------------------------------------------------------
-  /** Ash really used the app (typing or clicking) at `at`. Tell Ash OS; a failure here is never shown. */
-  async reportActive(at: Date): Promise<void> {
-    if (!this.running) return;
-    const gen = this.gen;
-    try {
-      const out = obj(await this.t.call("ash-hub-active", { at: at.toISOString() }));
-      if (!this.alive(gen)) return;
-      const sinceAt = optStr(out.sinceAt);
-      const moved = sinceAt !== this.snap.sinceAt;
-      this.patch({ lastActiveAt: optStr(out.lastActiveAt), sinceAt });
-      if (moved) void this.loadSince(0);
-    } catch {
-      /* the app's next read finds out if Ash OS is down */
-    }
   }
 }

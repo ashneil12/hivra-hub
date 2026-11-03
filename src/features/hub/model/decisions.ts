@@ -4,7 +4,7 @@
 // - What is still open for a project: the inbox's own needs (hubData().listNeeds(projectId)), the same rows Today and
 //   the project's Asking view show. Answering happens there (WaitingOnYou / QuestionSheet), never in a second copy.
 // - What is already decided: the project's current memory as Ash OS composes it for a Lead's fresh session
-//   (hubMemoryPrimer.ts, `ash-hub-memory-primer`): the project's never-do rules and decisions, newest first, then
+//   (hubMemoryPrimer.ts): the project's never-do rules and decisions, newest first, then
 //   Ash's global layer (`ash`). Each line is the short form `- <text> [14 Oct]` (studio/memory.py `_compact`), so a
 //   line has a day when it was saved with one.
 //

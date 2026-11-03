@@ -6,13 +6,13 @@ import { memoryPrimerBlock } from "./hubMemoryPrimer";
 const primer = { name: "Tally", text: "## Tally: decisions, newest first\n- accent is teal #0F766E" } as never;
 
 it("a Lead saves Ash's answer to its own question at once", () => {
-  const lead = memoryPrimerBlock("tally", primer, { tools: true, worker: false });
-  expect(lead).toMatch(/ash_remember/);
+  const lead = memoryPrimerBlock("tally", primer, { worker: false });
+  expect(lead).toMatch(/Save to ~\/agent-memory\/tally\/decisions\.md at once/);
   expect(lead).toMatch(/answers a question you asked/);
   expect(lead).not.toMatch(/only when \S+ says remember or lock/);
 });
 
 it("a worker still reports instead of saving", () => {
-  const worker = memoryPrimerBlock("tally", primer, { tools: true, worker: true });
-  expect(worker).not.toMatch(/ash_remember/);
+  const worker = memoryPrimerBlock("tally", primer, { worker: true });
+  expect(worker).not.toMatch(/Save to/);
 });
