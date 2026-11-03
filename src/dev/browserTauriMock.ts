@@ -18,6 +18,9 @@ function markSetupProved() {
 const fakeClaude = new URLSearchParams(location.search).has("fakeClaude");
 if (fakeClaude) configureChildBackend(fakeClaudeBackend());
 
+// The hub's dev page opens on the hub before anything is picked, as the Hub bundle does (hubNav.ts opensOnHub).
+Object.assign(window, { __MONOCODE_HUB_DEV_PAGE__: true });
+
 // Look like the Mac app (traffic-light space, ⌘ shortcuts).
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 
