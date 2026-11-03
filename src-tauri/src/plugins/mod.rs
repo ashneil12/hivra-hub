@@ -3,6 +3,7 @@
 //! CLI's session. Plugins never run code in the app's process: their code runs only as MCP servers (separate
 //! processes, through `plugin-mcp`) or, for panels, inside the Pages sandbox.
 
+pub mod discover;
 mod fsutil;
 pub mod hivra;
 pub mod manifest;
