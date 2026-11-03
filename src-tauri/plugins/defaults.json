@@ -1,0 +1,24 @@
+{
+  "about": "Plugins Hivra installs and switches on by itself (WP-41). See src-tauri/plugins/README.md. Each folder beside this file is embedded in the app (build.rs).",
+  "plugins": [
+    {
+      "name": "pstack",
+      "folder": "pstack",
+      "repository": "https://github.com/cursor/plugins",
+      "path": "pstack",
+      "commit": "6ea74587e384e1a8035c09ae33a46fe3f881eb9b",
+      "version": "0.15.36",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 Lauren Tan",
+      "left_out": [
+        ".cursor-plugin",
+        ".gitignore",
+        "agents",
+        "automations",
+        "assets",
+        "docs/guide/images",
+        "skills/statechart/scripts/test"
+      ]
+    }
+  ]
+}
