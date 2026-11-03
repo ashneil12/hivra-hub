@@ -4,7 +4,8 @@ This repo is **Ash's MonoCode Hub fork**: his control centre and the runtime eve
 through. It is built on upstream [MonoCode](https://github.com/hardbeat920/monocode) and must stay
 mergeable with it.
 
-Read this before building, installing or launching anything here.
+Read this before building, installing or launching anything here. Building a Hivra work package? Start with
+[docs/hivra/README.md](docs/hivra/README.md); every rule in this file still applies.
 
 ## This repo is NOT upstream MonoCode
 
