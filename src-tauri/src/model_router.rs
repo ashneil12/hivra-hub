@@ -1280,9 +1280,152 @@ pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> 
     Ok(routed_env(route, &token, port, window))
 }
 
+// ---- quick pick: one short completion for a room's auto responder (WP-22) -----------------------------------------------
+
+/// The longest a quick pick may take, whatever the caller asks: the room falls back to its lead after 1.5 s anyway.
+const QUICK_PICK_MAX_MS: u64 = 1_500;
+
+/// The request a quick pick sends: a tiny, deterministic chat completion.
+pub fn quick_pick_body(model_id: &str, system: &str, prompt: &str) -> Value {
+    json!({
+        "model": model_id.trim(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 80,
+        "temperature": 0,
+        "stream": false
+    })
+}
+
+/// One short completion from a model Ash configured (never a Claude model, never a CLI session), with a hard
+/// deadline for the whole request. The room's auto responder reads the answer; any error means "the lead answers".
+pub fn quick_complete(
+    route: &CustomRoute,
+    key: Option<&str>,
+    system: &str,
+    prompt: &str,
+    timeout_ms: u64,
+) -> Result<String, String> {
+    if !may_route(route) {
+        return Err("That model can't be used for a quick pick.".into());
+    }
+    let token = session_token(&route.provider, key)?;
+    let deadline = Duration::from_millis(timeout_ms.clamp(1, QUICK_PICK_MAX_MS));
+    let body = quick_pick_body(&route.model_id, system, prompt);
+    let response = ureq::AgentBuilder::new()
+        .timeout(deadline)
+        .build()
+        .post(&chat_url(&route.provider, &route.base_url))
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(|e| match e {
+            ureq::Error::Status(code, _) => format!("The quick model answered with error {code}."),
+            ureq::Error::Transport(_) => "The quick model didn't answer in time.".to_string(),
+        })?;
+    let value: Value = response
+        .into_string()
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or_else(|| "The quick model's answer couldn't be read.".to_string())?;
+    value["choices"][0]["message"]["content"]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "The quick model gave no text.".to_string())
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn model_quick_pick(
+    provider: String,
+    base_url: String,
+    model_id: String,
+    custom_model_id: String,
+    system: String,
+    prompt: String,
+    timeout_ms: Option<u64>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let route = CustomRoute {
+            provider,
+            base_url,
+            model_id,
+            custom_model_id,
+            reasoning_effort: None,
+        };
+        let key = if route.provider == "ollama" {
+            None
+        } else {
+            read_key_in(KEY_SERVICE, &route.custom_model_id)?
+        };
+        quick_complete(
+            &route,
+            key.as_deref(),
+            &system,
+            &prompt,
+            timeout_ms.unwrap_or(QUICK_PICK_MAX_MS),
+        )
+    })
+    .await
+    .map_err(|_| "The quick pick didn't finish.".to_string())?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_quick_pick_never_uses_a_claude_model_and_sends_a_tiny_request() {
+        let claude = route("custom", "https://example.com/v1", "claude-sonnet");
+        assert!(quick_complete(&claude, Some("k"), "s", "p", 500).is_err());
+        let body = quick_pick_body(" grok-4-fast ", "sys", "who?");
+        assert_eq!(body["model"], "grok-4-fast");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["messages"][0]["role"], "system");
+        assert_eq!(body["messages"][1]["content"], "who?");
+    }
+
+    #[test]
+    fn a_quick_pick_reads_the_answer_over_the_real_http_path() {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let (mut s, _) = upstream.accept().unwrap();
+            let _ = read_request(&mut s).unwrap();
+            let text = r#"{"choices":[{"message":{"role":"assistant","content":"{\"pick\":[\"frank\"],\"confidence\":0.9}"}}]}"#;
+            let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{text}", text.len());
+        });
+        let r = route(
+            "custom",
+            &format!("http://127.0.0.1:{port}/v1"),
+            "fake-model",
+        );
+        let out = quick_complete(&r, Some("fake-key"), "s", "p", 1_500).unwrap();
+        assert!(out.contains("frank"));
+    }
+
+    #[test]
+    fn a_quick_pick_gives_up_at_its_deadline() {
+        let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = upstream.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            // Accept and never answer.
+            let (s, _) = upstream.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+            drop(s);
+        });
+        let r = route(
+            "custom",
+            &format!("http://127.0.0.1:{port}/v1"),
+            "fake-model",
+        );
+        let started = std::time::Instant::now();
+        // Asked for longer than the cap: the cap holds.
+        assert!(quick_complete(&r, Some("fake-key"), "s", "p", 60_000).is_err());
+        assert!(started.elapsed() < Duration::from_millis(2_500));
+    }
 
     fn route(provider: &str, base: &str, model: &str) -> CustomRoute {
         CustomRoute {

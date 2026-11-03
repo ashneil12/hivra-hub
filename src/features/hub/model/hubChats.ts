@@ -26,7 +26,7 @@ import {
   whenLabel,
   type RoomBackend,
 } from "./roomStore";
-import type { ChatConversation, ChatMessage, GroupChat, RoomAttachment } from "./types";
+import type { ChatConversation, ChatMessage, GroupChat, ResponderMode, RoomAttachment } from "./types";
 
 const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
   id,
@@ -499,6 +499,17 @@ export function setRoomLead(chatId: string, monoId: string | undefined): void {
   });
 }
 
+/** WP-22: who answers in a room (roomModes.ts). "everyone", the default, is stored as nothing. */
+export function setRoomResponder(chatId: string, mode: ResponderMode): void {
+  whenLoaded(() => {
+    persistRoom(update(chatId, (c) => {
+      const { responder: _, ...rest } = c;
+      return mode === "everyone" ? rest : { ...rest, responder: mode };
+    }));
+    changed();
+  });
+}
+
 // ---- Conversations and messages -----------------------------------------------------------------------------------
 
 /** A conversation names itself from its first message: the first line, cut at a word near 40 characters. */
@@ -834,8 +845,11 @@ export {
   roomIdle,
   roomPaused,
   roomPauseReason,
+  roomGoal,
   roomPick,
   roomStrip,
+  setRoomDecider,
+  startGoal,
   roomTurnOf,
   roomTurnsByMono,
   roomWorking,
@@ -845,6 +859,7 @@ export {
   typingIn,
   type GroupChatRunner,
   type RoomDraft,
+  type RoomGoal,
   type RoomStrip,
   type RoomTurnOutcome,
   type RoomTurnRequest,

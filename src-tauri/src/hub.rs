@@ -683,7 +683,8 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::model_router::model_key_save,
             crate::model_router::model_key_test,
             crate::model_router::model_key_delete,
-            crate::model_router::model_context_window
+            crate::model_router::model_context_window,
+            crate::model_router::model_quick_pick
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {

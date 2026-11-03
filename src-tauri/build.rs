@@ -39,6 +39,8 @@ fn main() {
             "model_key_save",
             "model_key_test",
             "model_key_delete",
+            // WP-22: a room's auto responder asks the quick model through this.
+            "model_quick_pick",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))

@@ -203,6 +203,12 @@ export function RoomMessage({
         />
       ) : null}
       {children}
+      {/* WP-22: a reply the room's auto mode picked says so, under it. */}
+      {!live && message.pick?.by === "auto" ? (
+        <div className="pt-0.5 text-[11px] text-content/45" data-hub-msg-auto-pick>
+          picked automatically
+        </div>
+      ) : null}
       {live ? null : <Reactions chatId={chatId} message={message} nameOf={nameOf} />}
     </>
   );

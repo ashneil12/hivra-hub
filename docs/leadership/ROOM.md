@@ -89,7 +89,16 @@ Targets measured from the 15 Oct Leadership Board (about 190 messages in 3.5 hou
 messages first (median 9 s, p90 27 s); the room re-planned within about 40 s of an interrupt; most review loops ran 5 to
 12 posts without Ash and ended on "pass from me" and "Locked".
 
-**Who speaks.**
+**Who speaks (3 Nov, WP-22: responder modes).** Each room has a "Who answers" setting (`roomModes.ts`). The rules
+below are **everyone**, the default and every room's behaviour before modes. **lead**: only the room's lead answers,
+unless Ash mentions someone. **mentions**: only the seats Ash mentions answer, and with nobody mentioned nobody does (the
+strip says so). **auto**: the first model under Other models picks one seat or several within 1.5 s; on a timeout,
+error, unsure or low-confidence answer, or no model, the lead answers. In lead, mentions and auto, every seat Ash
+mentions answers and nobody else chimes in. **Goal mode** is separate from the setting: Ash's next message is a goal, and the
+lead runs at most 13 turns toward it, naming who goes next in a hidden `<room_control>` block, and stops on completed,
+needs input or blocked (a line in the room says which). His next message carries a run that waits on him; Stop ends it.
+Every seat's turn says it is one of several sessions and doesn't take over another's work.
+
 - Ash writes: the host's turn starts at once, with no model in front of it (the old small-model router picked the answerer
   and cost seconds). Everything of his still unanswered in that conversation is answered together.
 - After the host's answer (or its NO_REPLY or 👍), when Ash named nobody, every other seat gets one turn, side by side

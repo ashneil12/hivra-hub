@@ -268,6 +268,9 @@ export interface HubDataSource {
 export type ChatMessageKind = "ash" | "mono" | "system" | "notice";
 
 /** How a Mono came to speak (shown behind its name). */
+/** WP-22: lead, mentions, everyone or auto (roomModes.ts). */
+export type ResponderMode = "lead" | "mentions" | "everyone" | "auto";
+
 export type ChatPickSource =
   | "mention"
   | "only"
@@ -281,7 +284,10 @@ export type ChatPickSource =
   | "digest"
   | "report"
   | "back"
-  | "post";
+  | "post"
+  // WP-22: a room in auto mode had a quick model pick who answers; a goal run's lead chose who speaks next.
+  | "auto"
+  | "goal";
 
 /**
  * One message in a group chat. `from` is "ash", a Mono id, or "app" (a system line or a notice). A notice is the room
@@ -355,6 +361,11 @@ export type GroupChat = {
   conversations: ChatConversation[];
   /** Who answers Ash first. Unset: Chief of Staff when seated, else the first member. */
   leadId?: string;
+  /**
+   * WP-22: who answers a message from Ash (roomModes.ts). Unset is "everyone", the room's behaviour before modes: the
+   * lead answers first and every other member may add a reply.
+   */
+  responder?: ResponderMode;
   /** The default team was seated in it once (a Mono Ash takes out stays out). */
   seated?: boolean;
   replyPending?: string;
