@@ -33,6 +33,8 @@
 //   {"background": {"id", "kind": "subagent"|"shell", "description"}}   start background work (task_started)
 //   {"finishBackground": "id"}                        it finishes (task_updated, task_notification)
 //   {"mark": "name"}                                  write marks/<name>.json (when, which conversation, the prompt)
+//   {"write": {"path", "text"}}                       write a file in the folder it runs in, as a Write tool call
+//                                                     (Hivra WP-10's checkout guard; the path can't leave the folder)
 //   {"waitFile": "name", "timeoutMs"?}                wait until gates/<name> exists (the app can be killed meanwhile)
 //   {"sleep": ms}, {"exit": code}
 //   {"goalCheck": "reason"}                           the conversation's /goal evaluator says "not yet" (a synthetic
@@ -554,6 +556,24 @@ export async function main(argv = process.argv.slice(2)) {
           task_id: id,
           status: "completed",
           summary: `${task?.description ?? id} finished`,
+        });
+      } else if (step.write && typeof step.write.path === "string") {
+        // Hivra WP-10: an edit in the folder the CLI runs in, shown as Claude Code's Write tool (a first mate's checkout
+        // guard must notice it). The path stays inside that folder.
+        messages += 1;
+        const toolId = `toolu_fake_${process.pid}_${messages}`;
+        const target = path.resolve(process.cwd(), step.write.path);
+        if (path.relative(process.cwd(), target).startsWith("..")) throw new Error(`write outside the folder: ${step.write.path}`);
+        const content = fillTemplate(String(step.write.text ?? ""), lookup);
+        assistant([{ type: "tool_use", id: toolId, name: "Write", input: { file_path: target, content } }]);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        fs.writeFileSync(target, content);
+        out({
+          type: "user",
+          session_id: conversationId,
+          parent_tool_use_id: null,
+          uuid: randomUUID(),
+          message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolId, content: `Wrote ${target}` }] },
         });
       } else if (step.mark) {
         writeJson(path.join(dir, "marks", `${safeName(step.mark)}.json`), {

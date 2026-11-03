@@ -38,7 +38,7 @@ and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
 yours, stored as a task: its report comes back to you as a [MonoCode report] turn once you are idle, even across \
-restarts, and its questions as [MonoCode question] turns. Put the full context in brief and the finish line in goal, say \
+restarts, and its questions as [MonoCode question] turns. Put Ash's ask in intent, the build instructions in brief and the finish line in goal, say \
 in one line what you started, and end your turn instead of polling. task_status reads results, task_wait blocks on a \
 short job, task_cancel stops a task and everything beneath it, task_cannot says you cannot finish one (one plain line on \
 what is in the way: it goes to Ash at once), task_answer answers a worker's question. pr_watch wakes \
@@ -207,10 +207,10 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "brief": { "type": "string", "description": "The whole job: Ash's own words quoted, the context, the checkout, what it may change, the checks to run and the result and evidence you expect back, ending with a short self-review (what it would do differently next time)." },
+                    "brief": { "type": "string", "description": "The spec: only the build instructions the ask needs, the checkout, what it may change, what stays out of scope, and the checks to run. The worker gets your intent, this spec and the goal inside the app's brief template, which already asks for its report and self-review." },
                     "title": { "type": "string", "description": "A short job name, like \"Fix the save bug\". Defaults to the brief's first line." },
                     "asks": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "The Ash OS ask ids (a_...) this job covers." },
-                    "goal": { "type": "string", "description": "Done when: the condition that finishes the job." },
+                    "goal": { "type": "string", "description": "The definition of done: the condition that finishes the job, as a check someone can run." },
                     "project": { "type": "string", "description": "The hub project id, folder path or name. Omit when you have one project." },
                     "model": { "type": "string", "description": "Usually omit it. On Ash's Grok bridge every worker runs on DeepSeek at high effort (a Claude name there means DeepSeek too); grok-4.7 or one of Ash's own models (custom:<id>) is kept when named, and another engine's model (grok:..., codex:...) runs on DeepSeek too. Off the bridge, omitted means Sonnet for a usual job, a stronger model for a hard one (hard, heavy, scope or redoes), or this project's saved worker model." },
                     "effort": { "type": "string", "description": "The model's effort setting, when it has one." },
@@ -226,7 +226,7 @@ fn tools() -> Value {
                     "redoes": { "type": "string", "description": "The taskId of one of your tasks that failed or stopped moving that this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. It works in that task's own checkout (its worktree, with the half-done work still there), or a fresh one, never the shared checkout unless you say isolation shared. The old task keeps going until you stop it with task_cancel." },
                     "files": { "type": "array", "items": { "type": "string" }, "maxItems": 30, "description": "The project files or folders this job will change (e.g. packages/ui/src/App.tsx), when you know them. A job that shares one with a job still running in the project waits and starts by itself once that one has landed, from the project with its work in, so two workers never edit the same file at once. If it belongs with the running job instead, send that job a follow-up rather than a second job." }
                 },
-                "required": ["brief"],
+                "required": ["intent", "brief", "goal"],
                 "additionalProperties": false
             },
             "annotations": { "title": "Delegate a task", "destructiveHint": true, "openWorldHint": true }
@@ -485,13 +485,20 @@ fn tools() -> Value {
             "annotations": { "title": "Teach a skill a lesson", "destructiveHint": false, "openWorldHint": false }
         }
     ]);
+    // Hivra WP-10: the brief's intent, which the model fills (added here: one more field in the literal above passes
+    // json!'s recursion limit).
+    tools[0]["inputSchema"]["properties"]["intent"] = json!({
+        "type": "string",
+        "description": "Ash's own ask, in his words, with the context needed to read it. Don't widen it. The app writes the rest of the brief around it (Hivra's brief template) and refuses an empty or placeholder one."
+    });
     if let Value::Array(list) = &mut tools {
         list.extend(crate::pr_watch::mcp::tools());
     }
     tools
 }
 
-const DELEGATE_APP_FIELDS: [&str; 15] = [
+const DELEGATE_APP_FIELDS: [&str; 16] = [
+    "intent",
     "brief",
     "title",
     "asks",

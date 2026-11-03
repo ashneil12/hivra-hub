@@ -58,6 +58,8 @@ import { forUser } from "../../hub/model/userName";
 import { appIdentity } from "../../../app/model/appIdentity";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import {
   bridgeFamily,
   GROK_BRIDGE_MODEL_ID,
@@ -95,6 +97,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   [
     "tasks.delegate",
     [
+      "intent",
       "brief",
       "title",
       "asks",
@@ -165,6 +168,11 @@ export type AgentAppTasksHost = {
   waiting?(owner: string, on: boolean): void;
   /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
   selfTask?(sessionId: string): Promise<Delegation | undefined>;
+  /**
+   * Hivra WP-10: how deep a delegation from this chat would sit; rejects past the cap (first mate, first mate, workers)
+   * with the reason (src-tauri/src/firstmate/mod.rs check_depth).
+   */
+  checkDepth?(ownerSession: string): Promise<number>;
   /**
    * The agent says it cannot finish this task, with its plain reason (the declared `blocked` stall, delegations.rs). It
    * is Ash's at once; it stands until the row moves. False: the row moved before it could be recorded.
@@ -280,7 +288,7 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
  * its landing took the sibling's test out of the project; workers leave code they didn't write alone.
  */
 export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End your report with a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${MONO_HOME_FENCE}\n</worker_rules>`;
 }
 
 /**
@@ -596,11 +604,18 @@ async function delegate(
     throw new Error(
       "request ID must use letters, digits, underscores or hyphens (up to 100)",
     );
+  // Hivra WP-10: the model fills the brief's intent, spec and definition of done; a brief with any of them empty or
+  // left as a placeholder is refused before anything starts (firstmate/model/brief.ts).
+  const unfit = checkBrief({ intent: input.intent, spec: input.brief, done: input.goal });
+  if (unfit) throw new Error(unfit);
+  const intent = text(input.intent, "intent", BRIEF_MAX);
   const brief = text(input.brief, "brief", BRIEF_MAX);
   const title =
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
-  const goal = input.goal === undefined ? undefined : text(input.goal, "goal", 1_000);
+  const goal = text(input.goal, "goal", 1_000);
+  // Hivra WP-10: never deeper than first mate, first mate, workers.
+  if (tasks.checkDepth) await tasks.checkDepth(source.id);
   // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
   const redoes =
     input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
@@ -610,7 +625,9 @@ async function delegate(
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
-    return briefLead(source, owner.mono, tasks, { requestId, brief, title, asks, goal, input });
+    // A Lead is a first mate: its brief comes from the same template, read-only on the project.
+    const leadBrief = renderBrief({ intent, spec: brief }, { kind: "first-mate" });
+    return briefLead(source, owner.mono, tasks, { requestId, brief: leadBrief, title, asks, goal, input });
   }
   if (input.whenBusy !== undefined)
     throw new Error("whenBusy is for a brief to a Lead (lead); a worker starts in a chat of its own");
@@ -709,12 +726,23 @@ async function delegate(
     id,
     new Set(everyone.flatMap((row) => (row.brief ? [portOfBrief(row.brief)].filter((p): p is number => !!p) : []))),
   );
+  // Hivra WP-10: the brief from the template, with the isolation check this launch needs.
+  const isolationOf = (workspaceMode: "worktree" | "current", worktreeCwd?: string): BriefIsolation =>
+    workspaceMode === "worktree" || worktreeCwd
+      ? { kind: "own-checkout", mainCheckout: folder }
+      : { kind: "shared", folder };
   const launchWith = (workspaceMode: "worktree" | "current", worktreeCwd?: string) =>
     helpers.startLaunch(
       source,
       {
         ...(worktreeCwd ? { worktreeCwd } : {}),
-        prompt: briefPrompt(owner.name, brief, goal, memory, workerRules(port)),
+        prompt: briefPrompt(
+          owner.name,
+          renderBrief({ intent, spec: brief }, isolationOf(workspaceMode, worktreeCwd)),
+          goal,
+          memory,
+          workerRules(port),
+        ),
         // PM's r63 run: a worker tab was named from the brief's first line ("Ash's words, verbatim: …"); it is the job.
         title,
         ...(ownTeam

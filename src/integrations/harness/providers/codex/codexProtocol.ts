@@ -55,9 +55,20 @@ function withNetwork(
 export function runtimeModeToCodexConfig(
   mode: RuntimeMode,
   controlsAgents?: boolean,
+  firstMate?: boolean,
 ): CodexThreadConfig {
+  // Hivra WP-10: a first mate reads and never edits, whatever the chat's mode: Codex's read-only sandbox, with no
+  // escalation, and network for the delegate tool's loopback (the same shape a plan turn runs in).
+  if (firstMate) return withNetwork(FIRST_MATE_CONFIG, true);
   return withNetwork(baseCodexConfig(mode), controlsAgents);
 }
+
+const FIRST_MATE_CONFIG: CodexThreadConfig = {
+  approvalPolicy: "never",
+  sandbox: "read-only",
+  approvalsReviewer: "user",
+  sandboxPolicy: { type: "readOnly" },
+};
 
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
   switch (mode) {
@@ -98,12 +109,15 @@ export function buildThreadStartParams(input: {
   cwd: string;
   runtimeMode: RuntimeMode;
   controlsAgents?: boolean;
+  /** Hivra WP-10: a first mate's session runs read-only. */
+  firstMate?: boolean;
   model?: string;
   serviceTier?: string;
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
+    input.firstMate,
   );
   return {
     cwd: input.cwd,
@@ -135,6 +149,8 @@ export function buildTurnStartParams(input: {
   threadId: string;
   runtimeMode: RuntimeMode;
   controlsAgents?: boolean;
+  /** Hivra WP-10: a first mate's turns run read-only. */
+  firstMate?: boolean;
   prompt?: string;
   attachments?: Attachment[];
   model?: string;
@@ -145,6 +161,7 @@ export function buildTurnStartParams(input: {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
+    input.firstMate,
   );
   const config: CodexThreadConfig =
     input.intent === "plan"

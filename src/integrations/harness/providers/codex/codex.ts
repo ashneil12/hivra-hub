@@ -694,6 +694,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           cwd: input.cwd,
           runtimeMode: input.runtimeMode,
           controlsAgents: input.controlsAgents,
+          firstMate: input.firstMate,
           model,
           serviceTier,
         });
@@ -729,6 +730,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         cwd: input.cwd,
         runtimeMode: input.runtimeMode,
         controlsAgents: input.controlsAgents,
+        firstMate: input.firstMate,
         model,
         serviceTier,
       });
@@ -821,6 +823,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     threadId: live.threadId,
     runtimeMode: input.runtimeMode,
     controlsAgents: input.controlsAgents,
+    firstMate: input.firstMate,
     prompt: input.text.trim() || undefined,
     attachments: input.attachments,
     model,

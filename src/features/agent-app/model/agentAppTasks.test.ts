@@ -8,7 +8,9 @@ import {
   setHarnessModels,
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
-import { handleAgentApp, type AgentAppHost } from "./agentApp";
+import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
+import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
+import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import {
   briefPrompt,
   portOfBrief,
@@ -61,6 +63,9 @@ vi.stubGlobal("localStorage", {
 });
 
 const PROJECT = "/tmp/vg-game";
+/** Hivra WP-10: a worker's brief body, from the template around the test's intent and spec. */
+const scaffold = (spec: string, isolation: BriefIsolation = { kind: "shared", folder: PROJECT }) =>
+  renderBrief({ intent: TEST_INTENT, spec }, isolation);
 
 beforeEach(() => {
   localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
@@ -400,7 +405,10 @@ describe("tasks.delegate", () => {
     expect(launch.prompt).toBe(
       briefPrompt(
         "EXO lead",
-        "Ash: \"the save bug on mission two\". Fix it and prove it with a restart.",
+        scaffold("Ash: \"the save bug on mission two\". Fix it and prove it with a restart.", {
+          kind: "own-checkout",
+          mainCheckout: PROJECT,
+        }),
         "Saving survives a restart",
         undefined,
         workerRules(workerPort("app-mono-exo-r1")),
@@ -438,23 +446,24 @@ describe("tasks.delegate", () => {
     expect(api.memoryBrief).toHaveBeenCalledWith("mono-exo", "claude");
     const [launch] = started[0] as [{ prompt: string }];
     const rules = workerRules(portOfBrief(launch.prompt)!);
-    expect(launch.prompt).toBe(briefPrompt("EXO lead", "Fix the save bug.", "It saves", block, rules));
-    expect(launch.prompt.startsWith(`[MonoCode brief from EXO lead]\n\nFix the save bug.\n\n${rules}\n\nDone when: It saves\n\n<project_memory>`)).toBe(true);
+    expect(launch.prompt).toBe(briefPrompt("EXO lead", scaffold("Fix the save bug."), "It saves", block, rules));
+    expect(launch.prompt.startsWith(`[MonoCode brief from EXO lead]\n\n${scaffold("Fix the save bug.")}\n\n${rules}\n\nDone when: It saves\n\n<project_memory>`)).toBe(true);
     // The memory after it is not part of the finish line the worker's /goal is set to (claudeGoal.ts).
     expect(goalFromBrief(launch.prompt)).toBe("It saves");
     // a worker on another engine: its own engine decides how the block tells it to read more (no ash-os tools there)
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     await handleAgentApp(source, "r-mem-2", "tasks.delegate", { brief: "Draw it.", model: "codex:gpt-5" }, host);
     expect(api.memoryBrief).toHaveBeenLastCalledWith("mono-exo", "codex");
-    // a chat with no project (the leadership team) gets the brief alone; a primer that fails never blocks the brief
+    // a chat with no project (the leadership team) gets the brief alone; a primer that fails never blocks the brief (the
+    // earlier workers still run in this project, so these get checkouts of their own)
     api.memoryBrief = vi.fn(async () => undefined);
     await handleAgentApp(source, "r-plain", "tasks.delegate", { brief: "Look at CI." }, host);
     const plain = (started.at(-1) as [{ prompt: string }])[0].prompt;
-    expect(plain).toBe(briefPrompt("EXO lead", "Look at CI.", undefined, undefined, workerRules(portOfBrief(plain)!)));
+    expect(plain).toBe(briefPrompt("EXO lead", scaffold("Look at CI.", { kind: "own-checkout", mainCheckout: PROJECT }), TEST_GOAL, undefined, workerRules(portOfBrief(plain)!)));
     api.memoryBrief = vi.fn(async () => Promise.reject(new Error("Ash OS is down")));
     await handleAgentApp(source, "r-down", "tasks.delegate", { brief: "Look again." }, host);
     const down = (started.at(-1) as [{ prompt: string }])[0].prompt;
-    expect(down).toBe(briefPrompt("EXO lead", "Look again.", undefined, undefined, workerRules(portOfBrief(down)!)));
+    expect(down).toBe(briefPrompt("EXO lead", scaffold("Look again.", { kind: "own-checkout", mainCheckout: PROJECT }), TEST_GOAL, undefined, workerRules(portOfBrief(down)!)));
   });
 
   it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
@@ -491,7 +500,7 @@ describe("tasks.delegate", () => {
       workspaceMode: "current",
     });
     expect(result).toMatchObject({ model: "claude:sonnet-5", modelWhy: "A usual job (a usual job), so Sonnet 5." });
-    expect(meta).toEqual({ title: "CI", askIds: [], project: "vg-game" });
+    expect(meta).toEqual({ title: "CI", askIds: [], goal: TEST_GOAL, project: "vg-game" });
   });
 
   it("gives a hard job the stronger model, and leaves a usual one on the model it already runs", async () => {
@@ -698,7 +707,7 @@ describe("tasks.delegate", () => {
     expect(launch.prompt).toBe(
       briefPrompt(
         "EXO coding team",
-        "Fix the save bug.",
+        scaffold("Fix the save bug.", { kind: "own-checkout", mainCheckout: PROJECT }),
         "It saves",
         "<project_memory>\n- EXO is dark blue\n</project_memory>",
         workerRules(workerPort("app-team-exo-r1")),
@@ -822,9 +831,10 @@ describe("tasks.delegate", () => {
       expect(id).toBe("app-mono-exo-r-own");
       expect(notify).toBe("mono-exo");
       expect(launch).toMatchObject({ cwd: TEAM, workspaceMode: "current", reveal: false });
-      expect(String(launch.prompt).startsWith("[MonoCode brief from Alfred]\n\nResearch the launch copy.")).toBe(true);
+      expect(String(launch.prompt).startsWith("[MonoCode brief from Alfred]\n\n## Isolation check\n")).toBe(true);
+      expect(String(launch.prompt)).toContain(`## Intent\n${TEST_INTENT}\n\n## Spec\nResearch the launch copy.`);
       // Not a hub project: the row carries no project.
-      expect(meta).toEqual({ title: "Launch copy", askIds: [] });
+      expect(meta).toEqual({ title: "Launch copy", askIds: [], goal: TEST_GOAL });
       expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-own", cwd: TEAM, team: "Alfred's team" });
       expect((result as { note: string }).note).toContain("Running in Alfred's team, where its chat shows under yours");
       // A second worker there shares the folder: it isn't a repository, so there is no checkout of its own to make (the
@@ -860,7 +870,7 @@ describe("tasks.delegate", () => {
     const { source, host, started } = fixture();
     for (const [input, message] of [
       [{ brief: "x", prompt: "y" }, "Unknown tasks.delegate fields: prompt"],
-      [{ brief: "" }, "brief must be"],
+      [{ brief: "" }, "The spec (brief) is empty"],
       [{ brief: "x", asks: ["not-an-ask"] }, "asks must be"],
       [{ brief: "x", isolation: "fork" }, "isolation must be"],
       [{ brief: "x", model: "gpt-9" }, 'Unknown model "gpt-9"'],
@@ -874,6 +884,45 @@ describe("tasks.delegate", () => {
       handleAgentApp(source, "bad id", "tasks.delegate", { brief: "x" }, host),
     ).rejects.toThrow("request ID");
     expect(started).toHaveLength(0);
+  });
+
+  // Hivra WP-10: the model fills intent, spec and definition of done; the app refuses a brief with any left empty or as
+  // a placeholder, before anything starts.
+  it("refuses a brief with an empty or placeholder section, before anything starts", async () => {
+    const { source, host, started } = fixture();
+    const good = { intent: "Ash: \"fix the save bug\"", brief: "Fix the save bug in src/save.ts.", goal: "npm test passes" };
+    for (const [input, message] of [
+      [{ brief: good.brief, goal: good.goal }, "The intent (intent) is empty"],
+      [{ ...good, intent: "TODO" }, "The intent (intent) is a placeholder"],
+      [{ ...good, brief: "<your spec here>" }, "The spec (brief) still has a placeholder"],
+      [{ ...good, brief: "Fix {TASK} today" }, "The spec (brief) still has a placeholder ({TASK})"],
+      [{ ...good, goal: "TBD" }, "The definition of done (goal) is a placeholder"],
+      [{ ...good, goal: "   " }, "The definition of done (goal) is empty"],
+      [{ intent: "...", brief: "[fill in]", goal: "" }, "intent) is a placeholder; The spec (brief) still has a placeholder ([fill in]); The definition of done (goal) is empty"],
+    ] as const) {
+      await expect(handleRaw(source, "r-brief", "tasks.delegate", input, host)).rejects.toThrow(message);
+    }
+    expect(started).toHaveLength(0);
+    // A good one goes out from the template, and the row stores it.
+    await handleRaw(source, "r-good", "tasks.delegate", good, host);
+    const [launch] = started[0] as [{ prompt: string }];
+    for (const section of ["## Isolation check", "## Intent\nAsh: \"fix the save bug\"", "## Spec\nFix the save bug in src/save.ts.", "## Status protocol", "## Steering", "## Report\nSummary:", "Done when: npm test passes"])
+      expect(launch.prompt).toContain(section);
+  });
+
+  it("refuses a delegation deeper than first mate, first mate, workers, before anything starts", async () => {
+    const { source, host, started, api } = fixture();
+    (api as { checkDepth?: (owner: string) => Promise<number> }).checkDepth = vi.fn(async () => {
+      throw new Error("This task would sit 3 levels deep; work stops at 2");
+    });
+    await expect(handleAgentApp(source, "r-deep", "tasks.delegate", { brief: "Split it further." }, host)).rejects.toThrow(
+      "3 levels deep",
+    );
+    expect(started).toHaveLength(0);
+    (api as { checkDepth?: (owner: string) => Promise<number> }).checkDepth = vi.fn(async () => 2);
+    await handleAgentApp(source, "r-ok", "tasks.delegate", { brief: "Do the one part." }, host);
+    expect(started).toHaveLength(1);
+    expect((api as { checkDepth: ReturnType<typeof vi.fn> }).checkDepth).toHaveBeenCalledWith("mono-exo");
   });
 });
 
