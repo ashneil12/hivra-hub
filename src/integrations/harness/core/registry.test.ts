@@ -110,6 +110,7 @@ describe("harness registry", () => {
       "pi",
       "omp",
       "fx",
+      "hermes",
       "antigravity",
     ];
 
@@ -124,6 +125,7 @@ describe("harness registry", () => {
       pi: true,
       omp: true,
       fx: false,
+      hermes: false,
       antigravity: false,
     });
   });
