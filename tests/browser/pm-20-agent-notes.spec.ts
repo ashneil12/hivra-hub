@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { openLocalHub } from "./localHub";
 
 // Round 20 proofs (a browser fixture, not Ash's Mac; tests/browser/agent-notes.tsx, made-up data labelled Example:):
 // agent-to-agent notes in a Lead's chat (one quiet line, a clickable name; notes landing together fold into one line

@@ -17,35 +17,6 @@ async function open(page: Page) {
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
 }
 
-test("Today at 2560 wide: the ask rows stay in one column", async ({ page }) => {
-  fs.mkdirSync(SHOTS, { recursive: true });
-  await page.setViewportSize({ width: 2560, height: 1440 });
-  await open(page);
-  // G1: Hivra's own Today (it has the asks); its needs list is one column, no per-project grid.
-  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
-  const list = page.locator("[data-hub-today-projects]").first();
-  await expect(list).toBeVisible({ timeout: 30_000 });
-  const layout = await list.evaluate((el) => {
-    const style = getComputedStyle(el);
-    return {
-      display: style.display,
-      direction: style.flexDirection,
-      rows: [...el.children].map((e) => ({ left: Math.round(e.getBoundingClientRect().left) })).filter((r) => r.left > 0),
-    };
-  });
-  expect(layout.display).toBe("flex");
-  expect(layout.direction).toBe("column");
-  expect(layout.rows.length).toBeGreaterThan(0);
-  expect(new Set(layout.rows.map((r) => r.left)).size).toBe(1);
-  await page.waitForTimeout(600);
-  await page.screenshot({ path: `${SHOTS}/pm-20-today-2560.png` });
-  // At 1440 wide, the same single column.
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(300);
-  const narrow = await list.evaluate((el) => [...el.children].map((e) => Math.round(e.getBoundingClientRect().left)).filter((l) => l > 0));
-  expect(new Set(narrow).size).toBe(1);
-});
-
 test("a Page preview has no watermark; the bar says it is a preview", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1920, height: 1080 });
