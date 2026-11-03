@@ -138,9 +138,10 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   const leadSubs = page.locator(`[data-sub-chats="${lead}"] [data-sub-chat]`);
   await expect(leadSubs).toHaveCount(4);
   await expect(leadSubs.nth(0)).toHaveAttribute("data-state", "completed");
-  await expect(page.locator(`[data-sub-chat="app-${lead}-t-3"]`)).toHaveAttribute("data-state", "stalled");
-  await expect(page.locator(`[data-sub-chat="app-${lead}-t-3"]`)).toHaveAttribute("aria-label", /No output for 9 min/);
-  await expect(page.locator(`[data-sub-chat="app-${lead}-t-2"]`)).toHaveAttribute("data-state", "question");
+  // The Monos rail shows the Lead's stuck sub-chat too (its own row); these are the coding team list's.
+  await expect(leadSubs.and(page.locator(`[data-sub-chat="app-${lead}-t-3"]`))).toHaveAttribute("data-state", "stalled");
+  await expect(leadSubs.and(page.locator(`[data-sub-chat="app-${lead}-t-3"]`))).toHaveAttribute("aria-label", /No output for 9 min/);
+  await expect(leadSubs.and(page.locator(`[data-sub-chat="app-${lead}-t-2"]`))).toHaveAttribute("data-state", "question");
   await expect(leadRow(page).locator("[data-mono-stuck-kind]")).toHaveAttribute("data-mono-stuck-kind", "stalled");
   const teamToggle = page.locator(`[data-sub-chats-toggle="${TEAM_CHAT}"]`);
   await expect(teamToggle).toHaveText("2 sub-chats");
@@ -168,7 +169,8 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   // Folded, the Lead's sub-chats say what is stuck; Ash's chat's unfold on a click.
   await page.locator(`[data-sub-chats-toggle="${lead}"]`).click();
   await expect(leadSubs).toHaveCount(0);
-  await expect(page.locator(`[data-sub-chats-toggle="${lead}"]`)).toHaveText("4 sub-chats · 2 stuck");
+  // r30b: no "stuck" word; it says what each one is doing.
+  await expect(page.locator(`[data-sub-chats-toggle="${lead}"]`)).toHaveText("4 sub-chats · 1 waiting · 1 stalled");
   await shot(page, "2-folded");
   await teamToggle.click();
   const teamSubs = page.locator(`[data-sub-chats="${TEAM_CHAT}"] [data-sub-chat]`);

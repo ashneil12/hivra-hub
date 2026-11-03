@@ -96,7 +96,7 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
   await page.locator("[data-hub-conversation-draft]").dblclick();
   await page.locator("[data-hub-conversation-rename]").fill("HUD crispness");
   await page.locator("[data-hub-conversation-rename]").press("Enter");
-  await expect(page.locator("[data-hub-conversation-draft]")).toHaveText("HUD crispness");
+  await expect(page.locator("[data-hub-conversation-draft-title]")).toHaveText("HUD crispness");
   expect(await roomConvs(page)).toHaveLength(1);
 
   // 5. + offers photos and videos or files: one of each.
@@ -107,6 +107,9 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
   await page.keyboard.press("Escape");
   await attach(page, "media", PHOTO);
   await attach(page, "file", NOTES);
+  // The chip just landed under the pointer, and a hovered element's title is held aside for the in-page tip
+  // (titleTips.ts, r72): move away so the title is back.
+  await page.mouse.move(5, 5);
   await expect(page.locator("[data-hub-chat] form [title='/Users/ash/Desktop/combo-notes.md']")).toBeVisible();
   await composer(page).fill("cos the hud looks soft on the external monitor, see pic + my notes");
   await shot(page, "4-attached-before-send");
@@ -198,7 +201,10 @@ test("Coding team: New session and back leaves no empty chat; double-click renam
   await input.press("Enter");
   await expect(page.locator('[data-session-card="b8-save-bug"]')).toContainText("Mission two save bug");
   await shot(page, "9-coding-team-renamed");
-  // The Lead's chat is named for the Mono: double-click doesn't rename it.
+  // Ash, 22 Oct (codingTeamList.ts leadRenameRow): the Lead's chat renames like any other chat once it exists, and
+  // Escape leaves its name as it was.
   await page.locator("[data-coding-team-lead] [data-session-select]").dblclick();
+  await expect(page.locator("[data-coding-team-lead] input")).toHaveCount(1);
+  await page.locator("[data-coding-team-lead] input").press("Escape");
   await expect(page.locator("[data-coding-team-lead] input")).toHaveCount(0);
 });
