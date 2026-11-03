@@ -30,12 +30,56 @@ export function claudeGuardArgs(): string[] {
   }
 }
 
+/**
+ * WP-30: what installed plugins add to a session in `cwd` (src/features/plugins/model/pluginSessions.ts): a
+ * `--plugin-dir` per plugin with skills, and MCP servers to merge into the session's one `--mcp-config`.
+ */
+export type ClaudePluginAdditions = { pluginDirs: string[]; mcpServers: Record<string, unknown> };
+type PluginProvider = (cwd: string) => ClaudePluginAdditions | Promise<ClaudePluginAdditions>;
+
+let pluginProvider: PluginProvider | undefined;
+
+export function setClaudePluginArgs(next: PluginProvider | undefined): void {
+  pluginProvider = next;
+}
+
+/**
+ * Add the plugins' servers to the `--mcp-config` already in `args` (the app's own entries keep their names), or add
+ * one when there is none, then the `--plugin-dir`s.
+ */
+export function withPluginArgs(args: string[], plugins: ClaudePluginAdditions): string[] {
+  const out = [...args];
+  if (Object.keys(plugins.mcpServers).length) {
+    const at = out.indexOf("--mcp-config");
+    let merged = false;
+    if (at >= 0 && at + 1 < out.length) {
+      try {
+        const config = JSON.parse(out[at + 1]) as { mcpServers?: Record<string, unknown> };
+        out[at + 1] = JSON.stringify({ ...config, mcpServers: { ...plugins.mcpServers, ...(config.mcpServers ?? {}) } });
+        merged = true;
+      } catch {
+        merged = false;
+      }
+    }
+    if (!merged) out.push("--mcp-config", JSON.stringify({ mcpServers: plugins.mcpServers }));
+  }
+  for (const dir of plugins.pluginDirs) out.push("--plugin-dir", dir);
+  return out;
+}
+
 /** Extra arguments for this session; never throws. A provider still reading what it needs is waited for. */
-export async function claudeExtraArgs(sessionId: string): Promise<string[]> {
+export async function claudeExtraArgs(sessionId: string, cwd?: string): Promise<string[]> {
+  let args: string[] = [];
   try {
-    return (await provider?.(sessionId)) ?? [];
+    args = (await provider?.(sessionId)) ?? [];
   } catch {
-    return [];
+    args = [];
+  }
+  if (!cwd || !pluginProvider) return args;
+  try {
+    return withPluginArgs(args, await pluginProvider(cwd));
+  } catch {
+    return args;
   }
 }
 

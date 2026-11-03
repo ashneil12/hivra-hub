@@ -1025,7 +1025,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       // access chosen later on any other process restarts it (claudeLaunchDelta).
       ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass, offBridge }),
       ...workerCheckoutsArgs(input.cwd),
-      ...(await claudeExtraArgs(input.sessionId)),
+      // WP-30: the cwd lets installed plugins add their skills and MCP servers (claudeExtraArgs.ts).
+      ...(await claudeExtraArgs(input.sessionId, input.cwd)),
       // The hub's additions ride on Claude Code's own system prompt, never in place of it.
       ...claudeAppendArgs(claudeAppend(input.sessionId)),
     ],

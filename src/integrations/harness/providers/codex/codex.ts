@@ -49,6 +49,7 @@ import {
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { prepareCodexMonoContext } from "./codexStore";
+import { codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
 import type {
   ApprovalDecision,
   CompactContextInput,
@@ -564,6 +565,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         })
       : undefined;
   const storeConfig = store?.config;
+  // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
+  const extraConfig = await codexExtraConfig(input.cwd);
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(
@@ -702,14 +705,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           {
             threadId: resume.threadId,
             ...params,
-            ...(storeConfig
-              ? {
-                  config: {
-                    ...storeConfig,
-                    ...(params.config as Record<string, unknown> | undefined),
-                  },
-                }
-              : {}),
+            ...withConfig(storeConfig, extraConfig, params.config),
           },
         );
         threadId = opened.thread?.id ?? resume.threadId;
@@ -736,14 +732,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         "thread/start",
         {
           ...params,
-          ...(storeConfig
-            ? {
-                config: {
-                  ...storeConfig,
-                  ...(params.config as Record<string, unknown> | undefined),
-                },
-              }
-            : {}),
+          ...withConfig(storeConfig, extraConfig, params.config),
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       );
@@ -1613,6 +1602,16 @@ function autoApproval(
 }
 
 /** Exported for tests. */
+/** The `config` a thread opens with (WP-30): the private store's, the plugins', then the thread's own. */
+function withConfig(
+  store: Record<string, unknown> | undefined,
+  extra: Record<string, unknown>,
+  params: unknown,
+): { config?: Record<string, unknown> } {
+  const config = mergeCodexConfig(store, extra, params as Record<string, unknown> | undefined);
+  return config ? { config } : {};
+}
+
 export function __codexTestReset(): void {
   liveByThread.clear();
   resumeByThread.clear();
