@@ -569,8 +569,16 @@ mod tests {
 
     #[test]
     fn projects_and_messages_come_from_the_plan() {
+        // An absolute path on every platform ("/tmp/m.json" isn't one on Windows).
+        let messages = std::env::temp_dir().join("m.json");
         let plan = parse(
-            r#"{"version":1,"runId":"r1","projects":[{"id":"verify-tree","name":"Verify tree","folder":"/tmp/x"}],"messages":"/tmp/m.json"}"#,
+            &serde_json::json!({
+                "version": 1,
+                "runId": "r1",
+                "projects": [{"id": "verify-tree", "name": "Verify tree", "folder": "/tmp/x"}],
+                "messages": messages,
+            })
+            .to_string(),
         )
         .unwrap();
         assert_eq!(window_info(&plan)["projects"][0]["id"], "verify-tree");
