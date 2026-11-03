@@ -1862,8 +1862,11 @@ pub fn report_main(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::fs::git_checked;
-    use crate::project_file::tests::{commit, repo, temp};
+    use crate::project_file::tests::temp;
+    #[cfg(unix)]
+    use crate::project_file::tests::{commit, repo};
 
     const NOW: u64 = 1_800_000_000_000;
 
@@ -2133,6 +2136,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     fn git_commit_file(root: &Path, name: &str, text: &str) {
         std::fs::write(root.join(name), text).unwrap();
         git_checked(root, &["add", name]).unwrap();
