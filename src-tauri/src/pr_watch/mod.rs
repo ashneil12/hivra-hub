@@ -1100,6 +1100,9 @@ fn apply(
             QUIET_EVERY
         };
     let mut changed = before != (w.status.clone(), w.memo.clone(), w.title.clone());
+    // Hivra WP-12: CI red, CI green, merged and closed feed delivery (and WP-11's classifier).
+    let delivery_news =
+        crate::delivery::events::classify(read, report.as_ref().map(|r| r.changes.as_slice()));
     match (read.state, report) {
         (PrState::Merged, _) => {
             w.merge_sha = read.merge_sha.clone();
@@ -1146,6 +1149,10 @@ fn apply(
         (PrState::Open, None) => {}
     }
     save(&tx, &w)?;
+    let head = read.detail.head_sha.as_deref();
+    if let Err(error) = crate::delivery::events::record(&tx, &w.repo, w.number, head, &delivery_news, now) {
+        eprintln!("delivery events for {}#{} weren't recorded: {error}", w.repo, w.number);
+    }
     tx.commit().map_err(|e| e.to_string())?;
     if changed {
         swept.changed.push(w.id);

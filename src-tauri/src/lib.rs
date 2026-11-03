@@ -17,6 +17,8 @@ pub mod control_cli;
 mod cursor_store;
 mod delegations;
 mod dev_fault;
+// Hivra WP-12: delivery modes and the one merge path.
+mod delivery;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -509,6 +511,17 @@ pub fn run() {
             firstmate::firstmate_checkout_snapshot,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
+            // Hivra WP-12: delivery modes and the one merge path.
+            delivery::delivery_settings_get,
+            delivery::delivery_settings_set,
+            delivery::delivery_list,
+            delivery::delivery_deliver,
+            delivery::delivery_fix_ask,
+            delivery::delivery_merge,
+            delivery::delivery_merge_approve,
+            delivery::delivery_merges,
+            delivery::delivery_events_open,
+            delivery::delivery_events_consume,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
