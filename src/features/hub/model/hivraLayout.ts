@@ -14,8 +14,9 @@
 /** The one layout Hivra renders: `false` is Classic, `true` would be upstream's Focused (inset) layout. */
 export const HIVRA_INSET_LAYOUT = false;
 
-/** Whether the layout is fixed: true in the Hivra bundle. Read once; Vite inlines the flag at build time. */
-export const HIVRA_LAYOUT_FIXED = import.meta.env.VITE_MONOCODE_HUB === "1";
+/** Whether the layout is fixed: true in the Hivra bundle. Read once; Vite inlines the flag at build time. The host
+ * server bundles this file for Node, where there is no `import.meta.env`, hence the `?.`. */
+export const HIVRA_LAYOUT_FIXED = import.meta.env?.VITE_MONOCODE_HUB === "1";
 
 /** The settings Hivra doesn't show while the layout is fixed (search included): the layout switch itself. */
 export const HIVRA_LAYOUT_HIDDEN_SETTINGS: readonly string[] = HIVRA_LAYOUT_FIXED ? ["inset-layout"] : [];
