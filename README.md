@@ -1,80 +1,53 @@
-<p align="center">
-  <img src="public/monocode.png" alt="MonoCode" width="88" />
-</p>
+<h1 align="center">Hivra</h1>
 
-<h1 align="center">MonoCode</h1>
+<p align="center">
+  <strong>An experiment in running projects with a team of agents.</strong><br />
+  A fork of <a href="https://github.com/hardbeat920/monocode">MonoCode</a>.
+</p>
 
 > [!WARNING]
-> **This is an experiment. Don't take it seriously.** It's Ash's personal fork of
-> [MonoCode](https://github.com/hardbeat920/monocode), turned into a "hub" where a team of agents
-> runs his projects. It's built in public and changes all the time, it isn't supported, and it may
-> break. For the real app, use [upstream MonoCode](https://github.com/hardbeat920/monocode).
-> Agents working here should read [CLAUDE.md](CLAUDE.md) first.
+> **This is an experiment. Don't take it seriously.** Hivra is Ash's personal build, made in public. It
+> changes all the time, it isn't supported, and it may break. If you want a working app, use
+> [upstream MonoCode](https://github.com/hardbeat920/monocode).
 
-<p align="center">
-  <strong>A GUI for your coding agents.</strong>
-</p>
+## What this is
 
-<p align="center">
-  <img width="1680" height="1050" alt="MonoCode with agent sessions open side by side" src="https://github.com/user-attachments/assets/2cd4a6ec-eb1e-4b45-8627-a76442ea3874" />
-</p>
+Hivra is a fork of [MonoCode](https://github.com/hardbeat920/monocode), a desktop GUI for coding agents
+(Claude Code, Codex, Cursor, Grok Build, OpenCode, Hermes and others). It stays a MonoCode fork on purpose
+and keeps merging upstream changes in.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Antigravity, Pi, omp, fx, and Devin. If they’re installed and logged in, MonoCode can run them. Tabs are sessions. The composer is the input. MonoCode does not sell tokens.
+On top of MonoCode, Hivra is a harness for **managing** agents rather than chatting with one: a lead that
+takes your asks, hands work to agents across your projects, keeps track of what's done and what isn't, and
+comes back to you when it needs a decision.
 
-## Install
+The idea is to **curate, not invent**. Instead of building every piece from scratch, Hivra picks proven
+pieces and puts them in the right places: a few ship by default, and the rest are optional plugins. It
+should stay small.
 
-Install and sign in to at least one supported agent first. See [provider setup](docs/providers.md) for instructions.
+## Inspirations so far
 
-| Platform | Download |
-| --- | --- |
-| macOS, Apple Silicon | [MonoCode.dmg](https://dl.usemono.dev/MonoCode.dmg) |
-| macOS, Intel | [MonoCode_x64.dmg](https://dl.usemono.dev/MonoCode_x64.dmg) |
-| Linux, x86_64 | [.deb, .rpm, or AppImage](https://github.com/hardbeat920/monocode/releases/latest) |
-| Windows, x86_64 | [Installer](https://github.com/hardbeat920/monocode/releases/latest) |
+- [MonoCode](https://github.com/hardbeat920/monocode): the app Hivra is built on.
+- [firstmate](https://github.com/kunchenguid/firstmate): an "agent distro" with a captain and a pluggable crew.
+- [DeepSeek super-agent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype): a router that
+  never does the work itself, workers that follow threads, and a watchdog.
+- [pstack](https://github.com/cursor/plugins/tree/main/pstack) and [poteto](https://x.com/poteto)'s writing
+  on skills and verification, including the
+  [verification skill example](https://github.com/poteto/verification-skill-example).
 
-On macOS, open the DMG and drag MonoCode to Applications. On Windows, run the installer. See [Linux setup](docs/install.md) for dependencies and package instructions.
+This list will grow.
 
-## Get started
+## Status
 
-Open a project folder, choose an agent, and send a message. Each tab is a session. Split panes to work with sessions side by side.
+Early. The plan is still being worked out, so expect the code and this page to change a lot. Agents
+working in this repo should read [CLAUDE.md](CLAUDE.md) first.
 
-- Keep conversations organized by project.
-- Use separate Git worktrees for parallel tasks.
-- Edit files and review changes in the app.
-- Start a message with `/operator` to let an agent open sessions and manage worktrees and notes.
+## Building
 
-Monos are experimental agents that work across your projects. They keep a memory and can run scheduled tasks you set up with them.
-
-MonoCode is still early. If something breaks, [report a bug](https://github.com/hardbeat920/monocode/issues).
-
-## Guides
-
-- [Provider setup](docs/providers.md)
-- [Linux installation](docs/install.md)
-- [Agent access with /operator](docs/agent-access.md)
-- [Remote sessions, experimental](docs/remote-access.md)
-
-## Build from source
-
-You’ll need Node.js 20+ and a stable Rust toolchain. See [build setup](docs/building.md) for platform dependencies and packaging.
-
-The mobile app is a separate Expo project in [`mobile/`](mobile/README.md). Run it with `cd mobile && npm install && npm start`.
-
-```bash
-npm install
-npm run tauri dev
-```
-
-Small, focused contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
-
-## Contributors
-
-Thanks to everyone who contributes to MonoCode!
-
-[![MonoCode contributors](https://contrib.rocks/image?repo=hardbeat920/monocode)](https://github.com/hardbeat920/monocode/graphs/contributors)
-
-Contributor image by [contrib.rocks](https://contrib.rocks).
+Same as MonoCode: Node.js 20+ and a stable Rust toolchain. See [build setup](docs/building.md). This fork
+has its own build and dev scripts (`npm run hub:dev`, `npm run hub:build`), described in
+[CLAUDE.md](CLAUDE.md).
 
 ## License
 
-[MIT](LICENSE). Provider names and logos are trademarks of their owners. See [NOTICE](NOTICE).
+[MIT](LICENSE), like MonoCode. Hivra is not affiliated with MonoCode or with the makers of the agents it
+drives. Provider names and logos are trademarks of their owners. See [NOTICE](NOTICE).
