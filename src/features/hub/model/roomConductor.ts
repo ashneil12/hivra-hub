@@ -159,7 +159,15 @@ type Wake = {
   stepped?: boolean;
 };
 /** WP-22: a goal run in one conversation (roomModes.ts). */
-type GoalRun = { text: string; lead: string; turns: number; state: GoalState; reason?: string };
+type GoalRun = {
+  text: string;
+  lead: string;
+  turns: number;
+  state: GoalState;
+  reason?: string;
+  /** It stopped because it used all its turns: only Continue starts it again (Ash's next message doesn't). */
+  outOfTurns?: boolean;
+};
 type Running = { wake: Wake; mode: "turn" | "queued" | "steered"; startedAt: number; answered?: boolean; activity?: LiveActivity };
 /**
  * A turn's words as it writes them, shown in the room as a live message until the turn ends (then the post takes its
@@ -330,14 +338,17 @@ export type RoomStrip =
   | { kind: "paused"; reason: PauseReason; text: string }
   | { kind: "note"; text: string; mono: string }
   | { kind: "goal"; text: string }
+  | { kind: "goal-waiting"; text: string }
   | { kind: "hint"; text: string };
 export function roomStrip(chatId: string, convId: string): RoomStrip | undefined {
   const t = rooms.get(chatId)?.threads.get(convId);
   if (!t) return undefined;
   if (t.paused) return { kind: "paused", reason: t.paused.reason, text: pauseText(t, t.paused.reason) };
   if (t.note) return { kind: "note", text: t.note.text, mono: t.note.mono };
-  // How a goal run ended is a line in the room itself (endGoal), so only a running one shows here.
+  // How a finished goal ended is a line in the room itself (endGoal); a running or waiting one shows here.
   if (t.goal?.state === "running") return { kind: "goal", text: `Working toward the goal · turn ${Math.max(1, t.goal.turns)} of ${GOAL_MAX_TURNS}` };
+  // A goal that waits for Ash says why, with Continue and End goal beside it.
+  if (goalWaiting(t.goal)) return { kind: "goal-waiting", text: goalEndLine(t.goal.state as "blocked" | "needs_input", t.goal.reason) };
   if (t.hint) return { kind: "hint", text: t.hint };
   return undefined;
 }
@@ -487,15 +498,21 @@ function onAsh(chatId: string, convId: string): boolean {
     settleIfIdle(chatId);
     return true;
   }
-  // WP-22: a goal run that is under way, or waits on Ash, takes up what he wrote: its lead's next turn answers him.
+  // WP-22: a goal whose lead has left the room is over: the room answers as usual.
   const goal = t.goal;
-  if (goal && (goal.state === "running" || goal.state === "needs_input" || goal.state === "blocked")) {
-    if (goal.state !== "running") Object.assign(goal, { state: "running", turns: 0, reason: undefined });
-    goalTurn(chatId, convId, goal.lead, { trigger: batch[batch.length - 1].id, batch: batch.map((m) => m.id), ashAnswered: true });
+  if (goal && !seats.some((s) => s.id === goal.lead)) {
+    endGoal(chatId, convId, "blocked", `${nameOf(goal.lead)} left the room`);
+    t.goal = undefined;
+  }
+  // A running goal takes up what Ash wrote (its lead's next turn answers him), and so does one whose lead asked him
+  // something. A goal that is blocked or out of turns waits for Continue; meanwhile the room answers as usual.
+  if (t.goal && (t.goal.state === "running" || (t.goal.state === "needs_input" && !t.goal.outOfTurns))) {
+    if (t.goal.state !== "running") Object.assign(t.goal, { state: "running", turns: 0, reason: undefined });
+    goalTurn(chatId, convId, t.goal.lead, { trigger: batch[batch.length - 1].id, batch: batch.map((m) => m.id), ashAnswered: true });
     pump(chatId);
     return true;
   }
-  t.goal = undefined;
+  if (!goalWaiting(t.goal)) t.goal = undefined;
   const mode = responderOf(chat);
   const texts = batch.map((m) => m.text);
   const host = hostOf(seats, chat.leadId)!;
@@ -634,6 +651,12 @@ function goalTurn(chatId: string, convId: string, monoId: string, input: { trigg
   if (!g || g.state !== "running") return;
   if (g.turns >= GOAL_MAX_TURNS) {
     endGoal(chatId, convId, "needs_input", `the room used all ${GOAL_MAX_TURNS} of its turns`);
+    g.outOfTurns = true;
+    return;
+  }
+  const chat = getChat(chatId);
+  if (!chat?.memberIds.includes(monoId)) {
+    endGoal(chatId, convId, "blocked", `${nameOf(monoId)} isn't in the room any more`);
     return;
   }
   g.turns++;
@@ -662,8 +685,59 @@ function endGoal(chatId: string, convId: string, state: Exclude<GoalState, "runn
   if (!g || g.state !== "running") return;
   Object.assign(g, { state, reason: reason?.trim() || undefined });
   r.queue = r.queue.filter((w) => !(w.convId === convId && w.kind === "goal"));
+  // A goal turn still in flight is over too: whatever it says or however it ends later moves nothing.
+  for (const [monoId, run] of r.running)
+    if (run.wake.convId === convId && run.wake.kind === "goal" && !run.wake.stepped) {
+      run.wake.stepped = true;
+      void Promise.resolve(runner?.stop?.(monoId, run.wake.id)).catch(() => undefined);
+    }
   appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: goalEndLine(state, reason) });
   notify();
+}
+
+/** A goal that stopped short and waits for Ash: blocked, out of turns, or its lead asked him something. */
+function goalWaiting(g: GoalRun | undefined): g is GoalRun {
+  return !!g && (g.state === "blocked" || g.state === "needs_input");
+}
+
+/**
+ * Continue on a goal that waits for Ash: its lead picks it up again with a fresh budget of turns, taking up anything
+ * he wrote since.
+ */
+export function continueGoal(chatId: string, convId: string): Promise<void> {
+  const r = roomOf(chatId);
+  const t = threadOf(r, convId);
+  const g = t.goal;
+  const chat = getChat(chatId);
+  const conv = chat?.conversations.find((c) => c.id === convId);
+  if (!goalWaiting(g) || !chat || !conv) return Promise.resolve();
+  if (!chat.memberIds.includes(g.lead) || !runner) {
+    t.goal = undefined;
+    notify();
+    return Promise.resolve();
+  }
+  turnRoom(chatId, convId);
+  Object.assign(g, { state: "running", turns: 0, reason: undefined, outOfTurns: undefined });
+  const line = appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: forUser("Ash asked the room to carry on with the goal.") });
+  const batch = unanswered(conv);
+  goalTurn(chatId, convId, g.lead, {
+    trigger: batch[batch.length - 1]?.id ?? line?.message.id,
+    ...(batch.length ? { batch: batch.map((m) => m.id), ashAnswered: true } : {}),
+  });
+  pump(chatId);
+  return roomIdle(chatId, convId);
+}
+
+/** End goal: a goal that waits for Ash (or still runs) is over. */
+export function endRoomGoal(chatId: string, convId: string): void {
+  const t = threadOf(roomOf(chatId), convId);
+  const g = t.goal;
+  if (!g) return;
+  if (g.state === "running") endGoal(chatId, convId, "stopped", "you ended it");
+  else if (goalWaiting(g)) appendMessage(chatId, convId, { id: newMessageId("app"), from: "app", kind: "system", text: goalEndLine("stopped", "you ended it") });
+  t.goal = undefined;
+  notify();
+  settleIfIdle(chatId);
 }
 
 /**
@@ -680,7 +754,7 @@ function landGoal(chatId: string, wake: Wake, me: Seat, text: string, id?: strin
   const chat = getChat(chatId);
   if (!g || g.state !== "running" || !chat) return undefined;
   const leading = wake.goal?.role === "lead";
-  const parsed = leading ? parseGoalControl(text, seatsOf(chat)) : { post: text };
+  const parsed = leading ? parseGoalControl(text, seatsOf(chat)) : { post: text.replace(/<room_control>[\s\S]*?(?:<\/room_control>|$)/gi, "") };
   const words = cleanPost(parsed.post, me.name);
   let posted: ChatMessage | undefined;
   if (!isSilent(words)) {
@@ -806,6 +880,8 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   const me = seats.find((s) => s.id === wake.monoId);
   const conv = chat?.conversations.find((c) => c.id === wake.convId);
   if (!chat || !me || !conv || !runner) {
+    // WP-22: a goal turn for a seat that has left ends the run, with a line, rather than leaving it waiting forever.
+    if (wake.kind === "goal" && !stale(r, wake)) endGoal(chatId, wake.convId, "blocked", `${nameOf(wake.monoId)} isn't in the room any more`);
     settleIfIdle(chatId);
     return;
   }
@@ -887,9 +963,12 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   finish();
   if (!stale(r, wake)) {
     // WP-22: a goal turn that ended without posting moves the run on as a silent turn.
-    if (wake.kind === "goal" && end.status === "done" && !wake.stepped) landGoal(chatId, wake, me, NO_REPLY);
+    // One that already posted (room_post) has moved the run on: how its own session ends afterwards changes nothing.
+    if (wake.kind === "goal" && wake.stepped) {
+      /* already taken up */
+    } else if (wake.kind === "goal" && end.status === "done") landGoal(chatId, wake, me, NO_REPLY);
     else if (wake.kind === "goal" && end.status === "dropped") endGoal(chatId, wake.convId, "blocked", `${me.name}'s turn didn't run`);
-    if (end.status === "failed") failed(chatId, wake, me, end.error ?? "Its turn did not finish.");
+    else if (end.status === "failed") failed(chatId, wake, me, end.error ?? "Its turn did not finish.");
     // Ash must never be left without an answer: the host that finished its own work without one says so.
     else if (wake.kind === "answer" && !running.answered && end.status === "done")
       noteFor(chatId, wake, me, `${me.name} finished its own work without answering here.`);
@@ -1056,6 +1135,8 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
 
 /** Never silent: a turn that failed, ran out of budget or couldn't start says so in the thread. */
 function failed(chatId: string, wake: Wake, me: Seat, error: string): void {
+  // WP-22: a goal turn already taken up (it posted, or the run ended) has nothing left to fail.
+  if (wake.kind === "goal" && wake.stepped) return;
   notice(chatId, wake, me, failureNotice(me.name, error, me.engine));
   if (wake.kind === "goal") endGoal(chatId, wake.convId, "blocked", `${me.name}'s turn failed`);
 }
@@ -1070,7 +1151,7 @@ function notice(chatId: string, wake: Wake, me: Seat, text: string): void {
     ...(wake.trigger ? { replyTo: wake.trigger } : {}),
     notice: { mono: me.id, retry: true },
   });
-  if (posted) r.retries.set(posted.message.id, { ...wake, id: newWakeId(me.id) });
+  if (posted) r.retries.set(posted.message.id, { ...wake, id: newWakeId(me.id), stepped: undefined });
 }
 
 /** A status note in the strip above the composer, not a message in the room (AD6, AD12). */
@@ -1091,8 +1172,12 @@ export function retryNotice(chatId: string, noticeId: string): Promise<void> {
   }
   if (wake.kind === "answer") return requestReply(chatId, wake.convId);
   // WP-22: Try again on a goal turn that failed picks the run up again from that turn.
-  const goal = wake.kind === "goal" ? threadOf(r, wake.convId).goal : undefined;
-  if (goal?.state === "blocked") Object.assign(goal, { state: "running", reason: undefined });
+  if (wake.kind === "goal") {
+    const goal = threadOf(r, wake.convId).goal;
+    // A run that has since ended or moved on has no use for this turn.
+    if (goal?.state !== "blocked") return Promise.resolve();
+    Object.assign(goal, { state: "running", reason: undefined });
+  }
   enqueue(chatId, { ...wake, gen: wake.gen < 0 ? -1 : threadOf(r, wake.convId).gen });
   pump(chatId);
   return roomIdle(chatId, wake.convId);

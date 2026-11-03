@@ -96,7 +96,9 @@ strip says so). **auto**: the first model under Other models picks one seat or s
 error, unsure or low-confidence answer, or no model, the lead answers. In lead, mentions and auto, every seat Ash
 mentions answers and nobody else chimes in. **Goal mode** is separate from the setting: Ash's next message is a goal, and the
 lead runs at most 13 turns toward it, naming who goes next in a hidden `<room_control>` block, and stops on completed,
-needs input or blocked (a line in the room says which). His next message carries a run that waits on him; Stop ends it.
+needs input or blocked (a line in the room says which). When the lead asked him something, his next message carries
+the run on; blocked or out of turns, it waits for Continue (or End goal) in the strip, and the room answers him as
+usual meanwhile. Stop ends a running goal.
 Every seat's turn says it is one of several sessions and doesn't take over another's work.
 
 - Ash writes: the host's turn starts at once, with no model in front of it (the old small-model router picked the answerer

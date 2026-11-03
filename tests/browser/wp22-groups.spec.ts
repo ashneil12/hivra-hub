@@ -34,5 +34,11 @@ test("switching a room's mode, then a goal run that ends on needs input", async 
   await expect(page.getByText("Example: two prices are on the table, 9 or 12 a month.")).toBeVisible();
   await expect(page.getByText("room_control")).toHaveCount(0);
   await expect(page.locator("[data-hub-goal-hint]")).toHaveCount(0);
+  // The waiting goal says why above the composer, with Continue and End goal.
+  await expect(page.locator('[data-hub-room-strip="goal-waiting"]')).toHaveText("Goal needs you: Ash picks between 9 and 12 a month.");
+  await expect(page.locator("[data-hub-goal-continue]")).toBeVisible();
   await page.screenshot({ path: `${SHOTS}/wp22-goal-needs-input.png` });
+  await page.locator("[data-hub-goal-end]").click();
+  await expect(page.locator("[data-hub-msg-system]").last()).toHaveText("Goal stopped: you ended it.");
+  await expect(page.locator("[data-hub-goal-continue]")).toHaveCount(0);
 });

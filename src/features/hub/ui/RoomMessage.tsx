@@ -8,6 +8,8 @@ import { useState, type ReactNode } from "react";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
 import {
+  continueGoal,
+  endRoomGoal,
   keepGoing,
   react,
   REACTIONS,
@@ -266,6 +268,16 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
         <button type="button" onClick={() => keepGoing(chatId, convId)} className="shrink-0 underline" data-hub-room-keep-going>
           Keep going
         </button>
+      ) : strip?.kind === "goal-waiting" && convId ? (
+        // WP-22: a goal that waits for Ash: carry on (a fresh budget of turns) or end it.
+        <span className="flex shrink-0 gap-3">
+          <button type="button" onClick={() => void continueGoal(chatId, convId)} className="underline" data-hub-goal-continue>
+            Continue
+          </button>
+          <button type="button" onClick={() => endRoomGoal(chatId, convId)} className="underline" data-hub-goal-end>
+            End goal
+          </button>
+        </span>
       ) : strip?.kind === "note" && convId ? (
         <button type="button" onClick={() => void retryRoomNote(chatId, convId)} className="shrink-0 underline" data-hub-room-strip-retry>
           Try again

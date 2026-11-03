@@ -830,6 +830,8 @@ export function resetRoomsForTests(next: GroupChat[] = []): void {
 
 // The room taking turns lives in roomConductor.ts; these are its door for the app and the screens.
 export {
+  continueGoal,
+  endRoomGoal,
   keepGoing,
   MonoBusyError,
   postBack,

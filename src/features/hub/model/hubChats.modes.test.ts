@@ -332,3 +332,131 @@ it("goal: Try again on a failed turn picks the run up from that turn", async () 
   expect(posts(said(conv))).toEqual(["frank"]);
   expect(chat.roomGoal(id, conv)).toMatchObject({ state: "completed" });
 });
+
+// ---- Review fixes (WP-22 review at 9dafa1f) ------------------------------------------------------------------------
+
+it("goal: a goal whose lead left the room ends with a line, and Ash's next message is answered as usual", async () => {
+  const { chat, id, said } = await room("lead");
+  const script = scripted({
+    "chief-of-staff": control({ status: "needs_input", reason: "Ash picks the price" }),
+    "projects-manager": "Here.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "Set the price");
+  await chat.startGoal(id, conv);
+  expect(chat.roomGoal(id, conv)).toMatchObject({ state: "needs_input" });
+  chat.removeMember(id, "chief-of-staff");
+  chat.sendMessage(id, "12", conv);
+  await chat.requestReply(id, conv);
+  // The room answered (its new lead), the goal is gone and nothing waits.
+  expect(script.who()).toEqual(["chief-of-staff", "projects-manager"]);
+  expect(chat.roomGoal(id, conv)).toBeUndefined();
+  expect(chat.roomStrip(id, conv)).toBeUndefined();
+  expect(chat.roomActive(id, conv)).toBe(false);
+});
+
+it("goal: a running goal whose lead leaves mid-run ends as blocked, with a line, instead of hanging", async () => {
+  const { chat, id, said } = await room("lead");
+  let release: () => void = () => undefined;
+  const script = scripted({
+    "chief-of-staff": control({ status: "continue", next: "frank", instruction: "Check." }),
+    frank: async () => {
+      await new Promise<void>((r) => (release = r));
+      return "Checked.";
+    },
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "Check memory");
+  const running = chat.startGoal(id, conv);
+  await new Promise((r) => setTimeout(r, 10));
+  chat.removeMember(id, "chief-of-staff");
+  release();
+  await running;
+  expect(chat.roomGoal(id, conv)).toMatchObject({ state: "blocked", reason: "Chief of Staff isn't in the room any more" });
+  expect(systemLines(said(conv)).at(-1)).toBe("Goal blocked: Chief of Staff isn't in the room any more.");
+  expect(chat.roomActive(id, conv)).toBe(false);
+});
+
+it("goal: a busy member's room_post moves the run on; its session failing afterwards changes nothing", async () => {
+  const { chat, id, said } = await room("lead");
+  let endFrank: (end: { status: "failed"; error: string }) => void = () => undefined;
+  const leadTurns: string[] = [];
+  const runner = {
+    run: vi.fn(async (request: RoomTurnRequest): Promise<RoomTurnOutcome> => {
+      await new Promise((r) => setTimeout(r, 1));
+      if (request.monoId === "frank") {
+        // frank is busy in his own chat: the turn goes in as a wake, and he answers with room_post.
+        setTimeout(() => chat.postFromMono(id, "frank", "Checked: the decision is in memory."), 2);
+        return { kind: "wake", delivery: "queued", done: new Promise((r) => (endFrank = r)) };
+      }
+      leadTurns.push(request.prompt);
+      return {
+        kind: "reply",
+        text: leadTurns.length === 1 ? control({ status: "continue", next: "frank", instruction: "Check memory." }) : `Done.\n${control({ status: "completed", reason: "checked" })}`,
+      };
+    }),
+    stop: vi.fn(),
+  };
+  chat.setGroupChatRunner(runner);
+  const conv = chat.startConversation(id, "Check memory");
+  const done = chat.startGoal(id, conv);
+  await new Promise((r) => setTimeout(r, 30));
+  // frank posted; the run moved on to the lead and completed. Now his own session reports a failure.
+  endFrank({ status: "failed", error: "usage limit reached" });
+  await done;
+  expect(posts(said(conv))).toEqual(["frank", "chief-of-staff"]);
+  expect(said(conv).some((m) => m.kind === "notice")).toBe(false);
+  expect(chat.roomGoal(id, conv)).toMatchObject({ state: "completed" });
+});
+
+it("goal: out of turns or blocked, it waits for Continue; a later 'thanks' doesn't restart it; End goal ends it", async () => {
+  const { chat, id, said } = await room("lead");
+  const script = scripted({
+    "chief-of-staff": (r) => (r.prompt.includes("<room_control>") ? `Round.\n${control({ status: "continue", next: "frank", instruction: "Again." })}` : "You're welcome."),
+    frank: "Checked.",
+  });
+  chat.setGroupChatRunner(script.runner);
+  const conv = chat.startConversation(id, "Keep checking");
+  await chat.startGoal(id, conv);
+  expect(script.calls).toHaveLength(13);
+  expect(chat.roomStrip(id, conv)).toEqual({ kind: "goal-waiting", text: "Goal needs you: the room used all 13 of its turns." });
+
+  chat.sendMessage(id, "thanks", conv);
+  await chat.requestReply(id, conv);
+  // An ordinary answer, not a fresh run of 13.
+  expect(script.calls).toHaveLength(14);
+  expect(script.calls[13].prompt).not.toContain("<room_control>");
+  expect(chat.roomGoal(id, conv)).toMatchObject({ state: "needs_input" });
+
+  await chat.continueGoal(id, conv);
+  expect(script.calls).toHaveLength(27);
+  expect(systemLines(said(conv))).toContain("Ash asked the room to carry on with the goal.");
+
+  chat.endRoomGoal(id, conv);
+  expect(chat.roomGoal(id, conv)).toBeUndefined();
+  expect(chat.roomStrip(id, conv)).toBeUndefined();
+  expect(systemLines(said(conv)).at(-1)).toBe("Goal stopped: you ended it.");
+});
+
+it("goal: an unclosed control block is never posted", async () => {
+  const { chat, id, said } = await room("lead");
+  chat.setGroupChatRunner(scripted({ "chief-of-staff": 'Working on it.\n<room_control>{"status":"continue","next":"frank"' }).runner);
+  const conv = chat.startConversation(id, "Check memory");
+  await chat.startGoal(id, conv);
+  expect(said(conv).every((m) => !m.text.includes("room_control"))).toBe(true);
+  expect(said(conv).find((m) => m.from === "chief-of-staff")?.text).toBe("Working on it.");
+  expect(chat.roomGoal(id, conv)).toMatchObject({ state: "needs_input" });
+});
+
+it("a mode the store wouldn't take is saved as everyone, so a bad imported value can't break every save", async () => {
+  const { chat, id } = await room();
+  const { roomInput } = await import("./roomStore");
+  chat.importChats([{ ...chat.getChat(id)!, id: "imported", responder: "loudest" as never }]);
+  expect(roomInput(chat.getChat("imported")!).responder).toBeUndefined();
+});
+
+it("a goal run's turns stay under the room's posts-without-Ash brake, which goal runs don't check", async () => {
+  const { GOAL_MAX_TURNS } = await import("./roomModes");
+  const { MONO_POSTS_CEILING } = await import("./roomTurns");
+  expect(GOAL_MAX_TURNS).toBeLessThan(MONO_POSTS_CEILING);
+});

@@ -230,7 +230,8 @@ export function roomInput(chat: GroupChat): RoomInput {
     name: chat.name,
     isDefault: chat.isDefault,
     ...(chat.leadId ? { leadId: chat.leadId } : {}),
-    ...(chat.responder && chat.responder !== "everyone" ? { responder: chat.responder } : {}),
+    // Only a mode the store accepts: anything else (an imported or hand-edited value) is saved as everyone.
+    ...(isResponderMode(chat.responder) ? { responder: chat.responder } : {}),
     seated: !!chat.seated,
     memberIds: [...chat.memberIds],
   };
@@ -249,7 +250,9 @@ export function conversationInput(roomId: string, conversation: ChatConversation
 
 /** WP-22: the modes roomModes.ts knows (kept here too so the store stays free of the room's rules). */
 const RESPONDERS = new Set(["lead", "mentions", "auto"]);
-const isResponderMode = (value: unknown): value is "lead" | "mentions" | "auto" => typeof value === "string" && RESPONDERS.has(value);
+function isResponderMode(value: unknown): value is "lead" | "mentions" | "auto" {
+  return typeof value === "string" && RESPONDERS.has(value);
+}
 
 const PICKS = new Set(["mention", "only", "named", "lead", "router", "lanes", "room", "chime", "addressed", "digest", "report", "back", "post", "auto", "goal"]);
 

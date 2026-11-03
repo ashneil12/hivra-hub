@@ -154,7 +154,8 @@ const CONTROL = /<room_control>([\s\S]*?)<\/room_control>/gi;
  */
 export function parseGoalControl(text: string, seats: readonly Seat[]): { post: string; control?: GoalControl } {
   const blocks = [...text.matchAll(CONTROL)];
-  const post = text.replace(CONTROL, "").replace(/```\s*```/g, "").trim();
+  // A block never closed (the turn was cut off, or the model forgot the end tag) is taken out too, never posted raw.
+  const post = text.replace(CONTROL, "").replace(/<room_control>[\s\S]*$/i, "").replace(/```\s*```/g, "").trim();
   const last = blocks[blocks.length - 1]?.[1];
   if (!last) return { post };
   const json = /\{[\s\S]*\}/.exec(last)?.[0];
