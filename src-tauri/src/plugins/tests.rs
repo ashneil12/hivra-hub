@@ -12,6 +12,16 @@ use super::mcp::{expand, launch_plan, Transport, MCP_SCHEMA_1_0_0};
 use super::registry::{self, Contribution, Host, Scope, Source};
 use super::wiring::{self, native_name};
 
+/// Paths as the plugin code resolves them (no verbatim prefix on Windows).
+trait CanonicalPath {
+    fn canonical_path(&self) -> std::io::Result<PathBuf>;
+}
+impl<P: AsRef<Path>> CanonicalPath for P {
+    fn canonical_path(&self) -> std::io::Result<PathBuf> {
+        fsutil::canonical(self.as_ref())
+    }
+}
+
 struct Tmp(PathBuf);
 
 impl Tmp {
@@ -19,7 +29,7 @@ impl Tmp {
         let dir =
             std::env::temp_dir().join(format!("hivra-plugins-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        Tmp(dir.canonicalize().unwrap())
+        Tmp(dir.canonical_path().unwrap())
     }
     fn path(&self) -> &Path {
         &self.0
@@ -306,7 +316,7 @@ fn a_stdio_server_starts_in_the_plugin_with_its_variables() {
     );
     let plan = launch_plan(&root, &data, &server("in-data")).unwrap();
     assert_eq!(plan.program, PathBuf::from("tool"));
-    assert_eq!(plan.cwd, data.join("work").canonicalize().unwrap());
+    assert_eq!(plan.cwd, data.join("work").canonical_path().unwrap());
 }
 
 #[cfg(unix)]
@@ -853,13 +863,13 @@ fn the_launcher_starts_only_a_plugin_that_is_on() {
     assert_eq!(
         command.get_program(),
         host.installed("demo")
-            .canonicalize()
+            .canonical_path()
             .unwrap()
             .join("bin/server")
     );
     assert_eq!(
         command.get_current_dir(),
-        Some(host.data("demo").canonicalize().unwrap().as_path())
+        Some(host.data("demo").canonical_path().unwrap().as_path())
     );
     let envs: Vec<(String, Option<String>)> = command
         .get_envs()
@@ -880,7 +890,7 @@ fn the_launcher_starts_only_a_plugin_that_is_on() {
             == Some(
                 &*host
                     .data("demo")
-                    .canonicalize()
+                    .canonical_path()
                     .unwrap()
                     .display()
                     .to_string()
@@ -978,8 +988,8 @@ fn a_plugin_server_runs_through_the_launcher_and_answers_mcp() {
     let description = tool["description"].as_str().unwrap();
     let seen: serde_json::Value =
         serde_json::from_str(description.split("Started with ").nth(1).unwrap()).unwrap();
-    let installed = host.installed("live").canonicalize().unwrap();
-    let data = host.data("live").canonicalize().unwrap();
+    let installed = host.installed("live").canonical_path().unwrap();
+    let data = host.data("live").canonical_path().unwrap();
     assert_eq!(seen["root"], installed.display().to_string());
     assert_eq!(seen["data"], data.display().to_string());
     assert_eq!(seen["cwd"], data.display().to_string());

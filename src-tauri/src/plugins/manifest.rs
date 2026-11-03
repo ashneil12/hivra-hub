@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use super::fsutil::canonical;
 use super::hivra::{self, HivraContributions};
 use super::mcp::{self, McpServer};
 
@@ -106,9 +107,8 @@ impl std::fmt::Display for Rejected {
 /// Load a plugin from its folder. `Err` only for what the standard makes fatal: no readable `plugin.json` inside the
 /// root, or a manifest that breaks its schema (other than unknown fields or a non-object `extensions`).
 pub fn load_plugin(root: &Path) -> Result<LoadedPlugin, Rejected> {
-    let root = root
-        .canonicalize()
-        .map_err(|e| Rejected(format!("The plugin folder can't be read: {e}")))?;
+    let root =
+        canonical(root).map_err(|e| Rejected(format!("The plugin folder can't be read: {e}")))?;
     if !root.is_dir() {
         return Err(Rejected("The plugin isn't a folder.".into()));
     }
@@ -140,10 +140,10 @@ pub fn load_plugin(root: &Path) -> Result<LoadedPlugin, Rejected> {
 /// A path that resolves inside the (already resolved) plugin root, or `None` (§4.1). A missing path resolves to
 /// itself when its parent is inside.
 pub(crate) fn within(root: &Path, path: &Path) -> Option<PathBuf> {
-    let resolved = match path.canonicalize() {
+    let resolved = match canonical(path) {
         Ok(resolved) => resolved,
         Err(_) => {
-            let parent = path.parent()?.canonicalize().ok()?;
+            let parent = canonical(path.parent()?).ok()?;
             parent.join(path.file_name()?)
         }
     };

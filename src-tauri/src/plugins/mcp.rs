@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
+use super::fsutil::canonical;
 use super::manifest::{within, Report};
 
 pub const MCP_SCHEMA_1_0_0: &str = "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json";
@@ -364,10 +365,9 @@ pub fn launch_plan(root: &Path, data: &Path, server: &McpServer) -> Result<Launc
             } else {
                 root
             };
-            let resolved = path
-                .canonicalize()
-                .map_err(|_| "the server's working folder doesn't exist.")?;
-            let base = base.canonicalize().map_err(|e| e.to_string())?;
+            let resolved =
+                canonical(&path).map_err(|_| "the server's working folder doesn't exist.")?;
+            let base = canonical(base).map_err(|e| e.to_string())?;
             if !resolved.starts_with(&base) {
                 return Err("the server's working folder is outside its plugin.".into());
             }

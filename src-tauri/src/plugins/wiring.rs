@@ -231,11 +231,7 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
         })?;
     let data = host.data(&plugin);
     std::fs::create_dir_all(&data).map_err(|e| format!("its data folder couldn't be made: {e}"))?;
-    let plan = launch_plan(
-        &loaded.root,
-        &data.canonicalize().unwrap_or(data.clone()),
-        found,
-    )?;
+    let plan = launch_plan(&loaded.root, &super::fsutil::resolved(&data), found)?;
     let mut command = std::process::Command::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.cwd);
     // The session's own connection to the app (and anything else the app put in its env) is not the plugin's.

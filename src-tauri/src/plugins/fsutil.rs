@@ -9,9 +9,25 @@ pub fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
+/// The path with links resolved. On Windows a drive path comes back without the verbatim `\\?\` prefix, so it
+/// still works once `/`-joined (a plugin's `${PLUGIN_ROOT}/server.js`) and when handed to another program.
+pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
+    let real = path.canonicalize()?;
+    #[cfg(windows)]
+    {
+        let text = real.to_string_lossy();
+        if let Some(rest) = text.strip_prefix(r"\\?\") {
+            if rest.as_bytes().get(1) == Some(&b':') {
+                return Ok(PathBuf::from(rest));
+            }
+        }
+    }
+    Ok(real)
+}
+
 /// The path with links resolved when it exists, as given otherwise.
 pub fn resolved(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    canonical(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -105,7 +121,7 @@ pub fn remove_link_if_points_to(link: &Path, target: &Path) -> Result<(), String
 /// Copy a plugin folder. Files and folders are copied; a link is followed only when it resolves inside the plugin
 /// (Agent Plugins §4.1), and copied as what it points to. Anything else is left out.
 pub fn copy_plugin_tree(root: &Path, to: &Path) -> Result<(), String> {
-    let root = root.canonicalize().map_err(|e| e.to_string())?;
+    let root = canonical(root).map_err(|e| e.to_string())?;
     copy_dir(&root, &root, to)
 }
 
@@ -119,7 +135,7 @@ fn copy_dir(root: &Path, from: &Path, to: &Path) -> Result<(), String> {
         if name == ".git" {
             continue;
         }
-        let Ok(real) = path.canonicalize() else {
+        let Ok(real) = canonical(&path) else {
             continue;
         };
         if !real.starts_with(root) {
