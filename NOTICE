@@ -76,8 +76,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-Hivra's first mate contract (src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts and
-src-tauri/src/firstmate/) adapts role rules, the brief scaffold, the isolation check, the status protocol and the
-steering section from firstmate (https://github.com/kunchenguid/firstmate), Copyright (c) 2026 Kun Chen, licensed
-under the MIT License.

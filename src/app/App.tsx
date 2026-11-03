@@ -647,6 +647,7 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -12756,7 +12757,8 @@ function Workspace({
           sessionId: job.ownerSession,
           requestId: job.requestId,
           action: "tasks.delegate",
-          input: job.input,
+          // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
+          input: withLegacyBriefParts(job.input, job.title),
         });
       },
       failed: (job, error) =>

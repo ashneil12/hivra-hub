@@ -12,7 +12,9 @@
 //! - **Revert** is offered only for a path that was clean when the turn started and only undoes the turn's own change:
 //!   back to the content at the turn's starting HEAD, or removed if it didn't exist then. A path that already had the
 //!   person's own uncommitted edits is never reverted (that would lose them), and commits are never rewritten; those are
-//!   listed for the person to decide.
+//!   listed for the person to decide. The flag records each path's fingerprint as the turn left it, and a revert skips a
+//!   path that has changed since (the person, or a later turn, edited it after the flag): only the turn's own change is
+//!   ever undone.
 //!
 //! Plain `git` processes, no shell, so it runs the same on Windows.
 
@@ -83,7 +85,7 @@ pub struct Snapshot {
     pub taken_at: i64,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangedPath {
     pub path: String,
@@ -91,9 +93,13 @@ pub struct ChangedPath {
     pub revertable: bool,
     /// Why not, when it can't.
     pub why_not: Option<String>,
+    /// Its status and content as the turn left it (none when it is clean or gone from `git status`). A revert refuses a
+    /// path whose fingerprint has moved since.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Flag {
     pub dir: String,
@@ -157,6 +163,14 @@ fn status(dir: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(entries)
 }
 
+fn fingerprints(dir: &Path) -> Result<BTreeMap<String, String>, String> {
+    let mut dirty = BTreeMap::new();
+    for (code, path) in status(dir)? {
+        dirty.insert(path.clone(), fingerprint(dir, &code, &path));
+    }
+    Ok(dirty)
+}
+
 fn fingerprint(dir: &Path, code: &str, path: &str) -> String {
     let full = dir.join(path);
     let content = match std::fs::read(&full) {
@@ -169,15 +183,15 @@ fn fingerprint(dir: &Path, code: &str, path: &str) -> String {
 
 pub fn snapshot(dir: &Path) -> Result<Snapshot, String> {
     let dir = canonical(dir);
-    let mut dirty = BTreeMap::new();
-    for (code, path) in status(&dir)? {
-        dirty.insert(path.clone(), fingerprint(&dir, &code, &path));
-    }
+    // Before the scan: a landing that happens while it runs must still count as inside the turn.
+    let taken_at = now_millis();
+    let head = head(&dir);
+    let dirty = fingerprints(&dir)?;
     Ok(Snapshot {
         dir: dir.to_string_lossy().to_string(),
-        head: head(&dir),
+        head,
         dirty,
-        taken_at: now_millis(),
+        taken_at,
     })
 }
 
@@ -226,6 +240,7 @@ pub fn check(before: &Snapshot) -> Result<Option<Flag>, String> {
             path: path.clone(),
             revertable: why_not.is_none(),
             why_not,
+            fingerprint: after.dirty.get(path).cloned(),
         });
     }
     if changed.is_empty() && head_moved.is_none() {
@@ -255,27 +270,45 @@ fn existed_at(dir: &Path, head: &Option<String>, path: &str) -> bool {
     )
 }
 
-/// Put back the named paths the turn changed, only those the check still calls revertable. Everything else is skipped,
-/// with why.
-pub fn revert(before: &Snapshot, paths: &[String]) -> Result<RevertOutcome, String> {
+fn skipped(path: &str, why: &str) -> ChangedPath {
+    ChangedPath {
+        path: path.to_string(),
+        revertable: false,
+        why_not: Some(why.into()),
+        fingerprint: None,
+    }
+}
+
+/// Put back the named paths the turn changed: only those the flag called revertable, the check still calls revertable,
+/// and nobody has touched since the flag. Everything else is skipped, with why.
+pub fn revert(before: &Snapshot, flag: &Flag, paths: &[String]) -> Result<RevertOutcome, String> {
     let dir = PathBuf::from(&before.dir);
-    let flag = check(before)?;
-    let changed = flag.map(|f| f.changed).unwrap_or_default();
+    let now = check(before)?;
+    let changed = now.map(|f| f.changed).unwrap_or_default();
     let mut outcome = RevertOutcome {
         reverted: Vec::new(),
         skipped: Vec::new(),
     };
     for path in paths {
-        let Some(entry) = changed.iter().find(|c| &c.path == path) else {
-            outcome.skipped.push(ChangedPath {
-                path: path.clone(),
-                revertable: false,
-                why_not: Some("The turn didn't change it, or it is already back.".into()),
-            });
+        let (Some(flagged), Some(entry)) = (
+            flag.changed.iter().find(|c| &c.path == path),
+            changed.iter().find(|c| &c.path == path),
+        ) else {
+            outcome.skipped.push(skipped(
+                path,
+                "The turn didn't change it, or it is already back.",
+            ));
             continue;
         };
-        if !entry.revertable || path.split(['/', '\\']).any(|p| p == "..") {
+        if !flagged.revertable || !entry.revertable || path.split(['/', '\\']).any(|p| p == "..") {
             outcome.skipped.push(entry.clone());
+            continue;
+        }
+        if entry.fingerprint != flagged.fingerprint {
+            outcome.skipped.push(skipped(
+                path,
+                "It changed again after the turn ended; reverting would lose that later change.",
+            ));
             continue;
         }
         let done = if existed_at(&dir, &before.head, path) {
@@ -305,11 +338,9 @@ pub fn revert(before: &Snapshot, paths: &[String]) -> Result<RevertOutcome, Stri
         if done {
             outcome.reverted.push(path.clone());
         } else {
-            outcome.skipped.push(ChangedPath {
-                path: path.clone(),
-                revertable: false,
-                why_not: Some("git could not put it back.".into()),
-            });
+            outcome
+                .skipped
+                .push(skipped(path, "git could not put it back."));
         }
     }
     Ok(outcome)

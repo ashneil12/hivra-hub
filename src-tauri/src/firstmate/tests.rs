@@ -578,7 +578,7 @@ fn a_first_mate_turn_that_edits_the_main_checkout_is_flagged() {
     assert!(flag.summary.contains("2 files"));
     // Offered for revert, and the revert puts the checkout back as the turn found it.
     let outcome =
-        checkout_guard::revert(&before, &["README.md".into(), "src/new.ts".into()]).unwrap();
+        checkout_guard::revert(&before, &flag, &["README.md".into(), "src/new.ts".into()]).unwrap();
     assert_eq!(outcome.reverted, ["README.md", "src/new.ts"]);
     assert_eq!(
         std::fs::read_to_string(repo.0.join("README.md")).unwrap(),
@@ -586,6 +586,35 @@ fn a_first_mate_turn_that_edits_the_main_checkout_is_flagged() {
     );
     assert!(!repo.0.join("src/new.ts").exists());
     assert!(checkout_guard::check(&before).unwrap().is_none());
+}
+
+#[test]
+fn a_revert_never_undoes_an_edit_made_after_the_flag() {
+    let repo = repo("later-edit");
+    let before = checkout_guard::snapshot(&repo.0).unwrap();
+    fake_turn(
+        &repo.0,
+        serde_json::json!([
+            { "write": { "path": "README.md", "text": "edited by the first mate\n" } },
+            { "write": { "path": "scratch.ts", "text": "export {};\n" } }
+        ]),
+    );
+    let flag = checkout_guard::check(&before).unwrap().expect("flagged");
+    // The person keeps working on README.md after the turn ended, before tapping revert.
+    std::fs::write(repo.0.join("README.md"), "the person's later words\n").unwrap();
+    let outcome =
+        checkout_guard::revert(&before, &flag, &["README.md".into(), "scratch.ts".into()]).unwrap();
+    assert_eq!(outcome.reverted, ["scratch.ts"]);
+    assert_eq!(outcome.skipped.len(), 1);
+    assert!(outcome.skipped[0]
+        .why_not
+        .as_deref()
+        .unwrap()
+        .contains("changed again"));
+    assert_eq!(
+        std::fs::read_to_string(repo.0.join("README.md")).unwrap(),
+        "the person's later words\n"
+    );
 }
 
 #[test]
@@ -624,7 +653,7 @@ fn a_landing_explains_its_files_and_the_persons_own_edits_are_never_reverted() {
         "it had the person's uncommitted edit"
     );
     let outcome =
-        checkout_guard::revert(&before, &["notes.md".into(), "landed.ts".into()]).unwrap();
+        checkout_guard::revert(&before, &flag, &["notes.md".into(), "landed.ts".into()]).unwrap();
     assert!(outcome.reverted.is_empty());
     assert_eq!(outcome.skipped.len(), 2);
     assert_eq!(

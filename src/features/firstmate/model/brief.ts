@@ -59,13 +59,16 @@ const EMPTY_WORDS = new Set([
   "?",
 ]);
 
-/** Template tokens left in: {TASK}, {{intent}}, <your intent here>, [fill in], [TODO]. */
+/**
+ * Only the template's own fill-in tokens (firstmate's {TASK} and {FIRSTMATE_SPEC}, and the names of this template's three
+ * parts), so a brief about ${PORT}, ${{ matrix.os }}, {{ user.name }} or <summary> is never mistaken for one.
+ */
+const PART = "(?:intent|spec|brief|goal|task|definition of done)";
 const TOKENS = [
-  /\{\{\s*[\w.-]*\s*\}\}/,
-  /\{[A-Z][A-Z0-9_]{1,40}\}/,
-  /<\s*(?:intent|spec|goal|task|brief|description|summary|todo|tbd|fill[^>]{0,30}|your [^>]{1,40}|insert [^>]{1,40}|describe [^>]{1,40}|placeholder[^>]{0,30})\s*>/i,
-  /\[\s*(?:todo|tbd|fill(?: me)? in|insert [^\]]{1,40}|placeholder|your [^\]]{1,40})\s*\]/i,
-  /\blorem ipsum\b/i,
+  /(?<!\$)\{(?:TASK|FIRSTMATE_SPEC|INTENT|SPEC|GOAL)\}/,
+  new RegExp(`(?<!\\$)\\{\\{\\s*${PART}\\s*\\}\\}`, "i"),
+  new RegExp(`<\\s*(?:${PART}|your ${PART}(?: here)?|fill(?: me)? in)\\s*>`, "i"),
+  new RegExp(`\\[\\s*(?:${PART}|your ${PART}(?: here)?|fill(?: me)? in)\\s*\\]`, "i"),
 ];
 
 function normalised(value: string): string {
@@ -119,13 +122,23 @@ function isolationSection(isolation: BriefIsolation): string {
   }
 }
 
-const STATUS_PROTOCOL = [
-  "## Status protocol",
-  "- Your first mate watches your work; you don't need to report progress. Speak up only when something changes what happens next.",
-  "- A question you need answered: ask it. It goes to your first mate, who answers or takes it to the person; never address the person yourself.",
-  "- If you can't finish, say so with task_cannot and one plain line on what is in the way. Don't keep trying something that can't work.",
-  "- When you finish, end with your report in the shape your rules give. Checks and links count as evidence; your opinion of your own work doesn't.",
-].join("\n");
+/**
+ * A worker's questions go to its first mate, never to the person. A first mate (today's Leads) still talks to the person
+ * in its own chat until WP-05 moves that, so its brief doesn't tell it otherwise.
+ */
+function statusProtocol(isolation: BriefIsolation): string {
+  const question =
+    isolation.kind === "first-mate"
+      ? "- A question only the person can answer: ask them in your own chat, as you do today."
+      : "- A question you need answered: ask it. It goes to your first mate, who answers or takes it to the person; never address the person yourself.";
+  return [
+    "## Status protocol",
+    "- Your first mate watches your work; you don't need to report progress. Speak up only when something changes what happens next.",
+    question,
+    "- If you can't finish, say so with task_cannot and one plain line on what is in the way. Don't keep trying something that can't work.",
+    "- When you finish, end with your report in the shape your rules give. Checks and links count as evidence; your opinion of your own work doesn't.",
+  ].join("\n");
+}
 
 const STEERING = [
   "## Steering",
@@ -141,7 +154,42 @@ export function renderBrief(parts: Pick<BriefParts, "intent" | "spec">, isolatio
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
     `## Spec\n${parts.spec.trim()}`,
-    STATUS_PROTOCOL,
+    statusProtocol(isolation),
     STEERING,
   ].join("\n\n");
+}
+
+/** The definition of done a brief from before WP-10 gets when it has none. */
+export const LEGACY_GOAL = "The checks the brief names pass, and the report says what changed.";
+
+/**
+ * A worker queued before WP-10 (H8's waiting workers are stored with their delegate input) has no intent and maybe no
+ * goal; replayed as it is, the template would refuse it and the worker would be dropped. It gets its job's title as
+ * the intent and a plain definition of done, so it starts as it was asked to. Anything it already carries is kept.
+ */
+export function withLegacyBriefParts(input: Record<string, unknown>, title: string): Record<string, unknown> {
+  const intent = sectionProblem(input.intent) ? `${title.trim() || "The job"} (asked before briefs carried the ask itself)` : input.intent;
+  const goal = sectionProblem(input.goal) ? LEGACY_GOAL : input.goal;
+  return { ...input, intent, goal };
+}
+
+/** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
+export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering"] as const;
+export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
+
+const FIXED_BLOCK = new RegExp(
+  `^## (?:${FIXED_SECTIONS.join("|")})\\n[\\s\\S]*?(?=^## |^<|^Done when:|(?![\\s\\S]))`,
+  "gm",
+);
+const FILLED_HEADING = new RegExp(`^## (?:${FILLED_SECTIONS.join("|")})\\n`, "gm");
+
+/** A brief's text with the template's fixed sections taken out and its filled headings dropped: the model's words. */
+export function withoutTemplate(text: string): string {
+  return text.replace(FIXED_BLOCK, "").replace(FILLED_HEADING, "");
+}
+
+/** The spec of a brief written from the template, or undefined for one that isn't. */
+export function specOf(text: string): string | undefined {
+  const found = /^## Spec\n([\s\S]*?)(?=^## |^<|^Done when:|(?![\s\S]))/m.exec(text);
+  return found?.[1].trim() || undefined;
 }

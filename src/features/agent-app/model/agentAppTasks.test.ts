@@ -43,6 +43,13 @@ vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async
   const real = await actual<typeof import("../../../integrations/harness/providers/claude/claudeGrokBridge")>();
   return { ...real, claudeRunsOnSubscriptionBridge: () => bridge.on };
 });
+// Hivra WP-10 review: hub.change goes through tasks.delegate; its preview copy is stood in for here.
+vi.mock("../../selfBuild/model/hubCode", async (actual) => ({
+  ...(await actual<typeof import("../../selfBuild/model/hubCode")>()),
+  startHubChange: vi.fn(async () => ({ changeId: "hc-1", folder: PROJECT_PREVIEW })),
+}));
+const PROJECT_PREVIEW = "/tmp/hub-preview";
+
 vi.mock("../../../integrations/harness/core/availability", () => ({
   // Before the first probe ends every harness reads as missing.
   isHarnessAvailable: (id: string) =>
@@ -364,6 +371,20 @@ describe("tasks.delegate redoes: the redo works where the job did", () => {
     await handleAgentApp(source, "r-shared", "tasks.delegate", { brief: "Again.", redoes: "t-first", isolation: "shared" }, host);
     expect(started[0][0]).toMatchObject({ workspaceMode: "current" });
     expect(started[0][0]).not.toHaveProperty("worktreeCwd");
+  });
+});
+
+describe("a first mate's workers (Hivra WP-10)", () => {
+  it("each get a checkout of their own, so the first mate's main checkout is never theirs to edit", async () => {
+    const { source, host, started } = fixture([]);
+    const mate = { ...source, firstMate: true };
+    const result = await handleAgentApp(mate, "r-mate", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(started[0][0]).toMatchObject({ workspaceMode: "worktree" });
+    expect((started[0][0] as { prompt: string }).prompt).toContain("never in the project's main checkout");
+    expect(result).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("first mate") });
+    await expect(
+      handleAgentApp(mate, "r-mate-shared", "tasks.delegate", { brief: "Fix it here.", isolation: "shared" }, host),
+    ).rejects.toThrow(/checkout of their own/);
   });
 });
 
@@ -908,6 +929,20 @@ describe("tasks.delegate", () => {
     const [launch] = started[0] as [{ prompt: string }];
     for (const section of ["## Isolation check", "## Intent\nAsh: \"fix the save bug\"", "## Spec\nFix the save bug in src/save.ts.", "## Status protocol", "## Steering", "## Report\nSummary:", "Done when: npm test passes"])
       expect(launch.prompt).toContain(section);
+  });
+
+  it("starts a hub change's worker with Ash's ask as its intent and a definition of done", async () => {
+    const { source, host, started } = fixture();
+    // Straight through the app, not the test helper that fills intent and goal in.
+    const out = (await handleRaw(source, "r-hub", "hub.change", { ask: "Make the Today cards smaller", title: "Smaller cards" }, host)) as {
+      changeId: string;
+    };
+    expect(out.changeId).toBe("hc-1");
+    expect(started).toHaveLength(1);
+    const [launch, , , , meta] = started[0] as [{ prompt: string }, string, unknown, string, { goal?: string }];
+    expect(launch.prompt).toContain("## Intent\nMake the Today cards smaller");
+    expect(meta.goal).toBeTruthy();
+    expect(launch.prompt).toContain(`Done when: ${meta.goal}`);
   });
 
   it("refuses a delegation deeper than first mate, first mate, workers, before anything starts", async () => {

@@ -29,7 +29,7 @@ function backend(changed: CheckoutFlag | null): CheckoutGuardBackend & { calls: 
       calls.push("check");
       return current;
     }),
-    revert: vi.fn(async (_before, paths: string[]) => {
+    revert: vi.fn(async (_before, _flag, paths: string[]) => {
       calls.push(`revert ${paths.join(",")}`);
       current = null;
       return { reverted: paths, skipped: [] };
@@ -51,7 +51,7 @@ describe("the after-turn checkout check (Hivra WP-10)", () => {
     expect(b.calls).toEqual(["snapshot /p", "check"]);
     const outcome = await guard.revert("mate", ["README.md"]);
     expect(outcome).toEqual({ reverted: ["README.md"], skipped: [] });
-    expect(b.revert).toHaveBeenCalledWith(snap("/p"), ["README.md"]);
+    expect(b.revert).toHaveBeenCalledWith(snap("/p"), expect.objectContaining({ dir: "/p" }), ["README.md"]);
     expect(guard.flagged()).toHaveLength(0);
   });
 

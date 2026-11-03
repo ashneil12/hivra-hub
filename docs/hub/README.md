@@ -15,7 +15,7 @@ Asked how the hub works or what it shows, answer from this file and the hub's to
 - **Ash** talks to orchestrators only: a Mono's own chat, or a chat in a project's coding team. Workers never talk to him.
 - **Monos** are long-lived agents with a soul (`SOUL.md`: who they are and what they own) and memory (`MEMORY.md` plus topic notes). The app keeps both; change them with the app CLI (`monocode app --help`: `soul.read`, `soul.update`, `memory.add`, `memory.replace`, `memory.search`). Never edit the Monos' home folder directly.
 - **Project Leads** are Monos that own one project. Leadership Monos hand a project's work to its Lead (`delegate_task` with `lead`).
-- **Workers** are chats you start with `delegate_task`. They see only your brief, so put the full job in it.
+- **Workers** are chats you start with `delegate_task`. They see only your brief, so put the full job in it: `intent` (Ash's own ask, in his words), `brief` (the build instructions) and `goal` (the condition that finishes it). All three are required.
 
 ## Handing work off
 - `delegate_task` starts a worker; say in a line what you started and end your turn. Its report comes back to you as a `[MonoCode report]` turn, even after the app restarts. Its questions come as `[MonoCode question]`; answer with `task_answer`.

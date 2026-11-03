@@ -59,6 +59,7 @@ import { appIdentity } from "../../../app/model/appIdentity";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import {
   bridgeFamily,
@@ -634,6 +635,13 @@ async function delegate(
   const asked = input.isolation;
   if (asked !== undefined && asked !== "shared" && asked !== "worktree")
     throw new Error('isolation must be "shared" or "worktree"');
+  // Hivra WP-10: a first mate's main checkout is watched for edits during its turn (checkout_guard.rs), so its workers
+  // never work in it: a worker there would get the first mate flagged for the worker's own changes.
+  const firstMate = isFirstMate(source);
+  if (firstMate && asked === "shared")
+    throw new Error(
+      'A first mate\'s workers each work in a checkout of their own, never in the project\'s main one: leave out isolation (or use "worktree").',
+    );
   if (input.heavy !== undefined && typeof input.heavy !== "boolean")
     throw new Error("heavy must be true or false");
   if (input.hard !== undefined && typeof input.hard !== "boolean")
@@ -766,11 +774,14 @@ async function delegate(
   const redo = redoes && !ownTeam && asked === undefined ? await redoCheckout(redoes, host, launch.cwd) : undefined;
   if (redo) launch = redo.path ? launchWith("current", redo.path) : launchWith("worktree");
   // Several workers in one repo at once each get a checkout of their own unless the chat said "shared": the baseline
-  // (20 Oct) had two in one checkout stopping each other's dev server.
+  // (20 Oct) had two in one checkout stopping each other's dev server. A first mate's workers always do (WP-10).
   const projectOf = (folder: string) => tasks.hubProjectId?.(folder) ?? folder;
   // Never in a Mono's own team: its folder is no repository (the checkout would never be made, and the worker never run).
   const auto =
-    !redo && !ownTeam && asked === undefined && everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd));
+    !redo &&
+    !ownTeam &&
+    asked === undefined &&
+    (firstMate || everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd)));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
   // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
@@ -849,7 +860,11 @@ async function delegate(
     ...(route ? { modelWhy: route.why } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
-      ? { isolationWhy: "Another worker is working in this project, so this one has a checkout of its own." }
+      ? {
+          isolationWhy: firstMate
+            ? "A first mate's workers each have a checkout of their own; the project's main checkout stays as it is."
+            : "Another worker is working in this project, so this one has a checkout of its own.",
+        }
       : {}),
     ...(redo && (launch.workspaceMode === "worktree" || launch.worktreeCwd)
       ? {

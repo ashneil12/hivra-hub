@@ -12,7 +12,8 @@ export type CheckoutSnapshot = {
   takenAt: number;
 };
 
-export type ChangedPath = { path: string; revertable: boolean; whyNot: string | null };
+/** `fingerprint`: the path as the turn left it; a revert skips a path that has changed since. */
+export type ChangedPath = { path: string; revertable: boolean; whyNot: string | null; fingerprint?: string | null };
 
 export type CheckoutFlag = {
   dir: string;
@@ -26,13 +27,13 @@ export type RevertOutcome = { reverted: string[]; skipped: ChangedPath[] };
 export type CheckoutGuardBackend = {
   snapshot(cwd: string): Promise<CheckoutSnapshot>;
   check(before: CheckoutSnapshot): Promise<CheckoutFlag | null>;
-  revert(before: CheckoutSnapshot, paths: string[]): Promise<RevertOutcome>;
+  revert(before: CheckoutSnapshot, flag: CheckoutFlag, paths: string[]): Promise<RevertOutcome>;
 };
 
 export const tauriCheckoutGuard: CheckoutGuardBackend = {
   snapshot: (cwd) => invoke("firstmate_checkout_snapshot", { cwd }),
   check: (before) => invoke("firstmate_checkout_check", { before }),
-  revert: (before, paths) => invoke("firstmate_checkout_revert", { before, paths }),
+  revert: (before, flag, paths) => invoke("firstmate_checkout_revert", { before, flag, paths }),
 };
 
 /** A flagged first-mate turn: which chat, what changed, and the snapshot a revert needs. */
@@ -51,6 +52,16 @@ export function isFirstMate(session: Pick<Session, "firstMate">): boolean {
 /** The launch input a first mate's turn adds (integrations/harness/core/types.ts `firstMate`). */
 export function firstMateLaunch(session: Pick<Session, "firstMate">): { firstMate?: true } {
   return isFirstMate(session) ? { firstMate: true } : {};
+}
+
+function keepTurnFingerprints(fresh: CheckoutFlag, turn: CheckoutFlag): CheckoutFlag {
+  return {
+    ...fresh,
+    changed: fresh.changed.map((path) => {
+      const was = turn.changed.find((c) => c.path === path.path);
+      return was ? { ...path, fingerprint: was.fingerprint ?? null } : path;
+    }),
+  };
 }
 
 export class FirstMateTurnGuard {
@@ -95,8 +106,10 @@ export class FirstMateTurnGuard {
   async revert(sessionId: string, paths: string[]): Promise<RevertOutcome | undefined> {
     const turn = this.flags.find((t) => t.sessionId === sessionId);
     if (!turn) return undefined;
-    const outcome = await this.backend.revert(turn.before, paths);
-    const left = await this.backend.check(turn.before).catch(() => turn.flag);
+    const outcome = await this.backend.revert(turn.before, turn.flag, paths);
+    const fresh = await this.backend.check(turn.before).catch(() => turn.flag);
+    // What is still flagged keeps the fingerprint the turn left, so a later revert still skips what changed after it.
+    const left = fresh && keepTurnFingerprints(fresh, turn.flag);
     this.flags = left
       ? this.flags.map((t) => (t === turn ? { ...t, flag: left } : t))
       : this.flags.filter((t) => t !== turn);

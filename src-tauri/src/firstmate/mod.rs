@@ -94,9 +94,10 @@ pub async fn firstmate_checkout_check(
 #[tauri::command]
 pub async fn firstmate_checkout_revert(
     before: checkout_guard::Snapshot,
+    flag: checkout_guard::Flag,
     paths: Vec<String>,
 ) -> Result<checkout_guard::RevertOutcome, String> {
-    tauri::async_runtime::spawn_blocking(move || checkout_guard::revert(&before, &paths))
+    tauri::async_runtime::spawn_blocking(move || checkout_guard::revert(&before, &flag, &paths))
         .await
         .map_err(|e| e.to_string())?
 }
