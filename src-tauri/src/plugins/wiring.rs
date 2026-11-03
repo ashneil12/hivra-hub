@@ -276,7 +276,7 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
 /// Variables a plugin server inherits: the path, home, user, locale, time zone, terminal and temp folders, and on
 /// Windows the system folders a program needs to start. Everything else (API keys, auth tokens, the app's own
 /// MONOCODE_* connection) stays behind.
-const PASSED_ENV: &[&str] = &[
+pub(crate) const PASSED_ENV: &[&str] = &[
     "PATH",
     "HOME",
     "USER",

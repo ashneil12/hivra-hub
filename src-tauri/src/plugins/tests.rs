@@ -966,26 +966,20 @@ fn the_launcher_starts_only_a_plugin_that_is_on() {
             )
         })
         .collect();
-    // env_clear() is in force, so get_envs() is exactly what the server gets: allowed names and its own.
+    // env_clear() is in force, so get_envs() is exactly what the server gets: the allow list (wiring::PASSED_ENV,
+    // which holds Windows' system folders too) and the server's own variables, and never a secret.
     for (key, value) in &envs {
+        let upper = key.to_ascii_uppercase();
         assert!(
             value.is_some()
-                && ([
-                    "PLUGIN_ROOT",
-                    "PLUGIN_DATA",
-                    "PATH",
-                    "HOME",
-                    "USER",
-                    "LOGNAME",
-                    "SHELL",
-                    "TERM",
-                    "TZ"
-                ]
-                .contains(&key.as_str())
-                    || key.starts_with("LANG")
-                    || key.starts_with("LC_")
-                    || key.starts_with("TMP")
-                    || key == "TEMP"),
+                && (wiring::PASSED_ENV.contains(&upper.as_str())
+                    || upper.starts_with("LC_")
+                    || upper == "PLUGIN_ROOT"
+                    || upper == "PLUGIN_DATA"),
+            "{key} reaches the plugin"
+        );
+        assert!(
+            !upper.contains("TOKEN") && !upper.contains("KEY") && !upper.starts_with("MONOCODE_"),
             "{key} reaches the plugin"
         );
     }
