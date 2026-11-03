@@ -11,7 +11,7 @@ impl TestDir {
             uuid::Uuid::new_v4().simple()
         ));
         fs::create_dir_all(&dir).unwrap();
-        Self(dir.canonicalize().unwrap())
+        Self(crate::fs::canonical(dir).unwrap())
     }
 }
 
@@ -284,11 +284,12 @@ fn export_texts(path: &Path) -> BTreeMap<String, Vec<u8>> {
             if path.is_dir() {
                 walk(base, &path, out);
             } else {
+                // Named the way the manifest and the archive name them: `/` on every platform.
                 out.insert(
                     path.strip_prefix(base)
                         .unwrap()
                         .to_string_lossy()
-                        .into_owned(),
+                        .replace('\\', "/"),
                     fs::read(&path).unwrap(),
                 );
             }
@@ -1570,4 +1571,72 @@ fn each_chat_says_which_engine_it_runs_on() {
         json!({"harness": "codex", "model": "codex-model"})
     );
     assert_eq!(engines["mono-chat"]["harness"], "claude");
+}
+
+/// WP-02: an export is read on another machine, maybe another platform, so every name in it (the archive's entries and
+/// the manifest's file list) uses `/`, whatever the platform that wrote it; and an import takes `\` as well.
+#[test]
+fn an_export_names_its_files_with_forward_slashes_on_every_platform() {
+    let source_dir = TestDir::new("source");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    seed(&source);
+    let dest = out.0.join("export.tar.gz");
+    export(&source, &export_request(&dest, Form::Archive)).unwrap();
+
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(fs::File::open(&dest).unwrap()));
+    let mut names = Vec::new();
+    let mut manifest = None;
+    for entry in tar.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        let raw = String::from_utf8(entry.path_bytes().into_owned()).unwrap();
+        if raw.ends_with("/manifest.json") {
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut entry, &mut text).unwrap();
+            manifest = Some(serde_json::from_str::<Value>(&text).unwrap());
+        }
+        names.push(raw);
+    }
+    assert!(
+        names.iter().any(|n| n.contains("/setup/monos/")),
+        "{names:?}"
+    );
+    assert!(!names.iter().any(|n| n.contains('\\')), "{names:?}");
+    let listed: Vec<String> = manifest.unwrap()["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        listed.iter().any(|p| p.starts_with("memory/")),
+        "{listed:?}"
+    );
+    assert!(!listed.iter().any(|p| p.contains('\\')), "{listed:?}");
+
+    // An archive written with `\` (another tool, an older Windows build) still opens, its files in their folders.
+    let foreign = out.0.join("foreign.tar.gz");
+    {
+        let gz = flate2::write::GzEncoder::new(
+            fs::File::create(&foreign).unwrap(),
+            flate2::Compression::default(),
+        );
+        let mut builder = tar::Builder::new(gz);
+        let body = b"# Soul\n";
+        let mut header = tar::Header::new_gnu();
+        // `set_path` would turn the separators into `/` itself; write the name's bytes as such a tool does.
+        let name = b"export\\setup\\monos\\cos\\SOUL.md";
+        header.as_old_mut().name[..name.len()].copy_from_slice(name);
+        header.set_size(body.len() as u64);
+        header.set_entry_type(tar::EntryType::Regular);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder.append(&header, &body[..]).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+    let scratch = unpack(&foreign).unwrap();
+    assert_eq!(
+        fs::read_to_string(scratch.0.join("export/setup/monos/cos/SOUL.md")).unwrap(),
+        "# Soul\n"
+    );
 }

@@ -503,10 +503,10 @@ fn prune_logs(dir: &Path) {
 /// The checkout an action runs in must be the project's main checkout or one of its registered worktrees.
 pub fn checkout_of_project(cwd: &Path) -> Result<(PathBuf, PathBuf), String> {
     let main = project_file::main_checkout(cwd)?;
-    let wanted = cwd.canonicalize().map_err(|e| e.to_string())?;
+    let wanted = crate::fs::canonical(cwd).map_err(|e| e.to_string())?;
     let registered = crate::worktrees::list(&main)?
         .into_iter()
-        .filter_map(|tree| PathBuf::from(tree.path).canonicalize().ok())
+        .filter_map(|tree| crate::fs::canonical(tree.path).ok())
         .any(|path| path == wanted);
     if !registered {
         return Err(
@@ -752,9 +752,13 @@ mod tests {
                 seen.lock().unwrap().push(line.to_string());
             }
         });
-        let action = action(
-            "echo root=$MONOCODE_PROJECT_ROOT; echo tree=$MONOCODE_WORKTREE_PATH; pwd; echo oops >&2; exit 3",
-        );
+        // Actions run under `/bin/sh` here and `cmd` on Windows, so each gets the same script in its own words.
+        #[cfg(not(windows))]
+        let script =
+            "echo root=$MONOCODE_PROJECT_ROOT; echo tree=$MONOCODE_WORKTREE_PATH; pwd; echo oops >&2; exit 3";
+        #[cfg(windows)]
+        let script = "echo root=%MONOCODE_PROJECT_ROOT%& echo tree=%MONOCODE_WORKTREE_PATH%& cd& echo oops>&2& exit 3";
+        let action = action(script);
         let started = runs
             .start(
                 RunRequest {
