@@ -1308,7 +1308,13 @@ id: 6\nevent: hub\ndata: {\"seq\": 6, \"kind\": \"hub.need.done\", \"ref\": \"q1
                 sink.lock().unwrap().push(m)
             });
         });
-        thread::sleep(Duration::from_millis(500));
+        // A refused connection to 127.0.0.1 is immediate here and takes about two seconds on Windows (it retries
+        // the SYN), so wait for the first state rather than a fixed time.
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while states.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        thread::sleep(Duration::from_millis(100));
         stop.store(true, Ordering::SeqCst);
         handle.join().unwrap();
         let seen = states.lock().unwrap();

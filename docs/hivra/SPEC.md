@@ -160,9 +160,11 @@ away" feed reads from records stamped with what started each run.
 
 ## 10. The app
 
-- **One layout.** Upstream offers Classic and Focused; Hivra has exactly one. Default choice: Focused (project
-  switcher, workspace tabs, right panel), which is where upstream is putting its work, unless the measurements in
-  WP-03 show it is slower for Hivra's use. The setting goes away; the code change in upstream files stays tiny.
+- **One layout.** Upstream offers Classic and Focused; Hivra has exactly one: **Classic**. WP-03 measured Focused
+  switching tabs 1.5 to 1.9 times slower on upstream's own benchmark (warm p95 about 90 ms against 48 ms), so the
+  default choice of Focused fell to the measurements. The setting is gone; the hook in upstream files is tiny and
+  upstream's Focused code stays. Right-panel work such as the Crew tab (WP-15) goes in Classic's right sidebar
+  (Ctrl+Shift+B) or its sidebar tabs, since the Focused right panel isn't rendered.
 - **Where things live.** The projects rail on the left. The project's coding team chat is the home of a project.
   The right panel carries a **Crew** tab (each worker: status, branch, diff, PR and checks, open as a tab), next to
   upstream's Files, Changes and History. Monos are a contacts-style list; groups sit with them. Everything that
