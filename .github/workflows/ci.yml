@@ -23,6 +23,8 @@ jobs:
         with:
           node-version: 20
       - run: node --test scripts/release-channel.test.cjs
+      # The dev-loop test loads vite.config.ts through vite.
+      - run: npm ci
       - run: node --test scripts/hub-dev-loop.test.cjs
 
   mobile:
