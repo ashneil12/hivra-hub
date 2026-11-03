@@ -22,7 +22,7 @@ The loader (`manifest.rs`, `mcp.rs`) follows the standard's failure boundaries:
 | No `plugin.json`, unknown `$schema`, bad `name`, a field of the wrong type | the plugin is refused |
 | An unknown top-level field, a non-object `extensions` | reported and ignored |
 | One skill (no frontmatter, name not equal to its folder, no description) | that skill is skipped |
-| A skill whose frontmatter sets `hooks` or `allowed-tools` (or hides keys behind a flow map, `?` or `<<`) | that skill is skipped: Claude Code would run its hooks as shell commands and pre-approve its tools, and a plugin skill is only instructions |
+| A skill whose frontmatter sets `hooks` or `allowed-tools`, or isn't plain YAML (every line a column-0 `key:` of letters, digits, `-`, `_`, or indented under one: no escaped, tagged, aliased, merged, flow or wholly indented keys) | that skill is skipped: Claude Code would run its hooks as shell commands and pre-approve its tools, and a plugin skill is only instructions. Skills are checked again each time a session's wiring is built; one changed since it was switched on keeps the plugin's skills out of that session |
 | `mcp.json` broken, wrong schema or version | MCP is off for that plugin, skills still load |
 | One server (a name outside 1-64 letters, digits, `-`, `_`; a shell string as `command`, `../`, an `http` URL off this machine, reserved env names…) | that server is skipped |
 | Any path that resolves outside the plugin (links included) | refused at the narrowest level |
@@ -77,9 +77,11 @@ Tauri commands: `plugins_list`, `plugins_inspect`, `plugins_install_local`, `plu
 | **Codex** | a link per skill in `~/.agents/skills` while the plugin is on everywhere (Codex scans it: codex-rs `ext/skills/src/host_roots.rs`). Not per project. | `thread/start` / `thread/resume` `config.mcp_servers`, which Codex merges over the user's own servers; legacy `sse` servers are skipped with a report | `pluginSessions.test.ts` (fake CLI) |
 | Cursor, OpenCode, Pi and the other `.agents/skills` readers | the same `~/.agents/skills` links | not wired yet | none yet |
 
-Every plugin server goes by `plugin__<plugin>__<server>` in a session (a plugin's periods become `_`; plugin names
-can't hold `_`, so the first `__` after the prefix always ends the plugin's part and two plugins can't produce the same
-name). A name the person already uses in any CLI config the app knows (crate::mcp's discovery: Claude, Codex, Cursor,
+Every plugin server goes by `plugin-<plugin>-<server>` in a session (a plugin's periods become `_`). The name never
+holds `__`: Claude Code reads tool names as `mcp__<server>__<tool>` and splits on it, so a `__` inside would make every
+plugin's server one server called `plugin` to its permission rules. Server names are 1-64 of letters, digits, `-` and
+`_` without `__`. The rare pair that maps to one name (`a` + `b-c`, `a-b` + `c`) keeps the first and reports the second.
+A name the person already uses in any CLI config the app knows (crate::mcp's discovery: Claude, Codex, Cursor,
 OpenCode, Claude Desktop, user and project) is left out with a report: Codex would merge the person's entry with the
 plugin's, handing it their headers, token or env, and Claude would swap their server for the plugin's.
 

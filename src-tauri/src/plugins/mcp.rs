@@ -114,8 +114,9 @@ pub fn load_mcp(root: &Path, reports: &mut Vec<Report>) -> Vec<McpServer> {
     out
 }
 
-/// Server names are 1-64 letters, digits, `-` and `_`: the characters every CLI accepts in a server name, so the
-/// name a session sees (`plugin__<plugin>__<server>`, wiring.rs) is the plugin's own, unchanged.
+/// Server names are 1-64 letters, digits, `-` and `_`, without `__`: the characters every CLI accepts in a server
+/// name, and nothing Claude Code's `mcp__<server>__<tool>` split could cut, so the name a session sees
+/// (`plugin-<plugin>-<server>`, wiring.rs) keeps the plugin's server name unchanged.
 pub(crate) fn server_name_problem(name: &str) -> Option<&'static str> {
     if name.is_empty() || name.chars().count() > 64 {
         return Some("its name must be 1 to 64 characters.");
@@ -125,6 +126,10 @@ pub(crate) fn server_name_problem(name: &str) -> Option<&'static str> {
         .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Some("its name may only use letters, digits, \"-\" and \"_\".");
+    }
+    if name.contains("__") {
+        // Claude Code reads tool names as mcp__<server>__<tool>, splitting on "__".
+        return Some("its name can't hold \"__\".");
     }
     None
 }

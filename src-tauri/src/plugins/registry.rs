@@ -232,6 +232,13 @@ impl Entry {
         })
     }
 
+    pub fn skills(&self) -> impl Iterator<Item = &str> {
+        self.contributions.iter().filter_map(|c| match c {
+            Contribution::Skill { name } => Some(name.as_str()),
+            _ => None,
+        })
+    }
+
     pub fn claude_shim(&self) -> Option<&str> {
         self.contributions.iter().find_map(|c| match c {
             Contribution::ClaudeShim { path } => Some(path.as_str()),

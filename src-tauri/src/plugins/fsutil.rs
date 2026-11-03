@@ -9,20 +9,10 @@ pub fn display(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }
 
-/// The path with links resolved. On Windows a drive path comes back without the verbatim `\\?\` prefix, so it
-/// still works once `/`-joined (a plugin's `${PLUGIN_ROOT}/server.js`) and when handed to another program.
+/// The path with links resolved, without Windows' verbatim `\\?\` prefix on drive paths (`crate::fs::canonical`), so
+/// it still works once `/`-joined (a plugin's `${PLUGIN_ROOT}/server.js`) and when handed to another program.
 pub fn canonical(path: &Path) -> std::io::Result<PathBuf> {
-    let real = path.canonicalize()?;
-    #[cfg(windows)]
-    {
-        let text = real.to_string_lossy();
-        if let Some(rest) = text.strip_prefix(r"\\?\") {
-            if rest.as_bytes().get(1) == Some(&b':') {
-                return Ok(PathBuf::from(rest));
-            }
-        }
-    }
-    Ok(real)
+    crate::fs::canonical(path)
 }
 
 /// The path with links resolved when it exists, as given otherwise.

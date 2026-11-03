@@ -769,7 +769,7 @@ fn sessions_get_skills_and_servers_where_the_plugin_is_on() {
         wired.claude_plugin_dirs,
         [host.claude_shim("demo").display().to_string()]
     );
-    let tools = &wired.claude_mcp_servers["plugin__demo__tools"];
+    let tools = &wired.claude_mcp_servers["plugin-demo-tools"];
     assert_eq!(tools["command"], cli);
     let args: Vec<&str> = tools["args"]
         .as_array()
@@ -781,16 +781,16 @@ fn sessions_get_skills_and_servers_where_the_plugin_is_on() {
     assert!(args.windows(2).any(|w| w == ["--plugin", "demo"]));
     assert!(args.windows(2).any(|w| w[0] == "--project"));
     assert_eq!(
-        wired.claude_mcp_servers["plugin__demo__web"],
+        wired.claude_mcp_servers["plugin-demo-web"],
         json!({ "type": "http", "url": "https://example.com/mcp", "headers": {} })
     );
-    assert_eq!(wired.claude_mcp_servers["plugin__demo__old"]["type"], "sse");
-    assert_eq!(wired.codex_mcp_servers["plugin__demo__tools"], *tools);
+    assert_eq!(wired.claude_mcp_servers["plugin-demo-old"]["type"], "sse");
+    assert_eq!(wired.codex_mcp_servers["plugin-demo-tools"], *tools);
     assert_eq!(
-        wired.codex_mcp_servers["plugin__demo__web"],
+        wired.codex_mcp_servers["plugin-demo-web"],
         json!({ "url": "https://example.com/mcp", "http_headers": {} })
     );
-    assert!(!wired.codex_mcp_servers.contains_key("plugin__demo__old"));
+    assert!(!wired.codex_mcp_servers.contains_key("plugin-demo-old"));
     assert_eq!(wired.reports.len(), 1, "Codex can't take the SSE server");
 
     // Another folder: nothing until it is on everywhere.
@@ -804,32 +804,57 @@ fn sessions_get_skills_and_servers_where_the_plugin_is_on() {
     let global =
         wiring::session_wiring(&host, Some(&elsewhere), Some(cli), &Default::default()).unwrap();
     assert_eq!(global.claude_plugin_dirs.len(), 1);
-    assert!(!global.claude_mcp_servers["plugin__demo__tools"]["args"]
+    assert!(!global.claude_mcp_servers["plugin-demo-tools"]["args"]
         .to_string()
         .contains("--project"));
     // Without the app's launcher, stdio servers wait; remote ones still go.
     let no_cli =
         wiring::session_wiring(&host, Some(&elsewhere), None, &Default::default()).unwrap();
-    assert!(!no_cli
-        .claude_mcp_servers
-        .contains_key("plugin__demo__tools"));
-    assert!(no_cli.claude_mcp_servers.contains_key("plugin__demo__web"));
+    assert!(!no_cli.claude_mcp_servers.contains_key("plugin-demo-tools"));
+    assert!(no_cli.claude_mcp_servers.contains_key("plugin-demo-web"));
     registry::uninstall(&host, "demo").unwrap();
 }
 
 #[test]
-fn native_names_are_reserved_and_never_shared() {
-    assert_eq!(native_name("acme.tools", "db"), "plugin__acme_tools__db");
-    // Pairs that a plain "<plugin>-<server>" would merge stay apart.
-    assert_ne!(native_name("a", "b-c"), native_name("a-b", "c"));
+fn native_names_are_reserved_and_never_hold_a_double_underscore() {
+    assert_eq!(native_name("acme.tools", "db"), "plugin-acme_tools-db");
     assert_ne!(native_name("a.b", "c"), native_name("a-b", "c"));
-    // (A plugin name can't hold "_", so "plugin__a__b__c" can only be plugin "a", server "b__c".)
-    // Every name is in the characters CLIs accept.
-    for name in [native_name("acme.tools", "db_1-x"), native_name("z9", "Q")] {
+    // Claude Code splits mcp__<server>__<tool> on "__": a plugin server must stay one server to it.
+    for name in [
+        native_name("acme.tools", "db_1-x"),
+        native_name("z9", "Q"),
+        native_name("a.b.c", "_x_"),
+    ] {
+        assert!(!name.contains("__"), "{name}");
         assert!(name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'));
     }
+}
+
+#[test]
+fn two_plugin_servers_with_one_session_name_keep_the_first() {
+    let tmp = Tmp::new("same-name");
+    let host = host(&tmp);
+    for (plugin, server) in [("a", "b-c"), ("a-b", "c")] {
+        let source = tmp.path().join("src").join(plugin);
+        write(&source.join("plugin.json"), &manifest(plugin));
+        mcp(
+            &source,
+            json!({ server: { "type": "streamable-http", "url": format!("https://example.com/{plugin}") } }),
+        );
+        registry::install_local(&host, &source, Source::local(&source)).unwrap();
+        registry::enable(&host, plugin, &Scope::Global).unwrap();
+    }
+    let wired = wiring::session_wiring(&host, None, None, &Default::default()).unwrap();
+    assert_eq!(
+        wired.claude_mcp_servers["plugin-a-b-c"]["url"],
+        "https://example.com/a"
+    );
+    assert!(wired
+        .reports
+        .iter()
+        .any(|r| r.message.contains("already set up")));
 }
 
 #[test]
@@ -841,11 +866,11 @@ fn a_plugin_server_never_takes_a_name_already_in_use() {
     registry::install_local(&host, &source, Source::local(&source)).unwrap();
     registry::enable(&host, "demo", &Scope::Global).unwrap();
     // The person already has a server with the name the plugin's would get.
-    let taken: std::collections::BTreeSet<String> = ["plugin__demo__tools".to_string()].into();
+    let taken: std::collections::BTreeSet<String> = ["plugin-demo-tools".to_string()].into();
     let wired = wiring::session_wiring(&host, None, Some("/app/monocode"), &taken).unwrap();
-    assert!(!wired.claude_mcp_servers.contains_key("plugin__demo__tools"));
-    assert!(!wired.codex_mcp_servers.contains_key("plugin__demo__tools"));
-    assert!(wired.claude_mcp_servers.contains_key("plugin__demo__web"));
+    assert!(!wired.claude_mcp_servers.contains_key("plugin-demo-tools"));
+    assert!(!wired.codex_mcp_servers.contains_key("plugin-demo-tools"));
+    assert!(wired.claude_mcp_servers.contains_key("plugin-demo-web"));
     assert!(wired
         .reports
         .iter()
@@ -862,7 +887,7 @@ fn names_in_use_come_from_every_cli_config() {
     std::fs::create_dir_all(&project).unwrap();
     write(
         &home.join(".claude.json"),
-        &json!({ "mcpServers": { "plugin__demo__tools": { "command": "x" } } }).to_string(),
+        &json!({ "mcpServers": { "plugin-demo-tools": { "command": "x" } } }).to_string(),
     );
     write(
         &home.join(".codex/config.toml"),
@@ -870,7 +895,7 @@ fn names_in_use_come_from_every_cli_config() {
     );
     let names = crate::mcp::names_in_use_under(&home, &project);
     assert!(
-        names.contains("plugin__demo__tools") && names.contains("mine"),
+        names.contains("plugin-demo-tools") && names.contains("mine"),
         "{names:?}"
     );
 }
@@ -1026,7 +1051,7 @@ fn a_plugin_server_runs_through_the_launcher_and_answers_mcp() {
     registry::enable(&host, "live", &Scope::Global).unwrap();
     let wired =
         wiring::session_wiring(&host, None, Some("/app/monocode"), &Default::default()).unwrap();
-    let args: Vec<String> = wired.codex_mcp_servers["plugin__live__echo"]["args"]
+    let args: Vec<String> = wired.codex_mcp_servers["plugin-live-echo"]["args"]
         .as_array()
         .unwrap()
         .iter()
@@ -1117,16 +1142,24 @@ fn a_skill_that_asks_for_hooks_or_tools_is_skipped() {
         ("tooled", "allowed-tools: Bash(*)\n"),
         ("quoted", "\"hooks\": {}\n"),
         ("merged", "<<: *x\n"),
+        ("escaped", "\"hoo\\x6bs\": {}\n"),
+        ("tagged", "!!str hooks: {}\n"),
+        ("aliased", "x: &k hooks\n*k : {}\n"),
     ] {
         write(
             &root.join(format!("skills/{folder}/SKILL.md")),
             &format!("---\nname: {folder}\ndescription: Sneaky.\n{extra}---\nBody\n"),
         );
     }
+    // A whole block indented evenly: YAML still reads "hooks" at the top level.
+    write(
+        &root.join("skills/indented/SKILL.md"),
+        "---\n  name: indented\n  description: Sneaky.\n  hooks:\n    PreToolUse: []\n---\nBody\n",
+    );
     let loaded = load_plugin(&root).unwrap();
     let names: Vec<&str> = loaded.skills.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names, ["fine"]);
-    assert_eq!(loaded.reports.len(), 4, "{:?}", loaded.reports);
+    assert_eq!(loaded.reports.len(), 8, "{:?}", loaded.reports);
 
     // Nor does Claude Code see them: the shim links only the skills that loaded.
     let host = host(&tmp);
@@ -1134,7 +1167,9 @@ fn a_skill_that_asks_for_hooks_or_tools_is_skipped() {
     registry::enable(&host, "p", &Scope::Global).unwrap();
     let shim_skills = host.claude_shim("p").join("skills");
     assert!(shim_skills.join("fine/SKILL.md").is_file());
-    for folder in ["hooked", "tooled", "quoted", "merged"] {
+    for folder in [
+        "hooked", "tooled", "quoted", "merged", "escaped", "tagged", "aliased", "indented",
+    ] {
         assert!(!shim_skills.join(folder).exists(), "{folder}");
         assert!(!host.agents_skills.join(folder).exists(), "{folder}");
     }
@@ -1151,7 +1186,8 @@ fn server_names_outside_cli_characters_are_skipped() {
         json!({
             "ok_1": { "type": "streamable-http", "url": "https://example.com/a" },
             "has space": { "type": "streamable-http", "url": "https://example.com/b" },
-            "dot.ted": { "type": "streamable-http", "url": "https://example.com/c" }
+            "dot.ted": { "type": "streamable-http", "url": "https://example.com/c" },
+            "two__parts": { "type": "streamable-http", "url": "https://example.com/d" }
         }),
     );
     let loaded = load_plugin(&root).unwrap();
@@ -1368,5 +1404,26 @@ fn the_wiring_snapshot_for_the_session_test_is_current() {
         committed, text,
         "the wiring changed: rerun with UPDATE_PLUGIN_WIRING_SNAPSHOT=1 and check the TS session test"
     );
+    registry::uninstall(&host, "demo").unwrap();
+}
+
+#[test]
+fn a_skill_changed_after_it_was_switched_on_drops_out_of_sessions() {
+    let tmp = Tmp::new("skill-changed");
+    let host = host(&tmp);
+    let source = tmp.path().join("src/demo");
+    full_plugin(&source, "demo");
+    registry::install_local(&host, &source, Source::local(&source)).unwrap();
+    registry::enable(&host, "demo", &Scope::Global).unwrap();
+    let wired = wiring::session_wiring(&host, None, None, &Default::default()).unwrap();
+    assert_eq!(wired.claude_plugin_dirs.len(), 1);
+    // The plugin's own code edits its installed skill to ask for hooks.
+    write(
+        &host.installed("demo").join("skills/alpha/SKILL.md"),
+        "---\nname: alpha\ndescription: First.\nhooks: {}\n---\nBody\n",
+    );
+    let wired = wiring::session_wiring(&host, None, None, &Default::default()).unwrap();
+    assert!(wired.claude_plugin_dirs.is_empty());
+    assert!(wired.reports.iter().any(|r| r.message.contains("alpha")));
     registry::uninstall(&host, "demo").unwrap();
 }

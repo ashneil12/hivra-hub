@@ -35,18 +35,18 @@ pub struct Wiring {
     pub reports: Vec<Report>,
 }
 
-/// The prefix every plugin server's session name starts with. Nothing else the app writes uses it.
-pub const NAME_PREFIX: &str = "plugin__";
+/// The prefix every plugin server's session name starts with.
+pub const NAME_PREFIX: &str = "plugin-";
 
-/// The name a server goes by in a session: `plugin__<plugin>__<server>`. Plugin names never hold `_` (Agent Plugins
-/// §3.1), so their periods become `_` and the first `__` after the prefix always ends the plugin's part: two
-/// different (plugin, server) pairs never share a name. Server names are already in the characters CLIs accept
-/// (mcp.rs).
+/// The name a server goes by in a session: `plugin-<plugin>-<server>`, a plugin's periods turned into `_`. It never
+/// holds `__` (plugin names can't hold `_`, server names can't hold `__`), because Claude Code splits tool names
+/// (`mcp__<server>__<tool>`) on it: with `__` inside, every plugin's server would read as one server called `plugin`
+/// for permission rules. The rare pair of plugin servers that map to one name (`a` + `b-c`, `a-b` + `c`) is caught
+/// like any other taken name in `session_wiring`: the second is left out and reported.
 pub fn native_name(plugin: &str, server: &str) -> String {
-    format!("{NAME_PREFIX}{}__{server}", plugin.replace('.', "_"))
+    format!("{NAME_PREFIX}{}-{server}", plugin.replace('.', "_"))
 }
 
-/// `cli` is this app's own executable (the launcher); without it stdio servers are left out.
 /// `taken` is every server name the person already has (crate::mcp::names_in_use): a plugin server with one of those
 /// names is left out and reported, because Codex would merge its own entry with the person's (their token or env
 /// reaching the plugin) and Claude would swap the person's entry for it.
@@ -62,13 +62,12 @@ pub fn session_wiring(
         if !entry.active_for(cwd) {
             continue;
         }
-        if let Some(shim) = entry.claude_shim() {
-            out.claude_plugin_dirs.push(shim.to_string());
-        }
         let wanted: Vec<&str> = entry.mcp_servers().collect();
-        if wanted.is_empty() {
+        if entry.claude_shim().is_none() && wanted.is_empty() {
             continue;
         }
+        // Checked again for every session: the shim links the plugin's live folder, which the plugin's own server
+        // could have changed since it was switched on.
         let loaded = match load_plugin(&host.installed(&entry.name)) {
             Ok(loaded) => loaded,
             Err(why) => {
@@ -77,6 +76,23 @@ pub fn session_wiring(
                 continue;
             }
         };
+        if let Some(shim) = entry.claude_shim() {
+            let changed: Vec<&str> = entry
+                .skills()
+                .filter(|name| !loaded.skills.iter().any(|s| s.name == *name))
+                .collect();
+            if changed.is_empty() {
+                out.claude_plugin_dirs.push(shim.to_string());
+            } else {
+                out.reports.push(Report::new(
+                    &entry.name,
+                    format!(
+                        "Its skills were left out of this session: {} no longer pass the check.",
+                        changed.join(", ")
+                    ),
+                ));
+            }
+        }
         for server in loaded
             .mcp_servers
             .iter()

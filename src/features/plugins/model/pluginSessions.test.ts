@@ -78,7 +78,7 @@ const { probeClaude, probeCodex } = (await import("../../../../scripts/fake-plug
 const SCRIPTS = new URL("../../../../scripts/", import.meta.url);
 const SERVER = fileURLToPath(new URL("fake-mcp-server.mjs", SCRIPTS));
 const LAUNCHER = fileURLToPath(new URL("fake-plugin-launcher.mjs", SCRIPTS));
-const NAME = "plugin__demo__tools";
+const NAME = "plugin-demo-tools";
 
 type Snapshot = {
   wiring: PluginWiring;

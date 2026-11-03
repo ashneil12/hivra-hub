@@ -412,27 +412,33 @@ fn discover_skills(root: &Path, reports: &mut Vec<Report>) -> Vec<PluginSkill> {
 /// `allowed-tools` pre-approves tools while the skill is in use. A plugin's skills are instructions, nothing more.
 const REFUSED_SKILL_KEYS: &[&str] = &["hooks", "allowed-tools", "allowed_tools", "allowedtools"];
 
-/// Why a skill's frontmatter asks for more than instructions, if it does. Forms that could smuggle a key in (a flow
-/// mapping, a `? key`, a `<<` merge) are refused as well.
+/// Why a skill's frontmatter asks for more than instructions, if it does. Only the plainest YAML passes: every line
+/// that isn't blank or a comment is either a top-level `key:` in column 0 whose key is letters, digits, `-` and `_`,
+/// or an indented line under such a key. So a key can't arrive escaped (`"hoo\x6bs"`), tagged (`!!str hooks`),
+/// aliased (`*k :`), merged (`<<:`), as a flow map, or from a block indented as a whole; then the key itself is checked.
 pub(crate) fn agent_power_problem(front: &str) -> Option<String> {
+    let mut seen_key = false;
     for line in front.lines() {
         let trimmed = line.trim_start();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.len() != line.len() {
+        if trimmed.is_empty() || trimmed.starts_with('#') {
             continue;
         }
-        if trimmed.starts_with('{') || trimmed.starts_with('?') {
-            return Some("its frontmatter isn't plain \"key: value\" lines.".into());
-        }
-        let Some((key, _)) = trimmed.split_once(':') else {
+        if trimmed.len() != line.len() {
+            if !seen_key {
+                return Some(
+                    "its frontmatter starts indented; keys must start in the first column.".into(),
+                );
+            }
             continue;
+        }
+        let key = plain_key(line).ok_or_else(|| {
+            "its frontmatter has a line that isn't a plain \"key: value\" (letters, digits, - and _ only).".to_string()
+        });
+        let key = match key {
+            Ok(key) => key.to_ascii_lowercase(),
+            Err(why) => return Some(why),
         };
-        let key = key
-            .trim()
-            .trim_matches(|c| c == '"' || c == '\'')
-            .to_ascii_lowercase();
-        if key == "<<" {
-            return Some("its frontmatter merges keys in with \"<<\".".into());
-        }
+        seen_key = true;
         if REFUSED_SKILL_KEYS.contains(&key.as_str()) {
             return Some(format!(
                 "it sets \"{key}\", which would let it run commands or approve tools; plugin skills can't."
@@ -440,6 +446,17 @@ pub(crate) fn agent_power_problem(front: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// `key` from a column-0 `key:` line (`^[A-Za-z0-9_-]+\s*:`), followed by a space, a tab or nothing.
+fn plain_key(line: &str) -> Option<&str> {
+    let end = line
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .unwrap_or(line.len());
+    let key = &line[..end];
+    let rest = line[end..].trim_start_matches([' ', '\t']);
+    let after = rest.strip_prefix(':')?;
+    (!key.is_empty() && (after.is_empty() || after.starts_with([' ', '\t']))).then_some(key)
 }
 
 fn check_skill(skill_md: &Path, folder: &str) -> Result<(String, String), String> {

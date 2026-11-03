@@ -87,7 +87,7 @@
     }
   ],
   "launch": {
-    "plugin__demo__tools": {
+    "plugin-demo-tools": {
       "args": [
         "<TMP>/app-data/plugins/installed/demo/server/index.mjs"
       ],
@@ -112,7 +112,7 @@
   },
   "wiring": {
     "claudeMcpServers": {
-      "plugin__demo__tools": {
+      "plugin-demo-tools": {
         "args": [
           "plugin-mcp",
           "--root",
@@ -131,7 +131,7 @@
       "<TMP>/app-data/plugins/claude/demo"
     ],
     "codexMcpServers": {
-      "plugin__demo__tools": {
+      "plugin-demo-tools": {
         "args": [
           "plugin-mcp",
           "--root",
