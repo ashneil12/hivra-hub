@@ -322,6 +322,30 @@ mod tests {
         }
     }
 
+    /// An absolute path to a file named claude on this platform (`/tmp/...` isn't absolute on Windows).
+    fn claude_path() -> String {
+        std::env::temp_dir()
+            .join("run")
+            .join("bin")
+            .join("claude")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// A plan written with `/tmp/run/bin/claude`, with [`claude_path`] in its place.
+    fn with_claude(text: &str) -> String {
+        text.replace(
+            r#""/tmp/run/bin/claude""#,
+            &serde_json::to_string(&claude_path()).unwrap(),
+        )
+    }
+
+    /// `path` as it goes between a JSON string's quotes.
+    fn json_text(path: &Path) -> String {
+        let quoted = serde_json::to_string(&path.to_string_lossy()).unwrap();
+        quoted[1..quoted.len() - 1].to_string()
+    }
+
     #[test]
     fn only_a_dev_copy_under_a_temporary_home_reads_a_plan() {
         let temp = Path::new("/tmp/verify-home");
@@ -333,13 +357,16 @@ mod tests {
 
     #[test]
     fn a_bench_on_the_grok_bridge_says_so_to_the_window() {
-        let plan =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#)
-                .unwrap();
+        let plan = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#,
+        ))
+        .unwrap();
         assert!(plan.grok);
         assert_eq!(window_info(&plan)["grok"], true);
-        let off =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#).unwrap();
+        let off = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#,
+        ))
+        .unwrap();
         assert!(window_info(&off).get("grok").is_none());
         assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#)
             .unwrap_err()
@@ -348,9 +375,9 @@ mod tests {
 
     #[test]
     fn a_bench_on_the_deepseek_bridge_says_so_to_the_window() {
-        let plan = parse(
+        let plan = parse(&with_claude(
             r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","deepseek":true}"#,
-        )
+        ))
         .unwrap();
         assert!(plan.deepseek);
         assert_eq!(window_info(&plan)["deepseek"], true);
@@ -358,28 +385,28 @@ mod tests {
         assert!(parse(r#"{"version":1,"runId":"a","deepseek":true}"#)
             .unwrap_err()
             .contains("deepseek"));
-        assert!(parse(
-            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#
-        )
+        assert!(parse(&with_claude(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#))
         .unwrap_err()
         .contains("pass one"));
     }
 
     #[test]
     fn parses_a_plan_and_refuses_a_bad_one() {
-        let project = std::env::temp_dir();
-        let project = project.to_str().unwrap();
+        // Paths go into the JSON escaped: a Windows path's backslashes aren't JSON escapes.
+        let project = json_text(&std::env::temp_dir());
+        let claude = serde_json::to_string(&claude_path()).unwrap();
         let good = format!(
-            r#"{{"version":1,"runId":"20261019-a1","claudeBinary":"/tmp/run/bin/claude","autoResume":true,
+            r#"{{"version":1,"runId":"20261019-a1","claudeBinary":{claude},"autoResume":true,
                "kickoff":{{"project":"{project}","monoName":"Verify Lead","prompt":"VERIFY-LEAD-KICKOFF"}}}}"#
         );
         let plan = parse(&good).unwrap();
         assert!(plan.auto_resume);
         assert!(!plan.goals);
         assert!(window_info(&plan).get("goals").is_none());
-        let goals =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","goals":true}"#)
-                .unwrap();
+        let goals = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","goals":true}"#,
+        ))
+        .unwrap();
         assert!(goals.goals);
         assert_eq!(window_info(&goals)["goals"], true);
         assert!(window_info(&plan).get("stallMs").is_none());
@@ -447,7 +474,8 @@ mod tests {
         std::fs::create_dir_all(root.join("inbox")).unwrap();
         let driver = root.to_str().unwrap().to_string();
         let plan = parse(&format!(
-            r#"{{"version":1,"runId":"a","driver":"{driver}"}}"#
+            r#"{{"version":1,"runId":"a","driver":"{}"}}"#,
+            json_text(&root)
         ))
         .unwrap();
         assert_eq!(plan.driver.as_deref(), Some(driver.as_str()));

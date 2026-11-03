@@ -2293,12 +2293,19 @@ fn restore_history(bundle: &Path, target: &Path) -> Result<(), HistoryRefusal> {
             "core.symlinks=false",
             "-c",
             "core.hooksPath=/dev/null",
+            // The files come back byte for byte, whatever the machine's `core.autocrlf` (true on most Windows setups).
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
         ]);
         command
     };
     let ok = |command: &mut Command| command.output().is_ok_and(|out| out.status.success());
     if !ok(git()
         .args(["clone", "--quiet", "--no-checkout", "--template="])
+        // ... and so does every later commit in the folder this makes for itself.
+        .args(["--config", "core.autocrlf=false", "--config", "core.eol=lf"])
         .arg(bundle)
         .arg(target))
     {

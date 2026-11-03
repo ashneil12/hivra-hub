@@ -241,28 +241,85 @@ pub fn run_main(args: &[String]) -> i32 {
 }
 
 /// The system part of where a local server's program is looked for, and the PATH it runs with: never the caller's.
+#[cfg(not(windows))]
 pub const SAFE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
 /// [`SAFE_PATH`] plus the account's own `~/.local/bin` (where uvx installs), taken from the user database so a caller's
 /// HOME can't point it anywhere else.
+#[cfg(not(windows))]
 pub fn safe_path() -> String {
     match crate::instance::real_home() {
         Some(home) => format!("{SAFE_PATH}:{}", home.join(".local/bin").display()),
         None => SAFE_PATH.to_string(),
     }
 }
-/// All a local server gets from the caller's environment, besides [`safe_path`] and its own login.
-const PASSED_ENV: [&str; 4] = ["HOME", "USER", "LANG", "TMPDIR"];
 
-/// `command` on [`safe_path`] (a full path is taken as it is), or `None`.
+/// Windows' own folders, Node's and the account's `.local\bin` (uvx) and `npm` (npx-installed tools), joined with
+/// `;`. The profile comes from Windows itself ([`crate::instance::real_home`]), never from the caller's HOME.
+#[cfg(windows)]
+pub fn safe_path() -> String {
+    let system = std::env::var_os("SystemRoot")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    let programs = std::env::var_os("ProgramFiles")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+    let mut dirs = vec![
+        system.join("System32"),
+        system.clone(),
+        system.join(r"System32\WindowsPowerShell\v1.0"),
+        programs.join("nodejs"),
+    ];
+    if let Some(home) = crate::instance::real_home() {
+        dirs.push(home.join(r".local\bin"));
+        dirs.push(home.join(r"AppData\Roaming\npm"));
+    }
+    std::env::join_paths(dirs)
+        .map(|joined| joined.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// All a local server gets from the caller's environment, besides [`safe_path`] and its own login.
+#[cfg(not(windows))]
+const PASSED_ENV: &[&str] = &["HOME", "USER", "LANG", "TMPDIR"];
+/// The same on Windows, plus what Windows programs (Node among them) can't start without.
+#[cfg(windows)]
+const PASSED_ENV: &[&str] = &[
+    "HOME",
+    "USERNAME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "SystemRoot",
+    "SystemDrive",
+    "windir",
+    "ComSpec",
+    "PATHEXT",
+];
+
+/// `command` on [`safe_path`] (a full path is taken as it is), or `None`. On Windows a bare name also matches its
+/// `.exe`, `.cmd` or `.bat` (`npx` is `npx.cmd`).
 pub fn find_on_path(command: &str) -> Option<PathBuf> {
-    if command.contains('/') {
+    if command.contains('/') || (cfg!(windows) && command.contains('\\')) {
         let path = PathBuf::from(command);
         return path.is_file().then_some(path);
     }
-    std::env::split_paths(&safe_path())
-        .map(|dir| dir.join(command))
-        .find(|candidate| candidate.is_file())
+    let names: Vec<String> = if cfg!(windows) && Path::new(command).extension().is_none() {
+        ["exe", "cmd", "bat"]
+            .iter()
+            .map(|ext| format!("{command}.{ext}"))
+            .collect()
+    } else {
+        vec![command.to_string()]
+    };
+    std::env::split_paths(&safe_path()).find_map(|dir| {
+        names
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
 }
 
 /// How a local server is started: `program` with its arguments, an environment cleared down to [`PASSED_ENV`] and
@@ -636,21 +693,25 @@ pub(crate) mod tests {
     /// fixed PATH: a caller's NODE_OPTIONS or PATH can't reach it.
     #[test]
     fn a_local_server_gets_a_clean_environment_and_a_fixed_path() {
-        let allowed = [
-            "HOME",
-            "USER",
-            "LANG",
-            "TMPDIR",
-            "PATH",
-            "SLACK_MCP_XOXP_TOKEN",
-        ];
+        let mut allowed: Vec<&str> = PASSED_ENV.to_vec();
+        allowed.extend(["PATH", "SLACK_MCP_XOXP_TOKEN"]);
+        // Windows names are case-insensitive (`Path`, `SYSTEMROOT`), so compare them the way Windows does.
+        let allowed_key = |key: &str| allowed.iter().any(|a| a.eq_ignore_ascii_case(key));
         assert!(
-            std::env::vars().any(|(key, _)| !allowed.contains(&key.as_str())),
+            std::env::vars().any(|(key, _)| !allowed_key(&key)),
             "the test process has more in its environment than a server may get"
         );
+        // Something that prints the environment it was given: `env`, or `cmd /c set` on Windows.
+        #[cfg(not(windows))]
+        let (program, args) = (find_on_path("env").unwrap(), Vec::<String>::new());
+        #[cfg(windows)]
+        let (program, args) = (
+            find_on_path("cmd").unwrap(),
+            vec!["/d".to_string(), "/c".to_string(), "set".to_string()],
+        );
         let output = stdio_command(
-            Path::new("/usr/bin/env"),
-            &[],
+            &program,
+            &args,
             &[(
                 "SLACK_MCP_XOXP_TOKEN".to_string(),
                 "xoxp-SENTINEL".to_string(),
@@ -661,28 +722,47 @@ pub(crate) mod tests {
         let seen: BTreeMap<String, String> = String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter_map(|line| line.split_once('='))
-            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .map(|(k, v)| (k.to_ascii_uppercase(), v.to_string()))
             .collect();
         for key in seen.keys() {
-            assert!(allowed.contains(&key.as_str()), "{key} reached the server");
+            // cmd sets PROMPT for itself when it starts; it never came from the caller.
+            if cfg!(windows) && key == "PROMPT" {
+                continue;
+            }
+            assert!(allowed_key(key), "{key} reached the server");
         }
         assert_eq!(seen["PATH"], safe_path());
         assert_eq!(seen["SLACK_MCP_XOXP_TOKEN"], "xoxp-SENTINEL");
-        assert!(seen.get("HOME").is_some_and(|home| !home.is_empty()));
-        assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
-        assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
+        let home = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        assert!(seen.get(home).is_some_and(|home| !home.is_empty()));
+        #[cfg(not(windows))]
+        {
+            assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+            assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
+        }
+        #[cfg(windows)]
+        {
+            let found = find_on_path("cmd").unwrap();
+            assert!(found.ends_with(r"System32\cmd.exe"), "{}", found.display());
+        }
     }
 
     #[test]
     fn the_accounts_own_local_bin_is_on_the_path_never_the_callers_home() {
-        // uvx installs to ~/.local/bin; that folder comes from the user database, so a caller's HOME can't move it.
-        let own = crate::instance::real_home().expect("a home folder in the user database");
+        // uvx installs to ~/.local/bin; that folder comes from the user database (Windows: the profile known
+        // folder), so a caller's HOME can't move it.
+        let own = crate::instance::real_home().expect("a home folder from the system");
         let path = safe_path();
-        assert!(path.starts_with(SAFE_PATH), "{path}");
-        assert!(
-            path.ends_with(&format!(":{}", own.join(".local/bin").display())),
-            "{path}"
-        );
+        let dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+        #[cfg(not(windows))]
+        {
+            assert!(path.starts_with(SAFE_PATH), "{path}");
+            assert!(
+                path.ends_with(&format!(":{}", own.join(".local/bin").display())),
+                "{path}"
+            );
+        }
+        assert!(dirs.contains(&own.join(".local").join("bin")), "{path}");
         assert!(!path.contains("/tmp"), "{path}");
     }
 

@@ -163,6 +163,12 @@ jq '.productName="MonoCode Hub" | .identifier="com.ash.monocode-hub"
 npm run hub:build && npm run hub:verify
 ```
 
+Hivra has one layout (WP-03, `src/features/hub/model/hivraLayout.ts`): Classic, fixed wherever the Hub flag is on.
+Upstream's `tests/browser/layout-opt-in.spec.ts` tests the Classic/Focused switch Hivra doesn't have and was deleted
+on purpose: when a merge brings it back (a modify/delete conflict), keep it deleted. Keep upstream's Focused code
+itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the hooks in `appearance.ts` or
+`SettingsView.tsx`.
+
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
