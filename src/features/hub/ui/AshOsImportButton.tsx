@@ -1,15 +1,24 @@
 // Settings → Export and import → "Bring over from Ash OS" (WP-04 review): the one-time import, run again by hand. On
 // start the app asks only once and keeps the answer; this runs it whatever was decided before. It only ever adds, and
 // Ash OS is only read (localHub/ashOsImport.ts).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { appHubTransport } from "../model/localHub/localTransport";
-import { importFromAshOsAgain, importOutcome, type ImportDeps } from "../model/localHub/ashOsImport";
+import { importFromAshOsAgain, importOutcome, offersAshOsImport, type ImportDeps } from "../model/localHub/ashOsImport";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 
 export function AshOsImportButton({ deps }: { deps?: ImportDeps }) {
   const [busy, setBusy] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // Hidden once the app knows there's no Ash OS here (most people never had one); shown again after a run here.
+  const [offered, setOffered] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void offersAshOsImport(appHubTransport().hub).then((yes) => live && setOffered(yes));
+    return () => {
+      live = false;
+    };
+  }, []);
   const run = async () => {
     setBusy(true);
     setOutcome(null);
@@ -21,6 +30,7 @@ export function AshOsImportButton({ deps }: { deps?: ImportDeps }) {
       setBusy(false);
     }
   };
+  if (!offered && !outcome) return null;
   return (
     <div className="flex flex-col gap-1 px-3 pt-3" data-ash-os-import>
       <span className="text-[13px] leading-5 text-content/60">

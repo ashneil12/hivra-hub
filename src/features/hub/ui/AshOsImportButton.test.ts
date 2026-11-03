@@ -17,9 +17,10 @@ it("runs the import again after Start clean and shows what came over", async () 
   const asked: string[] = [];
   const host = document.createElement("div");
   document.body.append(host);
-  await act(async () =>
-    createRoot(host).render(createElement(AshOsImportButton, { deps: { fetch: async () => found, ask: async (q) => (asked.push(q), "import") } })),
-  );
+  await act(async () => {
+    createRoot(host).render(createElement(AshOsImportButton, { deps: { fetch: async () => found, ask: async (q) => (asked.push(q), "import") } }));
+    await new Promise((r) => setTimeout(r, 10));
+  });
   await act(async () => {
     host.querySelector<HTMLButtonElement>("[data-ash-os-import-run]")!.click();
     await new Promise((r) => setTimeout(r, 10));
@@ -28,4 +29,15 @@ it("runs the import again after Start clean and shows what came over", async () 
   expect(host.querySelector("[data-ash-os-import-outcome]")?.textContent).toBe("Brought over 1 project, 0 Monos' projects and 0 kept Pages.");
   expect((await hub.projects()).projects.map((p) => p.id)).toEqual(["exo"]);
   expect(await hub.disk.read(IMPORT_KEY)).toMatchObject({ decided: "imported" });
+});
+
+it("is hidden when there's no Ash OS here", async () => {
+  await appHubTransport().hub.disk.write(IMPORT_KEY, { decided: "none", at: "2026-11-03T00:00:00Z", message: "Ash OS isn't set up on this Mac." });
+  const host = document.createElement("div");
+  document.body.append(host);
+  await act(async () => {
+    createRoot(host).render(createElement(AshOsImportButton));
+    await new Promise((r) => setTimeout(r, 10));
+  });
+  expect(host.querySelector("[data-ash-os-import]")).toBeNull();
 });

@@ -96,7 +96,7 @@ function choose(): { source: HubDataSource; store?: HubStore } {
     // retired offers to bring Ash OS's projects and kept Pages over, once.
     const benchProjects = appIdentity()?.verify?.projects;
     if (benchProjects?.length) void appHubTransport().hub.importFrom({ projects: benchProjects, memberships: [], pages: [] });
-    startAshOsImport(appHubTransport().hub);
+    void startAshOsImport(appHubTransport().hub);
     if (makesProjectLeads()) startHubBundleLeads(store);
   }
   return chosen;

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { LocalHub, memoryDisk } from "./localHub";
 import { createLocalTransport } from "./localTransport";
 import { delegationDecisions, delegationJobGroups } from "./decisions";
-import { answerOf, importFromAshOsAgain, importOutcome, runAshOsImport, IMPORT_KEY, type ImportAnswer, type ImportFound } from "./ashOsImport";
+import { answerOf, importFromAshOsAgain, importOutcome, offersAshOsImport, resetAshOsImportStartForTest, runAshOsImport, startAshOsImport, IMPORT_KEY, type ImportAnswer, type ImportFound } from "./ashOsImport";
 import type { Delegation } from "../../../monos/model/delegations";
 
 const blocks = (title: string) => ({ kind: "blocks", title, blocks: [{ kind: "note", title: "n", text: "t" }] });
@@ -239,6 +239,33 @@ describe("the one-time Ash OS import", () => {
     expect(importOutcome(await importFromAshOsAgain(hub, { fetch: async () => ({ ...found, state: "unreachable", message: "Ash OS isn't running." }), ask: yes }))).toBe(
       "Ash OS didn't answer (Ash OS isn't running.). Try again when it's running.",
     );
+  });
+
+  it("asks only in the main window: a hidden quick-session window never pops the question (review)", async () => {
+    const hub = new LocalHub(memoryDisk());
+    let asked = 0;
+    const importDeps = { fetch: async () => found, ask: async (): Promise<ImportAnswer> => (asked++, "later") };
+    for (const label of ["session-abc", "floating-mono-frank", undefined]) {
+      resetAshOsImportStartForTest();
+      expect(await startAshOsImport(hub, { inTauri: true, label: async () => label, importDeps })).toBeUndefined();
+    }
+    expect(asked).toBe(0);
+    resetAshOsImportStartForTest();
+    expect(await startAshOsImport(hub, { inTauri: true, label: async () => "main", importDeps })).toMatchObject({ decided: "later" });
+    expect(asked).toBe(1);
+    // Once per launch, even in main.
+    expect(await startAshOsImport(hub, { inTauri: true, label: async () => "main", importDeps })).toBeUndefined();
+    expect(asked).toBe(1);
+    resetAshOsImportStartForTest();
+  });
+
+  it("Settings offers the row unless the app knows there's no Ash OS here", async () => {
+    const hub = new LocalHub(memoryDisk());
+    expect(await offersAshOsImport(hub)).toBe(true);
+    await runAshOsImport(hub, { fetch: async () => ({ ...found, state: "absent" }), ask: yes });
+    expect(await offersAshOsImport(hub)).toBe(false);
+    await hub.disk.write(IMPORT_KEY, { decided: "declined", at: "x" });
+    expect(await offersAshOsImport(hub)).toBe(true);
   });
 
   it("reads the dialog: Import, Start clean, and closing it", () => {

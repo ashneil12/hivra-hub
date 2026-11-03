@@ -109,11 +109,43 @@ export function answerOf(picked: string): ImportAnswer {
 
 let started = false;
 
-/** The app's run on each start. Once per launch; for good once a decision is kept. */
-export function startAshOsImport(hub: LocalHub): void {
-  if (started || typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+/** The window that asks: only the main one, never a hidden quick-session or floating window (WP-04 review). */
+export const IMPORT_WINDOW = "main";
+
+async function currentWindowLabel(): Promise<string | undefined> {
+  try {
+    const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    return getCurrentWebviewWindow().label;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The app's run on each start: only in the main window (every window loads the hub, hidden ones too, and while the
+ * import is undecided each would ask again). Once per launch; for good once a decision is kept.
+ */
+export async function startAshOsImport(
+  hub: LocalHub,
+  deps: { label?: () => Promise<string | undefined>; inTauri?: boolean; importDeps?: ImportDeps } = {},
+): Promise<ImportDecision | undefined> {
+  const inTauri = deps.inTauri ?? (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window);
+  if (started || !inTauri) return undefined;
+  if ((await (deps.label ?? currentWindowLabel)()) !== IMPORT_WINDOW) return undefined;
+  if (started) return undefined;
   started = true;
-  void runAshOsImport(hub, appImportDeps()).catch(() => undefined);
+  return runAshOsImport(hub, deps.importDeps ?? appImportDeps()).catch(() => undefined);
+}
+
+/** Tests only. */
+export function resetAshOsImportStartForTest(): void {
+  started = false;
+}
+
+/** Whether Settings offers the row: not once the app knows there is nothing to bring over ("none": no Ash OS here). */
+export async function offersAshOsImport(hub: LocalHub): Promise<boolean> {
+  const kept = (await hub.disk.read(IMPORT_KEY).catch(() => null)) as ImportDecision | null;
+  return kept?.decided !== "none";
 }
 
 /** Settings → "Bring over from Ash OS": run it again, whatever was decided before. */
