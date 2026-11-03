@@ -474,9 +474,10 @@ pub fn real_home() -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
 }
 
+/// The user's profile folder from Windows itself (the Profile known folder), whatever HOME or USERPROFILE say.
 #[cfg(not(unix))]
 pub fn real_home() -> Option<PathBuf> {
-    None
+    dirs::home_dir().filter(|home| home.is_absolute())
 }
 
 /// First thing in `run()`. Cocoa ignores HOME: the webview's storage, caches, saved window state and preferences live

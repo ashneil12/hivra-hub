@@ -2839,6 +2839,7 @@ dependencies = [
  "base64 0.22.1",
  "block2",
  "dirs",
+ "dunce",
  "flate2",
  "hostname",
  "if-addrs",

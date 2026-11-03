@@ -1998,21 +1998,43 @@ mod tests {
 
     #[test]
     fn the_ship_script_gets_a_deadline() {
-        let mut command = Command::new("/bin/sh");
-        command.args(["-c", "echo out; echo err >&2"]);
+        // `output_within` runs on every platform; the scripts are `/bin/sh` here and `cmd` on Windows.
+        #[cfg(not(windows))]
+        let (command, newline) = {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "echo out; echo err >&2"]);
+            (command, "\n")
+        };
+        #[cfg(windows)]
+        let (command, newline) = {
+            let mut command = Command::new("cmd");
+            command.args(["/d", "/c", "echo out& echo err>&2"]);
+            (command, "\r\n")
+        };
         let output = output_within(command, Duration::from_secs(20), "the script").unwrap();
         assert!(output.status.success());
-        assert_eq!(output.stdout, b"out\n");
-        assert_eq!(output.stderr, b"err\n");
+        assert_eq!(output.stdout, format!("out{newline}").into_bytes());
+        assert_eq!(output.stderr, format!("err{newline}").into_bytes());
 
         // One that hangs is stopped at the limit, with whatever it started.
         let root = TempDir::new("deadline");
         let pid_file = root.0.join("sleeper.pid");
-        let mut command = Command::new("/bin/sh");
-        command.args([
-            "-c",
-            &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
-        ]);
+        #[cfg(not(windows))]
+        let command = {
+            let mut command = Command::new("/bin/sh");
+            command.args([
+                "-c",
+                &format!("sleep 60 & echo $! > '{}'; wait", pid_file.display()),
+            ]);
+            command
+        };
+        #[cfg(windows)]
+        let command = {
+            let _ = &pid_file;
+            let mut command = Command::new("cmd");
+            command.args(["/d", "/c", "ping -n 60 127.0.0.1 >nul"]);
+            command
+        };
         let started = Instant::now();
         let error = output_within(command, Duration::from_millis(800), "hub-ship.mjs").unwrap_err();
         assert!(

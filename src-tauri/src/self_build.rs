@@ -1046,6 +1046,8 @@ mod tests {
         let repo = root.join("hub");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+        // Files are written here as LF; keep a Windows runner's `core.autocrlf=true` from reading them as changed.
+        git(&repo, &["config", "core.autocrlf", "false"]).unwrap();
         write(
             &repo,
             "src/app/shell/Sidebar.tsx",
@@ -1067,6 +1069,8 @@ mod tests {
         let repo = root.join("Projects/monocode-hub");
         std::fs::create_dir_all(&repo).unwrap();
         git(&repo, &["init", "-q", "-b", "main"]).unwrap();
+        // Files are written here as LF; keep a Windows runner's `core.autocrlf=true` from reading them as changed.
+        git(&repo, &["config", "core.autocrlf", "false"]).unwrap();
         write(&repo, "package.json", "{\"name\":\"monocode-desktop\"}\n");
         write(
             &repo,
