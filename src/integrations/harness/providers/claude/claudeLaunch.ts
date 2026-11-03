@@ -38,6 +38,8 @@ export type ClaudeLaunch = {
   autoCompactWindow?: number;
   /** The appended prompt's key (claudeExtraArgs.ts claudeAppend): a new one needs a new process. */
   appendKey?: string;
+  /** Hivra WP-10: started as a first mate, without file-editing tools; a change needs a new process. */
+  firstMate?: boolean;
 };
 
 export type ClaudeLiveRequest = {
@@ -74,6 +76,7 @@ export function claudeLaunchDelta(
   if (live.thinking !== next.thinking) restart.push("thinking");
   if (live.hooks !== next.hooks) restart.push("hooks");
   if (live.appendKey !== next.appendKey) restart.push("MonoCode note");
+  if (Boolean(live.firstMate) !== Boolean(next.firstMate)) restart.push("first mate");
 
   const flags: Record<string, unknown> = {};
   const flagLabels: string[] = [];

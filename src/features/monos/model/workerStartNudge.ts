@@ -74,7 +74,7 @@ export function workerStartNudge(
     id: `start-workers-${ask.block.id}`,
     attachments: [],
     waitForIdle: true,
-    text: forUser`${START_WORKERS_PREFIX} From the app: your last reply listed Ash's asks and said work starts, but no worker was started. Start them now: one delegate_task per independent area, each a short brief (his words for it, what it may change, the check to run, what to report). Then tell him in one line what is out. If nothing in the list is ready to start, say that in one line instead. This is an app notification, not a new message from Ash.`,
+    text: forUser`${START_WORKERS_PREFIX} From the app: your last reply listed Ash's asks and said work starts, but no worker was started. Start them now: one delegate_task per independent area, each with intent (his words for it), a short brief (what it may change, the check to run, what to report) and goal (done when). Then tell him in one line what is out. If nothing in the list is ready to start, say that in one line instead. This is an app notification, not a new message from Ash.`,
   };
 }
 

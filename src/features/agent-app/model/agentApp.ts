@@ -113,6 +113,9 @@ import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRoom
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 
 /** What a Mono hears if it reaches for the old proposal path. */
+/** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
+export const SELF_BUILD_GOAL = "The change is made in the preview copy, the checks its brief names pass, and the report says how to see it.";
+
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { recordSelfWrite } from "../../hub/model/botChanges";
@@ -1419,7 +1422,7 @@ export async function handleAgentApp(
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change")
-    return handleSelfBuild(source, action, input, host, async (brief, title, folder) => {
+    return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {
       // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.
       await harnessesProbed();
       const inFolder: AgentAppHost = {
@@ -1429,7 +1432,15 @@ export async function handleAgentApp(
           return mono && { ...mono, projects: [...mono.projects, folder], team: undefined };
         },
       };
-      return handleTasks(source, requestId, "tasks.delegate", { brief, title, project: folder }, inFolder, { startLaunch, fileStarted });
+      // Hivra WP-10: a brief carries Ash's ask and a definition of done, or delegate refuses it.
+      return handleTasks(
+        source,
+        requestId,
+        "tasks.delegate",
+        { intent, brief, title, goal: SELF_BUILD_GOAL, project: folder },
+        inFolder,
+        { startLaunch, fileStarted },
+      );
     });
   if (action.startsWith("artifacts."))
     return handleArtifacts(source, requestId, action, input, host);

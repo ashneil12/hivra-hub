@@ -342,8 +342,11 @@ Actions:
                    "schedule":{"kind":"daily","time":"09:00"}}
                   choices accepts 1–4 options. A habit card is a suggestion;
                   the user must start it before it is scheduled.
-  tasks.delegate {"brief":"<the whole job, Ash's words quoted>","title":"Fix the save bug",
-                  "asks":["a_..."],"goal":"<done when>","isolation":"shared"}
+  tasks.delegate {"intent":"<Ash's own ask, in his words>","brief":"<the build instructions>",
+                  "goal":"<done when>","title":"Fix the save bug","asks":["a_..."],
+                  "isolation":"shared"}
+                  intent, brief and goal are required; an empty or placeholder
+                  one is refused before anything starts.
                   Mono only. Hand a job to a worker chat nested under yours, as a
                   stored task (taskId) that reports back as a new turn once you
                   are idle. asks are the Ash OS ask ids it covers; isolation

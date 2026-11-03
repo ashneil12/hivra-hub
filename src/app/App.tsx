@@ -644,6 +644,10 @@ import {
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
+// Hivra WP-10: a first mate reads and never edits (features/firstmate/).
+import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -9022,6 +9026,7 @@ function Workspace({
                 controlsAgents:
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
+                ...firstMateLaunch(current),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9080,6 +9085,7 @@ function Workspace({
                 operatorAccess ||
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
+              ...firstMateLaunch(current),
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -11876,6 +11882,7 @@ function Workspace({
               isMonoSession(sessionId) ||
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
+            ...firstMateLaunch(current),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -12750,7 +12757,8 @@ function Workspace({
           sessionId: job.ownerSession,
           requestId: job.requestId,
           action: "tasks.delegate",
-          input: job.input,
+          // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
+          input: withLegacyBriefParts(job.input, job.title),
         });
       },
       failed: (job, error) =>
@@ -15950,6 +15958,7 @@ function Workspace({
 
   // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions, liveBusySessionIds);
+  useFirstMateCheckoutGuard(sessions);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();

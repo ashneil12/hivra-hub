@@ -209,7 +209,8 @@ export function scenario({ runId, failGate = false }) {
   // Double delegation. Every prompt matches only as the turn's own message (first, or right after a Mono's context
   // block): that context quotes the delegate rules, which name [MonoCode question] and [MonoCode report], and a report
   // quotes its worker's brief.
-  const brief = (marker) => said(`\\[MonoCode brief from [^\\]]*\\]\\s+${marker}`);
+  // Hivra WP-10: a brief comes from the template (firstmate/model/brief.ts), its spec under "## Spec".
+  const brief = (marker) => said(`\\[MonoCode brief from [^\\]]*\\][\\s\\S]*?## Spec\\s+${marker}`);
   const tree = [
     {
       name: "tree-cos-kickoff",
@@ -767,7 +768,22 @@ export function scenario({ runId, failGate = false }) {
       ],
     },
   ];
-  return { version: 1, rules };
+  return { version: 1, rules: withBriefParts(rules) };
+}
+
+/**
+ * Hivra WP-10: a delegation names its intent and definition of done, or the app refuses it (firstmate/model/brief.ts).
+ * The scripted first mates here send them with every brief; one that names its own goal keeps it.
+ */
+export function withBriefParts(rules) {
+  return rules.map((rule) => ({
+    ...rule,
+    steps: (rule.steps ?? []).map((step) =>
+      step.app === "tasks.delegate"
+        ? { ...step, input: { intent: "Ash asked for this in the verify-live walk.", goal: "The worker reports back.", ...step.input } }
+        : step,
+    ),
+  }));
 }
 
 /**
