@@ -503,10 +503,10 @@ fn prune_logs(dir: &Path) {
 /// The checkout an action runs in must be the project's main checkout or one of its registered worktrees.
 pub fn checkout_of_project(cwd: &Path) -> Result<(PathBuf, PathBuf), String> {
     let main = project_file::main_checkout(cwd)?;
-    let wanted = cwd.canonicalize().map_err(|e| e.to_string())?;
+    let wanted = crate::fs::canonical(cwd).map_err(|e| e.to_string())?;
     let registered = crate::worktrees::list(&main)?
         .into_iter()
-        .filter_map(|tree| PathBuf::from(tree.path).canonicalize().ok())
+        .filter_map(|tree| crate::fs::canonical(tree.path).ok())
         .any(|path| path == wanted);
     if !registered {
         return Err(

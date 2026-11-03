@@ -415,7 +415,7 @@ pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, St
 pub async fn refresh_worker_copy(checkout: String, project: String) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let checkout = crate::gates::worker_checkout(&checkout)?;
-        let project = std::fs::canonicalize(&project)
+        let project = crate::fs::canonical(&project)
             .map_err(|_| "The project folder isn't there.".to_string())?;
         refresh(&checkout, &project)
     })
@@ -428,7 +428,7 @@ pub async fn refresh_worker_copy(checkout: String, project: String) -> Result<Ve
 pub async fn land_worker_copy(checkout: String, project: String) -> Result<Landing, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let checkout = crate::gates::worker_checkout(&checkout)?;
-        let project = std::fs::canonicalize(&project)
+        let project = crate::fs::canonical(&project)
             .map_err(|_| "The project folder isn't there.".to_string())?;
         land(&checkout, &project)
     })
@@ -470,8 +470,8 @@ mod tests {
             &["worktree", "add", "-q", "--detach", copy.to_str().unwrap()],
         );
         (
-            std::fs::canonicalize(project).unwrap(),
-            std::fs::canonicalize(copy).unwrap(),
+            crate::fs::canonical(project).unwrap(),
+            crate::fs::canonical(copy).unwrap(),
         )
     }
 
@@ -619,7 +619,7 @@ mod tests {
                 second.to_str().unwrap(),
             ],
         );
-        let second = std::fs::canonicalize(second).unwrap();
+        let second = crate::fs::canonical(second).unwrap();
         std::fs::write(first.join("a.txt"), lines.replace("2\n", "two\n")).unwrap();
         std::fs::write(second.join("a.txt"), lines.replace("8\n", "eight\n")).unwrap();
         let (p1, c1, p2, c2) = (

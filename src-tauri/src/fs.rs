@@ -4581,6 +4581,19 @@ fn git_cmd_for_args(args: &[&str]) -> Command {
     git_cmd_for_args_with_path(args, crate::harness::gui_search_path)
 }
 
+/// `canonicalize`, but in the form git and people can use. On Windows `std::fs::canonicalize` returns a verbatim path
+/// (`\\?\C:\...`) that git can't create worktrees in ("could not create leading directories of '//?/C:/...'") and
+/// `cmd` can't start in; this drops the prefix whenever the plain path means the same folder. Elsewhere it is
+/// `std::fs::canonicalize`.
+pub(crate) fn canonical(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
+    dunce::canonicalize(path)
+}
+
+/// `path` without Windows' verbatim prefix, when the plain form means the same thing (see [`canonical`]).
+pub(crate) fn plain_path(path: &Path) -> &Path {
+    dunce::simplified(path)
+}
+
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
     let mut cmd = git_cmd_for_args(args);
     let output = cmd

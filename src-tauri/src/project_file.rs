@@ -480,7 +480,7 @@ pub fn main_checkout(cwd: &Path) -> Result<PathBuf, String> {
         Ok(_) => {}
         Err(_) => return Err("This repository has no main checkout".into()),
     }
-    main.canonicalize().map_err(|error| error.to_string())
+    crate::fs::canonical(main).map_err(|error| error.to_string())
 }
 
 /// What the main checkout holds right now.
@@ -783,7 +783,7 @@ pub(crate) mod tests {
     pub(crate) fn temp(prefix: &str) -> Temp {
         let dir = std::env::temp_dir().join(format!("{prefix}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        Temp(dir.canonicalize().unwrap())
+        Temp(crate::fs::canonical(dir).unwrap())
     }
 
     pub(crate) fn commit(root: &Path, message: &str) {
