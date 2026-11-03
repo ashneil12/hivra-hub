@@ -1,6 +1,6 @@
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../../integrations/harness/core/types";
@@ -143,7 +143,10 @@ afterAll(async () => {
 
 /** What the fake server says it was started with (PLUGIN_ROOT, PLUGIN_DATA, its folder, any app token). */
 function startedWith(description: string) {
-  return JSON.parse(description.split("Started with ")[1]);
+  const seen = JSON.parse(description.split("Started with ")[1]);
+  // The recorded paths mix separators on Windows ("C:\\…\\tmp/app-data/…"); compare them normalised.
+  for (const key of ["root", "data", "cwd"]) if (typeof seen[key] === "string") seen[key] = resolve(seen[key]);
+  return seen;
 }
 
 async function waitFor(check: () => boolean, what: string) {
