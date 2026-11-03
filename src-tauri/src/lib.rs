@@ -63,6 +63,8 @@ mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
+pub mod plugins;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -382,6 +384,8 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
+            let _ = plugins::host(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app
@@ -704,6 +708,14 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            // WP-30: plugins.
+            plugins::plugins_list,
+            plugins::plugins_inspect,
+            plugins::plugins_install_local,
+            plugins::plugins_enable,
+            plugins::plugins_disable,
+            plugins::plugins_uninstall,
+            plugins::plugins_session_wiring,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
