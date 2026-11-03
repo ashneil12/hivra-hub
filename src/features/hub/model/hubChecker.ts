@@ -6,7 +6,7 @@
 //
 // It never starts work, three ways over:
 // - the app lane (agentApp.ts): it and its habit runs get only models.list, memory and soul.read;
-// - its tool list (hubMcp.ts): ash-os as role `checker` (Ash OS's lane: reads plus its two calls), no delegate tool, and
+// - its tool list (hubMcp.ts): reads only, no delegate tool, and
 //   in Claude Code only Bash (for that app CLI) and reading, with no subagents or edits;
 // - no delegation: tasks.* refuses it (agentAppTasks.ts) and its context never teaches the delegate tool.
 // It never nags: Ash never hears from it (its runs end quiet), and Ash OS holds one open check per message, no repeats

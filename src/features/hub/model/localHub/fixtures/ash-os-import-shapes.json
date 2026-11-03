@@ -1,0 +1,76 @@
+{
+ "_about": "The projects and mono_projects answers of the real ashos.hub.Hub, cut from ash-os-real-shapes.json (removed with the bridge, WP-04; on main before it as src/features/hub/model/fixtures/). Invented content, no real data. Used by ashOsImport.shapes.test.ts.",
+ "projects": {
+  "projects": [
+   {
+    "id": "ash",
+    "name": "Harness & how I work",
+    "shortName": "Harness",
+    "iconShape": "folder",
+    "folder": null,
+    "workOwner": "ash_os",
+    "status": "active"
+   },
+   {
+    "id": "hivra",
+    "name": "Hivra",
+    "shortName": "Hivra",
+    "iconShape": "folder",
+    "folder": "/tmp/hub-test/hivra",
+    "workOwner": "ash_os",
+    "status": "active",
+    "needsCount": 1
+   },
+   {
+    "id": "nibbii",
+    "name": "Nibbii",
+    "shortName": "Nibbii",
+    "iconShape": "folder",
+    "folder": "/tmp/hub-test/nibbii",
+    "workOwner": "ash_os",
+    "status": "active"
+   },
+   {
+    "id": "vg-game",
+    "name": "EXO",
+    "shortName": "EXO",
+    "iconShape": "folder",
+    "folder": "/tmp/hub-test/vg-game",
+    "workOwner": "ash_os",
+    "status": "active",
+    "needsCount": 8
+   }
+  ],
+  "seq": 34
+ },
+ "mono_projects": {
+  "memberships": [
+   {
+    "monoId": "chief-of-staff",
+    "projectId": "hivra",
+    "role": "member",
+    "addedAt": "2026-10-15T02:32:48.622547Z"
+   },
+   {
+    "monoId": "hivra-lead",
+    "projectId": "hivra",
+    "role": "lead",
+    "addedAt": "2026-10-15T02:32:48.622547Z"
+   }
+  ],
+  "byProject": {
+   "hivra": [
+    "chief-of-staff",
+    "hivra-lead"
+   ]
+  },
+  "byMono": {
+   "chief-of-staff": [
+    "hivra"
+   ],
+   "hivra-lead": [
+    "hivra"
+   ]
+  }
+ }
+}

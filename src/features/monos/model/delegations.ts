@@ -91,7 +91,23 @@ export type Delegation = {
   reviewRequired?: boolean;
   /** The accepted self-review, as JSON (workerReview.ts), once the row is settled. */
   selfReview?: string | null;
+  /**
+   * Hivra WP-10 (src-tauri/src/firstmate/): the one status shown anywhere, computed in Rust from the row and its gates.
+   * Read it; never work a status out from `state` here. Absent only on rows from an older build.
+   */
+  status?: FirstMateStatus;
+  /** A plain line beside the status (a stall, a question, why it failed), when there is one. */
+  statusNotice?: string | null;
+  /** Who an open question waits on: "person" once the first mate passed it on; none means its first mate. */
+  questionOwner?: "person" | null;
+  /** The completion gates' verdict (WP-40): "pending", "passed" or "failed"; none when no gates apply. */
+  gateVerdict?: string | null;
+  /** The worker's typed final report, as JSON (firstmate/model/report.ts storedReport). */
+  report?: string | null;
 };
+
+/** Hivra's five statuses (docs/hivra/SPEC.md section 4). */
+export type FirstMateStatus = "working" | "needs-you" | "done" | "failed" | "paused";
 
 /**
  * How a running worker is stuck: no output (`quiet`), the same step over and over (`loop`), idle without a report, or
@@ -208,6 +224,10 @@ export type DelegationsBackend = {
   setStall?(input: StallInput): Promise<Change>;
   /** Its owner retried or split it: `task` is the new task taking it on (delegate_task `redoes`), kept in its log. */
   noteRedo?(ownerSession: string, id: string, task: string): Promise<Change>;
+  /** Hivra WP-10: the depth a delegation from this chat would sit at; rejects past the cap, with the reason. */
+  checkDepth?(ownerSession: string): Promise<number>;
+  /** Hivra WP-10: the first mate passes its worker's open question on to the person, or takes it back. */
+  setQuestionOwner?(id: string, generation: number, owner: "person" | "first-mate", by?: string): Promise<Change>;
 };
 
 export const tauriDelegations: DelegationsBackend = {
@@ -230,6 +250,9 @@ export const tauriDelegations: DelegationsBackend = {
   followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
   setStall: (input) => invoke("delegations_set_stall", { input }),
   noteRedo: (ownerSession, id, task) => invoke("delegations_note_redo", { ownerSession, id, task }),
+  checkDepth: (ownerSession) => invoke("firstmate_check_depth", { ownerSession }),
+  setQuestionOwner: (id, generation, owner, by) =>
+    invoke("firstmate_set_question_owner", { id, generation, owner, by }),
 };
 
 /** delegations.rs's event after any change to a row. */

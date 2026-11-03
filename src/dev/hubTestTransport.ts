@@ -1,40 +1,38 @@
-// Tests only. Talks to scripts/hub-stub-server.mjs over plain node http (happy-dom's fetch won't reach a local server),
-// the way the Rust plugin does: one POST per ash-hub-* call, errors as HubCallError with the plugin's kinds. The feed
-// reports "down", so a HubStore polls. Never shipped: nothing in the app imports it.
-import http from "node:http";
-import { HubCallError, type HubTransport } from "../features/hub/model/hubTransport";
+// Tests only. The app's own local hub (WP-04) on an in-memory disk, with the four example projects the old stub had, and
+// a log of every call the store makes. Never shipped: nothing in the app imports it.
+import type { Delegation } from "../features/monos/model/delegations";
+import { delegationDecisions } from "../features/hub/model/localHub/decisions";
+import { LocalHub, memoryDisk, type LocalHubState } from "../features/hub/model/localHub/localHub";
+import { createLocalTransport } from "../features/hub/model/localHub/localTransport";
+import type { HubTransport } from "../features/hub/model/hubTransport";
 
-export function httpTransport(baseUrl: () => string, token: () => string): HubTransport {
-  return {
-    call: (action, payload = {}) =>
-      new Promise((resolve, reject) => {
-        const body = JSON.stringify(payload);
-        const req = http.request(
-          `${baseUrl()}/api/${action}`,
-          { method: "POST", headers: { Authorization: `Bearer ${token()}`, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) } },
-          (res) => {
-            let raw = "";
-            res.on("data", (c) => (raw += c));
-            res.on("end", () => {
-              let json: { ok?: boolean; result?: unknown; error?: string } = {};
-              try {
-                json = JSON.parse(raw);
-              } catch {
-                /* not JSON */
-              }
-              if (res.statusCode === 401) reject(new HubCallError("unauthorized", "Ash OS didn't accept the app's key."));
-              else if (res.statusCode === 403) reject(new HubCallError("refused", json.error ?? "Ash OS didn't take that."));
-              else if (json.ok) resolve(json.result as never);
-              else reject(new HubCallError("error", json.error ?? `Ash OS answered with an error (${res.statusCode}).`));
-            });
-          },
-        );
-        req.on("error", () => reject(new HubCallError("unreachable", "Ash OS isn't running.")));
-        req.end(body);
-      }),
-    openFeed: (_after, handlers) => {
-      handlers.onState({ connected: false, message: "polling in this test" });
-      return () => undefined;
+export const EXAMPLE_PROJECTS = [
+  { project_id: "vg-game", name: "EXO", short_name: "EXO", icon_shape: "gamepad", folder: "/Users/example/Projects/vg-game" },
+  { project_id: "hivra", name: "Hivra", short_name: "Hivra", icon_shape: "sparkles", folder: "/Users/example/Projects/hivra" },
+  { project_id: "nibbii", name: "Nibbii", short_name: "Nibbii", icon_shape: "heart", folder: "/Users/example/Projects/nibbii" },
+  { project_id: "hub", name: "MonoCode Hub", short_name: "Hub", icon_shape: "code", folder: "/Users/example/Projects/monocode-hub" },
+];
+
+export type TestHub = {
+  hub: LocalHub;
+  transport: HubTransport;
+  /** Every action the store called, in order. */
+  calls: string[];
+  /** What the local store holds right now. */
+  state(): Promise<LocalHubState>;
+};
+
+export async function localTestHub(options: { projects?: boolean; open?: () => Delegation[] } = {}): Promise<TestHub> {
+  const hub = new LocalHub(memoryDisk());
+  if (options.projects !== false) for (const p of EXAMPLE_PROJECTS) await hub.projectCreate(p);
+  const inner = createLocalTransport(hub, delegationDecisions(async () => options.open?.() ?? []));
+  const calls: string[] = [];
+  const transport: HubTransport = {
+    call: (action, payload) => {
+      calls.push(action);
+      return inner.call(action, payload);
     },
+    openFeed: (after, handlers) => inner.openFeed(after, handlers),
   };
+  return { hub, transport, calls, state: () => hub.snapshot() };
 }

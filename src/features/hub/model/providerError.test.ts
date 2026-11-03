@@ -19,10 +19,3 @@ it("anything that isn't a provider failure is left as it was", () => {
   for (const text of ["Projects Manager turned it down: no.", "Say what the page should show.", ""]) expect(plainProviderError(text)).toBe(text);
 });
 
-it("a page build that fails at the provider shows Ash the plain sentence (buildPage)", async () => {
-  const { buildPage } = await import("../../pages/model/buildPage");
-  const { HubCallError } = await import("./hubTransport");
-  const transport = { call: (async () => { throw new HubCallError("error", raw); }) as never, openFeed: () => () => undefined };
-  const r = await buildPage({ projectId: "hub", monoId: "projects-manager", prompt: "a dashboard" } as never, { transport, roster: [{ id: "projects-manager" }], stub: false } as never);
-  expect(r).toEqual({ status: "error", reason: "The Grok model service turned the request away just now. Nothing changed; try again in a bit." });
-});

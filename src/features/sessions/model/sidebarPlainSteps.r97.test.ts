@@ -7,8 +7,8 @@ import type { Block } from "./session";
 const lookup: Block = {
   id: "s",
   role: "tool",
-  text: "Find select:mcp__monocode__delegate_task,mcp__ash-os__ash_remember",
-  tool: { kind: "search", status: "in_progress", title: "Find select:mcp__monocode__delegate_task,mcp__ash-os__ash_remember", preview: { kind: "search", query: "select:mcp__monocode__delegate_task,mcp__ash-os__ash_remember" } },
+  text: "Find select:mcp__monocode__delegate_task,mcp__memory__ash_remember",
+  tool: { kind: "search", status: "in_progress", title: "Find select:mcp__monocode__delegate_task,mcp__memory__ash_remember", preview: { kind: "search", query: "select:mcp__monocode__delegate_task,mcp__memory__ash_remember" } },
 } as Block;
 const run = (command: string, status = "in_progress"): Block => ({ id: command, role: "tool", text: command, tool: { kind: "execute", status, command } }) as Block;
 

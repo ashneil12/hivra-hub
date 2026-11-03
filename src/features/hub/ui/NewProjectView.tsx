@@ -41,7 +41,7 @@ async function pickFolder(): Promise<string | null> {
  * New project is chat-first: Ash types a name, then Chief of Staff talks it through with him (projectInterview.ts: its
  * own Mono on its own engine, asking what it needs). It ends on a preview card from its proposal that says exactly what
  * Create makes; nothing exists until Create.
- * Create goes to Ash OS (`ash-hub-project-create`): the project, its own memory, and (by default) its code folder at
+ * Create goes to Ash OS (`project-create`): the project, its own memory, and (by default) its code folder at
  * ~/Projects/<id> as a local git repo with a README. Then its Lead Mono is seeded and it joins the strip.
  */
 export function NewProjectView() {

@@ -10,7 +10,7 @@ it("every Lead's soul says only real asks become asks, and a question answered i
   for (const lead of leads.filter((l) => !!l)) {
     const soul = leadSoul(lead, "/code/x");
     expect(soul).toContain("Only real asks become asks: something to do, decide or provide.");
-    expect(soul).toMatch(/is not one: answer it, and don't record it with `ash_dump` or `ash_record`/);
+    expect(soul).toMatch(/is not one: answer it, and don't start a job for it/);
   }
   expect(SECTION_SENTENCES["Before you act"]).toContain("log only real asks");
 });

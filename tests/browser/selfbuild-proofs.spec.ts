@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
-// Self-build proofs (ash-day steps 13-15) in the real app in a browser: hub-dev.html reading the stub Ash OS, the Mono
+// Self-build proofs (ash-day steps 13-15) in the real app in a browser: hub-dev.html reading the app's own local store, the Mono
 // on the stand-in Claude CLI. The tools' app side runs for real (selfBuildProof.ts); only git is stood in for.
 // A browser preview only, not Ash's Mac.
 //   PM_PROOF_SPEC=selfbuild-proofs.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
@@ -17,12 +16,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const dev = <T>(page: Page, code: string, arg?: unknown) =>
@@ -52,9 +45,7 @@ async function open(page: Page) {
       JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }),
     );
   });
-  await page.goto(
-    `/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`,
-  );
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({
     timeout: 60_000,
   });

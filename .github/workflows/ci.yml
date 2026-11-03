@@ -66,6 +66,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
+      # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
+      - name: Hivra layout (Hub flag)
+        run: npx playwright test -c tests/browser/hivra-layout.config.ts
       - run: npm run test:browser
       - name: Upload browser failure traces
         if: failure()

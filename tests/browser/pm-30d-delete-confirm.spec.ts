@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 import { ringContrast } from "./contrastProbe";
 
 // Round 30d proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:): the one shared delete
@@ -10,16 +9,11 @@ import { ringContrast } from "./contrastProbe";
 //   PM_PROOF_SPEC=pm-30d-delete-confirm.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs/on-r47 npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-30d";
-let stub: { url: string; close(): Promise<void> };
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 test("deleting a room asks first in the shared confirm; Cancel (and Enter) keep it", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1512, height: 982 });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
   await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });

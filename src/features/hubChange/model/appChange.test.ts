@@ -4,7 +4,6 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { HubCallError } from "../../hub/model/hubTransport";
 import { addMono } from "../../monos/model/mono";
 import { resetPageActionsForTest, setPageActionsHost } from "../../pages/model/pageActions";
 import { APP_CHANGE_NOTE, hubLeadMono, sendToHubLead } from "./appChange";
@@ -13,15 +12,15 @@ import { requestChange } from "./hubChange";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const roster = [{ id: "projects-manager" }];
 const req = { flow: "hub" as const, projectId: "today", monoId: "projects-manager", prompt: "Make the sidebar icons bigger" };
-const failing = (message: string) => ({ call: async () => { throw new HubCallError("error", message); }, openFeed: () => () => undefined });
 
 beforeEach(() => { localStorage.clear(); resetPageActionsForTest(); });
 afterEach(() => vi.restoreAllMocks());
 
 it("a Mono's 'this is a change to the app itself' is its own result, not a turn-down", async () => {
-  const r = await requestChange(req, { roster, transport: failing("Projects Manager says this is a change to the app itself: The sidebar icons are drawn by the app.") });
-  expect(r).toEqual({ status: "app-change", reason: "Projects Manager says this is a change to the app itself: The sidebar icons are drawn by the app." });
-  expect((await requestChange(req, { roster, transport: failing("Projects Manager turned it down: no.") })).status).toBe("turned-down");
+  // The dev stub (Ash OS's preview builds are retired, WP-04): words about a screen's look are a change to the app.
+  const r = await requestChange(req, { roster, stub: true });
+  expect(r).toEqual({ status: "app-change", reason: "Projects Manager says this is a change to the app itself: Example: that's how a screen looks." });
+  expect((await requestChange({ ...req, prompt: "group my chats by week" }, { roster, stub: true })).status).toBe("ready");
 });
 
 it("Send to MonoCode Hub lead puts Ash's words in that Lead's own chat, through the composer's send", async () => {
@@ -61,8 +60,7 @@ it("on screen: the explanation and Send to MonoCode Hub lead instead of a flat n
   addMono({ id: "hub-lead", name: "MonoCode Hub lead", sessionId: "s-hub", mascot: "letter", color: "x", projects: [] });
   const sent: string[] = [];
   setPageActionsHost({ liveQuestion: () => undefined, respond: () => undefined, send: async (id) => { sent.push(id); return true; }, open: () => undefined, openMono: () => undefined });
-  const { tauriHubTransport } = await import("../../hub/model/hubTransport");
-  vi.spyOn(tauriHubTransport, "call").mockRejectedValue(new HubCallError("error", "Projects Manager says this is a change to the app itself: The sidebar icons are drawn by the app."));
+  localStorage.setItem("monocode:hub-change-dev-stub", "1"); // the dev stub: Ash OS's preview builds are retired (WP-04)
   const { HubChangeContent } = await import("../ui/HubChangeView");
   const host = document.createElement("div");
   document.body.append(host);
@@ -77,7 +75,7 @@ it("on screen: the explanation and Send to MonoCode Hub lead instead of a flat n
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
   const card = host.querySelector("[data-hub-change-app-change]")!;
   expect(card.textContent).toContain("This changes the app itself");
-  expect(card.textContent).toContain("The sidebar icons are drawn by the app.");
+  expect(card.textContent).toContain("that's how a screen looks.");
   const send = card.querySelector("[data-hub-change-send-lead]") as HTMLButtonElement;
   expect(send.textContent).toBe("Send to MonoCode Hub lead");
   await act(async () => send.click());

@@ -22,8 +22,8 @@
 //! the file is never deleted. `running.json` beside it names the owner. A second copy shows an alert naming that
 //! owner and exits 75. A database written by a newer build is refused with exit 65 (`session_store.rs`).
 //!
-//! **What a dev copy can't do** ([`Policy`]): talk to the live Ash OS (`hub.rs`: off, or a stub or the read-only
-//! proxy, never port 18767 or the live key), use the daily Keychain names (`hub_keychain.rs`: `monocode-hub-dev:*`
+//! **What a dev copy can't do** ([`Policy`]): import from the live Ash OS (`ash_os_import.rs`: only from a stand-in,
+//! never the live service or its key), use the daily Keychain names (`hub_keychain.rs`: `monocode-hub-dev:*`
 //! only), give Claude Ash's MCP servers, hooks or `~/.claude` (`harness.rs`: one shared
 //! `~/.monocode-hub-dev/claude-config`), or run the orphan reaper, phone access, habits, automations, reminders,
 //! auto-resume, the notification prompt or the quick composer's system-wide shortcut.
@@ -83,7 +83,8 @@ pub enum Kind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
-    /// The live Ash OS on 127.0.0.1:18767 with its real key. A dev copy reaches only a stub or the read-only proxy.
+    /// The one-time import may read the live Ash OS with its real key (`ash_os_import.rs`). A dev copy imports only
+    /// from a stand-in.
     pub live_ash_os: bool,
     /// Keychain items under their own names. A dev copy uses `monocode-hub-dev:*` only.
     pub daily_keychain: bool,
@@ -473,9 +474,10 @@ pub fn real_home() -> Option<PathBuf> {
     Some(PathBuf::from(std::ffi::OsStr::from_bytes(dir.to_bytes())))
 }
 
+/// The user's profile folder from Windows itself (the Profile known folder), whatever HOME or USERPROFILE say.
 #[cfg(not(unix))]
 pub fn real_home() -> Option<PathBuf> {
-    None
+    dirs::home_dir().filter(|home| home.is_absolute())
 }
 
 /// First thing in `run()`. Cocoa ignores HOME: the webview's storage, caches, saved window state and preferences live

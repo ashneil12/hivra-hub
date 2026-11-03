@@ -15,7 +15,6 @@ const assert = require("node:assert/strict");
 const { test } = require("node:test");
 const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
-const http = require("node:http");
 const net = require("node:net");
 const os = require("node:os");
 const path = require("node:path");
@@ -320,30 +319,27 @@ test("the slot's devCsp carries the slot's port, not 1420, and leaves every othe
 
 // ---- the environment ----------------------------------------------------------------------------------------------------------
 
-test("the dev environment shares the Rust build cache and points Ash OS only at this slot's own server", async (t) => {
+test("the dev environment shares the Rust build cache and drops what an enclosing shell set for another copy", async (t) => {
   const { devEnvironment } = await load("hub-dev.mjs");
   const home = tempDir(t);
   const inherited = {
     PATH: "/usr/bin",
-    MONOCODE_HUB_PORT: "18767",
-    MONOCODE_HUB_TOKEN_FILE: path.join(home, ".local/share/exo-cc-studio/token"),
+    MONOCODE_HUB_REPO: "/Users/ash/Projects/monocode-hub",
+    MONOCODE_HUB_BACKGROUND: "1",
     MONOCODE_VITE_PORT: "1450",
     TAURI_CONFIG: '{"identifier":"com.ash.monocode-hub"}',
     TAURI_ENV_DEBUG: "true",
   };
-  const off = devEnvironment({ slot: "a", hub: null, home, env: inherited });
+  const off = devEnvironment({ slot: "a", home, env: inherited });
   assert.equal(off.CARGO_BUILD_BUILD_DIR, path.join(home, "Library/Caches/monocode-hub/cargo-build"));
   assert.equal(off.MONOCODE_DEV_APP_NAME, "MonoCode Hub Dev a");
-  for (const key of ["MONOCODE_HUB_PORT", "MONOCODE_HUB_TOKEN_FILE", "MONOCODE_VITE_PORT", "TAURI_CONFIG", "TAURI_ENV_DEBUG"])
+  for (const key of ["MONOCODE_HUB_REPO", "MONOCODE_HUB_BACKGROUND", "MONOCODE_VITE_PORT", "TAURI_CONFIG", "TAURI_ENV_DEBUG"])
     assert.equal(off[key], undefined, key);
   assert.equal(off.PATH, "/usr/bin");
-  const on = devEnvironment({ slot: "a", hub: { port: 54321, tokenFile: "/t/hub-token" }, home, env: inherited });
-  assert.equal(on.MONOCODE_HUB_PORT, "54321");
-  assert.equal(on.MONOCODE_HUB_TOKEN_FILE, "/t/hub-token");
   // A memory folder for Export comes only from --memory, never from whatever the shell had.
-  const leaked = devEnvironment({ slot: "a", hub: null, home, env: { ...inherited, MONOCODE_HUB_MEMORY_ROOT: "/Users/ash/agent-memory" } });
+  const leaked = devEnvironment({ slot: "a", home, env: { ...inherited, MONOCODE_HUB_MEMORY_ROOT: "/Users/ash/agent-memory" } });
   assert.equal(leaked.MONOCODE_HUB_MEMORY_ROOT, undefined);
-  const asked = devEnvironment({ slot: "a", hub: null, memory: "/tmp/fixture-memory", home, env: inherited });
+  const asked = devEnvironment({ slot: "a", memory: "/tmp/fixture-memory", home, env: inherited });
   assert.equal(asked.MONOCODE_HUB_MEMORY_ROOT, "/tmp/fixture-memory");
   // SH-3: started from a chat inside the daily app, hub:dev's shell carries that chat's app and control credentials.
   const agent = {
@@ -353,7 +349,7 @@ test("the dev environment shares the Rust build cache and points Ash OS only at 
     MONOCODE_CONTROL_TOKEN: "daily-control-grant",
     MONOCODE_APP_ANYTHING_NEW: "x",
   };
-  const fromChat = devEnvironment({ slot: "a", hub: null, home, env: { ...inherited, ...agent } });
+  const fromChat = devEnvironment({ slot: "a", home, env: { ...inherited, ...agent } });
   for (const key of Object.keys(agent)) assert.equal(fromChat[key], undefined, key);
   assert.equal(fromChat.PATH, "/usr/bin");
 });
@@ -369,92 +365,14 @@ test("--print shows the plan and changes nothing; bad options are refused", (t) 
   assert.equal(plan.slot, "hub-print-check");
   assert.equal(plan.identifier, `${DEV_PREFIX}hub-print-check`);
   assert.ok(plan.dataDir.startsWith(path.join(home, "Library/Application Support/")));
-  assert.equal(plan.hub, "stub");
+  assert.equal(plan.hub, undefined, "no Ash OS stand-in any more (WP-04)");
   assert.deepEqual(fs.readdirSync(home), [], "nothing written");
   const bad = spawnSync(process.execPath, [path.join(__dirname, "hub-dev.mjs"), "--print", "--hub", "daily"], {
     env: { ...process.env, HOME: home },
     encoding: "utf8",
   });
   assert.notEqual(bad.status, 0);
-  assert.match(bad.stderr, /--hub must be one of stub, live, off/);
-});
-
-// ---- the Ash OS bridge -----------------------------------------------------------------------------------------------------------
-
-test("the read-only proxy answers only the dev copy's token, adds the live key itself and refuses writes", async (t) => {
-  const { startLiveProxy } = await load("hub-live-proxy.mjs");
-  const dir = tempDir(t);
-  const keyFile = path.join(dir, "live-key");
-  fs.writeFileSync(keyFile, "the-live-key\n");
-  const seen = [];
-  const upstream = http.createServer((req, res) => {
-    seen.push({ url: req.url, auth: req.headers.authorization });
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end('{"ok":true,"result":[]}');
-  });
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
-  const clientTokenFile = path.join(dir, "slot/hub-token");
-  const proxy = await startLiveProxy({ port: 0, servicePort: upstream.address().port, keyFile, clientTokenFile });
-  t.after(() => proxy.close());
-
-  const token = fs.readFileSync(clientTokenFile, "utf8");
-  assert.ok(token.length >= 32 && token !== "the-live-key");
-  assert.equal(fs.statSync(clientTokenFile).mode & 0o777, 0o600);
-  const call = (name, headers = {}) =>
-    fetch(`${proxy.url}/api/ash-hub-${name}`, { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: "{}" });
-
-  assert.equal((await call("needs")).status, 401, "no token");
-  assert.equal((await call("needs", { Authorization: "Bearer wrong" })).status, 401, "wrong token");
-  assert.equal((await call("needs", { Authorization: "Bearer the-live-key" })).status, 401, "the live key is not this proxy's token");
-  assert.equal((await call("needs", { Authorization: `Bearer ${token}`, Origin: "http://localhost:1460" })).status, 401, "no browser in this mode");
-  assert.equal(seen.length, 0, "nothing reached Ash OS");
-
-  const ok = await call("needs", { Authorization: `Bearer ${token}` });
-  assert.equal(ok.status, 200);
-  assert.deepEqual(seen, [{ url: "/api/ash-hub-needs", auth: "Bearer the-live-key" }], "forwarded with the live key, never the client's");
-  assert.equal((await call("seen", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
-  assert.equal((await call("activity", { Authorization: `Bearer ${token}` })).status, 403, "read-only");
-  assert.equal(seen.length, 1);
-  // Pages, the Today board and the change history are reads (Today draws the real board); building, keeping, applying
-  // and making a project are writes and stay refused.
-  for (const read of ["pages", "layout", "changes"]) assert.equal((await call(read, { Authorization: `Bearer ${token}` })).status, 200, read);
-  for (const write of ["build-page", "page-update", "page-remove", "change-preview", "change-apply", "change-undo", "project-create", "project-rename", "project-archive"])
-    assert.equal((await call(write, { Authorization: `Bearer ${token}` })).status, 403, `${write} is a write`);
-  assert.equal(seen.length, 4);
-  await assert.rejects(startLiveProxy({ port: 0, keyFile, clientTokenFile: keyFile }), /can't be the live key/);
-});
-
-test("without a client token the proxy still serves the browser dev page's local origins only", async (t) => {
-  const { startLiveProxy } = await load("hub-live-proxy.mjs");
-  const dir = tempDir(t);
-  const keyFile = path.join(dir, "live-key");
-  fs.writeFileSync(keyFile, "k");
-  const upstream = http.createServer((_req, res) => res.end('{"ok":true}'));
-  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
-  t.after(() => upstream.close());
-  const proxy = await startLiveProxy({ port: 0, servicePort: upstream.address().port, keyFile });
-  t.after(() => proxy.close());
-  const from = (origin) => fetch(`${proxy.url}/api/ash-hub-projects`, { method: "POST", headers: { Origin: origin }, body: "{}" });
-  assert.equal((await from("http://localhost:1460")).status, 200);
-  assert.equal((await from("https://example.com")).status, 403);
-});
-
-test("the stub bridge hub:dev starts writes a throwaway token for MONOCODE_HUB_TOKEN_FILE and answers with it", async (t) => {
-  const { startHubBridge } = await load("hub-dev.mjs");
-  const dir = tempDir(t);
-  const tokenFile = path.join(dir, "slots/a/hub-token");
-  const bridge = await startHubBridge("stub", tokenFile);
-  t.after(() => bridge.close());
-  const token = fs.readFileSync(tokenFile, "utf8");
-  assert.equal(fs.statSync(tokenFile).mode & 0o777, 0o600);
-  const answer = await fetch(`http://127.0.0.1:${bridge.port}/api/ash-hub-projects`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: "{}",
-  });
-  assert.equal(answer.status, 200);
-  assert.equal(await startHubBridge("off", tokenFile), null);
+  assert.match(bad.stderr, /--hub is gone/);
 });
 
 // ---- stopping -----------------------------------------------------------------------------------------------------------------

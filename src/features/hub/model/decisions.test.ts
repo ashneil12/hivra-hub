@@ -53,14 +53,14 @@ it("a sentence that ends in brackets is left whole; an empty memory reads as emp
   expect(nothing.empty).toBe(true);
 });
 
-it("reads the project's memory through the primer call, and says so plainly when Ash OS can't answer", async () => {
+it("reads the project's memory through the primer call, and gives nothing when it can't answer", async () => {
   const seen: unknown[] = [];
   const call = async (action: string, payload: Record<string, unknown>) => {
     seen.push([action, payload]);
     return { project: "hub", text: PRIMER, lines: 6, more: 3, memory_dir: "/Users/ash/agent-memory/hub", global_dir: "/Users/ash/agent-memory/ash" };
   };
   const got = await projectDecisions("hub", { call });
-  expect(seen).toEqual([["ash-hub-memory-primer", { project: "hub" }]]);
+  expect(seen).toEqual([["memory-primer", { project: "hub" }]]);
   expect(got?.lines).toHaveLength(6);
   expect(got?.memoryDir).toBe("/Users/ash/agent-memory/hub");
 

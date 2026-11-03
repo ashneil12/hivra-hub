@@ -110,13 +110,13 @@ test("double delegation: each prompt reaches its role, and the wakes only as the
   const cos = rules.find((rule) => rule.name === "tree-cos-kickoff");
   const delegate = cos.steps.find((step) => step.app === "tasks.delegate");
   assert.equal(delegate.input.lead, TREE_LEAD);
-  const leadBrief = `${context}[MonoCode brief from Chief of Staff]\n\n${delegate.input.brief}\n\nHow: you are this project's Lead.`;
+  const leadBrief = `${context}[MonoCode brief from Chief of Staff]\n\n${SCAFFOLD}${delegate.input.brief}\n\nHow: you are this project's Lead.`;
   assert.equal(pick(leadBrief), "tree-lead-brief");
   assert.equal(pick(leadBrief, ["tree-lead"], { "tree-lead-brief": 1 }), null, "the context's quoted wakes start nothing");
   const lead = rules.find((rule) => rule.name === "tree-lead-brief");
   const askerBrief = lead.steps.find((step) => step.app === "tasks.delegate").input.brief;
   assert.ok(askerBrief.startsWith(ASKER));
-  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${askerBrief}`), "tree-asker");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${SCAFFOLD}${askerBrief}`), "tree-asker");
   // The asker's report quotes its brief: the Lead's chat takes it as a report, never as the asker.
   const report = `[MonoCode report] MonoCode completion notification\n\n{"originalPrompt":"${askerBrief}"}`;
   assert.equal(pick(report, ["tree-lead"]), "tree-lead-report");
@@ -125,7 +125,7 @@ test("double delegation: each prompt reaches its role, and the wakes only as the
   assert.equal(pick(report, ["lead"]), "lead-report", "the first Lead's report rule is unchanged");
   const helper = rules.find((rule) => rule.name === "tree-lead-report").steps.find((step) => step.app === "tasks.delegate");
   assert.ok(helper.input.brief.startsWith(HELPER));
-  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${helper.input.brief}`), "tree-helper");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${SCAFFOLD}${helper.input.brief}`), "tree-helper");
   // The question wake, as delegationQuestions.ts writes it, and the Lead's answer filled from its payload.
   const wake = `[MonoCode question] MonoCode notification: task t-9 is blocked on a question.\n\n${JSON.stringify({
     taskId: "t-9",
@@ -164,7 +164,7 @@ test("restart durability: goal workers, the Lead's waiting briefs and the recove
   assert.deepEqual(delegated.slice(0, 2).map((input) => input.goal), [goalA, goalB]);
   assert.equal(goalA, "VERIFY-GOAL-A run r1: the transcript says GOAL-A-DONE");
   // A worker's prompt is the brief agentAppTasks.briefPrompt writes, then "/goal <goal>" right behind it.
-  const workerBrief = (input) => `[MonoCode brief from Chief of Staff]\n\n${input.brief}\n\nDone when: ${input.goal}`;
+  const workerBrief = (input) => `[MonoCode brief from Chief of Staff]\n\n${SCAFFOLD}${input.brief}\n\nDone when: ${input.goal}`;
   assert.equal(pick(workerBrief(delegated[0])), "durable-goal-a");
   assert.equal(pick(`/goal ${goalA}`, ["goal-a"]), "durable-goal-a-set");
   assert.equal(pick(`/goal ${goalA}`, ["goal-a"], { "durable-goal-a-set": 1 }), "durable-goal-a-again", "a second /goal in A's conversation is counted");
@@ -182,7 +182,7 @@ test("restart durability: goal workers, the Lead's waiting briefs and the recove
   // The Verify lead's briefs: 1 holds it busy, 2 and 3 wait behind it; a waiting brief is never taken for its resume.
   const leadBriefs = delegated
     .filter((input) => input.lead === TREE_LEAD)
-    .map((input) => `${context}[MonoCode brief from Chief of Staff]\n\n${input.brief}\n\nHow: you are this project's Lead.`);
+    .map((input) => `${context}[MonoCode brief from Chief of Staff]\n\n${SCAFFOLD}${input.brief}\n\nHow: you are this project's Lead.`);
   assert.equal(leadBriefs.length, 3);
   assert.equal(pick(leadBriefs[0], ["tree-lead"]), "durable-lead-1");
   assert.equal(pick(leadBriefs[1], ["tree-lead", "durable-lead"]), "durable-lead-2");
@@ -212,11 +212,11 @@ test("coding with a Lead: Ash's messages, the workers' reports and the report re
   assert.equal(pick(report("Both are back. Writing the final report."), cosTags), "flow-cos-other-report", "a cut-off report is caught, not taken for the full one");
   // The Verify lead: its brief, then its workers' reports, Ash's messages (steered or not) and the report request.
   const leadTags = ["tree-lead", "durable-lead", "flow-lead"];
-  assert.equal(pick(`${context}[MonoCode brief from Chief of Staff]\n\n${leadBrief.brief}`, ["tree-lead", "durable-lead"]), "flow-lead-brief");
+  assert.equal(pick(`${context}[MonoCode brief from Chief of Staff]\n\n${SCAFFOLD}${leadBrief.brief}`, ["tree-lead", "durable-lead"]), "flow-lead-brief");
   const lead = rules.find((rule) => rule.name === "flow-lead-brief");
   const [api, ui] = lead.steps.filter((step) => step.app === "tasks.delegate").map((step) => step.input);
-  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${api.brief}`), "flow-api");
-  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${ui.brief}`), "flow-ui");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${SCAFFOLD}${api.brief}`), "flow-api");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${SCAFFOLD}${ui.brief}`), "flow-ui");
   assert.ok(api.brief.startsWith(FLOW_API) && ui.brief.startsWith(FLOW_UI) && leadBrief.brief.startsWith(FLOW_BRIEF));
   assert.equal(pick(report("FLOW-API-DONE run r1"), leadTags), "flow-lead-api-report");
   assert.equal(pick(report("FLOW-UI-DONE run r1"), leadTags), "flow-lead-ui-report");
@@ -308,7 +308,7 @@ test("the coding team: Ash's new chat, its worker and the report reach their own
   assert.ok(call.input.brief.startsWith(CT_WORKER));
   assert.equal(call.save, "ct-task");
   // Its worker's brief, signed by the coding team, with its worker rules before the finish line.
-  assert.equal(pick(`[MonoCode brief from Verify coding team]\n\n${CT_WORKER} run r1: check the verify widget.\n\n<worker_rules>\n</worker_rules>`), "ct-worker");
+  assert.equal(pick(`[MonoCode brief from Verify coding team]\n\n${SCAFFOLD}${CT_WORKER} run r1: check the verify widget.\n\n<worker_rules>\n</worker_rules>`), "ct-worker");
   // Its report comes back to the chat; another chat's report never takes the coding team's rule.
   assert.equal(pick("[MonoCode report] MonoCode completion notification: CT-WORKER-DONE run r1", ["ct-chat"]), "ct-report");
   assert.equal(pick("[MonoCode report] done", ["flow-cos"])?.startsWith("ct") ?? false, false);
@@ -337,11 +337,11 @@ test("teams: the new Mono's message, its brief, the Lead's worker, its own worke
   assert.ok(calls[2].input.brief.startsWith(MT_OWN));
   // The Lead's chat carries every earlier phase's tag: the brief still reaches its own rule.
   const leadTags = ["tree-lead", "durable-lead", "flow-lead"];
-  assert.equal(pick(`${context}[MonoCode brief from ${MT_MONO}]\n\n${calls[1].input.brief}\n\nHow: you are this project's Lead.`, leadTags), "mt-lead-brief");
+  assert.equal(pick(`${context}[MonoCode brief from ${MT_MONO}]\n\n${SCAFFOLD}${calls[1].input.brief}\n\nHow: you are this project's Lead.`, leadTags), "mt-lead-brief");
   const lead = rules.find((rule) => rule.name === "mt-lead-brief");
   assert.ok(lead.steps.find((step) => step.app === "tasks.delegate").input.brief.startsWith(MT_LEAD_WORKER));
-  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${MT_LEAD_WORKER} run r1: fix the widget copy.\n\n<worker_rules>\n</worker_rules>`), "mt-lead-worker");
-  assert.equal(pick(`[MonoCode brief from ${MT_MONO}]\n\n${calls[2].input.brief}\n\n<worker_rules>\n</worker_rules>`), "mt-own");
+  assert.equal(pick(`[MonoCode brief from Verify lead]\n\n${SCAFFOLD}${MT_LEAD_WORKER} run r1: fix the widget copy.\n\n<worker_rules>\n</worker_rules>`), "mt-lead-worker");
+  assert.equal(pick(`[MonoCode brief from ${MT_MONO}]\n\n${SCAFFOLD}${calls[2].input.brief}\n\n<worker_rules>\n</worker_rules>`), "mt-own");
   // Its own worker's report reaches the Mono; the Lead's worker's report reaches the Lead (whatever its tags), and the
   // Lead's report (which quotes its worker's) reaches the Mono.
   assert.equal(pick("[MonoCode report] MonoCode completion notification: MT-OWN-DONE run r1", ["mt-mono"]), "mt-mono-own-report");
@@ -493,6 +493,9 @@ setInterval(() => {}, 1000);
     assert.equal(alive(sleeper), false, `${signal}: what it started is stopped`);
   }
 });
+
+// Hivra WP-10: every brief comes from the template (src/features/firstmate/model/brief.ts); the spec follows "## Spec".
+const SCAFFOLD = "## Isolation check\nYou work in a checkout of your own.\n\n## Intent\nAsh asked for this.\n\n## Spec\n";
 
 test("a verify-live result says it is a wiring check, never a behaviour pass", () => {
   const passed = wiringScope(verdictOf([{ status: "pass" }]));

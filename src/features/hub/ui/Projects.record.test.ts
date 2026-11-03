@@ -1,12 +1,11 @@
 // @vitest-environment happy-dom
-// Projects through Ash OS, against the stub's project calls over real HTTP (scripts/hub-stub-studio.mjs): New project's
-// Create (nothing is made before it; the project, its folder at ~/Projects/<id>, its Lead), rename, the shape picker
-// and taking a project off the hub with Undo. The stub makes nothing on disk: its folders are invented paths.
+// Projects in the app's own local store (WP-04; src/dev/hubTestTransport.ts): New project's Create (nothing is made
+// before it; the project, its folder at ~/Projects/<id>, its Lead), rename, the shape picker and taking a project off
+// the hub with Undo. Nothing is made on disk here: the folder command answers an invented path.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { startStub, type Stub } from "../../../../scripts/hub-stub-server.mjs";
-import { httpTransport } from "../../../dev/hubTestTransport";
+import { localTestHub, type TestHub } from "../../../dev/hubTestTransport";
 import { findMono } from "../../monos/model/mono";
 import { setHubDataSource } from "../model/hubData";
 import { leadFor } from "../model/hubLeads";
@@ -21,17 +20,22 @@ import { ProjectMenu, RemoveFromHub } from "./ProjectMenu";
 import { ProjectStrip } from "./ProjectStrip";
 import { HubProjectItems } from "./HubProjectItems";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => { throw new Error("no native side in this test"); }) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args?: { id?: string }) => {
+    if (command === "plugin:hub|local_hub_make_folder") return `/Users/example/Projects/${args?.id}`;
+    throw new Error("no native side in this test");
+  }),
+}));
 
 const FAST = { coalesceMs: 5, minGapMs: 0, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 };
-let stub: Stub;
+let t: TestHub;
 let store: HubStore;
 let root: Root;
 let container: HTMLElement;
 
 async function until(read: () => unknown, what: string, ms = 4000) {
   const end = Date.now() + ms;
-  while (!read()) {
+  while (!(await read())) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}\n${container.textContent}`);
     await act(async () => {
       await new Promise((r) => setTimeout(r, 15));
@@ -43,7 +47,8 @@ const q = (s: string) => container.querySelector(s) as HTMLElement | null;
 const dq = (s: string) => document.querySelector(s) as HTMLElement | null;
 const strip = () => createElement(ProjectStrip, { selection: { project: "today", item: "inbox" }, onPickProject: () => undefined, onCreateProject: () => undefined });
 const stripLabels = () => [...container.querySelectorAll("[data-hub-strip] button span.truncate")].map((s) => s.textContent);
-const calls = (name: string) => stub.calls.filter((c) => c.path === `/api/ash-hub-${name}`).length;
+const calls = (name: string) => t.calls.filter((a) => a === name).length;
+const kept = async () => (await t.state()).projects;
 const project = (id: string) => store.getSnapshot().projects.find((p) => p.id === id)!;
 function type(el: HTMLInputElement, value: string) {
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
@@ -57,8 +62,8 @@ beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
   resetNameMoveForTest();
-  stub = await startStub();
-  store = new HubStore({ transport: httpTransport(() => stub.url, () => stub.token), ...FAST });
+  t = await localTestHub();
+  store = new HubStore({ transport: t.transport, ...FAST });
   setHubDataSource(createLiveHubData(store), store);
   container = document.createElement("div");
   document.body.append(container);
@@ -72,7 +77,6 @@ afterEach(async () => {
   await new Promise((r) => setTimeout(r, 20));
   store.stop();
   setHubDataSource(undefined);
-  await stub.close();
 });
 
 /** Chief of Staff already proposed it: the preview card shows (the interview itself: projectDraft.test.ts). */
@@ -114,22 +118,22 @@ describe("New project", () => {
     expect(calls("project-create")).toBe(0);
   });
 
-  it("Create makes the project in Ash OS, seeds its Lead, joins the strip and opens it", async () => {
+  it("Create makes the project in the local store, seeds its Lead, joins the strip and opens it", async () => {
     answered("Moonrise Farm");
     act(() => root.render(createElement("div", null, strip(), createElement(NewProjectView))));
     await until(() => q("[data-hub-new-project-preview]"), "preview card");
     act(() => q('[data-hub-new-project-shape="heart"]')!.click());
     await act(async () => q("[data-hub-create-project]")!.click());
-    await until(() => stub.state.projects.some((p) => p.id === "moonrise-farm"), "made in Ash OS");
-    expect(stub.state.projects.find((p) => p.id === "moonrise-farm")).toMatchObject({
+    await until(async () => (await kept()).some((p) => p.id === "moonrise-farm"), "made");
+    expect((await kept()).find((p) => p.id === "moonrise-farm")).toMatchObject({
       name: "Moonrise Farm", folder: "/Users/example/Projects/moonrise-farm", iconShape: "heart",
     });
     await until(() => stripLabels().includes("Moonrise"), "on the strip");
     expect(stripLabels().slice(-1)).toEqual(["Moonrise"]);
-    // Its Lead: a Mono of its own, tied to the folder, registered with Ash OS as the Lead.
+    // Its Lead: a Mono of its own, tied to the folder, recorded as the Lead.
     expect(findMono("moonrise-farm-lead")).toMatchObject({ name: "Moonrise lead", projects: ["/Users/example/Projects/moonrise-farm"] });
     expect(leadFor("moonrise-farm-lead")?.projectId).toBe("moonrise-farm");
-    await until(() => stub.state.memberships.some((m) => m.monoId === "moonrise-farm-lead" && m.role === "lead"), "registered as Lead");
+    await until(async () => (await t.state()).memberships.some((m) => m.monoId === "moonrise-farm-lead" && m.role === "lead"), "registered as Lead");
     expect(templateOf("moonrise-farm").id).toBe("product-saas");
     expect(projectDraft()).toBeNull();
     expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "moonrise-farm", item: "inbox" });
@@ -141,8 +145,8 @@ describe("New project", () => {
     await until(() => q("[data-hub-new-project-preview]"), "preview card");
     await act(async () => q("[data-hub-create-project]")!.click());
     await until(() => q("[data-hub-new-project-problem]"), "refusal");
-    expect(q("[data-hub-new-project-problem]")?.textContent).toBe("project hivra already exists");
-    expect(stub.state.projects).toHaveLength(4);
+    expect(q("[data-hub-new-project-problem]")?.textContent).toBe("There is already a project called Hivra.");
+    expect(await kept()).toHaveLength(4);
     expect(projectDraft()?.name).toBe("Hivra"); // the chat is kept
 
     act(() => root.unmount());
@@ -152,13 +156,13 @@ describe("New project", () => {
     await until(() => q("[data-hub-new-project-preview]"), "preview card");
     act(() => (q('[data-hub-new-project-code-choice="none"]') as HTMLInputElement).click());
     await act(async () => q("[data-hub-create-project]")!.click());
-    await until(() => stub.state.projects.some((p) => p.id === "quiet-notes"), "made");
-    expect(stub.state.projects.find((p) => p.id === "quiet-notes")?.folder).toBeNull();
+    await until(async () => (await kept()).some((p) => p.id === "quiet-notes"), "made");
+    expect((await kept()).find((p) => p.id === "quiet-notes")?.folder).toBeNull();
   });
 });
 
 describe("a project's menu", () => {
-  it("Rename goes to Ash OS and the strip follows; a name another project has is refused in place", async () => {
+  it("Rename goes to the local store and the strip follows; a name another project has is refused in place", async () => {
     act(() => root.render(createElement("div", null, strip(), createElement(ProjectMenu, { project: project("nibbii"), anchor: { x: 10, y: 10 }, onClose: () => undefined }))));
     act(() => (document.querySelector('[data-project-menu-item="Rename"]') as HTMLElement).click());
     const input = document.querySelector('[aria-label="Project name"]') as HTMLInputElement;
@@ -168,17 +172,17 @@ describe("a project's menu", () => {
     expect(document.querySelector("[data-project-rename-problem]")?.textContent).toBe('"Hivra" already means Hivra (hivra); pick another name');
     type(input, "Nibbii Pet");
     await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    await until(() => stub.state.projects.find((p) => p.id === "nibbii")?.name === "Nibbii Pet", "renamed in Ash OS");
+    await until(async () => (await kept()).find((p) => p.id === "nibbii")?.name === "Nibbii Pet", "renamed");
     await until(() => project("nibbii").name === "Nibbii Pet", "read back");
   });
 
-  it("the shape picker offers Ash OS's fourteen shapes (no ghost) and sets the chosen one there", async () => {
+  it("the shape picker offers the fourteen shapes (no ghost) and sets the chosen one there", async () => {
     act(() => root.render(createElement("div", null, strip(), createElement(ProjectMenu, { project: project("hivra"), anchor: { x: 10, y: 10 }, onClose: () => undefined }))));
     act(() => (document.querySelector('[data-project-menu-item="Change icon"]') as HTMLElement).click());
     const choices = [...document.querySelectorAll("[data-project-shape-choice]")].map((b) => b.getAttribute("data-project-shape-choice"));
     expect(choices).toEqual(["gamepad", "sparkles", "palette", "gauge", "folder", "code", "rocket", "chart", "briefcase", "megaphone", "book", "heart", "globe", "bolt"]);
     await act(async () => (document.querySelector('[data-project-shape-choice="megaphone"]') as HTMLElement).click());
-    await until(() => stub.state.projects.find((p) => p.id === "hivra")?.iconShape === "megaphone", "shape in Ash OS");
+    await until(async () => (await kept()).find((p) => p.id === "hivra")?.iconShape === "megaphone", "shape kept");
     await until(() => q('button[aria-label^="Hivra"] [data-project-shape="megaphone"]'), "strip shows the shape");
   });
 
@@ -206,24 +210,23 @@ describe("a project's menu", () => {
     expect(JSON.parse(localStorage.getItem("monocode:hub-project-prefs")!).icons.hivra).toMatchObject({ kind: "image", src: "asset://localhost/hub-hivra-logo.png" });
   });
 
-  it("Remove from hub says what stays open, archives it in Ash OS, and Undo brings it back", async () => {
-    stub.addNeed({ id: "qx", projectId: "nibbii", title: "Example: pick a name" });
+  it("Remove from hub says nothing is deleted, archives it, and Undo brings it back", async () => {
     act(() => root.render(createElement("div", null, strip(), createElement(RemoveFromHub, { project: project("nibbii"), anchor: { x: 10, y: 10 }, onClose: () => undefined }))));
     await until(() => document.querySelector("[data-remove-open]"), "open counts");
-    expect(document.querySelector("[data-remove-open]")?.textContent).toBe("It has 1 open ask and 1 thing waiting on you. Nothing is deleted, and you can bring it back.");
-    expect(stub.state.projects.find((p) => p.id === "nibbii")?.archived).toBeFalsy(); // asking changed nothing
+    expect(document.querySelector("[data-remove-open]")?.textContent).toContain("Nothing is deleted, and you can bring it back.");
+    expect((await kept()).find((p) => p.id === "nibbii")?.archived).toBeFalsy(); // asking changed nothing
     await act(async () => (document.querySelector("[data-project-remove]") as HTMLElement).click());
-    await until(() => stub.state.projects.find((p) => p.id === "nibbii")?.archived === true, "archived");
+    await until(async () => (await kept()).find((p) => p.id === "nibbii")?.archived === true, "archived");
     await until(() => !stripLabels().includes("Nibbii"), "off the strip");
     await act(async () => pendingUndo()!.undo());
     await until(() => stripLabels().includes("Nibbii"), "back on the strip");
-    expect(stub.state.projects.find((p) => p.id === "nibbii")?.archived).toBe(false);
+    expect((await kept()).find((p) => p.id === "nibbii")?.archived).toBe(false);
   });
 
-  it("names Ash gave projects on this Mac before are sent to Ash OS once, then dropped here", async () => {
+  it("names Ash gave projects on this Mac before are kept in the local store once, then dropped here", async () => {
     localStorage.setItem("monocode:hub-project-prefs", JSON.stringify({ names: { "vg-game": "EXO game", hivra: "Nibbii" }, order: [], hidden: [], icons: {} }));
     expect(await moveLocalNamesToAshOs()).toBe(1);
-    expect(stub.state.projects.find((p) => p.id === "vg-game")?.name).toBe("EXO game");
+    expect((await kept()).find((p) => p.id === "vg-game")?.name).toBe("EXO game");
     // A clash stays local (and still shows).
     expect(JSON.parse(localStorage.getItem("monocode:hub-project-prefs")!).names).toEqual({ hivra: "Nibbii" });
     expect(await moveLocalNamesToAshOs()).toBe(0);

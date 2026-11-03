@@ -1,11 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Teams, not sub-chats (Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it
 // itself or pick it up with the coding team. IF they do need to do work ... something like coding team should be created
-// for that mono"). The real app in a browser (hub-dev.html reading the stub through its real transport), with
+// for that mono"). The real app in a browser (hub-dev.html reading the local store through its real transport), with
 // delegation rows as delegations.rs returns them and chats as session_list_by_project does:
 // - the Monos rail lists people: nothing extra for a Mono with nothing out, on hover too; no sub-chats under any Mono, a
 //   Lead's included; one line says what each has out ("2 working · 1 stuck", red or amber), and Open team on the row;
@@ -26,12 +25,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 const EXO = "/Users/example/Projects/vg-game";
@@ -111,7 +104,7 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
     },
     { team: TEAM },
   );
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(rail(page)).toBeVisible({ timeout: 60_000 });
   await expect(railRow(page, "EXO lead")).toBeVisible({ timeout: 30_000 });
 

@@ -541,23 +541,28 @@ mod tests {
 
     #[test]
     fn the_daily_app_lives_in_agent_memory_and_a_dev_copy_never_does() {
-        let home = Path::new("/Users/ash");
-        let data = Path::new("/Users/ash/Library/Application Support/com.ash.monocode-hub");
+        // Absolute on every platform (`/Users/ash` isn't absolute on Windows).
+        let root = std::env::temp_dir();
+        let home = root.join("Users/ash");
+        let home = home.as_path();
+        let data = home.join("Library/Application Support/com.ash.monocode-hub");
+        let data = data.as_path();
         assert_eq!(
             choose_root(true, Some(home), None, data),
-            PathBuf::from("/Users/ash/agent-memory/monos")
+            home.join("agent-memory").join("monos")
         );
-        let dev = Path::new("/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x");
+        let dev = home.join("Library/Application Support/com.ash.monocode-hub.dev.x");
+        let dev = dev.as_path();
         assert_eq!(choose_root(false, Some(home), None, dev), dev.join("monos"));
         // The bench names a throwaway home; a relative one is ignored.
-        let throwaway = Path::new("/tmp/bench/monos");
+        let throwaway = root.join("bench/monos");
         assert_eq!(
-            choose_root(false, Some(home), Some(throwaway), dev),
+            choose_root(false, Some(home), Some(&throwaway), dev),
             throwaway
         );
         assert_eq!(
             choose_root(true, Some(home), Some(Path::new("relative")), data),
-            PathBuf::from("/Users/ash/agent-memory/monos")
+            home.join("agent-memory").join("monos")
         );
         assert_eq!(choose_root(true, None, None, data), data.join("monos"));
     }
@@ -594,8 +599,10 @@ mod tests {
             .unwrap()
             .flatten()
             .all(|e| !e.file_name().to_string_lossy().starts_with(".migrating")));
-        let saved = std::fs::read_to_string(home.join(MIGRATION_FILE)).unwrap();
-        assert!(saved.contains(&old.to_string_lossy().into_owned()));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join(MIGRATION_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(saved["from"], old.to_string_lossy().into_owned());
         std::fs::remove_dir_all(data).unwrap();
     }
 

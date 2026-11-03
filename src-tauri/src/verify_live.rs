@@ -73,6 +73,14 @@ pub struct Plan {
     /// The real-Claude bench's action folder (absolute, existing): `inbox/` in, `taken/` and `done/` out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub driver: Option<String>,
+    /// Hub projects this copy's local store starts with (`{id, name, folder}`), added once (WP-04: the bench's projects
+    /// used to come from the Ash OS stub).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub projects: Vec<Value>,
+    /// An absolute path to a JSON list of Ash's messages the bench sends mid-run (`[{id, monoId, prompt, ...}]`);
+    /// the window reads it with [`verify_live_messages`] and sends each once. A missing file is an empty list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<String>,
 }
 
 fn valid_run_id(id: &str) -> bool {
@@ -153,6 +161,24 @@ pub fn parse(text: &str) -> Result<Plan, String> {
             }
         }
     }
+    if plan.projects.len() > 50
+        || plan.projects.iter().any(|project| {
+            !project
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(valid_run_id)
+                || !project.get("name").is_some_and(Value::is_string)
+        })
+    {
+        return Err("verify plan: projects must be at most 50 {id, name, folder?}".into());
+    }
+    if plan
+        .messages
+        .as_ref()
+        .is_some_and(|path| !Path::new(path).is_absolute())
+    {
+        return Err("verify plan: messages must be an absolute path".into());
+    }
     Ok(plan)
 }
 
@@ -214,7 +240,37 @@ pub fn window_info(plan: &Plan) -> Value {
     if plan.deepseek {
         info["deepseek"] = Value::Bool(true);
     }
+    if !plan.projects.is_empty() {
+        info["projects"] = Value::Array(plan.projects.clone());
+    }
     info
+}
+
+const MESSAGES_MAX_BYTES: u64 = 1024 * 1024;
+
+/// The bench's mid-run messages from `path`: a JSON list, empty when the file isn't there yet.
+pub fn messages_from(path: &Path) -> Result<Vec<Value>, String> {
+    match std::fs::metadata(path) {
+        Err(_) => return Ok(Vec::new()),
+        Ok(meta) if meta.len() > MESSAGES_MAX_BYTES => {
+            return Err("verify messages: the file is too large".into())
+        }
+        Ok(_) => {}
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| format!("verify messages: {e}"))?;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Array(list)) => Ok(list.into_iter().filter(Value::is_object).collect()),
+        _ => Err("verify messages: not a JSON list".into()),
+    }
+}
+
+/// The fake-Claude bench: Ash's messages to send mid-run (the plan's `messages` file), or none without one.
+#[tauri::command]
+pub fn verify_live_messages() -> Result<Vec<Value>, String> {
+    match plan().and_then(|plan| plan.messages.as_ref()) {
+        Some(path) => messages_from(Path::new(path)),
+        None => Ok(Vec::new()),
+    }
 }
 
 const ACTION_MAX_BYTES: u64 = 256 * 1024;
@@ -322,6 +378,30 @@ mod tests {
         }
     }
 
+    /// An absolute path to a file named claude on this platform (`/tmp/...` isn't absolute on Windows).
+    fn claude_path() -> String {
+        std::env::temp_dir()
+            .join("run")
+            .join("bin")
+            .join("claude")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// A plan written with `/tmp/run/bin/claude`, with [`claude_path`] in its place.
+    fn with_claude(text: &str) -> String {
+        text.replace(
+            r#""/tmp/run/bin/claude""#,
+            &serde_json::to_string(&claude_path()).unwrap(),
+        )
+    }
+
+    /// `path` as it goes between a JSON string's quotes.
+    fn json_text(path: &Path) -> String {
+        let quoted = serde_json::to_string(&path.to_string_lossy()).unwrap();
+        quoted[1..quoted.len() - 1].to_string()
+    }
+
     #[test]
     fn only_a_dev_copy_under_a_temporary_home_reads_a_plan() {
         let temp = Path::new("/tmp/verify-home");
@@ -333,13 +413,16 @@ mod tests {
 
     #[test]
     fn a_bench_on_the_grok_bridge_says_so_to_the_window() {
-        let plan =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#)
-                .unwrap();
+        let plan = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#,
+        ))
+        .unwrap();
         assert!(plan.grok);
         assert_eq!(window_info(&plan)["grok"], true);
-        let off =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#).unwrap();
+        let off = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#,
+        ))
+        .unwrap();
         assert!(window_info(&off).get("grok").is_none());
         assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#)
             .unwrap_err()
@@ -348,9 +431,9 @@ mod tests {
 
     #[test]
     fn a_bench_on_the_deepseek_bridge_says_so_to_the_window() {
-        let plan = parse(
+        let plan = parse(&with_claude(
             r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","deepseek":true}"#,
-        )
+        ))
         .unwrap();
         assert!(plan.deepseek);
         assert_eq!(window_info(&plan)["deepseek"], true);
@@ -358,28 +441,28 @@ mod tests {
         assert!(parse(r#"{"version":1,"runId":"a","deepseek":true}"#)
             .unwrap_err()
             .contains("deepseek"));
-        assert!(parse(
-            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#
-        )
+        assert!(parse(&with_claude(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#))
         .unwrap_err()
         .contains("pass one"));
     }
 
     #[test]
     fn parses_a_plan_and_refuses_a_bad_one() {
-        let project = std::env::temp_dir();
-        let project = project.to_str().unwrap();
+        // Paths go into the JSON escaped: a Windows path's backslashes aren't JSON escapes.
+        let project = json_text(&std::env::temp_dir());
+        let claude = serde_json::to_string(&claude_path()).unwrap();
         let good = format!(
-            r#"{{"version":1,"runId":"20261019-a1","claudeBinary":"/tmp/run/bin/claude","autoResume":true,
+            r#"{{"version":1,"runId":"20261019-a1","claudeBinary":{claude},"autoResume":true,
                "kickoff":{{"project":"{project}","monoName":"Verify Lead","prompt":"VERIFY-LEAD-KICKOFF"}}}}"#
         );
         let plan = parse(&good).unwrap();
         assert!(plan.auto_resume);
         assert!(!plan.goals);
         assert!(window_info(&plan).get("goals").is_none());
-        let goals =
-            parse(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","goals":true}"#)
-                .unwrap();
+        let goals = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","goals":true}"#,
+        ))
+        .unwrap();
         assert!(goals.goals);
         assert_eq!(window_info(&goals)["goals"], true);
         assert!(window_info(&plan).get("stallMs").is_none());
@@ -447,7 +530,8 @@ mod tests {
         std::fs::create_dir_all(root.join("inbox")).unwrap();
         let driver = root.to_str().unwrap().to_string();
         let plan = parse(&format!(
-            r#"{{"version":1,"runId":"a","driver":"{driver}"}}"#
+            r#"{{"version":1,"runId":"a","driver":"{}"}}"#,
+            json_text(&root)
         ))
         .unwrap();
         assert_eq!(plan.driver.as_deref(), Some(driver.as_str()));
@@ -481,5 +565,35 @@ mod tests {
         assert_eq!(answer["ok"], true);
         assert!(done_into(&root, "../escape", &Value::Null).is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn projects_and_messages_come_from_the_plan() {
+        // An absolute path on every platform ("/tmp/m.json" isn't one on Windows).
+        let messages = std::env::temp_dir().join("m.json");
+        let plan = parse(
+            &serde_json::json!({
+                "version": 1,
+                "runId": "r1",
+                "projects": [{"id": "verify-tree", "name": "Verify tree", "folder": "/tmp/x"}],
+                "messages": messages,
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(window_info(&plan)["projects"][0]["id"], "verify-tree");
+        assert!(parse(r#"{"version":1,"runId":"r1","messages":"rel.json"}"#).is_err());
+        assert!(parse(r#"{"version":1,"runId":"r1","projects":[{"name":"no id"}]}"#).is_err());
+        let dir = std::env::temp_dir().join(format!("verify-messages-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("messages.json");
+        assert!(messages_from(&file).unwrap().is_empty());
+        std::fs::write(&file, r#"[{"id":"m1","monoId":"frank","prompt":"hi"}, 3]"#).unwrap();
+        let list = messages_from(&file).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0]["id"], "m1");
+        std::fs::write(&file, "{}").unwrap();
+        assert!(messages_from(&file).is_err());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

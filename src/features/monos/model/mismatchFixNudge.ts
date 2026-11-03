@@ -50,6 +50,6 @@ export function mismatchFixNudge(chat: Session, nudged: ReadonlySet<string>): Qu
     id: `fix-mismatch-${last.id}`,
     attachments: [],
     waitForIdle: true,
-    text: forUser`${FIX_MISMATCH_PREFIX} From the app: your last reply flagged "${flagged}" and handed nothing out. For each mismatch or Not fixed piece: if the fix is clear from Ash's words, start a worker on it now (delegate_task, a short brief: what to change to match what, the check to run). If it is Ash's call, ask him in one "Needs Ash:" line with your pick. Then one line to him on what is out. This is an app notification, not a new message from Ash.`,
+    text: forUser`${FIX_MISMATCH_PREFIX} From the app: your last reply flagged "${flagged}" and handed nothing out. For each mismatch or Not fixed piece: if the fix is clear from Ash's words, start a worker on it now (delegate_task with intent: Ash's words for it, a short brief: what to change to match what, and goal: the check that proves it). If it is Ash's call, ask him in one "Needs Ash:" line with your pick. Then one line to him on what is out. This is an app notification, not a new message from Ash.`,
   };
 }

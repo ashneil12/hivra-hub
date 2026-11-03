@@ -855,7 +855,7 @@ describe("claude task tools", () => {
 
   it("adds what the extra-arguments seam gives this session to Claude Code's command line, and nothing otherwise", async () => {
     const { setClaudeExtraArgs } = await import("./claudeExtraArgs");
-    const identity = ["--mcp-config", JSON.stringify({ mcpServers: { "ash-os": { command: "py", env: { ASH_MONO_ID: "vg-game-lead", ASH_ROLE: "lead" } } } })];
+    const identity = ["--mcp-config", JSON.stringify({ mcpServers: { memory: { command: "py", env: { ASH_MONO_ID: "vg-game-lead", ASH_ROLE: "lead" } } } })];
     setClaudeExtraArgs((id) => (id === "lead-session" ? identity : []));
     try {
       const before = spawned.length;

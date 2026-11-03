@@ -1,25 +1,18 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
-// - Ash 21 Oct, width: Pages and a project's own Today (G1: its Inbox; a fresh load opens the stub's first project)
+// - Ash 21 Oct, width: Pages and a project's own Today (G1: its Inbox; a fresh load opens the first project)
 //   fill the window at 1280, 1920 and 2560 wide, with modest side padding.
 // - Ash 21 Oct, team: a fresh install's onboarding shows the default team (names kept, a role line under each) and
 //   no pre-load option; nothing of Ash's. Round 20: the team is the four, Critiquito an unticked add-on (pm-20-review).
 //   PM_PROOF_SPEC=pm-19-width-team.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-19";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 async function open(page: Page) {
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
@@ -45,7 +38,7 @@ for (const size of SIZES) {
     fs.mkdirSync(SHOTS, { recursive: true });
     await page.setViewportSize({ width: size.width, height: size.height });
     await open(page);
-    // G1: a fresh load already selects the stub's first project's Inbox — its own Today fills the main column.
+    // G1: a fresh load already selects the first project's Inbox — its own Today fills the main column.
     const today = page.locator("[data-hub-surface-body]").first();
     await expect(today).toBeVisible({ timeout: 30_000 });
     const t = await fill(page, "[data-hub-surface-body]");

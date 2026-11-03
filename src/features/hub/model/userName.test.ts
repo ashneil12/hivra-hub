@@ -60,7 +60,7 @@ describe("a fresh install", () => {
     expect(now["turn:answer"]).toContain("Sam just wrote to you.");
     expect(now["turn:answer"]).toContain("In the room: Sam");
     expect(now.transcript).toMatch(/^>> Sam: hey team/);
-    expect(now["lead:hub-lead"]).toContain("Hub OS project `hub`");
+    expect(now["lead:hub-lead"]).toContain("the lead for MonoCode Hub (project `hub`)");
     expect(now["lead:hub-lead"]).not.toContain("15 Oct"); // Ash's dated quotes are his words, not Sam's
     expect(pronounLeaks(now)).toEqual([]);
     expect(now["lead:hub-lead"]).toContain("answer them at once whenever Sam writes");

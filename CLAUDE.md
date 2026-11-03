@@ -59,16 +59,14 @@ refusal shows an alert and exits:
   names itself in `<data>/running.json`; a second copy alerts with the owner and exits 75;
 - a database written by a newer build is refused (exit 65).
 
-A dev copy can't reach Ash's real things: the Ash OS bridge is off unless `MONOCODE_HUB_PORT` and
-`MONOCODE_HUB_TOKEN_FILE` point at the stub or the read-only proxy (never port 18767 or the live key), Keychain
+A dev copy can't reach Ash's real things: it keeps its hub data (projects, Monos per project, Pages) in its own
+database, its one-time Ash OS import reads only a stand-in a test names, never the live service or its key, Keychain
 names are `monocode-hub-dev:*`, and Claude runs with MCP servers and hooks stripped in
 `~/.monocode-hub-dev/claude-config` (one Claude login for every dev copy; it refuses to start if that folder can't be
 made). The one MCP server it keeps is the app's own delegate tool (`monocode mcp`), exactly as the app writes it: it
 only reaches that copy's own control port. The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
 the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
-only) points it at a stand-in. A proof that needs ash-os tools in a dev copy can opt in to a stand-in that
-only talks to that slot's stub: start it with `VITE_MONOCODE_DEV_ASH_OS` set to the entry
-`node scripts/hub-stub-ash-os-mcp.mjs --entry --url <stub url> --token-file <slot token file>` prints. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
+only) points it at a stand-in. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
 (`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
@@ -108,7 +106,7 @@ receipt).
    for resume, marked with the ship.
 4. **The runner** waits for the app's data-folder lock, backs up `monocode.db*` and `monos/`, renames the old app
    to `ship/<id>/previous.app.off`, moves the new one in and opens it ("trial").
-5. **Trial:** the new build holds auto-resume, habits and automations until its window, database and hub bridge
+5. **Trial:** the new build holds auto-resume, habits and automations until its window and database
    are up, then writes `committed.json`. Not in `running.json` within 30 s, no commit within 120 s, or an early
    exit: the runner stops that verified process, puts the old app and database copy back, and reopens it.
 6. `receipt.json` and `runner.log` in the ship folder say what happened; Today shows it; the shipping Lead's
@@ -163,6 +161,12 @@ jq '.productName="MonoCode Hub" | .identifier="com.ash.monocode-hub"
 npm run hub:build && npm run hub:verify
 ```
 
+Hivra has one layout (WP-03, `src/features/hub/model/hivraLayout.ts`): Classic, fixed wherever the Hub flag is on.
+Upstream's `tests/browser/layout-opt-in.spec.ts` tests the Classic/Focused switch Hivra doesn't have and was deleted
+on purpose: when a merge brings it back (a modify/delete conflict), keep it deleted. Keep upstream's Focused code
+itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the hooks in `appearance.ts` or
+`SettingsView.tsx`.
+
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
@@ -180,8 +184,7 @@ Never hand-build and re-install the app just to look at a frontend change. On th
 is served from vite, so HMR applies it where it stands:
 
 ```bash
-npm run hub:dev                   # this worktree's dev copy (tauri dev + HMR) in its own slot, invented Ash OS data
-npm run hub:dev -- --hub live     # the same, reading the real Ash OS through the read-only proxy
+npm run hub:dev                   # this worktree's dev copy (tauri dev + HMR) in its own slot
 npm run hub:dev -- --seed         # first copy a cleaned backup of the daily chats into the slot (opt-in)
 npm run hub:dev -- --print        # which slot, port and config it would use; changes nothing
 npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
@@ -200,9 +203,7 @@ daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a D
   port through `MONOCODE_VITE_PORT` in its own command.
 - **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
   by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
-- **Ash OS:** the dev copy only talks to a server hub:dev starts on a free port: the stub (`--hub stub`, the default,
-  invented data), the read-only live proxy (`--hub live`), or nothing (`--hub off`). Its token is a throwaway in
-  `~/.monocode-hub-dev/slots/<slot>/`, never the live key.
+- **Hub data:** the dev copy keeps it in its own database, like the daily app (no Ash OS; see "Ash OS is retired").
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
   automations, reminders, orchestration rows, delegation rows, PR watches and every `provider_session_id` are cleared. It refuses the daily folder,
@@ -217,8 +218,8 @@ daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a D
   `npm run hub:check-all && npm run hub:build && npm run hub:ship`. Reserve it for a change that is finished,
   tested and landed.
 
-Use `npm run dev` + a `hub-dev.html` page only for a browse-only look at the Hub's screens (stub or live
-proxy). It has no Rust side, so `hub_call` needs the stub or the live proxy to answer.
+Use `npm run dev` + a `hub-dev.html` page only for a browse-only look at the Hub's screens (`?local` reads the local
+store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has no Rust side.
 - Backup app bundles (`~/Applications/MonoCode-Hub-backup-*`) are throwaway build snapshots. Check the
   identifier before trusting one — at least one was built before the identity fix and carries
   `com.monocode.desktop`.
@@ -275,7 +276,7 @@ packaged release builds.
   note (Needs you) and a waiting Lead hears it failed. A chat whose Claude transcript is gone starts fresh from its
   brief (a "recovered" note) instead of failing every message.
 - **`npm run hub:verify-live`** proves the delegation chain through real restarts with a fake Claude
-  (`scripts/fake-claude.mjs`): a throwaway dev slot under a temporary HOME, the stub, `SIGKILL` between phases,
+  (`scripts/fake-claude.mjs`): a throwaway dev slot under a temporary HOME, its projects and Ash's messages from the plan, `SIGKILL` between phases,
   `evidence/<run>/verdict.json`. `-- --fail-gate` is its negative control and must exit non-zero. It never touches the
   daily app, its data, `~/.claude` or a real Claude login; it runs in the background (no focus) and closes the copy at
   the end. Launch it for a final proof, not to iterate: the unit tests and `claudeFakeCli.test.ts` cover the parts.
@@ -296,6 +297,21 @@ still use the installed agent CLIs; use a test worktree and avoid real external 
 
 The real group and Pages paths use the normal selected Mono session engine. Stub/browser previews prove rendering
 and controlled integration paths only; they do not prove a live provider, authentication or native release.
+
+## Ash OS is retired (WP-04)
+
+Hivra runs with no outside service. The Ash OS bridge (`hub.rs`, every `ash-hub-*` call, the change feed, the
+`ash-os` MCP entry), its stubs, its read-only live proxy and `hub:dev --hub` are gone; the last commit that had them is
+tagged `archive/ash-os-bridge`. What the app still needs lives in its own database (`src-tauri/src/local_hub.rs`,
+table `hub_local_docs`; the webview's shapes in `src/features/hub/model/localHub/`): projects, which Monos work on which
+project, and kept Pages (WP-33 takes Pages over). Being built reads the app's own open delegations; Needs, questions
+and checks are empty until WP-14's decision store (`localHub/decisions.ts` is the seam). On a start after the change
+the app asks Ash OS, read-only (`src-tauri/src/ash_os_import.rs`), and offers once to import its projects, memberships
+and kept Pages. Only a sure answer is kept: no Ash OS on the Mac (no key file, or a dev copy with no stand-in) starts
+clean for good; Ash OS not answering this time decides nothing and the next start tries again. Settings → Export and
+import → "Bring over from Ash OS" runs it again at any time (it only adds). Every hub chat denies `mcp__ash-os`, so
+Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
+only on top of the latest one and every window hears `local-hub://changed`.
 
 ## Export and import (Phase 5, docs/PORTABLE.md)
 

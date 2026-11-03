@@ -15,12 +15,13 @@ fn main() {
         println!("cargo::rustc-link-arg-cdylib=-Wl,--exclude-libs=ALL,--exclude-all-symbols");
     }
     // The hub plugin's commands get their permissions here (capabilities/default.json allows `hub:default`).
+    // WP-04: the Ash OS bridge's commands are gone; the local store and the one-time import took their place.
     let hub = tauri_build::InlinedPlugin::new()
         .commands(&[
-            "hub_call",
-            "hub_events_open",
-            "hub_events_close",
-            "hub_ash_os_mcp",
+            "local_hub_read",
+            "local_hub_write",
+            "local_hub_make_folder",
+            "ash_os_import_fetch",
             "connector_login_store",
             "connector_login_exists",
             "connector_login_delete",

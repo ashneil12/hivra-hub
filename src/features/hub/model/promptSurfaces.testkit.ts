@@ -49,11 +49,11 @@ export function promptSurfaces(): Record<string, string> {
   out.checker = String(checkerRosterEntry().instructions);
   out.checkerRules = forUser(CHECKER_RULES); // as the checker's context reads it (monoFiles.ts)
   const primer = { project: "hub", name: "MonoCode Hub", text: "- Decision one", lines: 1, more: 3, memory_dir: "~/agent-memory/hub" };
-  for (const tools of [true, false])
-    for (const worker of [true, false]) {
-      out[`primer:${tools}:${worker}`] = memoryPrimerBlock("hub", primer, { tools, worker });
-      out[`primer-missing:${tools}:${worker}`] = memoryPrimerBlock("hub", undefined, { tools, worker });
-    }
+  // No chat has memory tools since Ash OS is retired (WP-04): one block per reader.
+  for (const worker of [true, false]) {
+    out[`primer:${worker}`] = memoryPrimerBlock("hub", primer, { worker });
+    out[`primer-missing:${worker}`] = memoryPrimerBlock("hub", undefined, { worker });
+  }
   out.hubNote = hubNote();
   out.codingTeam = codingTeamContext({ projectId: "hub", projectName: "MonoCode Hub", folder: "/work/hub", leadName: "Hub lead" });
   out.noProjects = monoProjectsBrief({ projects: [] });

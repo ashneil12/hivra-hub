@@ -200,6 +200,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "How you run the project": "{name} will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
   "Finishing": "{name} will now prove its own work before calling it done, and ask Ash to look only at very critical work.",
   "Who you are to Ash OS": "{name} will now show up in Ash OS under its own name, and leave development to Claude Code.",
+  "Who you are": "{name} no longer uses Ash OS: it knows itself as its project's Lead and still never answers for Ash.",
   "Developing the hub from inside the hub": "{name} will now build every hub change in its own copy, try it in a dev copy, and reach the daily app only through a ship.",
   // The leadership team
   "Role": "{name}'s one-line role is updated.",

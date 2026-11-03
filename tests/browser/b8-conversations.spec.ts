@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 const SHOTS = process.env.B8_PROOF_DIR ?? "test-results/b8";
 const shot = async (page: Page, name: string) => {
@@ -12,19 +11,13 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 // B8 (Ash, 15 Oct 17:20): "You can't rename a new conversation at all. I don't know if it also renames itself after he
 // gets the topic of the message. In general, pressing "new conversation" also shouldn't immediately create a new
 // conversation. It should take you to the new conversation screen." / "The plus sign, what is it that you can attach
 // anything? Because then usually there's a different variety of media that you might want to use."
-// The real app in WebKit (hub-dev.html reading the stub Ash OS, with the stand-in Claude CLI behind the real Claude
+// The real app in WebKit (hub-dev.html reading the app's own local store, with the stand-in Claude CLI behind the real Claude
 // adapter): EXO's Leadership team. Press New conversation and back out, start one, name it, attach a photo and a file
 // from the + menu, send; the Mono's request carries the photo's bytes and the file's path; rename the older one by
 // double-click; reload and both names and the attachments are still there. Each step is photographed.
@@ -58,7 +51,7 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
   });
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: /^EXO/ }).first().click();
   await page.locator('[data-hub-item="leadership-team"]').click();
@@ -173,7 +166,7 @@ test("Coding team: New session and back leaves no empty chat; double-click renam
     localStorage.setItem("monocode:dev-sessions", JSON.stringify([chat]));
     localStorage.setItem("monocode:coding-team-chats", JSON.stringify({ "b8-save-bug": "vg-game" }));
   }, now);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await page.getByRole("button", { name: /^EXO/ }).first().click();
   await expect(page.locator("[data-coding-team-lead]")).toBeVisible({ timeout: 15_000 });

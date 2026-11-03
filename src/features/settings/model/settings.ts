@@ -14,6 +14,7 @@ import {
   shortcutTokens,
 } from "../../quick-composer/model/quickComposerShortcut";
 import { readFlag, writeFlag } from "./storageFlags";
+import { HIVRA_LAYOUT_HIDDEN_SETTINGS } from "../../hub/model/hivraLayout";
 
 const SECTION_KEY = "monocode.settingsSection";
 
@@ -669,10 +670,12 @@ export const INSET_LAYOUT_HIDDEN_SETTINGS: ReadonlySet<string> = new Set([
   "sidebar-opacity",
   "blur",
   "main-pane-glass",
+  ...HIVRA_LAYOUT_HIDDEN_SETTINGS, // WP-03
 ]);
 export const CLASSIC_LAYOUT_HIDDEN_SETTINGS: ReadonlySet<string> = new Set([
   "workspace-theme",
   "inset-glass",
+  ...HIVRA_LAYOUT_HIDDEN_SETTINGS, // WP-03
 ]);
 
 /** Individual settings first, then whole sections, so a row wins its own name. */

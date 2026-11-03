@@ -1,19 +1,13 @@
-import { plainProviderError } from "../../hub/model/providerError";
-import { liveHubStore } from "../../hub/model/hubData";
-import { HubCallError, tauriHubTransport, toHubError, type HubTransport } from "../../hub/model/hubTransport";
 import { listMonos } from "../../monos/model/mono";
 import { checkBespokePage, type DesignIssue } from "./designCheck";
 import { validatePageSpec, type PageSpec } from "./pageSpec";
 import { stubPageSpec, stubRebuildSpec } from "./stubPages";
 
 /**
- * The seam between Pages and a real Mono build (docs/pages-build-contract.md). The app calls Ash OS through the hub
- * transport with `ash-hub-build-page`; Ash OS runs that Mono on the project's real asks and answers with a PageSpec
- * (plus the record's `pageId`). Only a seated Mono may build: temporary workers are turned away before anything is sent.
- *
- * A build can take longer than one call: the app says how long Ash OS may wait (`wait`, which also stretches the
- * call's own time limit in hub.rs). If the Mono isn't done by then, the answer is "still building", and the same
- * request (Try again) joins the running build or collects the finished page; nothing is built twice.
+ * The seam between Pages and a Mono build (docs/pages-build-contract.md). Building a page through Ash OS is retired
+ * with the bridge (WP-04): a Mono builds a page from its own chat (page_build), and WP-33 turns Pages into panel
+ * plugins. Here the Build and Change buttons say so; the old keyword stub still answers behind its dev flag. Only a
+ * seated Mono may build: temporary workers are turned away before anything else.
  */
 export type BuildPageRequest = { projectId: string; monoId: string; prompt: string };
 /** Rebuild: a kept page changed from Ash's words; `current` is its spec (the dev stub changes it here). */
@@ -36,22 +30,21 @@ export type BuildPageResult =
   | { status: "building"; reason: string }
   | { status: "error"; reason: string };
 
-/** How long Ash OS may wait for a build within one call (it allows up to 40 s; hub.rs adds this to its 15 s). */
-export const BUILD_WAIT_SECONDS = 30;
 /**
  * How long the app keeps collecting one build before it shows "still building" (C3 live 22 Oct: a real page took
  * longer than one 30 s call and needed Try again). While the Mono is at it the app asks again by itself, the same
  * request joining the same build, so Ash never has to press Try again for an ordinary build.
  */
 export const BUILD_TOTAL_SECONDS = 240;
-/** The pause between two collecting calls (each call already waits up to BUILD_WAIT_SECONDS on Ash OS). */
+/** The pause between two collecting calls. */
 export const BUILD_RECHECK_MS = 2_000;
-/** Ash OS's "<Mono> is still building this page/preview. Press Try again…": a wait, not a failure. */
+/** "<Mono> is still building this page/preview. Press Try again…": a wait, not a failure. */
 export function isStillBuilding(message: string): boolean {
   return /\bis still building\b/i.test(message);
 }
 
-export const BUILD_PAGE_ACTION = "ash-hub-build-page";
+/** What the Build button says now that Ash OS doesn't build pages. */
+export const BUILD_MOVED = "Ask the Mono in its chat to build this page: pages aren't built from here any more.";
 export const SEATED_ONLY_PAGES = "Only one of your own Monos can build pages. Temporary workers can't.";
 const DEV_STUB_KEY = "monocode:pages-dev-stub";
 
@@ -69,7 +62,6 @@ export function devStubOn(): boolean {
 }
 
 export type BuildDeps = {
-  transport?: HubTransport;
   roster?: readonly { id: string }[];
   stub?: boolean;
   /** Tests: the clock and the pause between collecting calls. */
@@ -79,8 +71,8 @@ export type BuildDeps = {
 
 /**
  * No cap on how many pages build at once (H8, Ash 21 Oct 20:40: "if you build a page, you build a page ... Why does it
- * need a cap?"). The "3 at once" was only ever a proposed call and was never built here: each build is its own call to
- * Ash OS, nothing queues them, and buildPage.parallel.test.ts keeps it that way.
+ * need a cap?"). The "3 at once" was only ever a proposed call and was never built here: each build is its own call,
+ * nothing queues them, and buildPage.parallel.test.ts keeps it that way.
  */
 export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
   if (!isSeatedMono(req.monoId, deps.roster)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
@@ -89,7 +81,7 @@ export async function buildPage(req: BuildPageRequest, deps: BuildDeps = {}): Pr
 }
 
 /**
- * Rebuild a kept page from Ash's words (Ash OS: `ash-hub-build-page` with its `pageId`). The answer is the page's new
+ * Rebuild a kept page from Ash's words (with its `pageId`). The answer is the page's new
  * version: it waits on the page (`newVersion`) until Ash uses it or throws it away; the page runs as it was until then.
  */
 export async function rebuildPage(req: RebuildPageRequest, deps: BuildDeps = {}): Promise<BuildPageResult> {
@@ -110,29 +102,12 @@ async function build(payload: Record<string, unknown>, stub: () => unknown, deps
   }
 }
 
-async function buildOnce(payload: Record<string, unknown>, stub: () => unknown, deps: BuildDeps): Promise<BuildPageResult> {
-  let raw: unknown;
-  if (deps.stub ?? devStubOn()) raw = stub();
-  else {
-    try {
-      const body = { ...payload, wait: BUILD_WAIT_SECONDS };
-      const store = deps.transport ? undefined : liveHubStore();
-      raw = store ? await store.act(BUILD_PAGE_ACTION, body, payload.pageId ? ["pages"] : []) : await (deps.transport ?? tauriHubTransport).call(BUILD_PAGE_ACTION, body);
-    } catch (e) {
-      const err = e instanceof HubCallError ? e : toHubError(e);
-      if (err.kind === "error" && isStillBuilding(err.message)) return { status: "building", reason: err.message };
-      if (err.kind === "timeout") return { status: "building", reason: "The page is taking a while. Press Try again in a moment to see it." };
-      if (err.isDown || err.kind === "refused") return { status: "not-connected", reason: err.isDown ? "The harness service isn't running, so no Mono can build a page right now." : err.message };
-      if (/turned it down/i.test(err.message) || err.message === SEATED_ONLY_PAGES) return { status: "turned-down", reason: err.message };
-      // Ash OS's refusal ("Only a seated Mono…" before, "Only one of your Monos…" now): shown in the app's plain words (r27c).
-      if (/only (?:a seated mono|one of your monos)/i.test(err.message)) return { status: "turned-down", reason: SEATED_ONLY_PAGES };
-      return { status: "error", reason: plainProviderError(err.message) || "The build didn't go through." };
-    }
-  }
-  return checkBuiltSpec(raw);
+async function buildOnce(_payload: Record<string, unknown>, stub: () => unknown, deps: BuildDeps): Promise<BuildPageResult> {
+  if (!(deps.stub ?? devStubOn())) return { status: "not-connected", reason: BUILD_MOVED };
+  return checkBuiltSpec(stub());
 }
 
-/** A built page as it came back (from Ash OS, or from a Mono's own chat through page_build): checked, then ready. */
+/** A built page as it came back (from a Mono's own chat through page_build): checked, then ready. */
 /** Why a real page with made-up data is turned down: real data, or an honest empty block. */
 export const REAL_DATA_ONLY =
   "Use the project's real data (its board, commits, tickets or memory), or leave the block empty: an empty block shows 'Nothing here yet'. No example or made-up numbers.";
@@ -143,7 +118,7 @@ export function hasMadeUpData(spec: unknown): boolean {
   return /\bExample:|\b(lorem ipsum|placeholder data|sample data|dummy data)\b/i.test(JSON.stringify((spec as { blocks?: unknown }).blocks ?? []));
 }
 
-/** `real`: a Mono's page_build from chat, where made-up data is turned down (Ash OS's build path relays what it gets). */
+/** `real`: a Mono's page_build from chat, where made-up data is turned down. */
 export function checkBuiltSpec(raw: unknown, options: { real?: boolean } = {}): BuildPageResult {
   const r = raw && typeof raw === "object" ? (raw as { pin?: unknown; pageId?: unknown; replaces?: unknown }) : {};
   const extra = {

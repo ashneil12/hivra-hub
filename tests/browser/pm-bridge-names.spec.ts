@@ -1,19 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Rounds 15 and 16: with Claude Code on the Grok bridge, no surface names a Claude model or shows Claude's mark (the
 // chat toolbar's model picker and its menu, the chat card and its hover preview, the tab, the turn header), and the
 // usage chip is gone (its numbers are the Claude plan's). They all read claudeGrokBridge.ts. Also, rail names and the turn header line
 // keep at least 4.5:1 in every state. Example data only. A browser preview, not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-bridge-names";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
 const FOLDER = "/Users/example/Projects/vg-game";
@@ -85,7 +78,7 @@ const shotOf = async (page: Page, name: string, selector: string, pad = 8) => {
 
 async function openChat(page: Page, bridge: boolean, inset = false) {
   await seed(page, bridge, inset);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.getByRole("button", { name: /^EXO/ }).first()).toBeVisible({ timeout: 60_000 });
   await closeOffer(page);
   await page.getByRole("button", { name: /^EXO/ }).first().click();
