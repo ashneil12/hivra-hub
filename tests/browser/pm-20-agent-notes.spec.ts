@@ -15,7 +15,8 @@ test("a single note, a folded group collapsed and expanded", async ({ page }) =>
   const single = page.locator("[data-agent-note]").first();
   await expect(single).toBeVisible({ timeout: 60_000 });
   // Round 21: the brief's line repeats the worker's label, so it is said once.
-  await expect(single).toHaveText('EXO lead messaged Worker "Example: fix the save bug"');
+  // r91: a brief reads "handed a job to" (agentNotes.ts noteVerb).
+  await expect(single).toHaveText('EXO lead handed a job to Worker "Example: fix the save bug"');
   const style = await single.evaluate((el) => {
     const s = getComputedStyle(el);
     return { bg: s.backgroundColor, radius: s.borderRadius, border: s.borderTopWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(s.lineHeight)) };

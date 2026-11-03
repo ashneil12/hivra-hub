@@ -56,8 +56,10 @@ for (const size of SIZES) {
     await page.screenshot({ path: `${SHOTS}/pm-19-today-${size.name}.png` });
 
     await page.getByRole("button", { name: /^Pages/ }).first().click();
-    const newButton = page.locator("[data-pages-new-button]").first();
-    if (await newButton.isVisible().catch(() => false)) await newButton.click();
+    // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
+    // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
+    await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
+    if (await page.locator("[data-pages-list]").count()) await page.locator("[data-pages-new-button]").first().click();
     await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
     await page.getByLabel("Send to a Mono").click();
     await expect(page.locator("[data-block-calendar]").first()).toBeVisible({ timeout: 30_000 });

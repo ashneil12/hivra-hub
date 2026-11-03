@@ -17100,8 +17100,9 @@ function Workspace({
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
-              not prompt for the new one; it stays in Settings → Appearance. */}
-          {IS_HUB_BUNDLE ? null : (
+              not prompt for the new one; it stays in Settings → Appearance.
+              The hub's dev page doesn't either (hubDefaultsOn). */}
+          {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}

@@ -2,11 +2,11 @@
 // sessions model, which would put a cycle under every module that reads the hub selection.
 
 /**
- * The Hub's defaults: the app opens on the hub, the sidebar's Inbox opens the project's Today, and New session goes to
- * an untouched New session tab instead of adding another. They apply in the Hub bundle (VITE_MONOCODE_HUB=1), on the
+ * The Hub's defaults: the app opens on the hub, the sidebar's Inbox opens the project's Today, New session goes to an
+ * untouched New session tab instead of adding another, and no "Try the Focused layout" invitation. They apply in the Hub bundle (VITE_MONOCODE_HUB=1), on the
  * hub's dev page (hub-dev.html sets the flag in browserTauriMock.ts) and wherever the project Leads are made
  * (hubBundle.ts makesProjectLeads). Upstream MonoCode's own build, which its browser specs load, keeps upstream's:
- * its workspace first, Inbox as an app view, and a new tab for each New session.
+ * its workspace first, Inbox as an app view, a new tab for each New session, and the invitation.
  */
 export function hubDefaultsOn(): boolean {
   if (import.meta.env.VITE_MONOCODE_HUB === "1") return true;
