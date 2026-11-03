@@ -263,15 +263,22 @@ mod tests {
 
     #[test]
     fn a_local_server_is_tested_over_its_own_stdio() {
-        // A stand-in MCP server: a shell script that answers initialize and tools/list, and checks its env.
+        // A stand-in MCP server: a script that answers initialize and tools/list, and checks its env. A shell script
+        // here, a batch file on Windows (which can't run `.sh`). `set /p` may take both of the client's next lines at
+        // once from a pipe, so the batch file reads once before its second answer.
         let dir = std::env::temp_dir().join(format!("mc-stdio-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let script = dir.join("fake-mcp.sh");
-        std::fs::write(
-            &script,
+        #[cfg(not(windows))]
+        let (script, text) = (
+            dir.join("fake-mcp.sh"),
             "#!/bin/sh\n[ \"$FAKE_KEY\" = \"KEY_SENTINEL\" ] || exit 3\nread a\necho '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}'\nread b\nread c\necho '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"x\"}]}}'\nsleep 5\n",
-        )
-        .unwrap();
+        );
+        #[cfg(windows)]
+        let (script, text) = (
+            dir.join("fake-mcp.cmd"),
+            "@echo off\r\nif not \"%FAKE_KEY%\"==\"KEY_SENTINEL\" exit /b 3\r\nset /p a=\r\necho {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\r\nset /p b=\r\necho {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[{\"name\":\"x\"}]}}\r\nping -n 6 127.0.0.1 >nul\r\n",
+        );
+        std::fs::write(&script, text).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

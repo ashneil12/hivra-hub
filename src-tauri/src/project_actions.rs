@@ -752,9 +752,13 @@ mod tests {
                 seen.lock().unwrap().push(line.to_string());
             }
         });
-        let action = action(
-            "echo root=$MONOCODE_PROJECT_ROOT; echo tree=$MONOCODE_WORKTREE_PATH; pwd; echo oops >&2; exit 3",
-        );
+        // Actions run under `/bin/sh` here and `cmd` on Windows, so each gets the same script in its own words.
+        #[cfg(not(windows))]
+        let script =
+            "echo root=$MONOCODE_PROJECT_ROOT; echo tree=$MONOCODE_WORKTREE_PATH; pwd; echo oops >&2; exit 3";
+        #[cfg(windows)]
+        let script = "echo root=%MONOCODE_PROJECT_ROOT%& echo tree=%MONOCODE_WORKTREE_PATH%& cd& echo oops>&2& exit 3";
+        let action = action(script);
         let started = runs
             .start(
                 RunRequest {

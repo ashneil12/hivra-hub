@@ -4589,11 +4589,6 @@ pub(crate) fn canonical(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
-/// `path` without Windows' verbatim prefix, when the plain form means the same thing (see [`canonical`]).
-pub(crate) fn plain_path(path: &Path) -> &Path {
-    dunce::simplified(path)
-}
-
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
     let mut cmd = git_cmd_for_args(args);
     let output = cmd
@@ -7566,6 +7561,34 @@ mod tests {
             assert_eq!(location.relative, relative);
         }
         assert_eq!(git_locate_file(&home.0.join("outside.txt")).unwrap(), None);
+    }
+
+    /// WP-02: on Windows `std::fs::canonicalize` gives `\\?\C:\...`, and git can't make a worktree there ("could not
+    /// create leading directories of '//?/C:/...'"). Every folder the app resolves and hands to git goes through
+    /// `canonical`, which git can use.
+    #[test]
+    fn a_resolved_folder_is_one_git_can_make_a_worktree_in() {
+        let home = tmp("canonical-git");
+        let repo = home.0.join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        assert!(init_git_commit(&repo, &[("file.txt", "a\n")]));
+        let resolved = canonical(&home.0).unwrap();
+        assert!(
+            !resolved.to_string_lossy().starts_with(r"\\?\"),
+            "{}",
+            resolved.display()
+        );
+        assert_eq!(
+            std::fs::canonicalize(&resolved).unwrap(),
+            std::fs::canonicalize(&home.0).unwrap()
+        );
+        let tree = resolved.join("tree");
+        git_checked(
+            &canonical(&repo).unwrap(),
+            &["worktree", "add", "-b", "other", tree.to_str().unwrap()],
+        )
+        .unwrap();
+        assert!(tree.join("file.txt").is_file());
     }
 
     #[test]

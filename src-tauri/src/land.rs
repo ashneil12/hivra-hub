@@ -459,6 +459,8 @@ mod tests {
         let project = root.join("tally");
         std::fs::create_dir_all(&project).unwrap();
         sh(&project, &["init", "-q"]);
+        // The test compares bytes: keep a Windows runner's `core.autocrlf=true` from turning them into CRLF.
+        sh(&project, &["config", "core.autocrlf", "false"]);
         sh(&project, &["config", "user.email", "t@example.com"]);
         sh(&project, &["config", "user.name", "t"]);
         std::fs::write(project.join("a.txt"), "one\n").unwrap();
