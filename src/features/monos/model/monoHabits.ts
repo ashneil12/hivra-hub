@@ -7,6 +7,7 @@ import {
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import type { Block, MonoSpawnedSession } from "../../sessions/model/session";
 import { USAGE_LIMIT_RESUME_GRACE_MS } from "../../sessions/model/usageLimit";
+import { withFirstMateContract } from "../../firstmate/model/contract";
 import type { MonoLook } from "./mono";
 import {
   MonoFileConflict,
@@ -376,7 +377,7 @@ export function habitRunPrompt(
             : ""
       }.`
     : " This is its first run.";
-  return `${monoContext(look, files, { soul: true, memory: true })}
+  return withFirstMateContract(`${monoContext(look, files, { soul: true, memory: true })}
 
 <habit_run>
 You are running one of your habits on your own; the user did not just message you, and they will not see this run. It is ${new Date(now).toLocaleString()}.${lastRun}
@@ -385,7 +386,7 @@ Habit: ${habit.name}
 ${habit.instructions.trim()}
 
 Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
-</habit_run>`;
+</habit_run>`);
 }
 
 /** What to post, or nothing when the run chose to stay quiet. */

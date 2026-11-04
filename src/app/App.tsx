@@ -829,6 +829,8 @@ import {
   recordAgentContext,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
+import { withFirstMateContract } from "../features/firstmate/model/contract";
+import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
 import {
@@ -9150,7 +9152,7 @@ function Workspace({
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}:plain:${plainEnglishEndings() ? "1" : "0"}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -9196,14 +9198,15 @@ function Workspace({
           const appended = appendsHubNote(current.harness, !!rawCommand);
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
-            const noteKey = handedFiles.soulHash;
+            // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
+            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
             const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
                 : undefined;
-              const note = monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
+              const note = withFirstMateContract(monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
@@ -9214,7 +9217,7 @@ function Workspace({
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(leadNoteName),
                     }
                   : {}),
-              });
+              }));
               if (appended) setHubNote(sessionId, { key: noteKey, text: note });
               else appContext.push(note);
               notedMono = true;
@@ -9225,14 +9228,14 @@ function Workspace({
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
           const teamHanded =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate`, memoryHash: "" }
+              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
               : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
-            const note = codingTeamContext(
+            const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
                 projectName: team.name,
@@ -9240,7 +9243,7 @@ function Workspace({
                 leadName: leadSpecFor(team).name,
               },
               projectMemory ? { projectMemory } : {},
-            );
+            ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
           }

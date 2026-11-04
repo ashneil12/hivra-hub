@@ -5,9 +5,10 @@
 // The model fills only three: the intent (the person's ask), the spec (`brief`) and the definition of done (`goal`).
 // `checkBrief` refuses a brief with any of them empty or left as a placeholder, before anything starts.
 //
-// Adapted from firstmate's bin/fm-brief.sh and bin/fm-spawn.sh (https://github.com/kunchenguid/firstmate, Copyright (c)
-// 2026 Kun Chen, MIT License): the scaffold with "Captain's intent" and "Firstmate spec" filled in by the first mate, the
-// worktree-isolation assertion, the status protocol and the steering inbox, and the refusal of leftover placeholders.
+// The fixed sentences are vendored verbatim from firstmate's bin/fm-brief.sh (https://github.com/kunchenguid/firstmate,
+// Copyright (c) 2026 Kun Chen, MIT License; see vendor/firstmate-contract.md). A binding sentence after each block is the
+// rewrite: Hivra has no status file and no inbox directory, so the worker uses task_cannot and this chat.
+import { briefSkillsSection, type BriefTask } from "./briefSkills";
 
 export type BriefParts = {
   /** The person's own ask, in their words, with the context needed to read it. */
@@ -105,9 +106,13 @@ export function checkBrief(parts: Partial<Record<keyof BriefParts, unknown>>): s
 function isolationSection(isolation: BriefIsolation): string {
   switch (isolation.kind) {
     case "own-checkout":
+      // Verbatim from bin/fm-brief.sh. The last line is the rewrite: Hivra names the checkout and has no status file.
       return [
         "## Isolation check",
-        `You work in a checkout of your own, never in the project's main checkout (${isolation.mainCheckout}). Before anything else, run \`git rev-parse --show-toplevel\`. If it prints that folder, stop at once: change nothing, and report in one line that you were started in the main checkout.`,
+        "**Verify isolation before anything else.** Run `pwd -P` and `git rev-parse --show-toplevel`; both must resolve to the disposable task worktree you were launched in, such as a treehouse pool path or an Orca-managed worktree, not the primary checkout firstmate operates from.",
+        "The path check is authoritative: `git rev-parse --git-dir` and `git rev-parse --git-common-dir` can help inspect the repo, but they do not prove you are outside the primary checkout.",
+        "If the top-level path is the primary checkout or not the worktree you were launched in, STOP - do not branch or commit here - append `blocked [at=<epoch>]: launched in primary checkout, not an isolated worktree` to the status file and stop.",
+        `The primary checkout is ${isolation.mainCheckout}. Hivra has no status file: if that check fails, change nothing and report that blocked line with task_cannot.`,
       ].join("\n");
     case "shared":
       return [
@@ -131,32 +136,76 @@ function statusProtocol(isolation: BriefIsolation): string {
     isolation.kind === "first-mate"
       ? "- A question only the person can answer: ask them in your own chat, as you do today."
       : "- A question you need answered: ask it. It goes to your first mate, who answers or takes it to the person; never address the person yourself.";
-  return [
+  const lines = [
     "## Status protocol",
     "- Your first mate watches your work; you don't need to report progress. Speak up only when something changes what happens next.",
     question,
+  ];
+  if (isolation.kind !== "first-mate") {
+    // Verbatim from bin/fm-brief.sh. The binding after it is the rewrite: there is no status file.
+    lines.push(
+      "4. Report status by appending one line:",
+      "   `$STATUS_APPEND`",
+      "   States: working, needs-decision, blocked, $PAUSED_VERB, done, failed.",
+      "   Substitute `<epoch>` with the current Unix time in seconds - run `date +%s` and write the number it printed; a stamp that is not plain digits records no time at all.",
+      "   Each append wakes firstmate, so report sparingly: only phase changes a supervisor",
+      "   would act on (setup done, bug reproduced, fix implemented, validation passed) and the",
+      "   needs-decision/blocked/paused/done/failed states. No step-by-step FYI progress lines;",
+      "   firstmate reads your pane for that.",
+      "   Whenever you mention a PR anywhere - a status line, your terminal, a summary - write its full",
+      "   https:// URL exactly as the forge printed it, never a bare number such as \"PR 108\"; firstmate",
+      "   copies that URL from your line rather than assembling one.",
+      "   A mid-task `working:` line (including setup complete) is nonterminal: do not end the",
+      "   turn after it; continue the same stage until a defined `done:` gate under Definition of done.",
+      "5. If you hit the same obstacle twice, append `blocked [at=<epoch>]: {why}` and stop; firstmate will help.",
+      "6. If a decision belongs above the implementation worker (product choices, destructive actions),",
+      "   append `needs-decision [at=<epoch>]: {summary of options}` and stop. Firstmate will reply with the decision.",
+      "   A decision or blocker you opened stays open until a `resolved` line carrying its exact key lands; a later `done:` or `working:` line never closes it, even when the answer is what started that work.",
+      "   Firstmate's reply normally writes that closing line at answer time; when a blocker or wait clears WITHOUT a firstmate reply, append `resolved [at=<epoch>]: {how it cleared}` yourself (same `[key=<slug>]` if you opened it with one) as you resume.",
+      "Hivra has no status file (rewrite: a delegation row, not an append). Do not write one. Say a blocker or a decision with task_cannot and one plain line. `done:` and `working:` still never close an open decision.",
+    );
+  }
+  lines.push(
     "- If you can't finish, say so with task_cannot and one plain line on what is in the way. Don't keep trying something that can't work.",
     "- When you finish, end with your report in the shape your rules give. Checks and links count as evidence; your opinion of your own work doesn't.",
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 const STEERING = [
   "## Steering",
   "Your first mate may send you messages while you work; they arrive in this chat, inside your running turn or as your next one. They outrank this brief where they differ, and the person's own words outrank both.",
   "A question you can't answer from this brief goes to your first mate (task_cannot, or your report), never to the person.",
+  // Verbatim from bin/fm-brief.sh. The binding is the rewrite: Hivra stores steering in the database, not *.msg files.
+  "# Firstmate instruction inbox",
+  "Firstmate steers you through durable message files in $INBOX_DIR.",
+  "When a terminal message says an instruction is waiting there - and at any natural checkpoint when you are unsure - list them with `find $INBOX_DIR -maxdepth 1 -name '*.msg' 2>/dev/null | sort -V`, read the complete contents of each record (including its final line even when it is not newline-terminated) and act on each message in numeric order, then acknowledge each handled message by moving it: `mv $INBOX_DIR/NNN.msg $INBOX_DIR/handled/`.",
+  "Prefer the format-aware `fm_task_inbox_body` reader from `bin/fm-task-inbox-lib.sh` when it is available. If you read manually, a header line `body-terminator=1` means the writer added exactly one synthetic final newline to terminate the record file; that marked newline is not part of the logical message body, so remove only it and preserve any intentional trailing newlines. Legacy records without that marker may end without a newline; read them through the file end.",
+  "The move IS the acknowledgement: without it firstmate rings again and eventually treats you as stuck. An empty or absent inbox needs no action.",
+  "Hivra has no inbox directory (rewrite: a steering row delivered into this chat). Do not look for `*.msg` files or run `mv`. A message that arrives here is already the instruction.",
+  "# Project memory",
+  "A project's `AGENTS.md` or `CLAUDE.md` is loaded into every agent session in that project, so edit it only to correct information that is factually wrong - including information your own change made wrong - and never to add knowledge because it is missing.",
+  "A correction edits only the wrong text: do not run `bin/fm-ensure-agents-md.sh`, create either file, or add sections, headings, or pointers alongside it.",
 ].join("\n");
 
 /**
  * The brief's body from the template: the fixed sections around the model's intent and spec. The definition of done
  * goes last in the whole prompt (briefPrompt), so it is not repeated here.
  */
-export function renderBrief(parts: Pick<BriefParts, "intent" | "spec">, isolation: BriefIsolation): string {
+export function renderBrief(
+  parts: Pick<BriefParts, "intent" | "spec">,
+  isolation: BriefIsolation,
+  task?: BriefTask,
+): string {
+  // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
+  const skills = task ? briefSkillsSection(task) : undefined;
   return [
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
     `## Spec\n${parts.spec.trim()}`,
     statusProtocol(isolation),
     STEERING,
+    ...(skills ? [skills] : []),
   ].join("\n\n");
 }
 
@@ -175,7 +224,7 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering"] as const;
+export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering", "Skills"] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(

@@ -11,6 +11,7 @@ import type { Delegation } from "../../monos/model/delegations";
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
 import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
   briefPrompt,
   portOfBrief,
@@ -72,7 +73,7 @@ vi.stubGlobal("localStorage", {
 const PROJECT = "/tmp/vg-game";
 /** Hivra WP-10: a worker's brief body, from the template around the test's intent and spec. */
 const scaffold = (spec: string, isolation: BriefIsolation = { kind: "shared", folder: PROJECT }) =>
-  renderBrief({ intent: TEST_INTENT, spec }, isolation);
+  renderBrief({ intent: TEST_INTENT, spec }, isolation, classifyBriefTask(`${TEST_INTENT}\n${spec}`));
 
 beforeEach(() => {
   localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
@@ -379,7 +380,7 @@ describe("a first mate's workers (Hivra WP-10)", () => {
     const mate = { ...source, firstMate: true };
     const result = await handleAgentApp(mate, "r-mate", "tasks.delegate", { brief: "Fix the save bug." }, host);
     expect(started[0][0]).toMatchObject({ workspaceMode: "worktree" });
-    expect((started[0][0] as { prompt: string }).prompt).toContain("never in the project's main checkout");
+    expect((started[0][0] as { prompt: string }).prompt).toContain("STOP - do not branch or commit here");
     expect(result).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("first mate") });
     await expect(
       handleAgentApp(mate, "r-mate-shared", "tasks.delegate", { brief: "Fix it here.", isolation: "shared" }, host),
