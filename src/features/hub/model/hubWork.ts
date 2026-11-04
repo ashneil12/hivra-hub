@@ -61,9 +61,9 @@ WORKERS.length && WORKERS.push({
 });
 
 WORKERS.length && WORKERS.push(
-  { id: "w8", activeAgo: 18, projectId: "exo-game", who: "frank", kind: "mono", minutes: 20, state: "needs_you",
+  { id: "w8", activeAgo: 18, projectId: "exo-game", who: "ed", kind: "mono", minutes: 20, state: "needs_you",
     doing: "Example: choosing the boss music", steps: [{ id: "1", at: "8:30pm", text: "Example: two takes ready; waiting for you to pick" }] },
-  { id: "w9", activeAgo: 160, projectId: "exo-game", who: "frank", kind: "mono", minutes: 15, state: "parked",
+  { id: "w9", activeAgo: 160, projectId: "exo-game", who: "ed", kind: "mono", minutes: 15, state: "parked",
     doing: "Example: the photo mode", steps: [{ id: "1", at: "6:02pm", text: "Example: parked until after 0.15" }] },
 );
 

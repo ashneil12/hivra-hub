@@ -1,4 +1,4 @@
-// r97 (frank f, c02 BLIND 242d +340s): the Lead sent off a median fix nobody asked for, just to turn npm test green,
+// r97 (ed f, c02 BLIND 242d +340s): the Lead sent off a median fix nobody asked for, just to turn npm test green,
 // after its workers had left that failure alone. The no-overreach rule holds for the Lead too: report, don't fix.
 import { expect, it } from "vitest";
 import { codingTeamContext, TEAM_CHAT_RULES } from "./monoFiles";

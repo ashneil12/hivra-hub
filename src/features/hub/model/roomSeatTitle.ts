@@ -2,9 +2,9 @@ import { listMonos, monoLook } from "../../monos/model/mono";
 import { getChat } from "./hubChats";
 
 /**
- * r67 (Alfred's r66 rechecks): the Working tray titled room seats with their raw prompt ("You are frank, in the group
+ * r67 (Alfred's r66 rechecks): the Working tray titled room seats with their raw prompt ("You are ed, in the group
  * chat \"Leadership team\"…"), since a room turn's session is named from its first message. A room seat's session
- * reads as the Mono and the room: "frank · Leadership team".
+ * reads as the Mono and the room: "ed · Leadership team".
  */
 export function roomSeatTitle(sessionId: string): string | undefined {
   for (const mono of listMonos()) {

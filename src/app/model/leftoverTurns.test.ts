@@ -36,14 +36,14 @@ describe("endLeftoverTurns", () => {
   it("stops a cut turn's process that is still alive and waits for it to exit", async () => {
     const h = host(
       [
-        { sessionId: "frank-chat", pid: 1, start: 0, turns: [{ start: 0 }] },
+        { sessionId: "ed-chat", pid: 1, start: 0, turns: [{ start: 0 }] },
         { sessionId: "other-window-chat", pid: 2, start: 0, turns: [{ start: 0 }] },
         { sessionId: "done-chat", pid: 3, start: 0, end: 5, turns: [] },
       ],
       300,
     );
-    expect(await endLeftoverTurns(new Set(["frank-chat", "done-chat"]), h.deps)).toEqual(["frank-chat"]);
-    expect(h.killed).toEqual(["frank-chat"]);
+    expect(await endLeftoverTurns(new Set(["ed-chat", "done-chat"]), h.deps)).toEqual(["ed-chat"]);
+    expect(h.killed).toEqual(["ed-chat"]);
     expect(h.elapsed()).toBeGreaterThanOrEqual(300);
     expect(h.elapsed()).toBeLessThan(3_000);
   });

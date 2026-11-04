@@ -92,12 +92,28 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     .count();
     assert_eq!(fixture_skills, 58);
 
-    for planned in [
-        "e2e-verify",
-        "browser",
-        "desktop-control",
-        "council-personas",
-    ] {
+    // WP-42: Verify is the one offered plugin that can be installed. The pin is the npm package, unchanged.
+    let verify = entry(&index, "e2e-verify");
+    assert_eq!(verify.status, Status::Available);
+    assert_eq!(verify.license.as_deref(), Some("Apache-2.0"));
+    assert_eq!(
+        verify.source,
+        Some(InstallSource::Npm {
+            package: "e2e".into(),
+            version: "0.22.0".into(),
+            registry: None,
+        })
+    );
+    let skills = verify.adds.iter().find(|add| add.kind == "skills").unwrap();
+    assert_eq!(skills.names, ["e2e", "when-to-verify"]);
+    let servers = verify
+        .adds
+        .iter()
+        .find(|add| add.kind == "mcpServers")
+        .unwrap();
+    assert_eq!(servers.names, ["e2e"]);
+
+    for planned in ["browser", "desktop-control", "council-personas"] {
         let e = entry(&index, planned);
         assert_eq!(e.status, Status::Planned, "{planned}");
         assert!(

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// r51 (Alfred's r50 blind run, e02): frank's room message ended with the raw word NO_REPLY. It is the app's signal for
+// r51 (Alfred's r50 blind run, e02): ed's room message ended with the raw word NO_REPLY. It is the app's signal for
 // "say nothing", never words for Ash: it is dropped from a saved post and a live draft, and from a message that was
 // saved with it before, when it renders.
 import { act, createElement } from "react";
@@ -25,8 +25,8 @@ describe("NO_REPLY never shows in a room (r51)", () => {
   });
 
   it("a post or live draft is saved without it", () => {
-    expect(cleanPost(FRANK, "frank")).not.toMatch(/NO_REPLY/i);
-    expect(cleanPost("frank: Done here. NO_REPLY", "frank")).toBe("Done here.");
+    expect(cleanPost(FRANK, "ed")).not.toMatch(/NO_REPLY/i);
+    expect(cleanPost("ed: Done here. NO_REPLY", "ed")).toBe("Done here.");
     expect(isSilent("NO_REPLY")).toBe(true);
   });
 

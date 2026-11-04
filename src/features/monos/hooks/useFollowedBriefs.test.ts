@@ -8,7 +8,7 @@ import { postAnsweredLeadReports } from "./useFollowedBriefs";
 const leadRow = {
   id: "t-1",
   ownerSession: "cos-chat",
-  ownerMono: "chief-of-staff",
+  ownerMono: "ada",
   childSession: "lead-chat",
   requestId: "app-cos-chat-b1",
   generation: 1,

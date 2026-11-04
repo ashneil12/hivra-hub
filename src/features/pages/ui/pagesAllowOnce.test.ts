@@ -15,7 +15,7 @@ const agents = READY_PAGES.find((r) => r.request === AGENTS_READY)!;
 beforeEach(async () => {
   localStorage.clear();
   resetPagesForTest();
-  addMono({ id: "frank", name: "frank", mascot: "robot", color: "x", projects: [] });
+  addMono({ id: "ed", name: "ed", mascot: "robot", color: "x", projects: [] });
   const { hubData, setHubDataSource } = await import("../../hub/model/hubData");
   setHubDataSource(undefined);
   const src = Object.create(hubData());

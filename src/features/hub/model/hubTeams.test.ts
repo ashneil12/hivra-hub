@@ -163,7 +163,7 @@ describe("a Mono proposed by an agent needs Ash's okay", () => {
     const before = mono.listMonos().map((m) => m.id);
     const proposal = teams.proposeMono(
       { team: "Marketing", spec: { name: "Maya", brief: "Social posts", engine: "claude", projects: [HIVRA], connectors: [] } },
-      { monoId: "alfred", name: "Alfred" },
+      { monoId: "cam", name: "Alfred" },
     );
     expect(proposal.status).toBe("pending");
     expect(proposal.teamName).toBe("Marketing");
@@ -172,7 +172,7 @@ describe("a Mono proposed by an agent needs Ash's okay", () => {
     const row = waiting.setupItems().find((i) => i.id === `mono-proposal:${proposal.id}`)!;
     expect(row).toMatchObject({ title: "Alfred proposes a new Mono: Maya", actionLabel: "Review" });
     expect(row.detail).toContain("Marketing");
-    expect(() => teams.proposeMono({ spec: { ...proposal.spec } }, { name: "frank" })).toThrow(/already waiting/);
+    expect(() => teams.proposeMono({ spec: { ...proposal.spec } }, { name: "ed" })).toThrow(/already waiting/);
 
     const made = await teams.approveProposal(proposal.id, ["hivra"], fake.deps);
     expect(mono.findMono(made.id)?.name).toBe("Maya");
@@ -228,8 +228,8 @@ describe("a Mono proposed by an agent needs Ash's okay", () => {
     const { handleAgentApp, MONO_ONE_WAY } = await import("../../agent-app/model/agentApp");
     const teams = await import("./hubTeams");
     expect(teams.pendingMonoProposals()).toEqual([]);
-    const source = { id: "s-alfred", cwd: "/Users/ash" } as never;
-    const host = { isMono: (id: string) => id === "s-alfred", monoOf: () => ({ id: "alfred", projects: [] }) } as never;
+    const source = { id: "s-cam", cwd: "/Users/ash" } as never;
+    const host = { isMono: (id: string) => id === "s-cam", monoOf: () => ({ id: "cam", projects: [] }) } as never;
     await expect(handleAgentApp(source, "r1", "monos.propose", { name: "Nora" }, host)).rejects.toThrow(/one way to make a Mono: mono_create/);
     expect(MONO_ONE_WAY).toMatch(/Ash/);
     expect(teams.pendingMonoProposals()).toEqual([]);

@@ -40,7 +40,7 @@ describe("when a chat resumes", () => {
       expect(at).toBeLessThan(RESET + USAGE_LIMIT_RESUME_GRACE_MS + RESUME_JITTER_MS);
       expect(resumeAtFor(id, RESET, 0)).toBe(at);
     }
-    expect(resumeRank("chief-of-staff", (id) => id === "chief-of-staff", () => false)).toBe(0);
+    expect(resumeRank("ada", (id) => id === "ada", () => false)).toBe(0);
     expect(resumeRank("hivra-lead", () => false, (id) => id === "hivra-lead")).toBe(1);
     expect(resumeRank(undefined, () => true, () => true)).toBe(2);
   });

@@ -33,14 +33,14 @@ afterEach(() => {
 type Submitted = { sessionId: string; text: string; options: Record<string, unknown> };
 
 async function setup() {
-  const team = await import("../../features/hub/model/builtInMonos");
-  team.ensureBuiltInMonos();
   const mono = await import("../../features/monos/model/mono");
+  for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"]] as const)
+    mono.addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
   const chat = await import("../../features/hub/model/hubChats");
   const { useRoomRunner } = await import("./useRoomRunner");
   const sessionsRef = { current: [] as Session[] };
   const chatOf = (monoId: string) => `mono-${monoId}`;
-  for (const id of ["chief-of-staff", "projects-manager", "frank"]) {
+  for (const id of ["ada", "bo", "ed"]) {
     const session = { ...newSession("claude", "/code/hub"), id: chatOf(id) };
     sessionsRef.current.push(session);
     vi.spyOn(mono, "monoForSession").mockImplementation((sid: string) => mono.listMonos().find((m) => chatOf(m.id) === sid));
@@ -87,35 +87,38 @@ async function setup() {
     sessionsRef.current = next;
     render();
   };
-  const room = chat.createChat("hub", "Leadership team", ["chief-of-staff", "projects-manager", "frank"]);
+  const room = chat.createChat("hub", "Leadership team", ["ada", "bo", "ed"]);
   return { chat, room, sessionsRef, submitted, settle, origins, done, host: () => host, setSessions, chatOf };
 }
 
 it("a free Mono's room turn is a managed turn with its quiet line; a busy one gets the wake in its queue", async () => {
   const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
-  // frank is busy in his own chat.
-  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("frank") ? { ...s, busy: true } : s)));
-  const conv = chat.startConversation(room.id, "frank, is the label in?");
+  // ed is busy in his own chat.
+  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("ed") ? { ...s, busy: true } : s)));
+  const conv = chat.startConversation(room.id, "ed, is the label in?");
   void chat.requestReply(room.id, conv);
-  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages).toHaveLength(1));
-  const wake = sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages![0];
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("ed"))!.queuedMessages).toHaveLength(1));
+  const wake = sessionsRef.current.find((s) => s.id === chatOf("ed"))!.queuedMessages![0];
   expect(wake).toMatchObject({ appRequestId: wake.id, monoNote: { kind: "room", from: "Leadership team", ref: room.id, line: "Answered Ash" } });
   expect(wake.text).toContain(`answer in the room with room_post (room "${room.id}")`);
-  expect(chat.roomWorking(room.id)).toEqual([{ monoId: "frank", convId: conv, kind: "answer", state: "steered" }]);
+  expect(chat.roomWorking(room.id)).toEqual([{ monoId: "ed", convId: conv, kind: "answer", state: "steered" }]);
   expect(submitted).toEqual([]);
-  // Ash asks the host instead: a managed turn, hidden, with its quiet line.
-  chat.sendMessage(room.id, "cos, what's next?", conv);
+  // Ash asks the host instead (nobody is named, so the first member): a managed turn, hidden, with its quiet line.
+  chat.sendMessage(room.id, "what's next?", conv);
   void chat.requestReply(room.id, conv);
-  // The waiting wake is taken back out of frank's queue (Ash turned the room).
-  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages ?? []).toHaveLength(0));
+  // The waiting wake is taken back out of ed's queue (Ash turned the room).
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("ed"))!.queuedMessages ?? []).toHaveLength(0));
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  // Nobody was named, so after the host posts every other seat gets one turn. ed is free again by then: a still-busy
+  // seat would queue that turn and the room would wait out the wake timeout instead of going quiet.
+  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("ed") ? { ...s, busy: false } : s)));
   expect(submitted[0]).toMatchObject({
-    sessionId: chatOf("chief-of-staff"),
+    sessionId: chatOf("ada"),
     options: { managed: true, monoNote: { kind: "room", from: "Leadership team", ref: room.id, line: "Answered Ash" } },
   });
-  settle.get(chatOf("chief-of-staff"))!("Next: the Pages round.");
+  settle.get(chatOf("ada"))!("Next: the Pages round.");
   await chat.roomIdle(room.id);
-  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Next: the Pages round." });
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "ada", text: "Next: the Pages round." });
 });
 
 it("the host's words show in the room while its managed turn writes them, then the post takes their place", async () => {
@@ -124,7 +127,7 @@ it("the host's words show in the room while its managed turn writes them, then t
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
   const requestId = submitted[0].options.appRequestId as string;
-  const cos = chatOf("chief-of-staff");
+  const cos = chatOf("ada");
   const write = (text: string) =>
     setSessions(
       sessionsRef.current.map((s) =>
@@ -141,13 +144,13 @@ it("the host's words show in the room while its managed turn writes them, then t
       ),
     );
   write("Heard you. Waiting on the Tally lead");
-  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)).toMatchObject([{ monoId: "chief-of-staff", text: "Heard you. Waiting on the Tally lead" }]), { timeout: 2_000 });
+  await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)).toMatchObject([{ monoId: "ada", text: "Heard you. Waiting on the Tally lead" }]), { timeout: 2_000 });
   write("Heard you. Waiting on the Tally lead's start-ack.");
   await vi.waitFor(() => expect(chat.roomDrafts(room.id, conv)[0]?.text).toBe("Heard you. Waiting on the Tally lead's start-ack."), { timeout: 2_000 });
   settle.get(cos)!("Heard you. Waiting on the Tally lead's start-ack. Nothing needs you.");
   await chat.roomIdle(room.id);
   expect(chat.roomDrafts(room.id)).toEqual([]);
-  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "ada", text: "Heard you. Waiting on the Tally lead's start-ack. Nothing needs you." });
 });
 
 it("a reply written in two parts around a tool call keeps them apart in the room (the turn's own text runs them together)", async () => {
@@ -155,7 +158,7 @@ it("a reply written in two parts around a tool call keeps them apart in the room
   const conv = chat.startConversation(room.id, "wat now");
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
-  const cos = chatOf("chief-of-staff");
+  const cos = chatOf("ada");
   setSessions(
     sessionsRef.current.map((s) =>
       s.id === cos
@@ -181,9 +184,9 @@ it("a seat's room turn carries no project memory block: nothing outside the app 
   const conv = chat.startConversation(room.id, "wat now");
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
-  expect(submitted[0].text).toMatch(/^\[MonoCode room\] You are Chief of Staff/);
+  expect(submitted[0].text).toMatch(/^\[MonoCode room\] You are Ada/);
   expect(submitted[0].text).not.toContain("<project_memory>");
-  settle.get(chatOf("chief-of-staff"))!("Nothing needs you.");
+  settle.get(chatOf("ada"))!("Nothing needs you.");
   await chat.roomIdle(room.id);
 });
 
@@ -193,13 +196,13 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
   // During the host's room turn it delegates: the app tells the room host, which records where it came from.
-  const cos = sessionsRef.current.find((s) => s.id === chatOf("chief-of-staff"))!;
-  host().delegated(cos, { childSessionId: "app-mono-chief-of-staff-q1", title: "Launch shortlist" });
+  const cos = sessionsRef.current.find((s) => s.id === chatOf("ada"))!;
+  host().delegated(cos, { childSessionId: "app-mono-ada-q1", title: "Launch shortlist" });
   await vi.waitFor(() => expect(origins).toHaveLength(1));
-  expect(origins[0]).toMatchObject({ childSession: "app-mono-chief-of-staff-q1", roomId: room.id, conversationId: conv, monoId: "chief-of-staff", ownerSession: cos.id, title: "Launch shortlist" });
+  expect(origins[0]).toMatchObject({ childSession: "app-mono-ada-q1", roomId: room.id, conversationId: conv, monoId: "ada", ownerSession: cos.id, title: "Launch shortlist" });
   // Delegated outside a room turn: not recorded.
-  host().delegated(sessionsRef.current.find((s) => s.id === chatOf("frank"))!, { childSessionId: "other", title: "x" });
-  settle.get(chatOf("chief-of-staff"))!("On it: one worker is researching launch platforms.");
+  host().delegated(sessionsRef.current.find((s) => s.id === chatOf("ed"))!, { childSessionId: "other", title: "x" });
+  settle.get(chatOf("ada"))!("On it: one worker is researching launch platforms.");
   await chat.roomIdle(room.id);
   // The report turn in the host's own chat, answered.
   const report: Block = {
@@ -207,7 +210,7 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
     role: "user",
     text: "[MonoCode report] ...",
     internal: true,
-    monoSessionCompletion: { sessionId: "app-mono-chief-of-staff-q1", title: "Launch shortlist", status: "completed" },
+    monoSessionCompletion: { sessionId: "app-mono-ada-q1", title: "Launch shortlist", status: "completed" },
     startedAt: 1,
   };
   const answer: Block = { id: "a", role: "assistant", text: "Ash, the shortlist is in: stay on Base, Clanker v4 first." };
@@ -215,12 +218,12 @@ it("work delegated during a room turn comes back to that room as 'X is back' onc
   await vi.waitFor(() => expect(submitted).toHaveLength(2), { timeout: 3_000 });
   expect(submitted[1].text).toContain('Work you delegated from this room has come back: "Launch shortlist"');
   expect(submitted[1].text).toContain("Ash, the shortlist is in");
-  settle.get(chatOf("chief-of-staff"))!("Launch shortlist is back: stay on Base, Clanker v4 first. Full write-up in my chat.");
+  settle.get(chatOf("ada"))!("Launch shortlist is back: stay on Base, Clanker v4 first. Full write-up in my chat.");
   // No review round follows: nobody is named, so nobody else is woken.
   await chat.roomIdle(room.id);
   expect(submitted).toHaveLength(2);
-  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "chief-of-staff", pick: { by: "back" } });
-  expect(done).toEqual(["app-mono-chief-of-staff-q1"]);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)).toMatchObject({ from: "ada", pick: { by: "back" } });
+  expect(done).toEqual(["app-mono-ada-q1"]);
 });
 
 // B8 (Ash, 15 Oct): what Ash attaches in a room reaches the Mono answering, with the turn, as it would from its own chat.
@@ -228,20 +231,20 @@ it("a photo and a file Ash attached in the room go with the Mono's turn: managed
   const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
   const photo = { id: "p1", name: "hud.png", mimeType: "image/png", kind: "image" as const, size: 68, path: "/tmp/monocode-attachments/hud.png" };
   const doc = { id: "f1", name: "combo-notes.md", mimeType: "text/markdown", kind: "file" as const, size: 120, path: "/Users/ash/Desktop/combo-notes.md" };
-  const conv = chat.startConversation(room.id, "cos look at this hud and the notes", { attachments: [photo, doc] });
+  const conv = chat.startConversation(room.id, "look at this hud and the notes", { attachments: [photo, doc] });
   void chat.requestReply(room.id, conv);
   await vi.waitFor(() => expect(submitted).toHaveLength(1));
-  expect(submitted[0].sessionId).toBe(chatOf("chief-of-staff"));
+  expect(submitted[0].sessionId).toBe(chatOf("ada"));
   expect(submitted[0].options.attachments).toEqual([photo, doc]);
   // The prompt names them by path too, so the transcript keeps them for later turns and other seats.
   expect(submitted[0].text).toContain('[Attached: hud.png ("/tmp/monocode-attachments/hud.png"), combo-notes.md ("/Users/ash/Desktop/combo-notes.md")]');
-  settle.get(chatOf("chief-of-staff"))!("Seen both.");
+  settle.get(chatOf("ada"))!("Seen both.");
   await chat.roomIdle(room.id);
 
-  // frank is busy: the wake waits in his queue with the files on it.
-  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("frank") ? { ...s, busy: true } : s)));
-  chat.sendMessage(room.id, "frank check this one", conv, [photo]);
+  // ed is busy: the wake waits in his queue with the files on it.
+  setSessions(sessionsRef.current.map((s) => (s.id === chatOf("ed") ? { ...s, busy: true } : s)));
+  chat.sendMessage(room.id, "ed check this one", conv, [photo]);
   void chat.requestReply(room.id, conv);
-  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages).toHaveLength(1));
-  expect(sessionsRef.current.find((s) => s.id === chatOf("frank"))!.queuedMessages![0].attachments).toEqual([photo]);
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === chatOf("ed"))!.queuedMessages).toHaveLength(1));
+  expect(sessionsRef.current.find((s) => s.id === chatOf("ed"))!.queuedMessages![0].attachments).toEqual([photo]);
 });

@@ -34,6 +34,7 @@ import {
   type SourceList,
 } from "../model/discover";
 import { InstalledPlugins } from "./InstalledPlugins";
+import { VerifyOffer } from "./VerifyOffer";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -56,7 +57,7 @@ function resultFor(results: IndexResult[], source: IndexSource, index: number): 
   return results.find((item) => JSON.stringify(item.source) === JSON.stringify(source));
 }
 
-export function PluginsPage() {
+export function PluginsPage({ projectFolder }: { projectFolder?: string } = {}) {
   const stored = readStored();
   const [revision, setRevision] = useState(stored.revision);
   const [sources, setSources] = useState<IndexSource[]>(stored.sources);
@@ -218,6 +219,7 @@ export function PluginsPage() {
       {tab === "installed" ? <InstalledPlugins /> : (
       <>
       <div data-setting-id="plugin-discover" className="flex flex-col gap-4">
+        {projectFolder ? <VerifyOffer projectFolder={projectFolder} /> : null}
         {notice ? (
           <p data-discover-notice className="text-[13px] text-content/70">{notice}</p>
         ) : null}

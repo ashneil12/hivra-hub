@@ -86,19 +86,32 @@ it("counts a mono's unread replies, except the one open", () => {
   expect(badge()).toBeNull();
 });
 
-it("hub, clean first launch: the default team in normal rows, no intro card, no blue switch, one create button", async () => {
+it("hub, clean first launch: no default team, no intro card, no blue switch, one create button", async () => {
+  vi.resetModules();
+  const { addMono } = await import("../../features/monos/model/mono");
   const { hubMonoRank } = await import("../../features/hub/model/hubData");
+  const { ensureBuiltInMonos, DEFAULT_TEAM_IDS } = await import("../../features/hub/model/builtInMonos");
+  const names = () =>
+    [...container.querySelectorAll("[data-mono-status] > button[title]")]
+      .map((b) => b.getAttribute("title")!.split("\n")[0])
+      .filter((t) => t !== "Mono options");
+  expect(DEFAULT_TEAM_IDS).toEqual([]);
+  expect(ensureBuiltInMonos()).toBe(0);
   render({ rank: hubMonoRank });
-  const names = [...container.querySelectorAll("[data-mono-status] > button[title]")].map((b) => b.getAttribute("title")!.split("\n")[0]).filter((t) => t !== "Mono options");
-  expect(names).toEqual(["Chief of Staff", "Projects Manager", "frank", "Alfred"]);
+  expect(names()).toEqual([]);
   expect(intro()).toBeNull();
   expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(container.querySelector(".bg-accent")).toBeNull();
   expect([...container.querySelectorAll("button")].filter((b) => /create mono|new mono/i.test(b.getAttribute("aria-label") ?? b.textContent ?? ""))).toHaveLength(1);
-  // removed later: the team doesn't come back by itself
+  for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"], ["cam", "Cam"]] as const)
+    addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
+  render({ rank: hubMonoRank });
+  expect(names()).toEqual(["Ada", "Bo", "Ed", "Cam"]);
+  // removed later: they don't come back by themselves
   localStorage.setItem("monocode:mono-roster", "[]");
   window.dispatchEvent(new CustomEvent("monocode:monos-changed"));
   render({ rank: hubMonoRank });
+  expect(ensureBuiltInMonos()).toBe(0);
   expect(container.querySelectorAll("[data-mono-status]")).toHaveLength(0);
 });
 

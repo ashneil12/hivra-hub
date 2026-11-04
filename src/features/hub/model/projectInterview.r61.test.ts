@@ -54,6 +54,6 @@ describe("Every interview turn leaves Ash something to answer (r61)", () => {
   it("the note says the chat can't check anything and each reply ends on a question or the card", () => {
     const note = interviewNote("kids maths");
     expect(note).toMatch(/no tools/);
-    expect(note).toMatch(/ends with either one question for Ash or the project block/);
+    expect(note).toMatch(/ends with either one question or the project block/);
   });
 });

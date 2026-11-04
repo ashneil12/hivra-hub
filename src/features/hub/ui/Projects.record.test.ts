@@ -79,7 +79,7 @@ afterEach(async () => {
   setHubDataSource(undefined);
 });
 
-/** Chief of Staff already proposed it: the preview card shows (the interview itself: projectDraft.test.ts). */
+/** The interview is already answered: the preview card shows (the interview itself: projectDraft.test.ts). */
 function answered(name: string) {
   saveProjectDraft({
     name, started: true, tpl: "product-saas", addon: false, oneLine: "A cosy farming game for the Mac notch",
@@ -111,7 +111,7 @@ describe("New project", () => {
     const card = q("[data-hub-new-project-preview]")!.textContent!;
     expect(card).toContain("A new folder at ~/Projects/moonrise-farm: a git repo with a README, never pushed");
     expect(card).toContain("Its own memory. Nothing from your other projects comes with it.");
-    expect(q("[data-hub-new-project-team]")?.textContent).toContain("and Moonrise lead, its own Lead");
+    expect(q("[data-hub-new-project-team]")?.textContent).toContain("Moonrise lead, its own lead");
     expect(container.querySelectorAll("[data-hub-new-project-shape]")).toHaveLength(14);
     expect(q('[data-hub-new-project-shape="rocket"]')?.getAttribute("aria-pressed")).toBe("true");
     expect(q('[data-hub-new-project-shape="ghost"]')).toBeNull();

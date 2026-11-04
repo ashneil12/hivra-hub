@@ -1,0 +1,8 @@
+{
+  "name": "Planner",
+  "role": "Keeps the board: owner, state, evidence.",
+  "skills": [],
+  "crewRules": [
+    { "match": { "labels": ["board"] }, "cli": "claude", "effort": "medium" }
+  ]
+}

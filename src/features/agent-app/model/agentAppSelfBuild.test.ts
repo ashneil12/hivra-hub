@@ -62,7 +62,7 @@ it("teams.create drafts a team and makes nothing; only draftId, after Ash answer
   const postie = mono.createMono(["/Users/ash/Projects/hivra"]);
   mono.saveMonoName(postie.id, "Postie");
   const teams = await import("../../hub/model/hubTeams");
-  const host = { isMono: () => true, monoOf: () => ({ id: "chief-of-staff", name: "Chief of Staff", projects: [] }) };
+  const host = { isMono: () => true, monoOf: () => ({ id: "ada", name: "Chief of Staff", projects: [] }) };
 
   const draft = (await call("teams.create", { name: "Marketing", brief: "Owns the launch.", projects: ["hivra"], members: ["Postie"] }, host)) as {
     draftId: string;

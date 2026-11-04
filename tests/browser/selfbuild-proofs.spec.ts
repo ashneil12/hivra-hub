@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 
 // Self-build proofs (ash-day steps 13-15) in the real app in a browser: hub-dev.html reading the app's own local store, the Mono
@@ -27,9 +28,10 @@ const dev = <T>(page: Page, code: string, arg?: unknown) =>
       ) as T,
     [code, arg] as const,
   );
-const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: [] };
+const ME = { monoId: "ada", name: "Ada", projects: [] };
 
 async function open(page: Page) {
+  await seedExampleRoster(page);
   await page.addInitScript(() => {
     localStorage.setItem(
       "monocode.lastModel",
@@ -57,7 +59,7 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
 }) => {
   await open(page);
   const rail = page.locator("[data-mono-rail]").first();
-  await rail.locator('button[aria-label^="Chief of Staff"]').first().click();
+  await rail.locator('button[aria-label^="Ada"]').first().click();
   const say = (text: string) =>
     page.evaluate(
       (w) =>
@@ -66,7 +68,7 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
         ).__fakeClaude.next.push(w),
       `say:${text}`,
     );
-  const composer = page.getByLabel("Message Chief of Staff");
+  const composer = page.getByLabel("Message Ada");
   // 1. Ash asks; the Mono asks him one real question back and ends its turn.
   await say(
     "Happy to. Two quick questions first: should it post on its own, or draft each post for your OK? And who does it answer to?",
@@ -197,7 +199,7 @@ test("15: a hub change shows Now | Preview with Apply and Discard; after Apply, 
   const before = await buttonTop();
   await dev(
     page,
-    `async (sb) => { const { changeId } = await sb.startHubChange("can u move the new chat button to the top n make the accent a bit more purple", "New chat button at the top, accent more purple", "Chief of Staff"); return sb.readyHubChange(changeId, "Chief of Staff"); }`,
+    `async (sb) => { const { changeId } = await sb.startHubChange("can u move the new chat button to the top n make the accent a bit more purple", "New chat button at the top, accent more purple", "Ada"); return sb.readyHubChange(changeId, "Ada"); }`,
   );
   const offer = page.locator("[data-change-offer]");
   await expect(offer).toBeVisible();

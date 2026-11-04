@@ -36,7 +36,7 @@ beforeEach(() => {
   for (const [id, name, sessionId] of [
     ["vg-game-lead", "EXO lead", "exo-chat"],
     ["hub-lead", "Hub lead", "hub-chat"],
-    ["chief-of-staff", "Chief of Staff", "cos-chat"],
+    ["ada", "Chief of Staff", "cos-chat"],
   ])
     addMono({ id, name, sessionId, mascot: "letter", color: "#888", projects: [] });
   container = document.createElement("div");
@@ -65,7 +65,7 @@ describe("Today's stuck workers (no Stuck section since r30)", () => {
     setDelegationRows([
       stalled("t-1", "vg-game-lead", "exo-chat", "vg-game", "Run the movement tests"),
       stalled("t-2", "hub-lead", "hub-chat", "hub", "Fix the splash"),
-      stalled("t-3", "chief-of-staff", "cos-chat", "vg-game", "Plan the playtest"),
+      stalled("t-3", "ada", "cos-chat", "vg-game", "Plan the playtest"),
     ]);
     act(() => root.render(createElement(StuckToday, { projectId: undefined, tone: "grey" })));
     const where = (child: string) => container.querySelector(`[data-stuck-worker="${child}"] [data-stuck-where]`)?.textContent;

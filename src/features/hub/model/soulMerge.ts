@@ -1,15 +1,15 @@
-// "Ask Alfred to merge it": the one way a Mono's soul is changed by another Mono (Alfred's lane: he looks after souls).
+// One Mono's own chat may merge the app's newer soul wording into another Mono's soul.
 //
-// Soul refresh leaves a soul alone when it can't tell Ash's own edits from old app wording (soulRefresh.ts). Ash then
-// asks Alfred ("merge hivra leads update"). Alfred reads the soul and the app's newer version (`souls.read`) and writes
-// one soul that takes the app's new wording and keeps every change Ash made himself, his wording winning wherever the
-// two clash; he hands it to the app (`souls.merge`). The app, not Alfred, decides whether it goes in:
-// - only Alfred's own chat may ask (never a habit run, a worker, another Mono, or Alfred for his own soul);
-// - the soul must still be the one Alfred read (the read-before-write guard: an edit Ash made meanwhile refuses it);
+// Soul refresh leaves a soul alone when it can't tell a hand edit from old app wording (soulRefresh.ts). Any Mono, from
+// its own chat, reads the soul and the app's newer version (`souls.read`) and writes one soul that takes the app's new
+// wording and keeps every hand edit, that wording winning wherever the two clash; it hands it to the app (`souls.merge`).
+// The app decides whether it goes in:
+// - only a Mono's own chat may ask (never a habit run, a worker, or that Mono for its own soul);
+// - the soul must still be the one it read (the read-before-write guard: an edit made meanwhile refuses it);
 // - the merged soul is a soul (opens with "# Soul", not blank, not huge) and is made only of lines from the current
-//   soul or the app's template, so nothing new is invented, and every section Ash added himself is still in it;
-// - the whole old soul is saved in that Mono's memory first, the template it now follows is recorded (so later
-//   refreshes know Ash's edits), and one plain Bot changes row with Undo and Redo says what changed.
+//   soul or the app's template, so nothing new is invented, and every section added by hand is still in it;
+// - the whole old soul is saved in that Mono's memory first, the template it now follows is recorded, and one plain
+//   Bot changes row with Undo and Redo says what changed.
 // The souls' home stays out of every chat's write reach (hubMcp.ts monoHomeDeniedTools); this action is the app's own
 // hash-checked write (mono.rs check_write behind it).
 import { listMonos } from "../../monos/model/mono";
@@ -28,9 +28,6 @@ import {
 } from "./soulRefresh";
 import { forUser } from "./userName";
 
-/** The Mono whose lane is looking after souls. By id only: a Mono can rename itself, not change its id. */
-export const SOUL_KEEPER_ID = "alfred";
-export const SOUL_KEEPER_NAME = "Alfred";
 const MAX_SOUL = 240_000;
 
 export class SoulMergeRefused extends Error {}
@@ -76,7 +73,7 @@ export function describeMerge(current: string, template: string, merged: string,
   const list = (keys: string[]) =>
     keys.length <= 1 ? keys.map(quote).join("") : `${keys.slice(0, -1).map(quote).join(", ")} and ${quote(keys[keys.length - 1])}`;
   const yours = [...kept, ...combined];
-  const line = `${SOUL_KEEPER_NAME} merged the app's update into ${name}'s soul${yours.length ? ` and kept your changes to ${list(yours)}` : ""}.`;
+  const line = `The app's update was merged into ${name}'s soul${yours.length ? ` and kept your changes to ${list(yours)}` : ""}.`;
   const details = [
     ...taken.map((key) => sectionSentence(key, name)),
     ...combined.map((key) => `${name}'s ${quote(key)} part now has the app's update with your own changes kept.`),
@@ -88,10 +85,10 @@ export function describeMerge(current: string, template: string, merged: string,
 
 export type SoulMergeCaller = { monoId: string | undefined; isOwnChat: boolean };
 
-function keeperOnly(caller: SoulMergeCaller, target: string): void {
-  if (caller.monoId !== SOUL_KEEPER_ID || !caller.isOwnChat)
-    throw new SoulMergeRefused(`Only ${SOUL_KEEPER_NAME}'s own chat can merge a Mono's soul update.`);
-  if (target === SOUL_KEEPER_ID) throw new SoulMergeRefused(forUser("Change your own soul with soul.update when Ash asks."));
+function ownChatOnly(caller: SoulMergeCaller, target: string): void {
+  if (!caller.monoId || !caller.isOwnChat)
+    throw new SoulMergeRefused("Only a Mono's own chat can merge another Mono's soul update.");
+  if (target === caller.monoId) throw new SoulMergeRefused(forUser("Change your own soul with soul.update when asked."));
 }
 
 function templateFor(target: string, templates: SoulTemplate[]): SoulTemplate {
@@ -107,14 +104,14 @@ export async function readForMerge(
   files: SoulFiles,
   templates: SoulTemplate[] = soulTemplates(listMonos()),
 ): Promise<{ mono: string; name: string; soul: string; hash: string; appVersion: string; sameAsApp: boolean }> {
-  keeperOnly(caller, target);
+  ownChatOnly(caller, target);
   const t = templateFor(target, templates);
   const soul = await files.read(target, "SOUL.md");
   if (soul.text == null) throw new SoulMergeRefused(`${t.name} has no soul yet.`);
   return { mono: target, name: t.name, soul: soul.text, hash: soul.hash, appVersion: t.template, sameAsApp: norm(soul.text) === norm(t.template) };
 }
 
-/** `souls.merge`: the app checks Alfred's merged soul, saves the old one, writes it, and logs one row with Undo. */
+/** `souls.merge`: the app checks the merged soul, saves the old one, writes it, and logs one row with Undo. */
 export async function mergeSoul(
   caller: SoulMergeCaller,
   input: { mono: string; text: string; expectedHash: string },
@@ -122,7 +119,7 @@ export async function mergeSoul(
   templates: SoulTemplate[] = soulTemplates(listMonos()),
   now: Date = new Date(),
 ): Promise<{ mono: string; merged: true; line: string; details: string[] }> {
-  keeperOnly(caller, input.mono);
+  ownChatOnly(caller, input.mono);
   const t = templateFor(input.mono, templates);
   const soul = await files.read(input.mono, "SOUL.md");
   if (soul.text == null) throw new SoulMergeRefused(`${t.name} has no soul yet.`);
@@ -145,7 +142,7 @@ export async function mergeSoul(
   const { line, details } = describeMerge(soul.text, t.template, input.text, t.name);
   recordBotChange({
     id: `soul-merge:${input.mono}:${now.getTime().toString(36)}`,
-    bot: SOUL_KEEPER_NAME,
+    bot: caller.monoId ?? "Mono",
     day: "Today",
     line,
     now: "Its soul as it was",

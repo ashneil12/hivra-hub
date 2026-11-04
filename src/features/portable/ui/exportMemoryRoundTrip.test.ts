@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-// Round 21 (CoS and Alfred, 21 Oct): "bring my whole setup across" carries every Mono's memory. Settings > Export and
+// "bring my whole setup across" carries every Mono's memory. Settings > Export and
 // import is left exactly as it opens (the Memory box starts ticked), exported, then imported into a fresh install:
-// every Mono's MEMORY.md arrives, the team seated here and a new Mono once it gets its OK.
+// every Mono's MEMORY.md arrives once that Mono gets its OK. A fresh install seats nobody by itself.
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -36,7 +36,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ save: async () => "/Users/ash/Desk
 vi.mock("../../../platform/tauri/fs", () => ({ revealPath: vi.fn() }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const TEAM = ["chief-of-staff", "projects-manager", "frank", "alfred"];
+const TEAM = ["ada", "bo", "ed", "cam"];
 const ALL = [...TEAM, "hivra-lead"];
 
 beforeEach(() => {
@@ -59,7 +59,7 @@ it("export left at its defaults carries every Mono's memory, and a fresh install
   // Ash's install: the team and a Lead.
   vi.resetModules();
   const mono = await import("../../monos/model/mono");
-  const names = ["Chief of Staff", "Projects Manager", "frank", "Alfred"];
+  const names = ["Ada", "Bo", "Ed", "Cam"];
   TEAM.forEach((id, i) => mono.addMono({ id, name: names[i], mascot: "robot", color: "x", projects: [], engine: "claude" }));
   mono.addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "crab", color: "x", projects: [] });
 
@@ -83,7 +83,8 @@ it("export left at its defaults carries every Mono's memory, and a fresh install
   const doc = await import("../model/setupDoc");
   const plan = await import("../model/importPlan");
   const setupSouls = await import("../../hub/model/setupSouls");
-  builtIn.ensureBuiltInMonos();
+  expect(builtIn.ensureBuiltInMonos()).toBe(0);
+  expect((await import("../../monos/model/mono")).listMonos()).toEqual([]);
   const here = disk();
   await hubTeam.seedTeamFiles(here.read, here.write);
   for (const id of TEAM) expect(here.files.get(`${id}/MEMORY.md`) ?? "", id).not.toContain("what");
@@ -94,9 +95,10 @@ it("export left at its defaults carries every Mono's memory, and a fresh install
   const choices = plan.defaultChoices(p);
   expect(choices.memory.on && choices.memory.monoMemory).toBe(true);
   await plan.applyImport(pending, p, choices, { agentFiles: { read: here.read, write: here.write } });
-  // The new Lead waits for one OK, then its memory lands too.
-  expect(setupSouls.waitingSouls().map((w) => w.monoId)).toEqual(["hivra-lead"]);
-  expect(await setupSouls.seatWaitingSoul("hivra-lead", here.write, undefined, here.read)).toEqual([]);
+  // Every Mono in the file is new on a fresh install, so each waits for one OK, then its memory lands.
+  expect(setupSouls.waitingSouls().map((w) => w.monoId).sort()).toEqual([...ALL].sort());
+  for (const id of setupSouls.waitingSouls().map((w) => w.monoId))
+    expect(await setupSouls.seatWaitingSoul(id, here.write, undefined, here.read), id).toEqual([]);
 
   for (const id of ALL) expect(here.files.get(`${id}/MEMORY.md`), id).toBe(`- 2026-10-01 · what ${id} knows`);
 });

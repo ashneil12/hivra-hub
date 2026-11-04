@@ -5,10 +5,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { recordBotChange, recordBotNote, setBotFiles } from "../model/botChanges";
-import { openMonoChatWith } from "../../monos/model/monoPrefill";
-import { askAlfred, refreshSouls, skippedLine } from "../model/soulRefresh";
-
-vi.mock("../../monos/model/monoPrefill", () => ({ openMonoChatWith: vi.fn() }));
+import { refreshSouls, skippedLine } from "../model/soulRefresh";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
 import { ChangesPage } from "./ChangesPage";
 
@@ -68,15 +65,13 @@ function openBots() {
 }
 const rowWith = (text: string) => [...container.querySelectorAll("[data-hub-bot-change]")].find((r) => r.textContent?.includes(text))!;
 
-it("a skipped soul's row has an Ask Alfred button that opens Alfred's chat with the ask typed in", () => {
-  recordBotNote({ id: "soul-skip:nibbii-lead:x", bot: "Nibbii lead", monoId: "nibbii-lead", line: skippedLine("Nibbii lead"), now: "Your own version", after: "Left as it is", ask: askAlfred("Nibbii lead") });
+it("a skipped soul's row says the update was left, and does not offer to ask a named Mono", () => {
+  recordBotNote({ id: "soul-skip:nibbii-lead:x", bot: "Nibbii lead", monoId: "nibbii-lead", line: skippedLine("Nibbii lead"), now: "Your own version", after: "Left as it is" });
   openBots();
   const row = rowWith("Nibbii lead's soul has your own changes");
   expect([...row.querySelectorAll("button")].map((b) => b.textContent)).not.toContain("Undo");
-  const ask = row.querySelector("[data-hub-bot-change-ask]") as HTMLButtonElement;
-  expect(ask.textContent).toBe("Ask Alfred");
-  act(() => ask.click());
-  expect(openMonoChatWith).toHaveBeenCalledWith("alfred", "merge Nibbii lead's update");
+  expect(row.querySelector("[data-hub-bot-change-ask]")).toBeNull();
+  expect(row.textContent ?? "").not.toMatch(/\bAlfred\b/);
 });
 
 it("one Undo all from… button, whose menu names each Mono", async () => {
@@ -87,7 +82,7 @@ it("one Undo all from… button, whose menu names each Mono", async () => {
     return `h:${text}`;
   };
   setBotFiles({ read, write });
-  for (const [id, bot] of [["a", "Hivra lead"], ["b", "frank"]] as const) {
+  for (const [id, bot] of [["a", "Hivra lead"], ["b", "ed"]] as const) {
     files.set(`${id}/RULES.md`, `${id}2`);
     recordBotChange({ id: `rules:${id}`, bot, day: "Today", line: `${bot} changed how it works`, now: "Old", after: "New", monoId: id, file: "RULES.md" as AgentFilePath, beforeText: `${id}1`, afterText: `${id}2` });
   }
@@ -97,8 +92,8 @@ it("one Undo all from… button, whose menu names each Mono", async () => {
   expect(container.querySelector("[data-undo-all-from-menu]")).toBeNull();
   act(() => (buttons[0] as HTMLButtonElement).click());
   const items = [...container.querySelectorAll("[data-undo-all-from-item]")];
-  expect(new Set(items.map((i) => i.textContent))).toEqual(new Set(["Hivra lead", "frank"]));
-  await act(async () => (container.querySelector('[data-undo-all-from-item="frank"]') as HTMLButtonElement).click());
+  expect(new Set(items.map((i) => i.textContent))).toEqual(new Set(["Hivra lead", "ed"]));
+  await act(async () => (container.querySelector('[data-undo-all-from-item="ed"]') as HTMLButtonElement).click());
   await vi.waitFor(() => expect(files.get("b/RULES.md")).toBe("b1"));
   expect(files.get("a/RULES.md")).toBe("a2");
   expect(container.querySelector("[data-undo-all-from-menu]")).toBeNull();
@@ -139,7 +134,7 @@ it("a put-back soul's row offers 'Keep that change' in place of Undo", () => {
 
 it("a two-line row's 'and 4 more' opens it, and so does a click anywhere on the row (Mac round 2)", async () => {
   // As on the Mac: a Lead's refresh row long enough to wrap, its "and 4 more" at the end of the second line.
-  const line = "Hivra lead will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him. (and 4 more)";
+  const line = "Hivra lead will now act as an orchestrator: small things itself, and bigger pieces to workers in the user's own words. (and 4 more)";
   const details = ["one", "two", "three", "four", "Hivra lead kept its old folder because its project's folder wasn't found on this Mac."];
   const files = new Map<string, string>([["hivra-lead/SOUL.md", "after"]]);
   setBotFiles({ read: async (id, p) => ({ text: files.get(`${id}/${p}`) ?? null, hash: `h:${files.get(`${id}/${p}`) ?? ""}` }), write: async (id, p, t) => (files.set(`${id}/${p}`, t), `h:${t}`) });

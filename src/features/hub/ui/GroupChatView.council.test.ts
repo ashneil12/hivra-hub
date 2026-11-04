@@ -39,7 +39,7 @@ it("opens a council from /council even when a file is attached, and keeps the ro
   const chats = await import("../model/hubChats");
   const { GroupChatView } = await import("./GroupChatView");
   nav.setHubSelection({ project: "hub", item: "coding-team" });
-  const room = chats.createChat("hub", "Pricing", ["chief-of-staff", "frank"]);
+  const room = chats.createChat("hub", "Pricing", ["ada", "ed"]);
   chats.startConversation(room.id, "What now?");
   const before = chats.getChat(room.id)!.conversations[0].messages.length;
   await act(async () => {
@@ -49,6 +49,6 @@ it("opens a council from /council even when a file is attached, and keeps the ro
     container.querySelector<HTMLButtonElement>("[data-test-council-send]")!.click();
   });
   const opened = chats.listChats("hub").find((chat) => chat.id !== room.id && chat.council?.question === "should we ship");
-  expect(opened?.memberIds).toEqual(["chief-of-staff", "frank"]);
+  expect(opened?.memberIds).toEqual(["ada", "ed"]);
   expect(chats.getChat(room.id)!.conversations[0].messages.length).toBe(before);
 });

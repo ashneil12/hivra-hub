@@ -14,7 +14,7 @@ beforeEach(() => localStorage.clear());
 
 it("archives only the listed chats and removes only the listed Monos", async () => {
   roster([
-    { id: "chief-of-staff", name: "Chief of Staff" },
+    { id: "ada", name: "Chief of Staff" },
     { id: "verify-lead", name: "Verify lead" },
     { id: "m-1", name: "Verify Marketing" },
   ]);
@@ -37,16 +37,16 @@ it("archives only the listed chats and removes only the listed Monos", async () 
   expect(answer.missing).toEqual(["gone"]);
   expect(answer.failed).toEqual([{ id: "refused", error: "archive refused" }]);
   expect(answer.ok).toBe(false);
-  expect(listMonos().map((mono) => mono.id)).toContain("chief-of-staff");
+  expect(listMonos().map((mono) => mono.id)).toContain("ada");
   expect(listMonos().map((mono) => mono.id)).not.toContain("m-1");
 });
 
 it("touches nothing when given nothing", async () => {
-  roster([{ id: "chief-of-staff", name: "Chief of Staff" }]);
+  roster([{ id: "ada", name: "Chief of Staff" }]);
   const archive = vi.fn(async () => true);
   const host = { sessions: () => [{ id: "a" }] as Session[], archive } as unknown as DriverHost;
   const answer = (await perform({ id: "1", op: "cleanup" }, host, new DriverLog())) as CleanupResult;
   expect(archive).not.toHaveBeenCalled();
   expect(answer).toMatchObject({ ok: true, archived: [], removedMonos: [], missing: [], failed: [] });
-  expect(listMonos().map((mono) => mono.id)).toEqual(["chief-of-staff"]);
+  expect(listMonos().map((mono) => mono.id)).toEqual(["ada"]);
 });

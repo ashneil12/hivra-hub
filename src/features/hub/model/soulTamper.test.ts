@@ -51,13 +51,13 @@ function memFiles() {
 /** Whose chats are whose: each Mono's own chat; workers are `app-<chat>-<request>` under it (hubMcp.ts). */
 const CHATS: Record<string, string> = {
   "hivra-chat": "hivra-lead",
-  "frank-chat": "frank",
+  "ed-chat": "ed",
   "lead-chat": "hivra-lead",
   "restored-chat": "restored-lead",
   "unrecorded-chat": "unrecorded-lead",
   "exo-chat": "vg-game-lead",
-  "cos-chat": "chief-of-staff",
-  "alfred-chat": "alfred",
+  "cos-chat": "ada",
+  "cam-chat": "cam",
 };
 const lookups: HubChatLookups = {
   monoOf: (id) => (CHATS[id] ? { id: CHATS[id] } : undefined),
@@ -178,11 +178,11 @@ describe("a soul changed outside the app", () => {
 
   it("a soul the app has no saved copy of is only recorded, and the same text with a new hash is no tamper", async () => {
     const { f, files } = memFiles();
-    files.set("frank/SOUL.md", { text: SAVED, at: 1 });
-    expect(await checkSoul("frank", "frank", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("recorded");
-    recordSavedSoul("frank", SAVED, "old-format-hash");
-    expect(await checkSoul("frank", "frank", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("unchanged");
-    expect(files.get("frank/SOUL.md")!.text).toBe(SAVED);
+    files.set("ed/SOUL.md", { text: SAVED, at: 1 });
+    expect(await checkSoul("ed", "ed", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("recorded");
+    recordSavedSoul("ed", SAVED, "old-format-hash");
+    expect(await checkSoul("ed", "ed", f, () => [{ sessionId: "x", start: 0, seen: 0 }])).toBe("unchanged");
+    expect(files.get("ed/SOUL.md")!.text).toBe(SAVED);
   });
 });
 
@@ -316,37 +316,37 @@ describe("a python script writing the soul file", () => {
       const root = mkdtempSync(join(tmpdir(), "soul-tamper-reload-"));
       const f = diskFiles(root);
       setBotFiles(f);
-      const soul = join(root, "frank", "SOUL.md");
-      await f.write("frank", "SOUL.md", SAVED);
+      const soul = join(root, "ed", "SOUL.md");
+      await f.write("ed", "SOUL.md", SAVED);
 
       const turnStart = Date.now() - 30_000;
-      // The page sees frank's chat start its turn, then reloads 2 s in: the fresh page reads the stored runs (open
+      // The page sees ed's chat start its turn, then reloads 2 s in: the fresh page reads the stored runs (open
       // ones end where the old page last saw them) and the chat comes back idle ("Turn interrupted ... reloaded").
-      noteSessionRuns([{ id: "frank-chat", busy: true, cwd: "/Users/ash" }], turnStart);
+      noteSessionRuns([{ id: "ed-chat", busy: true, cwd: "/Users/ash" }], turnStart);
       reloadSessionRunsForTest();
-      noteSessionRuns([{ id: "frank-chat", busy: false }], turnStart + 2_000);
-      // The app process still has frank's Claude process, mid-turn (no result line yet).
-      const alive: ProcessRun = { sessionId: "frank-chat", pid: 4242, cwd: "/Users/ash", start: turnStart - 500, turns: [{ start: turnStart }] };
+      noteSessionRuns([{ id: "ed-chat", busy: false }], turnStart + 2_000);
+      // The app process still has ed's Claude process, mid-turn (no result line yet).
+      const alive: ProcessRun = { sessionId: "ed-chat", pid: 4242, cwd: "/Users/ash", start: turnStart - 500, turns: [{ start: turnStart }] };
       setProcessRunSource(async () => [alive]);
 
-      // 30 s into the turn, a python3 script the turn runs writes frank's soul.
+      // 30 s into the turn, a python3 script the turn runs writes ed's soul.
       pyWrite(soul, OUTSIDE);
-      const changedAt = (await f.read("frank", "SOUL.md")).modifiedMs!;
+      const changedAt = (await f.read("ed", "SOUL.md")).modifiedMs!;
       expect(changedAt - turnStart).toBeGreaterThanOrEqual(29_000);
       // By the page's record alone nothing was running then: that was the bug.
       expect(runsAt(changedAt).filter((r) => r.pid == null)).toEqual([]);
 
-      expect(await checkSoul("frank", "frank", f)).toBe("put-back");
+      expect(await checkSoul("ed", "ed", f)).toBe("put-back");
       expect(readFileSync(soul, "utf8")).toBe(SAVED);
       const row = botChangeRows()
         .flatMap((r) => (r.kind === "one" ? [r.change] : r.items))
-        .find((c) => c.monoId === "frank")!;
-      // It was frank's own chat turn, not a worker: the row says so (Mac round 2, 21 Oct).
-      expect(row.line).toBe("Something outside the app changed frank's soul while frank's chat was running, so it was put back.");
-      expect(row.line).toBe(putBackLine("frank", { chats: 1 }));
-      expect(row.details![0]).toBe("When it changed, frank's chat was running.");
+        .find((c) => c.monoId === "ed")!;
+      // It was ed's own chat turn, not a worker: the row says so (Mac round 2, 21 Oct).
+      expect(row.line).toBe("Something outside the app changed ed's soul while ed's chat was running, so it was put back.");
+      expect(row.line).toBe(putBackLine("ed", { chats: 1 }));
+      expect(row.details![0]).toBe("When it changed, ed's chat was running.");
       expect(row.undoLabel).toBe("Keep that change");
-      const note = join(root, "frank", changedSoulNote(changedAt));
+      const note = join(root, "ed", changedSoulNote(changedAt));
       expect(readFileSync(note, "utf8")).toBe(OUTSIDE);
     },
   );
@@ -357,17 +357,17 @@ describe("a python script writing the soul file", () => {
       const root = mkdtempSync(join(tmpdir(), "soul-tamper-reload-ended-"));
       const f = diskFiles(root);
       setBotFiles(f);
-      const soul = join(root, "frank", "SOUL.md");
-      await f.write("frank", "SOUL.md", SAVED);
+      const soul = join(root, "ed", "SOUL.md");
+      await f.write("ed", "SOUL.md", SAVED);
       const turnStart = Date.now() - 30_000;
-      noteSessionRuns([{ id: "frank-chat", busy: true }], turnStart);
+      noteSessionRuns([{ id: "ed-chat", busy: true }], turnStart);
       reloadSessionRunsForTest();
-      noteSessionRuns([{ id: "frank-chat", busy: false }], turnStart + 2_000);
+      noteSessionRuns([{ id: "ed-chat", busy: false }], turnStart + 2_000);
       setProcessRunSource(async () => [
-        { sessionId: "frank-chat", pid: 4242, start: turnStart - 500, end: turnStart + 2_100, turns: [{ start: turnStart, end: turnStart + 2_100 }] },
+        { sessionId: "ed-chat", pid: 4242, start: turnStart - 500, end: turnStart + 2_100, turns: [{ start: turnStart, end: turnStart + 2_100 }] },
       ]);
       pyWrite(soul, ASH);
-      expect(await checkSoul("frank", "frank", f)).toBe("kept-ash");
+      expect(await checkSoul("ed", "ed", f)).toBe("kept-ash");
       expect(readFileSync(soul, "utf8")).toBe(ASH);
     },
   );
@@ -400,7 +400,7 @@ describe("whose run counts: only that Mono's own chats and workers, or one worki
     expect(runIsMonos({ sessionId: "plain", cwd: "~/agent-memory/monos/hivra-lead" }, "hivra-lead")).toBe(true);
     // Another Mono's home, or a name that only starts the same, is not this one's.
     expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/hivra-lead-2" }, "hivra-lead")).toBe(false);
-    expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/frank" }, "hivra-lead")).toBe(false);
+    expect(runIsMonos({ sessionId: "plain", cwd: "/Users/ash/agent-memory/monos/ed" }, "hivra-lead")).toBe(false);
     setMonoHomeRoot("/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos-home");
     expect(
       runIsMonos({ sessionId: "plain", cwd: "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.x/monos-home/hivra-lead" }, "hivra-lead"),
@@ -587,21 +587,21 @@ describe("the put-back row names what was running, by each run's own kind", () =
   });
 
   it("another Mono's chat that wrote the soul is named for whose it is and where it worked, not as one in this Mono's folder (S19 case C)", async () => {
-    expect(otherChatName({ sessionId: "alfred-chat", cwd: "/Users/ash" }, (id) => (id === "alfred" ? "Alfred" : undefined))).toBe("Alfred's chat in ~");
+    expect(otherChatName({ sessionId: "cam-chat", cwd: "/Users/ash" }, (id) => (id === "cam" ? "Alfred" : undefined))).toBe("Alfred's chat in ~");
     expect(otherChatName({ sessionId: "plain-chat", cwd: "/Users/ash/code/exo" })).toBe("a chat in ~/code/exo");
-    const texts: Record<string, RunToolCall[]> = { "alfred-chat": [{ kind: "edit", text: "/Users/ash/agent-memory/monos/nibbii-lead/SOUL.md" }] };
+    const texts: Record<string, RunToolCall[]> = { "cam-chat": [{ kind: "edit", text: "/Users/ash/agent-memory/monos/nibbii-lead/SOUL.md" }] };
     const { f, files } = memFiles();
     setBotFiles(f);
     await f.write("nibbii-lead", "SOUL.md", SAVED);
     setRunToolTextSource((id) => texts[id] ?? []);
     try {
-      noteSessionRuns([{ id: "alfred-chat", busy: true, cwd: "/Users/ash" }], 1_000);
+      noteSessionRuns([{ id: "cam-chat", busy: true, cwd: "/Users/ash" }], 1_000);
       files.set("nibbii-lead/SOUL.md", { text: OUTSIDE, at: 2_000 });
       expect(await checkSoul("nibbii-lead", "Nibbii lead", f, (at) => runsAt(at, 0, 9_000), 9_000)).toBe("put-back");
       const row = botChangeRows()
         .flatMap((r) => (r.kind === "one" ? [r.change] : r.items))
         .find((c) => c.monoId === "nibbii-lead")!;
-      expect(row.line).toMatch(/while (Alfred|alfred)'s chat in ~ was running/);
+      expect(row.line).toMatch(/while (Alfred|cam)'s chat in ~ was running/);
       expect(row.line).not.toContain("folder");
     } finally {
       setRunToolTextSource(null);

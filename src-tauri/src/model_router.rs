@@ -1394,7 +1394,7 @@ mod tests {
         std::thread::spawn(move || {
             let (mut s, _) = upstream.accept().unwrap();
             let _ = read_request(&mut s).unwrap();
-            let text = r#"{"choices":[{"message":{"role":"assistant","content":"{\"pick\":[\"frank\"],\"confidence\":0.9}"}}]}"#;
+            let text = r#"{"choices":[{"message":{"role":"assistant","content":"{\"pick\":[\"ed\"],\"confidence\":0.9}"}}]}"#;
             let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{text}", text.len());
         });
         let r = route(
@@ -1403,7 +1403,7 @@ mod tests {
             "fake-model",
         );
         let out = quick_complete(&r, Some("fake-key"), "s", "p", 1_500).unwrap();
-        assert!(out.contains("frank"));
+        assert!(out.contains("ed"));
     }
 
     #[test]

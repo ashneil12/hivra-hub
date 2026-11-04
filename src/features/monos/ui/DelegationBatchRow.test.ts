@@ -344,6 +344,38 @@ describe("the notices", () => {
     act(() => root.render(createElement(DelegationWaitingLine, { count: 0 })));
     expect(container.textContent).toBe("");
   });
+
+  it("shows .e2e proof from the worker's report and nothing that leaves that folder", () => {
+    const proved = row("t-e2e", "w-e2e", "completed");
+    proved.report = JSON.stringify({
+      summary: "proved the button",
+      filesChanged: [],
+      checks: [],
+      evidence: [".e2e/report.json", "https://example.com/run", "../secret.png"],
+      openQuestions: [],
+      selfAssessment: [],
+      missing: [],
+    });
+    setDelegationRows([proved]);
+    setDelegationActions({
+      openOwner: vi.fn(),
+      openChild: vi.fn(),
+      stopTree: vi.fn(),
+      stopRow: vi.fn(),
+    });
+    act(() =>
+      root.render(
+        createElement(DelegationBatchRow, {
+          launches: [launch("w-e2e", "Prove the button")],
+          views: new Map([["w-e2e", { state: "working", title: "Prove the button" }]]),
+          onOpen: vi.fn(),
+        }),
+      ),
+    );
+    expect(container.querySelector("[data-e2e-path]")?.textContent).toBe(".e2e/report.json");
+    expect(container.textContent).not.toContain("secret");
+    expect(container.textContent).not.toContain("example.com");
+  });
 });
 
 describe("a Lead's Stop all whose workers couldn't be loaded", () => {

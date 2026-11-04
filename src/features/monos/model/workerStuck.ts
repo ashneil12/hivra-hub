@@ -381,7 +381,7 @@ export function unfinishedWorker(row: Delegation, now: number): string | undefin
 }
 
 /**
- * Why only Ash can sort a failed worker (r30c; frank on Ash's D5 words, 22 Oct: "a broken job lands in Needs you with
+ * Why only Ash can sort a failed worker (r30c; ed on Ash's D5 words, 22 Oct: "a broken job lands in Needs you with
  * the reason and Open <Lead>'s chat"): out of credits (`billing`), a key the provider rejected (`auth` with key words,
  * or a 401/403 or "invalid API key" a provider sent unclassified), signed out (`auth`), a request the provider refused
  * for good (policy, permission, "not allowed": no retry or Lead can change that), or a failure self-repair's retries

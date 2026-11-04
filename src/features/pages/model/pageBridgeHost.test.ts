@@ -7,7 +7,7 @@ import type { Capability } from "./pageSpec";
 type Msg = Record<string, unknown>;
 function fakeSources() {
   const subs = new Map<string, Set<() => void>>();
-  let agents = { agents: [{ id: "frank", state: "idle" }] };
+  let agents = { agents: [{ id: "ed", state: "idle" }] };
   const source = (name: string, read: (args: Record<string, unknown>) => unknown) => ({
     read,
     subscribe(fn: () => void) {
@@ -64,7 +64,7 @@ it("answers a read Ash allowed, once, and refuses one he didn't", async () => {
   h.receive({ type: "hub:call", id: "c2", call: "jobs.read" });
   await flush();
   expect(replies()).toEqual([
-    { type: "hub:reply", id: "c1", ok: true, result: { agents: [{ id: "frank", state: "idle" }] } },
+    { type: "hub:reply", id: "c1", ok: true, result: { agents: [{ id: "ed", state: "idle" }] } },
     { type: "hub:reply", id: "c2", ok: false, error: NOT_ASKED },
   ]);
 });
@@ -75,12 +75,12 @@ it("a watch gets the data now and again whenever it changes (only when it change
   h.receive({ type: "hub:watch", id: "w1", call: "agents.read" });
   await vi.advanceTimersByTimeAsync(0);
   expect(replies()).toEqual([{ type: "hub:reply", id: "w1", ok: true, result: true }]);
-  expect(data()).toEqual([{ type: "hub:data", watch: "w1", call: "agents.read", data: { agents: [{ id: "frank", state: "idle" }] } }]);
-  src.set({ agents: [{ id: "frank", state: "working" }] });
-  src.set({ agents: [{ id: "frank", state: "asking" }] }); // a burst folds into one push
+  expect(data()).toEqual([{ type: "hub:data", watch: "w1", call: "agents.read", data: { agents: [{ id: "ed", state: "idle" }] } }]);
+  src.set({ agents: [{ id: "ed", state: "working" }] });
+  src.set({ agents: [{ id: "ed", state: "asking" }] }); // a burst folds into one push
   await vi.advanceTimersByTimeAsync(60);
   expect(data().map((m) => (m.data as { agents: { state: string }[] }).agents[0].state)).toEqual(["idle", "asking"]);
-  src.set({ agents: [{ id: "frank", state: "asking" }] }); // nothing new: no push
+  src.set({ agents: [{ id: "ed", state: "asking" }] }); // nothing new: no push
   await vi.advanceTimersByTimeAsync(60);
   expect(data()).toHaveLength(2);
   h.receive({ type: "hub:unwatch", id: "w1" });
@@ -117,7 +117,7 @@ it("an action runs only on Ash's tap inside the page, and only on a kept page", 
   expect(replies()[1]).toEqual({ type: "hub:reply", id: "a2", ok: true, result: { done: "Stopped it" } });
   expect(acted).toEqual([["agents.stop", { workerId: "d1" }, { pageId: "pg_1", pageTitle: "Agents" }]]);
   // An action it didn't ask for is refused even on a tap.
-  h.receive({ type: "hub:call", id: "a3", call: "agents.message", args: { agentId: "frank", text: "hi" } });
+  h.receive({ type: "hub:call", id: "a3", call: "agents.message", args: { agentId: "ed", text: "hi" } });
   await flush();
   expect(replies()[2].ok).toBe(false);
 });
@@ -139,11 +139,11 @@ it("a preview shows live data it asked to read, but its buttons and everything e
 it("mono.run and tasks.write run on Ash's tap on a kept page that asked for them, never on their own (C4)", async () => {
   approved = ["agents.read", "mono.run", "tasks.write"];
   const { h } = host({ asks: ["agents.read", "mono.run", "tasks.write"] });
-  h.receive({ type: "hub:call", id: "m1", call: "mono.run", args: { agentId: "frank", text: "Pull signups" } });
+  h.receive({ type: "hub:call", id: "m1", call: "mono.run", args: { agentId: "ed", text: "Pull signups" } });
   await flush();
   expect(replies()[0]).toEqual({ type: "hub:reply", id: "m1", ok: false, error: TAP_ONLY });
   tapped = true;
-  h.receive({ type: "hub:call", id: "m2", call: "mono.run", args: { agentId: "frank", text: "Pull signups" } });
+  h.receive({ type: "hub:call", id: "m2", call: "mono.run", args: { agentId: "ed", text: "Pull signups" } });
   h.receive({ type: "hub:call", id: "m3", call: "tasks.write", args: { op: "stop", workerId: "d1" } });
   await flush();
   expect(replies().slice(1).map((r) => r.ok)).toEqual([true, true]);
@@ -238,14 +238,14 @@ it("every tap's outcome is said on the page by the app: Sending… while it runs
   approved = ["agents.read", "agents.stop", "agents.message"] as Capability[];
   // Refused: no tap.
   const { h } = host({ asks: ["agents.read", "agents.stop", "agents.message"] as Capability[] });
-  h.receive({ type: "hub:call", id: "r1", call: "agents.message", args: { agentId: "chief-of-staff", text: "hi" } });
+  h.receive({ type: "hub:call", id: "r1", call: "agents.message", args: { agentId: "ada", text: "hi" } });
   await flush();
   expect(pageActionLog("pg_1")[0]).toMatchObject({ line: `Didn't go through: ${TAP_ONLY}`, ok: false });
   // Running, then failed with the plain reason.
   tapped = true;
   let fail!: (e: Error) => void;
   const failing = host({ asks: ["agents.message"] as Capability[], act: () => new Promise((_, rej) => { fail = rej; }) }).h;
-  failing.receive({ type: "hub:call", id: "r2", call: "agents.message", args: { agentId: "chief-of-staff", text: "hi" } });
+  failing.receive({ type: "hub:call", id: "r2", call: "agents.message", args: { agentId: "ada", text: "hi" } });
   await flush();
   expect(pageActionRunning("pg_1")).toBe(true);
   fail(new Error("Chief of Staff couldn't take a message right now. Open the chat instead."));

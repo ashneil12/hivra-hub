@@ -219,36 +219,36 @@ describe("Open team (the hub)", () => {
   it("opens a Lead's coding team and a Mono's own team from the row, the line and the menu; a Mono with none has none", async () => {
     const exo = "vg-game-lead";
     updateMono(exo, (m) => ({ ...m, sessionId: "lead-chat" }));
-    const alfred = createMono();
-    updateMono(alfred.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
+    const cam = createMono();
+    updateMono(cam.id, (m) => ({ ...m, name: "Alfred", sessionId: "cam-chat" }));
     const plain = createMono();
-    await ensureMonoTeam(alfred.id, async (id) => `/data/mono-teams/${id}`);
-    setDelegationRows([row("t-1", "w1", exo, "lead-chat", "running"), row("t-2", "w2", alfred.id, "alfred-chat", "running")]);
+    await ensureMonoTeam(cam.id, async (id) => `/data/mono-teams/${id}`);
+    setDelegationRows([row("t-1", "w1", exo, "lead-chat", "running"), row("t-2", "w2", cam.id, "cam-chat", "running")]);
     const onOpen = vi.fn();
     mount(new Map(), true, onOpen);
     const openTeam = (id: string) => container.querySelector<HTMLButtonElement>(`[data-mono-open-team="${id}"]`);
     expect(openTeam(exo)?.getAttribute("aria-label")).toBe("Open EXO coding team");
-    expect(openTeam(alfred.id)?.getAttribute("aria-label")).toBe("Open Alfred's team");
+    expect(openTeam(cam.id)?.getAttribute("aria-label")).toBe("Open Alfred's team");
     expect(openTeam(plain.id)).toBeNull();
     act(() => openTeam(exo)!.click());
-    act(() => openTeam(alfred.id)!.click());
+    act(() => openTeam(cam.id)!.click());
     expect(opened).toEqual([
       ["coding", "vg-game", { lead: true }],
-      ["mono", alfred.id, { owner: true }],
+      ["mono", cam.id, { owner: true }],
     ]);
     // The line opens the team too, never the Mono's chat.
-    act(() => work(alfred.id)!.querySelector("button")!.click());
-    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
+    act(() => work(cam.id)!.querySelector("button")!.click());
+    expect(opened.at(-1)).toEqual(["mono", cam.id, { owner: true }]);
     expect(onOpen).not.toHaveBeenCalled();
     // A Mono's team in view: its row is the current one (no project is).
-    act(() => setHubSelection({ project: "vg-game", item: `team:${alfred.id}` }));
+    act(() => setHubSelection({ project: "vg-game", item: `team:${cam.id}` }));
     expect(container.querySelector(`[data-selected][data-mono-status]`)?.querySelector("[data-mono-primary-name]")?.textContent).toBe("Alfred");
     // The menu offers it as well.
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Alfred options"]')!.click());
     const item = document.querySelector<HTMLButtonElement>("[data-mono-menu-open-team]");
     expect(item?.textContent).toBe("Open Alfred's team");
     act(() => item!.click());
-    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
+    expect(opened.at(-1)).toEqual(["mono", cam.id, { owner: true }]);
   });
 
   // Ash, 20 Oct (his screenshot of the shipped rail: "basically this is good"): a Mono with nothing out shows nothing
@@ -256,23 +256,23 @@ describe("Open team (the hub)", () => {
   it("adds nothing to the row of a Mono with nothing out, a Lead's or one with its own team; the menu still opens it", async () => {
     const exo = "vg-game-lead";
     updateMono(exo, (m) => ({ ...m, sessionId: "lead-chat" }));
-    const alfred = createMono();
-    updateMono(alfred.id, (m) => ({ ...m, name: "Alfred", sessionId: "alfred-chat" }));
-    await ensureMonoTeam(alfred.id, async (id) => `/data/mono-teams/${id}`);
+    const cam = createMono();
+    updateMono(cam.id, (m) => ({ ...m, name: "Alfred", sessionId: "cam-chat" }));
+    await ensureMonoTeam(cam.id, async (id) => `/data/mono-teams/${id}`);
     // What it had out is back: nothing is out any more.
-    setDelegationRows([row("t-1", "w1", alfred.id, "alfred-chat", "completed", { settledAt: Date.now() })]);
+    setDelegationRows([row("t-1", "w1", cam.id, "cam-chat", "completed", { settledAt: Date.now() })]);
     mount(new Map(), true);
     expect(container.querySelector("[data-mono-open-team]")).toBeNull();
     expect(container.querySelector("[data-mono-work]")).toBeNull();
     // Its row keeps the shipped hover room (one button's worth, for its options).
-    const alfredRow = container.querySelector<HTMLButtonElement>('button[aria-label^="Alfred,"]');
-    expect(alfredRow?.className).toContain("group-hover:pr-6");
-    expect(alfredRow?.className).not.toContain("pr-12");
+    const camRow = container.querySelector<HTMLButtonElement>('button[aria-label^="Alfred,"]');
+    expect(camRow?.className).toContain("group-hover:pr-6");
+    expect(camRow?.className).not.toContain("pr-12");
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Alfred options"]')!.click());
     const item = document.querySelector<HTMLButtonElement>("[data-mono-menu-open-team]");
     expect(item?.textContent).toBe("Open Alfred's team");
     act(() => item!.click());
-    expect(opened.at(-1)).toEqual(["mono", alfred.id, { owner: true }]);
+    expect(opened.at(-1)).toEqual(["mono", cam.id, { owner: true }]);
   });
 
   it("a Mono with work out but no team (it only briefed coding teams) opens its chat from the line", () => {

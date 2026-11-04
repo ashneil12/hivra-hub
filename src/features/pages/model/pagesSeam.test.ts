@@ -9,8 +9,8 @@ import { validatePageSpec, type BespokeSpec } from "./pageSpec";
 import { CSP, SANDBOX, bespokeSrcdoc } from "./sandbox";
 import { stubPageSpec } from "./stubPages";
 
-const roster = [{ id: "projects-manager" }];
-const req = { projectId: "hivra", monoId: "projects-manager", prompt: "a page" };
+const roster = [{ id: "bo" }];
+const req = { projectId: "hivra", monoId: "bo", prompt: "a page" };
 const bespoke = (over: Partial<BespokeSpec> = {}): BespokeSpec => ({ kind: "bespoke", title: "Example: room", html: "<p class='t'>Hi</p>", css: ".t{color:var(--color-content)}", permissions: [], ...over });
 
 beforeEach(() => { localStorage.clear(); resetPagesForTest(); });
