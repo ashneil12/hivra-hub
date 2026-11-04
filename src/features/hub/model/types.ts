@@ -1,6 +1,7 @@
 // Hub data shapes. They follow the spec's "Handoff notes for Claude Code"
 // (SPEC.md, H1b). The frontend only talks to `HubDataSource`; Claude Code
 // replaces the mock source with the real backend.
+import type { CouncilRecord } from "../../council/model/record";
 
 /**
  * Grey icon shape that tells a project apart. Never a colour. Ash OS's set (Ash, 15 Oct: "i want to be able to change
@@ -372,6 +373,8 @@ export type GroupChat = {
   replyError?: string;
   replyConversationId?: string;
   replyMessageId?: string;
+  /** WP-23: the council convened in this room, when there is one. */
+  council?: CouncilRecord;
 };
 
 export type BuildStatus = "ready" | "building" | "failed";

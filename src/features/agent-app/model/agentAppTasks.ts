@@ -1,6 +1,6 @@
 // The delegate tool's app side (docs/PHASE-2-DESIGN.md, H3): the `tasks.*` app actions, over the delegation rows that
 // H2 stores (src-tauri/src/delegations.rs, monos/model/delegations.ts). The `monocode` MCP server (src-tauri/src/
-// mcp_server.rs) maps delegate_task / task_status / task_wait / task_cancel / task_cannot / task_answer onto these; `monocode app
+// mcp_server.rs) maps delegate_task / task_status / task_wait / task_cancel / task_cannot / task_answer / task_accept onto these; `monocode app
 // tasks.*` reaches them too.
 //
 // - Only the chats Ash talks to have tasks: a Mono's own chat and a chat in a project's coding team (hub/model/
@@ -59,6 +59,7 @@ import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./ta
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
+import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
@@ -112,8 +113,12 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "whenBusy",
       "redoes",
       "files",
+      "gates",
+      "checks",
+      "code",
     ],
   ],
+  ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy"]],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
@@ -168,6 +173,13 @@ export type AgentAppTasksHost = {
   ): Promise<{ stopFailed: string[]; stopped?: string[]; cancelled?: string[] }>;
   /** The chat started (true) or finished (false) a tasks.wait call: its workers' questions come back through the wait. */
   waiting?(owner: string, on: boolean): void;
+  /**
+   * Hivra WP-40: keep this task's gates (firstmate_gates_plan). A store error is the caller's to retry; it must not
+   * look like the worker failed to start.
+   */
+  saveGates?(id: string, request: GateRequest, folder?: string): Promise<unknown>;
+  /** Hivra WP-40: the first mate accepts or refuses an unsure verdict (firstmate_gates_decide). */
+  decideGates?(owner: string, id: string, accept: boolean, reason?: string): Promise<unknown>;
   /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
   selfTask?(sessionId: string): Promise<Delegation | undefined>;
   /**
@@ -504,8 +516,26 @@ function lastActiveAt(row: Delegation, child: TaskChild | undefined) {
   return iso(Math.max(row.updatedAt, child?.lastActiveAt ?? 0));
 }
 
+/** What task_status says about the gates. Anything that isn't a pass is not passed. */
+function gateLine(verdict: string | null | undefined): string | undefined {
+  if (!verdict) return undefined;
+  switch (verdict) {
+    case "unsure":
+      return "Its checks need you. Accept with task_accept, or refuse with a reason. It is not done until you do.";
+    case "failed":
+      return "Its checks failed.";
+    case "pending":
+      return "Its checks are still running.";
+    case "passed":
+      return "Its checks passed.";
+    default:
+      return "Its checks have not passed.";
+  }
+}
+
 /** A task as task_wait reports it: status only. */
 function statusView(row: Delegation, child: TaskChild | undefined) {
+  const gates = gateLine(row.gateVerdict);
   return {
     taskId: row.id,
     ...(row.title ? { title: row.title } : {}),
@@ -513,6 +543,8 @@ function statusView(row: Delegation, child: TaskChild | undefined) {
     activity: activity(row, child),
     lastActiveAt: lastActiveAt(row, child),
     hasPendingQuestion: row.state === "question",
+    // WP-40: the gates' word, on the short view too, so a wait sees that a finished task is not done yet.
+    ...(gates ? { gates } : {}),
     // Stuck without asking or failing (workerStall.ts): steer it with a message, or cancel it and brief again.
     ...(row.state === "running" && row.stallKind
       ? {
@@ -608,6 +640,8 @@ async function delegate(
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
   const goal = text(input.goal, "goal", 1_000);
+  // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
+  const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
   // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
@@ -621,8 +655,21 @@ async function delegate(
       );
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
     // WP-41: the brief names the pstack skills for this kind of work.
-    const leadBrief = renderBrief({ intent, spec: brief }, { kind: "first-mate" }, classifyBriefTask(`${intent}\n${brief}`));
-    return briefLead(source, owner.mono, tasks, { requestId, brief: leadBrief, title, asks, goal, input });
+    const leadBrief = renderBrief(
+      { intent, spec: brief },
+      { kind: "first-mate" },
+      classifyBriefTask(`${intent}\n${brief}`),
+    );
+    return briefLead(source, owner.mono, tasks, {
+      requestId,
+      brief: leadBrief,
+      title,
+      asks,
+      goal,
+      input,
+      gates,
+      gateFolder: source.cwd,
+    });
   }
   if (input.whenBusy !== undefined)
     throw new Error("whenBusy is for a brief to a Lead (lead); a worker starts in a chat of its own");
@@ -706,6 +753,8 @@ async function delegate(
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
     tasks.pool?.started({ id, heavy, files });
+    // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
+    await keepGates(tasks, already.id, gates, folder);
     return {
       taskId: already.id,
       childSessionId: id,
@@ -839,6 +888,8 @@ async function delegate(
   tasks.pool?.started({ id, heavy, files });
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
+  // WP-40: the plan is kept once the row exists. A waiting worker stores `input` and this runs when it starts.
+  await keepGates(tasks, row?.id, gates, folder);
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
   if (redoes && row) await tasks.redo?.(source.id, redoes, row.id).catch(() => undefined);
   return {
@@ -893,6 +944,8 @@ async function briefLead(
     asks: string[];
     goal?: string;
     input: Record<string, unknown>;
+    gates?: GateRequest;
+    gateFolder?: string;
   },
 ) {
   const { input } = job;
@@ -916,6 +969,7 @@ async function briefLead(
     askIds: job.asks,
     mode: whenBusy,
   });
+  await keepGates(tasks, out.row?.id, job.gates, job.gateFolder);
   // A Lead that stopped on its own question to Ash is waiting on him, not busy with work: say so.
   const asked = out.delivery === "queued" ? tasks.child?.(out.childSessionId)?.pendingQuestion : undefined;
   return {
@@ -1188,6 +1242,41 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
   return { project, ...limits, line: limitsLine(projectName(folder), limits) };
 }
 
+/** Keep a task's gates. A miss is not a failed start: the same call again saves them. */
+async function keepGates(
+  tasks: AgentAppTasksHost,
+  id: string | null | undefined,
+  request: GateRequest | undefined,
+  folder?: string,
+) {
+  if (!id || !request || !tasks.saveGates) return;
+  await tasks.saveGates(id, request, folder).catch(() => undefined);
+}
+
+/**
+ * task_accept: the first mate's call on a finished task whose checks are unsure. Refusing needs a reason, in the same
+ * words Rust uses. Another chat's task is refused before the command runs.
+ */
+async function accept(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
+  const { tasks } = taskOwner(source, host);
+  const id = text(input.taskId, "taskId", 600);
+  if (typeof input.accept !== "boolean") throw new Error("accept must be true or false");
+  const raw = input.reason;
+  const reason = typeof raw === "string" ? raw.trim() : undefined;
+  if (raw !== undefined && (typeof raw !== "string" || !reason || reason.length > 500))
+    throw new Error("reason must be a non-empty string under 500 characters");
+  if (!input.accept && !reason)
+    throw new Error("Say why it isn't done (reason), in one plain line.");
+  const [row] = await ownRows(source, tasks, [id]);
+  if (!tasks.decideGates) throw new Error("This build can't accept a task's checks.");
+  await tasks.decideGates(source.id, row.id, input.accept, reason);
+  return {
+    taskId: row.id,
+    accepted: input.accept,
+    gateVerdict: input.accept ? "passed" : "failed",
+  };
+}
+
 /** Hivra WP-14: task_message and ask_person, on the caller's own tasks. */
 async function firstMateTool(
   source: Session,
@@ -1231,6 +1320,8 @@ export function handleTasks(
       return cannot(source, input, host);
     case "tasks.answer":
       return answer(source, input, host);
+    case "tasks.accept":
+      return accept(source, input, host);
     case "tasks.workers":
       return Promise.resolve().then(() => workers(source, input, host));
     case "tasks.message":

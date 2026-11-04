@@ -150,6 +150,9 @@ import { Popover } from "../../../shared/ui/Popover";
 import { UsageLimitNotice } from "./UsageLimitNotice";
 import { UsageLimitAccountPicker } from "./UsageLimitAccountPicker";
 import { consumePlanCommand, PLAN_COMMAND } from "../model/plan";
+import { COUNCIL_COMMAND, consumeCouncilCommand } from "../../council/model/command";
+import { requestCouncil } from "../../council/model/host";
+import { monoForSession } from "../../monos/model/mono";
 import {
   consumeOperatorCommand,
   OPERATOR_COMMAND,
@@ -571,13 +574,14 @@ export function Composer({
   const slashItems = useMemo(
     () =>
       remote
-        ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COMPACT_COMMAND]
+        ? [...(remoteFeatures?.plan ? [PLAN_COMMAND] : []), COUNCIL_COMMAND, COMPACT_COMMAND]
         : [
             SESSION_FOLDER_COMMAND,
             MCP_COMMAND,
             OPERATOR_COMMAND,
             ...(hideTopBar ? [] : [ORCHESTRATOR_COMMAND]),
             PLAN_COMMAND,
+            COUNCIL_COMMAND,
             ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
             ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
@@ -588,6 +592,7 @@ export function Composer({
                 ) &&
                 (skill.kind === "native" ||
                   (skill.name !== PLAN_COMMAND.name &&
+                    skill.name !== COUNCIL_COMMAND.name &&
                     skill.name !== COMPACT_COMMAND.name &&
                     skill.name !== SESSION_FOLDER_COMMAND.name &&
                     skill.name !== MCP_COMMAND.name &&
@@ -1399,6 +1404,26 @@ export function Composer({
       return;
     }
 
+    // WP-23: /council opens a council on the current project and never reaches the model.
+    const councilCommand = consumeCouncilCommand(value);
+    if (councilCommand.matched) {
+      const monoId = sessionId ? monoForSession(sessionId)?.id : undefined;
+      if (!requestCouncil(councilCommand.question, monoId ? [monoId] : [])) return;
+      if (!ref.current) return;
+      pasteGenerationRef.current += 1;
+      ref.current.value = "";
+      ref.current.style.height = "auto";
+      setDraft("");
+      onDraftChange?.("");
+      setPlusOpen(false);
+      setSlash(null);
+      setMention(null);
+      setCreatingSkill(false);
+      setCreateError(null);
+      syncHasValue("", attachmentsRef.current);
+      return;
+    }
+
     if (isCompactCommand(value)) {
       if (!onCompactContext?.()) return;
       if (!ref.current) return;
@@ -1575,6 +1600,7 @@ export function Composer({
       e.key === "Enter" &&
       !e.shiftKey &&
       (isCompactCommand(e.currentTarget.value) ||
+        consumeCouncilCommand(e.currentTarget.value).matched ||
         isMcpCommand(e.currentTarget.value) ||
         isSessionFolderCommand(e.currentTarget.value))
     ) {

@@ -7,6 +7,7 @@
 // reads them back; the old key stays where it is, untouched, until the copy is confirmed and beyond, so a rolled-back
 // build still finds its chats. Anything an older build wrote there later comes across on the next launch.
 import { invoke } from "@tauri-apps/api/core";
+import { councilFromUnknown } from "../../council/model/record";
 import type { ChatConversation, ChatMessage, ChatMessageKind, GroupChat, RoomAttachment } from "./types";
 
 export const CHAT_KEY = "monocode:hub-chats";
@@ -53,6 +54,8 @@ export type StoredRoom = {
   updatedAt: number;
   memberIds: string[];
   conversations: StoredConversation[];
+  /** WP-23: the council row's JSON, when this room has one. Unset on an older store. */
+  councilJson?: string;
 };
 
 export type RoomSnapshot = { rooms: StoredRoom[]; legacyImport?: Record<string, unknown> };
@@ -124,6 +127,11 @@ export type RoomBackend = {
   addOrigin(origin: RoomOrigin): Promise<void>;
   openOrigins(): Promise<RoomOrigin[]>;
   originDone(childSession: string): Promise<boolean>;
+  /**
+   * WP-23: write the council row only when `expectedRevision` is still the one stored (0 when there is none). A lost
+   * race comes back `applied: false` with the row that won. The room upsert never touches this row.
+   */
+  setCouncil?(roomId: string, expectedRevision: number, json: string): Promise<{ applied: boolean; revision: number; json: string }>;
 };
 
 export const tauriRooms: RoomBackend = {
@@ -141,6 +149,8 @@ export const tauriRooms: RoomBackend = {
   addOrigin: (origin) => invoke("rooms_origin_add", { origin: { ...origin, createdAt: origin.createdAt ?? 0 } }),
   openOrigins: () => invoke("rooms_origins_open"),
   originDone: (childSession) => invoke("rooms_origin_done", { childSession }),
+  // WP-23: the council is its own row, so a later room save cannot wipe it.
+  setCouncil: (roomId, expectedRevision, json) => invoke("rooms_set_council", { roomId, expectedRevision, json }),
 };
 
 // ---- Shapes ------------------------------------------------------------------------------------------------------
@@ -293,8 +303,20 @@ export function chatMessage(stored: StoredMessage): ChatMessage {
   };
 }
 
+/** A council row that is not the shape is dropped: the room opens with no council. */
+function councilOn(json: string | undefined): GroupChat["council"] {
+  if (!json) return undefined;
+  try {
+    return councilFromUnknown(JSON.parse(json)) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function groupChats(snapshot: RoomSnapshot, now = Date.now()): GroupChat[] {
-  return snapshot.rooms.map((room) => ({
+  return snapshot.rooms.map((room) => {
+    const council = councilOn(room.councilJson);
+    return {
     id: room.id,
     projectId: room.projectId,
     name: room.name,
@@ -302,6 +324,7 @@ export function groupChats(snapshot: RoomSnapshot, now = Date.now()): GroupChat[
     memberIds: [...room.memberIds],
     ...(room.leadId ? { leadId: room.leadId } : {}),
     ...(isResponderMode(room.responder) ? { responder: room.responder } : {}),
+    ...(council ? { council } : {}),
     ...(room.seated ? { seated: true } : {}),
     conversations: room.conversations.map((c) => ({
       id: c.id,
@@ -313,7 +336,8 @@ export function groupChats(snapshot: RoomSnapshot, now = Date.now()): GroupChat[
       ...(c.more ? { more: true } : {}),
       messages: c.messages.map(chatMessage),
     })),
-  }));
+    };
+  });
 }
 
 /**
