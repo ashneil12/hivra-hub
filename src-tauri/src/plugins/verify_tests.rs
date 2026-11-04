@@ -1550,3 +1550,81 @@ fn a_trimmed_resume_line_does_not_attach_the_earlier_runs_proof() {
         "proof from the resumed run is kept: {evidence:?}"
     );
 }
+
+#[test]
+fn an_old_row_resumed_before_the_column_existed_keeps_that_start() {
+    let start = 1_700_000_000_000_i64;
+    let earlier = start + 60_000;
+    let resume_at = start + 120_000;
+    let tmp = Tmp::new("old resume");
+    let dir = tmp.path().join("old project");
+    proof(&dir.join(".e2e"), "report.json", "{}\n");
+    proof(&dir.join(".e2e"), "mid.json", "{}\n");
+    proof(&dir.join(".e2e"), "results/home/trace.md", "trace\n");
+    set_mtime(&dir.join(".e2e/report.json"), start as u64);
+    set_mtime(&dir.join(".e2e/mid.json"), earlier as u64);
+    set_mtime(&dir.join(".e2e/results/home/trace.md"), resume_at as u64);
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "old-resume", &dir.display().to_string(), None);
+    let row = delegations::record(
+        &mut conn,
+        launch("owner", "old-resume", "old-resume"),
+        start,
+    )
+    .unwrap();
+    delegations::reattach(&mut conn, "old-resume", true, None, earlier)
+        .unwrap()
+        .unwrap();
+    let again = delegations::reattach(&mut conn, "old-resume", true, None, resume_at)
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.generation, 3);
+    // The column arrived after this resume, so the stored start is still unknown while the log remembers it.
+    conn.execute(
+        "UPDATE delegations SET run_started_at = NULL WHERE id = ?1",
+        [&row.id],
+    )
+    .unwrap();
+
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: row.id.clone(),
+            generation: 3,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        resume_at + 1,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "proof from the original run is not this resume: {evidence:?}"
+    );
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/mid.json"),
+        "an earlier resume is not the latest one: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the latest resume is kept: {evidence:?}"
+    );
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT run_started_at FROM delegations WHERE id = ?1",
+            [&row.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        Some(resume_at),
+        "a save must not write the created time back over a real resume"
+    );
+}

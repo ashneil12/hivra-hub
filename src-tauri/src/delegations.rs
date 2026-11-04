@@ -198,8 +198,9 @@ pub struct Delegation {
     pub delivery: String,
     pub delivery_message: Option<String>,
     pub created_at: i64,
-    /// When this run started, epoch ms. Set when the row is recorded and again when it resumes. Evidence uses this,
-    /// not the log: `note` only keeps the newest 50 lines.
+    /// When this run started, epoch ms. Set when the row is recorded and again when it resumes. A row from before
+    /// this column (NULL) uses the latest "resumed" line, else `created_at`, and that is what a later save writes.
+    /// Evidence uses this, not the log: `note` only keeps the newest 50 lines.
     pub run_started_at: i64,
     pub updated_at: i64,
     pub settled_at: Option<i64>,
@@ -285,11 +286,24 @@ const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_
      mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report, \
      run_started_at";
 
+/// The newest resume in the log. An old row has no `run_started_at`, and `created_at` would be the wrong run.
+fn latest_resumed_at(log: &[Value]) -> Option<i64> {
+    log.iter().rev().find_map(|entry| {
+        if entry.get("event").and_then(Value::as_str) != Some("resumed") {
+            return None;
+        }
+        entry.get("at").and_then(Value::as_i64)
+    })
+}
+
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
-    let log: String = row.get(26)?;
+    let log_text: String = row.get(26)?;
+    let log: Vec<Value> = serde_json::from_str(&log_text).unwrap_or_default();
     let created_at: i64 = row.get(23)?;
-    let run_started_at: Option<i64> = row.get(39)?;
+    let stored_start: Option<i64> = row.get(39)?;
+    let run_started_at =
+        stored_start.unwrap_or_else(|| latest_resumed_at(&log).unwrap_or(created_at));
     Ok(Delegation {
         id: row.get(0)?,
         owner_session: row.get(1)?,
@@ -315,10 +329,10 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         delivery: row.get(21)?,
         delivery_message: row.get(22)?,
         created_at,
-        run_started_at: run_started_at.unwrap_or(created_at),
+        run_started_at,
         updated_at: row.get(24)?,
         settled_at: row.get(25)?,
-        log: serde_json::from_str(&log).unwrap_or_default(),
+        log,
         version: row.get(27)?,
         mirrored_version: row.get(28)?,
         mirror_error: row.get(29)?,
