@@ -9,6 +9,7 @@ use super::readers::{exact_version, CLAUDE_REASON, DSH_REASON};
 use super::*;
 
 const COMMIT: &str = "6ea74587e384e1a8035c09ae33a46fe3f881eb9b";
+const BROWSER: &str = "a9cd2fdbfc4343a2d1868bebd045e19f4b89bf93";
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(
@@ -85,6 +86,17 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     let skills = &pstack.adds[0];
     assert_eq!(skills.kind, "skills");
     assert_eq!(skills.count, Some(58));
+    let browser = entry(&index, "browser");
+    assert_eq!(browser.status, Status::Available);
+    assert_eq!(browser.version.as_deref(), Some("1.0.0"));
+    assert_eq!(
+        browser.source,
+        Some(InstallSource::Git {
+            url: "https://github.com/ashneil12/monocode-hub".into(),
+            commit: BROWSER.into(),
+            path: Some("plugins/browser".into()),
+        })
+    );
     let fixture_skills = std::fs::read_dir(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack/skills"),
     )
@@ -92,12 +104,7 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     .count();
     assert_eq!(fixture_skills, 58);
 
-    for planned in [
-        "e2e-verify",
-        "browser",
-        "desktop-control",
-        "council-personas",
-    ] {
+    for planned in ["e2e-verify", "desktop-control", "council-personas"] {
         let e = entry(&index, planned);
         assert_eq!(e.status, Status::Planned, "{planned}");
         assert!(

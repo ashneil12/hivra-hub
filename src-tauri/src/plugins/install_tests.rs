@@ -157,6 +157,49 @@ impl Drop for ResetFail {
 }
 
 #[test]
+fn the_browser_plugin_installs_from_the_index_pin_without_the_network() {
+    let index: serde_json::Value = serde_json::from_str(super::discover::BUNDLED_INDEX).unwrap();
+    let browser = index["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|plugin| plugin["name"] == "browser")
+        .unwrap();
+    let pinned = &browser["versions"][0]["source"];
+    let url = pinned["url"].as_str().unwrap();
+    assert!(url.starts_with("https://"), "{url}");
+    let commit = pinned["commit"].as_str().unwrap();
+    assert_eq!(commit.len(), 40);
+    assert!(commit.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(pinned["path"], "plugins/browser");
+
+    let repo =
+        fsutil::canonical(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").as_path()).unwrap();
+    assert_eq!(git_cmd(&repo, &["cat-file", "-t", commit]), "commit");
+
+    let tmp = Tmp::new("browser-index");
+    let host = host(&tmp);
+    let source = InstallSource::Git {
+        url: repo.display().to_string(),
+        commit: Some(commit.to_string()),
+        tag: None,
+        path: Some("plugins/browser".into()),
+    };
+    let result = install::install(&host, &git_tools(), &source, RequestedBy::person()).unwrap();
+    let InstallResult::Installed { entry, .. } = result else {
+        panic!("the browser plugin should install, not wait");
+    };
+    let entry = entry.expect("installed");
+    assert_eq!(entry.name, "browser");
+    assert_eq!(entry.source.pin.as_deref(), Some(commit));
+    let mcp: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(host.installed("browser").join("mcp.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(mcp["mcpServers"]["browser"].is_object(), "{mcp}");
+}
+
+#[test]
 fn a_tag_installs_the_commit_it_points_at_and_uninstall_leaves_no_trace() {
     let tmp = Tmp::new("git-pin");
     let host = host(&tmp);

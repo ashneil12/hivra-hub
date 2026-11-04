@@ -50,9 +50,19 @@
       "category": "control",
       "keywords": ["browser", "playwright", "web", "mcp"],
       "contributes": { "mcpServers": ["browser"] },
+      "license": "MIT",
       "permissions": ["Runs a browser on this computer", "Opens web pages agents ask for", "Keeps a browser profile per agent in Hivra's data folder"],
-      "status": "planned",
-      "plannedIn": "WP-43"
+      "versions": [
+        {
+          "version": "1.0.0",
+          "source": {
+            "type": "git",
+            "url": "https://github.com/ashneil12/monocode-hub",
+            "commit": "a9cd2fdbfc4343a2d1868bebd045e19f4b89bf93",
+            "path": "plugins/browser"
+          }
+        }
+      ]
     },
     {
       "name": "desktop-control",
