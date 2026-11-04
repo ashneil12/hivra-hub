@@ -261,6 +261,12 @@ test("a spawn command outside the bundle is refused", () => {
     } catch (error) {
       if (error.code !== "EPERM" && error.code !== "ENOTSUP") throw error;
     }
+    const hard = path.join(bundle, "Contents", "MacOS", "hardlinked");
+    fs.linkSync(outside, hard);
+    const realHard = fs.realpathSync(hard);
+    const acceptedHard = acceptedSpawnCommand(bundle, { command: hard, args: [] });
+    if (isInside(realHard, fs.realpathSync(bundle))) assert.equal(acceptedHard.command, realHard);
+    else assert.equal(acceptedHard, null, "a hard link whose canonical path leaves the bundle is refused");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -305,14 +311,44 @@ test("appCommand on macOS is the bundle binary and ignores a spawn spec", () => 
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     fs.writeFileSync(binary, "stamp");
     fs.writeFileSync(`${binary}.spawn.json`, JSON.stringify({ command: "/not/node", args: ["x"] }));
-    const spec = appCommand(app);
     if (process.platform === "win32") {
-      assert.equal(spec.command, binary);
-      assert.deepEqual(spec.args, []);
+      assert.throws(() => appCommand(app, root), /This build has no monocode\.exe/);
     } else {
+      const spec = appCommand(app, root);
       assert.equal(spec.command, binary);
       assert.deepEqual(spec.args, []);
     }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a spawn.json is ignored under a non-temporary HOME", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ship-home-")));
+  try {
+    const app = path.join(root, "MonoCode Hub.app");
+    const binary = path.join(app, "Contents", "MacOS", "monocode");
+    const helper = path.join(app, "Contents", "MacOS", "node.exe");
+    fs.mkdirSync(path.dirname(binary), { recursive: true });
+    fs.writeFileSync(binary, "stamp");
+    fs.writeFileSync(helper, "not the real node");
+    fs.writeFileSync(`${binary}.spawn.json`, JSON.stringify({ command: helper, args: ["--from-spec"] }));
+    const realHome = os.userInfo().homedir;
+    if (process.platform !== "win32") {
+      assert.equal(appCommand(app, realHome).command, binary);
+      assert.deepEqual(appCommand(app, root).args, []);
+      return;
+    }
+    assert.throws(() => appCommand(app, realHome), /This build has no monocode\.exe/);
+    const spec = appCommand(app, root);
+    assert.equal(spec.command, fs.realpathSync(helper));
+    assert.deepEqual(spec.args, ["--from-spec"]);
+    fs.writeFileSync(`${binary}.exe`, "program");
+    assert.equal(appCommand(app, root).command, `${binary}.exe`);
+    assert.equal(appCommand(app, realHome).command, `${binary}.exe`);
+    fs.rmSync(`${binary}.exe`);
+    fs.rmSync(`${binary}.spawn.json`);
+    assert.throws(() => appCommand(app, root), /This build has no monocode\.exe/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

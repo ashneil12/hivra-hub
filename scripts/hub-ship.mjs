@@ -23,7 +23,6 @@
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
@@ -32,6 +31,7 @@ import {
   appCommand,
   copyBundle,
   spawnFailure,
+  isIsolatedHome,
   defaultLauncher,
   detachPath,
   homePathsFor,
@@ -90,15 +90,7 @@ export function homeFromEnv(env, platform = process.platform) {
   return null;
 }
 
-/** Whether `home` is a temporary HOME rather than the user's own (os.userInfo reads the user database). */
-export function isIsolatedHome(home) {
-  const real = os.userInfo().homedir;
-  try {
-    return fs.realpathSync(home) !== fs.realpathSync(real);
-  } catch {
-    return path.resolve(home) !== path.resolve(real);
-  }
-}
+export { isIsolatedHome };
 
 const git = (repo, args) =>
   execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
@@ -254,31 +246,39 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   // The new build migrates a copy of the live database (the live file is only read).
   if (!skipHealthcheck && exists(bundle) && verified.ok) {
     const db = path.join(paths.data, "monocode.db");
-    const spec = appCommand(bundle);
-    const result = spawnSync(spec.command, [...(spec.args ?? []), "healthcheck", "--json", "--db", db], {
-      encoding: "utf8",
-      timeout: 300_000,
-      env: { ...process.env, MONOCODE_NO_ALERT: "1" },
-    });
-    const report = (() => {
-      try {
-        return JSON.parse(result.stdout.trim().split("\n").pop());
-      } catch {
-        return null;
+    let spec;
+    try {
+      spec = appCommand(bundle, paths.home);
+    } catch (error) {
+      refusals.push(error.message);
+      spec = null;
+    }
+    if (spec) {
+      const result = spawnSync(spec.command, [...(spec.args ?? []), "healthcheck", "--json", "--db", db], {
+        encoding: "utf8",
+        timeout: 300_000,
+        env: { ...process.env, MONOCODE_NO_ALERT: "1" },
+      });
+      const report = (() => {
+        try {
+          return JSON.parse(result.stdout.trim().split("\n").pop());
+        } catch {
+          return null;
+        }
+      })();
+      const failure = spawnFailure(result);
+      facts.healthcheck = report ?? {
+        exit: result.status,
+        stderr: typeof result.stderr === "string" ? result.stderr.slice(-400) : "",
+        ...(failure ? { error: failure } : {}),
+      };
+      if (result.status === 65)
+        refusals.push(`The live database is newer than this build (schema ${report?.schemaFound}; the build knows ${report?.buildSchema}).`);
+      else if (result.status !== 0) {
+        const stderrLine = typeof result.stderr === "string" ? result.stderr.trim().split("\n").pop() : "";
+        const why = report?.error ?? failure ?? (stderrLine || null) ?? `exit ${result.status}`;
+        refusals.push(`The healthcheck failed on a copy of the live database: ${why}`);
       }
-    })();
-    const failure = spawnFailure(result);
-    facts.healthcheck = report ?? {
-      exit: result.status,
-      stderr: typeof result.stderr === "string" ? result.stderr.slice(-400) : "",
-      ...(failure ? { error: failure } : {}),
-    };
-    if (result.status === 65)
-      refusals.push(`The live database is newer than this build (schema ${report?.schemaFound}; the build knows ${report?.buildSchema}).`);
-    else if (result.status !== 0) {
-      const stderrLine = typeof result.stderr === "string" ? result.stderr.trim().split("\n").pop() : "";
-      const why = report?.error ?? failure ?? (stderrLine || null) ?? `exit ${result.status}`;
-      refusals.push(`The healthcheck failed on a copy of the live database: ${why}`);
     }
   }
   // One ship at a time.

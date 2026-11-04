@@ -6,6 +6,7 @@
 
 import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 export const HUB_IDENTIFIER = "com.ash.monocode-hub";
@@ -131,13 +132,11 @@ export function copyBundle(from, to, options = {}) {
 }
 
 /**
- * What to spawn for a bundle. macOS runs Contents/MacOS/monocode.
- * Windows prefers monocode.exe, then a spawn spec written beside the stamp
- * (the stamp file itself is a shell script Windows cannot CreateProcess).
- */
-/**
  * A spawn spec may name only a file inside the bundle. The path is canonicalised
- * first, so a symlink or `..` that leaves the bundle is refused.
+ * first, so a symlink, a `..`, or a hard link whose canonical path leaves the
+ * bundle is refused. On Windows that canonical path can be the other name of a
+ * hard link, so a link to the installed node is outside even though the link
+ * itself sits in the bundle.
  */
 export function acceptedSpawnCommand(bundle, spec, platform = process.platform) {
   const command = spec?.command;
@@ -158,19 +157,42 @@ export function acceptedSpawnCommand(bundle, spec, platform = process.platform) 
   return { command: realCommand, args };
 }
 
-export function appCommand(app) {
+/** Whether `home` is a temporary HOME rather than the user's own (os.userInfo reads the user database). */
+export function isIsolatedHome(home) {
+  const real = os.userInfo().homedir;
+  try {
+    return fs.realpathSync(home) !== fs.realpathSync(real);
+  } catch {
+    return path.resolve(home) !== path.resolve(real);
+  }
+}
+
+/**
+ * What to spawn for a bundle. macOS runs Contents/MacOS/monocode.
+ * Windows runs monocode.exe. A spawn spec beside the stamp is only for a ship
+ * under a temporary HOME, so a real bundle cannot redirect the healthcheck or
+ * the launch. With neither, Windows refuses: the stamp file is a shell script
+ * and CreateProcess cannot run it.
+ */
+export function appCommand(app, home) {
   const binary = path.join(app, "Contents", "MacOS", "monocode");
   if (process.platform !== "win32") return { command: binary, args: [] };
   const exe = `${binary}.exe`;
-  if (fs.existsSync(exe)) return { command: exe, args: [] };
   try {
-    const spec = JSON.parse(fs.readFileSync(`${binary}.spawn.json`, "utf8"));
-    const accepted = acceptedSpawnCommand(app, spec, "win32");
-    if (accepted) return accepted;
+    if (fs.statSync(exe).isFile()) return { command: exe, args: [] };
   } catch {
-    // A missing or unreadable spec falls through to the stamp binary.
+    // no monocode.exe
   }
-  return { command: binary, args: [] };
+  if (typeof home === "string" && home.length > 0 && isIsolatedHome(home)) {
+    try {
+      const spec = JSON.parse(fs.readFileSync(`${binary}.spawn.json`, "utf8"));
+      const accepted = acceptedSpawnCommand(app, spec, "win32");
+      if (accepted) return accepted;
+    } catch {
+      // A missing or unreadable spec is the same as no program.
+    }
+  }
+  throw new Error("This build has no monocode.exe");
 }
 
 /** PowerShell single-quoted literal. An apostrophe is doubled. Ported from host/windows.ts. */

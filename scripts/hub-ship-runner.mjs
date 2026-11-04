@@ -614,8 +614,9 @@ async function swap(ctx, ship) {
 function launch(ctx, ship, purpose) {
   const app = appPath(ship);
   if (ship.launch?.mode === "direct") {
+    // Resolve the program before opening the log, so a refusal does not leak the handle.
+    const spec = appCommand(app, ship.home);
     const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
-    const spec = appCommand(app);
     // macOS direct launch keeps the process environment and overlays the ship's.
     // Off macOS the trial app gets an allow-list, never the runner's whole environment.
     const env =
@@ -637,7 +638,7 @@ function launch(ctx, ship, purpose) {
   }
   // WP-09: no Launch Services off macOS. Open the bundle the direct way.
   if (process.platform !== "darwin") {
-    const spec = appCommand(app);
+    const spec = appCommand(app, ship.home);
     const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
     const child = spawn(spec.command, spec.args, {
       detached: true,
