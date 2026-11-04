@@ -10,7 +10,7 @@ function kept(id: string, spec: unknown, over: Partial<KeptPage> = {}): KeptPage
 it("turns kept pages into a My panels plugin and leaves a second pass unchanged", () => {
   const pages = [
     kept("Board", { kind: "blocks", title: "看板", blocks: [note] }),
-    kept("custom", { kind: "bespoke", title: "Custom", html: "a\r\nb", css: "p{}", permissions: ["tasks.read"] }),
+    kept("custom", { kind: "bespoke", title: "Custom", html: "a\r\nb", css: "p{}", permissions: ["tasks.read"] }, { permissions: ["tasks.read"] }),
   ];
   const first = mergeMyPanels({}, pages);
   expect(first.added).toEqual(["board", "custom"]);
@@ -62,6 +62,28 @@ it("does not overwrite a panel someone edited, or a description they changed", (
 it("makes no plugin when nothing is kept", () => {
   expect(mergeMyPanels({}, []).files).toEqual({});
   expect(mergeMyPanels({}, [kept("x", { kind: "nope" })]).files).toEqual({});
+});
+
+it("installs only the permissions Ash approved, and a ready page kept without allow gets none", () => {
+  const agents = {
+    kind: "bespoke",
+    title: "Agents",
+    html: "<p>a</p>",
+    permissions: ["agents.read", "agents.answer"],
+  };
+  const keptWithoutAllow = mergeMyPanels({}, [kept("agents", agents, { permissions: [] })]);
+  expect(JSON.parse(keptWithoutAllow.files["hivra/panels/agents/panel.json"]).permissions).toEqual([]);
+
+  const oneApproved = mergeMyPanels({}, [
+    kept("custom", { kind: "bespoke", title: "Custom", html: "<p>a</p>", permissions: ["tasks.read", "jobs.read"] }, { permissions: ["jobs.read", "jobs.read"] }),
+  ]);
+  expect(JSON.parse(oneApproved.files["hivra/panels/custom/panel.json"]).permissions).toEqual(["jobs.read"]);
+
+  const garbage = mergeMyPanels({}, [
+    kept("bad", agents, { permissions: "agents.read" }),
+    kept("badcap", agents, { permissions: ["not-a-cap"] }),
+  ]);
+  expect(garbage.added).toEqual([]);
 });
 
 it("gives a second page its own folder when the names collide", () => {

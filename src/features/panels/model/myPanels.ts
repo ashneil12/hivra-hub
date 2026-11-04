@@ -1,6 +1,6 @@
 // Kept Pages become panels in one local plugin (WP-33), so they can be edited, exported and rolled back like any
 // other plugin. The plugin's id is `my-panels` (a plugin name can't contain a space); its description is "My panels".
-import { validatePageSpec, type PageSpec } from "../../pages/model/pageSpec";
+import { isCapability, validatePageSpec, type Capability, type PageSpec } from "../../pages/model/pageSpec";
 
 export const MY_PANELS_ID = "my-panels";
 export const MY_PANELS_TITLE = "My panels";
@@ -12,6 +12,8 @@ export type KeptPage = {
   keptAt?: unknown;
   removed?: unknown;
   spec?: unknown;
+  /** What was approved. Missing means nothing was approved. This is not the spec's ask list. */
+  permissions?: unknown;
 };
 
 export type PanelMerge = { files: Record<string, string>; added: string[]; skipped: string[] };
@@ -56,14 +58,28 @@ function freeId(base: string, taken: ReadonlySet<string>): string | undefined {
   return undefined;
 }
 
-function panelFiles(id: string, spec: PageSpec): Record<string, string> | undefined {
+/** Approved grants only. A list that isn't a list of real permissions is refused. Asks that were not approved are left out. */
+function approvedGrants(spec: PageSpec, approved: unknown): Capability[] | undefined {
+  if (spec.kind !== "bespoke") return [];
+  if (approved === undefined) return [];
+  if (!Array.isArray(approved)) return undefined;
+  const grants: Capability[] = [];
+  for (const item of approved) {
+    if (typeof item !== "string" || !isCapability(item)) return undefined;
+    if (!spec.permissions.includes(item) || grants.includes(item)) continue;
+    grants.push(item);
+  }
+  return grants;
+}
+
+function panelFiles(id: string, spec: PageSpec, grants: Capability[]): Record<string, string> | undefined {
   const dir = `hivra/panels/${id}`;
   if (spec.kind === "blocks") {
     return { [`${dir}/panel.json`]: JSON.stringify({ kind: "blocks", title: spec.title, blocks: spec.blocks }) };
   }
   if (!spec.html) return undefined;
   return {
-    [`${dir}/panel.json`]: JSON.stringify({ kind: "bespoke", title: spec.title, permissions: spec.permissions }),
+    [`${dir}/panel.json`]: JSON.stringify({ kind: "bespoke", title: spec.title, permissions: grants }),
     [`${dir}/index.html`]: spec.html,
     ...(spec.css ? { [`${dir}/style.css`]: spec.css } : {}),
     ...(spec.js ? { [`${dir}/script.js`]: spec.js } : {}),
@@ -116,7 +132,12 @@ export function mergeMyPanels(existing: Record<string, string>, pages: readonly 
       skipped.push(sourceId);
       continue;
     }
-    const written = panelFiles(id, checked.value);
+    const grants = approvedGrants(checked.value, page.permissions);
+    if (!grants) {
+      skipped.push(sourceId);
+      continue;
+    }
+    const written = panelFiles(id, checked.value, grants);
     if (!written) {
       skipped.push(sourceId);
       continue;
