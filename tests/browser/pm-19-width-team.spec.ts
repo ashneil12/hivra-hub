@@ -4,7 +4,7 @@ import { openLocalHub } from "./localHub";
 import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
-// - Ash 21 Oct, width: Pages and a project's own Today (G1: its Inbox; a fresh load opens the first project)
+// - Ash 21 Oct, width: Pages and the project's coding team (WP-06: that chat replaced Today)
 //   fill the window at 1280, 1920 and 2560 wide, with modest side padding.
 // - Ash 21 Oct, team: a fresh install's onboarding shows the default team (names kept, a role line under each) and
 //   no pre-load option; nothing of Ash's. Round 20: the team is the four, Critiquito an unticked add-on (pm-20-review).
@@ -35,19 +35,20 @@ const SIZES = [
 ];
 
 for (const size of SIZES) {
-  test(`Today and Pages fill the width at ${size.width}x${size.height}`, async ({ page }) => {
+  test(`the coding team and Pages fill the width at ${size.width}x${size.height}`, async ({ page }) => {
     fs.mkdirSync(SHOTS, { recursive: true });
     await page.setViewportSize({ width: size.width, height: size.height });
     await open(page);
-    // G1: a fresh load already selects the first project's Inbox — its own Today fills the main column.
-    const today = page.locator("[data-hub-surface-body]").first();
-    await expect(today).toBeVisible({ timeout: 30_000 });
-    const t = await fill(page, "[data-hub-surface-body]");
+    // WP-06: a fresh load opens the first project's coding team. Its chat fills the main column.
+    const chat = page.locator("[data-session-drop]").first();
+    await expect(chat).toBeVisible({ timeout: 30_000 });
+    const t = await fill(page, "[data-session-drop]");
     expect(t.share).toBeGreaterThan(0.99);
-    expect(t.pad).toBeGreaterThanOrEqual(24);
-    expect(t.pad).toBeLessThanOrEqual(32);
+    const pad = await page.locator("[data-session-composer]").first().evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+    expect(pad).toBeGreaterThanOrEqual(24);
+    expect(pad).toBeLessThanOrEqual(32);
     await page.waitForTimeout(600);
-    await page.screenshot({ path: `${SHOTS}/pm-19-today-${size.name}.png` });
+    await page.screenshot({ path: `${SHOTS}/pm-19-coding-team-${size.name}.png` });
 
     await page.getByRole("button", { name: /^Pages/ }).first().click();
     // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when

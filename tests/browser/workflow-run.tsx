@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { SessionPane, type SessionPaneProps } from "../../src/features/sessions/ui/SessionPane";
 import { TranscriptPool, TranscriptPoolOutlet } from "../../src/features/sessions/ui/TranscriptPool";
-import { BeingBuiltView } from "../../src/features/hub/ui/BeingBuiltView";
 import { newSession, type Session } from "../../src/features/sessions/model/session";
 import { applyHarnessEvent } from "../../src/integrations/harness/core/apply";
 import {
@@ -17,7 +16,7 @@ import runFixture from "../../src/integrations/harness/providers/claude/fixtures
 import stopFixture from "../../src/integrations/harness/providers/claude/fixtures/claude-cli-2.1.302/workflow-stopped.ndjson?raw";
 import "../../src/styles/index.css";
 
-// The real Claude adapter, registry, transcript and Being built, fed what Claude Code 2.1.302 streamed for a real
+// The real Claude adapter, registry and transcript, fed what Claude Code 2.1.302 streamed for a real
 // Workflow run against a fake API (the recorded fixtures). Only the child process and native IPC are fake.
 // "stop-unseen" is the stopped run minus the two frames that announced it (a run that began before this turn, known
 // only from its progress frames); "stop-fails" is the stopped run with the stop itself failing to reach Claude Code.
@@ -184,4 +183,3 @@ function Fixture() {
 }
 
 createRoot(document.getElementById("chat")!).render(<Fixture />);
-createRoot(document.getElementById("built")!).render(<BeingBuiltView projectId="vg-game" />);
