@@ -92,11 +92,13 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   // No runner mascot while the model line shows: nothing floats on the line's rule.
   await page.waitForTimeout(600);
   expect(await page.locator(".pointer-events-none.fixed.inset-0.z-40 .origin-bottom svg").count()).toBe(0);
-  // While the turn runs its header is the one live status line (what it does now, Critiquito 29 Oct), with no Claude
-  // name or mark; once it ends the header names the model really in use (the model line's source): Grok 4.7.
+  // While the turn runs its header is the one live status line (what it does now, Critiquito 29 Oct), with no model
+  // name or mark; once it ends the header names the model really in use. The catalog calls claude:sonnet-5 "Claude Sonnet 5".
   const chat = box.locator("xpath=ancestor::*[@data-session-drop][1]");
-  await expect(chat.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first()).toBeVisible();
-  await expect(chat.getByText(/Sonnet|Claude/)).toHaveCount(0);
+  const live = chat.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first();
+  await expect(live).toBeVisible();
+  // The model line in this chat names Sonnet 5. The live header does not.
+  await expect(live).not.toContainText(/Sonnet|Claude|Grok/);
   expect(await chat.locator('img[src*="claude"]').count()).toBe(0);
   // The chat's last lines too (the turn's working mark sits just above the model line), then the composer.
   // The whole chat (its title, the turn and the composer), as Ash sees it in EXO's coding team.
@@ -108,6 +110,6 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   await expect.poll(() => fake<Array<{ sessionId: string; kind: string }>>(page, "stops")).toContainEqual({ sessionId: TEAM_CHAT, kind: "interrupt" });
   expect((await fake<Array<{ kind: string }>>(page, "stops")).filter((s) => s.kind === "stop_task")).toEqual([]);
   await expect(box.locator('[aria-label="Send"]')).toBeVisible({ timeout: 15_000 });
-  await expect(chat.getByText(/^Grok 4\.7 worked/)).toBeVisible();
-  await expect(chat.getByText(/Sonnet|Claude/)).toHaveCount(0);
+  await expect(chat.getByText(/^Claude Sonnet 5 worked/)).toBeVisible();
+  await expect(chat.getByText(/Grok/)).toHaveCount(0);
 });

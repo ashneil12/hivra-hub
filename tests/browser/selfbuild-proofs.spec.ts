@@ -116,7 +116,8 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
     card.locator("svg, canvas, img, [data-mono-letter]").first(),
   ).toBeVisible();
   await expect(rail.locator('button[aria-label^="Postie"]')).toHaveCount(0);
-  await expect(page.locator("text=/Grok 4\\.7/ >> visible=true").first()).toBeVisible();
+  // claude:sonnet-5 is named "Claude Sonnet 5" in the model catalog (models.ts). The model line shows that name with the "Claude " prefix removed.
+  await expect(page.locator("text=/Sonnet 5/ >> visible=true").first()).toBeVisible();
   await card.screenshot({ path: `${SHOTS}/13-draft-mono-card.png` });
   await shot(page, "13-draft-mono-before-yes");
 });
