@@ -17,6 +17,9 @@ function markSetupProved() {
 const fakeClaude = new URLSearchParams(location.search).has("fakeClaude");
 if (fakeClaude) configureChildBackend(fakeClaudeBackend());
 
+// The hub's dev page opens on the hub before anything is picked, as the Hub bundle does (hubNav.ts opensOnHub).
+Object.assign(window, { __MONOCODE_HUB_DEV_PAGE__: true });
+
 // Look like the Mac app (traffic-light space, ⌘ shortcuts).
 Object.defineProperty(navigator, "platform", { get: () => "MacIntel" });
 
@@ -40,7 +43,7 @@ if (localHub) {
 } else if (new URLSearchParams(location.search).has("onboarding")) {
   if (!sessionStorage.getItem("hub-clean-start")) {
     sessionStorage.setItem("hub-clean-start", "1");
-    for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded", "monocode:mono-team-seeded", "monocode:mono-team-added"]) localStorage.removeItem(k);
+    for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-onboarded", "monocode:hub-setup-not-now", "monocode:mono-team-seeded", "monocode:mono-team-added"]) localStorage.removeItem(k);
     // Clean start: none of our example Monos.
     localStorage.setItem("monocode:mono-roster", "[]");
   }

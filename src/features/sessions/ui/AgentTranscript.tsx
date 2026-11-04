@@ -3706,7 +3706,7 @@ function MonoTurnHeader({
   ) : (
     <ActivityPhaseIcon kind={status.kind} />
   );
-  // While it is live the line under the name says what it is doing now ("Reading src/app.tsx · 14s"), from the turn's
+  // While it is live the step beside the name says what it is doing now ("Reading src/app.tsx · 14s"), from the turn's
   // own blocks; offscreen, the short ticker beside the name is enough.
   const override =
     status.key === "question"
@@ -3773,14 +3773,11 @@ function MonoTurnHeader({
       data-mono-work
       data-transcript-search-item
       data-transcript-search-current={searchCurrent || undefined}
-      className={`flex min-w-0 gap-1.5 px-4 py-1 font-sans text-sm text-content/50 ${active && live ? "flex-col items-start" : "items-center"}`}
+      // One row, live or not, as upstream has it: going live must not add a line above the work and push the chat
+      // down (transcript-scroll.spec.ts). The step truncates beside the name.
+      className="flex min-w-0 items-center gap-1.5 px-4 py-1 font-sans text-sm text-content/50"
     >
-      {active && live ? (
-        <>
-          <div className="flex w-full min-w-0 items-center gap-1.5">{identity}</div>
-          <div className="flex w-full min-w-0 pl-1">{work}</div>
-        </>
-      ) : active ? (
+      {active ? (
         <>
           {identity}
           {name || agentMascot ? (

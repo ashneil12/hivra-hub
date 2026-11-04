@@ -1,3 +1,4 @@
+import "./macPlatform";
 import { createRoot } from "react-dom/client";
 import { FloatingMonoChat } from "../../src/features/monos/ui/FloatingMonoChat";
 import { installFakeTauri } from "./fakeTauri";

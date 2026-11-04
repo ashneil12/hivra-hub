@@ -16,6 +16,7 @@ import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
@@ -3362,12 +3363,11 @@ function Workspace({
     const cwd = sidebarCwd;
     const session = newWorkspaceSession(cwd, sessionDefaults?.runtimeMode);
     // An untouched New session tab for this project is already open: go to
-    // it rather than stacking another empty one beside it.
-    const blank = reusableBlankSessionTab(
-      tabsRef.current,
-      sessionsRef.current,
-      session,
-    );
+    // it rather than stacking another empty one beside it. A Hub default
+    // (hubDefaultsOn): upstream's own build appends a new tab every time.
+    const blank = hubDefaultsOn()
+      ? reusableBlankSessionTab(tabsRef.current, sessionsRef.current, session)
+      : undefined;
     if (blank) {
       setActiveTabId(blank.tabId);
       setComposerFocused(true);
@@ -16433,7 +16433,7 @@ function Workspace({
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}
-      onOpenInbox={onHubOpenInbox}
+      onOpenInbox={hubDefaultsOn() ? onHubOpenInbox : onOpenInbox}
       onOpenInboxItem={onOpenLinkedWorkItem}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onOpenAutomations={onOpenAutomations}
@@ -17109,8 +17109,9 @@ function Workspace({
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
-              not prompt for the new one; it stays in Settings → Appearance. */}
-          {IS_HUB_BUNDLE ? null : (
+              not prompt for the new one; it stays in Settings → Appearance.
+              The hub's dev page doesn't either (hubDefaultsOn). */}
+          {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}
