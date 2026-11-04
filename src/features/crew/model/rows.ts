@@ -168,8 +168,8 @@ function actionsFor(
     if (ownerSession) actions.push("message");
     actions.push("stop");
   }
-  // A failed or paused job can be sent again. Working and done are not retries.
-  if (status === "failed" || status === "paused") actions.push("retry");
+  // A failed job can be sent again. A paused one resumes by itself, so Retry would start a second worker.
+  if (status === "failed") actions.push("retry");
   if (status === "done") {
     const mode = (delivery?.mode ?? "").trim();
     const state = (delivery?.state ?? "").trim();

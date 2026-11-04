@@ -179,7 +179,9 @@ describe("crew rows", () => {
     const byId = Object.fromEntries(shown.map((row) => [row.id, row]));
     expect(byId.live?.actions).toEqual(["open", "message", "stop"]);
     expect(byId.ask?.actions).toEqual(["open", "message", "stop"]);
-    expect(byId.wait?.actions).toEqual(["stop", "retry"]);
+    // A paused worker resumes by itself. Retry would start a second one on the same brief.
+    expect(byId.wait?.actions).toEqual(["stop"]);
+    expect(byId.wait?.actions).not.toContain("retry");
     expect(byId.broke?.actions).toEqual(["open", "retry"]);
     expect(byId.landed?.actions).toEqual(["open", "open-pr"]);
     expect(byId.landed?.checks).toBe("Every check passed");
