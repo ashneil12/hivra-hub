@@ -22,6 +22,7 @@ import {
   type CrewRow,
   type CrewWorkerInput,
 } from "../model/rows";
+import { GateCards } from "../../delivery-gate/ui/GateCards";
 import { CrewTab } from "./CrewTab";
 
 // steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
@@ -223,19 +224,23 @@ export function CrewPanel({
   }
 
   return (
-    <CrewTab
-      rows={rows}
-      briefTitle={focus.briefId ? "This brief" : null}
-      stale={stale}
-      note={note}
-      onShowAll={clearCrewFocus}
-      onOpen={(row) => {
-        if (row.sessionId) onOpenSession(row.sessionId);
-      }}
-      onMessage={(row, text) => onMessage(row, text)}
-      onStop={(row) => void onStop(row)}
-      onRetry={(row) => void onRetry(row)}
-      onDeliver={(row) => void onDeliver(row)}
-    />
+    <>
+      {/* WP-81: the check on the crew's task, and one question when it needs a person. */}
+      <GateCards project={project} />
+      <CrewTab
+        rows={rows}
+        briefTitle={focus.briefId ? "This brief" : null}
+        stale={stale}
+        note={note}
+        onShowAll={clearCrewFocus}
+        onOpen={(row) => {
+          if (row.sessionId) onOpenSession(row.sessionId);
+        }}
+        onMessage={(row, text) => onMessage(row, text)}
+        onStop={(row) => void onStop(row)}
+        onRetry={(row) => void onRetry(row)}
+        onDeliver={(row) => void onDeliver(row)}
+      />
+    </>
   );
 }

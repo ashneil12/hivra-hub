@@ -56,9 +56,17 @@ Go. Same author as firstmate, which Hivra already ports.
    the task.
 8. **One watcher per PR.** A PR that came through the gate has its CI repaired by no-mistakes. Hivra's PR watch
    still shows its state but doesn't dispatch its own fix crew for it.
-9. **Hivra's own repo first.** Add the repo config so the gate runs `npm run check`. That is the first project to use
+9. **One check per job, not three** (Ash, 4 Nov: "will it cause bloat?"):
+   - pstack's skills guide a worker while it builds;
+   - WP-40's gates decide whether the work is done (diff, the project's checks, committed, the verdict);
+   - no-mistakes is the single review before GitHub.
+
+   With the gate on, the crew does not also run a separate review round before delivery, and WP-40 doesn't run the
+   project's checks a second time when the gate's Test step runs the same command. Record which layer ran which
+   check on the task, so nothing is silently skipped.
+10. **Hivra's own repo first.** Add the repo config so the gate runs `npm run check`. That is the first project to use
    it.
-10. **Dev copies** use `NM_HOME` inside the slot's data folder and never push to a real remote. Tests use a local
+11. **Dev copies** use `NM_HOME` inside the slot's data folder and never push to a real remote. Tests use a local
     bare repo as `origin` and a stand-in for the PR step (`MONOCODE_NO_MISTAKES`, read by dev copies only, like
     `MONOCODE_PR_WATCH_GH`).
 
@@ -73,7 +81,8 @@ Credit no-mistakes (MIT) in credits.json. If a later change bundles its binary i
   - a passed run links its PR to the task;
   - the checksum is checked, and a mismatch refuses to install;
   - the socket-length check;
-  - a dev copy never names a real remote.
+  - a dev copy never names a real remote;
+  - with the gate on, the project's checks run once per delivery, and the task records which layer ran them.
 - [ ] Windows: the pinned asset and checksum for each platform, and the same tests on the Windows runner.
 - [ ] `npm run check` passes. Dev-copy check on a test repo: a deliberate lint slip is fixed by the gate, and a
       judgment call reaches the task card.

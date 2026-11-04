@@ -16,9 +16,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
-use crate::pinned_tool::{
-    ensure, ArchiveKind, BlobSource, EnsureError, ToolAsset, ToolPin, UreqSource,
-};
+use crate::pinned_tool::{install, Asset, Pin, UreqFetcher};
 
 pub const POOL_FULL_PREFIX: &str = "pool-full: ";
 pub const POOL_FULL_NOTE: &str = "Waiting for a free worktree. The pool for this project is full.";
@@ -30,80 +28,53 @@ const LOCK_STALE: Duration = Duration::from_secs(300);
 
 /// treehouse v3.1.8. Checksums are the release `checksums.txt` (SHA-256 of each
 /// archive). The installer keeps only `treehouse` (`treehouse.exe` on Windows).
-pub fn treehouse_pin() -> ToolPin {
-    const ASSETS: &[ToolAsset] = &[
-        asset(
-            "darwin",
-            "arm64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-darwin-arm64.tar.gz",
-            "007c55c26e0bd8b672b1a917465f06c3f89d93a66cd171364ffb65743d268601",
-            ArchiveKind::TarGz,
-            "treehouse",
-        ),
-        asset(
-            "darwin",
-            "amd64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-darwin-amd64.tar.gz",
-            "6be7f71cc8c6a1fbf40311af8ee3c45459c72afbab2c93dc2f80a183427bcbeb",
-            ArchiveKind::TarGz,
-            "treehouse",
-        ),
-        asset(
-            "linux",
-            "arm64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-linux-arm64.tar.gz",
-            "3d1c02c8ab13049709ace66be51d99b72fe7b6d0b73d0d0efd90f226e1aa87d1",
-            ArchiveKind::TarGz,
-            "treehouse",
-        ),
-        asset(
-            "linux",
-            "amd64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-linux-amd64.tar.gz",
-            "bd6227d909ba8046263ae5d4e072ccbcf43010cac9d7289b1262126510edfeed",
-            ArchiveKind::TarGz,
-            "treehouse",
-        ),
-        asset(
-            "windows",
-            "arm64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-windows-arm64.zip",
-            "b2e74941a0c03ab59a9a783ce3fafec474523dd41963d5b5d059ccad006aa419",
-            ArchiveKind::Zip,
-            "treehouse.exe",
-        ),
-        asset(
-            "windows",
-            "amd64",
-            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/treehouse-v3.1.8-windows-amd64.zip",
-            "72e7d61886e80e2befa067f5fab1c7ce2afbb49ba79c654cb7f4fc026cbc6b33",
-            ArchiveKind::Zip,
-            "treehouse.exe",
-        ),
-    ];
-    ToolPin {
-        name: "treehouse",
-        version: TREEHOUSE_VERSION,
-        assets: ASSETS,
-    }
-}
+pub const TREEHOUSE: Pin = Pin {
+    name: "treehouse",
+    version: TREEHOUSE_VERSION,
+    url_base: "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/",
+    binary: "treehouse",
+    assets: &[
+        Asset {
+            os: "darwin",
+            arch: "arm64",
+            file_name: "treehouse-v3.1.8-darwin-arm64.tar.gz",
+            sha256: "007c55c26e0bd8b672b1a917465f06c3f89d93a66cd171364ffb65743d268601",
+        },
+        Asset {
+            os: "darwin",
+            arch: "amd64",
+            file_name: "treehouse-v3.1.8-darwin-amd64.tar.gz",
+            sha256: "6be7f71cc8c6a1fbf40311af8ee3c45459c72afbab2c93dc2f80a183427bcbeb",
+        },
+        Asset {
+            os: "linux",
+            arch: "arm64",
+            file_name: "treehouse-v3.1.8-linux-arm64.tar.gz",
+            sha256: "3d1c02c8ab13049709ace66be51d99b72fe7b6d0b73d0d0efd90f226e1aa87d1",
+        },
+        Asset {
+            os: "linux",
+            arch: "amd64",
+            file_name: "treehouse-v3.1.8-linux-amd64.tar.gz",
+            sha256: "bd6227d909ba8046263ae5d4e072ccbcf43010cac9d7289b1262126510edfeed",
+        },
+        Asset {
+            os: "windows",
+            arch: "arm64",
+            file_name: "treehouse-v3.1.8-windows-arm64.zip",
+            sha256: "b2e74941a0c03ab59a9a783ce3fafec474523dd41963d5b5d059ccad006aa419",
+        },
+        Asset {
+            os: "windows",
+            arch: "amd64",
+            file_name: "treehouse-v3.1.8-windows-amd64.zip",
+            sha256: "72e7d61886e80e2befa067f5fab1c7ce2afbb49ba79c654cb7f4fc026cbc6b33",
+        },
+    ],
+};
 
-const fn asset(
-    os: &'static str,
-    arch: &'static str,
-    url: &'static str,
-    sha256: &'static str,
-    archive: ArchiveKind,
-    binary_name: &'static str,
-) -> ToolAsset {
-    ToolAsset {
-        os,
-        arch,
-        url,
-        sha256,
-        archive,
-        binary_name,
-    }
+pub fn treehouse_pin() -> &'static Pin {
+    &TREEHOUSE
 }
 
 #[derive(Clone, Debug)]
@@ -494,38 +465,38 @@ fn run_tool(env: &PoolEnv, launch: &ToolLaunch, cwd: &Path, args: &[String]) -> 
     }
 }
 
-fn resolve_launch(env: &PoolEnv) -> Result<ToolLaunch, EnsureError> {
+fn resolve_launch(env: &PoolEnv) -> Result<ToolLaunch, String> {
     if let Some(launch) = &env.launch {
         if launch.program.as_os_str().is_empty() {
-            return Err(EnsureError::NotPinned(
-                "This tool's pin isn't set, so it wasn't installed.",
-            ));
+            return Err("This tool's pin isn't set, so it wasn't installed.".into());
         }
         return Ok(launch.clone());
     }
-    // WP-81 owns `pinned_tool` and merges first. This is the only call. When
-    // that version lands, swap `ensure` for `pinned_tool::install`.
-    let installed = ensure(
+    let binary = install(
+        treehouse_pin(),
         &env.data_dir,
-        &treehouse_pin(),
-        &UreqSource as &dyn BlobSource,
+        crate::pinned_tool::host_os(),
+        crate::pinned_tool::host_arch(),
+        &UreqFetcher,
     )?;
     Ok(ToolLaunch {
-        program: installed.binary,
+        program: binary,
         args: Vec::new(),
     })
 }
 
-fn fallback_for(error: &EnsureError) -> (&'static str, &'static str) {
-    match error {
-        EnsureError::Unavailable(_) => (
+fn fallback_for(error: &str) -> (&'static str, &'static str) {
+    // A timeout or a service that did not answer is not a final failure.
+    if error.contains("didn't finish") {
+        (
             "unavailable",
             "The worktree pool couldn't be downloaded, so this checkout is a plain git worktree.",
-        ),
-        _ => (
+        )
+    } else {
+        (
             "not-installed",
             "The worktree pool isn't installed yet, so this checkout is a plain git worktree.",
-        ),
+        )
     }
 }
 
@@ -743,7 +714,7 @@ pub fn give_back(env: &PoolEnv, repo: &Path, path: &Path) -> Result<HandBack, St
     if !path_in(&paths.slots_dir, path) {
         return Err("That worktree is outside this copy's pool, so it was left in place.".into());
     }
-    let launch = resolve_launch(env).map_err(|error| error.to_string())?;
+    let launch = resolve_launch(env)?;
     let lease_id = store.leases[index].lease_id.clone();
     let lease_path = store.leases[index].path.clone();
     let args = vec![
@@ -1099,7 +1070,7 @@ pub async fn worktree_pool_prune(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pinned_tool::ArchiveKind;
+    use crate::pinned_tool::binary_file_name;
 
     struct Tmp {
         root: PathBuf,
@@ -1473,54 +1444,47 @@ mod tests {
         let pin = treehouse_pin();
         assert_eq!(pin.name, "treehouse");
         assert_eq!(pin.version, "3.1.8");
+        assert_eq!(pin.binary, "treehouse");
+        assert_eq!(
+            pin.url_base,
+            "https://github.com/kunchenguid/treehouse/releases/download/v3.1.8/"
+        );
         let want = [
             (
                 "darwin",
                 "arm64",
                 "treehouse-v3.1.8-darwin-arm64.tar.gz",
                 "007c55c26e0bd8b672b1a917465f06c3f89d93a66cd171364ffb65743d268601",
-                ArchiveKind::TarGz,
-                "treehouse",
             ),
             (
                 "darwin",
                 "amd64",
                 "treehouse-v3.1.8-darwin-amd64.tar.gz",
                 "6be7f71cc8c6a1fbf40311af8ee3c45459c72afbab2c93dc2f80a183427bcbeb",
-                ArchiveKind::TarGz,
-                "treehouse",
             ),
             (
                 "linux",
                 "arm64",
                 "treehouse-v3.1.8-linux-arm64.tar.gz",
                 "3d1c02c8ab13049709ace66be51d99b72fe7b6d0b73d0d0efd90f226e1aa87d1",
-                ArchiveKind::TarGz,
-                "treehouse",
             ),
             (
                 "linux",
                 "amd64",
                 "treehouse-v3.1.8-linux-amd64.tar.gz",
                 "bd6227d909ba8046263ae5d4e072ccbcf43010cac9d7289b1262126510edfeed",
-                ArchiveKind::TarGz,
-                "treehouse",
             ),
             (
                 "windows",
                 "arm64",
                 "treehouse-v3.1.8-windows-arm64.zip",
                 "b2e74941a0c03ab59a9a783ce3fafec474523dd41963d5b5d059ccad006aa419",
-                ArchiveKind::Zip,
-                "treehouse.exe",
             ),
             (
                 "windows",
                 "amd64",
                 "treehouse-v3.1.8-windows-amd64.zip",
                 "72e7d61886e80e2befa067f5fab1c7ce2afbb49ba79c654cb7f4fc026cbc6b33",
-                ArchiveKind::Zip,
-                "treehouse.exe",
             ),
         ];
         assert_eq!(pin.assets.len(), want.len());
@@ -1529,11 +1493,15 @@ mod tests {
                 .iter()
                 .find(|row| row.0 == asset.os && row.1 == asset.arch)
                 .unwrap_or_else(|| panic!("no asset for {}-{}", asset.os, asset.arch));
-            assert!(asset.url.ends_with(row.2), "{}", asset.url);
+            assert_eq!(asset.file_name, row.2);
             assert_eq!(asset.sha256, row.3);
             assert_eq!(asset.sha256.len(), 64);
-            assert_eq!(asset.archive, row.4);
-            assert_eq!(asset.binary_name, row.5);
+            let binary = binary_file_name(pin.binary, asset.os);
+            if asset.os == "windows" {
+                assert_eq!(binary, "treehouse.exe");
+            } else {
+                assert_eq!(binary, "treehouse");
+            }
         }
     }
 
