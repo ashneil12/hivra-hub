@@ -109,6 +109,7 @@ import {
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
+import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 
@@ -304,6 +305,8 @@ export type AgentAppHost = {
   tasks?: AgentAppTasksHost;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
+  /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
+  timers?: AgentAppTimersHost;
   /**
    * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work
    * started from a room comes back to it.
@@ -379,6 +382,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TASK_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
+  ...TIMER_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
 ]);
@@ -1420,6 +1424,7 @@ export async function handleAgentApp(
     return result;
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
+  if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {

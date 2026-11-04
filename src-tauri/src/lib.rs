@@ -99,6 +99,8 @@ mod trackpad_zoom;
 mod tray;
 mod verify_live;
 mod verify_stage;
+// Hivra WP-11: the watcher's wake queue and timers.
+mod watcher;
 mod window;
 mod window_frame;
 mod window_transfer;
@@ -531,6 +533,19 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // Hivra WP-11: the watcher's wake queue and timers.
+            watcher::watcher_wake_add,
+            watcher::watcher_wakes_open,
+            watcher::watcher_wakes_of,
+            watcher::watcher_wake_drain,
+            watcher::watcher_wake_ack,
+            watcher::watcher_wake_delivered,
+            watcher::watcher_wake_delivery,
+            watcher::watcher_dispose_owner,
+            watcher::watcher_timer_set,
+            watcher::watcher_timer_cancel,
+            watcher::watcher_timers,
+            watcher::watcher_tick,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,
@@ -741,6 +756,7 @@ pub fn run() {
             plugins::plugins_disable,
             plugins::plugins_uninstall,
             plugins::plugins_session_wiring,
+            plugins::discover::plugins_discover,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

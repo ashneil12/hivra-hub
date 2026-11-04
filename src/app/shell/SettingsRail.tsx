@@ -13,6 +13,7 @@ import {
   Terminal,
   Zap,
   Chatting,
+  Code,
   type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
@@ -29,6 +30,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   providers: Bot,
   mcp: Globe,
   skills: Sparkles,
+  plugins: Code,
   monos: Bot,
   inbox: Inbox,
   worktrees: FolderTree,
