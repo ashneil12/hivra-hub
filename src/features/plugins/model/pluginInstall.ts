@@ -203,6 +203,16 @@ export function sourceLine(source: PluginSource | null | undefined): string {
   return source.location;
 }
 
+/** Install the carried desktop control plugin. It stays off until it is turned on. */
+export function installDesktopControl(): Promise<unknown> {
+  return invoke("desktop_control_install");
+}
+
+/** WP-44: download the pinned desktop program. The package's scripts are not run. */
+export function fetchDesktopProgram(): Promise<unknown> {
+  return invoke("desktop_control_fetch");
+}
+
 export function plainError(error: unknown): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message.trim()) return error.message;

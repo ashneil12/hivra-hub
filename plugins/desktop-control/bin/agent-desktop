@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// WP-44: this is not the desktop program. The gate starts the pinned binary, which lives outside this folder.
+// A direct call does not reach it.
+process.stderr.write("Run the desktop gate. This file does not start the desktop program.\n");
+process.exit(2);

@@ -519,8 +519,54 @@ fn tools() -> Value {
         added.extend(steering_tools());
         list.splice(after_answer..after_answer, added);
         list.extend(crate::pr_watch::mcp::tools());
+        // WP-34: creator.draft and creator.state. Kept out of the literal above (json!'s recursion limit).
+        list.extend(creator_tools());
     }
     tools
+}
+
+/// WP-34: the Creator Mono writes files and reads the reports. Nothing else is a creator tool.
+fn creator_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "creator_draft",
+            "description": "Write the files of a creator draft. id and revision come from the brief. files are {path, content}.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "revision": { "type": "integer", "minimum": 0 },
+                    "files": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": { "type": "string" },
+                                "content": { "type": "string" }
+                            },
+                            "required": ["path", "content"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["id", "revision", "files"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "creator_state",
+            "description": "Read a creator session, including the reports.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" }
+                },
+                "required": ["id"],
+                "additionalProperties": false
+            }
+        }),
+    ]
 }
 
 /// Hivra WP-40: the first mate's call on a finished task whose checks are unsure.
@@ -609,7 +655,7 @@ const DELEGATE_APP_FIELDS: [&str; 19] = [
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
 /// app action.
-const SELF_BUILD: [(&str, &str, &[&str]); 8] = [
+const SELF_BUILD: [(&str, &str, &[&str]); 10] = [
     (
         "room_create",
         "rooms.create",
@@ -653,6 +699,13 @@ const SELF_BUILD: [(&str, &str, &[&str]); 8] = [
         &["ask", "projectOrder", "previewId", "apply"],
     ),
     ("skills_learn", "skills.learn", &["skill", "lesson", "from"]),
+    // WP-34: draft and state only. Preview, keep, undo, discard, approve and probe stay taps.
+    (
+        "creator_draft",
+        "creator.draft",
+        &["id", "revision", "files"],
+    ),
+    ("creator_state", "creator.state", &["id"]),
 ];
 
 /// Run one tool. An error is the reason the model reads (a refusal from the app comes through word for word).
@@ -1321,7 +1374,9 @@ mod tests {
                 "skills_learn",
                 "pr_watch",
                 "pr_unwatch",
-                "pr_watches"
+                "pr_watches",
+                "creator_draft",
+                "creator_state"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {
@@ -1709,6 +1764,12 @@ mod tests {
                 json!({ "skill": "reviewing-a-diff", "lesson": "Read the caller before changing the callee.", "from": "worker 2" }),
                 "skills.learn",
             ),
+            (
+                "creator_draft",
+                json!({ "id": "c1", "revision": 2, "files": [{ "path": "plugin.json", "content": "{}" }] }),
+                "creator.draft",
+            ),
+            ("creator_state", json!({ "id": "c1" }), "creator.state"),
         ] {
             let (outcome, _) = run_tool(&app, tool, args.clone());
             let out = outcome.unwrap();
@@ -1724,6 +1785,8 @@ mod tests {
             ("mono_retire", json!({ "retireId": "r", "force": true })),
             ("hub_change", json!({ "ask": "x", "force": true })),
             ("page_build", json!({ "spec": {}, "monoId": "cos" })),
+            ("creator_draft", json!({ "id": "c1", "keep": true })),
+            ("creator_state", json!({ "id": "c1", "revision": 1 })),
         ] {
             let before = app.actions().len();
             assert!(
@@ -1736,6 +1799,19 @@ mod tests {
                 "nothing is called for {tool} {args}"
             );
         }
+    }
+
+    #[test]
+    fn creator_tools_are_only_draft_and_state() {
+        let tools = tools();
+        let names: Vec<&str> = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .filter(|name| name.starts_with("creator"))
+            .collect();
+        assert_eq!(names, vec!["creator_draft", "creator_state"]);
     }
 
     #[test]

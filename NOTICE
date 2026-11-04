@@ -69,6 +69,13 @@ Third-party components Hivra adds:
   Used in: src/features/monos/model/vendor/mercurySoul.ts
   needsMigration and normalizeSoulText copied from src/soul/identity.ts (WP-21). The legacy template list is passed in, because Mercury's stored souls are Cosmic Stack text and are not included.
 
+- agent-desktop skill
+  Source: https://github.com/vercel-labs/agent-desktop
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
+  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
