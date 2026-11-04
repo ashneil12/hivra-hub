@@ -595,7 +595,8 @@ describe("desktop gate", () => {
     expect(refused.calls).toEqual([]);
   });
 
-  it("runs a real stub with an allow-listed environment", () => {
+  // Windows cannot start a .mjs file from its shebang, so the stub never runs.
+  it.runIf(process.platform !== "win32")("runs a real stub with an allow-listed environment", () => {
     const ctx = setup();
     on(ctx);
     const stub = path.join(ctx.root, "stub.mjs");
