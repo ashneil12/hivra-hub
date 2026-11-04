@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegations";
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
-import { publish, readDigestStore, writeDigestStore, type DigestPlan } from "../model/digest";
+import { readDigestStore, showDigest, writeDigestStore, type DigestPlan } from "../model/digest";
 import { afterAnswer, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, type FirstMateItem } from "../model/inbox";
 import { loadCrewDelegations } from "../model/load";
 import type { CrewDeliveryInput, CrewWorkerInput } from "../model/rows";
@@ -43,22 +43,28 @@ export function FirstMateInboxPanel({
   const mounted = useRef(true);
   const held = useRef({ rows, decisions, deliveries });
   held.current = { rows, decisions, deliveries };
-  // An answer whose send timed out. A later load must not paint that decision open again.
-  const unanswered = useRef<{ key: string; answer: string; rows: CrewWorkerInput[] } | null>(null);
-  // While an answer is in flight, a load must not paint over it.
-  const holdPaint = useRef(0);
+  // An answer that has not been confirmed. Its waiters stay working while the decision is still open.
+  const pendingAnswer = useRef<{ key: string; rows: CrewWorkerInput[] } | null>(null);
+  // While an answer is in flight, a load must not paint over it. A skipped load is run after.
+  const answerFlight = useRef(0);
+  const skippedLoad = useRef(0);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (): Promise<"applied" | "stale" | "busy" | "gone"> => {
     const ticket = ++generation.current;
     const [listed, asked, delivered]: [Load<Delegation[]>, Load<Decision[]>, Load<unknown>] = await Promise.all([
       loadCrewDelegations(),
       tauriFirstMate.decisions().then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
       invoke("delivery_list", { project }).then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
     ]);
-    if (!mounted.current || ticket !== generation.current || holdPaint.current !== 0) return;
+    if (!mounted.current) return "gone";
+    if (ticket !== generation.current) return "stale";
+    if (answerFlight.current !== 0) {
+      skippedLoad.current += 1;
+      return "busy";
+    }
     const nextRows = settleLoad(held.current.rows, listed.ok ? { ok: true, value: listed.value } : { ok: false });
     const nextDecisions = settleLoad(held.current.decisions, asked.ok && Array.isArray(asked.value) ? { ok: true, value: asked.value } : { ok: false });
-    const pending = unanswered.current;
+    const pending = pendingAnswer.current;
     const decisionsKnown = asked.ok && Array.isArray(asked.value);
     const decisionOpen =
       !!pending &&
@@ -66,17 +72,12 @@ export function FirstMateInboxPanel({
         nextDecisions.value.some(
           (decision) => decision.decisionKey === pending.key && decision.state !== "answered",
         ));
-    if (pending && decisionsKnown && !decisionOpen) unanswered.current = null;
+    if (pending && decisionsKnown && !decisionOpen) pendingAnswer.current = null;
     const keptRows = pending
       ? preserveAnswer(pending.rows, nextRows.value, decisionOpen)
       : nextRows.value;
-    const keptDecisions = pending && decisionOpen
-      ? nextDecisions.value.map((decision) =>
-          decision.decisionKey === pending.key
-            ? { ...decision, state: "answered" as const, answer: pending.answer }
-            : decision,
-        )
-      : nextDecisions.value;
+    // The decision stays as the server sent it. A timeout must not paint it answered.
+    const keptDecisions = nextDecisions.value;
     const nextDeliveries = settleLoad(
       held.current.deliveries,
       delivered.ok && Array.isArray(delivered.value)
@@ -88,6 +89,7 @@ export function FirstMateInboxPanel({
     setDecisions(keptDecisions);
     setDeliveries(nextDeliveries.value);
     setStale(nextRows.stale || nextDecisions.stale || nextDeliveries.stale);
+    return "applied";
   }, [project]);
 
   useEffect(() => {
@@ -128,55 +130,92 @@ export function FirstMateInboxPanel({
 
   useEffect(() => {
     let dead = false;
-    void publish({ read: readDigestStore, write: writeDigestStore }, noticesRef.current, Date.now()).then((plan) => {
-      if (dead || !plan) return;
-      setShown((current) => {
-        if (noticesRef.current.length === 0) return { ...plan, immediate: [], digest: null };
-        if (!plan.digest && current && current.state.version === plan.state.version) {
-          return { ...current, immediate: plan.immediate };
-        }
-        return plan;
-      });
-    });
+    void showDigest(
+      { read: readDigestStore, write: writeDigestStore },
+      noticesRef.current,
+      Date.now(),
+      {
+        show: (plan) => {
+          if (dead) return;
+          setShown((current) => {
+            if (noticesRef.current.length === 0) return { ...plan, immediate: [], digest: null };
+            if (!plan.digest && current && current.state.version === plan.state.version) {
+              return { ...current, immediate: plan.immediate };
+            }
+            return plan;
+          });
+        },
+        cancelled: () => dead,
+      },
+    );
     return () => {
       dead = true;
     };
   }, [noticeKey, clock]);
 
-  async function onAnswer(item: FirstMateItem, answerText: string) {
-    if (!item.key) return;
-    const snapshot = { rows, decisions };
-    const optimistic = afterAnswer(rows, decisions.find((decision) => decision.decisionKey === item.key), answerText);
+  async function onAnswer(item: FirstMateItem, answerText: string, tries = 0) {
+    if (!item.key || !mounted.current) return;
+    const snapshot = { rows: held.current.rows, decisions: held.current.decisions };
+    const decision = snapshot.decisions.find((entry) => entry.decisionKey === item.key);
+    if (tries > 0 && (!decision || decision.state === "answered")) return;
+    const optimistic = afterAnswer(snapshot.rows, decision, answerText);
     if (!optimistic.applied) return;
-    const answered = decisions.map((decision) =>
-      decision.decisionKey === item.key ? { ...decision, state: "answered" as const, answer: answerText } : decision,
-    );
-    holdPaint.current = ++generation.current;
-    held.current = { ...held.current, rows: optimistic.rows, decisions: answered };
+    // The card stays open until the server confirms. The waiters can show as working.
+    pendingAnswer.current = { key: item.key, rows: optimistic.rows };
+    held.current = { ...held.current, rows: optimistic.rows };
     setRows(optimistic.rows);
-    setDecisions(answered);
-    let refused = false;
+    answerFlight.current += 1;
+    let applied = false;
+    let threw = false;
     try {
       const outcome = await tauriFirstMate.answer(item.project, item.key, answerText);
-      if (!outcome.applied) refused = true;
+      applied = outcome.applied;
     } catch {
-      // A timeout is not a final no. The answer stays until a load shows it landed.
-      unanswered.current = { key: item.key, answer: answerText, rows: optimistic.rows };
+      // A timeout is not a final no. The decision stays open and is tried again.
+      threw = true;
     }
-    holdPaint.current = 0;
+    answerFlight.current = Math.max(0, answerFlight.current - 1);
     if (!mounted.current) return;
-    if (refused) {
-      unanswered.current = null;
-      const back = refuseAnswer(snapshot, { rows: held.current.rows, decisions: held.current.decisions }, false);
+    if (threw) {
+      if (tries < 2) {
+        window.setTimeout(() => {
+          if (!mounted.current) return;
+          void onAnswer(item, answerText, tries + 1);
+        }, 0);
+        return;
+      }
+      pendingAnswer.current = null;
+      if (answerFlight.current === 0 && skippedLoad.current > 0) {
+        skippedLoad.current = 0;
+        void load();
+      }
+      return;
+    }
+    if (!applied) {
+      pendingAnswer.current = null;
+      const skipped = skippedLoad.current;
+      skippedLoad.current = 0;
+      let end: "applied" | "stale" | "busy" | "gone" = "gone";
+      try {
+        end = await load();
+      } catch {
+        end = "gone";
+      }
+      if (!mounted.current || end === "gone" || end === "stale") return;
+      // A reload that landed, one that was skipped for a flight, or a flight still going: keep that, not the click.
+      const newer = end === "applied" || end === "busy" || skipped > 0;
+      const back = refuseAnswer(snapshot, { rows: held.current.rows, decisions: held.current.decisions }, newer);
       held.current = { ...held.current, rows: back.rows, decisions: back.decisions };
       setRows(back.rows);
       setDecisions(back.decisions);
+      if (end === "busy" && answerFlight.current === 0) void load();
       return;
     }
+    pendingAnswer.current = null;
     try {
       await load();
     } catch {
-      // The optimistic rows stay.
+      // The next load paints what the server has.
     }
   }
 
