@@ -6,6 +6,7 @@ import { plainTitle } from "../../../shared/text/plainTitle";
 // far, so a draft Ash left and came back to just asks again.
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../../integrations/harness";
 import { findMono, monoEngine, monoLook } from "../../monos/model/mono";
+import { withFirstMateContract } from "../../firstmate/model/contract";
 import { loadMonoFiles, monoContext, monoTurn } from "../../monos/model/monoFiles";
 import { loadDefaultModels } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
@@ -103,7 +104,7 @@ async function cosContext(): Promise<string | undefined> {
   const mono = findMono(COS_ID);
   if (!mono) return undefined;
   try {
-    return monoContext(monoLook(mono), await loadMonoFiles(COS_ID), { soul: true, memory: true });
+    return withFirstMateContract(monoContext(monoLook(mono), await loadMonoFiles(COS_ID), { soul: true, memory: true }));
   } catch {
     return undefined;
   }

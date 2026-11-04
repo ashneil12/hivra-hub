@@ -175,8 +175,8 @@
       "url": "https://github.com/kunchenguid/firstmate",
       "licence": "MIT",
       "copyright": "Copyright (c) 2026 Kun Chen",
-      "where": "src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/",
-      "how": "Role rules, the brief scaffold, the isolation check, the status protocol and the steering section, adapted (WP-10)"
+      "where": "src/features/firstmate/vendor/firstmate-contract.md, src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/",
+      "how": "Hard rules, delivery path, brief fill, isolation check, status lines, steering inbox and project-memory rule, vendored verbatim (WP-10). A one-line binding follows each block where Hivra has no status file, inbox directory or captain address"
     },
     {
       "name": "Puppetmaster's failure classification and retry budget",

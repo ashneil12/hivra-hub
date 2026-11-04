@@ -546,6 +546,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "runner animation coin fun",
   },
   {
+    id: "plain-english-endings",
+    section: "chat",
+    label: "Plain-English endings",
+    keywords: "plain english paragraph jargon summary reply",
+  },
+  {
     id: "format-on-save",
     section: "chat",
     label: "Format on save",

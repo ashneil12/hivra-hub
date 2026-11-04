@@ -49,7 +49,7 @@ import {
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { prepareCodexMonoContext } from "./codexStore";
-import { codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
+import { codexDeveloperInstructions, codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
 import type {
   ApprovalDecision,
   CompactContextInput,
@@ -95,6 +95,8 @@ type Live = {
   controlsAgents: boolean;
   ephemeral: boolean;
   codexStore?: "mono";
+  /** WP-41: the developer instructions this process started or resumed with. */
+  instructionKey: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
@@ -509,6 +511,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.codexStore ??
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
+  // WP-41: a running thread is resumed when the pstack index or the plain-English ending changed.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd);
+  const instructionKey = developerInstructions?.trim() ?? "";
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -518,7 +523,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ) &&
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
-    existing.codexStore === codexStore
+    existing.codexStore === codexStore &&
+    existing.instructionKey === instructionKey
   ) {
     existing.onEvent = input.onEvent;
     return existing;
@@ -700,6 +706,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           firstMate: input.firstMate,
           model,
           serviceTier,
+          developerInstructions,
         });
         const opened = await rpc.request<{ thread?: { id?: string } }>(
           "thread/resume",
@@ -729,6 +736,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         firstMate: input.firstMate,
         model,
         serviceTier,
+        developerInstructions,
       });
       const opened = await rpc.request<{ thread?: { id?: string } }>(
         "thread/start",
@@ -754,6 +762,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       controlsAgents,
       ephemeral,
       codexStore,
+      instructionKey,
       runtimeMode: input.runtimeMode,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
