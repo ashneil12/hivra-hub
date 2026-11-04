@@ -581,6 +581,43 @@ fn stop_all_stops_only_the_sessions_the_bar_shows() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn an_empty_lock_start_does_not_match_a_reused_pid() {
+    let tmp = Tmp::new();
+    let dir = browser_dir(tmp.data());
+    fs::create_dir_all(&dir).unwrap();
+    let mut sleeper = std::process::Command::new("sleep");
+    sleeper.arg("30");
+    allow_path(&mut sleeper);
+    let sleeper = sleeper.spawn().unwrap();
+    let sleeper = Reap(sleeper);
+    let pid = sleeper.0.id();
+    let path = dir.join("settings.lock");
+    let body = serde_json::json!({
+        "nonce": "dead-holder",
+        "pid": pid,
+        "started": ""
+    });
+    fs::write(&path, body.to_string()).unwrap();
+    let started = std::time::Instant::now();
+    let taken = lock_settings(&dir);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(800),
+        "an empty start time must not be waited out as if it were the holder"
+    );
+    let lock = taken.expect("a crashed lock with no start time can be taken");
+    let owner: LockOwner = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(!owner.started.is_empty(), "the new lock has a start time");
+    assert_ne!(owner.nonce, "dead-holder");
+    assert_ne!(owner.pid, pid);
+    assert!(
+        alive(pid),
+        "the sleeper is a different process and stays up"
+    );
+    drop(lock);
+}
+
 #[test]
 fn a_holder_does_not_delete_a_lock_it_no_longer_owns() {
     let tmp = Tmp::new();

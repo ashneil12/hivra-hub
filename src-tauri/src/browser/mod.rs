@@ -239,13 +239,15 @@ fn read_lock(path: &Path) -> Option<LockOwner> {
 }
 
 /// Alive, and still the process that took the lock. A reused pid, or a start time we can't
-/// match, is not the holder. If the start time can't be read, the holder is treated as alive.
+/// match, is not the holder. An empty start time matches nothing: a crash while `ps` failed
+/// must not look like every later process. If the start time can't be read now, a live pid
+/// is treated as the holder so a flaky `ps` doesn't give the lock away.
 fn owner_alive(owner: &LockOwner) -> bool {
     if !alive(owner.pid) {
         return false;
     }
     match process_start(owner.pid) {
-        Ok(started) => owner.started.is_empty() || started == owner.started,
+        Ok(started) => !owner.started.is_empty() && started == owner.started,
         Err(_) => true,
     }
 }
@@ -335,7 +337,10 @@ fn lock_settings(dir: &Path) -> Result<SettingsLock, String> {
     let path = dir.join("settings.lock");
     for _ in 0..100 {
         let nonce = uuid::Uuid::new_v4().to_string();
-        let started = process_start(std::process::id()).unwrap_or_default();
+        let started = match process_start(std::process::id()) {
+            Ok(started) if !started.is_empty() => started,
+            _ => return Err(TRY_SETTINGS.into()),
+        };
         let body = serde_json::to_vec(&LockOwner {
             nonce: nonce.clone(),
             pid: std::process::id(),
