@@ -1,0 +1,5 @@
+# Hivra WP-81: the first project whose gate runs the repo's own check.
+commands:
+  test: "npm run check"
+auto_fix:
+  review: 0

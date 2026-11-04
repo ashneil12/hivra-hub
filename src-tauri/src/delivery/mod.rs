@@ -31,7 +31,7 @@ use tauri::State;
 use crate::session_store::{now_millis, SessionStore};
 
 /// What a git or `gh` child may see. Anything else in this process (tokens, agent variables) stays here.
-const CHILD_ENV: &[&str] = &[
+pub(crate) const CHILD_ENV: &[&str] = &[
     "HOME",
     "USER",
     "LOGNAME",
@@ -139,7 +139,20 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            created_at INTEGER NOT NULL,
            consumed_at INTEGER
          );",
-    )
+    )?;
+    // WP-81: 1 when the pull request was opened by the local check, so Hivra does not send its own fix crew.
+    let has_gate: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('work_deliveries') WHERE name = 'gate')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_gate {
+        conn.execute(
+            "ALTER TABLE work_deliveries ADD COLUMN gate INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    Ok(())
 }
 
 // ---- commands ----------------------------------------------------------------------------------------------------------
