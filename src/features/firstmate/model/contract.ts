@@ -15,3 +15,21 @@ export function contractForAgents(): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
+
+/**
+ * A prompt that carries the contract. Builders use this, not `FIRST_MATE_CONTRACT`, so the Settings switch
+ * leaves the plain-English line out. A prompt that already includes the contract is not given a second copy.
+ */
+export function withFirstMateContract(prompt: string): string {
+  const contract = contractForAgents();
+  const body = prompt.replace(/\r\n/g, "\n").trim();
+  if (!body) return contract;
+  if (!body.includes("# The first mate contract")) return `${body}\n\n${contract}`;
+  if (plainEnglishEndings()) return body;
+  return body
+    .split("\n")
+    .filter((line) => !line.includes(PLAIN_ENGLISH_RULE))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}

@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { FIRST_MATE_CONTRACT, contractForAgents } from "./contract";
-import { PLAIN_ENGLISH_RULE, __resetPlainEnglishForTests, plainEnglishEndings, savePlainEnglishEndings } from "./plainEnglish";
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FIRST_MATE_CONTRACT, contractForAgents, withFirstMateContract } from "./contract";
+import { PLAIN_ENGLISH_KEY, PLAIN_ENGLISH_RULE, __resetPlainEnglishForTests, plainEnglishEndings, savePlainEnglishEndings } from "./plainEnglish";
 import { sessionInstruction } from "../../plugins/model/pstackAutopilot";
 
-afterEach(() => __resetPlainEnglishForTests());
+afterEach(() => {
+  __resetPlainEnglishForTests();
+  vi.unstubAllGlobals();
+});
 
 describe("plain-English endings", () => {
   it("is in the contract and the session instruction, on by default", () => {
@@ -28,5 +32,42 @@ describe("plain-English endings", () => {
     savePlainEnglishEndings(true);
     expect(contractForAgents()).toContain(PLAIN_ENGLISH_RULE);
     expect(sessionInstruction({ plainEnglish: true })).toContain(PLAIN_ENGLISH_RULE);
+  });
+
+  it("drops the line from every prompt that carries the contract", () => {
+    savePlainEnglishEndings(false);
+    const carried = withFirstMateContract(`You are the lead.\n\n${FIRST_MATE_CONTRACT}`);
+    expect(carried).toContain("You are the lead.");
+    expect(carried).toContain("**Never edit the project.**");
+    expect(carried).not.toContain(PLAIN_ENGLISH_RULE);
+    expect(carried.split("# The first mate contract").length - 1).toBe(1);
+    const built = withFirstMateContract("You are the lead.");
+    expect(built).toContain("You are the lead.");
+    expect(built).toContain("**Never edit the project.**");
+    expect(built).not.toContain(PLAIN_ENGLISH_RULE);
+    savePlainEnglishEndings(true);
+    expect(withFirstMateContract("You are the lead.")).toContain(PLAIN_ENGLISH_RULE);
+    for (const file of ["../../../app/App.tsx", "../../monos/model/monoHabits.ts", "../../hub/model/projectInterview.ts"]) {
+      expect(readFileSync(new URL(file, import.meta.url), "utf8"), file).toContain("withFirstMateContract");
+    }
+  });
+
+  it("reads the stored flag each time, so another window's change wins", () => {
+    const store = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => store.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        store.set(key, value);
+      },
+      removeItem: (key: string) => {
+        store.delete(key);
+      },
+    });
+    savePlainEnglishEndings(true);
+    expect(plainEnglishEndings()).toBe(true);
+    store.set(PLAIN_ENGLISH_KEY, "0");
+    expect(plainEnglishEndings()).toBe(false);
+    expect(contractForAgents()).not.toContain(PLAIN_ENGLISH_RULE);
+    expect(sessionInstruction({ plainEnglish: plainEnglishEndings() })).not.toContain(PLAIN_ENGLISH_RULE);
   });
 });

@@ -1,5 +1,6 @@
-// WP-41: plain-English endings, on unless the person switches them off. Vitest runs in node, where localStorage
-// throws, so a save also sets an in-memory override the session instruction can read.
+// WP-41: plain-English endings, on unless the person switches them off. The stored flag is read on every call, so
+// another window's change wins. Vitest runs in node, where localStorage throws; a save then remembers the value
+// only until storage can be read.
 import { readFlag, writeFlag } from "../../settings/model/storageFlags";
 
 export const PLAIN_ENGLISH_RULE =
@@ -7,20 +8,26 @@ export const PLAIN_ENGLISH_RULE =
 
 export const PLAIN_ENGLISH_KEY = "monocode.plainEnglishEndings";
 
-let override: boolean | undefined;
+let fallback: boolean | undefined;
 
-/** On when nothing has been saved. */
+/** On when nothing has been saved. A stored value always wins over a save this window could not write. */
 export function plainEnglishEndings(): boolean {
-  if (override !== undefined) return override;
-  return readFlag(PLAIN_ENGLISH_KEY) ?? true;
+  const stored = readFlag(PLAIN_ENGLISH_KEY);
+  if (stored !== null) return stored;
+  return fallback ?? true;
 }
 
 export function savePlainEnglishEndings(on: boolean): void {
-  override = on;
   writeFlag(PLAIN_ENGLISH_KEY, on);
+  fallback = readFlag(PLAIN_ENGLISH_KEY) === null ? on : undefined;
 }
 
 /** Test-only. */
 export function __resetPlainEnglishForTests(): void {
-  override = undefined;
+  fallback = undefined;
+  try {
+    localStorage.removeItem(PLAIN_ENGLISH_KEY);
+  } catch {
+    // node, or storage that refuses
+  }
 }

@@ -1,10 +1,18 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { playCue } from "../../settings/model/sounds";
-import { plainEnglishEndings, savePlainEnglishEndings } from "../model/plainEnglish";
+import { PLAIN_ENGLISH_KEY, plainEnglishEndings, savePlainEnglishEndings } from "../model/plainEnglish";
 
-/** WP-41: the Settings switch. On unless the person turns it off. */
+/** WP-41: the Settings switch. On unless the person turns it off. Another window's change updates this one. */
 export function PlainEnglishSetting({ onChange }: { onChange?: (on: boolean) => void }) {
   const [on, setOn] = useState(plainEnglishEndings);
+  useEffect(() => {
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== null && event.key !== PLAIN_ENGLISH_KEY) return;
+      setOn(plainEnglishEndings());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return (
     <button
       type="button"
