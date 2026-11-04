@@ -82,6 +82,7 @@ import {
   noteCodingTeamChat,
   projectTapSelection,
 } from "../features/hub/model/codingTeam";
+import { chosenPresence, forgetCodingTeamHome, settleCodingTeam } from "../features/hub/model/codingTeamHome";
 import {
   codingTeamNamed,
   ensureMonoTeam,
@@ -819,6 +820,7 @@ import {
   removeMono,
   updateMono,
   saveMonoName,
+  saveMonoSessionId,
   saveOpenMono,
   subscribeMonos,
   type MonoState,
@@ -6310,7 +6312,11 @@ function Workspace({
         // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
         if (removed) forgetWaitingChat(sessionId);
         // A deleted chat leaves its project's coding team (an archived one can come back, and stays in it).
-        if (removed && mode === "delete") forgetCodingTeamChat(sessionId);
+        if (removed && mode === "delete") {
+          forgetCodingTeamChat(sessionId);
+          // WP-20: deleting the home chat forgets it, so the next open can land on the Lead's chat.
+          forgetCodingTeamHome(sessionId);
+        }
         if (removed && deleteWorktreePath && seed) {
           try {
             await onRemoveWorktree(seed.cwd, deleteWorktreePath, false);
@@ -7054,6 +7060,31 @@ function Workspace({
    * Lead's chat by default (`lead`), or the chat Ash was last in there. A project with no code folder has no coding
    * team: it opens on its own Inbox.
    */
+  // WP-20: one coding-team home per project. The Lead's existing chat, history kept. No second chat is made.
+  const applyCodingTeamHomes = useCallback((list: Session[]) => {
+    if (!codingTeamsOn()) return list;
+    let next = list;
+    let changed = false;
+    for (const project of hubData().listProjects()) {
+      const lead = leadMono(leadSpecFor(project));
+      const settled = settleCodingTeam({
+        project,
+        sessions: next,
+        ...(lead ? { lead: { id: lead.id, sessionId: lead.sessionId } } : {}),
+        notedIds: next.flatMap((row) => (codingTeamChatProject(row.id) === project.id ? [row.id] : [])),
+        present: chosenPresence(),
+        newId: "",
+        probe: { ghSignedIn: false },
+        bindLead: saveMonoSessionId,
+      });
+      if (settled.changed) {
+        next = settled.sessions;
+        changed = true;
+      }
+    }
+    return changed ? next : list;
+  }, []);
+
   const openCodingTeam = useCallback(
     (projectId: string, target: CodingTeamTarget = {}) => {
       const project = hubData()
@@ -7068,6 +7099,12 @@ function Workspace({
         setHubSelection({ project: projectId, item: "inbox" });
         return;
       }
+      // WP-20: mark the home chat before the Lead opens, so the launch sees the first mate.
+      const settled = applyCodingTeamHomes(sessionsRef.current);
+      if (settled !== sessionsRef.current) {
+        sessionsRef.current = settled;
+        setSessions(settled);
+      }
       const lead = leadMono(leadSpecFor(project));
       if (lead && (target.lead ?? codingTeamView(project.id) === "lead")) {
         setHubSelection(projectTapSelection(project));
@@ -7080,9 +7117,16 @@ function Workspace({
       nameHubProject(project);
       onSelectProject(project.folder);
     },
-    [closeMonoView, onOpenMono, onSelectProject],
+    [applyCodingTeamHomes, closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
+  // WP-20: a Lead chat that loads after the project opened still becomes the one home.
+  useEffect(() => {
+    const settled = applyCodingTeamHomes(sessions);
+    if (settled === sessions) return;
+    sessionsRef.current = settled;
+    setSessions(settled);
+  }, [sessions, applyCodingTeamHomes]);
   /**
    * Open a Mono's own team (hubNav.ts openMonoTeam, monoTeams.ts): its folder's workspace and Sessions list, the Mono's
    * chat pinned on top and its workers under it, on the Mono's chat by default (`owner`) or the chat Ash was last in
