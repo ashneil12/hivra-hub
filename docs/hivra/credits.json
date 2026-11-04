@@ -143,6 +143,12 @@
       "url": "https://github.com/ChristopherKahler",
       "licence": "MIT",
       "gave": "rule staging behind approval and a four-state worker status"
+    },
+    {
+      "name": "Orbit",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "gave": "tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E"
     }
   ],
   "components": [
