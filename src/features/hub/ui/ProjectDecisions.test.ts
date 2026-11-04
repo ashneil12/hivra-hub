@@ -77,7 +77,10 @@ it("Settings → Decisions still offers every project", async () => {
 
 it("a stored Decisions item is not a project page", async () => {
   const { HubSurface } = await import("./HubSurface");
+  const { currentHubSelection } = await import("../model/hubNav");
   await act(async () => root!.render(createElement(HubSurface, { selection: { project: "exo-game", item: "decisions" } })));
   expect(host.querySelector("[data-hub-project-decisions]")).toBeNull();
   expect(host.textContent ?? "").not.toContain("Approve the new art");
+  // Browse-only there is no app opener, so the stored item selects the coding team rather than a Decisions page.
+  expect(currentHubSelection()).toMatchObject({ project: "exo-game", item: "coding-team" });
 });
