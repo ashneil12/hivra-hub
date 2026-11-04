@@ -109,6 +109,7 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
@@ -304,6 +305,16 @@ export type AgentAppHost = {
   codingTeamOf?(sessionId: string): { project: string; name: string; folder: string } | undefined;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat or a coding-team chat only. */
   tasks?: AgentAppTasksHost;
+  /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
+  taskStore?(
+    command: "tasks_list" | "tasks_get" | "tasks_create" | "tasks_update",
+    args: {
+      actor: { id: string; project: string; kind: "agent" };
+      project?: unknown;
+      id?: string;
+      input?: Record<string, unknown>;
+    },
+  ): Promise<unknown>;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
   /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
@@ -381,6 +392,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["chat.card", [...CARD_FIELDS]],
   ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
+  // WP-70: the shared task list. Not the delegation tools above.
+  ...TASK_STORE_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
   ...TIMER_FIELDS,
@@ -1412,6 +1425,8 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, input);
   checkerLane(source, action, host);
+  // WP-70: the shared task list. Not the delegation tools below.
+  if (isTaskStoreAction(action)) return handleTaskStore(source, action, input, host);
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").

@@ -389,6 +389,17 @@ describe("a first mate's workers (Hivra WP-10)", () => {
 });
 
 describe("tasks.delegate", () => {
+  it("passes the shared task through, and refuses one that is not an id", async () => {
+    const { source, host, started } = fixture();
+    await handleAgentApp(source, "r-link", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-abc" }, host);
+    expect(started[0]?.[4]).toMatchObject({ taskId: "task-abc" });
+    const second = fixture();
+    await expect(
+      handleAgentApp(second.source, "r-bad", "tasks.delegate", { brief: "Pick it up.", taskId: "  " }, second.host),
+    ).rejects.toThrow("taskId must be the shared task's id");
+    expect(second.started).toEqual([]);
+  });
+
   it("starts a worker nested under the Mono, monitored, with a signed brief and a row that carries the job", async () => {
     const rows: Delegation[] = [];
     const { source, host, started } = fixture(rows);

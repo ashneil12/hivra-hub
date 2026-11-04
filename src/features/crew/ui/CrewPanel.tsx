@@ -23,6 +23,7 @@ import {
   type CrewWorkerInput,
 } from "../model/rows";
 import { CrewTab } from "./CrewTab";
+import { TaskPane } from "../../tasks/ui/TaskPane";
 
 // steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
 const STEER_TEXT_MAX = 8_000;
@@ -223,19 +224,23 @@ export function CrewPanel({
   }
 
   return (
-    <CrewTab
-      rows={rows}
-      briefTitle={focus.briefId ? "This brief" : null}
-      stale={stale}
-      note={note}
-      onShowAll={clearCrewFocus}
-      onOpen={(row) => {
-        if (row.sessionId) onOpenSession(row.sessionId);
-      }}
-      onMessage={(row, text) => onMessage(row, text)}
-      onStop={(row) => void onStop(row)}
-      onRetry={(row) => void onRetry(row)}
-      onDeliver={(row) => void onDeliver(row)}
-    />
+    <>
+      <CrewTab
+        rows={rows}
+        briefTitle={focus.briefId ? "This brief" : null}
+        stale={stale}
+        note={note}
+        onShowAll={clearCrewFocus}
+        onOpen={(row) => {
+          if (row.sessionId) onOpenSession(row.sessionId);
+        }}
+        onMessage={(row, text) => onMessage(row, text)}
+        onStop={(row) => void onStop(row)}
+        onRetry={(row) => void onRetry(row)}
+        onDeliver={(row) => void onDeliver(row)}
+      />
+      {/* WP-70: the tasks of this project, under the crew. */}
+      <TaskPane project={project} />
+    </>
   );
 }

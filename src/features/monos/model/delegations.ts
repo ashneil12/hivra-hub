@@ -148,6 +148,8 @@ export type RecordInput = {
   follow?: FollowMode;
   /** The open row the owner works for (a Lead's current brief), when the app knows it. */
   parentId?: string;
+  /** WP-70: the shared task this work moves. */
+  taskId?: string;
   /** A delegated worker's report must carry a self-review; its settle is refused without one (workerReview.ts). */
   reviewRequired?: boolean;
 };
