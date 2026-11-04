@@ -173,7 +173,7 @@ export function PluginsPage() {
     setInstalling(key);
     setInstallNote(null);
     try {
-      const outcome = installOutcome(await invoke("plugins_install", { source }));
+      const outcome = installOutcome(await invoke("plugins_install", { source, requestedBy: { kind: "person" } }));
       if (!mounted.current) return;
       if (outcome.ok) setInstalled((prev) => ({ ...prev, [key]: outcome.message }));
       else setInstallNote({ key, message: outcome.message });

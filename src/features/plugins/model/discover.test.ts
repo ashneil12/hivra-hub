@@ -363,21 +363,68 @@ describe("search, filter and the detail (WP-32)", () => {
   });
 });
 
-describe("install (WP-32)", () => {
+describe("install (WP-31)", () => {
+  const installed = "Installed pstack. It's off until you switch it on in Settings > Plugins.";
+
   it("does not call a missing installer a success", () => {
     expect(installOutcome(undefined)).toEqual({
       ok: false,
       message: "Install isn't in this build yet. Nothing was installed.",
     });
-    expect(installOutcome(null).ok).toBe(false);
-    expect(installOutcome({ ok: false, error: "That platform isn't supported." })).toEqual({
+    expect(installOutcome(null)).toEqual({
       ok: false,
-      message: "That platform isn't supported.",
+      message: "Install isn't in this build yet. Nothing was installed.",
     });
   });
 
-  it("uses the words the installer returns", () => {
-    expect(installOutcome({ message: "Installed pstack." })).toEqual({ ok: true, message: "Installed pstack." });
-    expect(installOutcome({ ok: true })).toEqual({ ok: true, message: "Installed." });
+  it("reads an installed result, and never calls anything else installed", () => {
+    expect(installOutcome({ status: "installed", entry: { name: "pstack" }, reports: [] })).toEqual({
+      ok: true,
+      message: installed,
+    });
+    expect(installOutcome({ status: "installed", entry: { name: "  pstack  " } }).message).toBe(installed);
+    for (const value of [
+      { status: "installed", entry: null },
+      { status: "installed", entry: {} },
+      { status: "installed", entry: { name: "" } },
+      { status: "installed", entry: { name: "bad\0name" } },
+      { message: "Installed pstack." },
+      { message: "Installed." },
+      { ok: true },
+      { ok: false, error: "That platform isn't supported." },
+      "Installed.",
+    ]) {
+      const outcome = installOutcome(value);
+      expect(outcome.ok).toBe(false);
+      expect(outcome.message).not.toContain("Installed");
+    }
+  });
+
+  it("shows a waiting install and the commands that would run", () => {
+    expect(installOutcome({ status: "waiting", request: { steps: [] } })).toEqual({
+      ok: true,
+      message: "Waiting for your OK in the Inbox",
+    });
+    expect(installOutcome({ status: "waiting" }).message).toBe("Waiting for your OK in the Inbox");
+    expect(installOutcome({ status: "waiting", request: { steps: "npm install" } }).message).toBe(
+      "Waiting for your OK in the Inbox",
+    );
+    expect(
+      installOutcome({
+        status: "waiting",
+        request: {
+          steps: [
+            { run: ["npm", "install"], cwd: ".", why: "install dependencies" },
+            { run: ["./mark"], cwd: ".", why: "mark" },
+            { run: [], cwd: ".", why: "nothing" },
+            { run: [1], cwd: "." },
+            null,
+          ],
+        },
+      }),
+    ).toEqual({
+      ok: true,
+      message: "Waiting for your OK in the Inbox. npm install; ./mark",
+    });
   });
 });
