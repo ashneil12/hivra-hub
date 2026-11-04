@@ -23,6 +23,13 @@ import {
 } from "../model/rows";
 import { CrewTab } from "./CrewTab";
 
+// steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
+const STEER_TEXT_MAX = 8_000;
+
+function steerTextLength(text: string): number {
+  return Array.from(text).length;
+}
+
 type Load<T> = { ok: true; value: T } | { ok: false };
 
 function asDelivery(value: unknown): CrewDeliveryInput | null {
@@ -140,9 +147,10 @@ export function CrewPanel({
     const body = text.trim();
     if (!body || !row.sessionId || !row.ownerSession) return;
     if (!rows.some((item) => item.id === row.id)) return;
-    if (body.length > 2000) {
-      setNote("That message is too long.");
-      return;
+    if (steerTextLength(body) > STEER_TEXT_MAX) {
+      const tooLong = `A message can be ${STEER_TEXT_MAX} characters at most.`;
+      setNote(tooLong);
+      throw new Error(tooLong);
     }
     try {
       await tauriFirstMate.record({
