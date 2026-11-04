@@ -36,7 +36,7 @@
       "homepage": "https://github.com/tester-army/e2e",
       "category": "testing",
       "keywords": ["e2e", "testing", "verification", "mcp"],
-      "contributes": { "skills": ["e2e", "create-verification-skill", "migrate-to-e2e", "when-to-verify"], "mcpServers": ["e2e"] },
+      "contributes": { "skills": ["e2e", "when-to-verify"], "mcpServers": ["e2e"] },
       "permissions": ["Runs e2e's MCP server on this computer", "Opens the app under test in a browser or simulator"],
       "versions": [
         { "version": "0.22.0", "source": { "type": "npm", "package": "e2e" } }

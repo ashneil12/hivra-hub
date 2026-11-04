@@ -105,15 +105,7 @@ fn the_bundled_index_lists_the_five_default_plugins() {
         })
     );
     let skills = verify.adds.iter().find(|add| add.kind == "skills").unwrap();
-    assert_eq!(
-        skills.names,
-        [
-            "e2e",
-            "create-verification-skill",
-            "migrate-to-e2e",
-            "when-to-verify"
-        ]
-    );
+    assert_eq!(skills.names, ["e2e", "when-to-verify"]);
     let servers = verify
         .adds
         .iter()
