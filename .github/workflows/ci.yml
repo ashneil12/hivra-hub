@@ -60,6 +60,13 @@ jobs:
 
   browser:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
+    # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
+    name: browser (${{ matrix.shard }}/4)
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -75,13 +82,14 @@ jobs:
       - run: npx playwright install --with-deps chromium webkit
       # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
       - name: Hivra layout (Hub flag)
+        if: matrix.shard == 1
         run: npx playwright test -c tests/browser/hivra-layout.config.ts
-      - run: npm run test:browser
+      - run: npm run test:browser -- --shard=${{ matrix.shard }}/4
       - name: Upload browser failure traces
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: browser-test-results
+          name: browser-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 7
           if-no-files-found: ignore
@@ -111,16 +119,26 @@ jobs:
 
   check:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
+    # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
+    # macOS stays one job: it was already quick, and macOS runners are the scarce ones.
+    name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        include:
+          - { os: macos-latest, part: all }
+          - { os: ubuntu-latest, part: web }
+          - { os: ubuntu-latest, part: rust }
+          - { os: windows-latest, part: web, shard: 1/2 }
+          - { os: windows-latest, part: web, shard: 2/2 }
+          - { os: windows-latest, part: rust }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.part != 'web'
         run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
 
       - uses: actions/setup-node@v4
@@ -129,16 +147,29 @@ jobs:
           cache: npm
 
       - uses: dtolnay/rust-toolchain@stable
+        if: matrix.part != 'web'
         with:
           components: rustfmt, clippy
 
+      # Saved only from main, so a PR starts from main's compiled dependencies and never evicts them with its own.
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.part != 'web'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - run: npm ci
-      - run: npm test
+      - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
+        if: matrix.part != 'rust'
       - run: npx tsc --noEmit
+        if: matrix.part != 'rust'
       - run: cargo fmt --check
+        if: matrix.part != 'web'
       - run: cargo clippy --workspace --all-targets -- -D warnings
+        if: matrix.part != 'web'
       - run: cargo check
+        if: matrix.part != 'web'
       - run: cargo test
+        if: matrix.part != 'web'
 
   appimage:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
