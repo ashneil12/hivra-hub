@@ -1124,6 +1124,11 @@ const PagesView = lazySurface(async () => {
   const module = await import("../features/pages/ui/PagesView");
   return { default: module.PagesView };
 }, { suspense: false });
+// WP-33: plugin panels open as tabs beside Pages.
+const PanelTabsScreen = lazySurface(async () => {
+  const module = await import("../features/panels/ui/PanelTabs");
+  return { default: module.PanelTabsScreen };
+}, { suspense: false });
 const AutomationsView = lazySurface(
   async () => {
     const module = await import("../features/automations/ui/AutomationsView");
@@ -17057,6 +17062,8 @@ function Workspace({
                         }
                         compactRail={!insetLayout && compactRailActive}
                       />
+                      {/* WP-33: plugin panels open as tabs beside Pages. */}
+                      <PanelTabsScreen />
                     </AppViewSurface>
                   ) : automationsViewOpen ||
                     (insetLayout && openAppViews.includes("automations")) ? (
