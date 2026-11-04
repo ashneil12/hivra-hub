@@ -451,11 +451,7 @@ export async function refreshSouls(
         }
       }
       if (plan.kind === "current") {
-        // WP-21: trailing spaces on a line are still this template (Mercury), so the clean text is written.
-        if (soul.text !== template && !keepsEditedSoul(soul.text, [template])) {
-          const clean = template.endsWith("\n") ? template : `${template}\n`;
-          if (!(await saveChecked(files, monoId, "SOUL.md", clean, soul.hash))) continue;
-        }
+        // WP-21: trailing spaces are still this template. The person's file is not rewritten for that.
         if (last.text !== template) {
           await files.write(monoId, SOUL_TEMPLATE_FILE, template, last.hash);
           recorded.push(monoId);

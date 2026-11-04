@@ -386,15 +386,14 @@ describe("refreshSouls with no recorded template: a lead soul is left alone; the
     });
   });
 
-  it("refreshes a soul that is only the template with trailing spaces on a line", async () => {
+  it("does not rewrite a soul when only trailing spaces differ from the template", async () => {
     const f = fakeFiles();
     const spaced = NEW_LEAD.replace("- review-pr", "- review-pr  ");
     f.set("lead-w", "SOUL.md", spaced);
     f.set("lead-w", "MEMORY.md", "Ash wrote this.\r\n");
     const result = await refreshSouls(f, [{ monoId: "lead-w", name: "Hivra lead", template: NEW_LEAD }], DAY);
     expect(result.skipped).not.toContain("lead-w");
-    expect(f.get("lead-w", "SOUL.md")).toContain("- review-pr\n");
-    expect(f.get("lead-w", "SOUL.md")).not.toContain("- review-pr  ");
+    expect(f.get("lead-w", "SOUL.md")).toBe(spaced);
     expect(f.get("lead-w", "MEMORY.md")).toBe("Ash wrote this.\r\n");
   });
 

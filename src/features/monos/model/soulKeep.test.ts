@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { setBotFiles } from "../../hub/model/botChanges";
-import { refreshSouls, type SoulFiles } from "../../hub/model/soulRefresh";
+import { refreshSouls, SOUL_TEMPLATE_FILE, type SoulFiles } from "../../hub/model/soulRefresh";
 import type { AgentFilePath } from "./monoFiles";
-import { applyMonoTemplateUpdate, keepsEditedSoul, updateFileFromTemplate } from "./soulKeep";
+import { keepsEditedSoul } from "./soulKeep";
 import { needsMigration, normalizeSoulText } from "./vendor/mercurySoul";
 
 const LEGACY = "# Soul\n\n## How I speak\n- Concise and direct\n";
@@ -24,70 +24,51 @@ describe("Mercury soul migration", () => {
 });
 
 describe("a template update keeps a person's edits", () => {
-  it("replaces a known soul and leaves an edited soul and an edited memory", async () => {
-    const writes: string[] = [];
-    const files = new Map<string, string>([
-      ["SOUL.md", EDITED],
-      ["MEMORY.md", "The save button is too small.\r\n"],
-    ]);
-    const write = async (file: "SOUL.md" | "MEMORY.md", text: string) => {
-      writes.push(file);
-      files.set(file, text);
-      return true;
-    };
-    const edited = await applyMonoTemplateUpdate({
-      soul: { text: files.get("SOUL.md")!, hash: "soul" },
-      memory: { text: files.get("MEMORY.md")!, hash: "mem" },
-      soulTemplate: NEXT,
-      memoryTemplate: "# Memory\n\n- nothing yet\n",
-      knownSouls: [LEGACY],
-      knownMemories: ["# Memory\n\n- nothing yet\n"],
-      write,
-    });
-    expect(edited).toEqual({ soul: "kept", memory: "kept" });
-    expect(writes).toEqual([]);
-    expect(files.get("SOUL.md")).toBe(EDITED);
-    expect(files.get("MEMORY.md")).toBe("The save button is too small.\r\n");
-
-    const again = await applyMonoTemplateUpdate({
-      soul: { text: EDITED, hash: "soul" },
-      memory: { text: "The save button is too small.\r\n", hash: "mem" },
-      soulTemplate: "# Soul\n\n## How I speak\n- Newer still\n",
-      memoryTemplate: "# Memory\n\n- replaced\n",
-      knownSouls: [LEGACY, NEXT],
-      knownMemories: ["# Memory\n\n- nothing yet\n"],
-      write,
-    });
-    expect(again).toEqual({ soul: "kept", memory: "kept" });
-    expect(files.get("SOUL.md")).toBe(EDITED);
+  it("keeps an edited soul and memory, and not a known template", () => {
+    const memory = "The save button is too small.\r\n";
+    expect(keepsEditedSoul(EDITED, [LEGACY])).toBe(true);
+    expect(keepsEditedSoul(memory, ["# Memory\n\n- nothing yet\n"])).toBe(true);
+    expect(keepsEditedSoul(LEGACY, [LEGACY])).toBe(false);
+    expect(keepsEditedSoul(LEGACY.replace(/\n/g, "\r\n"), [LEGACY])).toBe(false);
+    expect(keepsEditedSoul(null, [LEGACY])).toBe(false);
+    expect(keepsEditedSoul("", [])).toBe(true);
+    expect(keepsEditedSoul(EDITED, [LEGACY, NEXT, "# Soul\n\n## How I speak\n- Newer still\n"])).toBe(true);
+    expect(keepsEditedSoul(memory, ["# Memory\n\n- nothing yet\n", "# Memory\n\n- replaced\n"])).toBe(true);
   });
 
-  it("writes a missing file, and a CRLF known template, and retries when the hash moved", async () => {
-    const missing = await updateFileFromTemplate({ text: null, hash: "" }, NEXT, [LEGACY], async () => true);
-    expect(missing).toEqual({ outcome: "wrote", text: NEXT });
-
-    const crlf = await updateFileFromTemplate(
-      { text: LEGACY.replace(/\n/g, "\r\n"), hash: "old" },
-      NEXT,
-      [LEGACY],
-      async () => true,
-    );
-    expect(crlf.outcome).toBe("wrote");
-
-    let tried = 0;
-    const raced = await updateFileFromTemplate(
-      { text: LEGACY.replace(/\n/g, "\r\n"), hash: "old" },
-      NEXT,
-      [LEGACY],
-      async () => {
-        tried += 1;
-        return false;
+  it("leaves a missing soul for creation, replaces a CRLF known template, and does not claim a write that missed", async () => {
+    const files = new Map<string, string>();
+    const key = (id: string, path: string) => `${id}/${path}`;
+    const hash = (text: string | undefined) => `h:${text ?? ""}`;
+    const api: SoulFiles & { get(id: string, path: string): string | undefined } = {
+      get: (id, path) => files.get(key(id, path)),
+      read: async (id, path) => ({ text: files.get(key(id, path)) ?? null, hash: hash(files.get(key(id, path))) }),
+      write: async (id, path: AgentFilePath, text, expected) => {
+        if (id === "raced" && path === "SOUL.md") return hash(files.get(key(id, path)));
+        if (expected !== undefined && hash(files.get(key(id, path))) !== expected) return "conflict";
+        files.set(key(id, path), text);
+        return hash(text);
       },
-    );
-    expect(raced).toEqual({ outcome: "retry", text: LEGACY.replace(/\n/g, "\r\n") });
-    expect(tried).toBe(1);
-    expect(keepsEditedSoul("", [])).toBe(true);
-    expect(keepsEditedSoul(null, [LEGACY])).toBe(false);
+    };
+    setBotFiles({ read: api.read, write: api.write });
+    const day = new Date(2026, 10, 4);
+
+    const missing = await refreshSouls(api, [{ monoId: "gone", name: "Gone", template: NEXT }], day);
+    expect(missing.refreshed).toEqual([]);
+    expect(files.has(key("gone", "SOUL.md"))).toBe(false);
+
+    const crlf = LEGACY.replace(/\n/g, "\r\n");
+    files.set(key("ada-crlf", "SOUL.md"), crlf);
+    files.set(key("ada-crlf", SOUL_TEMPLATE_FILE), LEGACY);
+    const replaced = await refreshSouls(api, [{ monoId: "ada-crlf", name: "Ada", template: NEXT }], day);
+    expect(replaced.refreshed).toEqual(["ada-crlf"]);
+    expect(files.get(key("ada-crlf", "SOUL.md"))).toBe(NEXT);
+
+    files.set(key("raced", "SOUL.md"), LEGACY);
+    files.set(key("raced", SOUL_TEMPLATE_FILE), LEGACY);
+    const raced = await refreshSouls(api, [{ monoId: "raced", name: "Ada", template: NEXT }], day);
+    expect(raced.refreshed).not.toContain("raced");
+    expect(files.get(key("raced", "SOUL.md"))).toBe(LEGACY);
   });
 
   it("leaves an edited soul and memory alone on the app's own refresh", async () => {
