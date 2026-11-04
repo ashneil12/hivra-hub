@@ -9,7 +9,7 @@
 //!                               connectors.json (names and where each login lives, never the login)
 //! memory/<project>/…            Ash OS project memory, only if ticked; <project>.git.bundle with its history if ticked
 //! workspace/                    only if ticked: sessions/<id>.json (transcript, engine, provider transcript pointer),
-//!                               notes.json + note-assets/, automations.json, reminders.json, delegations.json,
+//!                               notes.json + note-assets/, doc-versions.json, doc-mentions.json, automations.json, reminders.json, delegations.json,
 //!                               hub/ (the webview's group chats)
 //! ```
 //!
@@ -1133,6 +1133,21 @@ fn export_workspace(
         "workspace/notes.json",
         Value::Array(notes.into_iter().map(Value::Object).collect()),
     )?;
+    // WP-72: a page's history and mentions travel with the note. An older export has neither file.
+    let doc_versions = table_rows(conn, "note_versions", "note_id, version")?;
+    counts.insert("docVersions".into(), json!(doc_versions.len()));
+    wrote(
+        writer,
+        "workspace/doc-versions.json",
+        Value::Array(doc_versions.into_iter().map(Value::Object).collect()),
+    )?;
+    let doc_mentions = table_rows(conn, "note_mentions", "note_id, kind, target_id")?;
+    counts.insert("docMentions".into(), json!(doc_mentions.len()));
+    wrote(
+        writer,
+        "workspace/doc-mentions.json",
+        Value::Array(doc_mentions.into_iter().map(Value::Object).collect()),
+    )?;
 
     let automations: Vec<Value> = table_rows(conn, "automations", "updated_at, id")?
         .into_iter()
@@ -1894,6 +1909,91 @@ fn import_workspace(
     Ok(())
 }
 
+/// Versions and mentions for notes this import actually added. A copy gets its own rows, and a page
+/// mention follows a page that was copied. An export from before docs has neither file.
+fn import_doc_history(
+    conn: &Connection,
+    opened: &Opened,
+    inserted: &BTreeMap<String, String>,
+    renamed: &BTreeMap<String, String>,
+) -> rusqlite::Result<()> {
+    let rewrite = |text: &str, from: &str, to: &str| {
+        text.replace(
+            &format!("{NOTE_ASSET_DIR}/{from}/"),
+            &format!("{NOTE_ASSET_DIR}/{to}/"),
+        )
+    };
+    if has_table(conn, "note_versions")? {
+        for row in opened
+            .json("workspace/doc-versions.json")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default()
+        {
+            let Some(mut row) = row.as_object().cloned() else {
+                continue;
+            };
+            let Some(note_id) = row
+                .get("note_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(target) = inserted.get(&note_id).cloned() else {
+                continue;
+            };
+            if target != note_id {
+                if let Some(Value::String(body)) = row.get_mut("body") {
+                    *body = rewrite(body, &note_id, &target);
+                }
+                if let Some(Value::String(blocks)) = row.get_mut("blocks_json") {
+                    *blocks = rewrite(blocks, &note_id, &target);
+                }
+                if let Some(old) = row.get("id").and_then(Value::as_str).map(str::to_string) {
+                    row.insert("id".into(), json!(format!("{target}-{old}")));
+                }
+                row.insert("note_id".into(), json!(target));
+            }
+            insert_row(conn, "note_versions", &row)?;
+        }
+    }
+    if has_table(conn, "note_mentions")? {
+        for row in opened
+            .json("workspace/doc-mentions.json")
+            .and_then(|value| value.as_array().cloned())
+            .unwrap_or_default()
+        {
+            let Some(mut row) = row.as_object().cloned() else {
+                continue;
+            };
+            let Some(note_id) = row
+                .get("note_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+            else {
+                continue;
+            };
+            let Some(target) = inserted.get(&note_id).cloned() else {
+                continue;
+            };
+            row.insert("note_id".into(), json!(target));
+            if row.get("kind").and_then(Value::as_str) == Some("page") {
+                if let Some(mentioned) = row
+                    .get("target_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                {
+                    if let Some(next) = renamed.get(&mentioned) {
+                        row.insert("target_id".into(), json!(next));
+                    }
+                }
+            }
+            insert_row(conn, "note_mentions", &row)?;
+        }
+    }
+    Ok(())
+}
+
 fn workspace_rows(
     env: &Env,
     conn: &Connection,
@@ -1905,6 +2005,7 @@ fn workspace_rows(
     // Notes first: chats' artifact cards point at them.
     let note_ids: BTreeSet<&String> = wanted.notes.iter().collect();
     let copies: BTreeSet<&String> = wanted.note_copies.iter().collect();
+    let mut inserted: BTreeMap<String, String> = BTreeMap::new();
     for note in opened
         .json("workspace/notes.json")
         .and_then(|v| v.as_array().cloned())
@@ -1928,6 +2029,12 @@ fn workspace_rows(
             let fresh = new_id();
             if let Some(Value::String(body)) = row.get_mut("body") {
                 *body = body.replace(
+                    &format!("{NOTE_ASSET_DIR}/{id}/"),
+                    &format!("{NOTE_ASSET_DIR}/{fresh}/"),
+                );
+            }
+            if let Some(Value::String(blocks)) = row.get_mut("blocks_json") {
+                *blocks = blocks.replace(
                     &format!("{NOTE_ASSET_DIR}/{id}/"),
                     &format!("{NOTE_ASSET_DIR}/{fresh}/"),
                 );
@@ -1958,9 +2065,31 @@ fn workspace_rows(
             } else {
                 report.notes_added += 1;
             }
+            inserted.insert(id.clone(), target.clone());
             after.note_assets.push((id.clone(), target));
         }
     }
+
+    // A copied page follows its copied parent. The kept original's children stay where they are.
+    for (old, target) in &inserted {
+        if old == target {
+            continue;
+        }
+        let parent: Option<String> = conn.query_row(
+            "SELECT parent_id FROM notes WHERE id = ?1",
+            [target],
+            |row| row.get(0),
+        )?;
+        if let Some(parent) = parent {
+            if let Some(next) = report.renamed.get(&parent) {
+                conn.execute(
+                    "UPDATE notes SET parent_id = ?1 WHERE id = ?2",
+                    params![next, target],
+                )?;
+            }
+        }
+    }
+    import_doc_history(conn, opened, &inserted, &report.renamed)?;
 
     let session_ids: BTreeSet<&String> = wanted.sessions.iter().collect();
     let session_copies: BTreeSet<&String> = wanted.session_copies.iter().collect();
