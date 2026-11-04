@@ -1,6 +1,7 @@
 // Hivra WP-15: one compact line per brief, counted from derive_status only.
 
 import { knownStatus, statusWord } from "./words";
+import { workersUnder } from "./rows";
 import type { FirstMateStatus } from "../../monos/model/delegations";
 
 const ORDER: readonly FirstMateStatus[] = ["working", "needs-you", "done", "failed", "paused"];
@@ -24,4 +25,34 @@ export function briefLine(title: string, workers: readonly { status?: unknown }[
   });
   const name = titleOf(title);
   return parts.length ? `${name}: ${parts.join(", ")}` : name;
+}
+
+type BriefSource = {
+  id: string;
+  ownerSession?: string | null;
+  follow?: string | null;
+  title?: string | null;
+  parentId?: string | null;
+  status?: unknown;
+  createdAt?: number;
+};
+
+/** One line per brief this chat owns, including one whose workers are all done or all paused. */
+export function crewBriefLines(
+  ownerSession: string,
+  rows: readonly BriefSource[],
+): { id: string; text: string }[] {
+  const owner = ownerSession.trim();
+  if (!owner) return [];
+  const unique = new Map<string, BriefSource>();
+  for (const row of rows) {
+    if (!row?.id || row.ownerSession !== owner || row.follow !== "lead") continue;
+    if (!unique.has(row.id)) unique.set(row.id, row);
+  }
+  return [...unique.values()]
+    .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id.localeCompare(b.id))
+    .map((brief) => ({
+      id: brief.id,
+      text: briefLine(brief.title ?? "", workersUnder(brief.id, rows)),
+    }));
 }
