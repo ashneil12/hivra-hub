@@ -7,6 +7,7 @@ const ACTION_LABEL: Record<CrewAction, string> = {
   open: "Open as a tab",
   message: "Message",
   stop: "Stop",
+  retry: "Retry",
   land: "Land",
   "open-pr": "Open the pull request",
 };
@@ -23,26 +24,35 @@ function CrewRowView({
   onOpen,
   onMessage,
   onStop,
+  onRetry,
   onDeliver,
 }: {
   row: CrewRow;
   onOpen?: (row: CrewRow) => void;
-  onMessage?: (row: CrewRow, text: string) => void;
+  onMessage?: (row: CrewRow, text: string) => void | Promise<void>;
   onStop?: (row: CrewRow) => void;
+  onRetry?: (row: CrewRow) => void;
   onDeliver?: (row: CrewRow) => void;
 }) {
   const [messaging, setMessaging] = useState(false);
   const [text, setText] = useState("");
+  const [sendFailed, setSendFailed] = useState(false);
   const [armed, setArmed] = useState(false);
   const diff = diffOf(row);
   const meta = [row.cli, row.model, row.branch, diff, row.checks].filter(Boolean).join(" · ");
 
-  function send() {
+  async function send() {
     const body = text.trim();
     if (!body) return;
-    onMessage?.(row, body);
-    setText("");
-    setMessaging(false);
+    try {
+      await onMessage?.(row, body);
+      setText("");
+      setMessaging(false);
+      setSendFailed(false);
+    } catch {
+      // A timeout is not a final loss of what was typed.
+      setSendFailed(true);
+    }
   }
 
   return (
@@ -78,6 +88,10 @@ function CrewRowView({
             <button key={action} type="button" className="text-[12px] text-content/70" onClick={() => setArmed(true)}>
               {ACTION_LABEL.stop}
             </button>
+          ) : action === "retry" ? (
+            <button key={action} type="button" className="text-[12px] text-content/70" onClick={() => onRetry?.(row)}>
+              {ACTION_LABEL.retry}
+            </button>
           ) : (
             <button
               key={action}
@@ -108,7 +122,7 @@ function CrewRowView({
             className="min-w-0 flex-1 rounded-md border border-stroke bg-transparent px-2 py-1 text-[12px] text-content"
           />
           <button type="submit" className="text-[12px] text-content/70">
-            Send
+            {sendFailed ? "Retry" : "Send"}
           </button>
         </form>
       ) : null}
@@ -141,6 +155,7 @@ export function CrewTab({
   onOpen,
   onMessage,
   onStop,
+  onRetry,
   onDeliver,
 }: {
   rows: readonly CrewRow[];
@@ -149,8 +164,9 @@ export function CrewTab({
   note?: string | null;
   onShowAll?: () => void;
   onOpen?: (row: CrewRow) => void;
-  onMessage?: (row: CrewRow, text: string) => void;
+  onMessage?: (row: CrewRow, text: string) => void | Promise<void>;
   onStop?: (row: CrewRow) => void;
+  onRetry?: (row: CrewRow) => void;
   onDeliver?: (row: CrewRow) => void;
 }) {
   return (
@@ -179,6 +195,7 @@ export function CrewTab({
             onOpen={onOpen}
             onMessage={onMessage}
             onStop={onStop}
+            onRetry={onRetry}
             onDeliver={onDeliver}
           />
         ))

@@ -19,6 +19,8 @@ export type CrewWorkerInput = {
   errorClass?: string | null;
   error?: string | null;
   follow?: string | null;
+  brief?: string | null;
+  goal?: string | null;
 };
 
 export type CrewSessionInput = {
@@ -53,7 +55,7 @@ export type CrewChecksInput = {
   checks?: number;
 };
 
-export type CrewAction = "open" | "message" | "stop" | "land" | "open-pr";
+export type CrewAction = "open" | "message" | "stop" | "retry" | "land" | "open-pr";
 
 export type CrewRow = {
   id: string;
@@ -166,6 +168,8 @@ function actionsFor(
     if (ownerSession) actions.push("message");
     actions.push("stop");
   }
+  // A failed or paused job can be sent again. Working and done are not retries.
+  if (status === "failed" || status === "paused") actions.push("retry");
   if (status === "done") {
     const mode = (delivery?.mode ?? "").trim();
     const state = (delivery?.state ?? "").trim();

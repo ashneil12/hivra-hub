@@ -116,6 +116,7 @@ import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
 import { OPEN_CREW } from "../features/crew/model/focus";
+import { registerCrewDelegate } from "../features/crew/model/retry";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
@@ -12952,6 +12953,16 @@ function Workspace({
     });
     // A worker that waited for a free worker (H8) starts through its own delegate_task, asked again by the app.
     controlRequestRef.current = runControlRequest;
+    // WP-15: Retry re-delegates through tasks.delegate, the same path as a redo, which keeps the attempt ledger.
+    registerCrewDelegate((ownerSession, requestId, input) =>
+      runControlRequest({
+        namespace: "app",
+        sessionId: ownerSession,
+        requestId,
+        action: "tasks.delegate",
+        input,
+      }),
+    );
     async function runControlRequest(payload: {
       namespace: string;
       sessionId: string;
@@ -13860,6 +13871,7 @@ function Workspace({
     }
     return () => {
       controlRequestRef.current = undefined;
+      registerCrewDelegate(null);
       void listening.then((unlisten) => unlisten());
     };
   }, []);

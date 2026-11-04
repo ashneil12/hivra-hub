@@ -81,6 +81,57 @@ describe("crew tab", () => {
     act(() => send?.click());
     expect(onMessage).not.toHaveBeenCalled();
   });
+
+  it("keeps a message that did not send, and the button becomes Retry", async () => {
+    const rows = crewRows({ project: PROJECT, now: NOW, rows: [worker("a", "working")] });
+    const onMessage = vi.fn(() => Promise.reject(new Error("timed out")));
+    act(() => root.render(createElement(CrewTab, { rows, onMessage })));
+    const message = [...container.querySelectorAll("button")].find((button) => button.textContent === "Message");
+    act(() => message?.click());
+    const input = container.querySelector("input");
+    expect(input).toBeTruthy();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter!.call(input, "Keep this");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll("button")].find((button) => button.textContent === "Send");
+    await act(async () => {
+      send?.click();
+    });
+    expect(onMessage).toHaveBeenCalledOnce();
+    expect(container.querySelector("input")?.value).toBe("Keep this");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Retry")).toBe(true);
+  });
+
+  it("clears the message once the send has succeeded", async () => {
+    const rows = crewRows({ project: PROJECT, now: NOW, rows: [worker("a", "working")] });
+    const onMessage = vi.fn(() => Promise.resolve());
+    act(() => root.render(createElement(CrewTab, { rows, onMessage })));
+    const message = [...container.querySelectorAll("button")].find((button) => button.textContent === "Message");
+    act(() => message?.click());
+    const input = container.querySelector("input");
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    act(() => {
+      setter!.call(input, "Hello");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const send = [...container.querySelectorAll("button")].find((button) => button.textContent === "Send");
+    await act(async () => {
+      send?.click();
+    });
+    expect(container.querySelector("input")).toBeNull();
+  });
+
+  it("offers Retry on a failed row and calls it", () => {
+    const rows = crewRows({ project: PROJECT, now: NOW, rows: [worker("d", "failed")] });
+    const onRetry = vi.fn();
+    act(() => root.render(createElement(CrewTab, { rows, onRetry })));
+    const retry = [...container.querySelectorAll("button")].find((button) => button.textContent === "Retry");
+    expect(retry).toBeTruthy();
+    act(() => retry?.click());
+    expect(onRetry).toHaveBeenCalledOnce();
+  });
 });
 
 describe("inbox and digest on screen", () => {

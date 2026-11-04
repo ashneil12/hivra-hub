@@ -8,8 +8,9 @@ import { DELEGATIONS_CHANGED, tauriDelegations, type Delegation } from "../../mo
 import { tauriFirstMate } from "../../firstmate/model/steering";
 import { tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
-import { clearCrewFocus, crewFocus, subscribeCrewFocus } from "../model/focus";
+import { clearCrewFocus, crewFocus, holdCrewOpen, subscribeCrewFocus } from "../model/focus";
 import { loadCrewDelegations } from "../model/load";
+import { crewDelegate, retrySameBrief } from "../model/retry";
 import { steerRequestId } from "../model/steerId";
 import {
   crewRows,
@@ -101,6 +102,8 @@ export function CrewPanel({
     setNow(Date.now());
   }, [project]);
 
+  useEffect(() => holdCrewOpen(), [focus.version]);
+
   useEffect(() => {
     mounted.current = true;
     void load();
@@ -150,8 +153,24 @@ export function CrewPanel({
         text: body,
       });
       setNote("Sent.");
-    } catch {
+    } catch (error) {
       setNote("Couldn't send that. Trying again.");
+      throw error instanceof Error ? error : new Error("Couldn't send that.");
+    }
+  }
+
+  async function onRetry(row: CrewRow) {
+    if (!rows.some((item) => item.id === row.id)) return;
+    const worker = workers.find((item) => item.id === row.id);
+    if (!worker?.ownerSession) return;
+    try {
+      await retrySameBrief(worker, (requestId, input) =>
+        crewDelegate(worker.ownerSession as string, requestId, input),
+      );
+      setNote(null);
+      void load();
+    } catch {
+      setNote("Couldn't retry that. Trying again.");
     }
   }
 
@@ -198,8 +217,9 @@ export function CrewPanel({
       onOpen={(row) => {
         if (row.sessionId) onOpenSession(row.sessionId);
       }}
-      onMessage={(row, text) => void onMessage(row, text)}
+      onMessage={(row, text) => onMessage(row, text)}
       onStop={(row) => void onStop(row)}
+      onRetry={(row) => void onRetry(row)}
       onDeliver={(row) => void onDeliver(row)}
     />
   );
