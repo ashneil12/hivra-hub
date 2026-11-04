@@ -286,18 +286,16 @@ fn write_watch(
 fn watcher_text(program: &Path, data_dir: &Path, label: &str) -> Result<String, String> {
     #[cfg(target_os = "windows")]
     {
-        return watcher_task_script(
+        watcher_task_script(
             &program.to_string_lossy(),
             &data_dir.to_string_lossy(),
             &task_name(label),
-        );
+        )
     }
     #[cfg(target_os = "linux")]
     {
         let _ = label;
-        return Ok(
-            watcher_systemd_units(&program.to_string_lossy(), &data_dir.to_string_lossy()).0,
-        );
+        Ok(watcher_systemd_units(&program.to_string_lossy(), &data_dir.to_string_lossy()).0)
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
@@ -317,12 +315,12 @@ fn watcher_is_loaded(label: &str, file: &Path) -> bool {
     #[cfg(target_os = "windows")]
     {
         let _ = file;
-        return task_loaded(&task_name(label));
+        task_loaded(&task_name(label))
     }
     #[cfg(target_os = "linux")]
     {
         let _ = label;
-        return unit_loaded(file);
+        unit_loaded(file)
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
@@ -379,12 +377,12 @@ fn register_watcher(label: &str, file: &Path, text: &str) -> Result<(), String> 
     #[cfg(target_os = "windows")]
     {
         let _ = (label, file);
-        return run_powershell(text);
+        run_powershell(text)
     }
     #[cfg(target_os = "linux")]
     {
         let _ = (label, text);
-        return enable_timer(file);
+        enable_timer(file)
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
@@ -426,12 +424,12 @@ fn unregister_watcher(label: &str, file: &Path) -> Result<(), String> {
     {
         let _ = file;
         let script = watcher_task_remove_script(&task_name(label))?;
-        return run_powershell(&script);
+        run_powershell(&script)
     }
     #[cfg(target_os = "linux")]
     {
         let _ = label;
-        return disable_units(file);
+        disable_units(file)
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {

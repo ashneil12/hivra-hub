@@ -1426,6 +1426,7 @@ pub struct Autopilot {
     awake_error: Mutex<Option<String>>,
     relaunch: Result<AgentPlan, String>,
     installed: Mutex<bool>,
+    #[cfg(target_os = "macos")]
     launchd: Box<dyn Launchd>,
     signal: Arc<(Mutex<u64>, Condvar)>,
     relaunched_after_crash: bool,
@@ -1589,6 +1590,7 @@ fn sync(app: &AppHandle, what: &str) {
 /// `installed` says it may be in place. Only a removal that worked clears it, so a failed install never hides a watcher
 /// that is still loaded from an earlier one, and switching off always takes it away; a half-done install (its plist
 /// written) is taken away too.
+#[cfg(target_os = "macos")]
 fn sync_agent(launchd: &dyn Launchd, plan: &AgentPlan, installed: &mut bool, until: Option<i64>) {
     match until {
         Some(until) => match install_agent(launchd, plan, until) {
@@ -1674,6 +1676,7 @@ pub(crate) fn init(app: &AppHandle, identity: &instance::Identity, data_dir: Pat
         awake_error: Mutex::new(None),
         relaunch,
         installed: Mutex::new(installed),
+        #[cfg(target_os = "macos")]
         launchd: Box::new(SystemLaunchd),
         signal: signal.clone(),
         relaunched_after_crash: relaunched,
@@ -2344,6 +2347,7 @@ mod tests {
     }
 
     /// launchd as current macOS behaves: bootstrapping a label that is already loaded fails with 5.
+    #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct FakeLaunchd {
         calls: Mutex<Vec<String>>,
@@ -2354,12 +2358,14 @@ mod tests {
         stuck: Mutex<bool>,
     }
 
+    #[cfg(target_os = "macos")]
     impl FakeLaunchd {
         fn is_loaded(&self) -> bool {
             *self.loaded.lock().unwrap()
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl Launchd for FakeLaunchd {
         fn bootstrap(&self, domain: &str, plist: &Path) -> Result<(), String> {
             self.calls
@@ -2387,6 +2393,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn switching_off_removes_the_watcher_even_after_a_later_install_failed_on_a_loaded_label() {
         let dir = std::env::temp_dir().join(format!("ap-sync-{}", uuid::Uuid::new_v4()));
@@ -2409,6 +2416,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_removal_that_fails_keeps_the_watcher_on_the_books_until_one_works() {
         let dir = std::env::temp_dir().join(format!("ap-stuck-{}", uuid::Uuid::new_v4()));
@@ -2427,6 +2435,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_half_done_install_is_cleaned_up_when_autopilot_ends() {
         let dir = std::env::temp_dir().join(format!("ap-half-{}", uuid::Uuid::new_v4()));
@@ -2443,6 +2452,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn installing_and_removing_the_watcher_writes_and_clears_its_files() {
         let dir = std::env::temp_dir().join(format!("ap-agent-{}", uuid::Uuid::new_v4()));
