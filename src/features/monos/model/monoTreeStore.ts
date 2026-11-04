@@ -175,8 +175,13 @@ export function treeMessages(block: Block): Array<T.Msg & { ref: string }> {
  * Logs a finished turn's blocks not logged yet, oldest first. Idempotent: each block goes in once (its id rides on
  * its message in main/, so a restart knows), and a block before the last logged one is never logged after it.
  */
-export async function feedTree(monoId: string, blocks: readonly Block[]): Promise<number> {
-  if (!longChatOn(monoId)) return 0;
+export async function feedTree(
+  monoId: string,
+  blocks: readonly Block[],
+  opts?: { evenWithoutSetting?: boolean },
+): Promise<number> {
+  // WP-51: a first mate past the size is fed even when "Keep one long chat" is off.
+  if (!longChatOn(monoId) && opts?.evenWithoutSetting !== true) return 0;
   const { tree, fed } = await openTree(monoId);
   let from = 0;
   for (let k = blocks.length - 1; k >= 0; k--)
@@ -192,8 +197,13 @@ export async function feedTree(monoId: string, blocks: readonly Block[]): Promis
 }
 
 /** What a fresh conversation of a long-chat Mono opens on: the view, and how to open it back up. */
-export async function treeContext(monoId: string, cli: string): Promise<string | undefined> {
-  if (!longChatOn(monoId)) return undefined;
+export async function treeContext(
+  monoId: string,
+  cli: string,
+  opts?: { evenWithoutSetting?: boolean },
+): Promise<string | undefined> {
+  // WP-51: same gate as feedTree. Without the flag, a Mono that is off still has no tree.
+  if (!longChatOn(monoId) && opts?.evenWithoutSetting !== true) return undefined;
   const { tree } = await openTree(monoId);
   if (tree.count === 0) return undefined;
   const view = T.view(tree)

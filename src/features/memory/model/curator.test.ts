@@ -1,0 +1,148 @@
+import { describe, expect, it } from "vitest";
+import { curateTurn, freshDoc, settleTurn, type CuratorAsk, type CuratorContext } from "./curator";
+import { acceptItem, rejectItem } from "./review";
+
+const NOW = Date.parse("2026-03-01T00:00:00Z");
+const SECRET = "sk-ant-api03-abcdefghijklmnopqrst";
+
+function ctx(extra: Partial<CuratorContext> = {}): CuratorContext {
+  return {
+    mateId: "notes-lead",
+    turnId: "turn-1",
+    user: "Please keep reviews async. I like small commits.",
+    assistant: "I'll keep reviews async.",
+    now: NOW,
+    ...extra,
+  };
+}
+
+const ask =
+  (text: string) =>
+  async (): Promise<CuratorAsk> => ({ ok: true, text });
+
+describe("curateTurn", () => {
+  it("stores one unreviewed fact, and ignores a second", async () => {
+    const reply = JSON.stringify([
+      { kind: "add", text: "Likes small commits", evidence: "I like small commits" },
+      { kind: "add", text: "Reviews stay async", evidence: "keep reviews async" },
+    ]);
+    const result = await curateTurn(freshDoc(), ctx(), ask(reply));
+    expect(result.outcome.status).toBe("stored");
+    expect(result.doc.items).toHaveLength(1);
+    expect(result.doc.items[0]).toMatchObject({ action: "add", state: "unreviewed", text: "Likes small commits" });
+    expect(result.doc.doneTurns).toEqual(["notes-lead:turn-1"]);
+    const again = await curateTurn(result.doc, ctx(), ask(reply));
+    expect(again.doc.items).toHaveLength(1);
+    expect(again.outcome.status).toBe("none");
+  });
+
+  it("treats an empty reply as no fact, and prose as not a fact", async () => {
+    const empty = await curateTurn(freshDoc(), ctx(), ask("  "));
+    expect(empty.outcome).toMatchObject({ status: "none" });
+    expect(empty.doc.items).toEqual([]);
+    expect(empty.doc.doneTurns).toHaveLength(1);
+    const prose = await curateTurn(freshDoc(), ctx({ turnId: "turn-2" }), ask("I think they like commits."));
+    expect(prose.outcome).toMatchObject({ status: "dropped", reason: "invalid" });
+    expect(prose.doc.items).toEqual([]);
+  });
+
+  it("keeps a skill as a proposal until the person accepts or rejects it", async () => {
+    const reply = JSON.stringify({
+      kind: "skill",
+      name: "Reviewing a diff",
+      lesson: "Read the diff before commenting.",
+      evidence: "I like small commits",
+    });
+    const result = await curateTurn(freshDoc(), ctx(), ask(reply));
+    expect(result.doc.items[0]).toMatchObject({ action: "skill", state: "unreviewed", skill: { name: "reviewing-a-diff" } });
+    const accepted = acceptItem(result.doc, result.doc.items[0].id, NOW);
+    expect(accepted.skill).toEqual({ name: "reviewing-a-diff", lesson: "Read the diff before commenting." });
+    expect(accepted.doc.items[0].state).toBe("confirmed");
+    const rejected = rejectItem(result.doc, result.doc.items[0].id);
+    expect(rejected.items).toEqual([]);
+    expect(acceptItem(accepted.doc, result.doc.items[0].id, NOW).skill).toBeUndefined();
+  });
+
+  it("does not change a fact when it proposes an update or a removal", async () => {
+    const first = await curateTurn(
+      freshDoc(),
+      ctx(),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    const id = first.doc.items[0].id;
+    const confirmed = acceptItem(first.doc, id, NOW).doc;
+    const update = settleTurn(
+      confirmed,
+      ctx({ turnId: "turn-2" }),
+      { kind: "reply", text: JSON.stringify({ kind: "update", targetId: id, text: "Likes tiny commits", evidence: "small commits" }) },
+    );
+    expect(update.doc.items.find((item) => item.id === id)?.text).toBe("Likes small commits");
+    expect(update.doc.items.some((item) => item.action === "update" && item.state === "unreviewed")).toBe(true);
+    const removal = settleTurn(
+      confirmed,
+      ctx({ turnId: "turn-3" }),
+      { kind: "reply", text: JSON.stringify({ kind: "remove", targetId: id, evidence: "small commits" }) },
+    );
+    expect(removal.doc.items.find((item) => item.id === id)?.state).toBe("confirmed");
+    expect(removal.doc.items.some((item) => item.action === "remove")).toBe(true);
+  });
+
+  it("does not finish the turn when the model times out, is unreachable, or throws", async () => {
+    const timeout = await curateTurn(freshDoc(), ctx(), async () => ({ ok: false, kind: "timeout", reason: "slow" }));
+    expect(timeout.outcome.status).toBe("deferred");
+    expect(timeout.doc.doneTurns).toEqual([]);
+    const away = await curateTurn(freshDoc(), ctx(), async () => ({ ok: false, kind: "unreachable", reason: "down" }));
+    expect(away.outcome.status).toBe("deferred");
+    expect(away.doc.doneTurns).toEqual([]);
+    const thrown = await curateTurn(freshDoc(), ctx(), async () => {
+      throw new Error("socket");
+    });
+    expect(thrown.outcome.status).toBe("deferred");
+    expect(thrown.doc.doneTurns).toEqual([]);
+  });
+
+  it("drops a secret without sending it or storing it", async () => {
+    let sent = "";
+    const result = await curateTurn(freshDoc(), ctx({ user: `my key is ${SECRET}` }), async (prompt) => {
+      sent = prompt;
+      return { ok: true, text: JSON.stringify({ kind: "add", text: SECRET, evidence: SECRET }) };
+    });
+    expect(sent).toBe("");
+    expect(result.outcome).toMatchObject({ status: "dropped", reason: "secret" });
+    expect(JSON.stringify(result.doc)).not.toContain(SECRET);
+    expect(JSON.stringify(result.doc)).not.toContain("sk-ant");
+  });
+
+  it("drops a fact whose evidence is not in the turn, and a duplicate of one already kept", async () => {
+    const madeUp = await curateTurn(
+      freshDoc(),
+      ctx(),
+      ask(JSON.stringify({ kind: "add", text: "Works on Sundays", evidence: "every Sunday" })),
+    );
+    expect(madeUp.outcome).toMatchObject({ status: "dropped", reason: "ungrounded" });
+    expect(madeUp.doc.items).toEqual([]);
+    const once = await curateTurn(
+      freshDoc(),
+      ctx(),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    const twice = await curateTurn(
+      { ...once.doc, doneTurns: [] },
+      ctx({ turnId: "turn-9" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "small commits" })),
+    );
+    expect(twice.outcome).toMatchObject({ status: "dropped", reason: "duplicate" });
+    expect(twice.doc.items).toHaveLength(1);
+  });
+
+  it("applies a late reply onto the doc as it is now, still only once", () => {
+    const answer = {
+      kind: "reply" as const,
+      text: JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" }),
+    };
+    const first = settleTurn(freshDoc(), ctx(), answer);
+    const raced = settleTurn(first.doc, ctx(), answer);
+    expect(raced.doc.items).toHaveLength(1);
+    expect(raced.outcome.status).toBe("none");
+  });
+});
