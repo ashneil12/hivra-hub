@@ -420,6 +420,9 @@ function readStart(pid) {
 
 function probeProcess(pid) {
   const alive = stillAlive(pid);
+  // Windows start times are a PowerShell query. Rows here carry no start time,
+  // so a live check is enough and a query cannot hold the stop.
+  if (process.platform === "win32") return { alive, started: "" };
   return { alive, started: alive ? readStart(pid) : "" };
 }
 
@@ -507,6 +510,23 @@ export function windowsStopResult(killed, listing, states) {
   if (!killed || killed.stopped !== true) return "failed";
   if (goneAfterStop(listing, states)) return "clear";
   return "unknown";
+}
+
+/** Liveness only. `started` stays empty so no start-time query runs. */
+export function probeWindows(pid, aliveOf) {
+  const check = typeof aliveOf === "function" ? aliveOf : stillAlive;
+  return { alive: check(pid) === true, started: "" };
+}
+
+// Kill first, then look. `readStart` may be passed in; this must not call it.
+export function windowsStopPlan(pid, seen, deps) {
+  const stop = deps && typeof deps.stop === "function" ? deps.stop : null;
+  const aliveOf = deps && typeof deps.stillAlive === "function" ? deps.stillAlive : stillAlive;
+  const killed = stop ? stop(pid) : { stopped: false, confirmed: false };
+  const held = mergeRows(Array.isArray(seen) ? seen : [], [{ pid, started: "" }]);
+  const states = held.map((item) => rowState(item, probeWindows(item.pid, aliveOf)));
+  const listing = killed && killed.stopped === true ? held : null;
+  return { killed, held, result: windowsStopResult(killed, listing, states) };
 }
 
 export function settle(states) {
@@ -619,28 +639,23 @@ function main() {
         process.exit(code === 0 ? 1 : code);
         return;
       }
-      const known = seen.find((row) => row.pid === pid);
-      const started = (known && known.started) || "";
-      // A live pid is still the process we started. A dead one may have been reused,
-      // so taskkill runs only while it is alive.
-      const before = probeProcess(pid);
-      const killed = before.alive ? stopWindowsTree(pid, runTaskkill) : { stopped: true, confirmed: false };
-      const row = { pid, started };
-      const held = mergeRows(seen, [row]);
-      const states = held.map((item) => rowState(item, probeProcess(item.pid)));
-      // A failed taskkill is not a listing, and a failed listing is not gone.
-      let result = windowsStopResult(killed, before.alive && !killed.stopped ? null : held, states);
-      seen = dropConfirmedGone(held, (item) => probeProcess(item.pid));
+      // taskkill first. Later looks are liveness only, so PowerShell never runs here.
+      const step = windowsStopPlan(pid, seen, {
+        stop: (id) => stopWindowsTree(id, runTaskkill),
+        stillAlive,
+        readStart,
+      });
+      seen = dropConfirmedGone(step.held, (item) => probeWindows(item.pid, stillAlive));
       publishTree(seen);
-      if (result === "failed") {
+      if (step.result === "failed") {
         process.exit(code === 0 ? 1 : code);
         return;
       }
-      if (result !== "clear") {
+      if (step.result !== "clear") {
         const deadline = Date.now() + 1000;
         const timer = setInterval(() => {
-          const now = held.map((item) => rowState(item, probeProcess(item.pid)));
-          result = windowsStopResult(killed, held, now);
+          const now = step.held.map((item) => rowState(item, probeWindows(item.pid, stillAlive)));
+          const result = windowsStopResult(step.killed, step.held, now);
           if (result === "clear" || Date.now() >= deadline) {
             clearInterval(timer);
             if (result !== "clear") {

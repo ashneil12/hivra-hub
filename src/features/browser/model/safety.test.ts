@@ -16,6 +16,7 @@ import {
   pidsConfirmedGone,
   prepareTools,
   stopWindowsTree,
+  windowsStopPlan,
   windowsStopResult,
   redact,
   rowState,
@@ -743,6 +744,35 @@ describe("the browser tree is only the process that was started", () => {
     expect(windowsStopResult(ok, row, ["gone"])).toBe("clear");
     expect(windowsStopResult(ok, row, ["same"])).toBe("unknown");
     expect(windowsStopResult(timedOut, row, ["gone"])).toBe("failed");
+  });
+
+  it("stops on windows without reading a start time, and kills before it looks", () => {
+    const order: string[] = [];
+    const readStart = () => {
+      order.push("read");
+      throw new Error("start time");
+    };
+    const stopped = windowsStopPlan(42, [{ pid: 42, started: "" }], {
+      readStart,
+      stop: () => {
+        order.push("kill");
+        return { stopped: true, confirmed: false };
+      },
+      stillAlive: () => {
+        order.push("probe");
+        return false;
+      },
+    });
+    expect(order).toEqual(["kill", "probe"]);
+    expect(stopped.result).toBe("clear");
+
+    const live = windowsStopPlan(42, [{ pid: 42, started: "" }], {
+      readStart,
+      stop: () => ({ stopped: true, confirmed: false }),
+      stillAlive: () => true,
+    });
+    expect(live.result).toBe("unknown");
+    expect(order).toEqual(["kill", "probe"]);
   });
 
   it("drops a tracked pid only once that pid is confirmed gone", () => {

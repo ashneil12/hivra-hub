@@ -819,9 +819,6 @@ fn reap(pid: u32) {
     }
 }
 
-#[cfg(not(unix))]
-fn reap(_pid: u32) {}
-
 #[cfg(unix)]
 fn alive(pid: u32) -> bool {
     let Some(pid) = pid_i32(pid) else {
