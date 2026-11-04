@@ -22,7 +22,7 @@ import {
   preferredModelId,
   resolveModel,
 } from "../../sessions/model/models";
-import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -109,6 +109,7 @@ import {
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
+import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 
@@ -304,6 +305,8 @@ export type AgentAppHost = {
   tasks?: AgentAppTasksHost;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
+  /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
+  timers?: AgentAppTimersHost;
   /**
    * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work
    * started from a room comes back to it.
@@ -379,6 +382,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TASK_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
+  ...TIMER_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
 ]);
@@ -689,9 +693,9 @@ function startLaunch(
     throw new Error(`${chosenHarness} is not available in MonoCode`);
   const requestedModel = optionalString(input.model, "model");
   const model = requestedModel
-    ? // One of Ash's own models ("Other models") keeps its own id; the router reads its route (customModels.ts). On a
-      // subscription bridge, so do its Grok 4.7 and DeepSeek (bridgeModels.ts), which no catalog lists: a worker the
-      // app routes to DeepSeek was refused here as an unknown model (28 Oct), and the Lead fell back to the Grok CLI.
+    ? // One of Ash's own models ("Other models") keeps its own id; the router reads its route (customModels.ts). On the
+      // DeepSeek launcher, so does DeepSeek, which no catalog lists: a worker the app routes there was refused here
+      // as an unknown model, and the Lead fell back to another CLI.
       chosenHarness === "claude" &&
       (isCustomModelId(requestedModel) || (isBridgeModelId(requestedModel) && claudeRunsOnSubscriptionBridge()))
       ? resolveModel(chosenHarness, requestedModel)
@@ -1420,6 +1424,7 @@ export async function handleAgentApp(
     return result;
   }
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
+  if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {

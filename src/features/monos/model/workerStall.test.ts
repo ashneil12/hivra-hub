@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 import type { Block, Session } from "../../sessions/model/session";
 import { DelegationTracker, type Delegation } from "./delegations";
 import { MemoryDelegations } from "./memoryDelegations";
-import { judgeStall, lookAt, STALL_DEFAULTS, StallWatch, type Presence } from "./workerStall";
+import { STALL_DEFAULTS, StallWatch, type Presence } from "./workerStall";
+import type { Wake } from "../../firstmate/watcher/classifier";
 
 const MIN = 60_000;
 let seq = 0;
@@ -22,68 +23,7 @@ type Chat = Pick<Session, "busy" | "blocks" | "pendingQuestion" | "queuedMessage
 const chat = (blocks: Block[], extra: Partial<Chat> = {}): Chat => ({ busy: true, blocks, cwd: "/repo", ...extra });
 const seen = (over: Partial<Presence> = {}): Presence => ({ watchedSince: 0, lastProgressAt: 0, steps: 0, ...over });
 
-describe("judgeStall", () => {
-  it("a busy worker that keeps talking is fine; six quiet minutes make it stuck since its last change", () => {
-    const look = lookAt(chat([asked(), said("Reading the save code")]));
-    expect(judgeStall(look, seen({ lastChangeAt: 10 * MIN, lastProgressAt: 10 * MIN }), 15 * MIN)).toBeNull();
-    expect(judgeStall(look, seen({ lastChangeAt: 10 * MIN, lastProgressAt: 10 * MIN }), 16 * MIN)).toEqual({
-      kind: "quiet",
-      reason: "",
-      since: 10 * MIN,
-    });
-  });
-
-  it("gives a step that is still running longer (20 min), and says which", () => {
-    const look = lookAt(chat([asked(), tool("npm test", "in_progress", "")]));
-    expect(look.runningTool).toBeTruthy();
-    const presence = seen({ lastChangeAt: 0 });
-    expect(judgeStall(look, presence, 12 * MIN)).toBeNull();
-    const stall = judgeStall(look, presence, 20 * MIN);
-    expect(stall?.kind).toBe("quiet");
-    expect(stall?.reason).toMatch(/^Still running .*npm test/);
-  });
-
-  it("the same finished step with the same output six times in a row is a loop; a different output breaks it", () => {
-    const five = [asked(), ...Array.from({ length: 5 }, () => tool("gh pr checks", "completed", "pending"))];
-    expect(lookAt(chat(five)).repeat?.count).toBe(5);
-    expect(judgeStall(lookAt(chat(five)), seen({ lastChangeAt: 100 }), 200)).toBeNull();
-    const six = [...five, tool("gh pr checks", "completed", "pending")];
-    const stall = judgeStall(lookAt(chat(six)), seen({ lastChangeAt: 100, repeatSince: 150 }), 200);
-    expect(stall).toMatchObject({ kind: "loop", since: 150 });
-    expect(stall?.reason).toMatch(/^Repeating the same step: .*gh pr checks.* \(6 times\)$/);
-    const varied = [...five, tool("gh pr checks", "completed", "1 failing")];
-    expect(lookAt(chat(varied)).repeat).toBeUndefined();
-  });
-
-  it("an hour without a new step is left to the hourly progress check (workerProgress.ts), which reads real progress", () => {
-    const look = lookAt(chat([asked(), tool("npm test")]));
-    const presence = seen({ lastChangeAt: 59 * MIN, lastProgressAt: 0 });
-    expect(judgeStall(look, presence, 60 * MIN)).toBeNull();
-  });
-
-  it("idle with its row still running means it stopped without reporting; a question, a queued message or a limit holds it", () => {
-    const idle = chat([asked(), said("Done, I think")], { busy: false });
-    expect(judgeStall(lookAt(idle), seen({ lastChangeAt: 0 }), 5 * MIN)).toBeNull();
-    expect(judgeStall(lookAt(idle), seen({ lastChangeAt: 0 }), 6 * MIN)).toEqual({
-      kind: "idle",
-      reason: "Stopped without reporting back",
-      since: 0,
-    });
-    const queued = { ...idle, queuedMessages: [{ id: "m", text: "go on", attachments: [] }] } as Chat;
-    expect(judgeStall(lookAt(queued), seen(), 60 * MIN)).toBeNull();
-    expect(judgeStall(lookAt({ ...queued, queueStatus: "paused" }), seen(), 60 * MIN)?.kind).toBe("idle");
-    const resumeStopped = chat([asked(), { id: "n", role: "system", text: "Stopped resuming", notice: "resume-stopped" } as Block], {
-      busy: false,
-    });
-    expect(judgeStall(lookAt(resumeStopped), seen(), 6 * MIN)?.reason).toBe("Stopped resuming itself after restarts");
-  });
-
-  it("unknown is never stuck: the clock starts when this window first sees the worker", () => {
-    const look = lookAt(chat([asked()]));
-    expect(judgeStall(look, seen({ watchedSince: 100 * MIN, lastProgressAt: 100 * MIN }), 105 * MIN)).toBeNull();
-    expect(judgeStall(look, seen({ watchedSince: 100 * MIN, lastProgressAt: 100 * MIN }), 106 * MIN)?.since).toBe(100 * MIN);
-  });
-
+describe("stallOptions", () => {
   it("reads the stall minutes from settings, keeping the long-step wait at least three times it", async () => {
     const { stallOptions } = await import("./workerStall");
     const stored = new Map<string, string>([["monocode:stall-minutes", "10"]]);
@@ -115,14 +55,18 @@ describe("StallWatch", () => {
     const launch = tracker.launch({ ownerSession: "lead", ownerMono: "vg-game-lead", requestId: "r1", childSession: "w1", title: "Fix the save bug" });
     const row = (await launch.row) as Delegation;
     let now = 0;
+    const wakes: Wake[] = [];
+    const stops: { id: string; error: string }[] = [];
     const watch = new StallWatch({
       tracker: () => tracker,
       session: (id) => sessions.get(id),
       openOwned: (chatId) => tracker.known().filter((r) => r.ownerSession === chatId && r.state !== "completed").length,
       now: () => now,
+      wake: (wake) => wakes.push(wake),
+      silent: (stopped, stop) => stops.push({ id: stopped.id, error: stop.error }),
     });
     const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
-    return { backend, tracker, sessions, row, watch, settle, at: (ms: number) => (now = ms) };
+    return { backend, tracker, sessions, row, watch, settle, wakes, stops, at: (ms: number) => (now = ms) };
   }
 
   it("raises a quiet worker's stall on the row once, and clears it the moment the worker talks again", async () => {
@@ -199,5 +143,45 @@ describe("StallWatch", () => {
     t.watch.tick();
     await t.settle();
     expect(t.backend.get(t.row.id).stallKind ?? null).toBeNull();
+  });
+
+  it("Hivra WP-11: tells the first mate once per silent stretch, and stops the worker once after twenty silent minutes", async () => {
+    const t = await setup();
+    t.sessions.set("w1", chat([asked(), said("Looking")]));
+    for (const minute of [0, 6, 7, 8, 12, 19]) {
+      t.at(minute * MIN);
+      t.watch.tick();
+      await t.settle();
+    }
+    expect(t.wakes.map((w) => w.kind)).toEqual(["stall"]);
+    expect(t.stops).toEqual([]);
+    t.at(20 * MIN);
+    t.watch.tick();
+    await t.settle();
+    t.at(21 * MIN);
+    t.watch.tick();
+    expect(t.stops).toEqual([{ id: t.row.id, error: expect.stringContaining("Silent for 20 minutes") }]);
+  });
+
+  it("Hivra WP-11: a worker waiting on an approval is never silent, and activity re-arms the notice", async () => {
+    const t = await setup();
+    const approval = { ...tool("Bash", "pending", ""), approval: { decided: false } } as unknown as Block;
+    t.sessions.set("w1", chat([asked(), approval]));
+    for (const minute of [0, 10, 30, 90]) {
+      t.at(minute * MIN);
+      t.watch.tick();
+      await t.settle();
+    }
+    expect(t.wakes).toEqual([]);
+    expect(t.stops).toEqual([]);
+    // Answered: it works, goes quiet again, and that is a new stretch with its own notice.
+    t.sessions.set("w1", chat([asked(), said("Approved, carrying on")]));
+    t.at(91 * MIN);
+    t.watch.sync();
+    t.watch.tick();
+    t.at(98 * MIN);
+    t.watch.tick();
+    await t.settle();
+    expect(t.wakes.map((w) => w.key)).toEqual([`stall:${t.row.id}:1:${91 * MIN}`]);
   });
 });

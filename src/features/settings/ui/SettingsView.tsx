@@ -9,6 +9,7 @@ import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
+import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -211,10 +212,6 @@ import {
   saveProviderBinaryPath,
   type ConfigurableBinaryProvider,
 } from "../../providers/model/providerBinaryPaths";
-import {
-  claudeRunsOnGrok,
-  findClaudeGrokBridge,
-} from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   compareSemver,
   MINIMUM_OPENCODE_VERSION,
@@ -692,6 +689,10 @@ export function SettingsView({
               {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
+              {section === "plugins" ? (
+                // WP-32: Discover. Listing reads indexes; it never runs plugin code.
+                <PluginsPage />
+              ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}
@@ -3559,63 +3560,6 @@ function binaryInspectionError(
   return null;
 }
 
-/**
- * Claude Code's runtime: Ash's Claude login, or Grok 4.7 through his Grok subscription (claudeGrokBridge.ts).
- * Shown only on a Mac that has the bridge launcher. Choosing points Claude Code's CLI path at the launcher; like
- * any CLI path it takes effect after a restart.
- */
-function ClaudeRunsOnControl() {
-  const [bridge, setBridge] = useState<string | null>(null);
-  const [saved, setSaved] = useState(() => loadProviderBinaryPath("claude"));
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    void findClaudeGrokBridge().then((path) => {
-      if (live) setBridge(path);
-    });
-    return () => {
-      live = false;
-    };
-  }, []);
-  const savedOnGrok = claudeRunsOnGrok(saved);
-  if (!bridge && !savedOnGrok) return null;
-  const pending = providerBinaryPathChangePending("claude");
-  const choose = (next: string) => {
-    const path = next === "grok" ? bridge : null;
-    if (next === "grok" && !path) {
-      setError("The Grok bridge isn't on this Mac.");
-      return;
-    }
-    if (next === (savedOnGrok ? "grok" : "claude")) return;
-    if (!saveProviderBinaryPath("claude", path)) {
-      setError("Could not save that choice.");
-      return;
-    }
-    setError(null);
-    setSaved(loadProviderBinaryPath("claude"));
-  };
-  return (
-    <div className="flex items-center gap-2">
-      <Select
-        label="Claude Code runs on"
-        value={savedOnGrok ? "grok" : "claude"}
-        onChange={choose}
-        options={[
-          { value: "claude", label: "Claude (your Claude login)" },
-          { value: "grok", label: "Grok 4.7 (your Grok subscription)" },
-        ]}
-      />
-      {error ? (
-        <span role="alert" className="text-[11px] text-red-400">
-          {error}
-        </span>
-      ) : pending ? (
-        <span className="text-[11px] text-amber-300">Restart MonoCode to switch</span>
-      ) : null}
-    </div>
-  );
-}
-
 function ProviderBinaryControl({
   provider,
 }: {
@@ -4622,8 +4566,6 @@ function ProviderRow({
   const available = isHarnessAvailable(harness);
   const current =
     models.length > 0 ? resolveModel(harness, selectedModel) : null;
-  // Claude Code on the Grok bridge, as this run of the app uses it: the Claude model picker has no say then.
-  const onGrok = harness === "claude" && claudeRunsOnGrok();
 
   useEffect(() => {
     if (!available || hasLiveCatalog(harness)) return;
@@ -4645,15 +4587,12 @@ function ProviderRow({
         </span>
       }
       description={
-        harness === "claude" && onGrok
-          ? "Runs on Grok 4.7 through your Grok subscription. Every Claude Code chat uses Grok 4.7."
-          : available
-            ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
-            : harnessUnavailableHint(harness)
+        available
+          ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
+          : harnessUnavailableHint(harness)
       }
     >
-      {harness === "claude" ? <ClaudeRunsOnControl /> : null}
-      {current && !(harness === "claude" && onGrok) ? (
+      {current ? (
         <Select
           label={`${HARNESS_TITLE[harness]} model`}
           value={current.id}

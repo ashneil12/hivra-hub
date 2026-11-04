@@ -203,6 +203,53 @@ pub fn claude_plugin_name(name: &str) -> String {
     name.replace('.', "-")
 }
 
+/// A digest of everything in an installed plugin folder (WP-31's lock file): each path, its kind, and each file's
+/// bytes or link's target, in sorted order, as `sha256-<hex>`. Two copies of the same plugin give the same digest
+/// wherever they sit.
+pub fn tree_digest(dir: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let is_dir = std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir())
+                && link_target(&path).is_none();
+            out.push((rel, path.clone()));
+            if is_dir {
+                walk(base, &path, out);
+            }
+        }
+    }
+    let mut paths = Vec::new();
+    walk(dir, dir, &mut paths);
+    paths.sort();
+    let mut hash = Sha256::new();
+    for (rel, path) in paths {
+        hash.update(rel.as_bytes());
+        hash.update([0]);
+        if let Some(target) = link_target(&path) {
+            hash.update(b"l");
+            hash.update(target.to_string_lossy().replace('\\', "/").as_bytes());
+        } else if path.is_dir() {
+            hash.update(b"d");
+        } else {
+            hash.update(b"f");
+            hash.update(std::fs::read(&path).unwrap_or_default());
+        }
+        hash.update([0]);
+    }
+    let digest = hash.finalize();
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256-{hex}")
+}
+
 /// Every path under `dirs` (relative, sorted, with a marker for links) — what a test compares before and after.
 #[cfg(test)]
 pub fn tree(dirs: &[&Path]) -> Vec<String> {

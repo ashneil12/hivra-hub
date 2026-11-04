@@ -21,8 +21,8 @@ test("the check lands in app data by project id, with its script beside it, in t
 });
 
 test("--app-gate is a flag, off unless passed", () => {
-  assert.equal(parseArgs(["--grok-sub"]).appGate, false);
-  assert.equal(parseArgs(["--grok-sub", "--app-gate"]).appGate, true);
+  assert.equal(parseArgs(["--deepseek-sub"]).appGate, false);
+  assert.equal(parseArgs(["--deepseek-sub", "--app-gate"]).appGate, true);
 });
 
 test("with the app running the check, the bench never copies or runs it", () => {

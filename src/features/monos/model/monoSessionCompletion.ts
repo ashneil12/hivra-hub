@@ -16,45 +16,35 @@ import {
   type QueuedMessage,
   type Session,
 } from "../../sessions/model/session";
-import { bridgeModelName, GROK_BRIDGE_NAME, unavailableNote, type BridgeKind } from "../../sessions/model/bridgeModels";
-import { claudeBridgeKind } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
-import { appIdentity } from "../../../app/model/appIdentity";
+import { bridgeModelName, type BridgeKind } from "../../sessions/model/deepseekBridge";
+import { claudeBridgeKind } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { latestTestLine } from "./staleTestClaim";
 
-/** Which bridge this app's Claude Code runs on, and whether the bench holds every call to Grok 4.7 (verify.grok). */
-function currentBridge(): { kind?: BridgeKind; benchGrok: boolean } {
+/** Which launcher this app's Claude Code runs through, if any. */
+function currentBridge(): BridgeKind | undefined {
   try {
-    return { kind: claudeBridgeKind(), benchGrok: appIdentity()?.verify?.grok === true };
+    return claudeBridgeKind();
   } catch {
-    return { benchGrok: false };
+    return undefined;
   }
 }
 
 /**
- * r78 (Critiquito): a finished worker's row names the model that ran, not the harness ("claude · Last week total" read as
- * if Claude ran it). The stored title keeps its "claude · " prefix; this swaps it for the model's name: on a bridge, what
- * the bridge runs (DeepSeek V4.1 Flash, or Grok 4.7, and Grok 4.7 for every call on the Grok bench); otherwise the
- * chat's own model id. A title without the prefix, or a chat with no model named, stays as it is.
+ * A finished worker's row names the model that ran, not the harness. The stored title keeps its harness prefix; this
+ * swaps it for the model's name. On the DeepSeek launcher that is DeepSeek. Otherwise it is the chat's own model id.
+ * A title without the prefix, or a chat with no model named, stays as it is.
  */
 export function completionTitle(
   session: Pick<Session, "title" | "harness" | "model">,
-  bridge: { kind?: BridgeKind; benchGrok: boolean } = currentBridge(),
+  bridge: BridgeKind | undefined = currentBridge(),
 ): string {
   const title = session.title || "Agent session";
   const prefix = `${HARNESS_LABEL[session.harness]} · `;
   if (!title.startsWith(prefix)) return title;
-  // r90 (Ash): the name comes from the hub's own model record for the chat (its model id, read through the bridge
-  // it is on). The bench's Grok routing no longer stands in for it; when the bench runs a different model than the
-  // record names, the label says both, so the Lead's text never hides what the hub asked for or what ran.
-  const recorded =
-    session.harness === "claude" && bridge.kind
-      ? bridgeModelName(session.model, bridge.kind)
-      : session.model?.trim() || undefined;
-  // r90 (Critiquito): what ran comes first, the reason after it, in the same words as the card and the sub-chat row.
   const name =
-    recorded && session.harness === "claude" && bridge.benchGrok && recorded !== GROK_BRIDGE_NAME
-      ? `${GROK_BRIDGE_NAME} · ${unavailableNote(recorded)}`
-      : recorded;
+    session.harness === "claude" && bridge
+      ? bridgeModelName(session.model, bridge)
+      : session.model?.trim() || undefined;
   return name ? `${name} · ${title.slice(prefix.length)}` : title;
 }
 

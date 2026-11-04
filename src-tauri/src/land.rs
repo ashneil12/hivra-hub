@@ -133,6 +133,22 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
     result
 }
 
+/// Hivra WP-12 (the teardown guard, src/delivery/teardown.rs): whether everything the worker changed is already in the
+/// project, so removing its copy loses nothing. A change that is only partly there counts as not landed.
+pub(crate) fn landed_in(checkout: &Path, project: &Path) -> Result<bool, String> {
+    let (patch, _, _) = worker_patch(checkout, project)?;
+    if patch.is_empty() {
+        return Ok(true);
+    }
+    let (already, _, _) = git(
+        project,
+        &["apply", "--check", "-R", "-"],
+        None,
+        Some(&patch),
+    )?;
+    Ok(already)
+}
+
 pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
     if !project_of(checkout, project) {
         return Err("Only a worker's own copy of this project lands in it.".into());

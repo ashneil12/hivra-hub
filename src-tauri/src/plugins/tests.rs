@@ -1181,7 +1181,8 @@ fn server_names_outside_cli_characters_are_skipped() {
             "ok_1": { "type": "streamable-http", "url": "https://example.com/a" },
             "has space": { "type": "streamable-http", "url": "https://example.com/b" },
             "dot.ted": { "type": "streamable-http", "url": "https://example.com/c" },
-            "two__parts": { "type": "streamable-http", "url": "https://example.com/d" }
+            "two__parts": { "type": "streamable-http", "url": "https://example.com/d" },
+            "trailing_": { "type": "streamable-http", "url": "https://example.com/e" }
         }),
     );
     let loaded = load_plugin(&root).unwrap();

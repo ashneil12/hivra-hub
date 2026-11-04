@@ -1248,11 +1248,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
     crate::delegations::ensure_tables(conn)?;
+    // Hivra WP-11: the first mate's wake queue and timers.
+    crate::watcher::ensure_tables(conn)?;
     // Hivra WP-14: steering messages and decisions.
     crate::steering::ensure_tables(conn)?;
     crate::decisions::ensure_tables(conn)?;
     crate::autopilot::ensure_tables(conn)?;
     crate::pr_watch::ensure_tables(conn)?;
+    crate::delivery::ensure_tables(conn)?; // Hivra WP-12
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
     crate::ship::ensure_acceptance_table(conn)?;

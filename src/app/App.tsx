@@ -2,7 +2,6 @@ import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 import { withInboxCount } from "../features/hub/model/inboxCountNote";
 import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
 import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
-import { monoChatModelFix } from "../features/monos/model/monoModels";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
@@ -113,6 +112,9 @@ import { bindCouncilApp } from "../features/council/model/seatSessions";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
+// Hivra WP-11: the first mate's wake queue.
+import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
   waitingActivity,
@@ -666,7 +668,7 @@ import {
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
-import { claudeRunsOnSubscriptionBridge, modelInUseLabel } from "../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
 import {
@@ -2078,6 +2080,8 @@ function Workspace({
   const delegationsRef = useRef<DelegationTracker | null>(null);
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
+  // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
+  const firstMateWakesRef = useRef<WakeQueue | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -7601,17 +7605,6 @@ function Workspace({
     [],
   );
 
-  // Ash (27 Oct): no Claude subscription anywhere. A Mono's chat still on a Claude name (the old default) moves to the
-  // model its Mono names, Grok 4.7 (monoModels.ts), through the picker's own change; a model Ash picked stays.
-  useEffect(() => {
-    for (const mono of listMonos()) {
-      const chat = mono.sessionId ? sessions.find((session) => session.id === mono.sessionId) : undefined;
-      if (!chat || chat.busy || isPreparingHandoff(chat)) continue;
-      const model = monoChatModelFix(mono, chat);
-      if (model) onModelChange(chat.id, chat.harness, model);
-    }
-  }, [sessions, onModelChange]);
-
   const onModelSettingsChange = useCallback(
     (sessionId: string, modelSettings: Record<string, string>) => {
       saveLastModelSettings(modelSettings);
@@ -8421,7 +8414,7 @@ function Workspace({
             author: {
               harness: current.harness,
               model: current.model,
-              name: modelInUseLabel(current.harness, resolveModel(current.harness, current.model).name, current.model) ?? "",
+              name: resolveModel(current.harness, current.model).name,
             },
             settings: { choices: [], maxWorkers: 2 },
             status: "planning",
@@ -10026,6 +10019,11 @@ function Workspace({
       queueMonoSessionCompletionRef.current(monoId, message),
   });
   prWatchesRef.current = prWatches;
+  firstMateWakesRef.current = useFirstMateWakes({
+    sessionsRef,
+    queueWake: (ownerId, message) =>
+      queueMonoSessionCompletionRef.current(ownerId, message),
+  });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
@@ -10641,6 +10639,7 @@ function Workspace({
             if (accepted && head.monoSessionCompletion) {
               delegationsRef.current?.delivered(head.id);
               prWatchesRef.current?.delivered(head.id);
+              void firstMateWakesRef.current?.delivered(head.id);
             }
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
@@ -10724,6 +10723,7 @@ function Workspace({
     (sessionId: string, messageId: string) => {
       delegationsRef.current?.discarded(messageId);
       prWatchesRef.current?.discarded(messageId);
+      firstMateWakesRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -12787,8 +12787,7 @@ function Workspace({
     workerRoom(harness, {
       now: Date.now(),
       usageFor: (entry) => getCachedRateLimits(entry.provider, entry.id),
-      // On a subscription bridge (Grok 4.7 or DeepSeek) a Claude account's sign-in and limit don't hold Claude Code
-      // workers back: they don't use it.
+      // WP-16: on the DeepSeek launcher a Claude account's sign-in doesn't hold a worker back.
       elsewhere: harness === "claude" && claudeRunsOnSubscriptionBridge(),
     });
   // Waiting workers start by themselves, in order, when a worker frees up or a provider's limit resets (H8).

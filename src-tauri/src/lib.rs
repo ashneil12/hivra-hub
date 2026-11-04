@@ -18,6 +18,8 @@ mod cursor_store;
 mod decisions;
 mod delegations;
 mod dev_fault;
+// Hivra WP-12: delivery modes and the one merge path.
+mod delivery;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -98,6 +100,8 @@ mod trackpad_zoom;
 mod tray;
 mod verify_live;
 mod verify_stage;
+// Hivra WP-11: the watcher's wake queue and timers.
+mod watcher;
 mod window;
 mod window_frame;
 mod window_transfer;
@@ -519,6 +523,30 @@ pub fn run() {
             firstmate::firstmate_checkout_snapshot,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
+            // Hivra WP-12: delivery modes and the one merge path.
+            delivery::delivery_settings_get,
+            delivery::delivery_settings_set,
+            delivery::delivery_list,
+            delivery::delivery_deliver,
+            delivery::delivery_fix_ask,
+            delivery::delivery_merge,
+            delivery::delivery_merge_approve,
+            delivery::delivery_merges,
+            delivery::delivery_events_open,
+            delivery::delivery_events_consume,
+            // Hivra WP-11: the watcher's wake queue and timers.
+            watcher::watcher_wake_add,
+            watcher::watcher_wakes_open,
+            watcher::watcher_wakes_of,
+            watcher::watcher_wake_drain,
+            watcher::watcher_wake_ack,
+            watcher::watcher_wake_delivered,
+            watcher::watcher_wake_delivery,
+            watcher::watcher_dispose_owner,
+            watcher::watcher_timer_set,
+            watcher::watcher_timer_cancel,
+            watcher::watcher_timers,
+            watcher::watcher_tick,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,
@@ -730,6 +758,15 @@ pub fn run() {
             plugins::plugins_disable,
             plugins::plugins_uninstall,
             plugins::plugins_session_wiring,
+            // WP-31: pinned install, update, rollback, and the person's OK.
+            plugins::plugins_install,
+            plugins::plugins_update,
+            plugins::plugins_approve,
+            plugins::plugins_decline,
+            plugins::plugins_pending,
+            plugins::plugins_rollback,
+            // WP-32: Discover. Listing reads indexes; it never runs plugin code.
+            plugins::discover::plugins_discover,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
@@ -745,7 +782,7 @@ pub fn run() {
             verify_live::verify_live_messages,
             verify_live::verify_live_quit,
             harness::harness_resolve_claude,
-            harness::harness_claude_grok_bridge,
+            // WP-16: the retired launcher command is gone.
             harness::claude_mcp_list,
             mcp::mcp_discover,
             mcp::mcp_add,

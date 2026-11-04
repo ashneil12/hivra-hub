@@ -1,6 +1,5 @@
 import type { ReactNode } from "react";
 import { projectName } from "../../../shared/lib/paths";
-import { claudePillName, ranModel, ranModelText, type RanModel } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { resolveModel } from "../../sessions/model/models";
 import {
   Chatting,
@@ -21,13 +20,10 @@ import type {
   LaunchedSessionView,
 } from "../model/monoSpawnedSessions";
 
-/**
- * The worker's model, named as the composer names it ("Sonnet 5"; "Grok 4.7" on the bridge). r90: what really ran, with
- * the quiet reason when the chat asked for another ("Grok 4.7" then "DeepSeek wasn't available").
- */
-function modelLabel(harness: MonoSpawnedSession["harness"], model: string): RanModel {
+/** The worker's model, named as the composer names it ("Sonnet 5"). */
+function modelLabel(harness: MonoSpawnedSession["harness"], model: string): string {
   const name = resolveModel(harness, model).name;
-  return ranModel(harness, harness === "claude" ? claudePillName(name) : name);
+  return harness === "claude" ? name.replace(/^Claude /, "") : name;
 }
 
 const STATUS: Record<LaunchedSessionState, { label: string; icon: ReactNode }> =
@@ -128,7 +124,7 @@ export function LaunchedSessionCard({
   );
   const status = stalled ? STALLED : view ? STATUS[view.state] : undefined;
   const ran = modelLabel(launch.harness, launch.model);
-  const ranLine = `Runs on ${ranModelText(ran)}${launch.effort ? `, ${launch.effort} effort` : ""}`;
+  const ranLine = `Runs on ${ran}${launch.effort ? `, ${launch.effort} effort` : ""}`;
   return (
     <button
       type="button"

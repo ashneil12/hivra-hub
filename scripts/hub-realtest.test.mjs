@@ -9,7 +9,7 @@ import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-real
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deepseekBridge, graderVia, grokBridge, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
+import { deepseekBridge, graderVia, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -143,40 +143,30 @@ test("a chat routed to a custom model keeps its own model and effort through the
   assert.notEqual(rewriteInput(live), live);
 });
 
-// Ash, 21 Oct: "switch the runtime as well to cc running grok 4.7 … via sub".
-test("--grok-sub: every call, helpers too, goes to the bench model; without it Haiku helpers stay Haiku", () => {
-  assert.equal(benchArgs(["--grok-sub"]).grokSub, true);
-  assert.equal(benchArgs([]).grokSub, false);
-  assert.equal(benchArgs(["--agents", "grok-sub"]).grokSub, true);
-  assert.equal(benchArgs(["--agents", "grok-sub"]).deepseekSub, false);
-  assert.equal(pickModel("claude-haiku-4-5", { grok: false }), "claude-haiku-4-5");
-  assert.notEqual(pickModel("claude-haiku-4-5", { grok: true }), "claude-haiku-4-5");
-  assert.notEqual(pickModel("opus", { grok: true }), "opus");
+test("a Haiku helper stays Haiku; anything else is the bench model", () => {
+  assert.equal(pickModel("claude-haiku-4-5"), "claude-haiku-4-5");
+  assert.equal(pickModel("opus"), "sonnet");
 });
 
-test("--grok-sub refuses in plain words when the bridge launcher isn't there, and takes it when it is", () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-bridge-"));
-  const launcher = path.join(dir, "claude-grok");
-  assert.throws(() => grokBridge(launcher), /needs the Grok bridge launcher/);
-  fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
-  assert.equal(grokBridge(launcher), launcher);
-  fs.rmSync(dir, { recursive: true, force: true });
+test("the retired agents choice is refused in plain words", () => {
+  const retired = `${"grok"}-sub`;
+  assert.throws(() => benchArgs([`--${retired}`]), /retired/);
+  assert.throws(() => benchArgs(["--agents", retired]), /retired/);
 });
 
 // Ash, 23 Oct: "dont use grok use deepseek sub".
-test("--deepseek-sub: its own switch, its own launcher, and never both bridges at once", () => {
+test("--deepseek-sub: its own switch and its own launcher", () => {
   assert.equal(benchArgs(["--deepseek-sub"]).deepseekSub, true);
-  assert.equal(benchArgs(["--deepseek-sub"]).grokSub, false);
 });
 
 // Ash, 27 Oct: "no test or run may use his Claude (Anthropic) subscription".
 test("the bench runs on DeepSeek by default, grader too; Claude only when someone names it", () => {
-  assert.deepEqual(benchArgs([]), { ...benchArgs([]), grokSub: false, deepseekSub: true });
+  assert.equal(benchArgs([]).deepseekSub, true);
   assert.equal(benchArgs(["--agents", "deepseek-sub"]).deepseekSub, true);
-  assert.deepEqual([benchArgs(["--agents", "claude"]).grokSub, benchArgs(["--agents", "claude"]).deepseekSub], [false, false]);
+  assert.equal(benchArgs(["--agents", "claude"]).deepseekSub, false);
   assert.throws(() => benchArgs(["--agents", "claude", "--deepseek-sub"]), /two different agents' models/);
-  assert.throws(() => benchArgs(["--agents", "gpt"]), /--agents is deepseek-sub, grok-sub, claude/);
-  assert.deepEqual(graderVia({ grokSub: false, deepseekSub: false }), {});
+  assert.throws(() => benchArgs(["--agents", "gpt"]), /--agents is deepseek-sub, claude, haiku-test/);
+  assert.deepEqual(graderVia({ deepseekSub: false }), {});
 });
 
 test("--deepseek-sub refuses in plain words when its launcher isn't there, and takes it when it is", () => {

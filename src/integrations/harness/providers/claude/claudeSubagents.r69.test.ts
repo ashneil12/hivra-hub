@@ -31,17 +31,9 @@ describe("sub-agent model follows the worker's provider", () => {
     expect(JSON.stringify(env)).not.toMatch(/haiku/i);
   });
 
-  it("a Grok worker's sub-agents run on the Grok bridge model", () => {
-    cliPath = "/Users/ash/.local/bin/claude-grok";
-    const args = buildClaudeSpawnArgs({ model: "claude-haiku-5-5" });
-    const env = envOf(args);
-    expect(env?.CLAUDE_CODE_SUBAGENT_MODEL).toBe(flag(args, "--model"));
-    expect(env?.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL).not.toMatch(/haiku/i);
-  });
-
   it("a routed Other model (DeepSeek through the hub's router) pins its own id", () => {
     cliPath = "/usr/local/bin/claude";
-    const args = buildClaudeSpawnArgs({ model: "deepseek-v4.1-flash", routedModel: "deepseek-v4.1-flash", offBridge: true });
+    const args = buildClaudeSpawnArgs({ model: "deepseek-v4.1-flash", routedModel: "deepseek-v4.1-flash" });
     expect(envOf(args)).toEqual({
       CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4.1-flash",
       CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL: "deepseek-v4.1-flash",

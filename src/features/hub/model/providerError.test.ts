@@ -2,12 +2,12 @@
 import { expect, it } from "vitest";
 import { plainProviderError } from "./providerError";
 
-const raw = 'The build didn\'t go through: model call failed (grok/grok-4.7): HTTP 524: {"type": "error", "error": {"type": "api_error", "message": "Grok subscription upstream rejected this request"}}';
+const raw = 'The build didn\'t go through: model call failed (grok/grok-4): HTTP 524: {"type": "error", "error": {"type": "api_error", "message": "upstream rejected this request"}}';
 
 it("the raw 524 from a page build reads as one plain sentence, naming the service and no JSON", () => {
   const out = plainProviderError(raw);
   expect(out).toBe("The Grok model service turned the request away just now. Nothing changed; try again in a bit.");
-  expect(out).not.toMatch(/[{}]|HTTP|api_error|grok-4\.7/);
+  expect(out).not.toMatch(/[{}]|HTTP|api_error|grok-4/);
 });
 
 it("rate limits and sign-in failures say what to do; other providers are named", () => {

@@ -36,8 +36,8 @@ import {
   type ClaudeFailure,
   type ClaudeFailureContext,
 } from "./claudeFailure";
-import { claudeBridgeKind, grokBridgeEffort } from "./claudeGrokBridge";
-import { bridgeLaunchModel } from "../../../../features/sessions/model/bridgeModels";
+import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -298,8 +298,6 @@ export function buildClaudeSpawnArgs(input: {
    * Only for a chat in Full access at launch (claude.ts).
    */
   allowBypass?: boolean;
-  /** This process leaves the Grok bridge (a non-Grok Other model, claudeGrokBridge.ts routedOffBridge): its own model. */
-  offBridge?: boolean;
   /** A routed Other model's id (the hub's loopback router): not Anthropic, so its sub-agents run on it too (r69). */
   routedModel?: string;
   /** Hivra WP-10: a first mate's session, which has no file-editing tools (FIRST_MATE_DENY_TOOLS). */
@@ -325,16 +323,13 @@ export function buildClaudeSpawnArgs(input: {
     ...input.settings,
     ...(input.isolated ? { disableAllHooks: true } : {}),
   };
-  const bridge = input.offBridge ? undefined : claudeBridgeKind();
-  // r62 (bridge log, 28 Oct: 639 "thinking: budget zero not allowed ... clamped_to=0"): thinking off makes Claude Code
-  // send `thinking: {type: "disabled"}`, which the gateway turns into a budget of 0 that Grok 4.7 doesn't accept. On a
-  // bridge, thinking is always adaptive and the effort sets how much; what was "off" (helpers, the Thinking toggle)
-  // asks for low effort instead, so every request carries a level the gateway can place.
+  const bridge = claudeBridgeKind();
+  // The DeepSeek gateway rejects thinking disabled. On that launcher, thinking stays
+  // on and the effort sets how much; what was "off" asks for low effort instead.
   const thinkingWasOff = bridge ? settings.alwaysThinkingEnabled === false : false;
   if (bridge) settings.alwaysThinkingEnabled = true;
-  // Claude Code on a subscription bridge (claudeGrokBridge.ts): every process asks for Grok 4.7 or DeepSeek by the
-  // launcher's own name, whatever Claude model was picked, and one it can't place throws before anything starts
-  // (bridgeModels.ts), so no name ever reaches the gateway for it to route elsewhere.
+  // On the DeepSeek launcher every process asks for DeepSeek by the launcher's own
+  // name, and a model it can't place throws before anything starts.
   const model = bridge ? bridgeLaunchModel(input.model, bridge) : input.model;
   const ownSubagents = subagentModelEnv(bridge ? model : input.routedModel);
   if (ownSubagents) settings.env = { ...settings.env, ...ownSubagents };
@@ -347,8 +342,7 @@ export function buildClaudeSpawnArgs(input: {
     args.push(`--setting-sources=${CLAUDE_SETTING_SOURCES}`);
     args.push("--settings", JSON.stringify(settings));
   }
-  const asked = input.effort ?? (thinkingWasOff ? "low" : undefined);
-  const effort = bridge === "grok" ? grokBridgeEffort(asked) : asked;
+  const effort = input.effort ?? (thinkingWasOff ? "low" : undefined);
   if (model) args.push("--model", model);
   if (effort) args.push("--effort", effort);
   if (input.permissionMode) {

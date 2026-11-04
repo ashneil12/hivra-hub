@@ -27,6 +27,10 @@
         "path": "app-data/plugins/installed/pstack"
       },
       {
+        "path": "app-data/plugins/lock.json",
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+      },
+      {
         "dir": true,
         "path": "home"
       }
@@ -315,6 +319,10 @@
       {
         "carried": "pstack",
         "path": "app-data/plugins/installed/pstack"
+      },
+      {
+        "path": "app-data/plugins/lock.json",
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,

@@ -24,17 +24,15 @@ const area = async (page: Page, name: string, box: { x: number; y: number; width
   const y = Math.max(0, box.y - pad);
   await page.screenshot({ path: `${SHOTS}/${name}.png`, clip: { x, y, width: box.width + 2 * pad, height: box.height + 2 * pad } });
 };
-const onGrokBridge = (page: Page) =>
+const seedClaude = (page: Page) =>
   page.addInitScript(() => {
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
-    // Claude Code on Grok 4.7 through the bridge launcher, as on Ash's Mac (claudeGrokBridge.ts).
-    localStorage.setItem("monocode.providerBinaryPaths.v1", JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }));
   });
 
 test("a coding team's own chat: Stop in the send spot during a turn, its own turn only; the model line above the box", async ({ page }) => {
   const now = Date.now();
-  await onGrokBridge(page);
+  await seedClaude(page);
   await page.addInitScript(
     ({ chat, folder, at }) => {
       if (sessionStorage.getItem("seeded")) return;
@@ -66,9 +64,9 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   const field = box.locator("textarea");
   await expect(field).toBeVisible({ timeout: 15_000 });
 
-  // The model as text above the box, Grok 4.7 on the bridge, with a chevron; no model picker in the toolbar.
+  // The model as text above the box, with a chevron; no model picker in the toolbar.
   const line = pane.locator("[data-mono-model-line]");
-  await expect(line).toContainText("Grok 4.7");
+  await expect(line).toContainText("Sonnet 5");
   await expect(pane.locator("[data-model-menu]")).toBeVisible();
   await expect(box.locator("button[aria-haspopup]").filter({ hasText: /Sonnet|Claude/ })).toHaveCount(0);
 
@@ -94,11 +92,13 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   // No runner mascot while the model line shows: nothing floats on the line's rule.
   await page.waitForTimeout(600);
   expect(await page.locator(".pointer-events-none.fixed.inset-0.z-40 .origin-bottom svg").count()).toBe(0);
-  // While the turn runs its header is the one live status line (what it does now, Critiquito 29 Oct), with no Claude
-  // name or mark; once it ends the header names the model really in use (the model line's source): Grok 4.7.
+  // While the turn runs its header is the one live status line (what it does now, Critiquito 29 Oct), with no model
+  // name or mark; once it ends the header names the model really in use. The catalog calls claude:sonnet-5 "Claude Sonnet 5".
   const chat = box.locator("xpath=ancestor::*[@data-session-drop][1]");
-  await expect(chat.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first()).toBeVisible();
-  await expect(chat.getByText(/Sonnet|Claude/)).toHaveCount(0);
+  const live = chat.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first();
+  await expect(live).toBeVisible();
+  // The model line in this chat names Sonnet 5. The live header does not.
+  await expect(live).not.toContainText(/Sonnet|Claude|Grok/);
   expect(await chat.locator('img[src*="claude"]').count()).toBe(0);
   // The chat's last lines too (the turn's working mark sits just above the model line), then the composer.
   // The whole chat (its title, the turn and the composer), as Ash sees it in EXO's coding team.
@@ -110,6 +110,6 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   await expect.poll(() => fake<Array<{ sessionId: string; kind: string }>>(page, "stops")).toContainEqual({ sessionId: TEAM_CHAT, kind: "interrupt" });
   expect((await fake<Array<{ kind: string }>>(page, "stops")).filter((s) => s.kind === "stop_task")).toEqual([]);
   await expect(box.locator('[aria-label="Send"]')).toBeVisible({ timeout: 15_000 });
-  await expect(chat.getByText(/^Grok 4\.7 worked/)).toBeVisible();
-  await expect(chat.getByText(/Sonnet|Claude/)).toHaveCount(0);
+  await expect(chat.getByText(/^Claude Sonnet 5 worked/)).toBeVisible();
+  await expect(chat.getByText(/Grok/)).toHaveCount(0);
 });

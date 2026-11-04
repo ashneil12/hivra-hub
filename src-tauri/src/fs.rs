@@ -1503,12 +1503,28 @@ pub async fn git_github_work_item_comment(
 /// Merge or change the lifecycle state of a GitHub pull request via `gh`.
 #[tauri::command]
 pub async fn git_github_pr_action(
+    app: tauri::AppHandle,
     cwd: String,
     repo: String,
     number: i64,
     action: String,
 ) -> Result<GitHubWorkItem, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        // Hivra WP-12: a merge goes through the one merge path (never red or pending; logged with who allowed it).
+        if let Some(method) = crate::delivery::merge::Method::from_action(&action) {
+            github_pr_action_args(&repo, number, &action)?;
+            use tauri::Manager;
+            crate::delivery::merge::by_person(
+                &app.state::<crate::session_store::SessionStore>(),
+                &crate::delivery::github::CliGithub,
+                &repo,
+                number as u64,
+                method,
+                "Inbox",
+                crate::session_store::now_millis(),
+            )?;
+            return git_github_work_item_for(&expand_home(&cwd), &repo, "pr", number);
+        }
         git_github_pr_action_for(&expand_home(&cwd), &repo, number, &action)
     })
     .await

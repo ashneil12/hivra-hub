@@ -1,15 +1,15 @@
 // A clean first launch (and every new project) starts with the default team:
 // Chief of Staff, Projects Manager, frank, Alfred. Critiquito is only an
 // add-on offer. Everything else comes via a setup file.
-import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
+import { defaultClaudeModelId } from "../../sessions/model/defaultClaudeModel";
 import { teamPack, teamSouls } from "./teamPack";
 
 const ROSTER_KEY = "monocode:mono-roster";
 
 /**
  * One leadership-team Mono. `engine` is the coding engine its chat starts on (Ash, 19 Oct: the team runs on Claude
- * Code; noted per Mono so one can move to another engine later), on Grok 4.7, named explicitly (Ash, 27 Oct: no
- * Claude subscription anywhere; bridgeModels.ts). Its soul is seeded once (teamSouls.ts).
+ * Code; noted per Mono so one can move to another engine later), on the app's default Claude model.
+ * Its soul is seeded once (teamSouls.ts).
  */
 export type TeamSpec = { id: string; name: string; engine: "claude"; addon?: true };
 
@@ -27,7 +27,7 @@ export const TEAM_ADDONS: readonly TeamSpec[] = [{ id: "critiquito", name: "Crit
 
 /** The roster entry a team Mono starts as: its soul rides in `instructions` until SOUL.md is first written. */
 export function teamRosterEntry(spec: TeamSpec, projects: string[] = []) {
-  return { id: spec.id, name: spec.name, ...LOOK, color: COLOR[spec.id] ?? LOOK.color, projects, engine: spec.engine, engineModel: MONO_BRIDGE_MODEL_ID, instructions: teamSouls()[spec.id] };
+  return { id: spec.id, name: spec.name, ...LOOK, color: COLOR[spec.id] ?? LOOK.color, projects, engine: spec.engine, engineModel: defaultClaudeModelId(), instructions: teamSouls()[spec.id] };
 }
 
 /** Set by the first version of this step, which only seeded an empty roster. */

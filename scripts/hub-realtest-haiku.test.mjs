@@ -9,7 +9,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { haikuArgs, haikuTestEnv, pickModel, rewriteArgs, testKey, TEST_KEY_ENV } from "./hub-realtest-claude.mjs";
-import { graderVia, GROK_BRIDGE, parseArgs as benchArgs } from "./hub-realtest.mjs";
+import { DEEPSEEK_BRIDGE, DEEPSEEK_BRIDGE_MODEL, graderVia, parseArgs as benchArgs } from "./hub-realtest.mjs";
 import { parseArgs as convArgs } from "./hub-realconv.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,7 +39,7 @@ test("no test key: it refuses, never a Claude login instead", () => {
 
 test("every call is Haiku with no effort, whatever the app asked", () => {
   assert.equal(pickModel("claude-opus-4-1", { haiku: true }), "haiku");
-  assert.equal(pickModel("sonnet", { haiku: true, grok: true }), "haiku");
+  assert.equal(pickModel("sonnet", { haiku: true }), "haiku");
   assert.deepEqual(haikuArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]), ["--input-format", "stream-json", "--model", "haiku"]);
   assert.deepEqual(haikuArgs(["-p", "--model=sonnet", "--effort=high"]), ["-p", "--model=haiku"]);
   assert.deepEqual(haikuArgs(["--input-format", "stream-json"]), ["--input-format", "stream-json", "--model", "haiku"]);
@@ -48,16 +48,15 @@ test("every call is Haiku with no effort, whatever the app asked", () => {
   assert.deepEqual(rewriteArgs(["--model", "deepseek-chat"], { routed: true, haiku: true }), ["--model", "deepseek-chat"]);
 });
 
-test("the benches take --agents haiku-test, graded on Grok", () => {
+test("the benches take --agents haiku-test, graded on DeepSeek", () => {
   const bench = benchArgs(["--agents", "haiku-test"]);
   assert.equal(bench.haikuTest, true);
-  assert.equal(bench.grokSub, false);
   assert.equal(bench.deepseekSub, false);
-  assert.throws(() => benchArgs(["--agents", "haiku-test", "--grok-sub"]), /two different agents' models/);
-  if (fs.existsSync(GROK_BRIDGE)) assert.equal(graderVia({ haikuTest: true }).model, "grok-4.7");
+  assert.throws(() => benchArgs(["--agents", "haiku-test", "--deepseek-sub"]), /two different agents' models/);
+  if (fs.existsSync(DEEPSEEK_BRIDGE)) assert.equal(graderVia({ haikuTest: true }).model, DEEPSEEK_BRIDGE_MODEL);
   const conv = convArgs(["--agents", "haiku-test"], {});
   assert.equal(conv.agents, "haiku-test");
-  assert.equal(conv.tester.provider, "grok-sub");
+  assert.equal(conv.tester.provider, "deepseek-sub");
 });
 
 test("the wrapper with no key exits before any Claude starts, and never prints a key", () => {

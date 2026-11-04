@@ -186,13 +186,12 @@ describe("plain setup details", () => {
     expect(JSON.stringify(run.checks)).not.toContain("@");
   });
 
-  it("names the Grok launcher in plain words, and never shows a path", async () => {
-    expect(plainSetupDetail("installed", "2.1.0 (Claude Code) at /Users/ash/.local/bin/claude-grok")).toBe("Grok 4.7 ready");
+  it("names Claude Code in plain words, and never shows a path", async () => {
     expect(plainSetupDetail("installed", "1.2.3 at /usr/local/bin/claude")).toBe("Claude Code 1.2.3 ready");
     expect(plainSetupDetail("folder", "/Users/ash/Projects")).toBe("Working in Projects");
     expect(plainSetupDetail("folder", "There is no folder at /Users/ash/gone.")).toBe("There is no folder at gone.");
-    expect(plainSetupDetail("installed", "Claude Code at /Users/ash/.local/bin/claude-grok did not answer: boom")).toBe("Claude Code at the Grok launcher did not answer: boom");
-    const run = await checkHubSetup({ folder: "/Users/ash/Projects", probes: { ...allPass, installed: async () => ({ ok: true, detail: "2.1.0 at /Users/ash/.local/bin/claude-grok" }) }, refresh: true });
+    expect(plainSetupDetail("installed", "Claude Code at /usr/local/bin/claude did not answer: boom")).toBe("Claude Code at claude did not answer: boom");
+    const run = await checkHubSetup({ folder: "/Users/ash/Projects", probes: { ...allPass, installed: async () => ({ ok: true, detail: "2.1.0 at /usr/local/bin/claude" }) }, refresh: true });
     for (const check of run.checks) expect(check.detail).not.toMatch(/\/Users|~\//);
   });
 

@@ -87,21 +87,20 @@ function lastPart(path: string): string {
 
 /**
  * A check's detail in plain words, as the card shows it (Critiquito, 0.16.3 blocker): never the account's email, never
- * a raw path. The Grok launcher reads "Grok 4.7 ready"; a folder is named by its last part. Applied to what is stored
- * too, so a record written by an older version (with the email or a path in it) reads the same way.
+ * a raw path. A folder is named by its last part. Applied to what is stored too, so a record written by an older
+ * version (with the email or a path in it) reads the same way.
  */
 export function plainSetupDetail(id: SetupFactId, detail: string): string {
   const text = detail.trim();
   if (!text) return text;
   if (id === "signedIn") return /@|^Signed in as\b/i.test(text) ? "Signed in" : text;
-  if (id === "installed" && /claude-grok/i.test(text) && !/did not answer|could not/i.test(text)) return "Grok 4.7 ready";
   if (id === "installed" && new RegExp(PATH.source).test(text) && !/did not answer|could not/i.test(text)) {
     const version = text.replace(PATH, "").replace(/\bat\b\s*$/i, "").replace(/\(Claude Code\)/i, "").trim();
     return version ? `Claude Code ${version} ready` : "Claude Code ready";
   }
   if (id === "folder" && text.startsWith("/") && !/\s/.test(text)) return `Working in ${lastPart(text)}`;
   // Failures keep their sentence, with each path cut to its last part.
-  return text.replace(PATH, (path) => (/claude-grok/i.test(path) ? "the Grok launcher" : lastPart(path))).replace(/\s+/g, " ");
+  return text.replace(PATH, (path) => lastPart(path)).replace(/\s+/g, " ");
 }
 
 type ProvedFact = { at: number; detail: string };
