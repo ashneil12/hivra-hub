@@ -67,6 +67,7 @@ import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
   isClaudeAliasModel,
@@ -665,6 +666,29 @@ function sharedTaskId(value: unknown): string | undefined {
   return value.trim();
 }
 
+/** A named task must be in this chat's project. Checked before a worker starts, and only when the store is there. */
+async function sharedTaskInThisProject(source: Session, taskId: string, host: AgentAppHost): Promise<void> {
+  if (!host.taskStore) return;
+  let project: string;
+  try {
+    project = taskProjectOf(source, host);
+  } catch {
+    return;
+  }
+  let found: unknown;
+  try {
+    found = await host.taskStore("tasks_get", {
+      actor: { id: source.id, project, kind: "agent" },
+      id: taskId,
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error && error.message ? error.message : "No task with that id.");
+  }
+  const projectId =
+    found && typeof found === "object" && "projectId" in found ? (found as { projectId?: unknown }).projectId : undefined;
+  if (projectId !== project) throw new Error("That task is in another project.");
+}
+
 async function delegate(
   source: Session,
   requestId: string,
@@ -689,6 +713,7 @@ async function delegate(
   const goal = text(input.goal, "goal", 1_000);
   // WP-70: the shared task this work moves. Checked before a worker starts.
   const sharedTask = sharedTaskId(input.taskId);
+  if (sharedTask) await sharedTaskInThisProject(source, sharedTask, host);
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.

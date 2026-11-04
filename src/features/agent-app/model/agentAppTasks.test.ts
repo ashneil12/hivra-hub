@@ -400,6 +400,29 @@ describe("tasks.delegate", () => {
     expect(second.started).toEqual([]);
   });
 
+  it("refuses a task from another project before a worker starts", async () => {
+    const blocked = fixture();
+    blocked.host.taskStore = vi.fn(async () => {
+      throw new Error("No task with that id.");
+    });
+    await expect(
+      handleAgentApp(blocked.source, "r-other", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-other" }, blocked.host),
+    ).rejects.toThrow("No task with that id.");
+    expect(blocked.started).toEqual([]);
+
+    const elsewhere = fixture();
+    elsewhere.host.taskStore = vi.fn(async () => ({ projectId: "other-project" }));
+    await expect(
+      handleAgentApp(elsewhere.source, "r-else", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-else" }, elsewhere.host),
+    ).rejects.toThrow("That task is in another project.");
+    expect(elsewhere.started).toEqual([]);
+
+    const same = fixture();
+    same.host.taskStore = vi.fn(async () => ({ projectId: PROJECT }));
+    await handleAgentApp(same.source, "r-same", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-abc" }, same.host);
+    expect(same.started[0]?.[4]).toMatchObject({ taskId: "task-abc" });
+  });
+
   it("starts a worker nested under the Mono, monitored, with a signed brief and a row that carries the job", async () => {
     const rows: Delegation[] = [];
     const { source, host, started } = fixture(rows);
