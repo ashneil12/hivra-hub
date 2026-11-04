@@ -1,0 +1,7 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hivra-creator",
+  "version": "1.0.0",
+  "description": "The Creator mono and the skills it uses to build a plugin.",
+  "license": "MIT"
+}
