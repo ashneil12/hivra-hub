@@ -242,39 +242,36 @@ describe("the engine starts headless, on this agent's profile", () => {
   });
 });
 
-function frame(message: unknown): Buffer {
-  const body = Buffer.from(JSON.stringify(message));
-  return Buffer.concat([Buffer.from(`Content-Length: ${body.length}\r\n\r\n`), body]);
+function frame(message: unknown): string {
+  const line = JSON.stringify(message);
+  if (line.includes("\n")) throw new Error("A message must be one line.");
+  return `${line}\n`;
 }
 
-function readFrames(chunks: Buffer[]): unknown[] {
-  const buf = Buffer.concat(chunks);
+function readFrames(chunks: string[]): unknown[] {
+  const buf = chunks.join("");
+  const lines = buf.split("\n");
+  if (!buf.endsWith("\n")) lines.pop();
   const out: unknown[] = [];
-  let offset = 0;
-  while (offset < buf.length) {
-    const headerEnd = buf.indexOf("\r\n\r\n", offset);
-    if (headerEnd < 0) break;
-    const match = /content-length:\s*(\d+)/i.exec(buf.subarray(offset, headerEnd).toString("utf8"));
-    if (!match) break;
-    const length = Number(match[1]);
-    const start = headerEnd + 4;
-    if (buf.length < start + length) break;
-    out.push(JSON.parse(buf.subarray(start, start + length).toString("utf8")));
-    offset = start + length;
+  for (const piece of lines) {
+    const line = piece.replace(/\r$/, "");
+    if (!line.trim()) continue;
+    out.push(JSON.parse(line));
   }
   return out;
 }
 
 function speak(messages: unknown[], env: NodeJS.ProcessEnv): Promise<{ frames: unknown[]; stderr: string; code: number | null }> {
   const child = spawn(process.execPath, [SERVER, "tok-123"], { env, stdio: ["pipe", "pipe", "pipe"] });
-  const chunks: Buffer[] = [];
+  const chunks: string[] = [];
   let stderr = "";
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       child.kill();
       reject(new Error("The browser didn't answer."));
     }, 8000);
-    child.stdout?.on("data", (chunk: Buffer) => {
+    child.stdout?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       chunks.push(chunk);
       if (readFrames(chunks).length >= messages.length) {
         clearTimeout(timer);
@@ -346,6 +343,82 @@ describe("the proxy in front of a fake engine", () => {
     const calls = readFileSync(join(dir, "calls.log"), "utf8");
     expect(calls).not.toContain("browser_evaluate");
     expect(calls).toContain("browser_snapshot");
+  });
+
+  it("answers a real newline-JSON initialize, tools/list and tools/call", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hivra-browser-lines-"));
+    temps.push(dir);
+    const child = spawn(process.execPath, [SERVER], { env: env(dir), stdio: ["pipe", "pipe", "pipe"] });
+    const messages = [
+      { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "hivra-test", version: "0" } } },
+      { jsonrpc: "2.0", method: "notifications/initialized" },
+      { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+      { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "browser_snapshot", arguments: { note: "line\nbreak" } } },
+    ];
+    let raw = "";
+    let stderr = "";
+    const replies: unknown[] = [];
+    const done = new Promise<unknown[]>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill();
+        reject(new Error(`no newline JSON answer (${replies.length}): ${stderr}`));
+      }, 4000);
+      child.stdout?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk: string) => {
+        raw += chunk;
+        let end = raw.indexOf("\n");
+        while (end >= 0) {
+          const line = raw.slice(0, end).replace(/\r$/, "");
+          raw = raw.slice(end + 1);
+          end = raw.indexOf("\n");
+          if (!line.trim()) continue;
+          if (line.includes("Content-Length") || line.includes("\n")) {
+            clearTimeout(timer);
+            child.kill();
+            reject(new Error(`not one JSON line: ${line.slice(0, 80)}`));
+            return;
+          }
+          try {
+            replies.push(JSON.parse(line));
+          } catch {
+            clearTimeout(timer);
+            child.kill();
+            reject(new Error(`not newline JSON: ${line.slice(0, 80)}`));
+            return;
+          }
+        }
+        if (replies.length >= 3) {
+          clearTimeout(timer);
+          child.kill();
+        }
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        stderr += chunk.toString("utf8");
+      });
+      child.on("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.on("exit", () => {
+        clearTimeout(timer);
+        resolve(replies);
+      });
+      child.stdin?.write("\n");
+      for (const message of messages) child.stdin?.write(`${JSON.stringify(message)}\n`);
+    });
+    const frames = await done;
+    const byId = (id: number) => frames.find((frame) => (frame as { id?: number }).id === id) as {
+      result?: { tools?: Array<{ name: string }>; content?: Array<{ text?: string }> };
+    };
+    expect(byId(1)?.result).toEqual({});
+    expect(byId(2)?.result?.tools?.map((tool) => tool.name)).toEqual([
+      "browser_navigate",
+      "browser_snapshot",
+      "browser_click",
+    ]);
+    expect(byId(3)?.result?.content?.[0]?.text).toContain("Cookie: [redacted]");
+    expect(byId(3)?.result?.content?.[0]?.text).not.toContain("swordfish");
+    expect(raw.includes("\n")).toBe(false);
   });
 
   it("does not start the engine for the person's own browser profile", async () => {

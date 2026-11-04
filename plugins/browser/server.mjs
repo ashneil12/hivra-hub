@@ -215,34 +215,29 @@ export function launchPlan(env) {
   return { ok: true, command: engine.command, args: [...engine.args, ...flags], headless, profile, own };
 }
 
-function writeMessage(stream, message) {
-  const body = Buffer.from(JSON.stringify(message));
-  stream.write(`Content-Length: ${body.length}\r\n\r\n`);
-  stream.write(body);
+/** One JSON-RPC object, then a newline. MCP stdio is newline JSON, not Content-Length frames. */
+export function writeMessage(stream, message) {
+  const line = JSON.stringify(message);
+  if (line.includes("\n") || line.includes("\r")) return;
+  stream.write(`${line}\n`);
 }
 
-function readMessages(stream, onMessage) {
-  let buf = Buffer.alloc(0);
+/** Split on newlines. A blank line is skipped. A line that is not JSON is skipped. */
+export function readMessages(stream, onMessage) {
+  let buf = "";
+  stream.setEncoding("utf8");
   stream.on("data", (chunk) => {
-    buf = Buffer.concat([buf, chunk]);
+    buf += chunk;
     for (;;) {
-      const headerEnd = buf.indexOf("\r\n\r\n");
-      if (headerEnd < 0) return;
-      const header = buf.subarray(0, headerEnd).toString("utf8");
-      const match = /content-length:\s*(\d+)/i.exec(header);
-      if (!match) {
-        buf = buf.subarray(headerEnd + 4);
-        continue;
-      }
-      const length = Number(match[1]);
-      const start = headerEnd + 4;
-      if (buf.length < start + length) return;
-      const body = buf.subarray(start, start + length).toString("utf8");
-      buf = buf.subarray(start + length);
+      const end = buf.indexOf("\n");
+      if (end < 0) return;
+      const line = buf.slice(0, end).replace(/\r$/, "");
+      buf = buf.slice(end + 1);
+      if (!line.trim()) continue;
       try {
-        onMessage(JSON.parse(body));
+        onMessage(JSON.parse(line));
       } catch {
-        // A broken frame is skipped. The next one can still be read.
+        // A broken line is skipped. The next one can still be read.
       }
     }
   });
