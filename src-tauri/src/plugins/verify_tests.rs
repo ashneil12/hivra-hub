@@ -1685,3 +1685,76 @@ fn reviving_a_refused_row_does_not_attach_proof_from_before_the_retry() {
         "proof from the retry is kept: {evidence:?}"
     );
 }
+
+#[test]
+fn a_failed_enable_keeps_the_pending_approval_so_it_can_be_retried() {
+    let (_package, version) = pinned_npm();
+    let tmp = Tmp::new("enable retry");
+    let host = plugin_host(&tmp);
+    let here = tmp.path().join("offered project");
+    std::fs::create_dir_all(&here).unwrap();
+    let stub = tmp.path().join("stub-deps");
+    std::fs::create_dir_all(&stub).unwrap();
+    let files = [
+        (
+            "package.json",
+            package_json("e2e", &version, "\"dependencies\":{\"left-pad\":\"1.0.0\"}"),
+        ),
+        ("dist/cli/bin.js", "process.exit(0)\n".to_string()),
+    ];
+    let owned: Vec<(String, String)> = files
+        .iter()
+        .map(|(name, text)| ((*name).to_string(), text.clone()))
+        .collect();
+    std::fs::write(stub.join("e2e.tgz"), tarball(&as_pairs(&owned))).unwrap();
+    std::fs::write(stub.join("version.txt"), &version).unwrap();
+    let tools = npm_tools(&stub);
+    let waiting = install::install_for(
+        &host,
+        &tools,
+        &InstallSource::Npm {
+            package: "e2e".into(),
+            version: version.clone(),
+            registry: None,
+        },
+        RequestedBy::person(),
+        Some(here.display().to_string()),
+    )
+    .unwrap();
+    let install::InstallResult::Waiting { request } = waiting else {
+        panic!("a package with dependencies waits for a yes");
+    };
+    // The shim folder is a file, so turning the plugin on cannot write it. The install itself can.
+    std::fs::write(host.root.join("claude"), "not a folder\n").unwrap();
+
+    let err = install::approve(&host, &tools, &request.id).unwrap_err();
+    assert!(
+        install::pending(&host)
+            .iter()
+            .any(|waiting| waiting.id == request.id),
+        "a failed enable must leave the approval to retry, not drop it: {err}"
+    );
+    assert!(
+        names(&host).contains(&"e2e-verify".to_string()),
+        "the plugin is installed even though it could not be turned on"
+    );
+    let key = registry::project_key(&here.display().to_string()).unwrap();
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(
+        !entry.enabled.projects.contains(&key),
+        "the failed enable must not claim the project"
+    );
+
+    std::fs::remove_file(host.root.join("claude")).unwrap();
+    let approved = install::approve(&host, &tools, &request.id).unwrap();
+    assert!(matches!(approved, install::InstallResult::Installed { .. }));
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(!entry.enabled.global);
+    assert_eq!(entry.enabled.projects, vec![key]);
+    assert!(
+        install::pending(&host)
+            .iter()
+            .all(|waiting| waiting.id != request.id),
+        "a retry that lands removes the approval"
+    );
+}

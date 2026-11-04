@@ -326,7 +326,16 @@ fn commit(
     approved: bool,
 ) -> Result<InstallResult, String> {
     let staged = dir.join("plugin");
-    if !request.steps.is_empty() {
+    // A previous approval installed it and then failed to turn it on. The staged copy was moved into
+    // place, so this retry must not run the steps again or install a second time. It only enables.
+    let already = if request.op.as_str() == "update" {
+        None
+    } else {
+        registry::read(host)
+            .ok()
+            .and_then(|registry| registry.plugins.get(&request.name).cloned())
+    };
+    if already.is_none() && !request.steps.is_empty() {
         if !approved {
             return Err("It needs the person's OK before anything runs.".into());
         }
@@ -337,9 +346,16 @@ fn commit(
     }
     let result = {
         let _guard = registry::lock();
-        match request.op.as_str() {
-            "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
-            _ => registry::install_staged(host, &staged, request.resolved.clone()),
+        if let Some(entry) = already {
+            Ok(registry::Outcome {
+                entry: Some(entry),
+                reports: Vec::new(),
+            })
+        } else {
+            match request.op.as_str() {
+                "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
+                _ => registry::install_staged(host, &staged, request.resolved.clone()),
+            }
         }
     };
     let outcome = match result {
@@ -359,7 +375,8 @@ fn commit(
         ) {
             Ok(enabled) => enabled,
             Err(why) => {
-                drop_pending(host, dir);
+                // The plugin is in place, but not on for this project. Keep the request so the same approval
+                // can be retried; dropping it would leave Verify off with nothing left to approve.
                 return Err(why);
             }
         }
