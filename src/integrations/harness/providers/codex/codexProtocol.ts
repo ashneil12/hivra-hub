@@ -113,6 +113,8 @@ export function buildThreadStartParams(input: {
   firstMate?: boolean;
   model?: string;
   serviceTier?: string;
+  /** WP-41: pstack and plain-English text. Empty adds nothing. Codex keeps what a thread started with. */
+  developerInstructions?: string;
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
@@ -128,6 +130,9 @@ export function buildThreadStartParams(input: {
     ...(input.model ? { model: input.model } : {}),
     ...(input.serviceTier && input.serviceTier !== "default"
       ? { serviceTier: input.serviceTier }
+      : {}),
+    ...(input.developerInstructions?.trim()
+      ? { developerInstructions: input.developerInstructions.trim() }
       : {}),
   };
 }

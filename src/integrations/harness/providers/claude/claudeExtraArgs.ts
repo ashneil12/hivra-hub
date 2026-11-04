@@ -111,3 +111,52 @@ export function claudeAppend(sessionId: string): ClaudeAppend | undefined {
 export function claudeAppendArgs(append: ClaudeAppend | undefined): string[] {
   return append ? ["--append-system-prompt", append.text] : [];
 }
+
+/**
+ * WP-41: more text for the same `--append-system-prompt` (the pstack index and the plain-English ending). The hub note
+ * stays first. `key` changes when either does, so a running process restarts for it.
+ */
+export function mergeClaudeAppend(hub: ClaudeAppend | undefined, extra: string | undefined): ClaudeAppend | undefined {
+  const hubText = hub?.text.trim() ?? "";
+  const extraText = extra?.trim() ?? "";
+  if (!hubText && !extraText) return undefined;
+  return {
+    key: [hub?.key ?? "", extraText].filter(Boolean).join("\n"),
+    text: [hubText, extraText].filter(Boolean).join("\n\n"),
+  };
+}
+
+type PluginAppend = (cwd: string) => string | Promise<string>;
+let pluginAppend: PluginAppend | undefined;
+
+export function setClaudePluginAppend(next: PluginAppend | undefined): void {
+  pluginAppend = next;
+}
+
+/** This folder's added prompt, if any; never throws. */
+export async function claudePluginAppend(cwd: string | undefined): Promise<string | undefined> {
+  if (!cwd || !pluginAppend) return undefined;
+  try {
+    const text = (await pluginAppend(cwd))?.trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const notedAppend = new Map<string, string>();
+
+/** Remember the text this session's launch key was compared against. Empty clears it. */
+export function noteSessionAppend(sessionId: string, text: string | undefined): void {
+  const trimmed = text?.trim();
+  if (trimmed) notedAppend.set(sessionId, trimmed);
+  else notedAppend.delete(sessionId);
+}
+
+export function notedSessionAppend(sessionId: string): string | undefined {
+  return notedAppend.get(sessionId);
+}
+
+export function clearNotedAppends(): void {
+  notedAppend.clear();
+}

@@ -49,7 +49,7 @@ import {
 import { codexMcpConfirmation } from "./codexElicitation";
 import { snapshotRemainder } from "../../core/streamText";
 import { prepareCodexMonoContext } from "./codexStore";
-import { codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
+import { codexDeveloperInstructions, codexExtraConfig, mergeCodexConfig } from "./codexExtraConfig";
 import type {
   ApprovalDecision,
   CompactContextInput,
@@ -567,6 +567,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const storeConfig = store?.config;
   // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
   const extraConfig = await codexExtraConfig(input.cwd);
+  // WP-41: the pstack index and the plain-English ending, on the thread instruction Codex already takes.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd);
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(
@@ -700,6 +702,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           firstMate: input.firstMate,
           model,
           serviceTier,
+          developerInstructions,
         });
         const opened = await rpc.request<{ thread?: { id?: string } }>(
           "thread/resume",
@@ -729,6 +732,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         firstMate: input.firstMate,
         model,
         serviceTier,
+        developerInstructions,
       });
       const opened = await rpc.request<{ thread?: { id?: string } }>(
         "thread/start",

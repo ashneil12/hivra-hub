@@ -1,6 +1,15 @@
 import { TurnNotReadyError } from "../../core/types";
 import { credentialBlock } from "../../core/credentialGuard";
-import { claudeAppend, claudeAppendArgs, claudeExtraArgs } from "./claudeExtraArgs";
+import {
+  claudeAppend,
+  claudeAppendArgs,
+  claudeExtraArgs,
+  claudePluginAppend,
+  clearNotedAppends,
+  mergeClaudeAppend,
+  notedSessionAppend,
+  noteSessionAppend,
+} from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
 import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
@@ -862,7 +871,11 @@ export function restoreClaudeTaskLists(
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const planning = input.intent === "plan";
-  const launchNext = claudeLaunchFor(input);
+  // WP-41: note the pstack index and plain-English ending before the launch key is compared, so turning either off restarts.
+  const sessionAppend = await claudePluginAppend(input.cwd);
+  noteSessionAppend(input.sessionId, sessionAppend);
+  const append = mergeClaudeAppend(claudeAppend(input.sessionId), sessionAppend);
+  const launchNext = claudeLaunchFor(input, append);
   const existing = liveByThread.get(input.sessionId);
   if (
     existing &&
@@ -1027,8 +1040,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ...workerCheckoutsArgs(input.cwd),
       // WP-30: the cwd lets installed plugins add their skills and MCP servers (claudeExtraArgs.ts).
       ...(await claudeExtraArgs(input.sessionId, input.cwd)),
-      // The hub's additions ride on Claude Code's own system prompt, never in place of it.
-      ...claudeAppendArgs(claudeAppend(input.sessionId)),
+      // WP-41: the same text the launch key was compared against, not a second read.
+      ...claudeAppendArgs(append),
     ],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
@@ -2632,7 +2645,7 @@ function writeJson(
 }
 
 /** What a process for this input would be started with. */
-function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
+function claudeLaunchFor(input: HarnessSessionInput, append = mergeClaudeAppend(claudeAppend(input.sessionId), notedSessionAppend(input.sessionId))): ClaudeLaunch {
   const options = launchOptions(input);
   const route = chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings })
     ? null
@@ -2658,7 +2671,7 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
     ultracode: options.settings?.ultracode === true,
     hooks: options.settings?.disableAllHooks !== true,
     autoCompactWindow: options.settings?.autoCompactWindow,
-    ...(claudeAppend(input.sessionId) ? { appendKey: claudeAppend(input.sessionId)!.key } : {}),
+    ...(append ? { appendKey: append.key } : {}),
     ...(options.firstMate ? { firstMate: true } : {}),
   };
 }
@@ -2860,4 +2873,5 @@ export function __claudeTestReset(): void {
   goalByThread.clear();
   goalEnded.clear();
   effortNoticesByThread.clear();
+  clearNotedAppends();
 }
