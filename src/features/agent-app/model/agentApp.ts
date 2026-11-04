@@ -1426,7 +1426,7 @@ export async function handleAgentApp(
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
-  if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change")
+  if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change" || action === "creator.draft" || action === "creator.state")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {
       // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.
       await harnessesProbed();
