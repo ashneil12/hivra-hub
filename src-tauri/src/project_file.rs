@@ -125,6 +125,10 @@ pub struct VerifySettings {
     /// "couldNotExercise", "detail": "..."}). Exit 0 without that file is not a pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub real_path: Option<RealPathCheck>,
+    /// Hivra WP-40 (firstmate/gates.rs): the completion gates a code brief gets when its first mate names none (`diff`,
+    /// `checks`, `committed`, `ratchet`, `routes`). A code brief always gets `diff` and `checks` on top.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gates: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -431,6 +435,14 @@ fn validate_verify(verify: &VerifySettings) -> Result<(), String> {
                     "{what} timeoutSeconds must be from 1 to {MAX_TIMEOUT_SECONDS}"
                 ));
             }
+        }
+    }
+    // Hivra WP-40: only gates from the fixed set.
+    for gate in &verify.gates {
+        if crate::firstmate::gates::GateKind::parse(gate).is_none() {
+            return Err(format!(
+                "verify.gates entry {gate:?} must be one of diff, checks, committed, ratchet, routes"
+            ));
         }
     }
     if let Some(real) = &verify.real_path {

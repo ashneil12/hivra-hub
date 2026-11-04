@@ -13,6 +13,7 @@
 //! | `completed`, no gates or gates passed | done |
 //! | `completed`, gates still running | working |
 //! | `completed`, gates failed | failed |
+//! | `completed`, gates passed but the verdict check was unsure, or a gate couldn't run (WP-40) | working, with a notice: its first mate decides |
 //! | `failed` on a usage limit (`resets_at`, or class `usage_limit`), not marked unretryable | paused |
 //! | `failed` otherwise | failed |
 //! | `cancelled` (stopped, or taken over by a later request) | failed, with a notice saying which |
@@ -44,11 +45,16 @@ pub enum GateVerdict {
     Pending,
     Passed,
     Failed,
+    /// WP-40: the gates passed but the verdict check couldn't say the brief was met, or a gate couldn't run: its first
+    /// mate decides (`task_accept`). Never done until it does.
+    Unsure,
 }
 
 impl GateVerdict {
+    pub const PENDING: &'static str = "pending";
     pub const PASSED: &'static str = "passed";
     pub const FAILED: &'static str = "failed";
+    pub const UNSURE: &'static str = "unsure";
 
     /// The row's stored verdict. An unknown value is treated as not yet passed, never as passed.
     pub fn of(row: &Delegation) -> GateVerdict {
@@ -56,6 +62,7 @@ impl GateVerdict {
             None => GateVerdict::NotRequired,
             Some(Self::PASSED) => GateVerdict::Passed,
             Some(Self::FAILED) => GateVerdict::Failed,
+            Some(Self::UNSURE) => GateVerdict::Unsure,
             Some(_) => GateVerdict::Pending,
         }
     }
@@ -158,6 +165,10 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
             GateVerdict::Failed => derived(
                 Status::Failed,
                 Some("Finished, but its checks failed".into()),
+            ),
+            GateVerdict::Unsure => derived(
+                Status::Working,
+                Some("Finished; its first mate is deciding whether the brief was met".into()),
             ),
         },
         FAILED => {

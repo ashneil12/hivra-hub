@@ -210,7 +210,8 @@ pub struct Delegation {
     pub stalled_at: Option<i64>,
     /// WP-10: who the open question waits on, `first-mate` (none) or `person` (firstmate/status.rs).
     pub question_owner: Option<String>,
-    /// WP-10: the completion gates' verdict (`pending`, `passed`, `failed`); none when no gates apply. Written by WP-40.
+    /// WP-10: the completion gates' verdict (`pending`, `passed`, `failed`, `unsure`); none when no gates apply. Written by
+    /// WP-40 (`set_gate_verdict`).
     pub gate_verdict: Option<String>,
     /// WP-10: the worker's typed final report, as JSON (firstmate/report.rs), parsed from its result when it settles.
     pub report: Option<String>,
@@ -1552,6 +1553,61 @@ pub fn set_question_owner(
         json!({ "for": owner.as_deref().unwrap_or(QUESTION_FOR_FIRST_MATE) }),
     );
     row.question_owner = owner;
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
+
+/// Hivra WP-40 (firstmate/gates.rs): the completion gates' verdict on the row, with one line of its history. While the
+/// worker is still open (the gates run before its report settles), or, with `decided_by_owner`, only on a finished
+/// row whose verdict is `unsure` and only by the chat that owns it (its first mate decides).
+pub fn set_gate_verdict(
+    conn: &mut Connection,
+    id: &str,
+    verdict: &str,
+    summary: &str,
+    decided_by_owner: Option<&str>,
+    now: i64,
+) -> Result<Change, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    let allowed = match decided_by_owner {
+        None => row.is_open(),
+        Some(owner) => {
+            row.owner_session == owner
+                && row.state == COMPLETED
+                && row.gate_verdict.as_deref()
+                    == Some(crate::firstmate::status::GateVerdict::UNSURE)
+        }
+    };
+    if !allowed {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    let by = match decided_by_owner {
+        Some(owner) => format!("owner:{owner}"),
+        None => "app:gates".to_string(),
+    };
+    row.note(
+        now,
+        &by,
+        "gates",
+        json!({ "verdict": verdict, "summary": cap(summary, 500) }),
+    );
+    row.gate_verdict = Some(verdict.to_string());
     row.touch(now);
     save(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;

@@ -5,12 +5,14 @@
 //! - `report`: the worker's typed final report; its opinion of its own work is kept and never counts as evidence.
 //! - `checkout_guard`: after each first-mate turn, a change to the project's main checkout that no landing explains is
 //!   flagged and offered for revert.
+//! - `gates` (WP-40): the completion gates and the verdict check a worker's "done" has to pass.
 //! - the depth cap (`check_depth`): a delegation is never deeper than two (first mate, first mate, workers).
 //!
 //! The brief scaffold and the per-CLI read-only launch live in the webview (src/features/firstmate/), where briefs are
 //! written and sessions launched. The role rules are src/features/firstmate/contract.md.
 
 pub mod checkout_guard;
+pub mod gates;
 pub mod report;
 pub mod status;
 
