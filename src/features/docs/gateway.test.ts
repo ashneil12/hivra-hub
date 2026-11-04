@@ -88,6 +88,33 @@ describe("memoryGateway", () => {
     );
   });
 
+  it("does not apply a reorder when the sibling list is stale", async () => {
+    const docs = memoryGateway();
+    await docs.create({ id: "a", title: "A", body: "a" });
+    await docs.create({ id: "b", title: "B", body: "b" });
+    await docs.create({ id: "c", title: "C", body: "c" });
+    await docs.create({ id: "folder", title: "Folder", body: "f" });
+    const moved = await docs.move({
+      id: "c",
+      parentId: "folder",
+      index: 0,
+      expectedVersion: 1,
+      siblingIds: [],
+    });
+    expect(moved.status).toBe("saved");
+    const stale = await docs.move({
+      id: "a",
+      parentId: null,
+      index: 0,
+      expectedVersion: 1,
+      siblingIds: ["b", "c"],
+    });
+    expect(stale.status).toBe("conflict");
+    const pages = await docs.list();
+    expect(pages.find((page) => page.id === "c")?.parentId).toBe("folder");
+    expect(pages.find((page) => page.id === "a")?.parentId).toBeNull();
+  });
+
   it("does not report a mention the page already has, and a missing task is not found", async () => {
     const docs = memoryGateway();
     await docs.create({ id: "page-1", title: "Plan", body: "one" });

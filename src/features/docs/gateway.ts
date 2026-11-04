@@ -94,6 +94,8 @@ export type DocsGateway = {
     parentId: string | null;
     index: number;
     expectedVersion: number;
+    /** Siblings the caller ordered against, not including the moved page. */
+    siblingIds?: string[];
   }) => Promise<DocWriteResult>;
   versions: (id: string) => Promise<DocVersionRecord[]>;
   restore: (input: {
@@ -369,6 +371,15 @@ export function memoryGateway(options: MemoryGatewayOptions = {}): DocsGateway {
         if (!pages.has(input.parentId)) throw new Error("Page was not found");
       }
       if (!canMove(tree(), input.id, input.parentId)) throw new Error("A page cannot move into itself");
+      // A list the caller built before a sibling moved is not applied.
+      if (Array.isArray(input.siblingIds)) {
+        const fresh = childrenOf(tree(), input.parentId ?? null)
+          .map((item) => item.id)
+          .filter((id) => id !== input.id);
+        if (input.siblingIds.join("\0") !== fresh.join("\0")) {
+          return { status: "conflict", version: page.version };
+        }
+      }
       const oldParent = page.parentId;
       const currentIndex = childrenOf(tree(), oldParent).findIndex((item) => item.id === input.id);
       const without = childrenOf(tree(), input.parentId)
