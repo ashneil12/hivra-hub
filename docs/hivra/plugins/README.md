@@ -3,7 +3,8 @@
 Hivra reads plugins in the open [Agent Plugins](https://agent-plugins.org/specification) format (schema 1.0.0), plus a
 Hivra extension folder, and keeps a registry of what each installed plugin contributes so it can be switched off or
 removed without leaving anything behind. Code: `src-tauri/src/plugins/` (Rust) and `src/features/plugins/` (the
-session seams). Install from git or npm, updates and rollback are WP-31; this package installs local folders only.
+session seams). Installing from a pinned git or npm source, updating, rolling back and approving a script are
+WP-31 (`install.rs`, `source.rs`, `compat.rs`); Discover is WP-32.
 
 ## The format
 
@@ -22,7 +23,7 @@ The loader (`manifest.rs`, `mcp.rs`) follows the standard's failure boundaries:
 | No `plugin.json`, unknown `$schema`, bad `name`, a field of the wrong type | the plugin is refused |
 | An unknown top-level field, a non-object `extensions` | reported and ignored |
 | One skill (no frontmatter, name not equal to its folder, no description) | that skill is skipped |
-| A skill whose frontmatter sets `hooks` or `allowed-tools`, or isn't plain YAML (every line a column-0 `key:` of letters, digits, `-`, `_`, or indented under one: no escaped, tagged, aliased, merged, flow or wholly indented keys) | that skill is skipped: Claude Code would run its hooks as shell commands and pre-approve its tools, and a plugin skill is only instructions. Skills are checked again each time a session's wiring is built; one changed since it was switched on keeps the plugin's skills out of that session |
+| A skill whose frontmatter sets `hooks` or `allowed-tools`, or isn't plain YAML (every line a column-0 `key:` of letters, digits, `-`, `_`, or indented under one: no escaped, tagged, aliased, merged, flow or wholly indented keys) | that skill is skipped: Claude Code would run its hooks as shell commands and pre-approve its tools, and a plugin skill is only instructions. Skills are checked again each time a session's wiring is built; one changed since it was switched on keeps the plugin's skills out of that session, and its link in `~/.agents/skills` is removed so Codex stops seeing it too |
 | `mcp.json` broken, wrong schema or version | MCP is off for that plugin, skills still load |
 | One server (a name outside 1-64 letters, digits, `-`, `_`; a shell string as `command`, `../`, an `http` URL off this machine, reserved env names…) | that server is skipped |
 | Any path that resolves outside the plugin (links included) | refused at the narrowest level |
@@ -67,7 +68,8 @@ had to create are removed again once empty, and `registry.json` itself goes once
 them to be equal.
 
 Tauri commands: `plugins_list`, `plugins_inspect`, `plugins_install_local`, `plugins_enable`, `plugins_disable`,
-`plugins_uninstall` (scope: no project = everywhere) and `plugins_session_wiring`.
+`plugins_uninstall` (scope: no project = everywhere), `plugins_session_wiring`, and (WP-31) `plugins_install`,
+`plugins_update`, `plugins_approve`, `plugins_decline`, `plugins_pending`, `plugins_rollback`.
 
 ## How each CLI gets a plugin
 
@@ -100,7 +102,23 @@ dev copy's plugins; its Codex sessions then don't get plugin skills. A dev copy'
 server (CLAUDE.md, `isolated_dev_claude_args`), so plugin MCP servers are stripped there too; plugin skills still load.
 Loosening that rule for the copy's own `plugin-mcp` entries is a separate decision.
 
+## Installs (WP-31)
+
+A source is a git address pinned to a full commit or a tag, an npm package at one exact version, or a local folder.
+A branch, `latest` or a range is refused. Before a local git folder is cloned, and before an npm tarball is
+downloaded, the declared platforms and Hivra version range are checked; a remote git commit is fetched into a scratch
+repository with no checkout and its `plugin.json` is read from the object store before anything is unpacked. The
+download is staged, validated with the loader above, and swapped into place. Any failure puts the installed version
+back, and `lock.json` records the version, source and a digest of the files (no times, no on/off switch).
+
+An install script, or an MCP server that needs `npm install`, is shown as the exact command and waits. An install an
+agent starts waits too, even when nothing would run. Both show in the Inbox and on the Installed list until the person
+allows or declines. A yes runs the command with no shell and the same limited environment a plugin server gets, plus
+`PLUGIN_ROOT`. Update keeps the old version in `previous/<name>` until the new one validates; rollback puts it back in
+one step; uninstall runs the disposers and removes the files, the previous copy and the lock entry.
+
+Settings → Plugins is the Installed list (update, roll back, remove).
+
 ## Not in this package
 
-Pinned git/npm installs, update and rollback, install-script approval (WP-31); Discover (WP-32); panels on screen
-(WP-33); pstack shipped by default (WP-41); a Settings screen for plugins.
+Discover (WP-32); panels on screen (WP-33); pstack shipped by default (WP-41).
