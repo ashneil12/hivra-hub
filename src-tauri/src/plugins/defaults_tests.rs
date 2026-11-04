@@ -409,7 +409,8 @@ fn a_failed_start_tries_again_next_time() {
 }
 
 /// lock.json is every bundled plugin. The session snapshot is the pstack wiring, so starter-monos is removed and the
-/// file is written again the way registry.rs writes it (pretty, then a newline).
+/// file is written again the way registry.rs writes it (pretty, then a newline). Only the Unix session test uses it.
+#[cfg(unix)]
 fn pstack_only_lock(raw: &str) -> String {
     let mut lock: registry::LockFile = serde_json::from_str(raw.trim()).unwrap();
     lock.plugins.remove("starter-monos");
