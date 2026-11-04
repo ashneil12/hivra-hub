@@ -254,8 +254,9 @@ pub fn safe_path() -> String {
     }
 }
 
-/// Windows' own folders, Node's and the account's `.local\bin` (uvx) and `npm` (npx-installed tools), joined with
-/// `;`. The profile comes from Windows itself ([`crate::instance::real_home`]), never from the caller's HOME.
+/// Windows' own folders, Node's, Git for Windows' `cmd` (git and gh children such as treehouse and no-mistakes run
+/// git themselves) and the account's `.local\bin` (uvx) and `npm` (npx-installed tools), joined with `;`. The profile
+/// comes from Windows itself ([`crate::instance::real_home`]), never from the caller's HOME.
 #[cfg(windows)]
 pub fn safe_path() -> String {
     let system = std::env::var_os("SystemRoot")
@@ -269,6 +270,7 @@ pub fn safe_path() -> String {
         system.clone(),
         system.join(r"System32\WindowsPowerShell\v1.0"),
         programs.join("nodejs"),
+        programs.join(r"Git\cmd"),
     ];
     if let Some(home) = crate::instance::real_home() {
         dirs.push(home.join(r".local\bin"));
