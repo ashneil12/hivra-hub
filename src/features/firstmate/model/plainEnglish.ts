@@ -4,7 +4,7 @@
 import { readFlag, writeFlag } from "../../settings/model/storageFlags";
 
 export const PLAIN_ENGLISH_RULE =
-  "Every reply that reports work or answers a question ends with one short plain-English paragraph saying what happened and what it means, with no jargon, lists or headings. Worker reports end the same way, and first mates pass that paragraph through to Ash.";
+  "Every reply that reports work or answers a question ends with one short plain-English paragraph saying what happened and what it means, with no jargon, lists or headings. Worker reports end the same way, and first mates pass that paragraph through to the person.";
 
 export const PLAIN_ENGLISH_KEY = "monocode.plainEnglishEndings";
 
