@@ -229,6 +229,10 @@ pub fn record(
         )
         .map_err(|e| e.to_string())?;
         let Some(delivery) = delivery else { continue };
+        // WP-81: a pull request from the local check is repaired by that check, not by a fix crew.
+        if item.kind == Kind::CiRed && deliver::through_gate(conn, &repo, number) {
+            continue;
+        }
         if let Some((state, rounds)) = next(&delivery.state, delivery.fix_rounds, item.kind) {
             let detail = match (item.kind, state) {
                 (Kind::CiRed, FIXING) => Some(format!(
