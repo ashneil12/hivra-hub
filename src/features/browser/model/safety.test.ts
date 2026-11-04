@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  answerFromEngine,
   isEvaluateTool,
   launchPlan,
   prepareTools,
@@ -113,6 +114,34 @@ describe("passwords and cookies stay out of tool output", () => {
     expect(cookie).toContain("landed;");
     expect(cookie).toContain("[redacted]");
     expect(cookie).not.toContain("supersecretvalue");
+  });
+
+  it("redacts a password field with any number of bracket groups, and a tools/call error", () => {
+    const text = [
+      '- textbox "Password" [active] [ref=e12]: swordfish',
+      '- textbox "PIN": 1234',
+      '- textbox "Passcode" [ref=e3]: letmein',
+      '- textbox "Password":',
+      "The password field is on the form.",
+      '- textbox "spinning": 9',
+    ].join("\n");
+    const out = redact(text) as string;
+    expect(out).toContain('- textbox "Password" [active] [ref=e12]: [redacted]');
+    expect(out).toContain('- textbox "PIN": [redacted]');
+    expect(out).toContain('- textbox "Passcode" [ref=e3]: [redacted]');
+    expect(out).toContain("The password field is on the form.");
+    expect(out).toContain('- textbox "spinning": 9');
+    expect(out).not.toContain("swordfish");
+    expect(out).not.toContain("1234");
+    expect(out).not.toContain("letmein");
+    const pending = new Map<unknown, string>([[7, "tools/call"]]);
+    const answered = answerFromEngine(pending, {
+      jsonrpc: "2.0",
+      id: 7,
+      error: { code: -32000, message: '- textbox "Password" [active] [ref=e12]: swordfish' },
+    }) as { error: { message: string } };
+    expect(answered.error.message).toContain("[redacted]");
+    expect(answered.error.message).not.toContain("swordfish");
   });
 });
 
@@ -265,5 +294,161 @@ describe("the proxy in front of a fake engine", () => {
     expect(code).toBe(78);
     expect(stderr).toContain("your own browser profile");
     expect(existsSync(join(dir, "calls.log"))).toBe(false);
+  });
+});
+
+const LATE = fileURLToPath(new URL("./lateChild.mjs", import.meta.url));
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function waitFor(check: () => boolean, ms: number): Promise<boolean> {
+  const start = Date.now();
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      if (check() || Date.now() - start >= ms) {
+        clearInterval(timer);
+        resolve(check());
+      }
+    }, 30);
+  });
+}
+
+function readPid(file: string): number {
+  const text = readFileSync(file, "utf8").trim();
+  const pid = Number(text);
+  if (!Number.isInteger(pid) || pid < 2) throw new Error(`no pid in ${file}`);
+  return pid;
+}
+
+describe("the wrapper does not leave the browser behind", () => {
+  function browserEnv(dir: string, args: string[], extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    return {
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      TMPDIR: process.env.TMPDIR,
+      HIVRA_BROWSER_COMMAND: process.execPath,
+      HIVRA_BROWSER_COMMAND_ARGS: JSON.stringify(args),
+      HIVRA_BROWSER_PROFILE: join(dir, "Ada profile"),
+      HIVRA_BROWSER_HEADLESS: "1",
+      HIVRA_BROWSER_SESSION: "hivra-session",
+      ...extra,
+    };
+  }
+
+  it("stops a grandchild the direct child leaves behind", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hivra-browser-tree-"));
+    temps.push(dir);
+    const grandFile = join(dir, "grand.pid");
+    const wrapper = spawn(process.execPath, [SERVER, "hivra-session"], {
+      env: browserEnv(dir, [LATE, "leave"], { HIVRA_GRAND_PID: grandFile }),
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    try {
+      expect(await waitFor(() => existsSync(grandFile), 3000)).toBe(true);
+      const grand = readPid(grandFile);
+      expect(alive(grand)).toBe(true);
+      wrapper.kill("SIGTERM");
+      expect(await waitFor(() => !alive(wrapper.pid ?? 0), 3000)).toBe(true);
+      expect(alive(grand)).toBe(false);
+    } finally {
+      if (wrapper.pid && alive(wrapper.pid)) wrapper.kill("SIGKILL");
+      if (existsSync(grandFile)) {
+        const grand = Number(readFileSync(grandFile, "utf8").trim());
+        if (Number.isInteger(grand) && alive(grand)) {
+          try {
+            process.kill(grand, "SIGKILL");
+          } catch {
+            // already gone
+          }
+        }
+      }
+    }
+  });
+
+  it("stops the browser when stdin closes", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hivra-browser-stdin-"));
+    temps.push(dir);
+    const pidFile = join(dir, "child.pid");
+    const wrapper = spawn(process.execPath, [SERVER, "hivra-session"], {
+      env: browserEnv(dir, [LATE, "hold"], { HIVRA_LATE_PID: pidFile }),
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    try {
+      expect(await waitFor(() => existsSync(pidFile), 3000)).toBe(true);
+      const child = readPid(pidFile);
+      expect(alive(child)).toBe(true);
+      wrapper.stdin?.end();
+      expect(await waitFor(() => !alive(wrapper.pid ?? 0) && !alive(child), 3000)).toBe(true);
+    } finally {
+      if (wrapper.pid && alive(wrapper.pid)) wrapper.kill("SIGKILL");
+      if (existsSync(pidFile)) {
+        const child = Number(readFileSync(pidFile, "utf8").trim());
+        if (Number.isInteger(child) && alive(child)) {
+          try {
+            process.kill(child, "SIGKILL");
+          } catch {
+            // already gone
+          }
+        }
+      }
+    }
+  });
+
+  it("stops the browser when its parent dies", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hivra-browser-parent-"));
+    temps.push(dir);
+    const pidFile = join(dir, "child.pid");
+    const wrapperFile = join(dir, "wrapper.pid");
+    const parent = spawn(
+      process.execPath,
+      [
+        "--input-type=module",
+        "-e",
+        [
+          "import { spawn } from 'node:child_process';",
+          "import { writeFileSync } from 'node:fs';",
+          "const wrapper = spawn(process.execPath, [process.argv[1], process.argv[2]], { env: process.env, stdio: ['pipe', 'ignore', 'inherit'] });",
+          "writeFileSync(process.argv[3], String(wrapper.pid));",
+          "setInterval(() => {}, 1000);",
+        ].join(" "),
+        SERVER,
+        "hivra-session",
+        wrapperFile,
+      ],
+      {
+        env: browserEnv(dir, [LATE, "hold"], { HIVRA_LATE_PID: pidFile }),
+        stdio: ["ignore", "ignore", "pipe"],
+      },
+    );
+    try {
+      expect(await waitFor(() => existsSync(pidFile) && existsSync(wrapperFile), 3000)).toBe(true);
+      const child = readPid(pidFile);
+      const wrapper = readPid(wrapperFile);
+      expect(alive(child)).toBe(true);
+      expect(alive(wrapper)).toBe(true);
+      parent.kill("SIGTERM");
+      expect(await waitFor(() => !alive(parent.pid ?? 0), 3000)).toBe(true);
+      expect(await waitFor(() => !alive(wrapper) && !alive(child), 3000)).toBe(true);
+    } finally {
+      if (parent.pid && alive(parent.pid)) parent.kill("SIGKILL");
+      for (const file of [wrapperFile, pidFile]) {
+        if (!existsSync(file)) continue;
+        const pid = Number(readFileSync(file, "utf8").trim());
+        if (Number.isInteger(pid) && alive(pid)) {
+          try {
+            process.kill(pid, "SIGKILL");
+          } catch {
+            // already gone
+          }
+        }
+      }
+    }
   });
 });

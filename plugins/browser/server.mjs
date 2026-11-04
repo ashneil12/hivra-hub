@@ -4,7 +4,7 @@
 // marked untrusted. The engine is spawned only while this process runs; nothing here
 // installs it.
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,8 +15,8 @@ const SECRET_KEY =
   /^(password|passwd|pwd|cookie|set-cookie|authorization|proxy-authorization|x-csrf-token|x-xsrf-token)$/i;
 const HEADER_LINE =
   /^(cookie|set-cookie|authorization|proxy-authorization|x-csrf-token|x-xsrf-token)\s*:\s*.*$/gim;
-const SNAPSHOT_PASSWORD =
-  /^(\s*(?:-\s*)?(?:textbox|input|searchbox|combobox)\s+"[^"\n]*password[^"\n]*"(?:\s+\[[^\]]*\])?\s*:\s*)(.*)$/i;
+const FIELD_VALUE =
+  /^(\s*(?:-\s*)?[A-Za-z][\w-]*\s+"([^"\n]*)"(?:\s+\[[^\]]*\])*\s*:\s*)(.*)$/;
 const INLINE_SECRET =
   /(^|[^\w-])((?:set-cookie|cookie|password|passwd|pwd)\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\s]+)/gi;
 const PAGE_TOOL = /snapshot|content|navigate|page|html|text|console|network|pdf/i;
@@ -96,10 +96,17 @@ function asJson(text) {
   }
 }
 
-function redactLine(line) {
-  const snapshot = line.replace(SNAPSHOT_PASSWORD, (all, lead, value) =>
-    String(value).trim() === "" ? all : `${lead}[redacted]`,
+function secretFieldName(name) {
+  return (
+    /password|passwd|pwd|passcode/i.test(name) || /(?:^|[^a-z0-9])pin(?:[^a-z0-9]|$)/i.test(name)
   );
+}
+
+function redactLine(line) {
+  const snapshot = line.replace(FIELD_VALUE, (all, lead, name, value) => {
+    if (!secretFieldName(name) || String(value).trim() === "") return all;
+    return `${lead}[redacted]`;
+  });
   return snapshot.replace(INLINE_SECRET, (_all, pre, lead) => `${pre}${lead}[redacted]`);
 }
 
@@ -221,10 +228,109 @@ export function answerFromEngine(pending, message) {
   if (method === "tools/list" && message.result && Array.isArray(message.result.tools)) {
     return { ...message, result: { ...message.result, tools: prepareTools(message.result.tools) } };
   }
-  if (method === "tools/call" && message.result) {
-    return { ...message, result: redact(message.result) };
+  if (method === "tools/call" && (message.result !== undefined || message.error !== undefined)) {
+    const next = { ...message };
+    if (message.result !== undefined) next.result = redact(message.result);
+    if (message.error !== undefined) next.error = redact(message.error);
+    return next;
   }
   return message;
+}
+
+function descendantPids(root) {
+  if (!root || root === process.pid) return [];
+  const wanted = new Set([root]);
+  let rows = [];
+  try {
+    const out = execFileSync("ps", ["-ax", "-o", "pid=,ppid="], { encoding: "utf8" });
+    rows = out
+      .split("\n")
+      .map((line) => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 2) return null;
+        const pid = Number(parts[0]);
+        const ppid = Number(parts[1]);
+        if (!Number.isInteger(pid) || !Number.isInteger(ppid)) return null;
+        return { pid, ppid };
+      })
+      .filter(Boolean);
+  } catch {
+    return [root];
+  }
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const row of rows) {
+      if (row.pid === process.pid) continue;
+      if (wanted.has(row.ppid) && !wanted.has(row.pid)) {
+        wanted.add(row.pid);
+        grew = true;
+      }
+    }
+  }
+  return [...wanted];
+}
+
+function stillAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+function processStarted(pid) {
+  try {
+    return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function snapshotTree(root) {
+  return descendantPids(root)
+    .map((pid) => ({ pid, started: processStarted(pid) }))
+    .filter((row) => row.started || row.pid === root);
+}
+
+function sameProcess(row) {
+  if (!row || row.pid === process.pid) return false;
+  if (!stillAlive(row.pid)) return false;
+  if (!row.started) return true;
+  return processStarted(row.pid) === row.started;
+}
+
+function signalRows(rows, signal) {
+  for (const row of rows) {
+    if (!sameProcess(row)) continue;
+    try {
+      process.kill(row.pid, signal);
+    } catch {
+      // Already gone, or the pid was reused.
+    }
+  }
+}
+
+function mergeRows(left, right) {
+  const byPid = new Map();
+  for (const row of [...left, ...right]) {
+    if (!byPid.has(row.pid)) byPid.set(row.pid, row);
+  }
+  return [...byPid.values()];
+}
+
+function waitForRows(rows, code) {
+  const started = Date.now();
+  const timer = setInterval(() => {
+    const left = rows.filter(sameProcess);
+    if (left.length === 0) {
+      clearInterval(timer);
+      process.exit(code);
+      return;
+    }
+    if (Date.now() - started >= 1000) signalRows(left, "SIGKILL");
+  }, 30);
 }
 
 function main() {
@@ -241,19 +347,42 @@ function main() {
     windowsHide: true,
   });
   const pending = new Map();
-  const stop = () => {
-    if (!child.killed) child.kill("SIGTERM");
-    process.exit(0);
-  };
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
+  let stopping = false;
+  let seen = [];
+  const parent = process.ppid;
+  const treeWatch = setInterval(() => {
+    if (!stopping && child.pid) seen = snapshotTree(child.pid);
+  }, 200);
+  treeWatch.unref();
+  // Snapshot the tree first, with each pid's start time. Signalling the engine reparents
+  // Playwright's Chrome, and a lookup after that no longer finds it. A reused pid is not signalled.
+  function shutdown(code) {
+    if (stopping) return;
+    stopping = true;
+    clearInterval(treeWatch);
+    const fresh = child.pid ? snapshotTree(child.pid) : [];
+    const rows = mergeRows(seen, fresh);
+    signalRows(rows, "SIGTERM");
+    waitForRows(rows, code);
+  }
+  process.on("SIGTERM", () => shutdown(0));
+  process.on("SIGINT", () => shutdown(0));
+  const parentWatch = setInterval(() => {
+    if (process.ppid !== parent) shutdown(0);
+  }, 200);
+  parentWatch.unref();
+  process.stdin.on("end", () => shutdown(0));
+  process.stdin.on("close", () => shutdown(0));
   child.on("error", () => {
+    if (stopping) return;
+    stopping = true;
     process.stderr.write("hivra browser: The browser didn't start. Try again.\n");
     process.exit(1);
   });
   child.on("exit", (code) => {
+    if (stopping) return;
     if (code && code !== 0) process.stderr.write("hivra browser: The browser stopped. Try again.\n");
-    process.exit(code ?? 0);
+    shutdown(code ?? 0);
   });
   child.stdout && readMessages(child.stdout, (message) => {
     writeMessage(process.stdout, answerFromEngine(pending, message));
