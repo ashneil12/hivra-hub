@@ -11,10 +11,11 @@ function memory(): CursorStore & { raw: Map<string, string> } {
   };
 }
 
-const entry = (seq: number, text = "The change is in."): CatchUpEntry => ({
+const entry = (seq: number, text = "The change is in.", ownerSession = "owner-1"): CatchUpEntry => ({
   seq,
   projectId: "project-1",
   delegationId: "delegation-1",
+  ownerSession,
   kind: "finished",
   startedBy: "person",
   text,
@@ -51,6 +52,77 @@ describe("remote first mate catch-up", () => {
     await expect(catchUpRemoteProject(request, "env", "project-1", storage)).resolves.toEqual([entry(4)]);
     await expect(catchUpRemoteProject(request, "env", "project-1", storage)).resolves.toEqual([]);
     expect(request).toHaveBeenLastCalledWith("firstmate.catchUp", { projectId: "project-1", after: 4 });
+  });
+
+  it("drops a catch-up entry that does not name its chat", () => {
+    const storage = memory();
+    const { ownerSession: _owner, ...stripped } = entry(1);
+    expect(acceptCatchUp(storage, "env", "project-1", { entries: [stripped] })).toEqual([]);
+    expect(storage.raw.size).toBe(0);
+  });
+
+  it("keeps the cursor where it is until the page is delivered", async () => {
+    const storage = memory();
+    const delivered: CatchUpEntry[][] = [];
+    const request = vi.fn(async () => ({ entries: [entry(1)] }));
+    await expect(
+      catchUpRemoteProject(request, "env", "project-1", storage, {
+        deliver: (entries) => {
+          delivered.push(entries);
+          return false;
+        },
+      }),
+    ).resolves.toEqual([]);
+    expect(delivered).toEqual([[entry(1)]]);
+    expect(storage.raw.size).toBe(0);
+
+    await expect(
+      catchUpRemoteProject(request, "env", "project-1", storage, { deliver: () => true }),
+    ).resolves.toEqual([entry(1)]);
+    await expect(
+      catchUpRemoteProject(request, "env", "project-1", storage, { deliver: () => true }),
+    ).resolves.toEqual([]);
+    expect(request).toHaveBeenLastCalledWith("firstmate.catchUp", { projectId: "project-1", after: 1 });
+  });
+
+  it("does not deliver or store a page once the reader is gone", async () => {
+    const storage = memory();
+    let alive = true;
+    const deliver = vi.fn(async () => true);
+    const request = vi.fn(async () => {
+      alive = false;
+      return { entries: [entry(1)] };
+    });
+    await expect(
+      catchUpRemoteProject(request, "env", "project-1", storage, { alive: () => alive, deliver }),
+    ).resolves.toEqual([]);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(storage.raw.size).toBe(0);
+  });
+
+  it("does not move the cursor backwards when another window stored a later page", () => {
+    const key = catchUpKey("env", "project-1");
+    const real = JSON.stringify({ after: 4, seen: [4] });
+    const raw = new Map<string, string>([[key, real]]);
+    let reads = 0;
+    const storage: CursorStore & { raw: Map<string, string> } = {
+      raw,
+      getItem: (item) => {
+        if (item === key && reads++ === 0) return JSON.stringify({ after: 0, seen: [] });
+        return raw.get(item) ?? null;
+      },
+      setItem: (item, value) => raw.set(item, value),
+      compareAndSwap: (item, expected, next) => {
+        const current = raw.get(item) ?? null;
+        if (current !== expected) return false;
+        raw.set(item, next);
+        return true;
+      },
+    };
+    acceptCatchUp(storage, "env", "project-1", { entries: [entry(3, "Earlier.")] });
+    const stored = JSON.parse(raw.get(key)!) as { after: number; seen: number[] };
+    expect(stored.after).toBeGreaterThanOrEqual(4);
+    expect(stored.seen).toContain(4);
   });
 
   it("reads a brief the host accepted", async () => {

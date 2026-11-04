@@ -12,6 +12,7 @@ import {
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
 import { catchUpRemoteProject } from "../../firstmate/host/remoteFirstMate";
+import { deliverRemoteReports } from "../../firstmate/host/remoteReport";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -430,6 +431,8 @@ export function useRemoteProjectSessions(
           (method, params) => remoteRequest(machine.id, method, params),
           remote.environmentId,
           remote.projectId,
+          undefined,
+          { alive: () => !disposed, deliver: deliverRemoteReports },
         ).catch(() => undefined);
         try {
           localStorage.setItem(historyKey(project), JSON.stringify(next));

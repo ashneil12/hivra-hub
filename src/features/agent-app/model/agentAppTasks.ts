@@ -63,6 +63,7 @@ import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/mo
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
+import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import {
@@ -737,6 +738,28 @@ async function delegate(
   const folder =
     ownTeam?.folder ??
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
+  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
+  const remoteBrief = await briefOnRemoteHost({
+    paths: [folder, source.cwd],
+    launchKey: `app-${source.id}-${requestId}`,
+    ownerSession: source.id,
+    title,
+    harness: source.harness,
+    model: source.model,
+    runtimeMode: WORKER_RUNTIME_MODE,
+    startedBy: firstMate ? "first-mate" : "person",
+    promptFor: (hostCwd) =>
+      briefPrompt(
+        owner.name,
+        renderBrief(
+          { intent, spec: brief },
+          { kind: "shared", folder: hostCwd },
+          classifyBriefTask(`${intent}\n${brief}`),
+        ),
+        goal,
+      ),
+  });
+  if (remoteBrief) return remoteBrief;
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.

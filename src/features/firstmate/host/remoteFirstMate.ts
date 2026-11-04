@@ -15,6 +15,8 @@ export type HostRequester = (method: string, params: Record<string, unknown>) =>
 export type CursorStore = {
   getItem(key: string): string | null;
   setItem(key: string, value: string): void;
+  /** Write only when the stored value is still `expected`. Absent, the store compares and then writes. */
+  compareAndSwap?(key: string, expected: string | null, next: string): boolean;
 };
 
 const KINDS: readonly CatchUpEntry["kind"][] = ["started", "finished", "failed", "cancelled"];
@@ -42,6 +44,13 @@ function readCursor(raw: string | null): Cursor {
   }
 }
 
+function swap(storage: CursorStore, key: string, expected: string | null, next: string): boolean {
+  if (storage.compareAndSwap) return storage.compareAndSwap(key, expected, next);
+  if (storage.getItem(key) !== expected) return false;
+  storage.setItem(key, next);
+  return storage.getItem(key) === next;
+}
+
 function isEntry(value: unknown): value is CatchUpEntry {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const entry = value as Record<string, unknown>;
@@ -51,6 +60,7 @@ function isEntry(value: unknown): value is CatchUpEntry {
     entry.seq >= 0 &&
     typeof entry.projectId === "string" &&
     typeof entry.delegationId === "string" &&
+    typeof entry.ownerSession === "string" &&
     KINDS.includes(entry.kind as CatchUpEntry["kind"]) &&
     INITIATORS.includes(entry.startedBy as Initiator) &&
     typeof entry.text === "string" &&
@@ -73,7 +83,8 @@ export function acceptCatchUp(
   let incoming = Array.isArray(page.entries) ? page.entries.filter(isEntry) : [];
   try {
     for (let attempt = 0; attempt < 5; attempt++) {
-      const current = readCursor(storage.getItem(key));
+      const raw = storage.getItem(key);
+      const current = readCursor(raw);
       const seen = new Set(current.seen);
       const fresh: CatchUpEntry[] = [];
       for (const entry of incoming) {
@@ -83,7 +94,11 @@ export function acceptCatchUp(
       }
       if (!fresh.length) return [];
       const after = Math.max(current.after, ...fresh.map((entry) => entry.seq));
-      storage.setItem(key, JSON.stringify({ after, seen: [...seen] }));
+      const next = JSON.stringify({ after, seen: [...seen] });
+      if (!swap(storage, key, raw, next)) {
+        incoming = fresh;
+        continue;
+      }
       const checked = readCursor(storage.getItem(key));
       const lost = fresh.filter((entry) => !checked.seen.includes(entry.seq) || checked.after < entry.seq);
       if (!lost.length) return fresh.filter((entry) => checked.seen.includes(entry.seq));
@@ -96,15 +111,24 @@ export function acceptCatchUp(
 }
 
 /** Pull what the host did after this desktop's cursor. A miss leaves the cursor where it was. */
+export type CatchUpOptions = {
+  /** Show the page in the chat. False, or a throw, leaves the cursor where it was. */
+  deliver?: (entries: CatchUpEntry[]) => Promise<boolean> | boolean;
+  /** False once the reader is gone. A late page is neither shown nor stored. */
+  alive?: () => boolean;
+};
+
 export async function catchUpRemoteProject(
   request: HostRequester,
   environmentId: string,
   projectId: string,
   storage?: CursorStore,
+  options?: CatchUpOptions,
 ): Promise<CatchUpEntry[]> {
   // Resolved in here so a missing or locked store rejects this call, not the poll that started it.
   const store = storage ?? globalThis.localStorage;
   if (!environmentId.trim() || !projectId.trim() || environmentId.includes("\0") || projectId.includes("\0")) return [];
+  if (options?.alive && !options.alive()) return [];
   const key = catchUpKey(environmentId, projectId);
   let page: unknown;
   try {
@@ -113,8 +137,23 @@ export async function catchUpRemoteProject(
   } catch {
     return [];
   }
+  if (options?.alive && !options.alive()) return [];
   if (!page || typeof page !== "object" || Array.isArray(page)) return [];
-  return acceptCatchUp(store, environmentId, projectId, page as CatchUpPage);
+  const entries = Array.isArray((page as CatchUpPage).entries) ? (page as CatchUpPage).entries.filter(isEntry) : [];
+  if (!options?.deliver) return acceptCatchUp(store, environmentId, projectId, { entries });
+  const seen = new Set(readCursor(store.getItem(key)).seen);
+  const fresh = entries.filter((entry) => !seen.has(entry.seq));
+  // A start is recorded. Only a result is shown, and only before the cursor moves.
+  const reports = fresh.filter((entry) => entry.kind !== "started");
+  if (reports.length) {
+    try {
+      if (!(await options.deliver(reports))) return [];
+    } catch {
+      return [];
+    }
+    if (options.alive && !options.alive()) return [];
+  }
+  return acceptCatchUp(store, environmentId, projectId, { entries: fresh });
 }
 
 /** Start a brief on the host, or read the worker this launch key already started. */
