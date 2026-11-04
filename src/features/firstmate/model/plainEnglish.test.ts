@@ -14,7 +14,7 @@ describe("plain-English endings", () => {
     expect(plainEnglishEndings()).toBe(true);
     expect(FIRST_MATE_CONTRACT).toContain(PLAIN_ENGLISH_RULE);
     expect(contractForAgents()).toContain(PLAIN_ENGLISH_RULE);
-    expect(contractForAgents()).toContain("**Never edit the project.**");
+    expect(contractForAgents()).toContain("**Never write to a project.**");
     expect(sessionInstruction({ plainEnglish: plainEnglishEndings() })).toContain(PLAIN_ENGLISH_RULE);
   });
 
@@ -24,7 +24,7 @@ describe("plain-English endings", () => {
     expect(FIRST_MATE_CONTRACT).toContain(PLAIN_ENGLISH_RULE);
     expect(contractForAgents()).not.toContain(PLAIN_ENGLISH_RULE);
     expect(contractForAgents()).toContain("Talk in outcomes");
-    expect(contractForAgents()).toContain("**Never edit the project.**");
+    expect(contractForAgents()).toContain("**Never write to a project.**");
     expect(sessionInstruction({ plainEnglish: plainEnglishEndings() })).not.toContain(PLAIN_ENGLISH_RULE);
     expect(sessionInstruction({ pstackRoot: "/plugins/installed/pstack", plainEnglish: plainEnglishEndings() })).not.toContain(
       "no jargon, lists or headings",
@@ -38,12 +38,12 @@ describe("plain-English endings", () => {
     savePlainEnglishEndings(false);
     const carried = withFirstMateContract(`You are the lead.\n\n${FIRST_MATE_CONTRACT}`);
     expect(carried).toContain("You are the lead.");
-    expect(carried).toContain("**Never edit the project.**");
+    expect(carried).toContain("**Never write to a project.**");
     expect(carried).not.toContain(PLAIN_ENGLISH_RULE);
     expect(carried.split("# The first mate contract").length - 1).toBe(1);
     const built = withFirstMateContract("You are the lead.");
     expect(built).toContain("You are the lead.");
-    expect(built).toContain("**Never edit the project.**");
+    expect(built).toContain("**Never write to a project.**");
     expect(built).not.toContain(PLAIN_ENGLISH_RULE);
     savePlainEnglishEndings(true);
     expect(withFirstMateContract("You are the lead.")).toContain(PLAIN_ENGLISH_RULE);

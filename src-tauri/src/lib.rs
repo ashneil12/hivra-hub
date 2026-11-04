@@ -68,6 +68,8 @@ mod pasteboard;
 mod pi_usage;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
+// WP-33: plugin panels, the catalog and the My panels migration.
+mod panels;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -777,6 +779,9 @@ pub fn run() {
             plugins::desktop::desktop_consent_read,
             plugins::desktop::desktop_consent_write,
             plugins::desktop::desktop_control_install,
+            // WP-33: panels from plugins, and kept pages moved into My panels.
+            panels::panels_catalog,
+            panels::panels_migrate,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
