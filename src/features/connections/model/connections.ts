@@ -11,6 +11,7 @@ import {
   type SessionSyncResponse,
 } from "./protocol";
 import { remoteProjectFor } from "./remoteProjects";
+import { catchUpRemoteProject } from "../../firstmate/host/remoteFirstMate";
 import { withRemoteAttachmentPreviews } from "./remoteAttachmentPreviews";
 
 const CHANGE = "monocode:remote-machines";
@@ -423,6 +424,13 @@ export function useRemoteProjectSessions(
         failures = 0;
         setSessions(next);
         setLoaded(true);
+        // WP-60: read what this project's first mate did on the host while this
+        // desktop was away. An older host or a dropped tunnel is not a failed list.
+        void catchUpRemoteProject(
+          (method, params) => remoteRequest(machine.id, method, params),
+          remote.environmentId,
+          remote.projectId,
+        ).catch(() => undefined);
         try {
           localStorage.setItem(historyKey(project), JSON.stringify(next));
           window.dispatchEvent(new Event(REMOTE_HISTORY_UPDATED));
