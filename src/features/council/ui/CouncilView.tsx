@@ -57,6 +57,7 @@ export function CouncilView({
   const [preset, setPreset] = useState<PanelPreset>(record.preset);
   const [picked, setPicked] = useState<Record<number, string>>({});
   const [active, setActive] = useState(0);
+  const [saveProblem, setSaveProblem] = useState<string | undefined>();
   const live = useRef(false);
   const gen = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
@@ -66,10 +67,21 @@ export function CouncilView({
     abortRef.current?.abort();
   }, []);
 
+  // Another window's save replaces this one. The question on screen follows the row that won.
+  useEffect(() => {
+    setQuestion(record.question);
+    setPreset(record.preset);
+  }, [record.revision, record.question, record.preset]);
+
   const proposal = proposePanel(engines, preset);
   const weights = new Map(personas.flatMap((persona) => (typeof persona.weight === "number" ? [[persona.id, persona.weight] as const] : [])));
   const round = record.phase === "done" ? "done" : record.phase === "stopped" ? "stopped" : (record.round ?? record.phase);
   const interrupted = record.phase === "running" && !live.current;
+
+  function lostSave() {
+    live.current = false;
+    setSaveProblem("This council was saved in another window. Start again.");
+  }
 
   function confirmPanel() {
     const seats = seatPanel(
@@ -77,15 +89,19 @@ export function CouncilView({
       weights,
       roomId,
     );
-    onChange({
-      ...record,
-      question: question.trim(),
-      preset,
-      expectedCalls: proposal.expectedCalls,
-      ...(proposal.note ? { note: proposal.note } : {}),
-      seats,
-      phase: "restate",
-    });
+    if (
+      !onChange({
+        ...record,
+        question: question.trim(),
+        preset,
+        expectedCalls: proposal.expectedCalls,
+        ...(proposal.note ? { note: proposal.note } : {}),
+        seats,
+        phase: "restate",
+      })
+    ) {
+      lostSave();
+    }
   }
 
   async function start() {
@@ -97,7 +113,7 @@ export function CouncilView({
     live.current = true;
     const base: CouncilRecord = { ...record, question: question.trim(), phase: "running", round: "blind" };
     if (!onChange(base)) {
-      live.current = false;
+      lostSave();
       return;
     }
     const personaText = new Map(
@@ -116,15 +132,17 @@ export function CouncilView({
         if (!onChange(merge(base, partial, "running"))) {
           gen.current += 1;
           ac.abort();
+          lostSave();
         }
       },
     });
     if (gen.current !== generation) return;
-    onChange(merge(base, result));
+    if (!onChange(merge(base, result))) lostSave();
   }
 
   function again() {
     live.current = false;
+    setSaveProblem(undefined);
     onChange({ ...blankProposal(record.question), preset: record.preset });
   }
 
@@ -143,6 +161,15 @@ export function CouncilView({
           </button>
         ) : null}
       </div>
+
+      {saveProblem ? (
+        <div role="alert" className="flex flex-col gap-2" data-council-save-error>
+          <p>{saveProblem}</p>
+          <button type="button" data-council-start-again onClick={again} className="h-8 w-fit rounded-md bg-content/10 px-3">
+            Start again
+          </button>
+        </div>
+      ) : null}
 
       {record.phase === "propose" ? (
         <div className="flex max-w-[72ch] flex-col gap-3">

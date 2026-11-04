@@ -38,6 +38,35 @@ function show(model?: () => Promise<{ text: string }>) {
   });
 }
 
+it("shows a lost save and offers to start again", () => {
+  const seat = {
+    id: "a",
+    cli: "claude",
+    family: "Anthropic",
+    label: "Claude Code",
+    weight: 1,
+    member: "Member A",
+    sessionId: "s-a",
+  };
+  act(() => {
+    root.render(
+      createElement(CouncilView, {
+        roomId: "room",
+        record: { ...blankProposal("Should we ship?"), phase: "restate", seats: [seat], expectedCalls: 4 },
+        engines: [engine],
+        personas: [],
+        model: async () => ({ text: "ok" }),
+        onChange: () => false,
+      }),
+    );
+  });
+  act(() => {
+    container.querySelector<HTMLButtonElement>("[data-council-restate-confirm]")!.click();
+  });
+  expect(container.querySelector("[data-council-save-error]")?.textContent).toContain("saved in another window");
+  expect(container.querySelector("[data-council-start-again]")).toBeTruthy();
+});
+
 it("starts only when a model is connected", () => {
   show();
   const off = container.querySelector<HTMLButtonElement>("[data-council-confirm]");

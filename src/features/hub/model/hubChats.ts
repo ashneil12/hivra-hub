@@ -545,8 +545,26 @@ export function saveCouncil(chatId: string, next: CouncilRecord, expectedRevisio
       } catch {
         adopted = null;
       }
-      if (!adopted) return;
-      update(chatId, (c) => ({ ...c, council: adopted }));
+      if (adopted) {
+        update(chatId, (c) => ({ ...c, council: adopted }));
+        changed();
+        return;
+      }
+      // The row is gone (revision 0 and no council to read). Put this one back, once, and keep whatever landed.
+      if (result.revision !== 0) return;
+      const retryJson = councilToJson({ ...stored, revision: 1 });
+      if (!retryJson) return;
+      const again = await b.setCouncil!(chatId, 0, retryJson);
+      if (getChat(chatId)?.council?.revision !== written) return;
+      if (again.applied === false) return;
+      let landed: CouncilRecord | null = null;
+      try {
+        landed = councilFromUnknown(JSON.parse(again.json));
+      } catch {
+        landed = null;
+      }
+      if (!landed) return;
+      update(chatId, (c) => ({ ...c, council: landed }));
       changed();
     });
   }

@@ -1,7 +1,7 @@
 // WP-23: a room's council. The group view only opens this; the run, the tally and the brief stay in the council modules.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { getChat, saveCouncil, useHubChatsVersion } from "../../hub/model/hubChats";
-import { availableCouncilEngines, councilModelInUse, installCouncilModel, openCouncilSeat, postCouncilBrief } from "../model/host";
+import { availableCouncilEngines, councilModelInUse, installCouncilModel, noteCouncilSeats, openCouncilSeat, postCouncilBrief } from "../model/host";
 import { bundledPersonas, combinePersonas } from "../model/personas";
 import { blankProposal, type CouncilRecord } from "../model/record";
 import { CouncilView } from "./CouncilView";
@@ -14,15 +14,24 @@ export function CouncilRoom({ chatId, onClose }: { chatId: string; onClose: () =
     setModelTick((n) => n + 1);
   }, []);
   const chat = getChat(chatId);
-  const expected = useRef(chat?.council?.revision ?? 0);
+  useEffect(() => {
+    const seats = getChat(chatId)?.council?.seats ?? [];
+    noteCouncilSeats(
+      seats.map((seat) => ({
+        id: seat.id,
+        cli: seat.cli,
+        ...(seat.model ? { model: seat.model } : {}),
+        sessionId: seat.sessionId,
+        label: seat.label,
+      })),
+    );
+  }, [chatId, chat?.council]);
   if (!chat) return null;
   const record = chat.council ?? blankProposal("");
 
   function publish(next: CouncilRecord): boolean {
-    const ok = saveCouncil(chatId, next, expected.current);
-    if (!ok) return false;
-    expected.current += 1;
-    return true;
+    const have = getChat(chatId)?.council?.revision ?? 0;
+    return saveCouncil(chatId, next, have);
   }
 
   return (
