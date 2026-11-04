@@ -522,6 +522,12 @@ pub fn run() {
             firstmate::firstmate_checkout_snapshot,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
+            // Hivra WP-40: completion and verdict gates.
+            firstmate::gates::firstmate_gates_resolve,
+            firstmate::gates::firstmate_gates_plan,
+            firstmate::gates::firstmate_run_gates,
+            firstmate::gates::firstmate_gate_evidence,
+            firstmate::gates::firstmate_gates_decide,
             // Hivra WP-12: delivery modes and the one merge path.
             delivery::delivery_settings_get,
             delivery::delivery_settings_set,

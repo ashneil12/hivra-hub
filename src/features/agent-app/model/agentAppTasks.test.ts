@@ -960,6 +960,86 @@ describe("tasks.delegate", () => {
   });
 });
 
+describe("tasks.delegate gates (WP-40)", () => {
+  it("refuses a word that isn't a gate before anything starts", async () => {
+    const { source, host, started } = fixture();
+    await expect(
+      handleAgentApp(source, "r-gate", "tasks.delegate", { brief: "Add delete.", gates: ["made-up"] }, host),
+    ).rejects.toThrow(`"made-up" isn't a gate. Use diff, checks, committed, ratchet or routes.`);
+    expect(started).toHaveLength(0);
+  });
+
+  it("keeps a code brief's gates on the task, and again when the same task is asked for twice", async () => {
+    const { source, host, started, api } = fixture();
+    const saveGates = vi.fn(async () => {
+      throw new Error("the store was busy");
+    });
+    api.saveGates = saveGates;
+    const first = (await handleAgentApp(source, "r-code", "tasks.delegate", { brief: "Add delete.", code: true }, host)) as {
+      taskId: string;
+    };
+    expect(started).toHaveLength(1);
+    expect(first.taskId).toBeTruthy();
+    expect(saveGates).toHaveBeenCalledWith(first.taskId, { code: true }, PROJECT);
+    saveGates.mockResolvedValue(undefined);
+    const again = (await handleAgentApp(source, "r-code", "tasks.delegate", { brief: "Add delete.", code: true, checks: ["lint"] }, host)) as {
+      alreadyStarted: boolean;
+    };
+    expect(again.alreadyStarted).toBe(true);
+    expect(started).toHaveLength(1);
+    expect(saveGates).toHaveBeenLastCalledWith(first.taskId, { code: true, checks: ["lint"] }, PROJECT);
+  });
+
+  it("does not keep gates on a task that is only waiting", async () => {
+    const { source, host, api } = fixture();
+    api.saveGates = vi.fn(async () => undefined);
+    api.pool = {
+      limits: () => ({ workers: 1, heavy: 1 }),
+      setLimits: () => ({ workers: 1, heavy: 1 }),
+      model: () => undefined,
+      openRows: () => [],
+      admit: () => ({ start: false, line: "Waiting for a free worker.", reason: "workers" }),
+      enqueue: () => undefined,
+      started: () => undefined,
+      queued: () => [],
+    } as unknown as AgentAppTasksHost["pool"];
+    const out = (await handleAgentApp(source, "r-wait", "tasks.delegate", { brief: "Add delete.", code: true }, host)) as {
+      status: string;
+    };
+    expect(out.status).toBe("waiting");
+    expect(api.saveGates).not.toHaveBeenCalled();
+  });
+});
+
+describe("tasks.accept (WP-40)", () => {
+  it("accepts one of its own and refuses one that isn't, or a refusal with no reason", async () => {
+    const rows = [
+      row({ id: "t-held", state: "completed", gateVerdict: "unsure" }),
+      row({ id: "t-theirs", ownerSession: "mono-hivra", state: "completed", gateVerdict: "unsure" }),
+    ];
+    const { source, host, api } = fixture(rows);
+    const decideGates = vi.fn(async () => undefined);
+    api.decideGates = decideGates;
+    await expect(handleAgentApp(source, "a1", "tasks.accept", { taskId: "t-held", accept: false }, host)).rejects.toThrow(
+      "Say why it isn't done (reason), in one plain line.",
+    );
+    expect(decideGates).not.toHaveBeenCalled();
+    await expect(handleAgentApp(source, "a2", "tasks.accept", { taskId: "t-theirs", accept: true }, host)).rejects.toThrow(
+      "No task t-theirs of yours",
+    );
+    expect(decideGates).not.toHaveBeenCalled();
+    const refused = await handleAgentApp(source, "a3", "tasks.accept", {
+      taskId: "t-held",
+      accept: false,
+      reason: "The route still answers 404.",
+    }, host);
+    expect(refused).toEqual({ taskId: "t-held", accepted: false, gateVerdict: "failed" });
+    expect(decideGates).toHaveBeenCalledWith("mono-exo", "t-held", false, "The route still answers 404.");
+    const accepted = await handleAgentApp(source, "a4", "tasks.accept", { taskId: "t-held", accept: true }, host);
+    expect(accepted).toMatchObject({ taskId: "t-held", accepted: true, gateVerdict: "passed" });
+  });
+});
+
 describe("tasks.status", () => {
   it("reports a chat's own tasks and marks a finished result read, never an open one", async () => {
     const rows = [
@@ -1014,6 +1094,30 @@ describe("tasks.status", () => {
       tasks: unknown[];
     };
     expect(again.tasks).toHaveLength(1);
+  });
+
+  it("says what the checks did, and says nothing when they have not run", async () => {
+    const rows = [
+      row({ id: "t-unsure", state: "completed", gateVerdict: "unsure" }),
+      row({ id: "t-failed", state: "failed", gateVerdict: "failed" }),
+      row({ id: "t-pending", gateVerdict: "pending" }),
+      row({ id: "t-passed", state: "completed", gateVerdict: "passed" }),
+      row({ id: "t-other", state: "completed", gateVerdict: "not-run" }),
+      row({ id: "t-none", state: "completed" }),
+    ];
+    const { source, host } = fixture(rows);
+    const out = (await handleAgentApp(source, "s-gates", "tasks.status", {
+      taskIds: rows.map((entry) => entry.id),
+    }, host)) as { tasks: Array<{ taskId: string; gates?: string }> };
+    const line = (id: string) => out.tasks.find((task) => task.taskId === id)?.gates;
+    expect(line("t-unsure")).toBe(
+      "Its checks need you. Accept with task_accept, or refuse with a reason. It is not done until you do.",
+    );
+    expect(line("t-failed")).toBe("Its checks failed.");
+    expect(line("t-pending")).toBe("Its checks are still running.");
+    expect(line("t-passed")).toBe("Its checks passed.");
+    expect(line("t-other")).toBe("Its checks have not passed.");
+    expect(out.tasks.find((task) => task.taskId === "t-none")).not.toHaveProperty("gates");
   });
 
   it("with no ids, also lists the team's other open jobs read only (AD3: PM saw none while CoS's brief to EXO lead ran)", async () => {

@@ -224,7 +224,7 @@ pub fn changed_folders(checkout: &Path, files: &[String]) -> Vec<String> {
 }
 
 /// Checkout-relative paths in `folder`'s subtree (`""` is the root).
-fn in_folder(path: &str, folder: &str) -> bool {
+pub(crate) fn in_folder(path: &str, folder: &str) -> bool {
     if folder.is_empty() {
         true
     } else {
@@ -349,6 +349,78 @@ fn run_command(
     Ok((record, started.elapsed().as_secs_f64()))
 }
 
+/// Run one of the project's checks in `checkout` through the action runner. Also the `checks` gate's runner (Hivra WP-40,
+/// firstmate/gates.rs): a check that couldn't start is `CouldNotExercise`, never a pass.
+pub(crate) fn run_check(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+) -> StepResult {
+    let (outcome, detail, run_id, log_path, seconds) = match run_command(
+        app,
+        main,
+        checkout,
+        &action_for("check", &format!("verify-{id}"), name, command, timeout),
+        Vec::new(),
+    ) {
+        Ok((run, seconds)) => match run.status {
+            crate::project_actions::RunStatus::Succeeded => (
+                Outcome::Passed,
+                "ran and passed".to_string(),
+                Some(run.id.clone()),
+                Some(run.log_path.clone()),
+                seconds,
+            ),
+            crate::project_actions::RunStatus::Failed => (
+                Outcome::Failed,
+                match run.exit_code {
+                    Some(code) => format!("failed (exit {code})"),
+                    None => "failed".to_string(),
+                },
+                Some(run.id.clone()),
+                Some(run.log_path.clone()),
+                seconds,
+            ),
+            crate::project_actions::RunStatus::TimedOut => (
+                Outcome::Failed,
+                "was stopped after its timeout".to_string(),
+                Some(run.id.clone()),
+                Some(run.log_path.clone()),
+                seconds,
+            ),
+            crate::project_actions::RunStatus::Stopped => (
+                Outcome::Failed,
+                "was stopped before it finished".to_string(),
+                Some(run.id.clone()),
+                Some(run.log_path.clone()),
+                seconds,
+            ),
+            crate::project_actions::RunStatus::Running => (
+                Outcome::CouldNotExercise,
+                "did not finish".to_string(),
+                Some(run.id.clone()),
+                Some(run.log_path.clone()),
+                seconds,
+            ),
+        },
+        Err(error) => (Outcome::CouldNotExercise, truncate(&error), None, None, 0.0),
+    };
+    StepResult {
+        kind: "check".into(),
+        id: id.to_string(),
+        name: name.to_string(),
+        outcome,
+        detail,
+        run_id,
+        log_path,
+        seconds,
+    }
+}
+
 pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<VerifyRecord, String> {
     let (main, checkout) = project_actions::checkout_of_project(cwd)?;
     let data = project_file::data_dir(app)?;
@@ -393,71 +465,15 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
             if !touched {
                 continue;
             }
-            let (outcome, detail, run_id, log_path, seconds) = match run_command(
+            record.steps.push(run_check(
                 app,
                 &main,
                 &checkout,
-                &action_for(
-                    "check",
-                    &format!("verify-{}", check.id),
-                    &check.name,
-                    &check.command,
-                    check.timeout_seconds(),
-                ),
-                Vec::new(),
-            ) {
-                Ok((run, seconds)) => match run.status {
-                    crate::project_actions::RunStatus::Succeeded => (
-                        Outcome::Passed,
-                        "ran and passed".to_string(),
-                        Some(run.id.clone()),
-                        Some(run.log_path.clone()),
-                        seconds,
-                    ),
-                    crate::project_actions::RunStatus::Failed => (
-                        Outcome::Failed,
-                        match run.exit_code {
-                            Some(code) => format!("failed (exit {code})"),
-                            None => "failed".to_string(),
-                        },
-                        Some(run.id.clone()),
-                        Some(run.log_path.clone()),
-                        seconds,
-                    ),
-                    crate::project_actions::RunStatus::TimedOut => (
-                        Outcome::Failed,
-                        "was stopped after its timeout".to_string(),
-                        Some(run.id.clone()),
-                        Some(run.log_path.clone()),
-                        seconds,
-                    ),
-                    crate::project_actions::RunStatus::Stopped => (
-                        Outcome::Failed,
-                        "was stopped before it finished".to_string(),
-                        Some(run.id.clone()),
-                        Some(run.log_path.clone()),
-                        seconds,
-                    ),
-                    crate::project_actions::RunStatus::Running => (
-                        Outcome::CouldNotExercise,
-                        "did not finish".to_string(),
-                        Some(run.id.clone()),
-                        Some(run.log_path.clone()),
-                        seconds,
-                    ),
-                },
-                Err(error) => (Outcome::CouldNotExercise, truncate(&error), None, None, 0.0),
-            };
-            record.steps.push(StepResult {
-                kind: "check".into(),
-                id: check.id.clone(),
-                name: check.name.clone(),
-                outcome,
-                detail,
-                run_id,
-                log_path,
-                seconds,
-            });
+                &check.id,
+                &check.name,
+                &check.command,
+                check.timeout_seconds(),
+            ));
         }
         for folder in changed_folders(&checkout, &changed) {
             if !verify
