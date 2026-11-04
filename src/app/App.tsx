@@ -13855,6 +13855,13 @@ function Workspace({
               window.dispatchEvent(new Event(NOTES_CHANGED_EVENT));
               return saved;
             },
+            // WP-72: docs are notes. Agents read and write them through the same store.
+            docs: {
+              list: () => invoke("docs_list"),
+              get: (id) => invoke("docs_get", { id }),
+              create: (page) => invoke("docs_create", { page }),
+              update: (page) => invoke("docs_update", { page }),
+            },
             artifacts: () => invoke("artifacts_list"),
             artifact: getArtifact,
             saveArtifact,
@@ -17270,6 +17277,8 @@ function Workspace({
                         recents={recents}
                         onClose={onLeaveNotes}
                         onToggleSidebar={onToggleSidebar}
+                        // WP-72: an @ on a page can name a chat in this project.
+                        mentionChats={sessions}
                       />
                     </AppViewSurface>
                   ) : null}
