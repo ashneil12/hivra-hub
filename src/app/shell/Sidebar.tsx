@@ -14,6 +14,8 @@ import {
   useProjectLabel,
 } from "../../features/projects/ui/CurrentProjectIcon";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
+import { CrewPanel } from "../../features/crew/ui/CrewPanel";
+import { clearCrewFocus } from "../../features/crew/model/focus";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import type { ChildChat } from "../../features/monos/model/delegationView";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
@@ -280,6 +282,8 @@ const TAB_LABELS: Record<SidebarTab | RightPanelTab, string> = {
   files: "Explorer",
   changes: "Changes",
   graph: "History",
+  // WP-15: the crew, beside History.
+  crew: "Crew",
 };
 
 const COMPACT_TAB_ICONS: Record<SidebarTab, typeof PanelLeft> = {
@@ -287,6 +291,8 @@ const COMPACT_TAB_ICONS: Record<SidebarTab, typeof PanelLeft> = {
   inbox: Inbox,
   files: FileScript,
   changes: GitBranch,
+  // WP-15: Crew in the compact rail.
+  crew: CircleDot,
 };
 
 function projectPathBusy(
@@ -2202,6 +2208,8 @@ function SidebarComponent({
   );
 
   const onTabPick = (itemId: SidebarTab) => {
+    // WP-15: picking Crew shows everyone. A brief line sets the filter on its own.
+    if (itemId === "crew") clearCrewFocus();
     onTabChange(itemId);
   };
 
@@ -2209,6 +2217,8 @@ function SidebarComponent({
     if (drawerMode) {
       setDrawerOpen(!(drawerVisible && tab === itemId));
     }
+    // WP-15: picking Crew shows everyone. A brief line sets the filter on its own.
+    if (itemId === "crew") clearCrewFocus();
     onTabChange(itemId);
   };
 
@@ -2696,6 +2706,13 @@ function SidebarComponent({
       ) : null}
     </>
   );
+
+  // WP-15: the crew for this project. Classic mounts it in the sidebar; the inset layout uses the right panel.
+  const crewPane = paneTab === "crew" ? (
+    <div role="tabpanel" aria-label="Crew" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <CrewPanel project={cwd} sessions={sessions} onOpenSession={onSelectLocalSession} />
+    </div>
+  ) : null;
 
   const graphPane = paneHost && paneTab === "graph" ? (
     <div
@@ -3263,6 +3280,7 @@ function SidebarComponent({
           )}
         </div>
         {paneHost ? null : changesPane}
+        {paneHost ? null : crewPane}
         {showSidebarFooter ? (
           <>
             <LiveAgentsPreview
@@ -3496,11 +3514,16 @@ function SidebarComponent({
               hasChangeStats={hasChangeStats}
               changeAdditions={changeAdditions}
               changeDeletions={changeDeletions}
-              onTabChange={paneHost.onTabChange}
+              onTabChange={(tab) => {
+                // WP-15: the Crew tab itself shows every worker. A brief line sets the filter on its own.
+                if (tab === "crew") clearCrewFocus();
+                paneHost.onTabChange(tab);
+              }}
             >
               {filesPane}
               {changesPane}
               {graphPane}
+              {crewPane}
             </RightPanel>,
             paneHost.host,
           )

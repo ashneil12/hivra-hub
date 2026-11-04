@@ -516,15 +516,9 @@ mod tests {
     /// A copy of the live folder as it was on 20 Oct: a lead, CoS with memory and a habit, the archive and index.
     fn live_folder(data: &Path) -> PathBuf {
         let old = data.join("monos");
-        write(
-            &old.join("chief-of-staff/SOUL.md"),
-            "# Soul\n\n## Role\nCoS\n",
-        );
-        write(
-            &old.join("chief-of-staff/MEMORY.md"),
-            "- 2026-10-19 · a fact\n",
-        );
-        write(&old.join("chief-of-staff/memory/hub.md"), "# Hub\n");
+        write(&old.join("ada/SOUL.md"), "# Soul\n\n## Role\nCoS\n");
+        write(&old.join("ada/MEMORY.md"), "- 2026-10-19 · a fact\n");
+        write(&old.join("ada/memory/hub.md"), "# Hub\n");
         write(
             &old.join("checker/habits.json"),
             "[{\"id\":\"checker-hourly\"}]",
@@ -535,7 +529,7 @@ mod tests {
         write(&old.join("ash-lead/memory/harness-lead-soul.md"), "old");
         write(&old.join(".archive/proof-1/SOUL.md"), "retired");
         write(&old.join("index.json"), "{\"agents\":[]}");
-        write(&old.join("chief-of-staff/SOUL.md.tmp"), "half-written");
+        write(&old.join("ada/SOUL.md.tmp"), "half-written");
         old
     }
 
@@ -576,9 +570,10 @@ mod tests {
         let HomeState::Migrated(record) = ensure_home(&home, &old, "20261021-0900").unwrap() else {
             panic!("should have migrated");
         };
-        assert_eq!(record.monos, vec!["ash-lead", "checker", "chief-of-staff"]);
+        // Ids are sorted. "ada" sorts ahead of "ash-lead".
+        assert_eq!(record.monos, vec!["ada", "ash-lead", "checker"]);
         assert_eq!(
-            std::fs::read_to_string(home.join("chief-of-staff/MEMORY.md")).unwrap(),
+            std::fs::read_to_string(home.join("ada/MEMORY.md")).unwrap(),
             "- 2026-10-19 · a fact\n"
         );
         assert_eq!(
@@ -587,9 +582,9 @@ mod tests {
         );
         assert!(home.join(".archive/proof-1/SOUL.md").is_file());
         assert!(home.join("index.json").is_file());
-        assert!(!home.join("chief-of-staff/SOUL.md.tmp").exists());
+        assert!(!home.join("ada/SOUL.md.tmp").exists());
         assert_eq!(
-            record.files.get("chief-of-staff/memory/hub.md"),
+            record.files.get("ada/memory/hub.md"),
             Some(&hash_bytes(b"# Hub\n"))
         );
         // The old folder is exactly as it was.
@@ -612,14 +607,11 @@ mod tests {
         let old = live_folder(&data);
         let home = data.join("agent-memory/monos");
         ensure_home(&home, &old, "1").unwrap();
-        write(
-            &home.join("chief-of-staff/MEMORY.md"),
-            "- learned after the move\n",
-        );
-        write(&old.join("chief-of-staff/MEMORY.md"), "- stale\n");
+        write(&home.join("ada/MEMORY.md"), "- learned after the move\n");
+        write(&old.join("ada/MEMORY.md"), "- stale\n");
         assert_eq!(ensure_home(&home, &old, "2").unwrap(), HomeState::Ready);
         assert_eq!(
-            std::fs::read_to_string(home.join("chief-of-staff/MEMORY.md")).unwrap(),
+            std::fs::read_to_string(home.join("ada/MEMORY.md")).unwrap(),
             "- learned after the move\n"
         );
         std::fs::remove_dir_all(data).unwrap();
@@ -634,7 +626,7 @@ mod tests {
         let error = ensure_home(&home, &old, "1").unwrap_err();
         assert!(error.contains("checker"), "{error}");
         assert!(!home.join(MIGRATION_FILE).exists());
-        assert!(!home.join("chief-of-staff").exists());
+        assert!(!home.join("ada").exists());
         assert_eq!(
             std::fs::read_to_string(home.join("checker/SOUL.md")).unwrap(),
             "someone else's checker"
@@ -679,7 +671,7 @@ mod tests {
         let old = live_folder(&data);
         let home = data.join("agent-memory/monos");
         ensure_home(&home, &old, "1").unwrap();
-        let mode = std::fs::metadata(home.join("chief-of-staff/MEMORY.md"))
+        let mode = std::fs::metadata(home.join("ada/MEMORY.md"))
             .unwrap()
             .permissions()
             .mode();
@@ -699,11 +691,7 @@ mod tests {
         assert!(check_write(CHATS_FILE, r#"{"main":"df9a","history":["old"]}"#).is_ok());
         assert!(check_write(CHATS_FILE, r#"{"main":3}"#).is_err());
         assert!(check_write(CHATS_FILE, r#"{"history":[1]}"#).is_err());
-        assert!(check_write(
-            ROSTER_FILE,
-            r#"{"monos":[{"id":"frank"},{"id":"hub-lead"}]}"#
-        )
-        .is_ok());
+        assert!(check_write(ROSTER_FILE, r#"{"monos":[{"id":"ed"},{"id":"hub-lead"}]}"#).is_ok());
         assert!(check_write(ROSTER_FILE, r#"{"monos":[{"id":"../x"}]}"#).is_err());
         assert!(check_write(ROSTER_FILE, r#"{"monos":[{"id":"a"},{"id":"a"}]}"#).is_err());
         assert!(check_write(ROSTER_FILE, r#"[]"#).is_err());
@@ -810,7 +798,7 @@ mod tests {
              CREATE TABLE delegation_chat_binds (provider_session TEXT PRIMARY KEY, mono_id TEXT,
                version INTEGER NOT NULL DEFAULT 1);
              INSERT INTO room_members VALUES ('hub:leadership','ash-lead',0,0),('hub:room','ash-lead',0,0),
-               ('hub:room','hub-lead',1,0),('hub:room','frank',2,0);
+               ('hub:room','hub-lead',1,0),('hub:room','ed',2,0);
              INSERT INTO room_origins VALUES ('c1','ash-lead');
              INSERT INTO room_messages VALUES (1,'ash-lead'),(2,'ash');
              INSERT INTO delegations VALUES ('open','ash-lead',NULL,3),('done','ash-lead',100,1);
@@ -834,7 +822,7 @@ mod tests {
             vec![
                 ("hub:leadership".into(), "hub-lead".into()),
                 ("hub:room".into(), "hub-lead".into()),
-                ("hub:room".into(), "frank".into()),
+                ("hub:room".into(), "ed".into()),
             ]
         );
         let open: (String, i64) = conn

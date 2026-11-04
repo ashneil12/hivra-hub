@@ -23,7 +23,7 @@ function row(id: string, patch: Partial<Delegation> = {}): Delegation {
   return {
     id,
     ownerSession: "cos-chat",
-    ownerMono: "chief-of-staff",
+    ownerMono: "ada",
     batchId: null,
     parentId: null,
     rootId: id,

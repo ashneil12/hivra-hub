@@ -4,21 +4,21 @@ import { plainName, roleNamesOn, roleNamesUndecided, setRoleNames } from "./role
 
 beforeEach(() => localStorage.clear());
 
-it("plain role names come first, with the Mono's own name after", () => {
+it("a mono shows its own name, and turning role names on does not rewrite it", () => {
   expect(roleNamesUndecided()).toBe(true);
-  expect(plainName("frank")).toEqual({ primary: "frank" });
+  expect(plainName("ed")).toEqual({ primary: "ed" });
   setRoleNames(true);
-  expect(plainName("frank")).toEqual({ primary: "Memory and checks", secondary: "frank" });
-  expect(plainName("Alfred")).toEqual({ primary: "Team setup", secondary: "Alfred" });
-  expect(plainName("Critiquito")).toEqual({ primary: "Design review", secondary: "Critiquito" });
-  expect(plainName("Chief of Staff")).toEqual({ primary: "Chief of Staff" });
+  expect(roleNamesOn()).toBe(true);
+  expect(plainName("ed")).toEqual({ primary: "ed" });
+  expect(plainName("Ada")).toEqual({ primary: "Ada" });
+  expect(plainName("  ")).toEqual({ primary: "  " });
 });
 
 it("Keep current names turns them off and is remembered", () => {
   setRoleNames(false);
   expect(roleNamesOn()).toBe(false);
   expect(roleNamesUndecided()).toBe(false);
-  expect(plainName("frank")).toEqual({ primary: "frank" });
+  expect(plainName("ed")).toEqual({ primary: "ed" });
   setRoleNames(true);
-  expect(plainName("frank").primary).toBe("Memory and checks");
+  expect(plainName("ed").primary).toBe("ed");
 });

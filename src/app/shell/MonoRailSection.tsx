@@ -510,7 +510,7 @@ export function MonoRailSection({
                     </span>
                 ) : (
                   // The name has the whole first row; the role is a small second line under it, at any rail width
-                  // (Ash, 15 Oct: "frank", "Alfred" don't say what they do). Grey at 80% is 4.5:1 on glass even dimmed.
+                  // (Ash, 15 Oct: "ed", "Alfred" don't say what they do). Grey at 80% is 4.5:1 on glass even dimmed.
                   <span className="flex min-w-0 flex-1 flex-col">
                     <span className="truncate text-sm font-medium leading-[18px]" data-mono-primary-name>
                       {shown(look).primary}

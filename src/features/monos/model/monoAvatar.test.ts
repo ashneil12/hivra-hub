@@ -25,21 +25,21 @@ it("picking a mascot keeps it; picking Letter shows the automatic letters and st
 
 it("Hivra lead and Harness lead no longer share a tile", async () => {
   const { monoTileLetters } = await import("./mono");
-  const names = ["Chief of Staff", "Projects Manager", "frank", "Alfred", "EXO lead", "Hivra lead", "Nibbii lead", "Harness lead"];
+  const names = ["Record Keeper", "Team steward", "ed", "Ada", "EXO lead", "Hivra lead", "Nibbii lead", "Harness lead"];
   const tiles = names.map(monoTileLetters);
-  expect(tiles).toEqual(["CS", "PM", "FR", "AL", "EX", "HI", "NI", "HA"]);
+  expect(tiles).toEqual(["RK", "TE", "ED", "AD", "EX", "HI", "NI", "HA"]);
   expect(new Set(tiles).size).toBe(names.length);
 });
 
 it("a tile shows the letters Ash chose, as typed; clearing them goes back to the automatic two capitals", () => {
-  addMono({ id: "alfred", name: "Alfred", mascot: "rocket", color: "gray", projects: [] });
-  expect(monoLook(findMono("alfred")!).mascot).toBe("rocket");
-  saveMonoTileLetters("alfred", "Af");
-  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:Af");
-  saveMonoTileLetters("alfred", "Q");
-  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:Q");
-  saveMonoTileLetters("alfred", "");
-  expect(monoLook(findMono("alfred")!).mascot).toBe("letter:AL");
+  addMono({ id: "cam", name: "Alfred", mascot: "rocket", color: "gray", projects: [] });
+  expect(monoLook(findMono("cam")!).mascot).toBe("rocket");
+  saveMonoTileLetters("cam", "Af");
+  expect(monoLook(findMono("cam")!).mascot).toBe("letter:Af");
+  saveMonoTileLetters("cam", "Q");
+  expect(monoLook(findMono("cam")!).mascot).toBe("letter:Q");
+  saveMonoTileLetters("cam", "");
+  expect(monoLook(findMono("cam")!).mascot).toBe("letter:AL");
 });
 
 it("a ghost shows as a dino in its own colour, picked or not", () => {

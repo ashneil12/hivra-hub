@@ -50,11 +50,12 @@ afterEach(() => {
 });
 
 async function render({ withConversation = true } = {}) {
-  const team = await import("../model/builtInMonos");
-  team.ensureBuiltInMonos();
+  const mono = await import("../../monos/model/mono");
+  for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"]] as const)
+    mono.addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
   const chat = await import("../model/hubChats");
   const { GroupChatView } = await import("./GroupChatView");
-  const room = chat.createChat("hub", "Leadership Board", ["chief-of-staff", "projects-manager", "frank"]);
+  const room = chat.createChat("hub", "Leadership Board", ["ada", "bo", "ed"]);
   const first = withConversation ? chat.startConversation(room.id, "whats the plan for pages") : undefined;
   const show = () => act(() => root.render(createElement(GroupChatView, { chatId: room.id, projectId: "hub" })));
   show();

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * r69 (PM's blind r67 on 0.16.8, frank): Ash's ~/.claude/settings.json pins CLAUDE_CODE_SUBAGENT_MODEL and
+ * r69 (PM's blind r67 on 0.16.8, ed): Ash's ~/.claude/settings.json pins CLAUDE_CODE_SUBAGENT_MODEL and
  * CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL to claude-haiku-5-5 for the Anthropic test-key Haiku workers. Inside a DeepSeek
  * worker every sub-agent then died with "API Error: 400 unknown provider for model claude-haiku-5-5". Off Anthropic, the
  * app's flag settings (which outrank the user's) pin sub-agents to the worker's own model; on Anthropic nothing changes.

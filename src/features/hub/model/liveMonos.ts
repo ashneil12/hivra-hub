@@ -1,16 +1,13 @@
-// r66 (Alfred A6, 0.16.5): four minutes after Postie was retired, Chief of Staff listed it as "already up", then said it
-// "stays in the sidebar until you hit Undo". Its picture of the team came from memory and the conversation. Every turn
-// it now reads the live roster (retired Monos are off it), keyed on its id, never its name.
+// Every turn reads the live roster (retired Monos are off it), keyed on id, never on a name. No Mono is special.
 import { listMonos, monoLook } from "../../monos/model/mono";
 import { retiredMonoIds } from "./hubConnectors";
 
-export const COS_MONO_ID = "chief-of-staff";
-/** The hub's read-only checker (hubMcp.CHECKER_MONO_ID): not a team member Ash talks about. */
+/** The hub's read-only checker (hubMcp.CHECKER_MONO_ID): not a team member. */
 const CHECKER_ID = "checker";
 
-/** The live Mono list for this turn, for Chief of Staff only (undefined for any other Mono). */
+/** The live Mono list for this turn. Undefined when there is no Mono. */
 export function liveMonosNote(forMonoId: string | undefined): string | undefined {
-  if (forMonoId !== COS_MONO_ID) return undefined;
+  if (!forMonoId) return undefined;
   const retired = new Set(retiredMonoIds());
   const monos = listMonos().filter((m) => m.id !== CHECKER_ID && !retired.has(m.id));
   const lines = monos.map((m) => {

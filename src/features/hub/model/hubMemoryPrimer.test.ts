@@ -24,7 +24,7 @@ const PRIMER: MemoryPrimer = {
 };
 
 const lookups: HubChatLookups = {
-  monoOf: (id) => ({ "chat-hivra": { id: "hivra-lead" }, "chat-cos": { id: "chief-of-staff" } })[id],
+  monoOf: (id) => ({ "chat-hivra": { id: "hivra-lead" }, "chat-cos": { id: "ada" } })[id],
   habitRunMono: () => undefined,
   isLead: (id) => id.endsWith("-lead"),
   leadProject: (id) => (id === "hivra-lead" ? "hivra" : undefined),

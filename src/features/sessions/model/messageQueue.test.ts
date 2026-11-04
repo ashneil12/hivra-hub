@@ -359,7 +359,7 @@ describe("typedQuestionAnswer: Ash types while the agent waits on its own questi
       { waitForIdle: true },
       { monoSessionCompletion: { sessionId: "w" } },
       { monoCheck: { id: "c" } },
-      { monoNote: { from: "frank" } },
+      { monoNote: { from: "ed" } },
       { managed: true },
       { autoResume: 1 },
       { queuedMessageId: "q1" },

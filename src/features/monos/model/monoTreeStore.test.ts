@@ -53,11 +53,11 @@ const settle = async (monoId: string) => {
 beforeEach(() => {
   monos.clear();
   monos.set("hivra", { id: "hivra", name: "Hivra", longChat: true, mascot: "m", color: "c", projects: [] });
-  monos.set("frank", { id: "frank", name: "frank", mascot: "m", color: "c", projects: [] });
+  monos.set("ed", { id: "ed", name: "ed", mascot: "m", color: "c", projects: [] });
 });
 afterEach(() => {
   closeTree("hivra");
-  closeTree("frank");
+  closeTree("ed");
   setTreeIo(undefined);
   setTreeCompactor(undefined);
 });
@@ -93,9 +93,9 @@ describe("feedTree", () => {
   it("does nothing for a Mono without the long chat: no tree, no files", async () => {
     const { io, files } = fakeIo();
     setTreeIo(io);
-    expect(await feedTree("frank", [block("a", "user", "hello")])).toBe(0);
+    expect(await feedTree("ed", [block("a", "user", "hello")])).toBe(0);
     expect(files.size).toBe(0);
-    expect(await treeContext("frank", "monocode")).toBeUndefined();
+    expect(await treeContext("ed", "monocode")).toBeUndefined();
   });
 
   it("logs each block once, in order, append-only, and a restart knows what it logged", async () => {

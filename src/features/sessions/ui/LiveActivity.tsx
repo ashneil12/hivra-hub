@@ -36,7 +36,7 @@ export function LiveActivityLine({
   activity: LiveActivity;
   className?: string;
   runner?: RunnerLook;
-  /** A name before the step, on a room's status line ("frank · Reading app.tsx · 12s"). */
+  /** A name before the step, on a room's status line ("ed · Reading app.tsx · 12s"). */
   who?: string;
 }) {
   const now = useNow();

@@ -16,16 +16,16 @@ import { forUser } from "./userName";
 import { answerPick, roomTranscript, turnPrompt, type Seat, type TurnInput } from "./roomTurns";
 
 const SEATS: Seat[] = [
-  { id: "chief-of-staff", name: "Chief of Staff" },
-  { id: "projects-manager", name: "Projects Manager" },
-  { id: "frank", name: "frank" },
-  { id: "alfred", name: "Alfred" },
-  { id: "critiquito", name: "Critiquito" },
+  { id: "ada", name: "Chief of Staff" },
+  { id: "bo", name: "Projects Manager" },
+  { id: "ed", name: "ed" },
+  { id: "cam", name: "Alfred" },
+  { id: "dee", name: "Critiquito" },
 ];
 const MESSAGES = [
   { id: "m1", from: "ash", text: "hey team, what's left?", at: 1 },
-  { id: "m2", from: "chief-of-staff", text: "Two things.", at: 2 },
-  { id: "m3", from: "app", kind: "notice", text: "frank is typing", at: 3 },
+  { id: "m2", from: "ada", text: "Two things.", at: 2 },
+  { id: "m3", from: "app", kind: "notice", text: "ed is typing", at: 3 },
 ];
 
 export function promptSurfaces(): Record<string, string> {
@@ -43,7 +43,7 @@ export function promptSurfaces(): Record<string, string> {
   ];
   for (const [k, t] of turns) out[`turn:${k}`] = turnPrompt({ ...base, ...t } as TurnInput);
   out["pick:lead"] = answerPick(["what's left?"], SEATS)?.why ?? "";
-  out["pick:mention"] = answerPick(["@frank check it"], SEATS)?.why ?? "";
+  out["pick:mention"] = answerPick(["@ed check it"], SEATS)?.why ?? "";
   for (const lead of LEADS) out[`lead:${lead.id}`] = leadSoul(lead, `/work/${lead.projectId}`);
   out["lead:extra"] = leadSoul({ projectId: "shop", id: "shop-lead", name: "Shop lead", projectName: "Shop" }, null);
   out.checker = String(checkerRosterEntry().instructions);

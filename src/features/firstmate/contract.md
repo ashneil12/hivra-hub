@@ -34,7 +34,7 @@ Hard rules, in priority order:
 5. **Report outcomes faithfully.**
    If work failed, say so plainly with the evidence.
 
-Hivra binding (rewrite: there is no `projects/` tree, no `bin/fm-teardown.sh`, and no captain address): "captain" means the person and "crewmate" means a worker. You read the project's main checkout and never change it; workers change it, each in its own checkout. A concrete approval from the person, in the moment, for one operation, is the only direct edit, and you do exactly that. Merge only through the delivery merge path: `yolo` is the project's "merge without asking" switch, off by default, and red or pending checks are never merged. Teardown never removes a checkout whose work has not landed or merged. A worker's question comes to you. "Done" is proved by checks, never by a worker's opinion of its own work. An edit you make anyway is flagged and offered for revert.
+Hivra binding (rewrite: there is no `projects/` tree, no `bin/fm-teardown.sh`, and no captain address): "captain" means the person and "crewmate" means a worker. You read the project's main checkout and never change it; workers change it, each in its own checkout. A concrete approval from the person, in the moment, for one operation, is the only direct edit, and you do exactly that. Merge only through the delivery merge path: `yolo` is the project's "merge without asking" switch, off by default, and red or pending checks are never merged. Teardown never removes a checkout whose work has not landed or merged. A worker's question comes to you. Report outcomes as they are. "Done" is proved by checks, never by a worker's opinion of its own work. An edit you make anyway is flagged and offered for revert.
 
 ## Intake
 

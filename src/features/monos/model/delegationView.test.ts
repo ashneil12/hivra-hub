@@ -141,7 +141,7 @@ describe("childChatsByMono", () => {
       row({
         id: "t-5",
         childSession: "cos-w",
-        ownerMono: "chief-of-staff",
+        ownerMono: "ada",
         createdAt: 40,
       }),
     ];
@@ -153,7 +153,7 @@ describe("childChatsByMono", () => {
       ["w2", "completed"],
       ["w3", "running"],
     ]);
-    expect(byMono.get("chief-of-staff")?.map((chat) => chat.sessionId)).toEqual(
+    expect(byMono.get("ada")?.map((chat) => chat.sessionId)).toEqual(
       ["cos-w"],
     );
   });

@@ -98,14 +98,22 @@ fn installed(name: &str) -> Outcome {
     Outcome::Installed { name: name.into() }
 }
 
+/// Pins run in defaults.json order: pstack, then the starter Monos (no skills, so no extra plugin dir), then Creator.
 fn both_installed() -> Vec<Outcome> {
-    vec![installed("pstack"), installed("hivra-creator")]
+    vec![
+        installed("pstack"),
+        installed("starter-monos"),
+        installed("hivra-creator"),
+    ]
 }
 
 fn both_given() -> Vec<Outcome> {
     vec![
         Outcome::AlreadyGiven {
             name: "pstack".into(),
+        },
+        Outcome::AlreadyGiven {
+            name: "starter-monos".into(),
         },
         Outcome::AlreadyGiven {
             name: "hivra-creator".into(),
@@ -216,6 +224,13 @@ fn a_fresh_install_has_pstack_on_everywhere() {
     let mut registered: Vec<String> = entry.skills().map(str::to_string).collect();
     registered.sort();
     assert_eq!(registered, skills, "every pstack skill loads");
+    let starter = &registry.plugins["starter-monos"];
+    assert!(starter.enabled.global);
+    assert_eq!(
+        starter.skills().count(),
+        0,
+        "starter monos add no plugin dir"
+    );
 
     // Installed exactly as carried; the staging folder is gone.
     assert_eq!(
@@ -299,22 +314,62 @@ fn switched_off_stays_off_and_removed_stays_removed() {
 
     registry::uninstall(&host, "pstack").unwrap();
     defaults::ensure(&host);
-    assert!(registry::read(&host)
-        .unwrap()
-        .plugins
-        .contains_key("hivra-creator"));
+    let registry = registry::read(&host).unwrap();
+    assert!(
+        !registry.plugins.contains_key("pstack"),
+        "a removed pstack is not put back"
+    );
+    assert!(registry.plugins["starter-monos"].enabled.global);
+    assert!(registry.plugins.contains_key("hivra-creator"));
     assert!(!host.installed("pstack").exists());
-    // A removed default is not put back. Uninstall both, and only the memory that they were given stays.
+    assert!(host.installed("starter-monos").exists());
+    assert!(host.installed("hivra-creator").exists());
+    // starter-monos and hivra-creator are still installed, so their records stay. pstack's folders are gone.
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(&host.root),
+        vec![
+            "claude".to_string(),
+            "data".to_string(),
+            STATE_FILE.to_string(),
+            "installed".to_string(),
+            "lock.json".to_string(),
+            "registry.json".to_string(),
+        ],
+        "nothing else is left behind"
+    );
+    assert_eq!(
+        names(&host.root.join("installed")),
+        vec!["hivra-creator".to_string(), "starter-monos".to_string()]
+    );
+    assert_eq!(
+        names(&host.root.join("data")),
+        vec!["hivra-creator".to_string(), "starter-monos".to_string()]
+    );
+    let still = skills_in(&host.agents_skills);
+    assert!(
+        still.iter().any(|skill| skill == "write-skill"),
+        "the Creator skills stay: {still:?}"
+    );
+    assert!(
+        !still.iter().any(|skill| skill == "tdd"),
+        "pstack stays removed: {still:?}"
+    );
+    // A removed default is not put back. Uninstall the rest, and only the memory that they were given stays.
     registry::uninstall(&host, "hivra-creator").unwrap();
+    registry::uninstall(&host, "starter-monos").unwrap();
     defaults::ensure(&host);
     assert!(registry::read(&host).unwrap().plugins.is_empty());
-    let left: Vec<String> = std::fs::read_dir(&host.root)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
     assert_eq!(
-        left,
+        names(&host.root),
         vec![STATE_FILE.to_string()],
         "nothing else is left behind"
     );
@@ -356,6 +411,7 @@ fn a_pstack_the_person_installed_themselves_is_left_alone() {
             Outcome::TheirOwn {
                 name: "pstack".into()
             },
+            installed("starter-monos"),
             installed("hivra-creator"),
         ]
     );
@@ -373,7 +429,7 @@ fn a_start_cut_after_the_install_finishes_the_job() {
     let staging = tmp.path().join("staging");
     let dir = defaults::unpack(&pin, &staging).unwrap();
     registry::install_local(&host, &dir, pin.source()).unwrap();
-    // No switch-on, no record: the app stopped here. hivra-creator was never installed, so it is given too.
+    // No switch-on, no record: the app stopped here. starter-monos and hivra-creator were never installed, so they are given too.
     assert_eq!(defaults::ensure(&host), both_installed());
     assert!(
         registry::read(&host).unwrap().plugins["pstack"]
@@ -390,7 +446,7 @@ fn a_failed_start_tries_again_next_time() {
     std::fs::create_dir_all(tmp.path().join("app-data")).unwrap();
     std::fs::write(&host.root, "not a folder").unwrap();
     let failed = defaults::ensure(&host);
-    assert_eq!(failed.len(), 2, "{failed:?}");
+    assert_eq!(failed.len(), defaults::pins().len(), "{failed:?}");
     assert!(
         failed
             .iter()
@@ -399,6 +455,16 @@ fn a_failed_start_tries_again_next_time() {
     );
     std::fs::remove_file(&host.root).unwrap();
     assert_eq!(defaults::ensure(&host), both_installed());
+}
+
+/// lock.json is every bundled plugin. The session snapshot is the pstack wiring plus Creator, so starter-monos is
+/// removed and the file is written again the way registry.rs writes it (pretty, then a newline). Only the Unix
+/// session test uses it.
+#[cfg(unix)]
+fn pstack_only_lock(raw: &str) -> String {
+    let mut lock: registry::LockFile = serde_json::from_str(raw.trim()).unwrap();
+    lock.plugins.remove("starter-monos");
+    format!("{}\n", serde_json::to_string_pretty(&lock).unwrap())
 }
 
 /// The session test (`src/features/plugins/model/pstackSessions.test.ts`) replays what the real Claude Code and Codex
@@ -439,6 +505,10 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                 if name.ends_with("registry.json") || name.ends_with(STATE_FILE) {
                     continue; // install times and the given-once record; the session test reads neither
                 }
+                // The snapshot is the pstack wiring. starter-monos has no skills and no MCP, so it is not part of it.
+                if name.contains("starter-monos") {
+                    continue;
+                }
                 let meta = std::fs::symlink_metadata(&path).unwrap();
                 if path == pstack_dir || path == creator_dir {
                     let carried = if path == pstack_dir {
@@ -459,7 +529,15 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     out.push(json!({ "path": name, "dir": true }));
                     walk(base, &path, pstack_dir, creator_dir, rel, out);
                 } else {
-                    out.push(json!({ "path": name, "text": rel(&std::fs::read_to_string(&path).unwrap()) }));
+                    let raw = std::fs::read_to_string(&path).unwrap();
+                    // lock.json lists every bundled plugin. The snapshot is the pstack wiring, so the
+                    // starter-monos pin is taken out before the text is compared. Same writer as registry.rs.
+                    let body = if name.ends_with("plugins/lock.json") {
+                        pstack_only_lock(&raw)
+                    } else {
+                        raw
+                    };
+                    out.push(json!({ "path": name, "text": rel(&body) }));
                 }
             }
         }

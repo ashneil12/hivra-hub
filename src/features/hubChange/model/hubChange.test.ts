@@ -3,8 +3,8 @@ import { beforeEach, expect, it } from "vitest";
 import { botChangeRows } from "../../hub/model/botChanges";
 import { applyChange, requestChange, SEATED_ONLY, stubPreview } from "./hubChange";
 
-const roster = [{ id: "projects-manager" }];
-const req = { flow: "hub" as const, projectId: "hivra", monoId: "projects-manager", prompt: "group my chats by week" };
+const roster = [{ id: "bo" }];
+const req = { flow: "hub" as const, projectId: "hivra", monoId: "bo", prompt: "group my chats by week" };
 beforeEach(() => localStorage.clear());
 
 it("only a seated Mono may ask; temporary workers are turned away", async () => {

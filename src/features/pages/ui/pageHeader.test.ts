@@ -18,7 +18,7 @@ const SPEC: BespokeSpec = {
 beforeEach(async () => {
   localStorage.clear();
   resetPagesForTest();
-  addMono({ id: "frank", name: "frank", mascot: "robot", color: "x", projects: [] });
+  addMono({ id: "ed", name: "ed", mascot: "robot", color: "x", projects: [] });
   const { hubData, setHubDataSource } = await import("../../hub/model/hubData");
   setHubDataSource(undefined);
   const src = Object.create(hubData());
@@ -30,7 +30,7 @@ afterEach(() => act(() => roots.splice(0).forEach((r) => r.unmount())));
 afterAll(async () => (await import("../../hub/model/hubData")).setHubDataSource(undefined));
 
 it("a kept page's line under the title doesn't say Kept, and the app shows the title once", async () => {
-  const page = { ...pageFromSpec(SPEC, "Make me a dashboard of what the agents are doing", "frank", "today", [], 1, undefined, "frank"), id: "page-c3" };
+  const page = { ...pageFromSpec(SPEC, "Make me a dashboard of what the agents are doing", "ed", "today", [], 1, undefined, "ed"), id: "page-c3" };
   await keepPage(page);
   requestOpenPage(page.id);
   const { PagesContent } = await import("./PagesView");

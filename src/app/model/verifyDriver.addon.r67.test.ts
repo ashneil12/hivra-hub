@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// r67 #11 (frank's A2): the bench's DOM rows say whether an add-on offer is ticked, so a fresh dev install's first
+// r67 #11 (ed's A2): the bench's DOM rows say whether an add-on offer is ticked, so a fresh dev install's first
 // project can show Critiquito offered but unticked as evidence, without anyone driving the screen.
 import { afterEach, expect, it } from "vitest";
 import { domRows } from "./verifyDriver";

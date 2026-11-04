@@ -58,20 +58,25 @@ it("the name typed is what the team calls you", () => {
   expect(storedUserName()).toBe("Sam");
 });
 
-it("offers Critiquito as an add-on, unticked: the default team is the four (Ash 14 Oct)", () => {
+it("offers the starter Monos, none of them ticked, and adds none unless one is ticked", () => {
   act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
   act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toBe("Chief of Staff, Projects Manager, frank and Alfred.");
-  const box = container.querySelector("[data-hub-onboarding-addon]")!;
-  expect(box.textContent).toContain("Also add Critiquito");
-  expect(box.getAttribute("aria-checked")).toBe("false");
+  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toContain("None are added unless you tick them");
+  const boxes = [...container.querySelectorAll("[data-hub-onboarding-starter]")];
+  expect(boxes.map((box) => box.getAttribute("data-hub-onboarding-starter"))).toEqual([
+    "coordinator", "design-review", "planner", "record-keeper", "team-steward",
+  ]);
+  expect(boxes.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
   act(() => root.unmount());
   root = createRoot(container);
   finish();
-  expect(listMonos().some((m) => m.id === "critiquito")).toBe(false);
+  expect(listMonos()).toEqual([]);
 });
 
-it("ticked, Critiquito joins when onboarding finishes", () => {
-  finish("Also add Critiquito");
-  expect(listMonos().find((m) => m.id === "critiquito")?.name).toBe("Critiquito");
+it("a ticked starter Mono is an ordinary Mono, not the template id", () => {
+  finish("Coordinator");
+  const added = listMonos();
+  expect(added).toHaveLength(1);
+  expect(added[0]?.name).toBe("Coordinator");
+  expect(added[0]?.id).not.toBe("coordinator");
 });

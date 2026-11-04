@@ -26,32 +26,32 @@ afterEach(() => {
 });
 
 it("each Undo and Redo is named for its change and undoes only its own row", async () => {
-  const files = new Map<string, string>([["frank/SOUL.md", "after-f"], ["alfred/SOUL.md", "after-a"]]);
+  const files = new Map<string, string>([["ed/SOUL.md", "after-f"], ["cam/SOUL.md", "after-a"]]);
   setBotFiles({
     read: async (id: string, path: AgentFilePath) => ({ text: files.get(`${id}/${path}`) ?? null, hash: `h:${files.get(`${id}/${path}`) ?? ""}` }),
     write: async (id: string, path: AgentFilePath, text: string) => (files.set(`${id}/${path}`, text), `h:${text}`),
   });
-  recordBotChange({ id: "c-frank", bot: "frank", day: "Today", line: "frank shortened the release-notes skill", now: "12", after: "8", monoId: "frank", file: "SOUL.md", beforeText: "before-f", afterText: "after-f" });
-  recordBotChange({ id: "c-alfred", bot: "alfred", day: "Today", line: "alfred now asks before deploying", now: "a", after: "b", monoId: "alfred", file: "SOUL.md", beforeText: "before-a", afterText: "after-a" });
+  recordBotChange({ id: "c-ed", bot: "ed", day: "Today", line: "ed shortened the release-notes skill", now: "12", after: "8", monoId: "ed", file: "SOUL.md", beforeText: "before-f", afterText: "after-f" });
+  recordBotChange({ id: "c-cam", bot: "cam", day: "Today", line: "cam now asks before deploying", now: "a", after: "b", monoId: "cam", file: "SOUL.md", beforeText: "before-a", afterText: "after-a" });
   root = createRoot(container);
   act(() => root!.render(createElement(ChangesPage)));
   act(() => (container.querySelector('[data-hub-changes-filter="bots"]') as HTMLButtonElement).click());
   const undos = [...container.querySelectorAll<HTMLButtonElement>("[data-hub-bot-change-undo]")];
   expect(undos.map((b) => b.getAttribute("aria-label")).sort()).toEqual([
-    "Undo: alfred now asks before deploying",
-    "Undo: frank shortened the release-notes skill",
+    "Undo: cam now asks before deploying",
+    "Undo: ed shortened the release-notes skill",
   ]);
-  const frank = undos.find((b) => b.getAttribute("aria-label")!.includes("frank"))!;
-  await act(async () => frank.click());
+  const ed = undos.find((b) => b.getAttribute("aria-label")!.includes("ed"))!;
+  await act(async () => ed.click());
   await act(async () => new Promise((r) => setTimeout(r, 0)));
-  expect(files.get("frank/SOUL.md")).toBe("before-f");
-  expect(files.get("alfred/SOUL.md")).toBe("after-a");
+  expect(files.get("ed/SOUL.md")).toBe("before-f");
+  expect(files.get("cam/SOUL.md")).toBe("after-a");
   const rows = botChangeRows();
   const state = (id: string) => rows.find((r) => r.kind === "one" && r.change.id === id);
-  expect(state("c-frank")?.kind === "one" && state("c-frank")!.kind === "one" ? (state("c-frank") as { change: { undone?: boolean } }).change.undone : null).toBe(true);
-  expect((state("c-alfred") as { change: { undone?: boolean } }).change.undone).toBeFalsy();
+  expect(state("c-ed")?.kind === "one" && state("c-ed")!.kind === "one" ? (state("c-ed") as { change: { undone?: boolean } }).change.undone : null).toBe(true);
+  expect((state("c-cam") as { change: { undone?: boolean } }).change.undone).toBeFalsy();
   const redo = container.querySelector<HTMLButtonElement>("[data-hub-bot-change-redo]")!;
-  expect(redo.getAttribute("aria-label")).toBe("Redo: frank shortened the release-notes skill");
+  expect(redo.getAttribute("aria-label")).toBe("Redo: ed shortened the release-notes skill");
   // Keys can't collide between rows.
   const keys = [...container.querySelectorAll("[data-hub-bot-change-row]")].map((e) => e.getAttribute("data-hub-bot-change-row"));
   expect(new Set(keys).size).toBe(keys.length);

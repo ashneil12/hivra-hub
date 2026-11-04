@@ -2096,15 +2096,15 @@ mod tests {
         std::fs::write(previous.join("Contents/MacOS/monocode"), b"old build").unwrap();
         // The backup, taken after the old app quit.
         let backup = dir.join(BACKUP_DIR);
-        std::fs::create_dir_all(backup.join("monos/frank")).unwrap();
+        std::fs::create_dir_all(backup.join("monos/ed")).unwrap();
         std::fs::write(backup.join("monocode.db"), b"old database").unwrap();
         std::fs::write(backup.join("monocode.db-wal"), b"old wal").unwrap();
-        std::fs::write(backup.join("monos/frank/SOUL.md"), b"old soul").unwrap();
+        std::fs::write(backup.join("monos/ed/SOUL.md"), b"old soul").unwrap();
         // What the new build did to the live data during its trial.
-        std::fs::create_dir_all(data.join("monos/frank")).unwrap();
+        std::fs::create_dir_all(data.join("monos/ed")).unwrap();
         std::fs::write(data.join("monocode.db"), b"migrated by the new build").unwrap();
         std::fs::write(data.join("monocode.db-shm"), b"new shm").unwrap();
-        std::fs::write(data.join("monos/frank/SOUL.md"), b"new soul").unwrap();
+        std::fs::write(data.join("monos/ed/SOUL.md"), b"new soul").unwrap();
         let db = sha256_file(&backup.join("monocode.db")).unwrap();
         let wal = sha256_file(&backup.join("monocode.db-wal")).unwrap();
         let doc = json!({
@@ -2151,11 +2151,11 @@ mod tests {
             "the backup had no shm"
         );
         assert_eq!(
-            std::fs::read(data.join("monos/frank/SOUL.md")).unwrap(),
+            std::fs::read(data.join("monos/ed/SOUL.md")).unwrap(),
             b"old soul"
         );
         assert_eq!(
-            std::fs::read(ship.dir.join(REJECTED_MONOS).join("frank/SOUL.md")).unwrap(),
+            std::fs::read(ship.dir.join(REJECTED_MONOS).join("ed/SOUL.md")).unwrap(),
             b"new soul"
         );
         let saved = Ship::load(&ship.dir).unwrap();
@@ -2238,7 +2238,7 @@ mod tests {
             b"new shm"
         );
         assert_eq!(
-            std::fs::read(data.join("monos/frank/SOUL.md")).unwrap(),
+            std::fs::read(data.join("monos/ed/SOUL.md")).unwrap(),
             b"new soul"
         );
         assert!(!data.join(".monocode.db.restoring").exists());

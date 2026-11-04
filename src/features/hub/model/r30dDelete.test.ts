@@ -33,7 +33,7 @@ afterEach(() => {
 });
 
 const room = (id: string, isDefault = false): GroupChat => ({
-  id, projectId: "hivra", name: isDefault ? "Leadership team" : `Example: ${id}`, isDefault, memberIds: ["frank"],
+  id, projectId: "hivra", name: isDefault ? "Leadership team" : `Example: ${id}`, isDefault, memberIds: ["ed"],
   conversations: [{ id: "c1", when: "Today", title: "Example: plan", messages: [{ id: "m1", from: "ash", text: "Example: hi" }] }],
 });
 const button = (text: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === text);
@@ -42,7 +42,7 @@ describe("deleting a room", () => {
   it("takes that room only, through the store's own delete, and never the Leadership team", async () => {
     const deleted: string[] = [];
     const stored = (id: string, isDefault = false) => ({ id, projectId: "hivra", name: isDefault ? "Leadership team" : `Example: ${id}`,
-      isDefault, memberIds: ["frank"], seated: false, createdAt: 1, updatedAt: 1, conversations: [] });
+      isDefault, memberIds: ["ed"], seated: false, createdAt: 1, updatedAt: 1, conversations: [] });
     const backend = {
       kind: "app",
       load: async () => ({ rooms: [stored("hivra:leadership", true), stored("hivra:chat-a"), stored("hivra:chat-b")] }),

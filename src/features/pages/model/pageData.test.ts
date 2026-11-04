@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
-import { expect, it } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import type { WaitingChat } from "../../hub/model/waitingChats";
 import type { HubJobGroup, HubProject } from "../../hub/model/types";
 import type { Delegation } from "../../monos/model/delegations";
 import type { Mono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
+import { ensureProjectLeads } from "../../hub/model/hubLeads";
 import { agentsData, jobsData, needsData, roomsData, type AgentInputs } from "./pageData";
 
 const NOW = 1_800_000_000_000;
@@ -25,6 +26,11 @@ const waitingChat = (sessionId: string, over: Partial<WaitingChat> = {}): Waitin
   sessionId, source: "marker", question: "Example: which save layout?", more: 0, pick: "Three slots", redLine: false, cwd: "/p", title: "t",
   askedAt: NOW - 120_000, projectId: "vg-game", projectName: "EXO", chatName: "EXO lead", ...over,
 });
+beforeEach(() => {
+  localStorage.clear();
+  ensureProjectLeads(projects);
+});
+
 function inputs(over: Partial<AgentInputs> & { sessions?: Session[]; quiet?: Record<string, number> } = {}): AgentInputs {
   const sessions = new Map((over.sessions ?? []).map((s) => [s.id, s]));
   return {
@@ -37,15 +43,15 @@ function inputs(over: Partial<AgentInputs> & { sessions?: Session[]; quiet?: Rec
 
 it("lists every seated agent with its role, projects and chat, and what it is doing now", () => {
   const data = agentsData(inputs({
-    monos: [mono("vg-game-lead", { sessionId: "s-exo" }), mono("frank", { name: "frank", projects: ["/p/hivra"] }), mono("chief-of-staff", { name: "Chief of Staff" })],
+    monos: [mono("vg-game-lead", { sessionId: "s-exo" }), mono("ed", { name: "Ed", projects: ["/p/hivra"] }), mono("ada", { name: "Ada" })],
     sessions: [session("s-exo", { busy: true, blocks: [{ id: "b", role: "tool", text: "", tool: { title: "Run the movement tests" } } as never] })],
   }));
   expect(data.agents.map((a) => [a.name, a.role, a.state])).toEqual([
-    ["frank", "team", "idle"], ["Chief of Staff", "team", "idle"], ["EXO lead", "lead", "working"],
+    ["EXO lead", "lead", "working"], ["Ed", "mono", "idle"], ["Ada", "mono", "idle"],
   ]);
   const exo = data.agents.find((a) => a.id === "vg-game-lead")!;
   expect(exo).toMatchObject({ projects: ["vg-game"], chatId: "s-exo", doing: "Run the movement tests" });
-  expect(data.agents.find((a) => a.id === "frank")!.projects).toEqual(["hivra"]);
+  expect(data.agents.find((a) => a.id === "ed")!.projects).toEqual(["hivra"]);
   expect(data.counts).toMatchObject({ working: 1, idle: 2 });
 });
 
@@ -113,12 +119,12 @@ it("a stuck Being built job makes its Lead stuck, with the job and the reason", 
   expect(jobsData(jobs, projects).jobs[0]).toMatchObject({ projectName: "Hivra", agentName: "Hivra lead", state: "stuck" });
 });
 
-// r61 (PM's blind C3 on 0.16.2): the Chief of Staff, idle, showed "Working · Scribe writes release notes" from an old job.
+// r61: an idle Mono showed "Working · Scribe writes release notes" from an old job nobody had touched.
 it("an idle Mono is not working on an Ash OS job nobody has touched for a while; a fresh one still counts", () => {
-  const job = (id: string, agoMs: number) => ({ id, projectId: "hivra", title: `Example: ${id}`, lead: "chief-of-staff", leadName: "Chief of Staff", state: "working" as const,
+  const job = (id: string, agoMs: number) => ({ id, projectId: "hivra", title: `Example: ${id}`, lead: "ada", leadName: "Ada", state: "working" as const,
     startedAt: new Date(NOW - agoMs - 60_000).toISOString(), lastActiveAt: new Date(NOW - agoMs).toISOString(), finishedAt: null, seen: true });
-  const cos = mono("chief-of-staff", { name: "Chief of Staff", sessionId: "s-cos" });
-  const stale: HubJobGroup[] = [{ leadId: "chief-of-staff", leadName: "Chief of Staff", projectId: "hivra", jobs: [job("scribe writes release notes", 3 * 86_400_000)] }];
+  const cos = mono("ada", { name: "Ada", sessionId: "s-cos" });
+  const stale: HubJobGroup[] = [{ leadId: "ada", leadName: "Ada", projectId: "hivra", jobs: [job("scribe writes release notes", 3 * 86_400_000)] }];
   const idle = agentsData(inputs({ monos: [cos], jobs: stale, sessions: [session("s-cos")] })).agents[0];
   expect(idle).toMatchObject({ state: "idle", doing: "" });
   const fresh: HubJobGroup[] = [{ ...stale[0], jobs: [job("tidy the notes", 5 * 60_000)] }];
@@ -132,7 +138,7 @@ it("needs and waiting chats, and rooms' latest messages, in plain shapes", () =>
     [waitingChat("s-exo")], projects);
   expect(n.needs).toEqual([{ id: "q:7", projectId: "hivra", projectName: "Hivra", title: "Example: pick a headline", why: "Two tested the same.", action: "See options", isQuestion: true }]);
   expect(n.waiting[0]).toMatchObject({ chatId: "s-exo", chatName: "EXO lead", pick: "Three slots" });
-  const r = roomsData([{ id: "hivra:leadership", projectId: "hivra", name: "Leadership", isDefault: true, memberIds: ["frank"], conversations: [
-    { id: "c1", when: "Today", title: "t", messages: [{ id: "m1", from: "ash", text: "hi" }, { id: "m2", from: "frank", text: "Example: on it" }] }] }], (id) => id.toUpperCase(), { limit: 1 });
-  expect(r.rooms[0].conversation?.messages).toEqual([{ id: "m2", from: "FRANK", text: "Example: on it" }]);
+  const r = roomsData([{ id: "hivra:leadership", projectId: "hivra", name: "Leadership", isDefault: true, memberIds: ["ed"], conversations: [
+    { id: "c1", when: "Today", title: "t", messages: [{ id: "m1", from: "ash", text: "hi" }, { id: "m2", from: "ed", text: "Example: on it" }] }] }], (id) => id.toUpperCase(), { limit: 1 });
+  expect(r.rooms[0].conversation?.messages).toEqual([{ id: "m2", from: "ED", text: "Example: on it" }]);
 });

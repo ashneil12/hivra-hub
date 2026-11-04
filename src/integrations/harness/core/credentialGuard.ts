@@ -30,7 +30,7 @@ export const CREDENTIAL_DENY_RULES: readonly string[] = [
 ];
 
 /**
- * r67 (Alfred's r66 rechecks, 29 Oct): frank answered "what did I say about models" by running sqlite3 on the app's own
+ * r67 (Alfred's r66 rechecks, 29 Oct): ed answered "what did I say about models" by running sqlite3 on the app's own
  * database, and other Monos read sessions, delegations and transcripts out of monocode.db by hand. No agent reads the
  * hub's database or the window's storage directly: it is Ash's whole history, half-written while the app runs, and the
  * MonoCode tools already give the parts an agent may see. Enforced like the keychain rule, in code for every harness.

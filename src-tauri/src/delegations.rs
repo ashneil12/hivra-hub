@@ -159,6 +159,14 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN report TEXT;",
         )?;
     }
+    // WP-42: when this run started. The log only keeps 50 lines, so a resume time stored there can be trimmed
+    // before settle, and older proof would be attached as this run's.
+    let has_run_started = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'run_started_at'")?
+        .exists([])?;
+    if !has_run_started {
+        conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
+    }
     Ok(())
 }
 
@@ -190,6 +198,10 @@ pub struct Delegation {
     pub delivery: String,
     pub delivery_message: Option<String>,
     pub created_at: i64,
+    /// When this run started, epoch ms. Set when the row is recorded, when it resumes, and when a refused launch is
+    /// retried. A row from before this column (NULL) uses the latest "resumed" or "retried" line, else `created_at`,
+    /// and that is what a later save writes. Evidence uses this, not the log: `note` only keeps the newest 50 lines.
+    pub run_started_at: i64,
     pub updated_at: i64,
     pub settled_at: Option<i64>,
     pub log: Vec<Value>,
@@ -271,11 +283,27 @@ impl Delegation {
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report";
+     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report, \
+     run_started_at";
+
+/// The newest line that starts a run. An old row has no `run_started_at`, and `created_at` would be the wrong run.
+fn latest_new_run_at(log: &[Value]) -> Option<i64> {
+    log.iter()
+        .filter_map(|entry| match entry.get("event").and_then(Value::as_str) {
+            Some("resumed" | "retried") => entry.get("at").and_then(Value::as_i64),
+            _ => None,
+        })
+        .max()
+}
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
-    let log: String = row.get(26)?;
+    let log_text: String = row.get(26)?;
+    let log: Vec<Value> = serde_json::from_str(&log_text).unwrap_or_default();
+    let created_at: i64 = row.get(23)?;
+    let stored_start: Option<i64> = row.get(39)?;
+    let run_started_at =
+        stored_start.unwrap_or_else(|| latest_new_run_at(&log).unwrap_or(created_at));
     Ok(Delegation {
         id: row.get(0)?,
         owner_session: row.get(1)?,
@@ -300,10 +328,11 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         pending_question: row.get(20)?,
         delivery: row.get(21)?,
         delivery_message: row.get(22)?,
-        created_at: row.get(23)?,
+        created_at,
+        run_started_at,
         updated_at: row.get(24)?,
         settled_at: row.get(25)?,
-        log: serde_json::from_str(&log).unwrap_or_default(),
+        log,
         version: row.get(27)?,
         mirrored_version: row.get(28)?,
         mirror_error: row.get(29)?,
@@ -353,7 +382,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
              ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, \
-             ?35, ?36, ?37, ?38, ?39)"
+             ?35, ?36, ?37, ?38, ?39, ?40)"
         ),
         params![
             d.id,
@@ -395,6 +424,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.question_owner,
             d.gate_verdict,
             d.report,
+            d.run_started_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -417,7 +447,7 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
            resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
            updated_at = ?12, settled_at = ?13, log = ?14, version = ?15, stall_kind = ?16, stall_reason = ?17,
            stalled_at = ?18, review_required = ?19, self_review = ?20, question_owner = ?21, gate_verdict = ?22,
-           report = ?23
+           report = ?23, run_started_at = ?24
          WHERE id = ?1",
         params![
             d.id,
@@ -443,6 +473,7 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.question_owner,
             d.gate_verdict,
             d.report,
+            d.run_started_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -636,6 +667,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             existing.delivery_message = None;
             existing.error = None;
             existing.settled_at = None;
+            existing.run_started_at = now;
             existing.note(now, &by, "retried", json!({}));
             existing.touch(now);
             save(&tx, &existing)?;
@@ -702,6 +734,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         delivery: PENDING.into(),
         delivery_message: None,
         created_at: now,
+        run_started_at: now,
         updated_at: now,
         settled_at: None,
         log: Vec::new(),
@@ -770,6 +803,8 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     if ![COMPLETED, FAILED, CANCELLED].contains(&input.state.as_str()) {
         return Err("state must be completed, failed or cancelled".into());
     }
+    // WP-42: collect this run's .e2e files before the write transaction, so the walk doesn't hold the database.
+    let staged = stage_evidence(conn, &input);
     let review = review_json(input.self_review)?;
     let by = actor(input.by);
     let tx = conn
@@ -806,10 +841,17 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.unstall();
     row.settled_at = Some(now);
     // WP-10: the worker's final report in its typed shape (firstmate/report.rs), kept beside its words.
-    row.report = row
-        .result
-        .as_deref()
-        .map(|result| crate::firstmate::report::parse(result).to_json());
+    row.report = row.result.as_deref().map(|result| {
+        let mut report = crate::firstmate::report::parse(result);
+        // WP-42: proof under the worker's .e2e/ from this run only. A missing folder, or a folder that moved
+        // while the files were read, changes nothing.
+        if let Some(staged) = &staged {
+            if child_folder(&tx, &row.child_session).as_ref() == Some(&staged.folder) {
+                crate::plugins::verify::append_evidence(&mut report, staged.files.clone());
+            }
+        }
+        report.to_json()
+    });
     let mut detail = json!({ "state": row.state, "generation": row.generation });
     if let Some(class) = &row.error_class {
         detail["error_class"] = json!(class);
@@ -822,6 +864,54 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         applied: true,
         row: Some(row),
     })
+}
+
+struct StagedProof {
+    folder: std::path::PathBuf,
+    files: Vec<String>,
+}
+
+/// When this run started. Stored on the row at create and again on resume, so a log that has been trimmed to its
+/// newest 50 lines cannot move the cutoff back to `created_at`.
+fn run_started_ms(row: &Delegation) -> i64 {
+    row.run_started_at
+}
+
+/// Read this run's proof before `settle` takes its write transaction. A row that will not be written, or a session
+/// with no folder, reads nothing.
+fn stage_evidence(conn: &Connection, input: &SettleInput) -> Option<StagedProof> {
+    if input
+        .result
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    let row = get(conn, &input.id).ok()??;
+    if !row.is_open() || row.generation != input.generation {
+        return None;
+    }
+    let folder = child_folder(conn, &row.child_session)?;
+    let files = crate::plugins::verify::evidence_files(&folder, run_started_ms(&row));
+    Some(StagedProof { folder, files })
+}
+
+/// The folder a worker's proof lives in: its worktree when it has one, otherwise the session folder. A missing row,
+/// a missing column, or a path that isn't there adds nothing. It never fails the settle.
+fn child_folder(conn: &Connection, session_id: &str) -> Option<std::path::PathBuf> {
+    let (cwd, worktree): (String, Option<String>) = conn
+        .query_row(
+            "SELECT cwd, worktree_cwd FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()?;
+    let chosen = worktree
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(cwd);
+    let path = crate::fs::canonical(crate::fs::expand_home(chosen.trim())).ok()?;
+    path.is_dir().then_some(path)
 }
 
 /// A new turn in a delegated child picks its row back up. An open row (its turn was cut off by a quit or crash) always
@@ -867,6 +957,7 @@ pub fn reattach(
     }
     let was = row.state.clone();
     row.generation += 1;
+    row.run_started_at = now;
     row.unstall();
     if reopen {
         row.state = RUNNING.into();
@@ -2482,7 +2573,7 @@ mod tests {
         .unwrap();
         let lead_b = record(&mut conn, followed("pm", "lead-b", "lead-chat", "lead"), 13).unwrap();
         // A later plain request takes over the plain row only.
-        record(&mut conn, launch("frank", "r3", "lead-chat"), 14).unwrap();
+        record(&mut conn, launch("ed", "r3", "lead-chat"), 14).unwrap();
         assert_eq!(get(&conn, &earlier.id).unwrap().unwrap().state, CANCELLED);
         for id in [&queued.id, &lead_a.id, &lead_b.id] {
             assert_eq!(get(&conn, id).unwrap().unwrap().state, RUNNING, "{id}");
@@ -2516,7 +2607,7 @@ mod tests {
         )
         .unwrap();
         // A plain launch's row into the same chat is not a brief that waits in its queue.
-        record(&mut conn, launch("frank", "r1", "lead-chat"), 12).unwrap();
+        record(&mut conn, launch("ed", "r1", "lead-chat"), 12).unwrap();
         cancel(
             &mut conn,
             std::slice::from_ref(&dropped.id),
@@ -3020,7 +3111,7 @@ mod tests {
         };
         assert!(bind_chat(&mut conn, bind(Some("vg-game-lead")), 1).unwrap());
         assert!(!bind_chat(&mut conn, bind(Some("vg-game-lead")), 2).unwrap());
-        assert!(bind_chat(&mut conn, bind(Some("frank")), 3).unwrap());
+        assert!(bind_chat(&mut conn, bind(Some("ed")), 3).unwrap());
         assert!(bind_chat(
             &mut conn,
             ChatBindInput {

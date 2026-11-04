@@ -28,7 +28,7 @@ test("switching a room's mode, then a goal run that ends on needs input", async 
   await box.fill("Example: get the pricing page ready to ship");
   await box.press("Enter");
 
-  await expect(page.locator("[data-hub-msg-system]").first()).toHaveText("Goal mode: Chief of Staff leads the room toward this goal, for up to 13 turns.");
+  await expect(page.locator("[data-hub-msg-system]").first()).toHaveText("Goal mode: Ada leads the room toward this goal, for up to 13 turns.");
   await expect(page.locator("[data-hub-goal-bar]")).toHaveAttribute("data-hub-goal-state", "needs_input", { timeout: 10_000 });
   await expect(page.locator("[data-hub-msg-system]").last()).toHaveText("Goal needs you: Ash picks between 9 and 12 a month.");
   await expect(page.getByText("Example: two prices are on the table, 9 or 12 a month.")).toBeVisible();

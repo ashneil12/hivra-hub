@@ -19,7 +19,7 @@ const roots: Root[] = [];
 beforeEach(async () => {
   localStorage.clear();
   resetPagesForTest();
-  addMono({ id: "frank", name: "frank", mascot: "robot", color: "x", projects: [] });
+  addMono({ id: "ed", name: "ed", mascot: "robot", color: "x", projects: [] });
   const { hubData, setHubDataSource } = await import("../../hub/model/hubData");
   setHubDataSource(undefined);
   const src = Object.create(hubData());
@@ -47,7 +47,7 @@ it("the Ready-made heading is sentence case, with no forced capitals, on an empt
   expect(ready.className).not.toMatch(FORCED_CAPS);
   act(() => roots.splice(0).forEach((r) => r.unmount()));
 
-  await keepPage({ ...pageFromSpec(SPEC, "Example: show me sign-ups", "frank", "today", [], 1, undefined, "frank"), id: "page-r25" });
+  await keepPage({ ...pageFromSpec(SPEC, "Example: show me sign-ups", "ed", "today", [], 1, undefined, "ed"), id: "page-r25" });
   host = await render();
   ready = host.querySelector("[data-pages-ready] h2")!;
   expect(ready.textContent).toBe("Ready-made");

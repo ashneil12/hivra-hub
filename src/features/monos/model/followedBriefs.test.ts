@@ -161,7 +161,7 @@ function row(over: Partial<Delegation> = {}): Delegation {
   return {
     id: "t-1",
     ownerSession: "cos-chat",
-    ownerMono: "chief-of-staff",
+    ownerMono: "ada",
     batchId: null,
     parentId: null,
     rootId: "t-1",
@@ -362,7 +362,7 @@ describe("double delegation through the rows: leadership -> Lead -> worker -> re
     // The Lead is mid-turn on something else: the brief queues behind it.
     const brief = "[MonoCode brief from Chief of Staff]\n\nShip the room";
     const requestId = "app-cos-chat-b1";
-    const lead = await tracker.launch({ ownerSession: "cos-chat", ownerMono: "chief-of-staff", requestId, childSession: "lead-chat", project: "hub", title: "Ship the room", brief, follow: "lead" }).row;
+    const lead = await tracker.launch({ ownerSession: "cos-chat", ownerMono: "ada", requestId, childSession: "lead-chat", project: "hub", title: "Ship the room", brief, follow: "lead" }).row;
     sessions.set("lead-chat", chat("lead-chat", [user("Ash: fix the doc"), said("fixing")], {
       busy: true,
       queuedMessages: [{ id: requestId, appRequestId: requestId, text: brief, attachments: [], waitForIdle: true }],

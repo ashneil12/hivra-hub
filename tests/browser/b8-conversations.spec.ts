@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 
 const SHOTS = process.env.B8_PROOF_DIR ?? "test-results/b8";
@@ -47,6 +48,7 @@ const attach = async (page: Page, kind: "media" | "file", pick: { path: string }
 };
 
 test("Leadership team: New conversation and back leaves nothing; named, attached and renamed conversations hold after a reload", async ({ page }) => {
+  await seedExampleRoster(page);
   await page.addInitScript(() => {
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
@@ -72,7 +74,7 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(1);
   await expect(page.locator("[data-hub-conversation-title]")).toHaveText("whats the plan for pages");
   await expect.poll(async () => (await prompts(page)).length, { timeout: 30_000 }).toBeGreaterThan(0);
-  await expect(page.locator("[data-hub-chat]")).toContainText("Chief of Staff", { timeout: 30_000 });
+  await expect(page.locator("[data-hub-chat]")).toContainText("Ada", { timeout: 30_000 });
 
   // 3. New conversation, then Back: the conversation he was in shows again, and there is still only one.
   await page.locator("[data-hub-new-conversation]").click();
@@ -123,7 +125,7 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
   expect(turn).toBeTruthy();
   expect(turn.content).toContainEqual(expect.objectContaining({ type: "image", source: expect.objectContaining({ type: "base64", media_type: "image/png", data: PNG }) }));
   expect(turn.text).toContain(JSON.stringify(NOTES.path));
-  await expect(page.locator("[data-hub-chat]")).toContainText("Chief of Staff", { timeout: 30_000 });
+  await expect(page.locator("[data-hub-chat]")).toContainText("Ada", { timeout: 30_000 });
   await shot(page, "5-sent-with-attachments");
 
   // 7. Double-click the older conversation to rename it.

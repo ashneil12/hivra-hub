@@ -13,7 +13,7 @@ const PRIMER: MemoryPrimer = {
   memory_dir: "/m/tally",
 };
 const seat = (patch: Partial<{ id: string; providerSessionId: string; harness: string }> = {}) => ({
-  id: "mono-frank",
+  id: "mono-ed",
   providerSessionId: "conv-1",
   harness: "claude",
   ...patch,
@@ -43,7 +43,7 @@ it("a seat's first room turn in a project's room carries the project's memory; l
   first!.delivered();
   expect(await roomMemory(seat(), "tally", { call })).toBeUndefined();
   // Another seat, a new conversation (a rotated chat), another project's room, or changed memory: it goes in again.
-  expect((await roomMemory(seat({ id: "mono-alfred" }), "tally", { call }))?.block).toContain("<project_memory>");
+  expect((await roomMemory(seat({ id: "mono-cam" }), "tally", { call }))?.block).toContain("<project_memory>");
   expect((await roomMemory(seat({ providerSessionId: "conv-2" }), "tally", { call }))?.block).toContain("<project_memory>");
   forgetMemoryPrimers();
   const changed = { ...PRIMER, text: `${PRIMER.text}\n- Sharing is private [20 Oct]` };

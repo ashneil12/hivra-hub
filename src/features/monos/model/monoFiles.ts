@@ -65,7 +65,7 @@ export class MonoFileConflict extends Error {
 
 /**
  * r62 (A4): topic notes that load whole with the memory block, not only by name. memory/ash-asks.md holds Ash's own
- * rules in his words; frank's Mono answered "what are Ash's rules" without the 21 Oct "DeepSeek on high" line because
+ * rules in his words; ed's Mono answered "what are Ash's rules" without the 21 Oct "DeepSeek on high" line because
  * the note was only listed and it never read it.
  */
 export const STANDING_NOTES: readonly string[] = ["ash-asks"];

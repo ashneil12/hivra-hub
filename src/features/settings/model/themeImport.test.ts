@@ -86,10 +86,10 @@ it("a theme can tint the glass but never make it solid; Glass stays the default"
 it("reads a Mono's themes/<name>.json and checks it like a pasted one", async () => {
   const { t } = await load();
   monoFiles.themes = { night: NIGHT };
-  expect(await t.monoThemeNames("critiquito")).toEqual(["night"]);
-  expect((await t.offerMonoTheme("critiquito", "night", "Critiquito")).ok).toBe(true);
+  expect(await t.monoThemeNames("dee")).toEqual(["night"]);
+  expect((await t.offerMonoTheme("dee", "night", "Critiquito")).ok).toBe(true);
   expect(t.pendingTheme()?.by).toBe("Critiquito");
-  expect(await t.offerMonoTheme("critiquito", "gone", "Critiquito")).toEqual({ ok: false, problems: ["Critiquito has no theme called “gone”."] });
+  expect(await t.offerMonoTheme("dee", "gone", "Critiquito")).toEqual({ ok: false, problems: ["Critiquito has no theme called “gone”."] });
 });
 
 it("says why in plain words, with no numbers", async () => {

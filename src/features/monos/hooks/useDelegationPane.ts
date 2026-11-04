@@ -38,6 +38,7 @@ import {
 import { hubData } from "../../hub/model/hubData";
 import { leadFor } from "../../hub/model/hubLeads";
 import { openCodingTeam } from "../../hub/model/hubNav";
+import { crewBriefLines } from "../../crew/model/briefLine";
 import { briefedTeams, type BriefTeam, type BriefedTeam } from "../model/briefedTeams";
 
 /** A hub project by id, for its name. */
@@ -94,6 +95,8 @@ export type DelegationPane =
       /** Its briefs out to coding teams: one live line each, which opens that coding team on its Lead. */
       briefs: BriefedTeam[];
       onOpenBrief?: (brief: BriefedTeam) => void;
+      /** WP-15: one compact line per brief, counted from derive_status. Opens the Crew tab. */
+      crewLines: { id: string; text: string }[];
     };
 
 /**
@@ -125,7 +128,9 @@ export function useDelegationPane(
         (mono ? monoLook(mono).name : "a worker")
       );
     });
-    if (!count && !failed.length && !unloaded.length && !stuck.length)
+    // WP-15: a done or paused brief still gets its line, so this returns before the empty check.
+    const crewLines = crewBriefLines(sessionId, rows);
+    if (!count && !failed.length && !unloaded.length && !stuck.length && !crewLines.length)
       return undefined;
     const actions = delegationActions();
     // A brief to a coding team is its own line (briefedTeams.ts), not a name on the working line.
@@ -139,6 +144,7 @@ export function useDelegationPane(
         rows.filter((row) => !(row.state === "running" && row.stallKind) && row.follow !== "lead"),
       ),
       briefs,
+      crewLines,
       onOpenBrief: (brief) => {
         if (brief.to) openCodingTeam(brief.to.projectId, { lead: true });
       },

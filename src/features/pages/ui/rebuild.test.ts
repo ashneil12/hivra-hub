@@ -16,7 +16,7 @@ beforeEach(async () => {
   localStorage.clear();
   resetPagesForTest();
   localStorage.setItem("monocode:pages-dev-stub", "1");
-  addMono({ id: "frank", name: "frank", mascot: "robot", color: "x", projects: [] });
+  addMono({ id: "ed", name: "ed", mascot: "robot", color: "x", projects: [] });
   const { hubData, setHubDataSource } = await import("../../hub/model/hubData");
   setHubDataSource(undefined);
   const src = Object.create(hubData());
@@ -40,7 +40,7 @@ const until = async (read: () => unknown) => {
 };
 
 it("Rebuild: say what should change, see the new version, use it, and the page keeps what it was allowed", async () => {
-  const page = { ...pageFromSpec(AGENTS, "Every agent", "frank", "today", [], 1, undefined, "frank"), id: "page-agents" };
+  const page = { ...pageFromSpec(AGENTS, "Every agent", "ed", "today", [], 1, undefined, "ed"), id: "page-agents" };
   await keepPage(page);
   requestOpenPage(page.id);
   const { PagesContent } = await import("./PagesView");
@@ -53,11 +53,11 @@ it("Rebuild: say what should change, see the new version, use it, and the page k
 
   await act(async () => (host.querySelector("[data-pages-rebuild]") as HTMLButtonElement).click());
   const input = host.querySelector('[data-pages-rebuild-ask] input[aria-label="What should change"]') as HTMLInputElement;
-  expect((host.querySelector("[data-pages-rebuild-ask] [data-pages-mono-picker]") as HTMLSelectElement).value).toBe("frank");
+  expect((host.querySelector("[data-pages-rebuild-ask] [data-pages-mono-picker]") as HTMLSelectElement).value).toBe("ed");
   await type(input, "Add a column for stuck time");
   await act(async () => (host.querySelector("[data-pages-rebuild-ask] form") as HTMLFormElement).requestSubmit());
   expect(await until(() => host.querySelector("[data-pages-new-version]"))).toBeTruthy();
-  expect(host.textContent).toContain("“Add a column for stuck time” · frank built a new version");
+  expect(host.textContent).toContain("“Add a column for stuck time” · ed built a new version");
   expect(host.querySelector("[data-pages-new-version-keeps]")!.textContent).toContain("It keeps what you allowed");
   // The page itself hasn't changed yet.
   expect(findPage(page.id)!.spec).toEqual(AGENTS);
@@ -71,7 +71,7 @@ it("Rebuild: say what should change, see the new version, use it, and the page k
 });
 
 it("a new version that newly asks something says so, and using it is Use it and allow", async () => {
-  const page = { ...pageFromSpec(AGENTS, "Every agent", "frank", "today", [], 1, undefined, "frank"), id: "page-agents" };
+  const page = { ...pageFromSpec(AGENTS, "Every agent", "ed", "today", [], 1, undefined, "ed"), id: "page-agents" };
   await keepPage(page);
   requestOpenPage(page.id);
   const { PagesContent } = await import("./PagesView");

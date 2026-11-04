@@ -66,7 +66,7 @@ describe("a coding-team chat and its Lead", () => {
 
   it("only to its own Lead: another Mono is refused, and so are room posts", async () => {
     const { run, message } = await fixture();
-    await expect(run("monos.message", { to: "frank", text: "x" })).rejects.toThrow('only to its own Lead: Hivra lead (to "hivra-lead")');
+    await expect(run("monos.message", { to: "ed", text: "x" })).rejects.toThrow('only to its own Lead: Hivra lead (to "hivra-lead")');
     await expect(run("rooms.post", { room: "hub", text: "hi" })).rejects.toThrow("Only a Mono's own chat talks in rooms");
     expect(message).not.toHaveBeenCalled();
   });
