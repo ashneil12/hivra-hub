@@ -126,7 +126,38 @@ test("replaces only a stale link to the main checkout, never a real install or a
 
   const h = fixture(t);
   fs.mkdirSync(path.join(h.tree, "node_modules"));
-  assert.match(run(h).out, /already installed here; left as it is/);
+  assert.match(run(h).out, /node_modules already matches the lockfile; nothing to do/);
+});
+
+test("leaves a real node_modules in place when the lockfile already matches", (t) => {
+  const f = fixture(t);
+  const modules = path.join(f.tree, "node_modules");
+  fs.mkdirSync(modules);
+  fs.writeFileSync(path.join(modules, "kept.js"), "local\n");
+  const { code, out } = run(f);
+  assert.equal(code, 0, out);
+  assert.equal(npmCalls(f), "");
+  assert.match(out, /node_modules already matches the lockfile; nothing to do/);
+  const stat = fs.lstatSync(modules);
+  assert.ok(stat.isDirectory());
+  assert.ok(!stat.isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(modules, "kept.js"), "utf8"), "local\n");
+});
+
+test("leaves a real node_modules in place when the lockfile differs", (t) => {
+  const f = fixture(t);
+  const modules = path.join(f.tree, "node_modules");
+  fs.mkdirSync(modules);
+  fs.writeFileSync(path.join(modules, "kept.js"), "local\n");
+  fs.writeFileSync(path.join(f.tree, "package-lock.json"), '{"lockfileVersion":3,"changed":true}\n');
+  const { code, out } = run(f);
+  assert.equal(code, 0, out);
+  assert.equal(npmCalls(f), "");
+  assert.match(out, /node_modules is already installed here; left as it is/);
+  const stat = fs.lstatSync(modules);
+  assert.ok(stat.isDirectory());
+  assert.ok(!stat.isSymbolicLink());
+  assert.equal(fs.readFileSync(path.join(modules, "kept.js"), "utf8"), "local\n");
 });
 
 test("never follows a link out of the worktree or links a linked source", (t) => {
