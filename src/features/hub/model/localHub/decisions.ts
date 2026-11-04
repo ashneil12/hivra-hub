@@ -1,11 +1,14 @@
-// What waits on Ash and what is being built (WP-04's seam for WP-14's decision store).
+// What waits on Ash and what is being built (WP-04's seam, filled by WP-14's decision store).
 //
-// These used to be Ash OS's ledger (needs, questions, answers, jobs, checks). The ledger is retired, so for now:
+// These used to be Ash OS's ledger (needs, questions, answers, jobs, checks). The ledger is retired, so now:
 // - **jobs** (Being built) are the app's own open delegations (src-tauri/src/delegations.rs), one row per delegation;
-// - **needs**, **questions** and **checks** are empty: nothing outside the app asks Ash anything any more. A question
-//   a worker asks still reaches its owner's chat through the delegation engine, as before.
-// WP-14 replaces this source with the decision store; the store and the screens read it through `DecisionSource` only.
+// - **needs** and **questions** are the open decisions (src-tauri/src/decisions.rs): a first mate's `ask_person`, one
+//   row per stable key, answered from its "See options" sheet. Answering releases every task waiting on it. A question
+//   a worker asks still goes to its own first mate first, through the delegation engine, never straight here;
+// - **checks** are empty until WP-40's gates report here.
+// The store and the screens read it through `DecisionSource` only.
 import type { Delegation } from "../../../monos/model/delegations";
+import type { Decision, FirstMateBackend } from "../../../firstmate/model/steering";
 import { HubCallError } from "../hubTransport";
 
 export interface DecisionSource {
@@ -59,11 +62,99 @@ export function delegationJobGroups(rows: readonly Delegation[]): { groups: Arra
   return { groups: [...groups.values()] };
 }
 
-/** The source the app uses until WP-14: jobs from the delegation engine, nothing else waiting. */
-export function delegationDecisions(listOpen: () => Promise<Delegation[]>): DecisionSource {
+/** A decision's Needs row id: its project and key, both kept whole. */
+export const decisionNeedId = (d: Pick<Decision, "project" | "decisionKey">) =>
+  `decision:${encodeURIComponent(d.project)}:${encodeURIComponent(d.decisionKey)}`;
+
+function parseNeedId(id: unknown): { project: string; key: string } | undefined {
+  if (typeof id !== "string") return undefined;
+  const match = /^decision:([^:]*):([^:]+)$/.exec(id);
+  if (!match) return undefined;
+  try {
+    return { project: decodeURIComponent(match[1]), key: decodeURIComponent(match[2]) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** One open decision as a Needs row (hubStore.mapNeed's shape): a question, answered from its sheet. */
+export function decisionNeed(d: Decision): Record<string, unknown> {
+  const waiting = d.waiting.length;
+  const id = decisionNeedId(d);
+  return {
+    id,
+    projectId: d.project,
+    title: d.question,
+    why: [d.recommended ? `Recommended: ${d.recommended}.` : "", waiting ? `${waiting} ${waiting === 1 ? "task waits" : "tasks wait"} on it.` : ""]
+      .filter(Boolean)
+      .join(" "),
+    actionType: "see_options",
+    actionLabel: "See options",
+    actionTarget: `question:${id}`,
+    since: iso(d.createdAt),
+    circle: "red",
+  };
+}
+
+/** Open decisions grouped by project, oldest first, in the shape hubStore.applyNeeds reads. */
+export function decisionNeeds(decisions: readonly Decision[]): { projects: Array<Record<string, unknown>>; setup: [] } {
+  const projects = new Map<string, Array<Record<string, unknown>>>();
+  for (const d of decisions) {
+    if (d.state !== "open") continue;
+    if (!projects.has(d.project)) projects.set(d.project, []);
+    projects.get(d.project)!.push(decisionNeed(d));
+  }
+  return { projects: [...projects].map(([projectId, shown]) => ({ projectId, shown })), setup: [] };
+}
+
+/** A decision's sheet (hubStore.question's shape). */
+export function decisionSheet(d: Decision): Record<string, unknown> {
+  const pick = d.recommended ? d.options.indexOf(d.recommended) : -1;
+  return {
+    id: decisionNeedId(d),
+    questionId: d.decisionKey,
+    status: d.state === "answered" ? "answered" : "open",
+    question: d.question,
+    options: d.options.map((label) => ({ label })),
+    recommendation: { text: d.recommended ? `Recommended: ${d.recommended}` : "", optionIndex: pick >= 0 ? pick : null },
+    quickAnswers: [],
+    askedAt: iso(d.createdAt),
+    ...(d.answer ? { heldAnswer: d.answer } : {}),
+  };
+}
+
+async function findDecision(backend: Pick<FirstMateBackend, "decisions">, id: unknown): Promise<Decision> {
+  const where = parseNeedId(id);
+  const found = where && (await backend.decisions(100)).find((d) => d.project === where.project && d.decisionKey === where.key);
+  if (!found) throw new HubCallError("refused", "That isn't waiting on you any more.");
+  return found;
+}
+
+/**
+ * The person's answer: an option by index, or their own words. Stored once; every task waiting on it carries on with
+ * it, and the first mate that asked hears it.
+ */
+async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "answer">, payload: Record<string, unknown>) {
+  const d = await findDecision(backend, payload.id);
+  const choice = typeof payload.choice === "number" ? d.options[payload.choice] : undefined;
+  const words = typeof payload.text === "string" ? payload.text.trim() : "";
+  const answer = choice ?? words;
+  if (!answer) throw new HubCallError("refused", "Pick an option or write your answer.");
+  const out = await backend.answer(d.project, d.decisionKey, answer, "user");
+  if (!out.applied) return { receipt: `Already answered: ${out.decision?.answer ?? ""}`, rowDone: true };
+  const n = out.releasedTasks.length;
+  return { receipt: n ? `Sent. ${n === 1 ? "The waiting task carries on" : `${n} waiting tasks carry on`}.` : "Sent.", rowDone: true };
+}
+
+/** The app's source: jobs from the delegation engine, and (with the store) the open decisions as Needs. */
+export function delegationDecisions(
+  listOpen: () => Promise<Delegation[]>,
+  decisions?: Pick<FirstMateBackend, "decisions" | "answer">,
+): DecisionSource {
   return {
     async needs() {
-      return { projects: [], setup: [] };
+      if (!decisions) return { projects: [], setup: [] };
+      return decisionNeeds(await decisions.decisions(0).catch(() => []));
     },
     async jobs() {
       return delegationJobGroups(await listOpen().catch(() => []));
@@ -71,8 +162,10 @@ export function delegationDecisions(listOpen: () => Promise<Delegation[]>): Deci
     async checks() {
       return { checks: [] };
     },
-    async act(action) {
+    async act(action, payload) {
       if (action === "job-seen" || action === "check-delivered") return {};
+      if (decisions && action === "question") return decisionSheet(await findDecision(decisions, payload.id));
+      if (decisions && action === "answer") return answerDecision(decisions, payload);
       throw new HubCallError("refused", "That isn't waiting on you any more.");
     },
   };

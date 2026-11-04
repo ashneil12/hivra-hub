@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { tauriDelegations } from "../../../monos/model/delegations";
 import { HubCallError, type HubFeedHandlers, type HubTransport } from "../hubTransport";
 import { delegationDecisions, isDecisionAction, type DecisionSource } from "./decisions";
+import { tauriFirstMate } from "../../../firstmate/model/steering";
 import { LocalHub, memoryDisk, type LocalHubDisk } from "./localHub";
 
 type Payload = Record<string, unknown>;
@@ -119,7 +120,11 @@ export function appHubTransport(): HubTransport & { hub: LocalHub } {
   if (!app) {
     const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
     const disk = inTauri ? tauriLocalHubDisk : memoryDisk();
-    app = createLocalTransport(new LocalHub(disk), delegationDecisions(() => (inTauri ? tauriDelegations.listOpen() : Promise.resolve([]))));
+    app = createLocalTransport(new LocalHub(disk), delegationDecisions(
+      () => (inTauri ? tauriDelegations.listOpen() : Promise.resolve([])),
+      // Hivra WP-14: open decisions are the Needs rows.
+      inTauri ? tauriFirstMate : undefined,
+    ));
   }
   return app;
 }

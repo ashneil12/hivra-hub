@@ -646,6 +646,7 @@ import {
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
@@ -10148,6 +10149,13 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
+  const steering = useSteering(sessions, {
+    chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
+    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    submit: async (id, text, { appRequestId, steer }) =>
+      await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
+  });
 
   useMobileWorkspace({
     sessions,
@@ -13650,6 +13658,7 @@ function Workspace({
             habits: { load: loadHabits, update: updateHabits },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
+              firstMate: steering,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),

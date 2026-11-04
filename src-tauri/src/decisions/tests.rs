@@ -177,7 +177,14 @@ fn a_finished_task_is_not_released_and_bad_asks_are_refused() {
     assert!(ask(&mut conn, long, 2).unwrap_err().contains("at most"));
 
     ask(&mut conn, ask_input("fm", "k", &[&a.id]), 3).unwrap();
-    crate::delegations::cancel(&mut conn, &[a.id.clone()], Some("stop".into()), None, 4).unwrap();
+    crate::delegations::cancel(
+        &mut conn,
+        std::slice::from_ref(&a.id),
+        Some("stop".into()),
+        None,
+        4,
+    )
+    .unwrap();
     let out = answer(&mut conn, "hivra", "k", "Keep 30 days", None, 5).unwrap();
     assert!(out.applied);
     assert!(out.released_tasks.is_empty());
