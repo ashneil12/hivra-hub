@@ -1,17 +1,60 @@
+Hivra
+=====
+Hivra (https://github.com/ashneil12/hivra-hub) is a fork of MonoCode
+(https://github.com/hardbeat920/monocode), MIT. The projects it learns from are listed in
+docs/hivra/SOURCES.md and in the app (Settings, About, Credits).
+
+Third-party components Hivra adds:
+
+- UniiChat's summary tree (Memory.ts, prompt.txt)
+  Source: https://github.com/VictorTaelin/UniiChat
+  License: Apache-2.0
+  Copyright 2026 Higher Order Company
+  Used in: src/features/monos/model/monoTree.ts, monoTreePrompt.txt
+  Ported and changed; see src/features/monos/model/monoTree.NOTICE.md.
+
+- react-day-picker
+  Source: https://github.com/gpbl/react-day-picker
+  License: MIT
+  Copyright (c) 2014-2026 Giampaolo Bellavite and contributors
+  Used in: src/features/pages/ui/CalendarBlock.tsx
+  npm package, restyled with the app's theme tokens.
+
+- Tremor BarList
+  Source: https://github.com/tremorlabs/tremor
+  License: Apache-2.0
+  Copyright Tremor Labs and the Tremor contributors
+  Used in: src/features/pages/ui/PagesView.tsx
+  Restyled copy of the component, no package.
+
+- firstmate's contract text
+  Source: https://github.com/kunchenguid/firstmate
+  License: MIT
+  Copyright (c) 2026 Kun Chen
+  Used in: src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/
+  Role rules, the brief scaffold, the isolation check, the status protocol and the steering section, adapted (WP-10).
+
+- pstack (default plugin)
+  Source: https://github.com/cursor/plugins/tree/main/pstack
+  License: MIT
+  Copyright (c) 2026 Lauren Tan
+  Used in: src-tauri/plugins/pstack
+  pstack 0.15.36 copied unchanged from cursor/plugins at commit 6ea74587, less its Cursor-only parts (agents, automations, .cursor-plugin), images and a test corpus; embedded in the app and installed once per data folder as Hivra's default plugin, with its LICENSE (WP-41).
+
+- pstack (test fixture)
+  Source: https://github.com/cursor/plugins/tree/main/pstack
+  License: MIT
+  Copyright (c) 2026 Lauren Tan
+  Used in: src-tauri/src/plugins/fixtures/pstack
+  Copied unchanged from cursor/plugins at commit 6ea74587 as a test fixture, with its LICENSE (WP-30).
+
+MonoCode
+========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
 agent harnesses it can drive.
 
 Provider marks that appear in the UI (including Claude, Codex, Cursor, GitHub, GitLab, Linear, Grok, OpenCode, Pi, omp, fx, Hermes, Nous Research, Devin, and Cognition) are trademarks of their respective owners and are used only to identify those products.
 
-src/features/monos/model/monoTree.ts and monoTreePrompt.txt are adapted from UniiChat
-(https://github.com/VictorTaelin/UniiChat), Copyright 2026 Higher Order Company, licensed under the
-Apache License, Version 2.0. See src/features/monos/model/monoTree.NOTICE.md.
-
-src-tauri/plugins/pstack is pstack 0.15.36 by Lauren Tan (https://github.com/cursor/plugins/tree/main/pstack),
-Copyright (c) 2026 Lauren Tan, licensed under the MIT License (LICENSE included in that folder). Copied unchanged
-from cursor/plugins at commit 6ea74587e384e1a8035c09ae33a46fe3f881eb9b, less its Cursor-only parts (agents,
-automations, .cursor-plugin), images and a test corpus; embedded in the app and installed as Hivra's default plugin
-(WP-41). src-tauri/src/plugins/fixtures/pstack is a smaller copy of the same commit used as a test fixture (WP-30).
 The native UI uses Zed Industries' GPUI framework through gpui-pre and
 gpui-pre-platform 0.3.9 (Zed snapshot
 93d745668805029476e6d7fbb19652116fed51de), licensed under Apache-2.0.
