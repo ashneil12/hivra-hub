@@ -2,7 +2,13 @@ import { useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
-import { showAppItem, showProjectToday } from "../model/hubNav";
+import { CLI_ORDER, cliLabel } from "../../crew/model/clis";
+import { openCodingTeam, showAppItem, showProjectToday } from "../model/hubNav";
+import { addMockProject } from "../model/mockData";
+import { liveHubStore } from "../model/hubData";
+import { createChat } from "../model/hubChats";
+import { createProject, defaultProjectFolder, projectSlug } from "../model/projectActions";
+import { beginFirstProject, firstLaunchChoice, saveChosenClis } from "../model/codingTeamHome";
 import { addStarterMono, starterOffers } from "../model/starterMonos";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
@@ -35,6 +41,10 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   // WP-05: starter Monos are offered unticked. Ticking one makes an ordinary Mono. None are added otherwise.
   const offers = starterOffers();
   const [ticked, setTicked] = useState<string[]>([]);
+  // WP-20: the CLIs on this Mac, a project, and a group. All optional. A project lands in its coding team.
+  const [clis, setClis] = useState<string[]>([]);
+  const [projectName, setProjectName] = useState("");
+  const [group, setGroup] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -62,6 +72,38 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     finishOnboarding();
     if (name.trim()) setUserName(name);
     if (start === "fresh") for (const id of ticked) addStarterMono(id);
+    const choice = firstLaunchChoice({ projectName, group, clis });
+    saveChosenClis(choice.clis);
+    // WP-20: a chosen project opens on its coding team. No project keeps today's path (Today, New project, or Restore).
+    if (choice.projectName && start === "fresh") {
+      void beginFirstProject(
+        { projectName: choice.projectName, group: choice.group },
+        {
+          create: async (named) => {
+            if (!liveHubStore()) {
+              const id = projectSlug(named);
+              const made = {
+                id,
+                name: named,
+                shortName: named.split(/\s+/)[0]?.slice(0, 16) || id,
+                iconShape: "folder" as const,
+                folder: defaultProjectFolder(id),
+              };
+              addMockProject(made);
+              return { id, folder: made.folder };
+            }
+            const made = await createProject({ name: named, oneLine: named, code: true });
+            return { id: made.project.id, folder: made.project.folder };
+          },
+          addGroup: (projectId) => {
+            createChat(projectId, "Group", []);
+          },
+          open: (projectId) => openCodingTeam(projectId),
+        },
+      );
+      onClose();
+      return;
+    }
     // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
     // (New project, Restore) opens over it.
     if (next === "today") showProjectToday();
@@ -105,7 +147,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
         ) : null}
 
         {kind === "start" ? (
-          <div className="flex flex-col gap-4">
+          <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
             <h1 className="text-[18px] text-content">How would you like to start?</h1>
             <Group label="Start">
               <Toggle on={start === "fresh"} onClick={() => setStart("fresh")} title="Start a new project" sub="Name it, pick a dashboard" />
@@ -114,6 +156,22 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
               onChange={(e) => void onFile(e.target.files?.[0])} />
             {start === "fresh" ? (
+              <>
+              <Group label="CLIs you have">
+                <p className="px-3 pb-1 text-[13px] text-content/75">Tick the ones on this Mac. None are required.</p>
+                {CLI_ORDER.map((cli) => (
+                  <Check2 key={cli} id={cli} dataAttr="data-hub-onboarding-cli" on={clis.includes(cli)}
+                    onClick={() => setClis((cur) => (cur.includes(cli) ? cur.filter((item) => item !== cli) : [...cur, cli]))}
+                    title={cliLabel(cli)} />
+                ))}
+              </Group>
+              <label className="flex flex-col gap-1">
+                <span className="text-xs text-content/60">Project name</span>
+                <input data-hub-onboarding-project value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Optional" maxLength={80}
+                  className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
+              </label>
+              <Check2 id="group" dataAttr="data-hub-onboarding-group" on={group} onClick={() => setGroup((on) => !on)}
+                title="Add a group" sub="Only if you want one" />
               <Group label="Your team">
                 <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>Add any of these. Each one is an ordinary Mono. None are added unless you tick them.</p>
                 {offers.map((offer) => (
@@ -122,6 +180,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                     title={offer.name} sub={offer.role} />
                 ))}
               </Group>
+              </>
             ) : null}
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
             <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
@@ -216,9 +275,9 @@ function Toggle({ on, onClick, title, sub }: { on: boolean; onClick: () => void;
 }
 
 /** A tick box for an optional extra (square, so it doesn't read as one of a set of choices). */
-function Check2({ on, onClick, title, sub, id }: { on: boolean; onClick: () => void; title: string; sub?: string; id: string }) {
+function Check2({ on, onClick, title, sub, id, dataAttr = "data-hub-onboarding-starter" }: { on: boolean; onClick: () => void; title: string; sub?: string; id: string; dataAttr?: string }) {
   return (
-    <button type="button" role="checkbox" aria-checked={on} onClick={onClick} data-hub-onboarding-starter={id}
+    <button type="button" role="checkbox" aria-checked={on} onClick={onClick} {...{ [dataAttr]: id }}
       className="flex items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-content/5">
       <span className={`grid size-4 shrink-0 place-items-center rounded ${on ? "bg-content text-background-base" : "bg-content/10"}`}>
         {on ? <Check className="size-3" strokeWidth={2.5} /> : null}

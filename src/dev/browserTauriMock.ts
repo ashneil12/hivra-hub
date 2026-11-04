@@ -48,6 +48,9 @@ if (localHub) {
     localStorage.setItem("monocode:mono-roster", "[]");
   }
   markSetupProved();
+  // WP-20: the preview is not the Hub bundle, so it does not make Leads or open a coding team unless this is set
+  // (the same switch ?local uses). The real app has the bundle flag and does not need it.
+  localStorage.setItem("monocode:hub-leads-dev", "1");
 } else {
   localStorage.setItem("monocode:hub-examples", "1");
   localStorage.setItem("monocode:hub-onboarded", "1");

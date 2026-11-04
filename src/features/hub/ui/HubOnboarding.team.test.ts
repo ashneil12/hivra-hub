@@ -80,3 +80,16 @@ it("a ticked starter Mono is an ordinary Mono, not the template id", () => {
   expect(added[0]?.name).toBe("Coordinator");
   expect(added[0]?.id).not.toBe("coordinator");
 });
+
+it("offers the CLIs, a project and a group on the same step, and none are required", () => {
+  act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 1 of 4");
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 4");
+  const clis = [...container.querySelectorAll("[data-hub-onboarding-cli]")];
+  expect(clis.map((box) => box.getAttribute("data-hub-onboarding-cli"))).toContain("claude");
+  expect(clis.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
+  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("false");
+  expect(container.querySelector("[data-hub-onboarding-project]")).toBeTruthy();
+  expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(5);
+});
