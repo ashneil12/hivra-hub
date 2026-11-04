@@ -17,7 +17,8 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { compareVersions, homePaths, isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { appCommand } from "./ship-platform.mjs";
 import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
@@ -32,6 +33,8 @@ const roots = [];
  * app, the shell that execs it, the runner), plus anything those spawned.
  */
 function strays() {
+  // WP-09: Windows has no ps. The drill's processes are found by command line instead.
+  if (process.platform === "win32") return straysWindows();
   const ps = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
   const rows = (ps.stdout ?? "").split("\n").flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -40,6 +43,36 @@ function strays() {
   const found = new Map();
   for (const row of rows)
     if (row.pid !== process.pid && roots.some((root) => row.command.includes(`${root}/`))) found.set(row.pid, row);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of rows)
+      if (!found.has(row.pid) && found.has(row.ppid)) {
+        found.set(row.pid, row);
+        grew = true;
+      }
+  }
+  return [...found.values()];
+}
+
+function straysWindows() {
+  const bin = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const ps = spawnSync(
+    bin,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  let parsed = [];
+  try {
+    const value = JSON.parse(ps.stdout || "[]");
+    parsed = Array.isArray(value) ? value : [value];
+  } catch {
+    parsed = [];
+  }
+  const rows = parsed.map((row) => ({ pid: Number(row.ProcessId), ppid: Number(row.ParentProcessId), command: String(row.CommandLine ?? "") }));
+  const norm = (value) => value.replaceAll("/", "\\").toLowerCase();
+  const found = new Map();
+  for (const row of rows)
+    if (row.pid !== process.pid && roots.some((root) => norm(row.command).includes(`${norm(root)}\\`))) found.set(row.pid, row);
   for (let grew = true; grew; ) {
     grew = false;
     for (const row of rows)
@@ -170,6 +203,47 @@ setInterval(() => {
 }, 100);
 `;
 
+function fakeAppSource() {
+  if (process.platform === "darwin") return FAKE_APP;
+  const data =
+    process.platform === "win32"
+      ? 'path.join(process.env.HOME, "AppData", "Roaming", "com.ash.monocode-hub")'
+      : 'path.join(process.env.HOME, ".local", "share", "com.ash.monocode-hub")';
+  let source = FAKE_APP.replace('path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub")', data);
+  if (process.platform !== "win32") return source;
+  source = source.replace(
+    'const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();',
+    'const lstart = spawnSync(path.join(process.env.SystemRoot || "C:\\\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id " + process.pid + ").StartTime.ToString(\'yyyy-MM-dd HH:mm:ss\')"], { encoding: "utf8" }).stdout.trim();',
+  );
+  source = source.replace(
+    "const m = /^\\w{3}\\s+(\\w{3})\\s+(\\d{1,2})\\s+(\\d{2}):(\\d{2}):(\\d{2})\\s+(\\d{4})$/.exec(lstart);",
+    "const m = /^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})$/.exec(lstart);",
+  );
+  source = source.replace(
+    "const startTime = new Date(+m[6], month, +m[2], +m[3], +m[4], +m[5]).getTime();",
+    "const startTime = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();",
+  );
+  return source;
+}
+
+const FAKE_CODESIGN_MJS = `import fs from "node:fs";
+const app = process.argv.at(-1);
+const fake = JSON.parse(fs.readFileSync(app + "/Contents/Resources/fake.json", "utf8"));
+const sig = fake.signature;
+if (sig === "unsigned") {
+  console.error(app + ": code object is not signed at all");
+  process.exit(1);
+}
+if (process.argv[2] === "-dv") {
+  if (sig === "adhoc") console.error("Signature=adhoc");
+  else console.error("Authority=Apple Development: Test (" + sig + ")");
+} else if (process.argv[2] === "-d") {
+  if (sig === "adhoc") console.log('designated => cdhash H"0000"');
+  else console.log('designated => identifier "com.ash.monocode-hub" and certificate leaf[subject.CN] = "' + sig + '"');
+}
+process.exit(0);
+`;
+
 const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
@@ -193,11 +267,22 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
+  const binary = path.join(app, "Contents/MacOS/monocode");
   fs.writeFileSync(
-    path.join(app, "Contents/MacOS/monocode"),
+    binary,
     `#!/bin/sh\n# MONOCODE-STAMP:${stamp}\n# MONOCODE-SHIP:1\nexec "${NODE}" --disable-warning=ExperimentalWarning "${path.join(root, "fake-app.mjs")}" "$0" "$@"\n`,
     { mode: 0o755 },
   );
+  // WP-09: Windows cannot execute the stamp script. The runner spawns node from this spec.
+  if (process.platform === "win32") {
+    fs.writeFileSync(
+      `${binary}.spawn.json`,
+      JSON.stringify({
+        command: NODE,
+        args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), binary],
+      }),
+    );
+  }
   fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
   return app;
 }
@@ -206,14 +291,14 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
 function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
-  fs.writeFileSync(path.join(root, "fake-app.mjs"), FAKE_APP);
-  const codesign = path.join(root, "codesign");
-  fs.writeFileSync(codesign, FAKE_CODESIGN, { mode: 0o755 });
+  fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
+  const codesign = path.join(root, process.platform === "win32" ? "codesign.mjs" : "codesign");
+  fs.writeFileSync(codesign, process.platform === "win32" ? FAKE_CODESIGN_MJS : FAKE_CODESIGN, { mode: 0o755 });
   const home = path.join(root, "home");
   const repo = path.join(root, "repo");
   fs.mkdirSync(repo, { recursive: true });
   const git = (...args) =>
-    execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], {
+    execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, ...args], {
       encoding: "utf8",
     }).trim();
   git("init", "-q", "-b", "hub/test");
@@ -226,14 +311,15 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   const sha = git("rev-parse", "HEAD");
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
   fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
-  const app = bundleAt(path.join(home, "Applications/MonoCode Hub.app"), { sha: SHA_A, behavior: oldBehavior, root });
+  const paths = homePaths(home);
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
     root,
     ...newBundle,
   });
-  const data = path.join(home, "Library/Application Support", HUB);
+  const data = paths.data;
   fs.mkdirSync(path.join(data, "monos/frank"), { recursive: true });
   fs.writeFileSync(path.join(data, "monocode.db"), crypto.randomBytes(64 * 1024));
   fs.writeFileSync(path.join(data, "monocode.db-wal"), crypto.randomBytes(8 * 1024));
@@ -287,7 +373,8 @@ function ship(w, args = [], env = {}) {
 }
 
 function startApp(w) {
-  const child = spawn(path.join(w.app, "Contents/MacOS/monocode"), [], { env: w.env, detached: true, stdio: "ignore" });
+  const spec = appCommand(w.app);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
   child.unref();
   pids.add(child.pid);
   return child.pid;
@@ -707,7 +794,7 @@ function launchdShip(ships, agents, id, phase) {
   return { label, plist, target: `${domain}/${label}` };
 }
 
-test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", () => {
+test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", { skip: process.platform === "win32" }, () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   const ships = path.join(root, "home/Library/Application Support", HUB, "ship");
@@ -757,7 +844,7 @@ test("SH-1: tidying old ships never archives the ship a rollback under way resto
   assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
 });
 
-test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", async () => {
+test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", { skip: process.platform === "win32" }, async () => {
   const w = world();
   const ships = path.join(w.data, "ship");
   const old = "20261019-000001-ccccccc";
@@ -855,7 +942,7 @@ test("a ship also copies the Monos' permanent home, byte for byte, and never nee
   }
 });
 
-test("r50: the runner is submitted to launchd with no plist, so macOS sees no new login item (no 'App Background Activity' banner)", () => {
+test("r50: the runner is submitted to launchd with no plist, so macOS sees no new login item (no 'App Background Activity' banner)", { skip: process.platform === "win32" }, () => {
   const args = runnerSubmitArgs({ label: "test.monocode-hub-ship.x", node: NODE, dir: "/tmp/ship dir", home: "/tmp/h" });
   assert.deepEqual(args.slice(0, 8), ["submit", "-l", "test.monocode-hub-ship.x", "-o", "/tmp/ship dir/runner.log", "-e", "/tmp/ship dir/runner.log", "--"]);
   assert.deepEqual(args.slice(8), ["/usr/bin/env", "HOME=/tmp/h", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NODE, "--disable-warning=ExperimentalWarning", "/tmp/ship dir/runner.mjs", "/tmp/ship dir"]);
@@ -880,7 +967,7 @@ test("r50: the runner is submitted to launchd with no plist, so macOS sees no ne
   remember(answer.shipDir);
 });
 
-test("r50: a submitted runner removes its own launchd job when it ends cleanly, and never another ship's", () => {
+test("r50: a submitted runner removes its own launchd job when it ends cleanly, and never another ship's", { skip: process.platform === "win32" }, () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   const launchctl = fakeLaunchctl(root);
@@ -910,7 +997,13 @@ test("r53: the runner is detached in its own session with its output in runner.l
   const options = runnerDetachOptions({ home: "/tmp/h", logFd: 7, env: { KEEP: "1", HOME: "/elsewhere", PATH: "/opt/bin" } });
   assert.equal(options.detached, true, "its own session (setsid): no hangup or process-group kill reaches it");
   assert.deepEqual(options.stdio, ["ignore", 7, 7], "no pipe of the caller's held open");
-  assert.deepEqual(options.env, { KEEP: "1", HOME: "/tmp/h", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+  if (process.platform === "win32") {
+    assert.equal(options.env.KEEP, "1");
+    assert.equal(options.env.HOME, "/tmp/h");
+    assert.match(options.env.PATH, /System32/);
+  } else {
+    assert.deepEqual(options.env, { KEEP: "1", HOME: "/tmp/h", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+  }
 });
 
 // r53 dry run of the default path: a whole ship under a temporary HOME (the real app is never touched) with no

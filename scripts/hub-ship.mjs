@@ -27,6 +27,19 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+// WP-09: install location, copy and the non-macOS runner. macOS paths stay homePathsFor("darwin").
+import {
+  appCommand,
+  copyBundle,
+  defaultLauncher,
+  detachPath,
+  homePathsFor,
+  portableIsolatedEnv,
+  runnerSystemdUnit,
+  runnerTaskScript,
+  runPowerShell,
+  systemdBooted,
+} from "./ship-platform.mjs";
 import {
   DEFAULT_TIMEOUTS,
   FINAL,
@@ -57,16 +70,13 @@ export const SHIP_MARKER = "MONOCODE-SHIP:1";
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GiB = 1024 ** 3;
 
-/** Where everything lives under `home`. */
+/** Where everything lives under `home`. WP-09: Windows and Linux via homePathsFor; macOS is unchanged. */
 export function homePaths(home) {
-  return {
-    home,
-    app: path.join(home, "Applications", APP_NAME),
-    data: path.join(home, "Library/Application Support", HUB_IDENTIFIER),
-    ships: path.join(home, "Library/Application Support", HUB_IDENTIFIER, "ship"),
-    archive: path.join(home, "Archive/monocode/ships"),
-    agents: path.join(home, "Library/LaunchAgents"),
-  };
+  return homePathsFor(process.platform, home, {
+    LOCALAPPDATA: process.env.LOCALAPPDATA,
+    APPDATA: process.env.APPDATA,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+  });
 }
 
 /** Whether `home` is a temporary HOME rather than the user's own (os.userInfo reads the user database). */
@@ -87,14 +97,19 @@ const codesignPath = () => process.env.MONOCODE_SHIP_CODESIGN || "/usr/bin/codes
 /** `{adhoc, requirement, verified, authority}` for a bundle, from codesign. */
 export function signatureOf(app) {
   const codesign = codesignPath();
-  const details = spawnSync(codesign, ["-dv", "--verbose=2", app], { encoding: "utf8" });
+  // A .mjs stand-in is for Windows tests: CreateProcess will not run a shell script.
+  const run = (args) =>
+    codesign.endsWith(".mjs")
+      ? spawnSync(process.execPath, [codesign, ...args], { encoding: "utf8" })
+      : spawnSync(codesign, args, { encoding: "utf8" });
+  const details = run(["-dv", "--verbose=2", app]);
   const text = `${details.stdout ?? ""}${details.stderr ?? ""}`;
-  const requirement = spawnSync(codesign, ["-d", "-r-", app], { encoding: "utf8" });
+  const requirement = run(["-d", "-r-", app]);
   const designated = `${requirement.stdout ?? ""}`
     .split("\n")
     .map((line) => line.trim())
     .find((line) => line.startsWith("designated => "));
-  const verify = spawnSync(codesign, ["--verify", "--strict", "--deep", app], { encoding: "utf8" });
+  const verify = run(["--verify", "--strict", "--deep", app]);
   return {
     signed: details.status === 0,
     adhoc: /Signature=adhoc/.test(text) || /cdhash/.test(designated ?? ""),
@@ -228,7 +243,8 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   // The new build migrates a copy of the live database (the live file is only read).
   if (!skipHealthcheck && exists(bundle) && verified.ok) {
     const db = path.join(paths.data, "monocode.db");
-    const result = spawnSync(path.join(bundle, "Contents/MacOS/monocode"), ["healthcheck", "--json", "--db", db], {
+    const spec = appCommand(bundle);
+    const result = spawnSync(spec.command, [...spec.args, "healthcheck", "--json", "--db", db], {
       encoding: "utf8",
       timeout: 300_000,
       env: { ...process.env, MONOCODE_NO_ALERT: "1" },
@@ -353,8 +369,59 @@ export function runnerDetachOptions({ home, logFd, env = process.env }) {
   return {
     detached: true,
     stdio: ["ignore", logFd, logFd],
-    env: { ...env, HOME: home, PATH: "/usr/bin:/bin:/usr/sbin:/sbin" },
+    // macOS keeps the launchd PATH. Windows keeps System32 (detachPath).
+    env: { ...env, HOME: home, PATH: detachPath(process.platform, env) },
   };
+}
+
+/**
+ * Windows Task Scheduler or a systemd user unit. The script is the one stored on the ship
+ * (`service.script`), so a later restart runs the same words. Tests point the commands at stand-ins.
+ */
+function serviceFor(launcher, { id, node, dir, home }) {
+  const safe = String(id).replace(/[^A-Za-z0-9._-]/g, "-");
+  if (launcher === "task") {
+    const taskName = `MonoCodeHub-ship-${safe}`;
+    return {
+      kind: "task",
+      taskName,
+      script: runnerTaskScript({
+        taskName,
+        nodePath: node,
+        runnerPath: path.win32.join(dir, "runner.mjs"),
+        shipDir: dir,
+        home,
+      }),
+    };
+  }
+  if (launcher === "systemd") {
+    const unitName = `monocode-hub-ship-${safe}.service`;
+    return {
+      kind: "systemd",
+      unitName,
+      script: runnerSystemdUnit({
+        unitName,
+        nodePath: node,
+        runnerPath: path.join(dir, "runner.mjs"),
+        shipDir: dir,
+        home,
+      }),
+    };
+  }
+  return null;
+}
+
+function startServiceRunner(ship, dir, launcher) {
+  if (launcher === "task") return runPowerShell(ship.service.script);
+  const unitPath = path.join(dir, ship.service.unitName);
+  fs.writeFileSync(unitPath, ship.service.script, { mode: 0o600 });
+  const systemctl = process.env.MONOCODE_SHIP_SYSTEMCTL || "systemctl";
+  const env = { HOME: ship.home, PATH: process.env.PATH || "/usr/bin:/bin" };
+  if (process.env.XDG_RUNTIME_DIR) env.XDG_RUNTIME_DIR = process.env.XDG_RUNTIME_DIR;
+  if (process.env.DBUS_SESSION_BUS_ADDRESS) env.DBUS_SESSION_BUS_ADDRESS = process.env.DBUS_SESSION_BUS_ADDRESS;
+  const linked = spawnSync(systemctl, ["--user", "link", unitPath], { encoding: "utf8", env });
+  if (linked.status !== 0) return linked;
+  return spawnSync(systemctl, ["--user", "start", ship.service.unitName], { encoding: "utf8", env });
 }
 
 /**
@@ -393,6 +460,13 @@ function startRunner(ship, dir, launcher) {
       fs.closeSync(logFd);
     }
   }
+  if (launcher === "task" || launcher === "systemd") {
+    const started = startServiceRunner(ship, dir, launcher);
+    if (started.status !== 0) {
+      throw new Error(`the ${launcher} runner didn't start: ${(started.stderr || started.stdout || "").trim() || started.status}`);
+    }
+    return { launcher, submitted: true };
+  }
   const { label, domain } = ship.launchd;
   const result = launchctl(runnerSubmitArgs({ label, node, dir, home: ship.home }));
   if (result.status !== 0) throw new Error(`launchctl submit ${label} failed: ${result.stderr.trim() || result.status}`);
@@ -411,17 +485,18 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
   const dir = path.join(paths.ships, id);
   fs.mkdirSync(path.join(dir, STAGED_DIR), { recursive: true });
   const staged = path.join(dir, STAGED_DIR, APP_NAME);
-  execFileSync("/usr/bin/ditto", [bundle, staged]);
+  copyBundle(bundle, staged);
   const stagedStamp = readStamp(staged);
   if (readIdentifier(staged) !== HUB_IDENTIFIER || stagedStamp?.sha !== to.sha) {
     fs.rmSync(dir, { recursive: true, force: true });
     throw new Error("The staged copy doesn't match the bundle (identity or stamp).");
   }
   fs.copyFileSync(path.join(HERE, "hub-ship-runner.mjs"), path.join(dir, "runner.mjs"));
+  fs.copyFileSync(path.join(HERE, "ship-platform.mjs"), path.join(dir, "ship-platform.mjs"));
   const isolated = isIsolatedHome(paths.home);
   const mode = launchMode ?? (isolated ? "direct" : "open");
   if (isolated && mode !== "direct") throw new Error("Under a temporary HOME the app must be opened directly (Launch Services would use the real HOME).");
-  const env = mode === "direct" ? { HOME: paths.home, ...(isolated ? { CFFIXED_USER_HOME: paths.home, MONOCODE_NO_ALERT: "1" } : {}), ...launchEnv } : {};
+  const env = mode === "direct" ? { HOME: paths.home, ...portableIsolatedEnv(paths.home), ...(isolated ? { CFFIXED_USER_HOME: paths.home, MONOCODE_NO_ALERT: "1" } : {}), ...launchEnv } : {};
   const prefix = labelPrefix ?? (isolated ? "test.monocode-hub-ship" : `${HUB_IDENTIFIER}.ship`);
   const label = `${prefix}.${id}`;
   const ship = {
@@ -444,7 +519,9 @@ export function stageShip({ bundle, paths, kind = "ship", to, from, owner, reque
     restoreDb,
     restoreDbHashes,
     launch: { mode, env },
+    archive: paths.archive,
     launchd: launcher === "launchd" ? { label, domain: launchDomain(), plist: null, submitted: true } : null,
+    service: serviceFor(launcher, { id, node: process.execPath, dir, home: paths.home }),
     /** How the runner was started: "detach" (r53 default), "launchd" (submitted job) or "spawn" (tests). */
     launcher,
     node: process.execPath,
@@ -506,7 +583,7 @@ export function legacyInstall({ bundle, paths }) {
   const incoming = path.join(path.dirname(paths.app), `.${APP_NAME}.installing-${process.pid}`);
   fs.rmSync(incoming, { recursive: true, force: true });
   try {
-    execFileSync("/usr/bin/ditto", [bundle, incoming], { stdio: ["ignore", "ignore", "pipe"] });
+    copyBundle(bundle, incoming, { stdio: ["ignore", "ignore", "pipe"] });
   } catch (error) {
     fs.rmSync(incoming, { recursive: true, force: true });
     const why = String(error.stderr ?? "").trim().split("\n").pop() || error.message;
@@ -580,7 +657,8 @@ function parseArgs(argv) {
     } else throw new Error(`unknown argument ${arg}`);
   }
   if (options.whenBusy && !["wait", "restart"].includes(options.whenBusy)) throw new Error("--when-busy is wait or restart");
-  if (options.launcher && !["detach", "launchd", "spawn"].includes(options.launcher)) throw new Error("--launcher is detach, launchd or spawn");
+  if (options.launcher && !["detach", "launchd", "spawn", "task", "systemd"].includes(options.launcher))
+    throw new Error("--launcher is detach, launchd, spawn, task or systemd");
   if (options.launch && !["open", "direct"].includes(options.launch)) throw new Error("--launch is open or direct");
   if (options.requestedBy && !/^[A-Za-z0-9_-]{1,128}$/.test(options.requestedBy)) throw new Error("--requested-by takes a session id");
   return options;
@@ -656,7 +734,7 @@ export async function main(argv = process.argv.slice(2)) {
       requestedBy: options.requestedBy ? { via: "app.ship", sessionId: options.requestedBy } : { via: "cli", sessionId: null },
       whenBusy: options.whenBusy ?? "wait",
       drill: options.drill ?? null,
-      launcher: options.launcher ?? "detach",
+      launcher: options.launcher ?? defaultLauncher(process.platform, isIsolatedHome(paths.home), systemdBooted()),
       launchMode: options.launch,
       launchEnv: options.launchEnv,
       timeouts: options.timeouts,

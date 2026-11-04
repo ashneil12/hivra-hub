@@ -27,6 +27,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+// WP-09: Windows process start, bundle spawn and copy. macOS still uses ps, ditto and the binary path.
+import { appCommand, copyBundle, processStartWindows } from "./ship-platform.mjs";
 
 export const STATE = "state.json";
 export const RUNNER_LOCK = "runner.lock";
@@ -138,6 +140,8 @@ export function releaseLock(db) {
 /** When `pid` started, in ms (from ps, to the second), or null when there is no such process. */
 export function processStart(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
+  // WP-09: Windows has no `ps -o lstart`. The PowerShell start time is the same second.
+  if (process.platform === "win32") return processStartWindows(pid);
   const out = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
@@ -183,7 +187,7 @@ export function moveDir(from, to) {
     fs.renameSync(from, to);
   } catch (error) {
     if (error.code !== "EXDEV") throw error;
-    execFileSync("/usr/bin/ditto", [from, to]);
+    copyBundle(from, to);
     fs.rmSync(from, { recursive: true, force: true });
   }
 }
@@ -611,7 +615,8 @@ function launch(ctx, ship, purpose) {
   const app = appPath(ship);
   if (ship.launch?.mode === "direct") {
     const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
-    const child = spawn(path.join(app, "Contents/MacOS/monocode"), [], {
+    const spec = appCommand(app);
+    const child = spawn(spec.command, spec.args, {
       detached: true,
       stdio: ["ignore", out, out],
       env: { ...process.env, ...(ship.launch.env ?? {}) },
@@ -621,6 +626,22 @@ function launch(ctx, ship, purpose) {
     ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
     (ship.launched ??= {})[purpose] = { ...ctx.child, at: nowIso() };
     ctx.log(`opened ${app} directly (pid ${child.pid})`);
+    return;
+  }
+  // WP-09: no Launch Services off macOS. Open the bundle the direct way.
+  if (process.platform !== "darwin") {
+    const spec = appCommand(app);
+    const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
+    const child = spawn(spec.command, spec.args, {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: { ...process.env, ...(ship.launch?.env ?? {}) },
+    });
+    child.unref();
+    fs.closeSync(out);
+    ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
+    (ship.launched ??= {})[purpose] = { ...ctx.child, at: nowIso() };
+    ctx.log(`opened ${app} (pid ${child.pid})`);
     return;
   }
   execFileSync("/usr/bin/open", ["-n", app]);
@@ -694,6 +715,8 @@ function newBuildProcesses(ctx, ship) {
   // Opened through Launch Services: find it by its binary, started after the trial began.
   const binary = path.join(appPath(ship), "Contents/MacOS/monocode");
   const since = Date.parse(ship.steps?.launched ?? ship.steps?.newMoved ?? "") - 2000;
+  // WP-09: the Windows trial is the child this runner started. ps is the macOS/Linux scan.
+  if (process.platform === "win32") return [...found.entries()];
   const ps = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   for (const line of ps.stdout?.split("\n") ?? []) {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line);
@@ -805,7 +828,7 @@ function finish(ctx, ship) {
   // Tidy first: the receipt says the ship is over, and whoever reads it (hub:ship, hub:rollback, a test) may stage the
   // next one straight away; nothing of this ship's should still be moving folders by then.
   try {
-    const moved = retainShips(path.dirname(ctx.dir), path.join(ship.home, "Archive/monocode/ships"), ship.id);
+    const moved = retainShips(path.dirname(ctx.dir), ship.archive || path.join(ship.home, "Archive/monocode/ships"), ship.id);
     if (moved.length) ctx.log(`archived ${moved.join(", ")}`);
   } catch (error) {
     ctx.log(`couldn't archive old ships: ${error.message}`);
