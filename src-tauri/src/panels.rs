@@ -909,6 +909,8 @@ mod tests {
         }
     }
 
+    // A symlink needs a privilege on Windows, as in plugins/tests.rs.
+    #[cfg(unix)]
     #[test]
     fn seed_does_not_follow_a_symlink_out_of_my_panels() {
         use std::os::unix::fs::symlink;
