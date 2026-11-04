@@ -1,6 +1,7 @@
 // WP-09: install paths, quoting, and the runner's service scripts. Pure checks, so they
 // run on a Mac for Windows and Linux too. Nothing here registers a real task.
 
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -11,7 +12,6 @@ import {
   HUB_IDENTIFIER,
   acceptedSpawnCommand,
   appCommand,
-  cmdArg,
   copyBundle,
   defaultLauncher,
   detachPath,
@@ -25,14 +25,10 @@ import {
   runnerSystemdUnit,
   runnerTaskRemoveScript,
   runnerTaskScript,
-  shouldRetryWindowsSpawn,
-  spawnBundleSync,
   spawnFailure,
   systemdBooted,
   trialAppEnv,
   unitQuote,
-  windowsShellArgs,
-  windowsSpawnRetry,
 } from "./ship-platform.mjs";
 
 test("install and data folders for each platform", () => {
@@ -287,63 +283,6 @@ test("the trial app does not inherit the runner's secrets", () => {
   assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
 });
 
-test("cmd quoting escapes a bare percent and refuses one that would be quoted", () => {
-  assert.equal(cmdArg("healthcheck"), "healthcheck");
-  assert.equal(cmdArg(""), '""');
-  assert.equal(cmdArg("C:\\Program Files\\MonoCode Hub.app\\node.exe"), '"C:\\Program Files\\MonoCode Hub.app\\node.exe"');
-  // cmd /d /s /c does not turn %% back into %. ^% is the escape, and only outside quotes.
-  assert.equal(cmdArg("C:\\Users\\%USERNAME%\\app.exe"), "C:\\Users\\^%USERNAME^%\\app.exe");
-  assert.equal(cmdArg("%TEMP%"), "^%TEMP^%");
-  assert.equal(cmdArg("100% done"), null);
-  assert.equal(cmdArg('a%"b"'), null);
-  assert.equal(cmdArg("a&b"), '"a&b"');
-  assert.equal(cmdArg("a|b"), '"a|b"');
-  assert.equal(cmdArg("a<b"), '"a<b"');
-  assert.equal(cmdArg("a>b"), '"a>b"');
-  assert.equal(cmdArg("a^b"), '"a^b"');
-  assert.equal(cmdArg('say "hi"'), '"say ""hi"""');
-});
-
-test("the Windows retry is System32 cmd.exe, never ComSpec, and /s can strip one pair of quotes", () => {
-  const via = windowsShellArgs(
-    "C:\\Program Files\\MonoCode Hub.app\\node.exe",
-    ["healthcheck", "--db", "C:\\data dir\\monocode.db"],
-    { SystemRoot: "D:\\Windows", ComSpec: "C:\\evil\\cmd.exe" },
-  );
-  assert.equal(via.command, "D:\\Windows\\System32\\cmd.exe");
-  assert.equal(via.windowsVerbatimArguments, true);
-  assert.deepEqual(via.args, [
-    "/d",
-    "/s",
-    "/c",
-    '""C:\\Program Files\\MonoCode Hub.app\\node.exe" healthcheck --db "C:\\data dir\\monocode.db""',
-  ]);
-  assert.equal(windowsShellArgs("node.exe", ["-v"], {}).command, "C:\\Windows\\System32\\cmd.exe");
-  assert.equal(windowsShellArgs("C:\\Program Files\\a%b.exe", ["healthcheck"], { SystemRoot: "D:\\Windows" }), null);
-  const bare = windowsShellArgs("C:\\Users\\%USERNAME%\\app.exe", ["healthcheck"], { SystemRoot: "D:\\Windows" });
-  assert.equal(bare.args[3], '"C:\\Users\\^%USERNAME^%\\app.exe healthcheck"');
-});
-
-test("the cmd fallback runs only for a Windows start failure it can fix", () => {
-  const lost = { status: null, signal: null, error: { code: "EINVAL", message: "spawnSync app EINVAL" } };
-  assert.equal(shouldRetryWindowsSpawn(lost, "win32"), true);
-  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null, error: { code: "ENOENT" } }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null, error: { code: "EFTYPE" } }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: 0 }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: 1, signal: null }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: "SIGTERM" }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null, error: { code: "ETIMEDOUT" } }, "win32"), false);
-  assert.equal(shouldRetryWindowsSpawn(lost, "linux"), false);
-  assert.equal(shouldRetryWindowsSpawn(null, "win32"), false);
-  const env = { SystemRoot: "D:\\Windows" };
-  const retry = windowsSpawnRetry(lost, "C:\\Program Files\\app.exe", ["healthcheck"], env, "win32");
-  assert.equal(retry.command, "D:\\Windows\\System32\\cmd.exe");
-  assert.equal(windowsSpawnRetry(lost, "C:\\Program Files\\a%b.exe", ["healthcheck"], env, "win32").startRefusal, "the command line contains %");
-  assert.equal(windowsSpawnRetry({ status: null, signal: null, error: { code: "ENOENT", message: "missing" } }, "C:\\Program Files\\app.exe", [], env, "win32"), null);
-  assert.equal(windowsSpawnRetry({ status: null, signal: null, error: { code: "EFTYPE", message: "not a program" } }, "C:\\Program Files\\app.exe", [], env, "win32"), null);
-});
-
 test("a spawn that never starts names the error instead of an empty exit", () => {
   assert.equal(
     spawnFailure({ status: null, signal: null, error: { code: "ENOENT", message: "spawnSync node.exe ENOENT" } }),
@@ -353,18 +292,9 @@ test("a spawn that never starts names the error instead of an empty exit", () =>
   assert.equal(spawnFailure({ status: null, signal: "SIGTERM", error: { code: "ENOENT", message: "no" } }), null);
   const err = Object.assign(new Error("spawn node ENOENT"), { code: "ENOENT" });
   assert.equal(spawnFailure(err), "couldn't start (ENOENT: spawn node ENOENT)");
-  const missing = spawnBundleSync({ command: path.join(os.tmpdir(), "no-such-monocode-wp09.exe"), args: [] }, [], { encoding: "utf8" });
+  const missing = spawnSync(path.join(os.tmpdir(), "no-such-monocode-wp09.exe"), [], { encoding: "utf8" });
   assert.equal(missing.status, null);
-  assert.equal(missing.startRefusal, undefined);
   assert.match(spawnFailure(missing), /^couldn't start \(ENOENT:/);
-});
-
-test("spawnBundleSync returns the command's own status", () => {
-  const ok = spawnBundleSync({ command: process.execPath, args: ["-e", "process.stdout.write('ok')"] }, [], { encoding: "utf8" });
-  assert.equal(ok.status, 0);
-  assert.equal(ok.stdout, "ok");
-  const failed = spawnBundleSync({ command: process.execPath, args: ["-e", "process.exit(3)"] }, [], { encoding: "utf8" });
-  assert.equal(failed.status, 3);
 });
 
 test("appCommand on macOS is the bundle binary and ignores a spawn spec", () => {

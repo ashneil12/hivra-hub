@@ -31,7 +31,6 @@ import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, ver
 import {
   appCommand,
   copyBundle,
-  spawnBundleSync,
   spawnFailure,
   defaultLauncher,
   detachPath,
@@ -256,7 +255,7 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   if (!skipHealthcheck && exists(bundle) && verified.ok) {
     const db = path.join(paths.data, "monocode.db");
     const spec = appCommand(bundle);
-    const result = spawnBundleSync(spec, ["healthcheck", "--json", "--db", db], {
+    const result = spawnSync(spec.command, [...(spec.args ?? []), "healthcheck", "--json", "--db", db], {
       encoding: "utf8",
       timeout: 300_000,
       env: { ...process.env, MONOCODE_NO_ALERT: "1" },
@@ -273,12 +272,9 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
       exit: result.status,
       stderr: typeof result.stderr === "string" ? result.stderr.slice(-400) : "",
       ...(failure ? { error: failure } : {}),
-      ...(result.startRefusal ? { refusal: result.startRefusal } : {}),
     };
     if (result.status === 65)
       refusals.push(`The live database is newer than this build (schema ${report?.schemaFound}; the build knows ${report?.buildSchema}).`);
-    else if (result.startRefusal)
-      refusals.push(`The healthcheck couldn't start: ${result.startRefusal}.`);
     else if (result.status !== 0) {
       const stderrLine = typeof result.stderr === "string" ? result.stderr.trim().split("\n").pop() : "";
       const why = report?.error ?? failure ?? (stderrLine || null) ?? `exit ${result.status}`;
@@ -436,7 +432,6 @@ function serviceFor(launcher, { id, node, dir, home }) {
 }
 
 function spawnStartFailure(result) {
-  if (result?.startRefusal) return result.startRefusal;
   if (result?.status == null && !result?.signal) return spawnFailure(result) ?? "couldn't start (unknown)";
   const text = `${result?.stderr ?? ""}`.trim() || `${result?.stdout ?? ""}`.trim();
   return text || `exit ${result?.status}`;
