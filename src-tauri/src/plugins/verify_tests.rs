@@ -1758,3 +1758,240 @@ fn a_failed_enable_keeps_the_pending_approval_so_it_can_be_retried() {
         "a retry that lands removes the approval"
     );
 }
+
+#[test]
+fn an_old_row_with_only_a_retried_line_keeps_that_start() {
+    let start = 1_700_000_000_000_i64;
+    let retry_at = start + 90_000;
+    let tmp = Tmp::new("retried only");
+    let dir = tmp.path().join("retry only");
+    proof(&dir.join(".e2e"), "report.json", "{}\n");
+    proof(&dir.join(".e2e"), "results/home/trace.md", "trace\n");
+    set_mtime(&dir.join(".e2e/report.json"), start as u64);
+    set_mtime(&dir.join(".e2e/results/home/trace.md"), retry_at as u64);
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "retry-only", &dir.display().to_string(), None);
+    let row = delegations::record(
+        &mut conn,
+        launch("owner", "retry-only", "retry-only"),
+        start,
+    )
+    .unwrap();
+    assert!(
+        delegations::refuse(&mut conn, &row.id, None, start + 1)
+            .unwrap()
+            .applied
+    );
+    delegations::record(
+        &mut conn,
+        launch("owner", "retry-only", "retry-only"),
+        retry_at,
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE delegations SET run_started_at = NULL WHERE id = ?1",
+        [&row.id],
+    )
+    .unwrap();
+
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: row.id.clone(),
+            generation: 1,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        retry_at + 1,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "a retried line with no resume is still a new run: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the retry is kept: {evidence:?}"
+    );
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT run_started_at FROM delegations WHERE id = ?1",
+            [&row.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, Some(retry_at));
+}
+
+#[test]
+fn an_old_row_retried_before_the_column_existed_keeps_that_start() {
+    let start = 1_700_000_000_000_i64;
+    let resumed_at = start + 60_000;
+    let retry_at = start + 120_000;
+    let tmp = Tmp::new("old retry");
+    let dir = tmp.path().join("retried project");
+    proof(&dir.join(".e2e"), "report.json", "{}\n");
+    proof(&dir.join(".e2e"), "mid.json", "{}\n");
+    proof(&dir.join(".e2e"), "results/home/trace.md", "trace\n");
+    set_mtime(&dir.join(".e2e/report.json"), start as u64);
+    set_mtime(&dir.join(".e2e/mid.json"), resumed_at as u64);
+    set_mtime(&dir.join(".e2e/results/home/trace.md"), retry_at as u64);
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "old-retry", &dir.display().to_string(), None);
+    let row =
+        delegations::record(&mut conn, launch("owner", "old-retry", "old-retry"), start).unwrap();
+    assert!(
+        delegations::refuse(&mut conn, &row.id, None, start + 1)
+            .unwrap()
+            .applied
+    );
+    let revived = delegations::record(
+        &mut conn,
+        launch("owner", "old-retry", "old-retry"),
+        retry_at,
+    )
+    .unwrap();
+    assert_eq!(revived.id, row.id);
+    assert!(
+        revived
+            .log
+            .iter()
+            .all(|entry| entry.get("event").and_then(Value::as_str) != Some("resumed")),
+        "this old row was retried, not resumed"
+    );
+    // A resume from before the retry is an earlier run. The column arrived after both, so it is still unknown.
+    let mut log = revived.log.clone();
+    log.insert(
+        0,
+        json!({ "at": resumed_at, "by": "test", "event": "resumed" }),
+    );
+    conn.execute(
+        "UPDATE delegations SET run_started_at = NULL, log = ?1 WHERE id = ?2",
+        (serde_json::to_string(&log).unwrap(), &row.id),
+    )
+    .unwrap();
+
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: row.id.clone(),
+            generation: 1,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        retry_at + 1,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "proof from before the retry is an earlier run: {evidence:?}"
+    );
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/mid.json"),
+        "an earlier resume is not the latest new run: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the retry is kept: {evidence:?}"
+    );
+    let stored: Option<i64> = conn
+        .query_row(
+            "SELECT run_started_at FROM delegations WHERE id = ?1",
+            [&row.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        Some(retry_at),
+        "a save must not write the created time, or an earlier resume, over a later retry"
+    );
+}
+
+#[test]
+fn a_second_approval_restages_a_missing_copy_and_can_still_turn_verify_on() {
+    let (_package, version) = pinned_npm();
+    let tmp = Tmp::new("restage approval");
+    let host = plugin_host(&tmp);
+    let here = tmp.path().join("offered project");
+    std::fs::create_dir_all(&here).unwrap();
+    let stub = tmp.path().join("stub-deps");
+    std::fs::create_dir_all(&stub).unwrap();
+    let files = [
+        (
+            "package.json",
+            package_json("e2e", &version, "\"dependencies\":{\"left-pad\":\"1.0.0\"}"),
+        ),
+        ("dist/cli/bin.js", "process.exit(0)\n".to_string()),
+    ];
+    let owned: Vec<(String, String)> = files
+        .iter()
+        .map(|(name, text)| ((*name).to_string(), text.clone()))
+        .collect();
+    let packed = tarball(&as_pairs(&owned));
+    std::fs::write(stub.join("e2e.tgz"), &packed).unwrap();
+    std::fs::write(stub.join("version.txt"), &version).unwrap();
+    let tools = npm_tools(&stub);
+    let waiting = install::install_for(
+        &host,
+        &tools,
+        &InstallSource::Npm {
+            package: "e2e".into(),
+            version: version.clone(),
+            registry: None,
+        },
+        RequestedBy::person(),
+        Some(here.display().to_string()),
+    )
+    .unwrap();
+    let install::InstallResult::Waiting { request } = waiting else {
+        panic!("a package with dependencies waits for a yes");
+    };
+    let staged = host.pending().join(&request.id).join("plugin");
+    assert!(staged.is_dir(), "the first fetch leaves a staged copy");
+    std::fs::remove_dir_all(&staged).unwrap();
+    // The pin cannot be fetched again yet, so this approval must not throw the request away.
+    std::fs::remove_file(stub.join("e2e.tgz")).unwrap();
+
+    let err = install::approve(&host, &tools, &request.id).unwrap_err();
+    assert!(
+        install::pending(&host)
+            .iter()
+            .any(|waiting| waiting.id == request.id),
+        "a missing staged copy must leave the approval to try again, not drop it: {err}"
+    );
+    assert!(
+        err.to_lowercase().contains("try again"),
+        "the failure must say to try again: {err}"
+    );
+    assert!(
+        !names(&host).contains(&"e2e-verify".to_string()),
+        "a failed re-fetch must not claim the plugin is installed"
+    );
+
+    std::fs::write(stub.join("e2e.tgz"), &packed).unwrap();
+    let approved = install::approve(&host, &tools, &request.id).unwrap();
+    assert!(matches!(approved, install::InstallResult::Installed { .. }));
+    let key = registry::project_key(&here.display().to_string()).unwrap();
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(!entry.enabled.global);
+    assert_eq!(entry.enabled.projects, vec![key]);
+    assert!(
+        install::pending(&host)
+            .iter()
+            .all(|waiting| waiting.id != request.id),
+        "a retry that lands removes the approval"
+    );
+}

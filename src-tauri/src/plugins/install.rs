@@ -229,6 +229,33 @@ fn drop_pending(host: &Host, dir: &Path) {
     fsutil::remove_dir_if_empty(&host.pending());
 }
 
+/// Fetch the request's pinned source back into `pending/<id>/plugin`. The pending request itself is left in place,
+/// including when this fails, so the same approval can be tried again.
+fn restage(dir: &Path, request: &PendingRequest, tools: &Tools) -> Result<(), String> {
+    let staged = dir.join("plugin");
+    let work = dir.join("fetch");
+    let _ = fsutil::remove_tree(&work);
+    let _ = fsutil::remove_tree(&staged);
+    let outcome = (|| {
+        let fetched = source::fetch(&request.source, tools, &work)?;
+        super::verify::prepare_package(&fetched.root, &request.source)?;
+        let checked = load_plugin(&fetched.root).map_err(|e| e.0)?;
+        if checked.manifest.name != request.name {
+            return Err(format!(
+                "That source holds \"{}\", not \"{}\".",
+                checked.manifest.name, request.name
+            ));
+        }
+        manifest_declared(&checked)?.check(&tools.target)?;
+        fsutil::copy_plugin_tree(&fetched.root, &staged)
+    })();
+    let _ = fsutil::remove_tree(&work);
+    if outcome.is_err() {
+        let _ = fsutil::remove_tree(&staged);
+    }
+    outcome
+}
+
 /// Fetch, check and stage a plugin under `pending/<id>/plugin`. Nothing outside that folder changes, and on failure
 /// it goes too.
 fn prepare(
@@ -335,6 +362,15 @@ fn commit(
             .ok()
             .and_then(|registry| registry.plugins.get(&request.name).cloned())
     };
+    // The staged copy can already be gone while the plugin is still not installed: a previous attempt moved it
+    // and then failed. Fetch the pinned source again. If that cannot be done, keep the request so it can be tried again.
+    if already.is_none() && !staged.is_dir() {
+        if let Err(why) = restage(dir, request, tools) {
+            return Err(format!(
+                "The downloaded copy is gone and couldn't be fetched again ({why}). Try again."
+            ));
+        }
+    }
     if already.is_none() && !request.steps.is_empty() {
         if !approved {
             return Err("It needs the person's OK before anything runs.".into());
