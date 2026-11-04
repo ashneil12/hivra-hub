@@ -34,6 +34,13 @@ Third-party components Hivra adds:
   Used in: src/features/firstmate/contract.md, src/features/firstmate/model/brief.ts, src-tauri/src/firstmate/
   Role rules, the brief scaffold, the isolation check, the status protocol and the steering section, adapted (WP-10).
 
+- Puppetmaster's failure classification and retry budget
+  Source: https://github.com/professorpalmer/Puppetmaster
+  License: MIT
+  Copyright (c) 2026 Cary
+  Used in: src/features/crew/model/failure.ts, src/features/crew/model/budget.ts, src-tauri/src/crew/failure.rs, src-tauri/src/crew/budget.rs
+  failure.py and failure_policy.py translated to TypeScript and Rust (WP-13). The checks and their order are the original's. A boolean is not a retry count.
+
 - pstack (default plugin)
   Source: https://github.com/cursor/plugins/tree/main/pstack
   License: MIT

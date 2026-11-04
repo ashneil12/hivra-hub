@@ -155,6 +155,8 @@ pub struct Tick {
 /// The watcher's look, also run once at start: due timers fire into the queue, and old settled rows go.
 pub fn tick(conn: &mut Connection, now: i64) -> Result<Tick, String> {
     let fired = timers::fire_due(conn, now)?;
+    // WP-13: a usage-limit hold resumes when its reset time has come. Not part of `Tick`.
+    crate::crew::resume_due(conn, now)?;
     let pruned = queue::prune(conn, now)? + timers::prune(conn, now)?;
     Ok(Tick { fired, pruned })
 }

@@ -20,6 +20,8 @@ mod delegations;
 mod dev_fault;
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+// Hivra WP-13: crew rules, routing and reroute.
+mod crew;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -546,6 +548,11 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // Hivra WP-13: crew rules, routing and reroute.
+            crew::crew_rules_get,
+            crew::crew_rules_set,
+            crew::crew_route,
+            crew::crew_on_failure,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,
