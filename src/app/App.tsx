@@ -7060,7 +7060,7 @@ function Workspace({
    * Lead's chat by default (`lead`), or the chat Ash was last in there. A project with no code folder has no coding
    * team: it opens on its own Inbox.
    */
-  // WP-20: one coding-team home per project. The Lead's existing chat, history kept. No second chat is made.
+  // WP-20: one coding-team home per project. The Lead's existing chat, history kept. A chat is made only when there is none.
   const applyCodingTeamHomes = useCallback((list: Session[]) => {
     if (!codingTeamsOn()) return list;
     let next = list;
@@ -7073,9 +7073,18 @@ function Workspace({
         ...(lead ? { lead: { id: lead.id, sessionId: lead.sessionId } } : {}),
         notedIds: next.flatMap((row) => (codingTeamChatProject(row.id) === project.id ? [row.id] : [])),
         present: chosenPresence(),
-        newId: "",
+        newId: crypto.randomUUID(),
+        allowCreate: true,
         probe: { ghSignedIn: false },
         bindLead: saveMonoSessionId,
+        // WP-20: the CLIs ticked at first launch are this team's CLI. An existing chat is not rewritten.
+        setLeadCli: (leadId, cli) => {
+          updateMono(leadId, (mono) => (mono.engine === cli ? mono : { ...mono, engine: cli }));
+        },
+        inflate: (draft) => {
+          const harness = (HARNESSES as readonly string[]).includes(draft.harness) ? (draft.harness as HarnessId) : "claude";
+          return { ...newSession(harness, draft.cwd), id: draft.id, firstMate: true, title: draft.title };
+        },
       });
       if (settled.changed) {
         next = settled.sessions;
