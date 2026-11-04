@@ -78,7 +78,6 @@ import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import { LiveAgentsPreview } from "../../features/sessions/ui/LiveAgentsPreview";
 import { ProjectLogoIcon } from "../../features/projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
-import { MonoContactsHost } from "../../features/monos/ui/MonoContactsHost";
 import { RailAction, RailSearch } from "./RailAction";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
@@ -486,8 +485,6 @@ export function ProjectRail({
             }}
             className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-none pb-2"
           >
-            {/* WP-21: Monos as contacts, on the Classic rail. */}
-            {headerless ? null : <MonoContactsHost unseen={monos?.unseenCounts} />}
             {monos ? <MonoRailSection {...monos} /> : null}
 
             {hubItems ? hubItems : null}

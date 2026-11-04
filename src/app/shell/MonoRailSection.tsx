@@ -11,7 +11,8 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ChevronDown, CircleAlert, Clock, ImagePlus, Loader, MoreHorizontal, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
+import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
+import { duplicateContactWithFiles, editContactProfile, setContactMuted, setContactPinned } from "../../features/monos/model/contacts";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
 import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
@@ -58,7 +59,6 @@ import {
   monoWorksOn,
   reorderMonos,
   saveMonoMascot,
-  saveMonoName,
   subscribeMonos,
   updateMono,
   monoForSession,
@@ -107,14 +107,20 @@ export function unreadLabel(count: number): string {
  * (the hub passes its selected project; Today passes none and keeps the whole roster). The hub (`rank` set) sorts the
  * list: the default four, then every project's Lead (hubMonoRank).
  */
-export function railMonos<M extends { id: string; name?: string; projects: string[] }>(
+export function railMonos<M extends { id: string; name?: string; projects: string[]; pinned?: boolean }>(
   list: M[],
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
   const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
-  if (!rank) return eligible;
-  return eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m);
+  const ordered = rank
+    ? eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m)
+    : eligible;
+  // WP-21: a pinned Mono stays in this order, and comes first.
+  return ordered
+    .map((m, i) => ({ m, i }))
+    .sort((a, b) => Number(b.m.pinned === true) - Number(a.m.pinned === true) || a.i - b.i)
+    .map((x) => x.m);
 }
 
 /** Open a Mono's team (monoTeams.ts): a Lead's coding team on the Lead, or a Mono's own team on its chat. */
@@ -416,7 +422,7 @@ export function MonoRailSection({
           const selected = activeId ? mono.id === activeId : mono.id === teamInView;
           // Its team, in the hub: a Lead's coding team, or its own once it has one.
           const team = rank ? teamFor({ id: mono.id, name: look.name }, hubData().listProjects()) : undefined;
-          const unseen = selected ? 0 : (unseenCounts?.get(mono.id) ?? 0);
+          const unseen = selected || mono.muted === true ? 0 : (unseenCounts?.get(mono.id) ?? 0);
           const projects = look.projects.length
             ? monoProjectsPhrase(look.projects)
             : "No projects yet";
@@ -922,9 +928,11 @@ function MonoMenu({
   if (!mono) return null;
   const look = monoLook(mono);
   const commitName = () => {
-    const next = name.trim().slice(0, 40);
-    if (next !== (findMono(monoId)?.name ?? "")) saveMonoName(monoId, next);
+    const next = (input.current?.value ?? name).trim().slice(0, 40);
+    if (next !== (findMono(monoId)?.name ?? "")) editContactProfile(monoId, { name: next });
   };
+  const itemClass =
+    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8";
 
   return (
     <Popover
@@ -972,6 +980,61 @@ function MonoMenu({
         />
       </div>
       <div role="separator" className="my-1 h-px bg-content/10" />
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          commitName();
+          setContactPinned(monoId, mono.pinned !== true);
+          onClose();
+        }}
+        className={itemClass}
+      >
+        {mono.pinned === true ? (
+          <PinOff className="size-3.5 shrink-0" strokeWidth={1.75} />
+        ) : (
+          <Pin className="size-3.5 shrink-0" strokeWidth={1.75} />
+        )}
+        {mono.pinned === true ? "Unpin" : "Pin"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          commitName();
+          setContactMuted(monoId, mono.muted !== true);
+          onClose();
+        }}
+        className={itemClass}
+      >
+        <BellOff className="size-3.5 shrink-0" strokeWidth={1.75} />
+        {mono.muted === true ? "Unmute" : "Mute"}
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          commitName();
+          void duplicateContactWithFiles(monoId);
+          onClose();
+        }}
+        className={itemClass}
+      >
+        <Copy className="size-3.5 shrink-0" strokeWidth={1.75} />
+        Duplicate
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        onClick={() => {
+          input.current?.focus();
+          input.current?.select();
+        }}
+        className={itemClass}
+      >
+        <Pencil className="size-3.5 shrink-0" strokeWidth={1.75} />
+        Edit profile
+      </button>
       {team ? (
         <button
           type="button"
