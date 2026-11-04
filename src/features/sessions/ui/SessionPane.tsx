@@ -169,7 +169,7 @@ export type SessionPaneProps = {
   monoComposerUsage?: boolean;
   recents: RecentProject[];
   hideProjectPicker?: boolean;
-  onFocus: (sessionId: string) => void;
+  onFocus: (sessionId: string, reason?: "pointer") => void;
   onClose: (sessionId: string) => void;
   onCwdChange: (sessionId: string, cwd: string) => void;
   onBranchChange: (sessionId: string) => void;
@@ -493,7 +493,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const [transcriptScroller, setTranscriptScroller] =
     useState<HTMLDivElement | null>(null);
   const focusPane = useCallback(
-    () => onFocus(session.id),
+    () => onFocus(session.id, "pointer"),
     [onFocus, session.id],
   );
   const quoteRequestId = useRef(0);
@@ -873,7 +873,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       className={`${
         agent && !projectBackground ? "" : "chat-pane-background "
       }relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
-      onMouseDown={() => onFocus(session.id)}
+      onMouseDown={() => onFocus(session.id, "pointer")}
     >
       {projectBackground?.effect === "gradient-blur" ||
       (!agent &&
@@ -1155,7 +1155,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     onEditLastTurn={
                       editLastTurnSupported && !monoTranscript.viewingOlderPage
                         ? () => {
-                            onFocus(session.id);
+                            onFocus(session.id, "pointer");
                             recallLastTurnRef.current?.();
                           }
                         : undefined

@@ -8,7 +8,7 @@ export const NO_PROJECT = "";
 export type HubSelection = {
   /** The project id, or NO_PROJECT when none is chosen (first run, or the last one was removed). */
   project: string;
-  /** Item id inside the project; "inbox" = the project's own Today, "" = nothing chosen. */
+  /** Item id inside the project. "coding-team" is the project's home. "" = nothing chosen. */
   item: string;
   /** Optional thing to scroll to and highlight, e.g. a chat message's refId. */
   focus?: string;
@@ -25,7 +25,7 @@ function read(): HubSelection {
     const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<HubSelection> | null;
     cached = raw && typeof raw.project === "string" && typeof raw.item === "string" ? { project: raw.project, item: raw.item } : DEFAULT;
     // Before 23 Oct the top of the strip was "Today for all projects", stored as the project "today". There is no central
-    // area now: an old selection opens on the first project's Today, the same as a first launch with no project chosen.
+    // area now: an old selection is no project, and the app opens the first one's coding team.
     if (cached.project === "today") cached = { project: NO_PROJECT, item: cached.item === "inbox" ? "" : cached.item };
   } catch {
     cached = DEFAULT;
@@ -66,11 +66,52 @@ export function showAppItem(item: string): void {
 }
 
 /**
- * Back to the hub: the project's own Today — the one given, else the last project Ash was in. With no project at all it
- * opens the create-a-project empty state (HubSurface picks the first project once there is one).
+ * Back to the hub: the project's coding team — the one given, else the last project Ash was in. With no project at all
+ * it opens the create-a-project empty state (HubSurface picks the first project once there is one). WP-06: not Today.
  */
 export function showProjectToday(projectId?: string): void {
-  setHubSelection({ project: projectId ?? read().project, item: "inbox" });
+  const project = projectId ?? read().project;
+  if (project && project !== NO_PROJECT) {
+    openCodingTeam(project);
+    return;
+  }
+  setHubSelection({ project: NO_PROJECT, item: "" });
+}
+
+/** Today, Being built, the project's Decisions page and Builds. WP-06: these are not screens any more. */
+const RETIRED_HUB_ITEMS = new Set(["inbox", "being-built", "decisions", "builds"]);
+
+export function retiredHubItem(item: string): boolean {
+  return RETIRED_HUB_ITEMS.has(item);
+}
+
+export type HubOpenRequest = { kind: "inbox" } | { kind: "selection"; selection: HubSelection };
+
+/**
+ * A settings leave (OPEN_HUB_EVENT). "inbox" is the retired Today item: that request is the real Inbox, not a hub
+ * selection. Anything else is a selection. A missing or blank detail is ignored.
+ */
+export function resolveHubOpen(detail: unknown): HubOpenRequest | null {
+  if (!detail || typeof detail !== "object") return null;
+  const record = detail as { project?: unknown; item?: unknown };
+  if (typeof record.project !== "string" || typeof record.item !== "string") return null;
+  if (!record.project.trim() || !record.item.trim()) return null;
+  if (record.item === "inbox") return { kind: "inbox" };
+  return { kind: "selection", selection: { project: record.project, item: record.item } };
+}
+
+/** A project with no code folder. A hub page, so the previous project's workspace does not stay on screen. */
+export const NO_CODE_ITEM = "no-code";
+
+/** A code folder is a non-blank path. Whitespace and a blank line are not one. */
+export function projectHasCodeFolder(folder: string | null | undefined): folder is string {
+  return typeof folder === "string" && folder.trim().length > 0;
+}
+
+/** Where a project opens. No folder: the no-code page. A folder: its coding team, which is the workspace. */
+export function projectHomeSelection(project: { id: string; folder?: string | null }): HubSelection {
+  if (!projectHasCodeFolder(project.folder)) return { project: project.id, item: NO_CODE_ITEM };
+  return { project: project.id, item: "coding-team" };
 }
 
 /**
@@ -98,13 +139,15 @@ export function hubSurfaceOpen(sel: HubSelection): boolean {
   // Before anything was picked, upstream MonoCode's own build opens on its workspace, as upstream does (hubDefaultsOn).
   if (sel === DEFAULT && !hubDefaultsOn()) return false;
   if (monoTeamInView(sel)) return false;
+  // WP-06: Today, Being built, Decisions and Builds are not a surface. The coding team is the workspace.
+  if (sel.project !== NO_PROJECT && retiredHubItem(sel.item)) return false;
   return sel.project === NO_PROJECT || sel.item !== "coding-team";
 }
 
 /**
  * Opening a project's coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to talk to"): its
  * folder's workspace with the Sessions list, on its Lead's chat by default (`lead`), or the chat Ash was last in there.
- * The app lends the way (App.tsx); a hub view that offers "Open in coding team" (Being built) calls it. Without the app
+ * The app lends the way (App.tsx); a hub view that offers "Open in coding team" calls it. Without the app
  * (a browse-only page) it only selects the item.
  */
 export type CodingTeamTarget = { lead?: boolean };

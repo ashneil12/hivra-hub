@@ -44,5 +44,5 @@ it("shows no project's name or items while a new project's draft is open", async
 it("still shows the project's name and items on the project's own pages", async () => {
   const host = await sidebar("coding-team");
   expect(host.querySelector("[data-hub-project-header]")?.textContent).toContain("Hivra");
-  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Coding team", "Leadership team", "Decisions"]);
+  expect([...host.querySelectorAll("[data-hub-item]")].map((b) => b.textContent)).toEqual(["Coding team", "Leadership team"]);
 });

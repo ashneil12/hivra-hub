@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 
-// The five hub screen ideas (research/ui-port-map.md) on the real components in a browser, with example data
-// (pm-ui-ideas.tsx). One photo per idea. A browser preview only: not Ash's Mac.
+// The chat ideas (research/ui-port-map.md) on the real components in a browser, with example data
+// (pm-ui-ideas.tsx). One photo per idea. WP-06 retired the Needs you screen. A browser preview only: not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-ui-ideas";
 const shot = async (page: Page, name: string, selector?: string) => {
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -30,7 +30,7 @@ const proof = (page: Page) => page.evaluate(() => {
 
 test.use({ viewport: { width: 1320, height: 900 }, deviceScaleFactor: 2 });
 
-test("the five ideas on the real components", async ({ page }) => {
+test("the chat ideas on the real components", async ({ page }) => {
   await page.goto("/tests/browser/pm-ui-ideas.html");
   const chat = page.locator("[data-proof-chat]");
   await expect(chat.locator("[data-team-report]").first()).toBeVisible({ timeout: 60_000 });
@@ -75,13 +75,4 @@ test("the five ideas on the real components", async ({ page }) => {
   await chat.getByRole("textbox").last().fill("Example: one more thing");
   await expect(send).toHaveAttribute("aria-label", "Send");
   await chat.getByRole("textbox").last().fill("");
-
-  // 3. Needs you: why, in one plain word per row; a red line is Approve once or Deny, neither chosen.
-  const needs = page.locator("[data-proof-needs]");
-  await expect(needs.locator("[data-hub-waiting-reason]")).toHaveText(["sign in", "pick an option", "approve a red-line step"]);
-  const approval = needs.locator("[data-hub-approval] button");
-  await expect(approval).toHaveText(["Approve once", "Deny"]);
-  await expect(needs.getByText(/Always allow/)).toHaveCount(0);
-  expect(await page.evaluate(() => !!document.activeElement?.closest("[data-hub-approval]"))).toBe(false);
-  await shot(page, "pm-ui-3-needs-you-reasons", "[data-proof-needs]");
 });

@@ -1,6 +1,6 @@
 // Ship, as this window sees it (src-tauri/src/ship.rs, Phase 1b WP3): an update staged and waiting for a quiet moment,
-// this build's trial (auto-resume, habits and automations wait until it commits), and the newest ship's receipt for
-// Today. Outside the app (vitest, the browser preview) there is no ship and nothing is held.
+// this build's trial (auto-resume, habits and automations wait until it commits), and the newest ship's receipt on
+// the main pane. Outside the app (vitest, a browser preview with nothing seeded) there is no ship and nothing is held.
 
 import { useEffect, useState } from "react";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -128,8 +128,22 @@ function publish(status: ShipStatus) {
   for (const listener of listeners) listener(status);
 }
 
+/**
+ * The real app, or the browser preview when a spec seeded `monocode:dev-ship`. The preview mocks IPC but leaves
+ * `window.isTauri` unset, so it is not the app: asking on every preview page would treat it as one. No seed, no ask.
+ */
+function canReadShip(): boolean {
+  if (isTauri()) return true;
+  try {
+    const internals = (globalThis as { __TAURI_INTERNALS__?: { invoke?: unknown } }).__TAURI_INTERNALS__;
+    return typeof internals?.invoke === "function" && localStorage.getItem("monocode:dev-ship") != null;
+  } catch {
+    return false;
+  }
+}
+
 function start() {
-  if (started || !isTauri()) return;
+  if (started || !canReadShip()) return;
   started = true;
   void invoke("ship_status")
     .then((raw) => publish(readShipStatus(raw)))
@@ -204,11 +218,11 @@ export type ShipCardView = {
   dismiss?: boolean;
   /** Asks Ash whether the build works: Yes, it works / Something's wrong. It stays until he answers. */
   accept?: boolean;
-  /** Shown once: Today marks it read as soon as it is on screen, and it is gone next time (a committed update). */
+  /** Shown once: the bar marks it read as soon as it is on screen, and it is gone next time (a committed update). */
   once?: boolean;
 };
 
-/** What Today says about Ship, if anything: the trial, a waiting update, Ash's own answer, or a receipt not yet read. */
+/** What the bar says about Ship, if anything: the trial, a waiting update, Ash's own answer, or a receipt not yet read. */
 export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardView | null {
   if (!status.enabled) return null;
   const current = status.current;

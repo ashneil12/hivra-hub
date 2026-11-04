@@ -14,6 +14,7 @@ import {
   linearProjectOptions,
   pruneInboxFilters,
   connectableInboxSources,
+  connectionFromStatus,
   loadInboxConnections,
   resolveInboxSource,
   saveInboxConnections,
@@ -692,6 +693,17 @@ describe("inbox connection cache", () => {
       gitlab: null,
       azuredevops: null,
     });
+  });
+
+  it("keeps the last answer when a status read comes back empty", () => {
+    const rejected: PromiseSettledResult<{ connected: boolean } | null> = {
+      status: "rejected",
+      reason: new Error("offline"),
+    };
+    expect(connectionFromStatus({ status: "fulfilled", value: { connected: true } }, null)).toBe(true);
+    expect(connectionFromStatus({ status: "fulfilled", value: { connected: false } }, true)).toBe(false);
+    expect(connectionFromStatus({ status: "fulfilled", value: null }, true)).toBe(true);
+    expect(connectionFromStatus(rejected, false)).toBe(false);
   });
 
   it("reads unknown rather than trusting a malformed value", () => {
