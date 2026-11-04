@@ -4,7 +4,7 @@ import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { liveHubStore } from "../model/hubData";
 import { leadSpecFor } from "../model/hubLeads";
-import { openCodingTeam, showProjectToday } from "../model/hubNav";
+import { openCodingTeam, projectHasCodeFolder, projectHomeSelection, setHubSelection, showProjectToday } from "../model/hubNav";
 import { createProject, defaultProjectFolder, projectSlug } from "../model/projectActions";
 import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
@@ -118,7 +118,9 @@ export function NewProjectView() {
       setTemplate(project.id, tpl);
       ended.current = true;
       clearProjectDraft();
-      openCodingTeam(project.id);
+      // WP-20: a project with code opens on its coding team. WP-06: one without is the no-code page, not Today.
+      if (projectHasCodeFolder(project.folder)) openCodingTeam(project.id);
+      else setHubSelection(projectHomeSelection(project));
     };
     if (!liveHubStore()) {
       // The example data: no Ash OS to make it, so it is kept on this Mac only.

@@ -8,6 +8,7 @@ gets: [docs/hivra/plugins/README.md](../../docs/hivra/plugins/README.md#default-
 | Folder | Upstream | Commit | Licence |
 | --- | --- | --- | --- |
 | `pstack` | [cursor/plugins `pstack`](https://github.com/cursor/plugins/tree/main/pstack), Lauren Tan | `6ea74587` (0.15.36) | MIT, `pstack/LICENSE` |
+| `hivra-creator` | First-party, maintained in this repo (not an upstream checkout) | `ff5b2b4f` (1.0.0) | MIT, `hivra-creator/LICENSE` |
 
 ## Updating pstack to a newer commit
 

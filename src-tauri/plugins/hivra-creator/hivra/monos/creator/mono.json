@@ -1,0 +1,5 @@
+{
+  "name": "Creator",
+  "role": "Builds a skill, a panel, a persona, a Mono or a slash command as a plugin.",
+  "skills": ["write-skill", "write-panel", "write-persona", "write-mono", "write-command"]
+}
