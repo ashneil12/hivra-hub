@@ -59,6 +59,20 @@ fn capitalize(value: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Whether a CLI already has a signed-in account on disk. No token is returned and nothing is sent.
+/// `home` is the folder that holds Claude's `.claude.json`, or the user home whose `.codex` holds Codex's
+/// `auth.json`. `None` uses the same default folders as the identity command. Other CLIs have no cached check.
+pub(crate) fn cached_signed_in(provider: &str, home: Option<&Path>) -> bool {
+    match provider {
+        "claude" => claude_identity(home.map(Path::to_path_buf)).is_some(),
+        "codex" => {
+            let dir = home.map(|root| root.join(".codex"));
+            codex_identity(dir).is_some()
+        }
+        _ => false,
+    }
+}
+
 fn claude_identity(dir: Option<PathBuf>) -> Option<ProviderAccountIdentity> {
     let path = match dir {
         Some(dir) => dir.join(".claude.json"),
@@ -145,6 +159,41 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(serde_json::to_vec(&claims).unwrap());
         json!({ "tokens": { "id_token": format!("header.{payload}.signature") } })
+    }
+
+    #[test]
+    fn cached_sign_in_reads_the_account_file_and_nothing_else() {
+        let dir = std::env::temp_dir().join(format!("crew-sign-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let claude = dir.join(".claude.json");
+        assert!(!cached_signed_in("claude", Some(&dir)));
+        std::fs::write(&claude, "{not json").unwrap();
+        assert!(!cached_signed_in("claude", Some(&dir)));
+        std::fs::write(&claude, r#"{"numStartups": 4}"#).unwrap();
+        assert!(!cached_signed_in("claude", Some(&dir)));
+        std::fs::write(
+            &claude,
+            r#"{"oauthAccount":{"emailAddress":"ada@example.com"}}"#,
+        )
+        .unwrap();
+        assert!(cached_signed_in("claude", Some(&dir)));
+        assert!(!cached_signed_in("cursor", Some(&dir)));
+        assert!(!cached_signed_in("not-a-cli", Some(&dir)));
+
+        let codex_home = dir.join("codex-home");
+        std::fs::create_dir_all(codex_home.join(".codex")).unwrap();
+        assert!(!cached_signed_in("codex", Some(&codex_home)));
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(br#"{"email":"ada@example.com"}"#);
+        std::fs::write(
+            codex_home.join(".codex").join("auth.json"),
+            format!(r#"{{"tokens":{{"id_token":"header.{payload}.signature"}}}}"#),
+        )
+        .unwrap();
+        assert!(cached_signed_in("codex", Some(&codex_home)));
+        std::fs::write(codex_home.join(".codex").join("auth.json"), "nope").unwrap();
+        assert!(!cached_signed_in("codex", Some(&codex_home)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

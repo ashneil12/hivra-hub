@@ -1,5 +1,6 @@
 // The app's one hook for delegation rows (model/delegations.ts): one tracker per window, boot recovery in the main
 // window, and each chat's Claude session bound (`delegations_bind_chat`) whenever it binds or rotates.
+import type { CrewFailureNote } from "../../crew/model/advice";
 import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
@@ -12,6 +13,7 @@ import {
   DelegationTracker,
   tauriDelegations,
   type ChatBindInput,
+  type Delegation,
   type DelegationsBackend,
 } from "../model/delegations";
 import { monoForSession } from "../model/mono";
@@ -70,6 +72,8 @@ export function useDelegations(options: {
   quitting: () => boolean;
   /** r84: lands a resumed worker's finished changes (workerLanding.ts). */
   land?: (result: MonoSessionCompletionResult) => Promise<MonoSessionCompletionResult>;
+  /** WP-13: an account failure is recorded. The note can name the next signed-in CLI. */
+  crewFailure?: (row: Delegation, result: MonoSessionCompletionResult) => Promise<CrewFailureNote | undefined>;
   backend?: DelegationsBackend;
 }): DelegationTracker {
   const latest = useRef(options);
@@ -89,6 +93,10 @@ export function useDelegations(options: {
           latest.current.queueReport(monoId, message),
         quitting: () => latest.current.quitting(),
         land: (result) => latest.current.land?.(result) ?? Promise.resolve(result),
+        // WP-13: read on each settle, so a later render's callback is the one that runs.
+        ...(options.crewFailure
+          ? { crewFailure: (row: Delegation, result: MonoSessionCompletionResult) => latest.current.crewFailure!(row, result) }
+          : {}),
       }),
   );
 
