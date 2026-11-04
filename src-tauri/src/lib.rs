@@ -20,6 +20,9 @@ mod delegations;
 mod dev_fault;
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+// Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
+mod delivery_gate;
+mod pinned_tool;
 // Hivra WP-13: crew rules, routing and reroute.
 mod crew;
 mod devin_config;
@@ -548,6 +551,11 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // Hivra WP-81: the check before work goes to GitHub.
+            delivery_gate::gate_setting_get,
+            delivery_gate::gate_setting_set,
+            delivery_gate::gate_cards,
+            delivery_gate::gate_respond,
             // Hivra WP-11: the watcher's wake queue and timers.
             watcher::watcher_wake_add,
             watcher::watcher_wakes_open,
@@ -1096,6 +1104,8 @@ pub fn run() {
             autopilot::on_exit(handle);
             handle.state::<remote::RemoteConnections>().shutdown();
             reap_harness_children(handle);
+            // WP-81: stop the check's daemon with the app. It is not a login item.
+            crate::delivery_gate::stop_daemons();
         }
         _ => {}
     });

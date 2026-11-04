@@ -581,6 +581,10 @@ pub fn decisions_answer(
         by,
         now_millis(),
     )?;
+    // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person.
+    if key.starts_with("gate/") {
+        let _ = crate::delivery_gate::forward_answer(&store, &key, &answer);
+    }
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);
     }
