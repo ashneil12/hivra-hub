@@ -4,7 +4,7 @@ import type { CrewRule } from "../../crew/model/rules";
 import { crewBriefLines } from "../../crew/model/briefLine";
 import { firstMateLaunch } from "../../firstmate/model/checkoutGuard";
 import { contractForAgents } from "../../firstmate/model/contract";
-import { createMono, saveMonoSessionId } from "./mono";
+import { createMono, findMono, saveMonoSessionId, updateMono } from "./mono";
 import { monoTurnNote, routeForMono } from "./monoMate";
 import type { MonoFiles } from "./monoFiles";
 
@@ -55,6 +55,28 @@ it("an empty soul still carries the contract", () => {
     { soul: true, memory: false },
   );
   expect(note).toContain("# The first mate contract");
+});
+
+it("a design Mono's stored rule picks Codex when the project's rule picks Claude", () => {
+  const mono = createMono(["/work/design"]);
+  updateMono(mono.id, (current) => ({
+    ...current,
+    name: "Ada",
+    crewRules: [
+      { labels: ["screen"], paths: [], cli: "codex", source: "person" },
+      { labels: [], paths: ["../secret"], cli: "cursor", source: "person" },
+      { labels: ["screen"], paths: [], cli: "not-a-cli", source: "person" },
+    ],
+  }));
+  const stored = findMono(mono.id);
+  const project: CrewRule = { labels: ["screen"], paths: [], cli: "claude", source: "person" };
+  const present = [
+    { cli: "claude", installed: true, signedIn: true },
+    { cli: "codex", installed: true, signedIn: true },
+  ];
+  expect(stored?.crewRules).toEqual([{ labels: ["screen"], paths: [], cli: "codex", source: "person" }]);
+  expect(routeForMono({ labels: ["screen"], paths: [] }, stored?.crewRules ?? [], [project], [], present).cli).toBe("codex");
+  expect(routeForMono({ labels: ["screen"], paths: [] }, [], [project], [], present).cli).toBe("claude");
 });
 
 it("a design Mono's crew rule beats the coding team's and a plugin's", () => {

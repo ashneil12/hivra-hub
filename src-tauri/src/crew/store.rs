@@ -102,6 +102,9 @@ pub struct RouteQuery {
     pub mono: Option<String>,
     #[serde(default)]
     pub present: Vec<Presence>,
+    /// WP-21: rules stored on the Mono. When any survive the checks, they are this Mono's rules.
+    #[serde(default)]
+    pub mono_rules: Vec<Rule>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -225,6 +228,28 @@ fn clean_paths(values: &[String]) -> Result<Vec<String>, String> {
         out.push(text);
     }
     Ok(out)
+}
+
+/// Rules carried on a Mono are untrusted. A broken one is dropped, and the source is the person's.
+fn carried_mono_rules(rules: &[Rule]) -> Vec<Rule> {
+    let mut out = Vec::new();
+    for rule in rules {
+        let draft = RuleDraft {
+            labels: rule.labels.clone(),
+            paths: rule.paths.clone(),
+            cli: rule.cli.clone(),
+            model: rule.model.clone(),
+            effort: rule.effort.clone(),
+        };
+        let Ok(clean) = prepare_rule(&draft) else {
+            continue;
+        };
+        out.push(clean);
+        if out.len() == MAX_RULES {
+            break;
+        }
+    }
+    out
 }
 
 fn prepare_rule(draft: &RuleDraft) -> Result<Rule, String> {
@@ -471,7 +496,7 @@ pub fn route_at(
     plugins: &[Rule],
     now: i64,
 ) -> Result<Route, String> {
-    let mono = match query
+    let stored = match query
         .mono
         .as_deref()
         .map(str::trim)
@@ -480,6 +505,9 @@ pub fn route_at(
         Some(id) => load_optional(conn, "mono", id)?,
         None => Vec::new(),
     };
+    // WP-21: rules stored on the Mono beat a copy in the crew table, then the project's, then plugins'.
+    let carried = carried_mono_rules(&query.mono_rules);
+    let mono = if carried.is_empty() { stored } else { carried };
     let project = match query
         .project
         .as_deref()

@@ -13871,6 +13871,8 @@ function Workspace({
                   ...(codingTeamsOn() && monoTeam(mono.id)
                     ? { team: monoTeam(mono.id)!.folder }
                     : {}),
+                  // WP-21: this Mono's crew rules go with the route.
+                  ...(mono.crewRules?.length ? { crewRules: mono.crewRules } : {}),
                 }
               );
             },

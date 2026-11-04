@@ -144,6 +144,7 @@ export function duplicateContact(id: string): Mono | undefined {
     ...(source.mascotPicked ? { mascotPicked: true } : {}),
     ...(source.role !== undefined ? { role: source.role } : {}),
     ...(source.instructions ? { instructions: source.instructions } : {}),
+    ...(source.crewRules?.length ? { crewRules: source.crewRules } : {}),
   }));
   if (!saved) {
     discardNewMono(created.id);

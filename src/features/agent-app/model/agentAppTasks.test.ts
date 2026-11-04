@@ -625,6 +625,26 @@ describe("tasks.delegate", () => {
     expect(effort).toMatchObject({ model: "claude:opus-5-5", effort: "High" });
   });
 
+  it("sends a design Mono's crew rule with the route so it can beat the project's", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    const { source, host, api } = fixture();
+    const design = { labels: ["screen"], paths: [] as string[], cli: "codex", source: "person" as const };
+    (host as { monoOf: () => unknown }).monoOf = () => ({
+      id: "design",
+      name: "Ada",
+      projects: [PROJECT],
+      crewRules: [design],
+    });
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }));
+    await handleAgentApp(source, "r-design-rule", "tasks.delegate", { brief: "Review the screen." }, host);
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mono: "design",
+        monoRules: [expect.objectContaining({ cli: "codex", labels: ["screen"] })],
+      }),
+    );
+  });
+
   it("asks the crew which CLI to start, and uses that CLI, model and effort", async () => {
     setHarnessModels("codex", [
       {

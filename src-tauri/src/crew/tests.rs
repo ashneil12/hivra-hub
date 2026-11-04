@@ -69,6 +69,7 @@ fn query(
         project: some(project),
         mono: some(mono),
         present: present(who),
+        mono_rules: Vec::new(),
     }
 }
 
@@ -380,10 +381,43 @@ fn a_mono_rule_beats_the_project_which_beats_a_plugin() {
     let only_plugin = store::route(
         &conn,
         &query("ui", "", "/other/project", "", None, None, &[]),
-        &[plugin],
+        std::slice::from_ref(&plugin),
     )
     .unwrap();
     assert_eq!(only_plugin.cli.as_deref(), Some("claude"));
+}
+
+#[test]
+fn a_design_monos_stored_rule_beats_the_project_for_the_same_task() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("screen", "", "claude", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    let mut asked = query("screen", "", PROJECT, "design", None, None, &[]);
+    asked.mono_rules = vec![Rule {
+        labels: vec!["screen".into()],
+        paths: vec![],
+        cli: Some("codex".into()),
+        model: None,
+        effort: None,
+        source: "person".into(),
+    }];
+    let design = store::route(&conn, &asked, &[]).unwrap();
+    assert_eq!(design.cli.as_deref(), Some("codex"));
+    let project = store::route(
+        &conn,
+        &query("screen", "", PROJECT, "design", None, None, &[]),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(project.cli.as_deref(), Some("claude"));
 }
 
 #[test]
