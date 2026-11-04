@@ -11,6 +11,7 @@ import {
 } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { isCli, isEffort } from "./clis";
+import type { CrewRule } from "./rules";
 
 export type CrewPick = {
   cli?: string;
@@ -25,6 +26,8 @@ export type CrewRouteQuery = {
   override?: CrewPick;
   project?: string;
   mono?: string;
+  /** WP-21: rules stored on the Mono. They are that Mono's rules when any survive the checks. */
+  monoRules?: CrewRule[];
 };
 
 export type CrewRouteAnswer = {

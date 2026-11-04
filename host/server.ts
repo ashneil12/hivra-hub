@@ -13,6 +13,7 @@ import {
   type RemoteProvider,
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
+import { HostFirstMate } from "./firstmate/service";
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -141,6 +142,8 @@ export function createHostServer(
     { binaries: string; probed: number; catalog: Promise<HostModelCatalog> }
   >();
   const transfers = new SyncTransfers();
+  // WP-60: a remote project's first mate keeps its records on this host.
+  const firstMate = new HostFirstMate(engine);
   const workspace = new WorkspaceCommands(
     engine.store,
     (projectId, action) => engine.withIdleProject(projectId, action),
@@ -292,6 +295,7 @@ export function createHostServer(
                 "attachments.read",
                 "sessions.draft",
                 "sessions.plan",
+                "firstmate",
               ],
             };
             break;
@@ -612,6 +616,18 @@ export function createHostServer(
               )) ?? null;
             break;
           }
+          case "firstmate.brief":
+            result = firstMate.brief(params);
+            break;
+          case "firstmate.catchUp":
+            result = firstMate.catchUp(params.projectId, params.after);
+            break;
+          case "firstmate.list":
+            result = firstMate.list(params.projectId);
+            break;
+          case "firstmate.wakes":
+            result = firstMate.wakes(params.projectId);
+            break;
           default:
             throw new Error("Unsupported host method");
         }
