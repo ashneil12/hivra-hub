@@ -16,7 +16,7 @@
 //   as the 15 Oct leads), the soul is swapped only when it is exactly a soul the app itself once seeded
 //   (knownSouls.generated.ts, built from git history by scripts/known-souls.mjs); if it differs at all, Ash may have
 //   edited it, so it is left alone and a plain row says so ("Hivra lead's soul has your own changes, so the app's update
-//   was skipped. Ask Alfred to merge it if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
+//   was skipped. Ask for a merge if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
 //   adds any new template ones.
 // - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
@@ -185,7 +185,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "": "{name}'s opening line is updated.",
   "Standing instructions": "{name}'s main instructions are updated to the app's newer wording.",
   // Leads
-  "Your job": "{name} will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
+  "Your job": "{name} will now act as an orchestrator: small things itself, and bigger pieces to workers in the user's own words.",
   "Before you act": "{name} will now check its project's memory before acting, answer a long message fast with every ask listed in Ash's order before it starts, and log only real asks, not questions it answers there and then.",
   "How you run the project": "{name} will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
   "Finishing": "{name} will now prove its own work before calling it done, and ask Ash to look only at very critical work.",
@@ -198,7 +198,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "How I talk to Ash": "{name} will now talk to Ash the newer way: outcome first, plain words, one question at a time.",
   "How I talk": "{name} will now talk the newer way: plain words, short, and saying what's real before anyone asks.",
   "What I own": "{name}'s list of what it owns is updated.",
-  "Ash's standing rules": "{name}'s list of Ash's standing rules is updated.",
+  "Standing rules": "{name}'s list of standing rules is updated.",
   "Limits": "{name}'s list of what it stays out of is updated.",
   "What I watch for": "{name}'s list of what it watches for is updated.",
   "How I hand work to a project Lead and get the report back": "{name} will now brief a Lead with the outcome, what's already done and what not to touch, and expect a start confirmation and proof back.",

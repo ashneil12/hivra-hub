@@ -127,10 +127,10 @@ export function everyoneElse(seats: readonly Seat[], answerer: string): Seat[] {
 }
 
 /**
- * Members a Mono's reply addresses: an @mention anywhere ("@ed", "@Projects Manager"), or a name or a list of names
+ * Members a Mono's reply addresses: an @mention anywhere ("@ed", "@Mina"), or a name or a list of names
  * opening a line, a sentence or what follows a colon, closed by a comma or colon or followed by a please ("ed,
- * please check…", "PM: put that in the contract", "ed, Critiquito, please pass or flag", "Projects Manager, ed,
- * and Alfred, check in", "ed and Critiquito please re-check 07", "**PM:** the board"). Any case; bold or italic
+ * please check…", "Mina: put that in the contract", "ed, Cam, please pass or flag", "Mina, ed,
+ * and Cam, check in", "ed and Cam please re-check 07", "**Mina:** the board"). Any case; bold or italic
  * around a name is fine. In order, without the speaker.
  */
 export function addressedIn(reply: string, seats: readonly Seat[], speaker: string): string[] {
@@ -206,7 +206,7 @@ const words = (text: string): string[] =>
     .filter((w) => w.length > 2);
 
 /**
- * r63 (Critiquito): when the Lead had just answered, Chief of Staff posted a near-copy of it. A reply that mostly
+ * r63: when the lead had just answered, another Mono posted a near-copy of it. A reply that mostly
  * repeats a post another Mono made since Ash last wrote (most of its words are that post's words, and it adds few of
  * its own) is a repeat: the room rule says add something new or stay quiet, and the conductor keeps it out.
  */
@@ -308,7 +308,7 @@ export type TurnInput = {
   conversation?: { title: string; startedAt?: number };
   /** The Mono cards this Mono drafted lately, with what happened to each (monoMake.draftStatusLines). */
   cards?: readonly string[];
-  /** r66: Chief of Staff's live Mono list for this turn (liveMonos.ts); retired Monos are not on it. */
+  /** r66: the live Mono list for this turn (liveMonos.ts); retired Monos are not on it. */
   monosNow?: string;
   /** WP-22: a chime from a seat the room picked to answer too (several mentioned, or the auto pick chose several). */
   picked?: boolean;
@@ -342,7 +342,7 @@ function task(input: TurnInput): string {
       if (input.statusAsk)
         return forUser`Ash asked where things stand and ${input.other ?? "the host"} has given the team's one combined status. This is your one turn, and silence is right here: your reply is exactly ${NO_REPLY}, with nothing before it. Don't open the board, run a tool or check anything for this turn (the host already read it all), and write no line about what you're doing or why you're staying quiet. The only exception is a fact from your own lane that ${input.other ?? "the host"}'s status got wrong or left out and Ash needs; then your whole post is that fact, in one or two lines, and nothing else (no status of your own, no list, no agreement).`;
       // A hello or a question to the team gets every seat; a go-ahead the host has already confirmed ("ye go") gets
-      // one confirmation, not four (Critiquito, run f451 3b): the others speak only if they found something.
+      // one confirmation, not four: the others speak only if they found something.
       return forUser`Ash wrote to the whole room and ${input.other ?? "the host"} has answered. This is your one turn: Ash wrote to everyone, so he expects to hear from you too. Reply to Ash as yourself, in your own voice, briefly, without repeating what's been said. If he's only giving a go-ahead that ${input.other ?? "the host"} has already confirmed, reply with exactly ${NO_REPLY} unless you found something new from your lane; a "pass" or a restated confirmation counts as repeating. Otherwise reply with exactly ${NO_REPLY} only if his message plainly isn't for you or you'd only be repeating.`;
     case "reply":
       return `${input.other ?? "Another Mono"} addressed you in the message marked >> below. Answer it or do it, from your lane. If nothing is needed from you, or it is already settled, reply with exactly ${NO_REPLY}.`;

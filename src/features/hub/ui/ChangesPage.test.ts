@@ -134,7 +134,7 @@ it("a put-back soul's row offers 'Keep that change' in place of Undo", () => {
 
 it("a two-line row's 'and 4 more' opens it, and so does a click anywhere on the row (Mac round 2)", async () => {
   // As on the Mac: a Lead's refresh row long enough to wrap, its "and 4 more" at the end of the second line.
-  const line = "Hivra lead will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him. (and 4 more)";
+  const line = "Hivra lead will now act as an orchestrator: small things itself, and bigger pieces to workers in the user's own words. (and 4 more)";
   const details = ["one", "two", "three", "four", "Hivra lead kept its old folder because its project's folder wasn't found on this Mac."];
   const files = new Map<string, string>([["hivra-lead/SOUL.md", "after"]]);
   setBotFiles({ read: async (id, p) => ({ text: files.get(`${id}/${p}`) ?? null, hash: `h:${files.get(`${id}/${p}`) ?? ""}` }), write: async (id, p, t) => (files.set(`${id}/${p}`, t), `h:${t}`) });

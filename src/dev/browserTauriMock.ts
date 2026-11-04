@@ -36,7 +36,7 @@ if (localHub) {
   for (const k of ["monocode:hub-examples", "monocode:hub-projects", "monocode:hub-templates", "monocode:hub-nav"]) localStorage.removeItem(k);
   localStorage.setItem("monocode:hub-onboarded", "1");
   markSetupProved();
-  // A proof can start from some of Ash's saved Monos (e.g. his picked green crab on Chief of Staff); otherwise none.
+  // A proof can start from a saved roster (for example a picked green crab); otherwise none.
   localStorage.setItem("monocode:mono-roster", localStorage.getItem("monocode:dev-roster-seed") ?? "[]");
   // Make the project Leads as the Hub bundle does, so the Coding team shows them here too.
   localStorage.setItem("monocode:hub-leads-dev", "1");
@@ -57,12 +57,11 @@ if (localStorage.getItem("monocode:hub-examples") === "1" && (localStorage.getIt
   localStorage.setItem(
     "monocode:mono-roster",
     JSON.stringify([
-      // The default team first (Critiquito is an add-on, off until Ash adds it), then each project's Lead.
-      // Ash's own looks: the 15 Oct backup, with the live store's pick (a green crab on Chief of Staff, picked on purpose).
-      { id: "ada", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] },
-      { id: "bo", name: "Projects Manager", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
+      // A few ordinary Monos, then each project's lead.
+      { id: "ada", name: "Ada", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] },
+      { id: "bo", name: "Bo", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
       { id: "ed", name: "ed", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
-      { id: "cam", name: "Alfred", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
+      { id: "cam", name: "Cam", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] },
       { id: "vg-game-lead", name: "EXO lead", mascot: "invader", color: "hsl(211 92% 62%)", projects: ["/Users/ash/harness/exo-game"] },
       { id: "hivra-lead", name: "Hivra lead", mascot: "ghost", color: "hsl(12 80% 58%)", projects: ["/Users/ash/harness/hivra"] },
       { id: "nibbii-lead", name: "Nibbii lead", mascot: "robot", color: "hsl(45 90% 55%)", projects: ["/Users/ash/harness/nibbii"] },
