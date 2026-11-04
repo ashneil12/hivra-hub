@@ -48,7 +48,7 @@ export function setClaudePluginArgs(next: PluginProvider | undefined): void {
  * switch that flips between the two awaits cannot split them.
  */
 export type ClaudePluginLaunch = { additions: ClaudePluginAdditions; append?: string };
-type LaunchReader = (cwd: string) => Promise<ClaudePluginLaunch>;
+type LaunchReader = (cwd: string, sessionId?: string) => Promise<ClaudePluginLaunch>;
 
 let launchReader: LaunchReader | undefined;
 
@@ -59,11 +59,11 @@ export function setClaudePluginLaunch(next: LaunchReader | undefined): void {
 const EMPTY_PLUGINS: ClaudePluginAdditions = { pluginDirs: [], mcpServers: {} };
 
 /** This launch's plugins and added prompt. One snapshot when a reader is registered. */
-export async function claudePluginLaunch(cwd: string | undefined): Promise<ClaudePluginLaunch> {
+export async function claudePluginLaunch(cwd: string | undefined, sessionId?: string): Promise<ClaudePluginLaunch> {
   if (!cwd) return { additions: EMPTY_PLUGINS };
   if (launchReader) {
     try {
-      const launch = await launchReader(cwd);
+      const launch = await launchReader(cwd, sessionId);
       return { additions: launch?.additions ?? EMPTY_PLUGINS, append: launch?.append };
     } catch {
       return { additions: EMPTY_PLUGINS };

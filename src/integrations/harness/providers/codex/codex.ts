@@ -572,7 +572,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       : undefined;
   const storeConfig = store?.config;
   // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
-  const extraConfig = await codexExtraConfig(input.cwd);
+  const extraConfig = await codexExtraConfig(input.cwd, input.sessionId);
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(

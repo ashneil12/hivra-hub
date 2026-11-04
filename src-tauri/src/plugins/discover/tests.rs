@@ -85,6 +85,32 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     let skills = &pstack.adds[0];
     assert_eq!(skills.kind, "skills");
     assert_eq!(skills.count, Some(58));
+    let browser = entry(&index, "browser");
+    assert_eq!(browser.status, Status::Available);
+    assert_eq!(browser.version.as_deref(), Some("1.0.0"));
+    let raw: serde_json::Value = serde_json::from_str(BUNDLED_INDEX).unwrap();
+    let pinned = &raw["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "browser")
+        .unwrap()["versions"][0]["source"];
+    assert_eq!(pinned["type"], "folder");
+    assert_eq!(pinned["path"], "plugins/browser");
+    assert!(
+        pinned.get("commit").is_none(),
+        "a commit of this repo is not the plugin source"
+    );
+    match &browser.source {
+        Some(InstallSource::Local { path }) => {
+            assert!(
+                Path::new(path).ends_with(Path::new("plugins").join("browser")),
+                "{path}"
+            );
+            assert!(std::path::Path::new(path).join("plugin.json").is_file());
+        }
+        other => panic!("the browser plugin is pinned to its folder, not {other:?}"),
+    }
     let fixture_skills = std::fs::read_dir(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack/skills"),
     )
@@ -113,7 +139,7 @@ fn the_bundled_index_lists_the_five_default_plugins() {
         .unwrap();
     assert_eq!(servers.names, ["e2e"]);
 
-    for planned in ["browser", "desktop-control", "council-personas"] {
+    for planned in ["desktop-control", "council-personas"] {
         let e = entry(&index, planned);
         assert_eq!(e.status, Status::Planned, "{planned}");
         assert!(

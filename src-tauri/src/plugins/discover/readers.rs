@@ -6,6 +6,8 @@
 //! A broken entry is skipped with a plain report and the rest still list (WP-30's failure boundaries); a broken index
 //! (not JSON, unknown format) lists nothing and says why.
 
+use std::path::Path;
+
 use serde::Serialize;
 use serde_json::{Map, Value};
 
@@ -58,6 +60,8 @@ pub enum InstallSource {
         #[serde(skip_serializing_if = "Option::is_none")]
         registry: Option<String>,
     },
+    /// The plugin's own folder in this checkout. Not a commit of the app.
+    Local { path: String },
 }
 
 /// One kind of thing a plugin adds, as the index states it.
@@ -318,7 +322,8 @@ fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
     }
 }
 
-/// A DeepSeek Harness / Hivra version source: `{ type: "git", url, commit, path? }` or `{ type: "npm", registry? }`.
+/// A DeepSeek Harness / Hivra version source: git, npm, or `{ type: "folder", path }` for a plugin that
+/// ships in this checkout. A folder pin is only a path check (`plugin.json` is a file). Nothing is started.
 fn version_source(
     value: Option<&Value>,
     package: &str,
@@ -375,8 +380,33 @@ fn version_source(
                 registry,
             })
         }
-        _ => Err("has a source that is neither git nor npm".into()),
+        Some("folder") => {
+            let relative = source
+                .get("path")
+                .and_then(Value::as_str)
+                .and_then(repo_path)
+                .ok_or("has a folder source whose path leaves the repository")?;
+            folder_source(&relative)
+        }
+        _ => Err("has a source that is neither git, npm nor a folder".into()),
     }
+}
+
+/// Resolve a folder pin against this checkout. The result has to stay inside the checkout and be a plugin.
+fn folder_source(relative: &str) -> Result<InstallSource, String> {
+    let root = crate::fs::canonical(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))
+        .map_err(|_| "has a folder source that isn't on this computer".to_string())?;
+    let full = crate::fs::canonical(root.join(relative))
+        .map_err(|_| "has a folder source that isn't on this computer".to_string())?;
+    if !full.starts_with(&root) || full == root {
+        return Err("has a folder source whose path leaves the repository".into());
+    }
+    if !full.join("plugin.json").is_file() {
+        return Err("has a folder source that isn't a plugin".into());
+    }
+    Ok(InstallSource::Local {
+        path: full.to_string_lossy().into_owned(),
+    })
 }
 
 /// The newest valid version of an entry's `versions` list, with its pinned source.
