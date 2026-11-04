@@ -1,13 +1,13 @@
-//! WP-81 and WP-82: one way to put a pinned tool in the app's data folder.
+//! One way to put a pinned tool in the app's data folder (WP-81 owns this file).
 //!
 //! The bytes are checked before anything is written. An install script in the
-//! archive is never run. A fetch that fails is not a final answer: nothing is
-//! installed, and the next call tries again.
+//! archive is never run. Only the named program is kept. A fetch that fails is
+//! not a final answer: nothing is installed, and the next call tries again.
 //!
 //! The checks follow `plugins/desktop_program.rs` (WP-44): hash the download,
 //! refuse a path that leaves the archive, write the file by a temporary name
-//! and rename it. This is not a copy of that installer. Treehouse and
-//! no-mistakes are not vendored here.
+//! and rename it. This is not a copy of that installer. A tool's own pin
+//! (version, asset names, checksums) lives with that tool, not here.
 
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
