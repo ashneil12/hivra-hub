@@ -1,0 +1,6 @@
+{
+  "package": "@playwright/mcp",
+  "version": "0.0.49",
+  "command": "npx",
+  "args": ["--no-install", "@playwright/mcp@0.0.49"]
+}

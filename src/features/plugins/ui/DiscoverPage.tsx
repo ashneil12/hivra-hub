@@ -34,6 +34,8 @@ import {
   type SourceList,
 } from "../model/discover";
 import { InstalledPlugins } from "./InstalledPlugins";
+// WP-43: profiles sit on the installed list, not on Discover's first paint.
+import { BrowserProfiles } from "../../browser/ui/BrowserProfiles";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -215,7 +217,13 @@ export function PluginsPage() {
           Installed
         </button>
       </div>
-      {tab === "installed" ? <InstalledPlugins /> : (
+      {tab === "installed" ? (
+        <>
+          <InstalledPlugins />
+          {/* WP-43: each agent's browser profile. */}
+          <BrowserProfiles />
+        </>
+      ) : (
       <>
       <div data-setting-id="plugin-discover" className="flex flex-col gap-4">
         {notice ? (

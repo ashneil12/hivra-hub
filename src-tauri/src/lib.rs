@@ -68,6 +68,8 @@ mod pasteboard;
 mod pi_usage;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
+// WP-43: a browser profile per agent, and Stop.
+pub mod browser;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -773,6 +775,14 @@ pub fn run() {
             plugins::plugins_rollback,
             // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
+            // WP-43: browser profiles and the visible Stop.
+            browser::browser_profiles,
+            browser::browser_clear,
+            browser::browser_watch,
+            browser::browser_choose_own,
+            browser::browser_drives,
+            browser::browser_stop,
+            browser::browser_stop_all,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

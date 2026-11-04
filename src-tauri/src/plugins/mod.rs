@@ -177,11 +177,28 @@ pub fn plugins_rollback(app: tauri::AppHandle, name: String) -> Result<registry:
 pub fn plugins_session_wiring(
     app: tauri::AppHandle,
     cwd: String,
+    agent_id: Option<String>,
+    agent_name: Option<String>,
 ) -> Result<wiring::Wiring, String> {
     let cli = std::env::current_exe()
         .ok()
         .map(|exe| exe.to_string_lossy().into_owned());
     let cwd = crate::fs::expand_home(&cwd);
     let taken = crate::mcp::names_in_use(&cwd);
-    wiring::session_wiring(&host(&app)?, Some(&cwd), cli.as_deref(), &taken)
+    // WP-43: a chat passes its agent so the browser plugin gets that profile. Other plugins ignore it.
+    let name = agent_name.unwrap_or_else(|| "This chat".into());
+    let agent = agent_id
+        .as_deref()
+        .filter(|id| !id.is_empty())
+        .map(|id| wiring::SessionAgent {
+            id,
+            name: name.as_str(),
+        });
+    wiring::session_wiring_for(
+        &host(&app)?,
+        Some(&cwd),
+        cli.as_deref(),
+        &taken,
+        agent.as_ref(),
+    )
 }

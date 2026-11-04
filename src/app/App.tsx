@@ -115,6 +115,8 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+// WP-43: Stop stays on screen while a browser is showing.
+import { DrivingBar } from "../features/browser/ui/DrivingBar";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
@@ -1397,6 +1399,8 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
 export default function App(props: AppProps) {
   return (
     <Suspense fallback={null}>
+      {/* WP-43: Stop stays visible while a browser is showing. */}
+      <DrivingBar />
       <Workspace {...props} />
     </Suspense>
   );

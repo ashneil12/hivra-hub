@@ -47,6 +47,13 @@ pub fn native_name(plugin: &str, server: &str) -> String {
     format!("{NAME_PREFIX}{}-{server}", plugin.replace('.', "_"))
 }
 
+/// Who a browser profile belongs to (WP-43). Other plugins ignore it.
+#[derive(Clone, Copy)]
+pub struct SessionAgent<'a> {
+    pub id: &'a str,
+    pub name: &'a str,
+}
+
 /// `taken` is every server name the person already has (crate::mcp::names_in_use): a plugin server with one of those
 /// names is left out and reported, because Codex would merge its own entry with the person's (their token or env
 /// reaching the plugin) and Claude would swap the person's entry for it.
@@ -55,6 +62,18 @@ pub fn session_wiring(
     cwd: Option<&Path>,
     cli: Option<&str>,
     taken: &BTreeSet<String>,
+) -> Result<Wiring, String> {
+    session_wiring_for(host, cwd, cli, taken, None)
+}
+
+/// `agent` is the chat's own agent. The browser is left out when it is missing, so a session never starts one
+/// without a profile to use.
+pub fn session_wiring_for(
+    host: &Host,
+    cwd: Option<&Path>,
+    cli: Option<&str>,
+    taken: &BTreeSet<String>,
+    agent: Option<&SessionAgent<'_>>,
 ) -> Result<Wiring, String> {
     let registry = registry::read(host)?;
     let mut out = Wiring::default();
@@ -108,6 +127,25 @@ pub fn session_wiring(
             .iter()
             .filter(|s| wanted.contains(&s.name.as_str()))
         {
+            if entry.name == "browser" {
+                match agent {
+                    Some(agent) if crate::browser::check_agent_id(agent.id).is_ok() => {}
+                    Some(_) => {
+                        out.reports.push(Report::new(
+                            format!("{}/mcp.json", entry.name),
+                            "The browser was left out of this session: that agent isn't a profile this app can keep.",
+                        ));
+                        continue;
+                    }
+                    None => {
+                        out.reports.push(Report::new(
+                            format!("{}/mcp.json", entry.name),
+                            "The browser was left out of this session: there is no agent, so it has no profile to use.",
+                        ));
+                        continue;
+                    }
+                }
+            }
             let name = native_name(&entry.name, &server.name);
             if taken.contains(&name) || out.claude_mcp_servers.contains_key(&name) {
                 out.reports.push(Report::new(
@@ -120,7 +158,7 @@ pub fn session_wiring(
                 continue;
             }
             let project = (!entry.enabled.global).then_some(cwd).flatten();
-            match server_entries(host, &entry.name, server, cli, project) {
+            match server_entries(host, &entry.name, server, cli, project, agent) {
                 Ok((claude, codex)) => {
                     out.claude_mcp_servers.insert(name.clone(), claude);
                     match codex {
@@ -152,6 +190,7 @@ fn server_entries(
     server: &McpServer,
     cli: Option<&str>,
     project: Option<&Path>,
+    agent: Option<&SessionAgent<'_>>,
 ) -> Result<(Value, Option<Value>), String> {
     match &server.transport {
         Transport::Stdio { .. } => {
@@ -175,6 +214,19 @@ fn server_entries(
             if let Some(project) = project {
                 args.extend(["--project".into(), project.to_string_lossy().into_owned()]);
             }
+            // WP-43: only the browser server is told which agent it is.
+            if plugin == "browser" {
+                if let Some(agent) = agent {
+                    let name = agent.name.trim();
+                    let name = if name.is_empty() { "This chat" } else { name };
+                    args.extend([
+                        "--agent".into(),
+                        agent.id.to_string(),
+                        "--agent-name".into(),
+                        name.to_string(),
+                    ]);
+                }
+            }
             let entry = json!({ "command": cli, "args": args });
             Ok((entry.clone(), Some(entry)))
         }
@@ -195,6 +247,9 @@ struct LaunchArgs {
     plugin: String,
     server: String,
     project: Option<String>,
+    /// WP-43. Consumed so `--agent` is not an unknown option. The browser launcher reads it; nothing else does.
+    agent: Option<String>,
+    agent_name: Option<String>,
 }
 
 impl PartialEq for Host {
@@ -210,6 +265,8 @@ fn parse_launch_args(args: &[String]) -> Result<LaunchArgs, String> {
     let mut plugin = None;
     let mut server = None;
     let mut project = None;
+    let mut agent = None;
+    let mut agent_name = None;
     let mut iter = args.iter();
     while let Some(flag) = iter.next() {
         let value = iter
@@ -222,6 +279,8 @@ fn parse_launch_args(args: &[String]) -> Result<LaunchArgs, String> {
             "--plugin" => plugin = Some(value),
             "--server" => server = Some(value),
             "--project" => project = Some(value),
+            "--agent" => agent = Some(value),
+            "--agent-name" => agent_name = Some(value),
             other => return Err(format!("unknown option {other}")),
         }
     }
@@ -236,6 +295,8 @@ fn parse_launch_args(args: &[String]) -> Result<LaunchArgs, String> {
         plugin: plugin.ok_or("--plugin is missing")?,
         server: server.ok_or("--server is missing")?,
         project,
+        agent,
+        agent_name,
     })
 }
 
@@ -246,7 +307,10 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
         plugin,
         server,
         project,
+        agent,
+        agent_name,
     } = parse_launch_args(args)?;
+    let _ = (agent, agent_name);
     let registry = registry::read(&host)?;
     let entry = registry
         .plugins
@@ -332,6 +396,13 @@ pub(crate) fn passed_env(
 /// `monocode plugin-mcp --root <dir> --plugin <name> --server <name> [--project <dir>]`: becomes the plugin's server
 /// on this stdio. Exit 78 when refused.
 pub fn run_main(args: &[String]) -> i32 {
+    // WP-43: the browser server records its drive and its profile before it becomes the plugin process.
+    if args
+        .windows(2)
+        .any(|pair| pair[0] == "--plugin" && pair[1] == "browser")
+    {
+        return crate::browser::run(args);
+    }
     let mut command = match prepare_launch(args) {
         Ok(command) => command,
         Err(why) => {
