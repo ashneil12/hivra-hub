@@ -12,6 +12,7 @@ import {
   plainError,
   readRegistry,
   readReports,
+  installDesktopControl,
   removePlugin,
   rollbackPlugin,
   sourceLine,
@@ -19,6 +20,7 @@ import {
   updatePlugin,
   type InstalledPlugin,
 } from "../model/pluginInstall";
+import { DesktopConsentBridge } from "./DesktopConsentBridge";
 
 /** The Installed list: update to an exact version, roll back one step, or remove. */
 export function InstalledPlugins() {
@@ -30,6 +32,7 @@ export function InstalledPlugins() {
   const [busy, setBusy] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
   const [reports, setReports] = useState<Record<string, string[]>>({});
+  const [loaded, setLoaded] = useState(false);
   const generation = useRef(0);
   const mounted = useRef(true);
 
@@ -40,10 +43,12 @@ export function InstalledPlugins() {
         if (!mounted.current || ticket !== generation.current) return;
         setRows(installedRows(readRegistry(value)));
         setError(null);
+        setLoaded(true);
       })
       .catch((caught) => {
         if (!mounted.current || ticket !== generation.current) return;
         setError(plainError(caught));
+        setLoaded(true);
       });
   }, []);
 
@@ -195,6 +200,10 @@ export function InstalledPlugins() {
                   </div>
                 </form>
               ) : null}
+              {/* WP-44: consent for desktop control only. The switch above is still what turns it on. */}
+              {row.name === "desktop-control" ? (
+                <DesktopConsentBridge on={on || row.enabled.projects.length > 0} />
+              ) : null}
               {lines.length > 0 ? (
                 <ul aria-label={`Reports for ${row.name}`} className="mt-2 flex flex-col gap-1">
                   {lines.map((line, index) => (
@@ -208,6 +217,11 @@ export function InstalledPlugins() {
           );
         })}
       </ul>
+      {loaded && !error && !rows.some((row) => row.name === "desktop-control") ? (
+        <SecondaryButton disabled={busy !== null} onClick={() => void run("desktop-control", installDesktopControl)}>
+          Install desktop control
+        </SecondaryButton>
+      ) : null}
     </div>
   );
 }

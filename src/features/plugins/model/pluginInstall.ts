@@ -203,6 +203,11 @@ export function sourceLine(source: PluginSource | null | undefined): string {
   return source.location;
 }
 
+/** Install the carried desktop control plugin. It stays off until it is turned on. */
+export function installDesktopControl(): Promise<unknown> {
+  return invoke("desktop_control_install");
+}
+
 export function plainError(error: unknown): string {
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message.trim()) return error.message;
