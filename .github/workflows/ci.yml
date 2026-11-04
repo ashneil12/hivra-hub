@@ -184,7 +184,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Ship and rollback under a temporary HOME
+      # The suite runs `hub-ship.mjs --drill-rollback` with no --launcher, under the
+      # temporary HOME `world()` makes. HOME and USERPROFILE here are also temporary,
+      # so a drill cannot fall through to the runner's real profile on any OS.
+      - name: hub:ship -- --drill-rollback under a temporary HOME
+        env:
+          HOME: ${{ runner.temp }}/monocode-hub-ship-home
+          USERPROFILE: ${{ runner.temp }}/monocode-hub-ship-home
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
   appimage:
