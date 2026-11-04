@@ -19,6 +19,7 @@ let container: HTMLElement;
 const text = () => container.textContent ?? "";
 async function until(read: () => boolean) {
   for (let i = 0; i < 80 && !read(); i++) await act(async () => new Promise((r) => setTimeout(r, 15)));
+  if (!read()) throw new Error("timed out waiting for the hub surface");
 }
 
 beforeEach(async () => {
@@ -56,6 +57,25 @@ it("a stored Today or Being built item does not draw those screens", async () =>
   expect(container.querySelector("[data-hub-project-decisions]")).toBeNull();
   expect(text()).toContain("Hivra");
   expect(text()).not.toMatch(/Example:|isn't running|not connected/i);
+});
+
+it("says so when what it waits for never arrives", async () => {
+  await expect(until(() => false)).rejects.toThrow(/timed out/);
+});
+
+it("a project with no code folder says so and does not open the coding team", async () => {
+  const { hubData, setHubDataSource: setSource } = await import("../model/hubData");
+  const src = Object.create(hubData());
+  src.listProjects = () => [{ id: "notes", name: "Notes", shortName: "Notes", iconShape: "book", folder: null }];
+  src.listProjectItems = () => [];
+  src.connection = () => ({ status: "ready" });
+  setSource(src);
+  act(() => root.render(createElement(HubSurface, { selection: { project: "notes", item: "no-code" } })));
+  expect(text()).toContain("This project has no code folder yet.");
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  expect(localStorage.getItem("monocode:hub-nav") ?? "").not.toContain("coding-team");
 });
 
 it("no project still offers a new one, and nothing from the old boards", () => {

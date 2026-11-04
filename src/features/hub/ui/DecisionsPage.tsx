@@ -9,8 +9,8 @@ const OPEN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/
 
 /**
  * Settings → Decisions (scorecard D2): one place per project for what is still open and what is already decided.
- * It shows the inbox's open asks and Ash OS's own memory primer, and nothing else: answering happens in the project's
- * Asking view (the "Open" button goes there), and the memory is a read of what Ash OS composes for a fresh session.
+ * It shows the inbox's open asks and Ash OS's own memory primer, and nothing else: answering happens in the Inbox
+ * (the "Open" button goes there), and the memory is a read of what Ash OS composes for a fresh session.
  * Given a projectId (each project's own Decisions, PM r57), it shows that project only, with no project picker.
  */
 export function DecisionsPage({ projectId }: { projectId?: string } = {}) {

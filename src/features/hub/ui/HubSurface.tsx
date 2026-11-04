@@ -4,7 +4,7 @@ import { RestorePreview } from "./RestorePreview";
 import { FolderOpen } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { dismissDoneNeeds, hubData, useHubDataVersion } from "../model/hubData";
-import { appItemInView, openCodingTeam, showAppItem } from "../model/hubNav";
+import { appItemInView, NO_CODE_ITEM, openCodingTeam, showAppItem } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { NewProjectView } from "./NewProjectView";
@@ -48,6 +48,14 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
     return <GroupChatView key={selection.item} chatId={selection.item.slice(5)} projectId={project.id} />;
   if (selection.item === "new-chat") return <NewGroupChat projectId={project.id} />;
   if (selection.item.startsWith("proposal:")) return <ProposalView key={selection.item} id={selection.item.slice(9)} />;
+  // WP-06: no code folder. A page, so the previous project's workspace is not left up. Do not open the coding team.
+  if (selection.item === NO_CODE_ITEM) {
+    return (
+      <div role="region" aria-label="No code folder" data-hub-no-code className="grid min-h-0 min-w-0 flex-1 place-items-center px-8 text-content">
+        <p className="max-w-[420px] text-center text-[13px] text-content/80">This project has no code folder yet.</p>
+      </div>
+    );
+  }
   const section = data.listProjectItems(project.id).find((i) => i.id === selection.item);
   if (section?.sectionType === "project-pages")
     return <ProjectPagesView key={project.id} projectId={project.id} title={section.title} />;

@@ -85,6 +85,35 @@ export function retiredHubItem(item: string): boolean {
   return RETIRED_HUB_ITEMS.has(item);
 }
 
+export type HubOpenRequest = { kind: "inbox" } | { kind: "selection"; selection: HubSelection };
+
+/**
+ * A settings leave (OPEN_HUB_EVENT). "inbox" is the retired Today item: that request is the real Inbox, not a hub
+ * selection. Anything else is a selection. A missing or blank detail is ignored.
+ */
+export function resolveHubOpen(detail: unknown): HubOpenRequest | null {
+  if (!detail || typeof detail !== "object") return null;
+  const record = detail as { project?: unknown; item?: unknown };
+  if (typeof record.project !== "string" || typeof record.item !== "string") return null;
+  if (!record.project.trim() || !record.item.trim()) return null;
+  if (record.item === "inbox") return { kind: "inbox" };
+  return { kind: "selection", selection: { project: record.project, item: record.item } };
+}
+
+/** A project with no code folder. A hub page, so the previous project's workspace does not stay on screen. */
+export const NO_CODE_ITEM = "no-code";
+
+/** A code folder is a non-blank path. Whitespace and a blank line are not one. */
+export function projectHasCodeFolder(folder: string | null | undefined): folder is string {
+  return typeof folder === "string" && folder.trim().length > 0;
+}
+
+/** Where a project opens. No folder: the no-code page. A folder: its coding team, which is the workspace. */
+export function projectHomeSelection(project: { id: string; folder?: string | null }): HubSelection {
+  if (!projectHasCodeFolder(project.folder)) return { project: project.id, item: NO_CODE_ITEM };
+  return { project: project.id, item: "coding-team" };
+}
+
 /**
  * A Mono's own team (monoTeams.ts) is the item `team:<mono id>`, with no project selected (Today's): it isn't a project,
  * so the strip highlights none and the Monos rail marks the Mono instead.

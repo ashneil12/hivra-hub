@@ -48,3 +48,33 @@ it("upstream's own build still opens on its workspace before anything was picked
   const nav = await import("./hubNav");
   expect(nav.hubSurfaceOpen(nav.currentHubSelection())).toBe(false);
 });
+
+it("Settings → Decisions → Open is the Inbox, not the retired Today item", async () => {
+  const nav = await import("./hubNav");
+  expect(nav.resolveHubOpen({ project: "hivra", item: "inbox" })).toEqual({ kind: "inbox" });
+  expect(nav.resolveHubOpen({ project: "项目", item: "inbox" })).toEqual({ kind: "inbox" });
+  expect(nav.resolveHubOpen({ project: "hivra", item: "leadership-team" })).toEqual({
+    kind: "selection",
+    selection: { project: "hivra", item: "leadership-team" },
+  });
+  expect(nav.resolveHubOpen({ project: "hivra", item: "being-built" })).toEqual({
+    kind: "selection",
+    selection: { project: "hivra", item: "being-built" },
+  });
+  for (const detail of [null, undefined, {}, { project: "hivra" }, { item: "inbox" }, { project: "", item: "inbox" }, { project: "hivra", item: "  " }, { project: "hivra", item: "\r\n" }]) {
+    expect(nav.resolveHubOpen(detail)).toBeNull();
+  }
+});
+
+it("a project with no folder is a hub page, not the previous workspace", async () => {
+  const nav = await import("./hubNav");
+  for (const folder of [null, undefined, "", "   ", "\r\n"]) {
+    const home = nav.projectHomeSelection({ id: "notes", folder });
+    expect(home).toEqual({ project: "notes", item: "no-code" });
+    expect(nav.hubSurfaceOpen(home)).toBe(true);
+  }
+  const coded = nav.projectHomeSelection({ id: "exo", folder: "/Users/example/My Projects/vg-game" });
+  expect(coded).toEqual({ project: "exo", item: "coding-team" });
+  expect(nav.hubSurfaceOpen(coded)).toBe(false);
+  expect(nav.projectHomeSelection({ id: "win", folder: "C:\\work\\hivra" }).item).toBe("coding-team");
+});
