@@ -30,6 +30,7 @@ import {
   type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
 import { storedReview } from "./workerReview";
+import type { CrewFailureNote } from "../../crew/model/advice";
 
 export type DelegationState =
   | "running"
@@ -513,18 +514,18 @@ export type DelegationHost = {
   /** r84: a resumed worker's finished changes put into the project (workerLanding.ts); the report says what happened. */
   land?(result: MonoSessionCompletionResult): Promise<MonoSessionCompletionResult>;
   /**
-   * WP-13: a failed task is recorded so a usage limit can pause and resume, and an account failure can move.
-   * The action (`pause`, `resume`, `reroute`, …), or nothing when the record didn't land.
+   * WP-13: an account failure is recorded. The note can name the next signed-in CLI. A usage limit is not
+   * settled here; the row stays open and the app notes the pause on its own.
    */
-  crewFailure?(row: Delegation, result: MonoSessionCompletionResult): Promise<string | undefined>;
+  crewFailure?(row: Delegation, result: MonoSessionCompletionResult): Promise<CrewFailureNote | undefined>;
 };
 
 /** One monitored launch or follow-up. */
 export type DelegationLaunch = {
   /** The stored row (null when the store refused it; the in-memory batch still reports). */
   row: Promise<Delegation | null>;
-  /** The child's turn ended. The batch cache queues the report; this keeps the row in step. The crew action, if one was recorded. */
-  settle(result: MonoSessionCompletionResult): Promise<string | undefined>;
+  /** The child's turn ended. The batch cache queues the report; this keeps the row in step. The crew note, if one was recorded. */
+  settle(result: MonoSessionCompletionResult): Promise<CrewFailureNote | undefined>;
   /** The CLI refused the launch and the calling turn already heard why: nothing is owed. */
   refuse(): void;
 };
@@ -668,7 +669,7 @@ export class DelegationTracker {
             settleInput(recorded, result),
           );
           this.remember(change.row);
-          // WP-13: a failure that landed is recorded, so a usage limit can pause and an account failure can move.
+          // WP-13: an account failure that landed is recorded. The note can name the next signed-in CLI.
           if (change.applied && change.row && result.status === "failed" && this.host.crewFailure)
             return await this.host.crewFailure(change.row, result);
           return undefined;

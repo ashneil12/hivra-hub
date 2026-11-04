@@ -58,7 +58,8 @@ import {
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
-import { crewRouteFor, recordCrewFailure } from "../features/crew/model/host";
+import { withCrewAdvice } from "../features/crew/model/advice";
+import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import {
   briefCancelled,
   briefSentAt,
@@ -13085,6 +13086,13 @@ function Workspace({
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
             settled = true;
+            // WP-13: an account failure can name the next signed-in CLI. A timeout of that note still reports the failure.
+            if (result.status === "failed") {
+              void Promise.resolve(launch?.settle(result))
+                .then((note) => settle(withCrewAdvice(result, note)))
+                .catch(() => settle(result));
+              return;
+            }
             launch?.settle(result);
             settle(result);
           };
@@ -13105,17 +13113,19 @@ function Workspace({
               ...(latestTurn && firstReport ? { earlierReport: firstReport } : {}),
               ...(reviewRequired ? { reviewRequired: true } : {}),
             });
-            // WP-13: a usage limit is settled failed first, so it can be paused or resumed. A pause, a resume,
-            // or a tracker that is not ready, is not reported. A move still reaches the Lead.
+            // WP-13: the row stays open. H8/E5 resumes it. The crew only notes the pause.
             if (holdForLimit(result)) {
               if (settled) return;
               settled = true;
-              const action = await launch?.settle(result);
-              if (!launch || action === "pause" || action === "resume") {
-                settle.discard();
-                return;
+              if (row) {
+                const child = sessionsRef.current.find((session) => session.id === row.childSession);
+                void recordCrewPause(row, result, {
+                  cli: child?.harness,
+                  model: child?.model,
+                  effort: child?.modelSettings?.effort,
+                }).catch(() => undefined);
               }
-              settle(result);
+              settle.discard();
               return;
             }
             // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
