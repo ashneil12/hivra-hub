@@ -3,6 +3,7 @@ import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { ProjectActionsPanel } from "./ProjectActionsPanel";
 import { WorktreeCleanup } from "./WorktreeCleanup";
+import { WorktreePoolSection } from "./WorktreePoolSection";
 import { SearchableProjectPicker } from "../../projects/ui/SearchableProjectPicker";
 import {
   FolderOpen,
@@ -236,6 +237,7 @@ export function WorktreesPage({
       {project && (
         <ProjectActionsPanel project={project} worktrees={data?.worktrees ?? []} />
       )}
+      {project && <WorktreePoolSection cwd={project} />}
       <WorktreeCleanup project={project} onRemove={onRemove} onChanged={refresh} />
       {creating && (
         <CreateWorktreeDialog

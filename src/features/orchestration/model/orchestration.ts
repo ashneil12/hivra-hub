@@ -298,6 +298,11 @@ export class Orchestrator {
   private pumping = false;
   private starting = new Set<string>();
   private pumpAgain = false;
+  /** One wake-up for pool-full waits. An earlier time is kept. */
+  private poolWake: {
+    at: number;
+    timer: ReturnType<typeof setTimeout>;
+  } | null = null;
   private waking = new Set<string>();
   private blocked = new Map<string, string>();
   private announced = new Map<string, Set<string>>();
@@ -959,6 +964,8 @@ export class Orchestrator {
       (entry) => activeTask(entry) && scopesOverlap(entry.scopes, task.scopes),
     );
     if (owner) return `Waiting for files: ${owner.title}`;
+    if (typeof task.poolNote === "string" && task.poolNote !== "")
+      return task.poolNote;
     return "Waiting for a worker slot";
   }
   private async execute(
@@ -1507,6 +1514,15 @@ export class Orchestrator {
             await this.stopRun(run.leadId);
             break;
           }
+          const retryAt = task.poolRetryAt;
+          if (
+            typeof retryAt === "number" &&
+            Number.isFinite(retryAt) &&
+            retryAt > Date.now()
+          ) {
+            this.schedulePoolWake(retryAt);
+            continue;
+          }
           const dispatchId = crypto.randomUUID();
           const now = Date.now();
           const dispatch: OrchestrationDispatch = {
@@ -1529,6 +1545,8 @@ export class Orchestrator {
                     status: "running",
                     activeDispatchId: dispatchId,
                     acceptedDispatchId: undefined,
+                    poolNote: undefined,
+                    poolRetryAt: undefined,
                   }
                 : entry,
             ),
@@ -1615,13 +1633,23 @@ export class Orchestrator {
                 stage: "turn_submitted",
               });
           } catch (error) {
+            const message = messageOf(error);
+            if (message.startsWith("pool-full: ")) {
+              await this.holdForFullPool(
+                run.leadId,
+                task.id,
+                dispatchId,
+                message,
+              );
+              continue;
+            }
             await this.settle(
               run.leadId,
               task.id,
               {
                 status: "failed",
                 text: "",
-                error: messageOf(error),
+                error: message,
               },
               dispatchId,
             );
@@ -1637,6 +1665,66 @@ export class Orchestrator {
         void this.pump();
       }
     }
+  }
+  /**
+   * A full worktree pool is a wait, not a failure. Put the task back on the
+   * queue and wake once; do not start it again in this pump pass.
+   */
+  private async holdForFullPool(
+    leadId: string,
+    taskId: string,
+    dispatchId: string,
+    message: string,
+  ) {
+    const note = message.slice("pool-full: ".length).trim();
+    const poolNote =
+      note ||
+      "Waiting for a free worktree. The pool for this project is full.";
+    const poolRetryAt = Date.now() + 5_000;
+    const current = this.run(leadId);
+    const currentTask = current?.tasks.find((entry) => entry.id === taskId);
+    if (
+      !current ||
+      currentTask?.status !== "running" ||
+      currentTask.activeDispatchId !== dispatchId
+    )
+      return;
+    await this.commit({
+      ...current,
+      tasks: current.tasks.map((entry) =>
+        entry.id === taskId
+          ? {
+              ...entry,
+              status: "queued",
+              activeDispatchId: undefined,
+              poolNote,
+              poolRetryAt,
+            }
+          : entry,
+      ),
+      dispatches: (current.dispatches ?? []).map((dispatch) =>
+        dispatch.id === dispatchId
+          ? {
+              ...dispatch,
+              state: "cancelled",
+              stage: "settled",
+              updatedAt: Date.now(),
+            }
+          : dispatch,
+      ),
+    });
+    this.writeChecks.delete(dispatchId);
+    this.schedulePoolWake(poolRetryAt);
+  }
+  /** Keep the soonest pool wake. A later request must not postpone it. */
+  private schedulePoolWake(at: number) {
+    if (this.poolWake && this.poolWake.at <= at) return;
+    if (this.poolWake) clearTimeout(this.poolWake.timer);
+    const timer = setTimeout(() => {
+      if (this.poolWake?.timer === timer) this.poolWake = null;
+      void this.pump();
+    }, Math.max(0, at - Date.now()));
+    this.poolWake = { at, timer };
   }
   private async settle(
     leadId: string,
