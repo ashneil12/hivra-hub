@@ -178,6 +178,8 @@ const PASSED = new Set([
   "NUMBER_OF_PROCESSORS",
   "PROCESSOR_ARCHITECTURE",
   "OS",
+  // WP-44: set by the gate to the helper beside the binary. A worker's value is replaced.
+  "AGENT_DESKTOP_MACOS_HELPER_PATH",
 ]);
 
 const MAX_TEXT = 256 * 1024;
@@ -786,6 +788,24 @@ function allowEnv(source) {
   return out;
 }
 
+function helperFileName() {
+  if (process.platform === "darwin") return "agent-desktop-macos-helper";
+  if (process.platform === "linux") return "agent-desktop-linux-clipboard-owner";
+  return null;
+}
+
+/** The allow list, then the helper path this gate chose. A worker cannot point it elsewhere. */
+function childEnv(source, binary) {
+  const out = allowEnv(source);
+  for (const key of Object.keys(out)) {
+    if (key.toUpperCase() === "AGENT_DESKTOP_MACOS_HELPER_PATH") delete out[key];
+  }
+  if (process.platform === "darwin") {
+    out.AGENT_DESKTOP_MACOS_HELPER_PATH = path.join(path.dirname(binary), "agent-desktop-macos-helper");
+  }
+  return out;
+}
+
 function hasFlag(args, name) {
   return args.some((token) => token === name || token.startsWith(`${name}=`));
 }
@@ -825,13 +845,19 @@ function absolutePath(value) {
 function takeLaunch(launch) {
   const message = "The app starts the desktop server. This file does not.";
   if (!launch || typeof launch !== "object") return { error: "INVALID_ARGS", message, retry: "unsafe" };
-  if (![launch.registry, launch.consent, launch.binary, launch.pin].every(absolutePath)) {
+  if (![launch.registry, launch.consent, launch.binary, launch.pin, launch.project].every(absolutePath)) {
     return { error: "INVALID_ARGS", message, retry: "unsafe" };
   }
-  return { registry: launch.registry, consent: launch.consent, binary: launch.binary, pin: launch.pin };
+  return {
+    registry: launch.registry,
+    consent: launch.consent,
+    binary: launch.binary,
+    pin: launch.pin,
+    project: launch.project,
+  };
 }
 
-/** The four paths a desktop server process was given by the app. A worker variable is not one of them. */
+/** Paths a desktop server process was given by the app. A worker variable is not one of them. */
 export function launchFromAppEnv(env) {
   if (!env) return null;
   const launch = {
@@ -839,10 +865,17 @@ export function launchFromAppEnv(env) {
     consent: env.DESKTOP_LAUNCH_CONSENT,
     binary: env.DESKTOP_LAUNCH_BINARY,
     pin: env.DESKTOP_LAUNCH_PIN,
+    project: env.DESKTOP_LAUNCH_PROJECT,
   };
   const taken = takeLaunch(launch);
   if (taken.error) return null;
-  return { registry: taken.registry, consent: taken.consent, binary: taken.binary, pin: taken.pin };
+  return {
+    registry: taken.registry,
+    consent: taken.consent,
+    binary: taken.binary,
+    pin: taken.pin,
+    project: taken.project,
+  };
 }
 
 function readPin(pinPath) {
@@ -860,8 +893,16 @@ function readPin(pinPath) {
   } catch {
     return missing;
   }
-  const sha = doc && doc.sha256;
+  const key = `${process.platform}-${process.arch}`;
+  const entry = doc && doc.platforms && doc.platforms[key];
+  if (!entry || typeof entry !== "object") return missing;
+  const sha = entry.sha256;
   if (typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) return missing;
+  if (process.platform === "darwin" || process.platform === "linux") {
+    const helper = entry.helperSha256;
+    if (typeof helper !== "string" || !/^[0-9a-fA-F]{64}$/.test(helper)) return missing;
+    return { sha256: sha, helperSha256: helper };
+  }
   return { sha256: sha };
 }
 
@@ -1027,7 +1068,7 @@ function scopeForward(command, rest, app, seen) {
   return { error: "That command can't be kept on the allowed app." };
 }
 
-function pinProblem(binary, expected) {
+function hashProblem(file, expected, missingFile) {
   if (typeof expected !== "string" || !/^[0-9a-fA-F]{64}$/.test(expected)) {
     return {
       code: "BINARY_MISSING",
@@ -1037,13 +1078,9 @@ function pinProblem(binary, expected) {
   }
   let digest;
   try {
-    digest = createHash("sha256").update(readFileSync(binary)).digest("hex");
+    digest = createHash("sha256").update(readFileSync(file)).digest("hex");
   } catch {
-    return {
-      code: "BINARY_MISSING",
-      message: "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
-      retry: "safe",
-    };
+    return missingFile;
   }
   if (digest.toLowerCase() !== expected.toLowerCase()) {
     return {
@@ -1055,7 +1092,25 @@ function pinProblem(binary, expected) {
   return null;
 }
 
-function spawnDesktop(command, binary, expectedHash, forwarded, spawnImpl, env) {
+function pinProblem(binary, pin) {
+  const programMissing = {
+    code: "BINARY_MISSING",
+    message: "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+    retry: "safe",
+  };
+  const binaryProblem = hashProblem(binary, pin && pin.sha256, programMissing);
+  if (binaryProblem) return binaryProblem;
+  if (!pin || pin.helperSha256 === undefined) return null;
+  const helper = helperFileName();
+  if (!helper) return null;
+  return hashProblem(path.join(path.dirname(binary), helper), pin.helperSha256, {
+    code: "BINARY_MISSING",
+    message: "The desktop program's helper isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+    retry: "safe",
+  });
+}
+
+function spawnDesktop(command, binary, pin, forwarded, spawnImpl, env) {
   if (!path.isAbsolute(binary) || binary.includes("\0")) {
     return refuse(command, "INVALID_ARGS", "The desktop program needs a full path.", "unsafe");
   }
@@ -1078,12 +1133,12 @@ function spawnDesktop(command, binary, expectedHash, forwarded, spawnImpl, env) 
       "safe",
     );
   }
-  const pinned = pinProblem(binary, expectedHash);
+  const pinned = pinProblem(binary, pin);
   if (pinned) return refuse(command, pinned.code, pinned.message, pinned.retry);
   const run = spawnImpl ?? defaultSpawn;
   let result;
   try {
-    result = run(binary, forwarded, { env: allowEnv(env ?? process.env), shell: false, stdio: ["ignore", "pipe", "pipe"] });
+    result = run(binary, forwarded, { env: childEnv(env ?? process.env, binary), shell: false, stdio: ["ignore", "pipe", "pipe"] });
   } catch {
     return refuse(command, "BINARY_MISSING", "The desktop program didn't start. Try again.", "safe");
   }
@@ -1146,11 +1201,11 @@ function collectApp(rest, hivraApp, command) {
 }
 
 /**
- * @param {{ argv?: string[], spawnImpl?: Function, env?: NodeJS.ProcessEnv, launch?: { registry: string, consent: string, binary: string, pin: string }, seen?: { apps: Record<string, string> } }} options
+ * @param {{ argv?: string[], spawnImpl?: Function, env?: NodeJS.ProcessEnv, launch?: { registry: string, consent: string, binary: string, pin: string, project: string }, seen?: { apps: Record<string, string> } }} options
  */
 export function runGate(options) {
   const argv = options.argv ?? [];
-  // Paths are `options.launch` only. A worker's environment, including HIVRA_DESKTOP_*, is not a path source.
+  // Paths and the project are `options.launch` only. A worker's environment is not a path source.
   const env = options.env ?? {};
   const split = splitArgs(argv);
   if (split.error) return refuse("", "INVALID_ARGS", split.error, "unsafe");
@@ -1158,17 +1213,22 @@ export function runGate(options) {
   const command = parsed.command ?? "";
   const repeated = repeatedFlag(split.rest);
   if (repeated) return refuse(command, "INVALID_ARGS", repeated, "unsafe");
-  if (!split.gate["--project"]) return refuse(command, "INVALID_ARGS", "Give a project folder.", "unsafe");
-  const projectResult = resolveProject(split.gate["--project"]);
-  if (projectResult.error) return refuse(command, projectResult.error, projectResult.message, projectResult.retry);
-  const project = projectResult.path;
   const launch = takeLaunch(options.launch);
   if (launch.error) return refuse(command, launch.error, launch.message, launch.retry);
+  const projectResult = resolveProject(launch.project);
+  if (projectResult.error) return refuse(command, projectResult.error, projectResult.message, projectResult.retry);
+  const project = projectResult.path;
   const on = pluginOn(launch.registry, project);
   if (on.error) return refuse(command, on.error, on.message, on.retry);
-  // Off wins over an allow list, over --headed, and over a command that would otherwise be allowed.
+  // Off wins over an allow list, over --headed, over a bad command, and over a project the worker named.
   if (!on.on) {
     return refuse(command || "desktop", "DESKTOP_CONTROL_OFF", "Desktop control is off. The person has to turn it on.", "unsafe");
+  }
+  if (split.gate["--project"]) {
+    const named = resolveProject(split.gate["--project"]);
+    if (named.error || named.path !== project) {
+      return refuse(command, "INVALID_ARGS", "That project isn't this session.", "unsafe");
+    }
   }
   if (parsed.error) return refuse(command, "INVALID_ARGS", parsed.error, "unsafe");
   if (!command) return refuse("", "INVALID_ARGS", "Say which command.", "unsafe");
@@ -1208,7 +1268,7 @@ export function runGate(options) {
   if (forwarded.error) return refuse(command, "INVALID_ARGS", forwarded.error, "unsafe");
   const pinned = readPin(launch.pin);
   if (pinned.code) return refuse(command, pinned.code, pinned.message, pinned.retry);
-  const result = spawnDesktop(command, launch.binary, pinned.sha256, forwarded.args, options.spawnImpl, env);
+  const result = spawnDesktop(command, launch.binary, pinned, forwarded.args, options.spawnImpl, env);
   if (result.code === 0 && (command === "snapshot" || command === "find")) {
     rememberRefs(options.seen, appResult.app, result.stdout, claimedSnapshotIds(split.rest, command));
   }
@@ -1221,9 +1281,8 @@ const DESKTOP_TOOL = {
   inputSchema: {
     type: "object",
     additionalProperties: false,
-    required: ["project", "app", "command"],
+    required: ["app", "command"],
     properties: {
-      project: { type: "string" },
       app: { type: "string" },
       command: { type: "string" },
       args: { type: "array", items: { type: "string" } },
@@ -1256,11 +1315,13 @@ export function handleMcpMessage(message, state) {
     const app = args && args.app;
     const command = args && args.command;
     const rest = args && Array.isArray(args.args) ? args.args.filter((item) => typeof item === "string") : [];
-    if (typeof project !== "string" || typeof app !== "string" || typeof command !== "string") {
+    if ((project !== undefined && typeof project !== "string") || typeof app !== "string" || typeof command !== "string") {
       return `${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "project, app and command are text." } })}\n`;
     }
+    const argv = ["--hivra-app", app, command, ...rest];
+    if (typeof project === "string") argv.unshift("--project", project);
     const result = runGate({
-      argv: ["--project", project, "--hivra-app", app, command, ...rest],
+      argv,
       env: (state && state.env) ?? {},
       launch: state && state.launch,
       seen: state && state.seen,

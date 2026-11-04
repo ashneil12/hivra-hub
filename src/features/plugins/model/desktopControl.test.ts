@@ -78,21 +78,45 @@ function touch(ctx: ReturnType<typeof setup>) {
   writeFileSync(ctx.binary, "");
 }
 
+const HELPER_STUB = "helper";
+
+function helperInstallName() {
+  if (process.platform === "linux") return "agent-desktop-linux-clipboard-owner";
+  if (process.platform === "darwin") return "agent-desktop-macos-helper";
+  return null;
+}
+
 function writePin(file: string, bytes: Buffer | string) {
-  writeFileSync(
-    file,
-    JSON.stringify({
-      package: "agent-desktop",
-      version: "1.1.0",
-      sha256: createHash("sha256").update(bytes).digest("hex"),
-    }),
-  );
+  const helper = helperInstallName() ? HELPER_STUB : undefined;
+  writeFileSync(file, platformPin(bytes, helper));
+}
+
+function platformPin(binary: Buffer | string, helper?: Buffer | string) {
+  const key = `${process.platform}-${process.arch}`;
+  const entry: { binary: string; sha256: string; helper?: string; helperSha256?: string } = {
+    binary: "agent-desktop-test",
+    sha256: createHash("sha256").update(binary).digest("hex"),
+  };
+  if (helper !== undefined) {
+    entry.helper = "helper-test";
+    entry.helperSha256 = createHash("sha256").update(helper).digest("hex");
+  }
+  return JSON.stringify({
+    package: "agent-desktop",
+    version: "1.1.0",
+    platforms: { [key]: entry },
+  });
 }
 
 function launchFor(ctx: ReturnType<typeof setup>, binary = ctx.binary) {
+  const name = helperInstallName();
+  if (name) {
+    const helper = path.join(path.dirname(binary), name);
+    if (!existsSync(helper)) writeFileSync(helper, HELPER_STUB);
+  }
   if (existsSync(binary)) writePin(ctx.pin, readFileSync(binary));
   else writePin(ctx.pin, "");
-  return { registry: ctx.registry, consent: ctx.consent, binary, pin: ctx.pin };
+  return { registry: ctx.registry, consent: ctx.consent, binary, pin: ctx.pin, project: ctx.project };
 }
 
 function launched(ctx: ReturnType<typeof setup>, argv: string[], stdout = "") {
@@ -115,10 +139,12 @@ function gate(
 ) {
   const env: NodeJS.ProcessEnv = { ...(opts?.env ?? {}) };
   const binary = opts?.binary === false ? path.join(ctx.root, "missing-desktop-program") : ctx.binary;
+  const launch = launchFor(ctx, binary);
+  launch.project = opts?.project ?? ctx.project;
   return runGate({
     argv: ["--project", opts?.project ?? ctx.project, ...argv],
     env,
-    launch: launchFor(ctx, opts?.binary === false ? binary : ctx.binary),
+    launch,
     seen: ctx.seen,
     spawnImpl: (spawned: string, args: string[], options: Call["options"]) => {
       ctx.calls.push({ binary: spawned, args, options });
@@ -686,7 +712,7 @@ process.stdout.write(JSON.stringify({
     touch(ctx);
     allow(ctx, "Notes");
     const launch = launchFor(ctx);
-    writeFileSync(launch.pin, JSON.stringify({ package: "agent-desktop", version: "1.1.0", sha256: "0".repeat(64) }));
+    writeFileSync(launch.pin, platformPin("not-the-program", helperInstallName() ? HELPER_STUB : undefined));
     const wrong = runGate({
       argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
       env: {
@@ -839,10 +865,7 @@ describe("desktop gate, app launch", () => {
     touch(ctx);
     allow(ctx, "Notes");
     const launch = launchFor(ctx);
-    writeFileSync(
-      launch.pin,
-      JSON.stringify({ package: "agent-desktop", version: "1.1.0", sha256: "ab".repeat(32) }),
-    );
+    writeFileSync(launch.pin, platformPin("not-the-program", helperInstallName() ? HELPER_STUB : undefined));
     const wrongEnv = runGate({
       argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
       env: {
@@ -1541,6 +1564,124 @@ describe("desktop gate, app launch", () => {
     expect(text).not.toContain("cmd+q");
     expect(text).not.toContain("press");
     expect(text).not.toContain("-w");
+  });
+
+  it("refuses a helper that does not match this platform's pin", () => {
+    if (process.platform === "win32") return;
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const helperName =
+      process.platform === "darwin" ? "agent-desktop-macos-helper" : "agent-desktop-linux-clipboard-owner";
+    writeFileSync(path.join(path.dirname(ctx.binary), helperName), "not-the-helper");
+    writeFileSync(ctx.pin, platformPin(readFileSync(ctx.binary), "the-real-helper"));
+    const again = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: { PATH: "/usr/bin", AGENT_DESKTOP_MACOS_HELPER_PATH: path.join(ctx.root, "evil-helper") },
+      launch: { registry: ctx.registry, consent: ctx.consent, binary: ctx.binary, pin: ctx.pin, project: ctx.project },
+      spawnImpl: () => {
+        ctx.calls.push({ binary: "", args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(again, "BINARY_UNTRUSTED", "unsafe");
+    expect(ctx.calls).toEqual([]);
+  });
+
+  it("checks the helper beside the binary and on macOS sets its path", () => {
+    if (process.platform === "win32") return;
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const helperName =
+      process.platform === "darwin" ? "agent-desktop-macos-helper" : "agent-desktop-linux-clipboard-owner";
+    const helper = path.join(path.dirname(ctx.binary), helperName);
+    writeFileSync(helper, "the-real-helper");
+    writeFileSync(ctx.pin, platformPin(readFileSync(ctx.binary), "the-real-helper"));
+    const result = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: { PATH: "/usr/bin", AGENT_DESKTOP_MACOS_HELPER_PATH: path.join(ctx.root, "evil-helper") },
+      launch: { registry: ctx.registry, consent: ctx.consent, binary: ctx.binary, pin: ctx.pin, project: ctx.project },
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(result.code).toBe(0);
+    const sent = ctx.calls[0]?.options.env?.AGENT_DESKTOP_MACOS_HELPER_PATH;
+    if (process.platform === "darwin") expect(sent).toBe(helper);
+    else expect(sent).toBeUndefined();
+  });
+
+  it("drops project from the tool and refuses one that is not this session", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const listed = handleMcpMessage({ jsonrpc: "2.0", id: 1, method: "tools/list" }, { launch: launchFor(ctx) });
+    const tool = JSON.parse(listed ?? "{}").result.tools[0] as {
+      inputSchema: { required: string[]; properties: Record<string, unknown> };
+    };
+    expect(tool.inputSchema.required).not.toContain("project");
+    expect(tool.inputSchema.properties.project).toBeUndefined();
+
+    const other = path.join(ctx.root, "other-project");
+    mkdirSync(other);
+    const before = readFileSync(ctx.consent);
+    const raw = handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "desktop",
+          arguments: { project: other, app: "Notes", command: "snapshot", args: ["--app", "Notes"] },
+        },
+      },
+      {
+        launch: { ...launchFor(ctx), project: ctx.project },
+        seen: ctx.seen,
+        env: { PATH: "/usr/bin" },
+        spawnImpl: () => {
+          ctx.calls.push({ binary: "", args: [], options: {} });
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    const body = JSON.parse(raw ?? "{}") as { result: { isError: boolean; content: { text: string }[] } };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toContain("That project isn't this session.");
+    expect(ctx.calls).toEqual([]);
+    expect(readFileSync(ctx.consent)).toEqual(before);
+  });
+
+  it("does not ask again when the launch project is already allowed", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const raw = handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "desktop", arguments: { app: "Notes", command: "snapshot", args: ["--app", "Notes"] } },
+      },
+      {
+        launch: { ...launchFor(ctx), project: ctx.project },
+        seen: ctx.seen,
+        env: { PATH: "/usr/bin" },
+        spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+          ctx.calls.push({ binary, args, options });
+          return { status: 0, stdout: '{"ok":true,"data":{"snapshot_id":"s9"}}\n', stderr: "" };
+        },
+      },
+    );
+    const body = JSON.parse(raw ?? "{}") as { result: { isError: boolean; content: { text: string }[] } };
+    expect(body.result.isError).toBe(false);
+    expect(ctx.calls).toHaveLength(1);
   });
 
   it("does not tell the worker to run the gate or the binary", () => {
