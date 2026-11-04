@@ -754,6 +754,7 @@ describe("the browser tree is only the process that was started", () => {
     };
     const stopped = windowsStopPlan(42, [{ pid: 42, started: "" }], {
       readStart,
+      stillOurs: true,
       stop: () => {
         order.push("kill");
         return { stopped: true, confirmed: false };
@@ -768,11 +769,55 @@ describe("the browser tree is only the process that was started", () => {
 
     const live = windowsStopPlan(42, [{ pid: 42, started: "" }], {
       readStart,
+      stillOurs: true,
       stop: () => ({ stopped: true, confirmed: false }),
       stillAlive: () => true,
     });
     expect(live.result).toBe("unknown");
     expect(order).toEqual(["kill", "probe"]);
+  });
+
+  it("does not taskkill a windows pid once the child we spawned has exited", () => {
+    const readStart = () => {
+      throw new Error("start time");
+    };
+    let stops = 0;
+    const exited = windowsStopPlan(42, [{ pid: 42, started: "" }], {
+      readStart,
+      stillOurs: false,
+      stop: () => {
+        stops += 1;
+        return { stopped: false, confirmed: false };
+      },
+      stillAlive: () => false,
+    });
+    expect(stops).toBe(0);
+    expect(exited.result).not.toBe("failed");
+
+    const reused = windowsStopPlan(42, [{ pid: 42, started: "" }], {
+      readStart,
+      stillOurs: false,
+      stop: () => {
+        stops += 1;
+        return { stopped: true, confirmed: false };
+      },
+      stillAlive: () => true,
+    });
+    expect(stops).toBe(0);
+    expect(reused.result).not.toBe("failed");
+    expect(reused.result).not.toBe("clear");
+
+    const running = windowsStopPlan(42, [{ pid: 42, started: "" }], {
+      readStart,
+      stillOurs: true,
+      stop: () => {
+        stops += 1;
+        return { stopped: true, confirmed: false };
+      },
+      stillAlive: () => false,
+    });
+    expect(stops).toBe(1);
+    expect(running.result).not.toBe("failed");
   });
 
   it("drops a tracked pid only once that pid is confirmed gone", () => {

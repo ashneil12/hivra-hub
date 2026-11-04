@@ -518,11 +518,18 @@ export function probeWindows(pid, aliveOf) {
   return { alive: check(pid) === true, started: "" };
 }
 
-// Kill first, then look. `readStart` may be passed in; this must not call it.
+// Kill only while the spawned child is still ours, then look. An exited pid may
+// have been reused, so taskkill does not run, and that is not a failed kill.
+// `readStart` may be passed in; this must not call it.
 export function windowsStopPlan(pid, seen, deps) {
   const stop = deps && typeof deps.stop === "function" ? deps.stop : null;
   const aliveOf = deps && typeof deps.stillAlive === "function" ? deps.stillAlive : stillAlive;
-  const killed = stop ? stop(pid) : { stopped: false, confirmed: false };
+  const stillOurs = Boolean(deps && deps.stillOurs === true);
+  const killed = stillOurs
+    ? stop
+      ? stop(pid)
+      : { stopped: false, confirmed: false }
+    : { stopped: true, confirmed: false };
   const held = mergeRows(Array.isArray(seen) ? seen : [], [{ pid, started: "" }]);
   const states = held.map((item) => rowState(item, probeWindows(item.pid, aliveOf)));
   const listing = killed && killed.stopped === true ? held : null;
@@ -639,9 +646,11 @@ function main() {
         process.exit(code === 0 ? 1 : code);
         return;
       }
-      // taskkill first. Later looks are liveness only, so PowerShell never runs here.
+      // Node holds the process handle until exit, so the pid cannot be reused
+      // while both are null. Later looks are liveness only, so PowerShell never runs here.
       const step = windowsStopPlan(pid, seen, {
         stop: (id) => stopWindowsTree(id, runTaskkill),
+        stillOurs: child.exitCode === null && child.signalCode === null,
         stillAlive,
         readStart,
       });
