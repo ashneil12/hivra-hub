@@ -48,42 +48,60 @@ struct NewPanel {
 
 /// Enabled plugins' panels, re-validated from disk. A plugin or a panel that doesn't load is skipped.
 pub fn catalog(host: &Host) -> Result<Vec<CatalogPanel>, String> {
+    catalog_for(host, None)
+}
+
+/// Enabled plugins, plus a creator preview that this view is allowed to see. Another view gets none of it.
+/// WP-34: the preview is read from the scratch folder. It is not installed, so it is not in the registry.
+pub fn catalog_for(host: &Host, view: Option<&str>) -> Result<Vec<CatalogPanel>, String> {
     let registry = registry::read(host)?;
     let mut out = Vec::new();
     for (name, entry) in &registry.plugins {
         if !entry.enabled.any() {
             continue;
         }
-        let Ok(loaded) = crate::plugins::load_plugin(&host.installed(name)) else {
-            continue;
-        };
-        for panel in &loaded.hivra.panels {
-            let rel = if panel.dir.is_empty() {
-                format!("hivra/panels/{}", panel.id)
-            } else {
-                panel.dir.clone()
-            };
-            if rel
-                .split(['/', '\\'])
-                .any(|part| part.is_empty() || part == "." || part == "..")
-            {
+        push_panels(&mut out, name, &host.installed(name));
+    }
+    if let Some(view) = view {
+        for scratch in crate::plugins::creator::scratches_for(host, view) {
+            if out.iter().any(|panel| panel.plugin == scratch.name) {
                 continue;
             }
-            let dir = loaded.root.join(&rel);
-            let Some(spec) = spec_value(&loaded.root, &dir, &panel.id) else {
-                continue;
-            };
-            out.push(CatalogPanel {
-                plugin: name.clone(),
-                id: panel.id.clone(),
-                title: panel.title.clone(),
-                kind: panel.kind.clone(),
-                permissions: panel.permissions.clone(),
-                spec,
-            });
+            push_panels(&mut out, &scratch.name, &scratch.root);
         }
     }
     Ok(out)
+}
+
+fn push_panels(out: &mut Vec<CatalogPanel>, name: &str, root: &Path) {
+    let Ok(loaded) = crate::plugins::load_plugin(root) else {
+        return;
+    };
+    for panel in &loaded.hivra.panels {
+        let rel = if panel.dir.is_empty() {
+            format!("hivra/panels/{}", panel.id)
+        } else {
+            panel.dir.clone()
+        };
+        if rel
+            .split(['/', '\\'])
+            .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            continue;
+        }
+        let dir = loaded.root.join(&rel);
+        let Some(spec) = spec_value(&loaded.root, &dir, &panel.id) else {
+            continue;
+        };
+        out.push(CatalogPanel {
+            plugin: name.to_string(),
+            id: panel.id.clone(),
+            title: panel.title.clone(),
+            kind: panel.kind.clone(),
+            permissions: panel.permissions.clone(),
+            spec,
+        });
+    }
 }
 
 fn spec_value(root: &Path, dir: &Path, id: &str) -> Option<Value> {
@@ -668,8 +686,16 @@ fn refresh(host: &Host, tools: &Tools, source: &Path) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-pub fn panels_catalog(app: tauri::AppHandle) -> Result<Vec<CatalogPanel>, String> {
-    catalog(&crate::plugins::host(&app)?)
+pub fn panels_catalog(
+    app: tauri::AppHandle,
+    view: Option<String>,
+) -> Result<Vec<CatalogPanel>, String> {
+    // WP-34: a preview is listed only for the view that asked. No view means installed panels only.
+    let host = crate::plugins::host(&app)?;
+    match view.as_deref() {
+        Some(view) => catalog_for(&host, Some(view)),
+        None => catalog(&host),
+    }
 }
 
 #[tauri::command(async)]

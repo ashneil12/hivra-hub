@@ -40,8 +40,8 @@ fn creator_lock() -> std::sync::MutexGuard<'static, ()> {
     CREATOR.lock().unwrap_or_else(|err| err.into_inner())
 }
 
-/// Test hook, called after a preview or keep has changed the registry and before that change is recorded on the
-/// session. The session lock is not held, so the hook can discard the session and the late result is rolled back.
+/// Test hook, called before a preview, keep or undo is recorded, and before undo rolls anything back. The session
+/// lock is not held, so the hook can try to discard the session. A late result is not recorded.
 #[cfg(test)]
 pub(crate) fn testing_before_commit(id: &str, hook: Option<Box<dyn Fn() + Send + Sync>>) {
     let mut hooks = COMMIT_HOOKS.lock().unwrap_or_else(|err| err.into_inner());
@@ -350,21 +350,101 @@ fn view_allows(host: &Host, view: &str, name: &str) -> bool {
         .is_some_and(|list| list.iter().any(|item| item == name))
 }
 
+fn deny_view(host: &Host, view: &str, name: &str) -> Result<(), String> {
+    let mut views = read_views(host)?;
+    let Some(list) = views.views.get_mut(view) else {
+        return Ok(());
+    };
+    let before = list.len();
+    list.retain(|item| item != name);
+    if list.len() == before {
+        return Ok(());
+    }
+    if list.is_empty() {
+        views.views.remove(view);
+    }
+    views.revision += 1;
+    let text = serde_json::to_string_pretty(&views).map_err(|err| err.to_string())?;
+    fsutil::write_atomic(&views_path(host), format!("{text}\n").as_bytes())
+}
+
+fn installed_entry(host: &Host, name: &str) -> Option<registry::Entry> {
+    registry::read(host)
+        .ok()
+        .and_then(|registry| registry.plugins.get(name).cloned())
+}
+
+fn already_installed(name: &str) -> String {
+    format!("\"{name}\" is already installed.")
+}
+
+/// A scratch plugin this view may preview. It is not installed. Another view's session is not here.
+pub struct ScratchPlugin {
+    pub name: String,
+    pub root: PathBuf,
+}
+
+pub fn scratches_for(host: &Host, view: &str) -> Vec<ScratchPlugin> {
+    if check_view(view).is_err() {
+        return Vec::new();
+    }
+    let Ok(entries) = std::fs::read_dir(host.root.join("creator")) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(path.join("session.json")) else {
+            continue;
+        };
+        let Ok(session) = serde_json::from_str::<Session>(&text) else {
+            continue;
+        };
+        if session.view != view || !matches!(session.phase, Phase::Previewed | Phase::Undone) {
+            continue;
+        }
+        let Some(name) = session.plugin else {
+            continue;
+        };
+        if manifest::plugin_name_problem(&name).is_some() || !view_allows(host, view, &name) {
+            continue;
+        }
+        if installed_entry(host, &name).is_some_and(|entry| entry.enabled.any()) {
+            continue;
+        }
+        let scratch = path.join("scratch");
+        if !scratch.is_dir() || is_symlink(&scratch) {
+            continue;
+        }
+        out.push(ScratchPlugin {
+            name,
+            root: scratch,
+        });
+    }
+    out
+}
+
 /// Whether `name` shows in `view`: everywhere once it is kept, and only in the view that previewed it until then.
 pub fn visible(host: &Host, view: &str, name: &str) -> bool {
     let Ok(registry) = registry::read(host) else {
         return false;
     };
-    let Some(entry) = registry.plugins.get(name) else {
-        return false;
-    };
-    if entry.enabled.global {
-        return true;
-    }
-    if entry.enabled.any() {
-        return false;
+    if let Some(entry) = registry.plugins.get(name) {
+        if entry.enabled.global {
+            return true;
+        }
+        // On for a project: that is not a creator preview, and it is not shown here as one.
+        if entry.enabled.any() {
+            return false;
+        }
     }
     view_allows(host, view, name)
+        && scratches_for(host, view)
+            .iter()
+            .any(|scratch| scratch.name == name)
 }
 
 fn read_inside(root: &Path, path: &Path) -> String {
@@ -613,7 +693,7 @@ fn swap_scratch(session_dir: &Path, staging: &Path, scratch: &Path) -> Result<()
 }
 
 pub fn preview(host: &Host, id: &str, revision: u64) -> Result<CreatorState, String> {
-    let (name, scratch, view, claim) = {
+    let (name, view, claim) = {
         let _guard = creator_lock();
         let mut session = load(host, id)?;
         if session.revision != revision {
@@ -636,20 +716,15 @@ pub fn preview(host: &Host, id: &str, revision: u64) -> Result<CreatorState, Str
         if !scratch.is_dir() || is_symlink(&scratch) {
             return Err("The scratch folder is missing.".into());
         }
+        // A preview stays in the scratch folder. It does not install, so it makes no data folder and no store entry.
+        if installed_entry(host, &name).is_some() {
+            return Err(already_installed(&name));
+        }
         let claim = new_claim();
         session.claim = Some(claim.clone());
         save(host, &session)?;
-        (name, scratch, session.view, claim)
+        (name, session.view, claim)
     };
-    let installed_now =
-        match registry::install_local(host, &scratch, registry::Source::local(&scratch)) {
-            Ok(_) => true,
-            Err(why) if why.contains("already installed") => false,
-            Err(why) => {
-                clear_claim(host, id, &claim);
-                return Err(why);
-            }
-        };
     before_commit(id);
     let _guard = creator_lock();
     let mut session = load(host, id)?;
@@ -657,9 +732,6 @@ pub fn preview(host: &Host, id: &str, revision: u64) -> Result<CreatorState, Str
         && session.phase != Phase::Discarded
         && session.revision == revision;
     if !still {
-        if installed_now {
-            let _ = registry::uninstall(host, &name);
-        }
         release_claim(&mut session, host, claim.as_str());
         return Err(if session.phase == Phase::Discarded {
             gone()
@@ -667,10 +739,11 @@ pub fn preview(host: &Host, id: &str, revision: u64) -> Result<CreatorState, Str
             stale()
         });
     }
+    if installed_entry(host, &name).is_some() {
+        release_claim(&mut session, host, claim.as_str());
+        return Err(already_installed(&name));
+    }
     if let Err(why) = allow_view(host, &view, &name) {
-        if installed_now {
-            let _ = registry::uninstall(host, &name);
-        }
         session.claim = None;
         let _ = save(host, &session);
         return Err(why);
@@ -725,6 +798,9 @@ pub fn keep(host: &Host, tools: &Tools, id: &str, revision: u64) -> Result<Creat
             if !scratch.is_dir() || is_symlink(&scratch) {
                 return Err("The scratch folder is missing.".into());
             }
+            if installed_entry(host, &name).is_some() {
+                return Err(already_installed(&name));
+            }
             let claim = new_claim();
             session.claim = Some(claim.clone());
             save(host, &session)?;
@@ -763,13 +839,8 @@ fn plan_pending(
     if host.pending().join(pending).is_dir() {
         return Ok(KeepPlan::Done(Box::new(finish(host, session))));
     }
-    let previous = registry::read(host).ok().and_then(|registry| {
-        registry
-            .plugins
-            .get(name)
-            .and_then(|entry| entry.previous.clone())
-    });
-    if previous.is_none() {
+    // A first install has no previous snapshot once it is approved. Declined means it is not installed at all.
+    if installed_entry(host, name).is_none() {
         session.pending_install = None;
         session.revision += 1;
         save(host, session)?;
@@ -797,7 +868,7 @@ fn keep_update(
     let source = InstallSource::Local {
         path: scratch.to_string_lossy().into_owned(),
     };
-    let updated = match install::update(host, tools, name, &source, RequestedBy::person()) {
+    let updated = match install::install(host, tools, &source, RequestedBy::person()) {
         Ok(result) => result,
         Err(why) => {
             clear_claim(host, id, claim);
@@ -853,7 +924,7 @@ fn enable_kept(
             && session.phase != Phase::Discarded
             && session.revision == revision;
         if !still {
-            let _ = install::rollback(host, name);
+            take_back(host, name);
             let mut session = session;
             release_claim(&mut session, host, claim);
             return Err(if session.phase == Phase::Discarded {
@@ -864,7 +935,7 @@ fn enable_kept(
         }
     }
     if let Err(why) = registry::enable(host, name, &Scope::Global) {
-        let _ = install::rollback(host, name);
+        take_back(host, name);
         clear_claim(host, id, claim);
         return Err(why);
     }
@@ -875,7 +946,7 @@ fn enable_kept(
         && session.revision == revision;
     if !still {
         let _ = registry::disable(host, name, &Scope::Global);
-        let _ = install::rollback(host, name);
+        take_back(host, name);
         release_claim(&mut session, host, claim);
         return Err(if session.phase == Phase::Discarded {
             gone()
@@ -889,6 +960,24 @@ fn enable_kept(
     session.revision += 1;
     save(host, &session)?;
     Ok(finish(host, &session))
+}
+
+/// Put a keep back. A first install (no earlier version) is removed. An update goes back to the version it replaced.
+fn take_back(host: &Host, name: &str) {
+    let _ = undo_install(host, name);
+}
+
+fn undo_install(host: &Host, name: &str) -> Result<(), String> {
+    let previous = installed_entry(host, name).and_then(|entry| entry.previous);
+    if previous.is_some() {
+        install::rollback(host, name)?;
+        registry::disable(host, name, &Scope::Global)?;
+        return Ok(());
+    }
+    if installed_entry(host, name).is_some() {
+        registry::uninstall(host, name)?;
+    }
+    Ok(())
 }
 
 pub fn undo(host: &Host, id: &str, revision: u64) -> Result<CreatorState, String> {
@@ -913,21 +1002,34 @@ pub fn undo(host: &Host, id: &str, revision: u64) -> Result<CreatorState, String
         save(host, &session)?;
         (name, claim)
     };
-    if let Err(why) = install::rollback(host, &name) {
-        clear_claim(host, id, &claim);
-        return Err(why);
-    }
+    // Check it is still kept before any rollback. The hook can try to discard; that must not clear this claim.
     before_commit(id);
-    if let Err(why) = registry::disable(host, &name, &Scope::Global) {
+    {
+        let _guard = creator_lock();
+        let mut session = load(host, id)?;
+        let still = session.claim.as_deref() == Some(claim.as_str())
+            && session.phase == Phase::Kept
+            && session.revision == revision;
+        if !still {
+            release_claim(&mut session, host, claim.as_str());
+            return Err(if session.phase == Phase::Discarded {
+                gone()
+            } else {
+                stale()
+            });
+        }
+    }
+    if let Err(why) = undo_install(host, &name) {
         clear_claim(host, id, &claim);
         return Err(why);
     }
     let _guard = creator_lock();
     let mut session = load(host, id)?;
-    let still = session.claim.as_deref() == Some(claim.as_str()) && session.revision == revision;
-    if !still || session.phase == Phase::Discarded {
-        session.claim = None;
-        let _ = save(host, &session);
+    let still = session.claim.as_deref() == Some(claim.as_str())
+        && session.phase == Phase::Kept
+        && session.revision == revision;
+    if !still {
+        release_claim(&mut session, host, claim.as_str());
         return Err(if session.phase == Phase::Discarded {
             gone()
         } else {
@@ -950,6 +1052,15 @@ pub fn discard(host: &Host, id: &str, revision: u64) -> Result<CreatorState, Str
     if session.phase == Phase::Discarded {
         return Err("The scratch folder is already gone.".into());
     }
+    // Undo rolls a keep back. Discard only removes the scratch folder, so it is refused while the plugin is on.
+    // An undo in progress holds the claim: do not clear it and do not delete the folder.
+    if session.phase == Phase::Kept {
+        return Err(if session.claim.is_some() {
+            busy()
+        } else {
+            "Undo it first.".into()
+        });
+    }
     let paths = paths(host, id)?;
     let root = fsutil::canonical(&host.root).map_err(|err| err.to_string())?;
     let parent = paths.scratch.parent().ok_or_else(outside)?;
@@ -960,6 +1071,11 @@ pub fn discard(host: &Host, id: &str, revision: u64) -> Result<CreatorState, Str
     }
     // The scratch path is derived from the session id, never from a path stored in the session file.
     // remove_tree drops a symlink and does not follow it.
+    if let Some(name) = session.plugin.clone() {
+        if manifest::plugin_name_problem(&name).is_none() {
+            let _ = deny_view(host, &session.view, &name);
+        }
+    }
     fsutil::remove_tree(&paths.scratch)?;
     session.phase = Phase::Discarded;
     session.claim = None;

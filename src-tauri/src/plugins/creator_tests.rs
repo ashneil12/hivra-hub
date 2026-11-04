@@ -282,10 +282,7 @@ fn each_kind_is_created_previewed_kept_undone_and_discarded() {
         assert_eq!(previewed.phase, "previewed");
         assert!(!previewed.enabled_globally);
         assert!(previewed.visible_here);
-        let installed = entry(&host, kind.name);
-        assert!(!installed.enabled.global);
-        assert!(installed.enabled.projects.is_empty());
-        assert!(!installed.active_for(None));
+        not_stored(&host, kind.name);
         assert!(creator::visible(&host, "this-view", kind.name));
         assert!(!creator::visible(&host, "other-view", kind.name));
         assert!(!host.agents_skills.join("greet").exists());
@@ -314,7 +311,7 @@ fn each_kind_is_created_previewed_kept_undone_and_discarded() {
         let undone = creator::undo(&host, &kept.id, kept.revision).unwrap();
         assert_eq!(undone.phase, "undone");
         assert!(!undone.enabled_globally);
-        assert!(!entry(&host, kind.name).enabled.global);
+        not_stored(&host, kind.name);
         assert!(!host.agents_skills.join("greet").exists());
         assert!(creator::visible(&host, "this-view", kind.name));
         assert!(!creator::visible(&host, "other-view", kind.name));
@@ -322,7 +319,7 @@ fn each_kind_is_created_previewed_kept_undone_and_discarded() {
         let discarded = creator::discard(&host, &undone.id, undone.revision).unwrap();
         assert_eq!(discarded.phase, "discarded");
         assert!(!folder.exists());
-        assert!(host.installed(kind.name).join("plugin.json").is_file());
+        not_stored(&host, kind.name);
         let twice = creator::discard(&host, &discarded.id, discarded.revision).unwrap_err();
         assert!(twice.contains("already gone"), "{twice}");
         world.untouched();
@@ -544,8 +541,8 @@ fn two_views_each_see_only_their_own_preview() {
     assert!(!creator::visible(&host, "view-b", "made-a"));
     assert!(creator::visible(&host, "view-b", "made-b"));
     assert!(!creator::visible(&host, "view-a", "made-b"));
-    assert!(!entry(&host, "made-a").enabled.global);
-    assert!(!entry(&host, "made-b").enabled.global);
+    not_stored(&host, "made-a");
+    not_stored(&host, "made-b");
     world.untouched();
 }
 
@@ -616,7 +613,7 @@ fn a_keep_discarded_while_it_updates_is_not_enabled() {
     let _clear = Clear(previewed.id.clone());
     let err = creator::keep(&host, &tools, &previewed.id, previewed.revision).unwrap_err();
     assert!(err.contains("gone"), "{err}");
-    assert!(!entry(&host, "made-skill").enabled.global);
+    not_stored(&host, "made-skill");
     world.untouched();
 }
 
@@ -666,7 +663,7 @@ fn a_setup_step_waits_and_a_decline_does_not_enable_it() {
     install::decline(&host, &pending[0].id).unwrap();
     let err = creator::keep(&host, &tools, &waiting.id, waiting.revision).unwrap_err();
     assert!(err.contains("declined"), "{err}");
-    assert!(!entry(&host, "made-skill").enabled.global);
+    not_stored(&host, "made-skill");
     world.untouched();
 }
 
@@ -1036,4 +1033,171 @@ fn frames_round_trip_and_a_huge_length_is_refused() {
     let mut huge = std::io::Cursor::new(&b"Content-Length: 99999999\r\n\r\n"[..]);
     let err = creator::read_frame(&mut huge).unwrap_err();
     assert!(err.contains("too big"), "{err}");
+}
+
+fn not_stored(host: &Host, name: &str) {
+    assert!(
+        !registry::read(host).unwrap().plugins.contains_key(name),
+        "{name} is in the store"
+    );
+    assert!(
+        !host.installed(name).exists(),
+        "{name} has an installed copy"
+    );
+    assert!(!host.data(name).exists(), "{name} has a data folder");
+}
+
+/// Discard removes the scratch folder. Undo is what rolls a keep back, so Discard is refused once it is kept.
+#[test]
+fn discard_after_keep_is_refused_and_leaves_it_on() {
+    let world = World::new("discard-kept");
+    let host = world.host();
+    let tools = quiet_tools();
+    let drafted = skill_draft(&host, "made-skill");
+    let previewed = creator::preview(&host, &drafted.id, drafted.revision).unwrap();
+    let kept = creator::keep(&host, &tools, &previewed.id, previewed.revision).unwrap();
+    assert!(entry(&host, "made-skill").enabled.global);
+    let err = creator::discard(&host, &kept.id, kept.revision).unwrap_err();
+    assert!(err.contains("Undo it first"), "{err}");
+    assert!(entry(&host, "made-skill").enabled.global);
+    assert!(scratch(&host, &kept.id).is_dir());
+    assert!(host.installed("made-skill").join("plugin.json").is_file());
+    let undone = creator::undo(&host, &kept.id, kept.revision).unwrap();
+    assert_eq!(undone.phase, "undone");
+    not_stored(&host, "made-skill");
+    let discarded = creator::discard(&host, &undone.id, undone.revision).unwrap();
+    assert_eq!(discarded.phase, "discarded");
+    assert!(!scratch(&host, &kept.id).exists());
+    not_stored(&host, "made-skill");
+    world.untouched();
+}
+
+/// A name something else already installed is an error. It is not treated as a successful preview.
+#[test]
+fn a_preview_refuses_a_name_something_else_installed() {
+    let world = World::new("name-taken");
+    let host = world.host();
+    let other = host.root.join("sources").join("made-skill");
+    put(&other.join("plugin.json"), &manifest("made-skill"));
+    put(
+        &other.join("skills/greet/SKILL.md"),
+        "---\nname: greet\ndescription: Says hello.\n---\n\n# greet\n",
+    );
+    put(&other.join("marker.txt"), "theirs");
+    registry::install_local(&host, &other, registry::Source::local(&other)).unwrap();
+    let drafted = skill_draft(&host, "made-skill");
+    let err = creator::preview(&host, &drafted.id, drafted.revision).unwrap_err();
+    assert!(err.contains("already installed"), "{err}");
+    let state = creator::load_state(&host, &drafted.id).unwrap();
+    assert_eq!(state.phase, "drafted");
+    assert_eq!(
+        std::fs::read(host.installed("made-skill").join("marker.txt")).unwrap(),
+        b"theirs"
+    );
+    assert!(!entry(&host, "made-skill").enabled.global);
+    world.untouched();
+}
+
+/// The kept check happens before anything is rolled back. A discard in that gap cannot clear the claim.
+#[test]
+fn undo_checks_it_is_still_kept_before_it_rolls_back() {
+    let world = World::new("undo-claim");
+    let host = world.host();
+    let tools = quiet_tools();
+    let drafted = skill_draft(&host, "made-skill");
+    let previewed = creator::preview(&host, &drafted.id, drafted.revision).unwrap();
+    let kept = creator::keep(&host, &tools, &previewed.id, previewed.revision).unwrap();
+    let host_hook = host.clone();
+    let id = kept.id.clone();
+    let hook_id = id.clone();
+    let still_on = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = still_on.clone();
+    creator::testing_before_commit(
+        &id,
+        Some(Box::new(move || {
+            flag.store(
+                entry(&host_hook, "made-skill").enabled.global,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let current = creator::load_state(&host_hook, &hook_id).unwrap();
+            let err = creator::discard(&host_hook, &hook_id, current.revision).unwrap_err();
+            assert!(
+                err.contains("Undo it first") || err.contains("already working"),
+                "{err}"
+            );
+            assert!(scratch(&host_hook, &hook_id).is_dir());
+        })),
+    );
+    let _clear = Clear(kept.id.clone());
+    let undone = creator::undo(&host, &kept.id, kept.revision).unwrap();
+    assert!(
+        still_on.load(std::sync::atomic::Ordering::SeqCst),
+        "undo rolled it back before checking the session was still kept"
+    );
+    assert_eq!(undone.phase, "undone");
+    not_stored(&host, "made-skill");
+    assert!(creator::visible(&host, "this-view", "made-skill"));
+    assert!(!creator::visible(&host, "other-view", "made-skill"));
+    world.untouched();
+}
+
+/// Preview does not install. Nothing is in the store or the data folder until Keep, and discard leaves neither.
+#[test]
+fn a_preview_stays_in_scratch_until_keep() {
+    let world = World::new("scratch-only");
+    let host = world.host();
+    let drafted = skill_draft(&host, "made-skill");
+    let previewed = creator::preview(&host, &drafted.id, drafted.revision).unwrap();
+    assert_eq!(previewed.phase, "previewed");
+    assert!(previewed.visible_here);
+    assert!(!previewed.enabled_globally);
+    not_stored(&host, "made-skill");
+    assert!(creator::visible(&host, "this-view", "made-skill"));
+    assert!(!creator::visible(&host, "other-view", "made-skill"));
+    let discarded = creator::discard(&host, &previewed.id, previewed.revision).unwrap();
+    assert_eq!(discarded.phase, "discarded");
+    not_stored(&host, "made-skill");
+    assert!(!creator::visible(&host, "this-view", "made-skill"));
+    assert!(!scratch(&host, &previewed.id).exists());
+    world.untouched();
+}
+
+/// The panel list for this view includes the scratch preview. Another view, and a list with no view, do not.
+#[test]
+fn a_previewed_panel_is_listed_for_this_view_only() {
+    let world = World::new("panel-list");
+    let host = world.host();
+    let started = creator::start(&host, "this-view", "panel").unwrap();
+    let drafted = creator::draft(
+        &host,
+        &started.id,
+        started.revision,
+        &files(&[
+            ("plugin.json", &manifest("made-panel")),
+            (
+                "hivra/panels/hello/panel.json",
+                r#"{"kind":"bespoke","title":"Hello","permissions":[]}"#,
+            ),
+            ("hivra/panels/hello/index.html", "<p>Hello</p>"),
+        ]),
+    )
+    .unwrap();
+    let previewed = creator::preview(&host, &drafted.id, drafted.revision).unwrap();
+    assert_eq!(previewed.phase, "previewed");
+    let here = crate::panels::catalog_for(&host, Some("this-view")).unwrap();
+    let panel = here
+        .iter()
+        .find(|panel| panel.plugin == "made-panel")
+        .unwrap();
+    assert_eq!(panel.id, "hello");
+    assert!(panel.spec["html"]
+        .as_str()
+        .unwrap_or("")
+        .contains("<p>Hello</p>"));
+    let other = crate::panels::catalog_for(&host, Some("other-view")).unwrap();
+    assert!(other.iter().all(|panel| panel.plugin != "made-panel"));
+    let none = crate::panels::catalog(&host).unwrap();
+    assert!(none.iter().all(|panel| panel.plugin != "made-panel"));
+    not_stored(&host, "made-panel");
+    world.untouched();
 }
