@@ -485,6 +485,84 @@ fn verify_on_for_one_project_does_not_start_in_another() {
 }
 
 #[test]
+fn an_approved_install_enables_the_project_the_offer_was_for() {
+    let (_package, version) = pinned_npm();
+    let tmp = Tmp::new("approve project");
+    let host = plugin_host(&tmp);
+    let here = tmp.path().join("this project");
+    let there = tmp.path().join("other project");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&there).unwrap();
+    let stub = tmp.path().join("stub-deps");
+    std::fs::create_dir_all(&stub).unwrap();
+    let files = [
+        (
+            "package.json",
+            package_json("e2e", &version, "\"dependencies\":{\"left-pad\":\"1.0.0\"}"),
+        ),
+        ("dist/cli/bin.js", "process.exit(0)\n".to_string()),
+    ];
+    let owned: Vec<(String, String)> = files
+        .iter()
+        .map(|(name, text)| ((*name).to_string(), text.clone()))
+        .collect();
+    std::fs::write(stub.join("e2e.tgz"), tarball(&as_pairs(&owned))).unwrap();
+    std::fs::write(stub.join("version.txt"), &version).unwrap();
+    let tools = npm_tools(&stub);
+    let waiting = install::install_for(
+        &host,
+        &tools,
+        &InstallSource::Npm {
+            package: "e2e".into(),
+            version: version.clone(),
+            registry: None,
+        },
+        RequestedBy::person(),
+        Some(here.display().to_string()),
+    )
+    .unwrap();
+    let install::InstallResult::Waiting { request } = waiting else {
+        panic!("a package with dependencies waits for a yes");
+    };
+    let key = registry::project_key(&here.display().to_string()).unwrap();
+    assert_eq!(
+        request.project.as_deref(),
+        Some(key.as_str()),
+        "the pending install must remember the project that was offered"
+    );
+    assert!(
+        !names(&host).contains(&"e2e-verify".to_string()),
+        "nothing is installed while it waits"
+    );
+    let offer = verify::offer_for(&host, &here.display().to_string()).unwrap();
+    assert!(
+        !offer.installed,
+        "the offer stays up until the approved install lands"
+    );
+
+    let approved = install::approve(&host, &tools, &request.id).unwrap();
+    assert!(matches!(approved, install::InstallResult::Installed { .. }));
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(
+        !entry.enabled.global,
+        "approval must not turn Verify on everywhere"
+    );
+    assert_eq!(
+        entry.enabled.projects,
+        vec![key],
+        "approval turns Verify on for the offered project only: {:?}",
+        entry.enabled.projects
+    );
+    let server = "plugin-e2e-verify-e2e";
+    let there_wiring =
+        wiring::session_wiring(&host, Some(&there), Some("monocode"), &Default::default()).unwrap();
+    assert!(!there_wiring.claude_mcp_servers.contains_key(server));
+    let here_wiring =
+        wiring::session_wiring(&host, Some(&here), Some("monocode"), &Default::default()).unwrap();
+    assert!(here_wiring.claude_mcp_servers.contains_key(server));
+}
+
+#[test]
 fn an_agents_install_and_a_package_with_dependencies_wait_for_a_yes() {
     let (_package, version) = pinned_npm();
     let tmp = Tmp::new("wait");
