@@ -12,3 +12,5 @@ The app validates the plugin. The panel has to render in the sandbox.
 If you also add an MCP server, it does not run until the person says yes, and it has to answer tools/list.
 
 Never change Hivra's own code. That goes through a dev copy and ship.
+
+Write the files, then call app creator.draft with them, and read creator.state for the reports.

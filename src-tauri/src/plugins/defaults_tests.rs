@@ -98,6 +98,28 @@ fn installed(name: &str) -> Outcome {
     Outcome::Installed { name: name.into() }
 }
 
+fn both_installed() -> Vec<Outcome> {
+    vec![installed("pstack"), installed("hivra-creator")]
+}
+
+fn both_given() -> Vec<Outcome> {
+    vec![
+        Outcome::AlreadyGiven {
+            name: "pstack".into(),
+        },
+        Outcome::AlreadyGiven {
+            name: "hivra-creator".into(),
+        },
+    ]
+}
+
+fn every_skill() -> Vec<String> {
+    let mut skills = pstack_skills();
+    skills.extend(skills_in(&carried("hivra-creator").join("skills")));
+    skills.sort();
+    skills
+}
+
 #[test]
 fn the_pins_match_the_copies_the_app_carries() {
     let pins = defaults::pins();
@@ -176,7 +198,7 @@ fn the_pins_match_the_copies_the_app_carries() {
 fn a_fresh_install_has_pstack_on_everywhere() {
     let tmp = Tmp::new("fresh");
     let host = host(&tmp);
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
 
     let registry = registry::read(&host).unwrap();
     let entry = &registry.plugins["pstack"];
@@ -219,14 +241,17 @@ fn a_fresh_install_has_pstack_on_everywhere() {
         );
     }
 
-    // Claude Code: one --plugin-dir carrying every skill. Codex and the other `.agents/skills` readers: a link each.
+    // Claude Code: one --plugin-dir per plugin. Codex and the other `.agents/skills` readers: a link each.
     let wired = wiring::session_wiring(&host, None, Some("<CLI>"), &Default::default()).unwrap();
-    assert_eq!(wired.claude_plugin_dirs.len(), 1);
-    assert_eq!(
-        skills_in(&Path::new(&wired.claude_plugin_dirs[0]).join("skills")),
-        skills
-    );
-    assert_eq!(skills_in(&host.agents_skills), skills);
+    assert_eq!(wired.claude_plugin_dirs.len(), 2);
+    let mut claude_skills = Vec::new();
+    for dir in &wired.claude_plugin_dirs {
+        claude_skills.extend(skills_in(&Path::new(dir).join("skills")));
+    }
+    claude_skills.sort();
+    let expected = every_skill();
+    assert_eq!(claude_skills, expected);
+    assert_eq!(skills_in(&host.agents_skills), expected);
     // pstack has no MCP servers.
     assert!(wired.claude_mcp_servers.is_empty() && wired.codex_mcp_servers.is_empty());
 }
@@ -238,12 +263,7 @@ fn every_later_start_changes_nothing() {
     defaults::ensure(&host);
     let before = fsutil::tree(&[tmp.path()]);
     let registry_before = std::fs::read_to_string(host.root.join("registry.json")).unwrap();
-    assert_eq!(
-        defaults::ensure(&host),
-        vec![Outcome::AlreadyGiven {
-            name: "pstack".into()
-        }]
-    );
+    assert_eq!(defaults::ensure(&host), both_given());
     assert_eq!(fsutil::tree(&[tmp.path()]), before);
     assert_eq!(
         std::fs::read_to_string(host.root.join("registry.json")).unwrap(),
@@ -259,13 +279,18 @@ fn switched_off_stays_off_and_removed_stays_removed() {
 
     registry::disable(&host, "pstack", &Scope::Global).unwrap();
     let wired = wiring::session_wiring(&host, None, None, &Default::default()).unwrap();
+    let off = skills_in(&host.agents_skills);
     assert!(
-        wired.claude_plugin_dirs.is_empty(),
-        "Claude Code gets no pstack"
+        !off.iter().any(|skill| skill == "tdd"),
+        "Codex gets no pstack: {off:?}"
     );
     assert!(
-        skills_in(&host.agents_skills).is_empty(),
-        "Codex gets no pstack"
+        off.iter().any(|skill| skill == "write-skill"),
+        "the Creator skills stay: {off:?}"
+    );
+    assert!(
+        !wired.claude_plugin_dirs.is_empty(),
+        "hivra-creator is still on"
     );
     defaults::ensure(&host);
     assert!(!registry::read(&host).unwrap().plugins["pstack"]
@@ -274,9 +299,15 @@ fn switched_off_stays_off_and_removed_stays_removed() {
 
     registry::uninstall(&host, "pstack").unwrap();
     defaults::ensure(&host);
-    assert!(registry::read(&host).unwrap().plugins.is_empty());
+    assert!(registry::read(&host)
+        .unwrap()
+        .plugins
+        .contains_key("hivra-creator"));
     assert!(!host.installed("pstack").exists());
-    // Only the memory that it was given stays.
+    // A removed default is not put back. Uninstall both, and only the memory that they were given stays.
+    registry::uninstall(&host, "hivra-creator").unwrap();
+    defaults::ensure(&host);
+    assert!(registry::read(&host).unwrap().plugins.is_empty());
     let left: Vec<String> = std::fs::read_dir(&host.root)
         .unwrap()
         .flatten()
@@ -303,19 +334,14 @@ fn an_existing_install_gets_it_once() {
     )
     .unwrap();
     registry::install_local(&host, &other, Source::local(&other)).unwrap();
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
     let registry = registry::read(&host).unwrap();
     assert!(registry.plugins["pstack"].enabled.global);
     assert!(
         !registry.plugins["other"].enabled.any(),
         "other plugins are left as they were"
     );
-    assert_eq!(
-        defaults::ensure(&host),
-        vec![Outcome::AlreadyGiven {
-            name: "pstack".into()
-        }]
-    );
+    assert_eq!(defaults::ensure(&host), both_given());
 }
 
 #[test]
@@ -326,9 +352,12 @@ fn a_pstack_the_person_installed_themselves_is_left_alone() {
     registry::install_local(&host, &theirs, Source::local(&theirs)).unwrap();
     assert_eq!(
         defaults::ensure(&host),
-        vec![Outcome::TheirOwn {
-            name: "pstack".into()
-        }]
+        vec![
+            Outcome::TheirOwn {
+                name: "pstack".into()
+            },
+            installed("hivra-creator"),
+        ]
     );
     let entry = &registry::read(&host).unwrap().plugins["pstack"];
     assert_eq!(entry.source.kind, "local");
@@ -344,8 +373,8 @@ fn a_start_cut_after_the_install_finishes_the_job() {
     let staging = tmp.path().join("staging");
     let dir = defaults::unpack(&pin, &staging).unwrap();
     registry::install_local(&host, &dir, pin.source()).unwrap();
-    // No switch-on, no record: the app stopped here.
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    // No switch-on, no record: the app stopped here. hivra-creator was never installed, so it is given too.
+    assert_eq!(defaults::ensure(&host), both_installed());
     assert!(
         registry::read(&host).unwrap().plugins["pstack"]
             .enabled
@@ -360,12 +389,16 @@ fn a_failed_start_tries_again_next_time() {
     // The plugin folder can't be made: a file is in the way.
     std::fs::create_dir_all(tmp.path().join("app-data")).unwrap();
     std::fs::write(&host.root, "not a folder").unwrap();
-    assert!(matches!(
-        defaults::ensure(&host).as_slice(),
-        [Outcome::Failed { .. }]
-    ));
+    let failed = defaults::ensure(&host);
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    assert!(
+        failed
+            .iter()
+            .all(|outcome| matches!(outcome, Outcome::Failed { .. })),
+        "{failed:?}"
+    );
     std::fs::remove_file(&host.root).unwrap();
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
 }
 
 /// The session test (`src/features/plugins/model/pstackSessions.test.ts`) replays what the real Claude Code and Codex
@@ -380,12 +413,14 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
     let host = host(&tmp);
     let base = tmp.path().display().to_string();
     let rel = |text: &str| text.replace(&base, "<TMP>");
-    let installed = host.installed("pstack");
+    let pstack_dir = host.installed("pstack");
+    let creator_dir = host.installed("hivra-creator");
     let record = |tmp: &Tmp| -> Vec<serde_json::Value> {
         fn walk(
             base: &Path,
             dir: &Path,
-            installed: &Path,
+            pstack_dir: &Path,
+            creator_dir: &Path,
             rel: &dyn Fn(&str) -> String,
             out: &mut Vec<serde_json::Value>,
         ) {
@@ -405,8 +440,13 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     continue; // install times and the given-once record; the session test reads neither
                 }
                 let meta = std::fs::symlink_metadata(&path).unwrap();
-                if path == installed {
-                    out.push(json!({ "path": name, "carried": "pstack" }));
+                if path == pstack_dir || path == creator_dir {
+                    let carried = if path == pstack_dir {
+                        "pstack"
+                    } else {
+                        "hivra-creator"
+                    };
+                    out.push(json!({ "path": name, "carried": carried }));
                 } else if meta.file_type().is_symlink() {
                     let target = std::fs::read_link(&path).unwrap();
                     let target = target
@@ -417,14 +457,21 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     out.push(json!({ "path": name, "link": target }));
                 } else if meta.is_dir() {
                     out.push(json!({ "path": name, "dir": true }));
-                    walk(base, &path, installed, rel, out);
+                    walk(base, &path, pstack_dir, creator_dir, rel, out);
                 } else {
                     out.push(json!({ "path": name, "text": rel(&std::fs::read_to_string(&path).unwrap()) }));
                 }
             }
         }
         let mut out = Vec::new();
-        walk(tmp.path(), tmp.path(), &installed, &rel, &mut out);
+        walk(
+            tmp.path(),
+            tmp.path(),
+            &pstack_dir,
+            &creator_dir,
+            &rel,
+            &mut out,
+        );
         out
     };
     defaults::ensure(&host);

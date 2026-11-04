@@ -28,6 +28,8 @@ use super::wiring::passed_env;
 const MAX_FILES: usize = 200;
 const MAX_FILE_BYTES: usize = 512 * 1024;
 const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+/// Content-Length framing is not what the probe speaks. The reader below is only for its unit test.
+#[cfg(test)]
 const MAX_FRAME_BYTES: usize = 1024 * 1024;
 
 static CREATOR: Mutex<()> = Mutex::new(());
@@ -630,6 +632,8 @@ pub fn draft(
     }
     session.phase = Phase::Drafted;
     session.plugin = Some(loaded.manifest.name);
+    // A new draft is a new server. The earlier OK does not cover it.
+    session.mcp_approved = false;
     session.mcp_note = None;
     session.mcp_tools.clear();
     session.revision += 1;
@@ -1120,7 +1124,9 @@ pub fn probe_mcp(
         if session.claim.is_some() {
             return Err(busy());
         }
-        let scratch = paths(host, id)?.scratch;
+        let paths = paths(host, id)?;
+        let scratch = paths.scratch;
+        let session_dir = paths.dir;
         if !session.mcp_approved {
             return Ok(finish(host, &session));
         }
@@ -1135,7 +1141,10 @@ pub fn probe_mcp(
             return Ok(finish(host, &session));
         };
         match &server.transport {
-            Transport::Stdio { command, .. } if command.starts_with("./") => {}
+            Transport::Stdio { command, args, .. }
+                if command.starts_with("./")
+                    || (is_probe_interpreter(command)
+                        && args.iter().any(|arg| arg.starts_with("./"))) => {}
             Transport::Stdio { .. } => {
                 session.mcp_note =
                     Some("It isn't a program inside the plugin, so it wasn't started.".into());
@@ -1153,10 +1162,10 @@ pub fn probe_mcp(
         let claim = new_claim();
         session.claim = Some(claim.clone());
         save(host, &session)?;
-        (loaded.root, server, claim)
+        (loaded.root, session_dir, server, claim)
     };
-    let (root, server, claim) = prepared;
-    let talked = talk(&root, &server, timeout);
+    let (root, session_dir, server, claim) = prepared;
+    let talked = talk(&root, &session_dir, &server, timeout);
     let _guard = creator_lock();
     let mut session = load(host, id)?;
     let still = session.claim.as_deref() == Some(claim.as_str())
@@ -1194,8 +1203,40 @@ enum Talk {
     Note(String),
 }
 
-fn talk(root: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
-    let data = root.join("probe-data");
+/// `node`, `python3`, `uv`, `deno` and `bun` may run a script. Anything else has to be a `./` program.
+fn is_probe_interpreter(command: &str) -> bool {
+    matches!(command, "node" | "python3" | "uv" | "deno" | "bun")
+}
+
+/// WP-42's `absolute_plugin_args` is not in this repo. An interpreter may run only a `./` script that stays inside
+/// the plugin. A flag is allowed. Any other argument is not.
+fn script_args_stay_inside(root: &Path, args: &[String]) -> bool {
+    let mut saw_script = false;
+    for arg in args {
+        if let Some(rel) = arg.strip_prefix("./") {
+            if rel.is_empty() || arg.contains("..") || arg.contains('\\') {
+                return false;
+            }
+            if !strictly_inside(root, &root.join(rel)) {
+                return false;
+            }
+            saw_script = true;
+        } else if arg.starts_with('-')
+            && !arg.contains('/')
+            && !arg.contains('\\')
+            && !arg.contains("..")
+        {
+            // A flag, not a path.
+        } else {
+            return false;
+        }
+    }
+    saw_script
+}
+
+fn talk(root: &Path, session_dir: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
+    // probe-data lives beside the scratch folder, so Keep does not install it.
+    let data = session_dir.join("probe-data");
     if std::fs::create_dir_all(&data).is_err() {
         return Talk::Note("It didn't start.".into());
     }
@@ -1203,12 +1244,32 @@ fn talk(root: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
         Ok(plan) => plan,
         Err(_) => return Talk::Note("It didn't start.".into()),
     };
-    let Ok(program) = fsutil::canonical(&plan.program) else {
-        return Talk::Note("It didn't start.".into());
+    let Transport::Stdio { command, args, .. } = &server.transport else {
+        return Talk::Note("A web server isn't started from here.".into());
     };
-    if !strictly_inside(root, &program) {
+    let program = if command.starts_with("./") {
+        let Ok(program) = fsutil::canonical(&plan.program) else {
+            return Talk::Note("It didn't start.".into());
+        };
+        if !strictly_inside(root, &program) {
+            return Talk::Note(
+                "It isn't a program inside the plugin, so it wasn't started.".into(),
+            );
+        }
+        program
+    } else if is_probe_interpreter(command) {
+        if !script_args_stay_inside(root, args) {
+            return Talk::Note(
+                "It isn't a program inside the plugin, so it wasn't started.".into(),
+            );
+        }
+        match crate::connectors::launch::find_on_path(command) {
+            Some(found) => found,
+            None => return Talk::Note("It didn't start.".into()),
+        }
+    } else {
         return Talk::Note("It isn't a program inside the plugin, so it wasn't started.".into());
-    }
+    };
     let mut command = std::process::Command::new(&program);
     command
         .args(&plan.args)
@@ -1226,29 +1287,32 @@ fn talk(root: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
         Err(_) => return Talk::Note("It didn't start.".into()),
     };
     let Some(stdout) = child.stdout.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop_child(&mut child);
         return Talk::Note("It didn't start.".into());
     };
     let Some(mut stdin) = child.stdin.take() else {
-        let _ = child.kill();
-        let _ = child.wait();
+        stop_child(&mut child);
         return Talk::Note("It didn't start.".into());
     };
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let mut reader = std::io::BufReader::new(stdout);
-        loop {
-            match read_frame(&mut reader) {
-                Ok(value) => {
-                    if sender.send(Ok(value)).is_err() {
-                        break;
+        let reader = std::io::BufReader::new(stdout);
+        for line in reader.lines() {
+            let sent = match line {
+                Ok(line) => {
+                    let line = line.trim();
+                    if line.is_empty() {
+                        continue;
+                    }
+                    match serde_json::from_str::<Value>(line) {
+                        Ok(value) => sender.send(Ok(value)),
+                        Err(_) => sender.send(Err("the reply wasn't JSON".to_string())),
                     }
                 }
-                Err(err) => {
-                    let _ = sender.send(Err(err));
-                    break;
-                }
+                Err(_) => sender.send(Err("it closed the connection".to_string())),
+            };
+            if sent.is_err() {
+                break;
             }
         }
     });
@@ -1262,66 +1326,79 @@ fn talk(root: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
             "clientInfo": { "name": "hivra-creator", "version": "0" }
         }
     });
-    if write_frame(&mut stdin, &init).is_err() {
+    if write_line(&mut stdin, &init).is_err() {
         stop_child(&mut child);
         return Talk::Note("It didn't start.".into());
     }
-    if let Err(timed_out) = recv_frame(&receiver, &mut child, timeout) {
-        return if timed_out {
-            Talk::TimedOut
-        } else {
-            Talk::Note("It didn't answer tools/list.".into())
-        };
+    let started = match wait_for_id(&receiver, &mut child, timeout, 1) {
+        Ok(reply) => reply,
+        Err(true) => return Talk::TimedOut,
+        Err(false) => return Talk::Note("It didn't answer tools/list.".into()),
+    };
+    if let Some(error) = started.pointer("/error/message").and_then(Value::as_str) {
+        stop_child(&mut child);
+        return Talk::Note(error.to_string());
     }
     let note = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "notifications/initialized"
     });
-    if write_frame(&mut stdin, &note).is_err() {
-        stop_child(&mut child);
-        return Talk::Note("It didn't answer tools/list.".into());
-    }
     let list = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 2,
         "method": "tools/list",
         "params": {}
     });
-    if write_frame(&mut stdin, &list).is_err() {
+    if write_line(&mut stdin, &note).is_err() || write_line(&mut stdin, &list).is_err() {
         stop_child(&mut child);
         return Talk::Note("It didn't answer tools/list.".into());
     }
-    let reply = match recv_frame(&receiver, &mut child, timeout) {
+    let reply = match wait_for_id(&receiver, &mut child, timeout, 2) {
         Ok(reply) => reply,
         Err(true) => return Talk::TimedOut,
         Err(false) => return Talk::Note("It didn't answer tools/list.".into()),
     };
     stop_child(&mut child);
+    if let Some(error) = reply.pointer("/error/message").and_then(Value::as_str) {
+        return Talk::Note(error.to_string());
+    }
     match tool_names(&reply) {
         Some(names) => Talk::Tools(names),
         None => Talk::Note("It didn't answer tools/list.".into()),
     }
 }
 
-/// `Err(true)` is a timeout. `Err(false)` is any other miss. The child is stopped on a timeout.
-fn recv_frame(
+/// `Err(true)` is a timeout. `Err(false)` is any other miss. Lines for another id are skipped. The child is stopped
+/// on a timeout.
+fn wait_for_id(
     receiver: &std::sync::mpsc::Receiver<Result<Value, String>>,
     child: &mut std::process::Child,
     timeout: Duration,
+    id: i64,
 ) -> Result<Value, bool> {
-    match receiver.recv_timeout(timeout) {
-        Ok(Ok(value)) => Ok(value),
-        Ok(Err(_)) => {
+    let deadline = std::time::Instant::now() + timeout;
+    let wanted = serde_json::json!(id);
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
             stop_child(child);
-            Err(false)
+            return Err(true);
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            stop_child(child);
-            Err(true)
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            stop_child(child);
-            Err(false)
+        match receiver.recv_timeout(left) {
+            Ok(Ok(value)) if value.get("id") == Some(&wanted) => return Ok(value),
+            Ok(Ok(_)) => continue,
+            Ok(Err(_)) => {
+                stop_child(child);
+                return Err(false);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                stop_child(child);
+                return Err(true);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                stop_child(child);
+                return Err(false);
+            }
         }
     }
 }
@@ -1331,14 +1408,15 @@ fn stop_child(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-fn write_frame(writer: &mut impl Write, message: &Value) -> Result<(), String> {
-    let body = serde_json::to_vec(message).map_err(|err| err.to_string())?;
-    write!(writer, "Content-Length: {}\r\n\r\n", body.len()).map_err(|err| err.to_string())?;
-    writer.write_all(&body).map_err(|err| err.to_string())?;
+/// One JSON-RPC message, newline-delimited, which is what MCP stdio speaks.
+fn write_line(writer: &mut impl Write, message: &Value) -> Result<(), String> {
+    writeln!(writer, "{message}").map_err(|err| err.to_string())?;
     writer.flush().map_err(|err| err.to_string())
 }
 
 /// One JSON-RPC frame, Content-Length framed. A length over 1 MiB is refused before it is read.
+/// The probe speaks newline JSON. This stays so a huge length is still refused in the unit test.
+#[cfg(test)]
 pub(crate) fn read_frame(reader: &mut impl BufRead) -> Result<Value, String> {
     let mut len = None;
     loop {

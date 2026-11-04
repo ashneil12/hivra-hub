@@ -208,7 +208,7 @@ fn entry(host: &Host, name: &str) -> registry::Entry {
 
 #[test]
 fn the_creator_template_loads() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../src/features/creator/template");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins/hivra-creator");
     let loaded = load_plugin(&root).unwrap();
     assert!(
         loaded
@@ -238,6 +238,8 @@ fn the_creator_template_loads() {
         let text = std::fs::read_to_string(root.join(format!("skills/{skill}/SKILL.md"))).unwrap();
         assert!(text.contains("tools/list"), "{skill}");
         assert!(text.contains("scratch"), "{skill}");
+        assert!(text.contains("creator.draft"), "{skill}");
+        assert!(text.contains("creator.state"), "{skill}");
     }
     let panel = std::fs::read_to_string(root.join("skills/write-panel/SKILL.md")).unwrap();
     assert!(panel.contains("sandbox"), "{panel}");
@@ -810,24 +812,18 @@ here = Path(__file__).resolve().parent
 )
 
 def read_message():
-    headers = {}
     while True:
-        line = sys.stdin.buffer.readline()
+        line = sys.stdin.readline()
         if not line:
             return None
-        if line in (b"\r\n", b"\n"):
-            break
-        if b":" in line:
-            name, value = line.split(b":", 1)
-            headers[name.decode().lower()] = value.decode().strip()
-    length = int(headers.get("content-length", "0"))
-    return json.loads(sys.stdin.buffer.read(length) or b"null")
+        line = line.strip()
+        if not line:
+            continue
+        return json.loads(line)
 
 def write_message(obj):
-    body = json.dumps(obj).encode()
-    sys.stdout.buffer.write(("Content-Length: %s\r\n\r\n" % len(body)).encode())
-    sys.stdout.buffer.write(body)
-    sys.stdout.buffer.flush()
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
 
 while True:
     msg = read_message()
@@ -988,7 +984,17 @@ fn a_probe_that_answers_tools_list_is_kept_and_a_timeout_is_not_failure() {
     )
     .unwrap();
     assert!(!session.contains("secret-token"), "{session}");
-    assert!(folder.join("probe-data").is_dir());
+    // The probe's data folder is the session folder, not the scratch plugin Keep would install.
+    assert!(
+        !folder.join("probe-data").exists(),
+        "probe-data must not sit in the scratch plugin"
+    );
+    assert!(host
+        .root
+        .join("creator")
+        .join(&probed.id)
+        .join("probe-data")
+        .is_dir());
     assert!(!host.data("made-probe").exists());
     world.untouched();
 
@@ -1200,4 +1206,174 @@ fn a_previewed_panel_is_listed_for_this_view_only() {
     assert!(none.iter().all(|panel| panel.plugin != "made-panel"));
     not_stored(&host, "made-panel");
     world.untouched();
+}
+
+const TOUCHES: &str = r#"#!/usr/bin/env python3
+from pathlib import Path
+Path(__file__).resolve().parent.joinpath("ran.txt").write_text("yes")
+"#;
+
+/// Approving one draft must not let a later draft's server run. The new draft clears the OK, the note and the tools.
+#[test]
+fn a_new_draft_clears_mcp_approval_so_the_new_server_does_not_run() {
+    let world = World::new("mcp-redraft");
+    let host = world.host();
+    let first = draft_mcp(&host, "made-first", "./server.py", Some("print('old')\n"));
+    let allowed = creator::approve_mcp(&host, &first.id, first.revision).unwrap();
+    assert!(allowed.mcp_approved);
+    let again = creator::draft(
+        &host,
+        &allowed.id,
+        allowed.revision,
+        &files(&[
+            ("plugin.json", &manifest("made-next")),
+            (
+                "skills/greet/SKILL.md",
+                "---\nname: greet\ndescription: Says hello.\n---\n\n# greet\n",
+            ),
+            ("mcp.json", &mcp_plugin("made-next", "./other.py")),
+            ("other.py", TOUCHES),
+        ]),
+    )
+    .unwrap();
+    assert!(!again.mcp_approved, "a new draft needs a new OK");
+    assert!(again.mcp_tools.is_empty());
+    assert!(again.mcp_note.is_none());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = scratch(&host, &again.id).join("other.py");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let probed = creator::probe_mcp(
+            &host,
+            &again.id,
+            again.revision,
+            Duration::from_millis(1500),
+        )
+        .unwrap();
+        assert!(!probed.mcp_approved);
+        assert!(
+            !scratch(&host, &probed.id).join("ran.txt").exists(),
+            "the new server ran without a new OK"
+        );
+    }
+    world.untouched();
+}
+
+#[cfg(windows)]
+#[test]
+fn a_new_draft_clears_mcp_approval_so_the_new_server_does_not_run_on_windows() {
+    // The flag is checked above. Starting the script needs a Unix mode bit.
+}
+
+fn mcp_with_args(command: &str, args: &[&str]) -> String {
+    json!({
+        "$schema": MCP_SCHEMA_1_0_0,
+        "mcpServers": {
+            "ping": { "type": "stdio", "command": command, "args": args }
+        }
+    })
+    .to_string()
+}
+
+/// An interpreter on PATH may run one ./ script inside the plugin. Anything else is not started.
+#[cfg(unix)]
+#[test]
+fn an_interpreter_on_path_can_run_a_script_inside_the_plugin() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = World::new("mcp-interpreter");
+    let host = world.host();
+    let started = creator::start(&host, "this-view", "skill").unwrap();
+    let drafted = creator::draft(
+        &host,
+        &started.id,
+        started.revision,
+        &files(&[
+            ("plugin.json", &manifest("made-py")),
+            (
+                "skills/greet/SKILL.md",
+                "---\nname: greet\ndescription: Says hello.\n---\n\n# greet\n",
+            ),
+            ("mcp.json", &mcp_with_args("python3", &["./server.py"])),
+            ("server.py", ANSWERS),
+        ]),
+    )
+    .unwrap();
+    let script = scratch(&host, &drafted.id).join("server.py");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let allowed = creator::approve_mcp(&host, &drafted.id, drafted.revision).unwrap();
+    let probed =
+        creator::probe_mcp(&host, &allowed.id, allowed.revision, Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        probed.mcp_tools,
+        vec!["ping".to_string()],
+        "{:?}",
+        probed.mcp_note
+    );
+    assert!(!scratch(&host, &probed.id).join("probe-data").exists());
+    assert!(host
+        .root
+        .join("creator")
+        .join(&probed.id)
+        .join("probe-data")
+        .is_dir());
+
+    let outside = creator::start(&host, "this-view", "skill").unwrap();
+    let drafted = creator::draft(
+        &host,
+        &outside.id,
+        outside.revision,
+        &files(&[
+            ("plugin.json", &manifest("made-out")),
+            (
+                "skills/greet/SKILL.md",
+                "---\nname: greet\ndescription: Says hello.\n---\n\n# greet\n",
+            ),
+            (
+                "mcp.json",
+                &mcp_with_args("python3", &["/tmp/not-in-the-plugin.py"]),
+            ),
+        ]),
+    )
+    .unwrap();
+    let allowed = creator::approve_mcp(&host, &drafted.id, drafted.revision).unwrap();
+    let probed = creator::probe_mcp(
+        &host,
+        &allowed.id,
+        allowed.revision,
+        Duration::from_millis(1500),
+    )
+    .unwrap();
+    let note = probed.mcp_note.unwrap();
+    assert!(note.contains("wasn't started"), "{note}");
+    world.untouched();
+}
+
+#[cfg(windows)]
+#[test]
+fn an_interpreter_on_path_can_run_a_script_inside_the_plugin() {
+    // python3 and the mode bit are the Unix fixture. The same refusal is in the command check.
+}
+
+#[test]
+fn the_creator_mono_is_a_default_plugin() {
+    let pin = super::defaults::pins()
+        .into_iter()
+        .find(|pin| pin.name == "hivra-creator")
+        .expect("hivra-creator is bundled with the app");
+    assert_eq!(pin.folder, "hivra-creator");
+    assert_eq!(pin.version, "1.0.0");
+    let paths: Vec<&str> = super::defaults::files("hivra-creator")
+        .map(|(path, _, _)| path)
+        .collect();
+    assert!(
+        paths.contains(&"hivra/monos/creator/mono.json"),
+        "{paths:?}"
+    );
+    let skills: Vec<&str> = paths
+        .iter()
+        .copied()
+        .filter(|path| path.ends_with("/SKILL.md"))
+        .collect();
+    assert_eq!(skills.len(), 5, "{skills:?}");
 }

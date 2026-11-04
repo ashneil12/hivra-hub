@@ -19,6 +19,17 @@
         "docs/guide/images",
         "skills/statechart/scripts/test"
       ]
+    },
+    {
+      "name": "hivra-creator",
+      "folder": "hivra-creator",
+      "repository": "https://github.com/ashneil12/hivra-hub",
+      "path": "src-tauri/plugins/hivra-creator",
+      "commit": "ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6",
+      "version": "1.0.0",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 Ashneil Lanelle",
+      "left_out": []
     }
   ]
 }
