@@ -214,7 +214,7 @@ describe("desktop gate", () => {
     const asked = JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState;
     expect(asked.pending).toEqual([{ id: "ask-1", project: ctx.project, app: "Notes" }]);
 
-    const second = gate(ctx, ["--app=Notes", "click"], { binary: false });
+    const second = gate(ctx, ["click", "--app=Notes"], { binary: false });
     refusal(second, "CONSENT_REQUIRED", "unsafe");
     const again = JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState;
     expect(again.pending).toEqual(asked.pending);
@@ -322,13 +322,13 @@ describe("desktop gate", () => {
     on(ctx);
     touch(ctx);
     allow(ctx, "Notes");
-    const hidden = gate(ctx, ["--headed", "click", "--app", "Notes"]);
+    const hidden = gate(ctx, ["click", "--headed", "--app", "Notes"]);
     refusal(hidden, "VISIBLE_NOT_ALLOWED", "unsafe");
     expect(ctx.calls).toEqual([]);
 
     const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
     expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
-    const ran = gate(ctx, ["--headed", "press", "cmd+q", "--app", "Notes"]);
+    const ran = gate(ctx, ["press", "--headed", "cmd+q", "--app", "Notes"]);
     expect(ran.code).toBe(0);
     expect(ctx.calls[0].args).toContain("--headed");
     expect(ctx.calls[0].args).toContain("--app");
@@ -339,13 +339,13 @@ describe("desktop gate", () => {
     on(ctx);
     touch(ctx);
     allow(ctx, "Notes");
-    const ran = gate(ctx, ["--headed=false", "snapshot", "--app", "Notes"]);
+    const ran = gate(ctx, ["snapshot", "--headed=false", "--app", "Notes"]);
     expect(ran.code).toBe(0);
     expect(ctx.calls).toHaveLength(1);
 
     const fresh = setup();
     on(fresh);
-    const asked = gate(fresh, ["--headed", "click", "--app", "Mail"], { binary: false });
+    const asked = gate(fresh, ["click", "--headed", "--app", "Mail"], { binary: false });
     refusal(asked, "CONSENT_REQUIRED", "unsafe");
     expect(JSON.parse(asked.stdout).error.code).not.toBe("VISIBLE_NOT_ALLOWED");
   });
@@ -1431,6 +1431,116 @@ describe("desktop gate, app launch", () => {
         if (attack.hidden) expect(result.stdout, label).not.toContain(attack.hidden);
       }
     }
+  });
+
+  it("refuses a leading flag, a second command word, and an extra positional on every forwarded command", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
+    expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
+    ctx.seen.apps.s1 = "Notes";
+    const forwarded = [
+      "click",
+      "double-click",
+      "triple-click",
+      "right-click",
+      "clear",
+      "focus",
+      "toggle",
+      "check",
+      "uncheck",
+      "expand",
+      "collapse",
+      "scroll-to",
+      "get",
+      "is",
+      "type",
+      "set-value",
+      "select",
+      "scroll",
+      "hover",
+      "launch",
+      "close-app",
+      "snapshot",
+      "find",
+      "screenshot",
+      "press",
+      "list-surfaces",
+      "wait",
+    ];
+    const base = (command: string): string[] => {
+      if (command === "type" || command === "set-value") return [command, "@s1:e2", "hello"];
+      if (command === "select") return [command, "@s1:e2", "Red"];
+      if (command === "scroll") return [command, "@s1:e2", "--direction", "down"];
+      if (command === "get") return [command, "@s1:e2", "--property", "text"];
+      if (command === "launch" || command === "close-app") return [command, "Notes"];
+      if (command === "press") return [command, "cmd+q"];
+      if (command === "wait") return [command, "200"];
+      if (command === "find") return [command, "--role", "button"];
+      if (command === "snapshot" || command === "list-surfaces") return [command];
+      if (command === "screenshot") return [command];
+      return [command, "@s1:e2"];
+    };
+    // screenshot takes one optional path, so one extra word is still its shape.
+    const extra = (command: string): string[] => (command === "screenshot" ? ["shot.png", "nope"] : ["nope"]);
+    const attacks: Array<{ name: string; args: (command: string) => string[]; hidden: string }> = [
+      { name: "a leading flag", args: (command) => ["-w", ...base(command)], hidden: "-w" },
+      { name: "a second command word", args: (command) => [...base(command), "trace"], hidden: "trace" },
+      { name: "an extra positional", args: (command) => [...base(command), ...extra(command)], hidden: "nope" },
+    ];
+    for (const command of forwarded) {
+      for (const attack of attacks) {
+        const before = ctx.calls.length;
+        const label = `${command} ${attack.name}`;
+        const result = launched(ctx, attack.args(command));
+        expect(result.code, label).not.toBe(0);
+        expect(ctx.calls, label).toHaveLength(before);
+        refusal(result, "INVALID_ARGS", "unsafe");
+        expect(result.stdout, label).not.toContain(attack.hidden);
+      }
+    }
+  });
+
+  it("refuses an MCP leading flag that would send press while visible control is off", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const raw = handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 4,
+        method: "tools/call",
+        params: {
+          name: "desktop",
+          arguments: {
+            project: ctx.project,
+            app: "Notes",
+            command: "-w",
+            args: ["snapshot", "press", "cmd+q", "--force"],
+          },
+        },
+      },
+      {
+        launch: launchFor(ctx),
+        seen: ctx.seen,
+        env: { PATH: "/usr/bin" },
+        spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+          ctx.calls.push({ binary, args, options });
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    const body = JSON.parse(raw ?? "{}") as { result: { isError: boolean; content: { text: string }[] } };
+    expect(body.result.isError).toBe(true);
+    expect(ctx.calls).toEqual([]);
+    const text = body.result.content[0].text;
+    expect(text).toContain("INVALID_ARGS");
+    expect(text).not.toContain("cmd+q");
+    expect(text).not.toContain("press");
+    expect(text).not.toContain("-w");
   });
 
   it("does not tell the worker to run the gate or the binary", () => {

@@ -205,6 +205,103 @@ const REF_COMMANDS = new Set([
   "hover",
 ]);
 const APP_FLAG_COMMANDS = new Set(["snapshot", "find", "screenshot", "press", "list-surfaces", "wait"]);
+// agent-desktop 1.1.0 command names. The first argument has to be one of these.
+// A later one is a second command, which the program can run in place of the first
+// when a leading flag (such as `-w`) takes the first word as its value.
+const KNOWN_COMMANDS = new Set([
+  "snapshot",
+  "find",
+  "screenshot",
+  "get",
+  "is",
+  "click",
+  "double-click",
+  "triple-click",
+  "right-click",
+  "type",
+  "set-value",
+  "clear",
+  "focus",
+  "select",
+  "toggle",
+  "check",
+  "uncheck",
+  "expand",
+  "collapse",
+  "scroll",
+  "scroll-to",
+  "press",
+  "key-down",
+  "key-up",
+  "hover",
+  "drag",
+  "mouse-move",
+  "mouse-click",
+  "mouse-down",
+  "mouse-up",
+  "mouse-wheel",
+  "launch",
+  "close-app",
+  "list-windows",
+  "list-displays",
+  "list-apps",
+  "focus-window",
+  "resize-window",
+  "move-window",
+  "minimize",
+  "maximize",
+  "restore",
+  "list-surfaces",
+  "open-system-surface",
+  "list-notifications",
+  "dismiss-notification",
+  "dismiss-all-notifications",
+  "notification-action",
+  "clipboard-get",
+  "clipboard-set",
+  "clipboard-clear",
+  "wait",
+  "status",
+  "permissions",
+  "version",
+  "batch",
+  "skills",
+  "session",
+  "cursor-overlay",
+  "trace",
+]);
+// Positional arity from the 1.1.0 command structs. Flags are not positionals.
+const ONE_REF = { min: 1, max: 1, refAt: 0 };
+const SHAPES = {
+  click: ONE_REF,
+  "double-click": ONE_REF,
+  "triple-click": ONE_REF,
+  "right-click": ONE_REF,
+  clear: ONE_REF,
+  focus: ONE_REF,
+  toggle: ONE_REF,
+  check: ONE_REF,
+  uncheck: ONE_REF,
+  expand: ONE_REF,
+  collapse: ONE_REF,
+  "scroll-to": ONE_REF,
+  get: ONE_REF,
+  is: ONE_REF,
+  scroll: ONE_REF,
+  type: { min: 2, max: 2, refAt: 0 },
+  "set-value": { min: 2, max: 2, refAt: 0 },
+  select: { min: 2, max: 2, refAt: 0 },
+  hover: { min: 0, max: 1, refAt: 0 },
+  snapshot: { min: 0, max: 0 },
+  find: { min: 0, max: 0 },
+  "list-surfaces": { min: 0, max: 0 },
+  screenshot: { min: 0, max: 1 },
+  press: { min: 1, max: 1 },
+  launch: { min: 1, max: 1 },
+  "close-app": { min: 1, max: 1 },
+  wait: { min: 0, max: 1, ms: true },
+};
+const U64_MAX = "18446744073709551615";
 const APP_SURFACES = new Set([
   "window",
   "focused",
@@ -488,20 +585,49 @@ function splitArgs(argv) {
   return { gate, rest };
 }
 
-function commandOf(args) {
-  for (let i = 0; i < args.length; i += 1) {
-    const token = args[i];
-    if (token === "--") continue;
-    if (token.startsWith("-")) {
-      if (!token.includes("=") && VALUE_FLAGS.has(token)) {
-        const next = args[i + 1];
-        if (next !== undefined && !next.startsWith("-")) i += 1;
-      }
-      continue;
-    }
-    return token;
+function commandToken(token) {
+  if (typeof token !== "string" || token === "" || token === "--") return false;
+  if (KNOWN_COMMANDS.has(token)) return true;
+  // `--role=press` is one argument, and the value is still a command word.
+  if (token.startsWith("-")) {
+    const eq = token.indexOf("=");
+    if (eq !== -1 && KNOWN_COMMANDS.has(token.slice(eq + 1))) return true;
   }
-  return "";
+  return false;
+}
+
+// The command is the first argument. A leading flag is not skipped: `-w` is a
+// global flag that takes the next word, so the program would then run whatever
+// command follows it.
+function parseCommand(args) {
+  const first = args[0];
+  if (!KNOWN_COMMANDS.has(first)) return { error: "Say which command." };
+  for (let i = 1; i < args.length; i += 1) {
+    if (commandToken(args[i])) return { command: first, error: "Only one command is allowed." };
+  }
+  return { command: first };
+}
+
+function isU64(value) {
+  if (typeof value !== "string" || !/^\d{1,20}$/.test(value)) return false;
+  if (value.length < 20) return true;
+  return value <= U64_MAX;
+}
+
+function shapeProblem(command, rest) {
+  const shape = SHAPES[command];
+  if (!shape) return null;
+  const positionals = positionalTokens(rest, command);
+  if (positionals.length < shape.min || positionals.length > shape.max) {
+    return "That command doesn't take those arguments.";
+  }
+  if (shape.refAt !== undefined && positionals.length > shape.refAt && !REF_RE.test(positionals[shape.refAt])) {
+    return "That ref isn't from this app's snapshot.";
+  }
+  if (shape.ms && positionals.length === 1 && !isU64(positionals[0])) {
+    return "That command doesn't take those arguments.";
+  }
+  return null;
 }
 
 function namedApps(args) {
@@ -1028,7 +1154,8 @@ export function runGate(options) {
   const env = options.env ?? {};
   const split = splitArgs(argv);
   if (split.error) return refuse("", "INVALID_ARGS", split.error, "unsafe");
-  const command = commandOf(split.rest);
+  const parsed = parseCommand(split.rest);
+  const command = parsed.command ?? "";
   const repeated = repeatedFlag(split.rest);
   if (repeated) return refuse(command, "INVALID_ARGS", repeated, "unsafe");
   if (!split.gate["--project"]) return refuse(command, "INVALID_ARGS", "Give a project folder.", "unsafe");
@@ -1043,6 +1170,7 @@ export function runGate(options) {
   if (!on.on) {
     return refuse(command || "desktop", "DESKTOP_CONTROL_OFF", "Desktop control is off. The person has to turn it on.", "unsafe");
   }
+  if (parsed.error) return refuse(command, "INVALID_ARGS", parsed.error, "unsafe");
   if (!command) return refuse("", "INVALID_ARGS", "Say which command.", "unsafe");
   const policy = policyFor(command, split.rest);
   if (policy.error) return refuse(command, "INVALID_ARGS", policy.error, "unsafe");
@@ -1074,6 +1202,8 @@ export function runGate(options) {
   }
   const target = targetProblem(command, split.rest, appResult.app, options.seen);
   if (target) return refuse(command, "INVALID_ARGS", target, "unsafe");
+  const shape = shapeProblem(command, split.rest);
+  if (shape) return refuse(command, "INVALID_ARGS", shape, "unsafe");
   const forwarded = scopeForward(command, split.rest, appResult.app, options.seen);
   if (forwarded.error) return refuse(command, "INVALID_ARGS", forwarded.error, "unsafe");
   const pinned = readPin(launch.pin);
