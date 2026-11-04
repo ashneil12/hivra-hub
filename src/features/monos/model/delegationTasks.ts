@@ -46,6 +46,8 @@ export type DelegationTasksDeps = {
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
   pool?: AgentAppTasksHost["pool"];
+  /** WP-13: which CLI, model and effort a delegated task uses. */
+  crewRoute?: AgentAppTasksHost["crewRoute"];
   /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
   firstMate?: AgentAppTasksHost["firstMate"];
 };
@@ -160,6 +162,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
+    ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),

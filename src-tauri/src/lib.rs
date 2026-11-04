@@ -20,6 +20,8 @@ mod delegations;
 mod dev_fault;
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+// Hivra WP-13: crew rules, routing and reroute.
+mod crew;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -70,6 +72,8 @@ mod pi_usage;
 pub mod plugins;
 // WP-43: a browser profile per agent, and Stop.
 pub mod browser;
+// WP-33: plugin panels, the catalog and the My panels migration.
+mod panels;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -555,6 +559,12 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // Hivra WP-13: crew rules, routing and reroute.
+            crew::crew_rules_get,
+            crew::crew_rules_set,
+            crew::crew_route,
+            crew::crew_on_failure,
+            crew::crew_note_pause,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,
@@ -783,6 +793,9 @@ pub fn run() {
             browser::browser_drives,
             browser::browser_stop,
             browser::browser_stop_all,
+            // WP-33: panels from plugins, and kept pages moved into My panels.
+            panels::panels_catalog,
+            panels::panels_migrate,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
