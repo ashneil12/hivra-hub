@@ -634,6 +634,7 @@ describe("settings navigation", () => {
       "mcp",
       "skills",
       "plugins",
+      "crew",
       "monos",
       "teams",
       "inbox",

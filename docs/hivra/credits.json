@@ -179,6 +179,14 @@
       "how": "Hard rules, delivery path, brief fill, isolation check, status lines, steering inbox and project-memory rule, vendored verbatim (WP-10). A one-line binding follows each block where Hivra has no status file, inbox directory or captain address"
     },
     {
+      "name": "Puppetmaster's failure classification and retry budget",
+      "url": "https://github.com/professorpalmer/Puppetmaster",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Cary",
+      "where": "src/features/crew/model/failure.ts, src/features/crew/model/budget.ts, src-tauri/src/crew/failure.rs, src-tauri/src/crew/budget.rs",
+      "how": "failure.py and failure_policy.py translated to TypeScript and Rust (WP-13). The checks and their order are the original's. A boolean is not a retry count."
+    },
+    {
       "name": "pstack (default plugin)",
       "url": "https://github.com/cursor/plugins/tree/main/pstack",
       "licence": "MIT",
