@@ -121,6 +121,17 @@ describe("browserAgentFor", () => {
     expect(right).toMatch(/^[A-Za-z0-9_-]+$/);
   });
 
+  it("does not give café and caf_e9 the same profile", () => {
+    const cafe = agentKey("chat", "café");
+    const literal = agentKey("chat", "caf_e9");
+    expect(cafe).not.toBe(literal);
+    expect(agentKey("chat", "foo/bar")).not.toBe(agentKey("chat", "foo_2fbar"));
+    expect(cafe).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(literal).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(cafe.length).toBeLessThanOrEqual(120);
+    expect(literal.length).toBeLessThanOrEqual(120);
+  });
+
   it("does not share a profile when reading the roster throws", () => {
     const original = Array.prototype.filter;
     Array.prototype.filter = () => {

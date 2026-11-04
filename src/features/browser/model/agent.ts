@@ -14,7 +14,9 @@ const KINDS = ["mono", "team", "chat"] as const;
 export function agentKey(kind: (typeof KINDS)[number], raw: string): string {
   let body = "";
   for (const ch of raw) {
-    body += /^[A-Za-z0-9_-]$/.test(ch) ? ch : `_${(ch.codePointAt(0) ?? 0).toString(16)}`;
+    const point = ch.codePointAt(0) ?? 0;
+    // `_` is the escape mark, so it is escaped too. Otherwise "caf_e9" and "café" share a profile.
+    body += point === 0x5f || !/^[A-Za-z0-9-]$/.test(ch) ? `_${point.toString(16)}` : ch;
   }
   if (!body) body = "unknown";
   const mark = mix(`${kind}\0${raw}`);
