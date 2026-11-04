@@ -436,6 +436,7 @@ import {
   type SettingsSectionId,
 } from "../model/settings";
 import { loadSoundsEnabled, playCue, saveSoundsEnabled } from "../model/sounds";
+import { PlainEnglishSetting } from "../../firstmate/ui/PlainEnglishSetting";
 import { setQuickComposerShortcut } from "../../quick-composer/model/quickComposer";
 import {
   isGlobalShortcut,
@@ -1191,6 +1192,16 @@ function ChatPage() {
 
   return (
     <>
+      {/* WP-41: plain-English endings, on unless this switch is off. */}
+      <Group title="Replies" description="How a finished reply reads.">
+        <Row
+          id="plain-english-endings"
+          label="Plain-English endings"
+          description="Replies end with one short paragraph in plain words about what happened and what it means."
+        >
+          <PlainEnglishSetting />
+        </Row>
+      </Group>
       <Group
         title="Transcript"
         description="How a conversation reads as it grows."

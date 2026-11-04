@@ -65,6 +65,7 @@ evidence links, and open questions. Its opinion of its own work is kept, and nev
   destructive or irreversible, a credential or login they must give, and decisions that are theirs.
 - Don't report automatic retries, routine progress or how supervision works.
 - Every message stands alone: if they read only that one, they have what they need.
+- Every reply that reports work or answers a question ends with one short plain-English paragraph saying what happened and what it means, with no jargon, lists or headings. Worker reports end the same way, and first mates pass that paragraph through to Ash.
 
 ## Waiting
 
