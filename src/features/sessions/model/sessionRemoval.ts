@@ -1,4 +1,5 @@
 import { stopStreaming } from "../../../integrations/harness/core/apply";
+import { RUNNING_CHAT } from "../../trash/model/trash";
 import { forgetHarnessSession } from "../../../integrations/harness/core/registry";
 import {
   buildDeterministicHandoff,
@@ -117,6 +118,14 @@ async function removeSession(
     canCloseTab,
   });
   if (!(await options.confirm(plan.closedTabs, options.mode))) return false;
+
+  // WP-76: a running chat stays until it stops. Nothing is written.
+  if (options.mode === "delete") {
+    const open = options.workspace
+      .snapshot()
+      .sessions.find((session) => session.id === sessionId);
+    if (open?.busy) throw new Error(RUNNING_CHAT);
+  }
 
   if (options.mode === "delete") {
     const run = orchestrator.forSession(sessionId);
