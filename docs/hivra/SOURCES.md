@@ -9,6 +9,7 @@ studies (read-only, Nov 2026) are in the project's research folder; the verdicts
   unlicensed ones. Don't copy their text or code while doing it.
 - **Vendor** (copy code, prompts or docs): only from MIT or Apache-2.0 sources, and MPL-2.0 file by file. Keep the
   licence header, add the source to the root `NOTICE`, and say what changed.
+- Copy code first (Ash, 4 Nov 2026). Where the source's licence allows (MIT, Apache-2.0, MPL-2.0 file by file) and the language fits (TypeScript or Rust), vendor its code with its licence header, a NOTICE entry and a credits.json line, rather than rewriting. Where the language doesn't fit, translate the original line by line, keeping its edge-case handling, and port its tests too. Never vendor AGPL or unlicensed sources. Any rewrite needs a one-line reason in the PR. Take every useful idea a source offers, not just one.
 - **Never vendor** from Rerun (AGPL-3.0 with a CLA), ROMA or OptMem (no licence file), or OpenMausBot's
   `enterprise/` folder (source-available, not open).
 - **Names are not licensed.** Don't use DeepSeek Harness, OpenMausBot, MausBot, Crest, Rerun or other product names
