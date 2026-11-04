@@ -1,141 +1,224 @@
-import { StrictMode, useEffect, useState } from "react";
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { afterAnswer, inboxItems, noticesFrom, type DecisionInput } from "../../src/features/crew/model/inbox";
-import { EMPTY_DIGEST, planDigest, type DigestPlan, type DigestState } from "../../src/features/crew/model/digest";
-import { crewRows, type CrewWorkerInput } from "../../src/features/crew/model/rows";
-import { CrewTab } from "../../src/features/crew/ui/CrewTab";
-import { DigestBanner } from "../../src/features/crew/ui/DigestBanner";
-import { FirstMateInbox } from "../../src/features/crew/ui/FirstMateInbox";
+import type { Decision } from "../../src/features/firstmate/model/steering";
+import type { Delegation } from "../../src/features/monos/model/delegations";
+import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
+import { CrewPanel } from "../../src/features/crew/ui/CrewPanel";
+import { FirstMateInboxPanel } from "../../src/features/crew/ui/FirstMateInboxPanel";
 import "../../src/styles/index.css";
+import { installFakeTauri } from "./fakeTauri";
 
+// The real Crew tab and Inbox. This page only names the Classic tabs and
+// answers the commands those two panels already call. It does not build rows.
 const PROJECT = "/work/proj";
 const START = 1_700_000_000_000;
-const HOUR = 60 * 60_000;
 
-const SESSIONS = [
-  { id: "chat-working", harness: "claude", model: "opus", branch: "fix-save", additions: 12, deletions: 3 },
-];
+const commands: string[] = [];
+let quiet = false;
+let answered = false;
 
-const DELIVERIES = [
-  { delegationId: "done", mode: "pr", state: "ready", url: "https://github.com/acme/app/pull/12", number: 12, branch: "fix-save", updatedAt: 1 },
-];
+function worker(
+  row: Pick<Delegation, "id" | "title" | "status" | "childSession" | "createdAt"> &
+    Partial<Delegation>,
+): Delegation {
+  return {
+    ownerSession: "lead",
+    ownerMono: null,
+    batchId: null,
+    parentId: null,
+    rootId: row.id,
+    requestId: row.id,
+    generation: 1,
+    project: PROJECT,
+    brief: null,
+    goal: null,
+    askIds: [],
+    state: "running",
+    errorClass: null,
+    error: null,
+    retryable: null,
+    resetsAt: null,
+    result: null,
+    pendingQuestion: null,
+    delivery: "pending",
+    deliveryMessage: null,
+    updatedAt: START,
+    settledAt: null,
+    log: [],
+    version: 1,
+    mirroredVersion: 0,
+    mirrorError: null,
+    statusNotice: null,
+    questionOwner: null,
+    ...row,
+  };
+}
 
-const CHECKS = [{ url: "https://github.com/acme/app/pull/12", number: 12, pending: 1, failed: [], passed: false, checks: 1 }];
-
-function initialRows(): CrewWorkerInput[] {
-  return [
-    { id: "working", project: PROJECT, title: "Fix the save bug", status: "working", createdAt: START - 12 * 60_000, updatedAt: START, childSession: "chat-working", ownerSession: "lead" },
-    { id: "needs", project: PROJECT, title: "Which name to ship", status: "needs-you", createdAt: START - 8 * 60_000, updatedAt: START, childSession: "chat-needs", ownerSession: "lead" },
-    { id: "done", project: PROJECT, title: "Ready to land", status: "done", createdAt: START - 60 * 60_000, settledAt: START, updatedAt: START, childSession: "chat-done" },
-    {
+function workers(): Delegation[] {
+  const rows = [
+    worker({
+      id: "working",
+      title: "Fix the save bug",
+      status: "working",
+      createdAt: START - 12 * 60_000,
+      childSession: "chat-working",
+    }),
+    worker({
+      id: "needs",
+      title: "Which name to ship",
+      status: answered ? "working" : "needs-you",
+      createdAt: START - 8 * 60_000,
+      childSession: "chat-needs",
+      questionOwner: answered ? null : "person",
+    }),
+    worker({
+      id: "done",
+      title: "Ready to land",
+      status: "done",
+      state: "completed",
+      createdAt: START - 60 * 60_000,
+      settledAt: START,
+      childSession: "chat-done",
+    }),
+    worker({
       id: "failed",
-      project: PROJECT,
       title: "Save bug",
       status: "failed",
+      state: "failed",
       createdAt: START - 20 * 60_000,
-      updatedAt: START,
       childSession: "chat-failed",
       statusNotice: "The save did not finish.",
       error: "at save (/tmp/a.ts:1)\nsk-live-secret",
-    },
-    {
+    }),
+    worker({
       id: "paused",
-      project: PROJECT,
       title: "Waiting on the limit",
       status: "paused",
       errorClass: "usage_limit",
       statusNotice: "Waiting for a usage limit",
       createdAt: START - 30 * 60_000,
-      updatedAt: START,
       childSession: "chat-paused",
-    },
+    }),
   ];
+  return quiet ? [] : rows;
 }
 
-const OPEN_DECISION: DecisionInput = {
-  project: PROJECT,
-  decisionKey: "ship",
-  question: "Ship it now?",
-  options: ["Ship it", "Wait"],
-  recommended: "Ship it",
-  askedBy: "lead-chat",
-  waiting: ["needs"],
-  state: "open",
-  updatedAt: START,
-};
+function decision(): Decision {
+  return {
+    project: PROJECT,
+    decisionKey: "ship",
+    question: "Ship it now?",
+    options: ["Ship it", "Wait"],
+    recommended: "Ship it",
+    askedBy: "lead-chat",
+    askedByMono: null,
+    waiting: ["needs"],
+    state: answered ? "answered" : "open",
+    answer: answered ? "Ship it" : null,
+    answeredBy: answered ? "person" : null,
+    answeredAt: answered ? START : null,
+    createdAt: START,
+    updatedAt: START,
+    version: answered ? 2 : 1,
+  };
+}
+
+const DELIVERIES = [
+  {
+    delegationId: "done",
+    mode: "pr",
+    state: "ready",
+    url: "https://github.com/acme/app/pull/12",
+    number: 12,
+    branch: "fix-save",
+    updatedAt: 1,
+  },
+];
+
+const WATCHES = [
+  {
+    number: 12,
+    url: "https://github.com/acme/app/pull/12",
+    repo: "acme/app",
+    status: { pending: 1, failed: [], passed: false, checks: 1 },
+  },
+];
+
+const sessions: SessionSummary[] = [
+  {
+    id: "chat-working",
+    cwd: PROJECT,
+    harness: "claude",
+    model: "opus",
+    runtimeMode: "supervised",
+    title: "Fix the save bug",
+    branch: "fix-save",
+    additions: 12,
+    deletions: 3,
+    createdAt: START,
+    updatedAt: START,
+  },
+];
+
+const bridge = installFakeTauri("crew", (command, args) => {
+  commands.push(command);
+  if (command === "delegations_list_open") return workers().filter((row) => row.status !== "done");
+  if (command === "delegations_recent") return workers();
+  if (command === "decisions_list") return quiet ? [] : [decision()];
+  if (command === "delivery_list") return quiet ? [] : DELIVERIES;
+  if (command === "pr_watch_list") return quiet ? [] : WATCHES;
+  if (command === "decisions_answer") {
+    answered = true;
+    const outcome = {
+      applied: true,
+      decision: decision(),
+      released: [],
+      releasedTasks: ["needs"],
+    };
+    queueMicrotask(() => {
+      bridge.emit("monocode:delegations-changed", {});
+      bridge.emit("hivra:decisions-changed", {});
+    });
+    return outcome;
+  }
+  return args;
+});
+
+Object.assign(window, { __crewCommands: commands });
 
 function Fixture() {
-  const [rows, setRows] = useState(initialRows);
-  const [decision, setDecision] = useState(OPEN_DECISION);
-  const [quiet, setQuiet] = useState(false);
-  const [now, setNow] = useState(START);
-  const [digest, setDigest] = useState<DigestState>(EMPTY_DIGEST);
-  const [shown, setShown] = useState<DigestPlan | null>(null);
-
-  const decisions = !quiet && decision.state === "open" ? [decision] : [];
-  const source = quiet ? [] : rows;
-  const items = inboxItems({ project: PROJECT, decisions, rows: source, deliveries: DELIVERIES });
-  const notices = noticesFrom(items, source);
-  const noticeKey = notices.map((notice) => notice.id).join("|");
-  const crew = crewRows({
-    project: PROJECT,
-    rows,
-    sessions: SESSIONS,
-    deliveries: DELIVERIES,
-    checks: CHECKS,
-    now: START + 12 * 60_000,
-  });
-
-  useEffect(() => {
-    if (quiet) return;
-    const plan = planDigest(digest, notices, now);
-    setShown((current) => {
-      if (current && current.state.version === plan.state.version) return { ...current, immediate: plan.immediate };
-      return plan;
-    });
-    if (plan.state.version !== digest.version) setDigest(plan.state);
-    // The hour and the notices decide this. `digest` is what the plan reads.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [noticeKey, now, quiet]);
-
-  function answer(option: string) {
-    const next = afterAnswer(rows, decision, option);
-    if (!next.applied) return;
-    setRows(next.rows);
-    setDecision({ ...decision, state: "answered", answer: option });
-  }
-
-  function hour() {
-    setNow((digest.lastDigestAt ?? now) + HOUR);
-  }
-
-  function quietHour() {
-    const plan = planDigest(digest, [], (digest.lastDigestAt ?? now) + HOUR);
-    setQuiet(true);
-    setShown(plan);
-  }
-
+  const [, redraw] = useState(0);
   return (
-    <div data-window={digest.lastDigestAt ?? ""}>
+    <div>
       <div role="tablist" aria-label="Project">
-        <button type="button" role="tab" aria-selected={false}>Explorer</button>
-        <button type="button" role="tab" aria-selected={false}>Changes</button>
-        <button type="button" role="tab" aria-selected={false}>History</button>
-        <button type="button" role="tab" aria-selected>Crew</button>
+        <button type="button" role="tab" aria-selected={false}>
+          Explorer
+        </button>
+        <button type="button" role="tab" aria-selected={false}>
+          Changes
+        </button>
+        <button type="button" role="tab" aria-selected={false}>
+          History
+        </button>
+        <button type="button" role="tab" aria-selected>
+          Crew
+        </button>
       </div>
-      <div role="tabpanel" aria-label="Crew">
-        <CrewTab rows={crew} />
-      </div>
-      <DigestBanner immediate={shown?.immediate ?? []} digest={shown?.digest ?? null} />
-      <FirstMateInbox items={items} onAnswer={(_item, option) => answer(option)} />
-      <button type="button" onClick={hour}>An hour passes</button>
-      <button type="button" onClick={quietHour}>A quiet hour</button>
+      <CrewPanel project={PROJECT} sessions={sessions} onOpenSession={() => {}} />
+      <FirstMateInboxPanel cwd={PROJECT} />
+      <button
+        type="button"
+        onClick={() => {
+          quiet = true;
+          bridge.emit("monocode:delegations-changed", {});
+          bridge.emit("hivra:decisions-changed", {});
+          redraw((n) => n + 1);
+        }}
+      >
+        A quiet hour
+      </button>
     </div>
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <Fixture />
-  </StrictMode>,
-);
+createRoot(document.getElementById("root")!).render(<Fixture />);

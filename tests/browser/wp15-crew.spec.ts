@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+const START = 1_700_000_000_000;
+
 test("the crew, a decision, a failure, and one digest an hour", async ({ page }, testInfo) => {
+  await page.clock.install({ time: new Date(START) });
   await page.goto("/tests/browser/wp15-crew.html");
   const crew = page.getByRole("tab", { name: "Crew" });
   await expect(crew).toHaveAttribute("aria-selected", "true");
@@ -16,6 +19,9 @@ test("the crew, a decision, a failure, and one digest an hour", async ({ page },
   await expect(row("paused")).toContainText("paused");
   await expect(row("working")).toContainText("claude");
   await expect(row("working")).toContainText("opus");
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __crewCommands: string[] }).__crewCommands))
+    .toContain("delegations_list_open");
   await page.screenshot({ path: testInfo.outputPath("crew.png") });
 
   await expect(page.locator("[data-recommended]")).toContainText("Recommended");
@@ -29,20 +35,36 @@ test("the crew, a decision, a failure, and one digest an hour", async ({ page },
   await expect(failure).not.toContainText("at save");
   await page.screenshot({ path: testInfo.outputPath("failure.png") });
 
-  await page.getByRole("button", { name: "An hour passes" }).click();
+  await page.clock.fastForward("01:00:00");
   await expect(page.locator("[data-digest]")).toHaveCount(1);
   await expect(page.locator("[data-digest]")).not.toContainText("Ship it now?");
   await expect(page.locator("[data-digest]")).not.toContainText("needs you");
-  await page.getByRole("button", { name: "An hour passes" }).click();
+  await page.clock.fastForward("01:00:00");
   await expect(page.locator("[data-digest]")).toHaveCount(1);
   await page.screenshot({ path: testInfo.outputPath("digest.png") });
 
   await page.getByRole("button", { name: "Ship it" }).click();
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __crewCommands: string[] }).__crewCommands))
+    .toContain("decisions_answer");
   await expect(row("needs")).toContainText("working");
   await expect(row("needs")).not.toContainText("needs you");
 
-  const windowBefore = await page.locator("[data-window]").getAttribute("data-window");
+  const windowBefore = await page.evaluate(() => {
+    const raw = localStorage.getItem("hivra.crewDigest");
+    const parsed = raw ? (JSON.parse(raw) as { lastDigestAt?: unknown }) : null;
+    return typeof parsed?.lastDigestAt === "number" ? parsed.lastDigestAt : null;
+  });
   await page.getByRole("button", { name: "A quiet hour" }).click();
+  await page.clock.fastForward("01:00:00");
   await expect(page.locator("[data-digest]")).toHaveCount(0);
-  await expect(page.locator("[data-window]")).toHaveAttribute("data-window", windowBefore ?? "");
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const raw = localStorage.getItem("hivra.crewDigest");
+        const parsed = raw ? (JSON.parse(raw) as { lastDigestAt?: unknown }) : null;
+        return typeof parsed?.lastDigestAt === "number" ? parsed.lastDigestAt : null;
+      }),
+    )
+    .toBe(windowBefore);
 });
