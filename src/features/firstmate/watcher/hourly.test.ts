@@ -1,7 +1,9 @@
+// Moved from monos/model/hourlyCheck.test.ts with the hourly check (Hivra WP-11).
 // The hourly progress check (Ash, 14 Oct): one plain line to the owner of a worker running over an hour, once an hour.
 import { expect, it } from "vitest";
-import { HOUR_MS, hourlyCheckMessage, hourlyChecksDue } from "./hourlyCheck";
-import type { ProgressEvidence } from "./progressCheck";
+import { HOUR_MS, hourlyChecksDue } from "./hourly";
+import { hourlyCheckMessage } from "../../monos/model/hourlyCheck";
+import type { ProgressEvidence } from "../../monos/model/progressCheck";
 
 const T = Date.UTC(2026, 9, 21, 12);
 const row = (id: string, state: string, startedAgoMs: number) => ({ id, state, createdAt: T - startedAgoMs }) as never;

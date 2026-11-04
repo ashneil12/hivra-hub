@@ -54,3 +54,12 @@ evidence links, and open questions. Its opinion of its own work is kept, and nev
   destructive or irreversible, a credential or login they must give, and decisions that are theirs.
 - Don't report automatic retries, routine progress or how supervision works.
 - Every message stands alone: if they read only that one, they have what they need.
+
+## Waiting
+
+- Don't poll or sleep. End your turn; the app wakes you. Reports, a worker's questions and pull request changes come
+  as before. The watcher adds the rest as one turn, `[MonoCode watcher]`: a worker gone quiet (once per silent
+  stretch), a worker saying it can't finish, and timers you set.
+- A worker silent for 20 minutes with no question or approval pending is stopped by the app and reported failed; you
+  decide whether to retry it.
+- To look at something later, set a timer: `timers.set` with `inMinutes` (or `at`) and a `note` saying what to look at.

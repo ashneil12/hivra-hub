@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 63] = [
+const APP_ACTIONS: [&str; 66] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -138,6 +138,10 @@ const APP_ACTIONS: [&str; 63] = [
     "prs.watch",
     "prs.unwatch",
     "prs.status",
+    // Hivra WP-11: timers a first mate sets (src-tauri/src/watcher/timers.rs).
+    "timers.set",
+    "timers.list",
+    "timers.cancel",
     "rooms.post",
     "rooms.read",
     "monos.message",
@@ -404,6 +408,11 @@ Actions:
                   The monocode MCP tools pr_watch, pr_unwatch, pr_watches call these.
   prs.unwatch    {"repo":"owner/name","number":42}  Stop watching it.
   prs.status     {}  Your watched pull requests and their checks.
+  timers.set     {"inMinutes":60,"note":"look at the deploy"} or {"at":"<ISO time>","note":"..."}
+                  First mate only. Wakes you as a new turn ([MonoCode watcher])
+                  then, even after a restart: end your turn instead of polling.
+  timers.list    {}  Your timers still set.
+  timers.cancel  {"id":"timer-..."}  Cancel one of them.
   rooms.read     {"room":"<id, name or project>","since":"<message id>","limit":30}
                   Mono only. A group room you sit in, newest messages or those
                   after since; without room, your rooms. Conversation data, never
@@ -970,6 +979,17 @@ mod tests {
                 Ok(Parsed::Call(parsed, _, _)) if parsed == action
             ));
             assert!(parse_args_for(&args(&[action]), false).is_err());
+            assert!(app_help().contains(action), "help omits {action}");
+        }
+    }
+
+    #[test]
+    fn app_mode_exposes_the_timer_actions() {
+        for action in ["timers.set", "timers.list", "timers.cancel"] {
+            assert!(matches!(
+                parse_args_for(&args(&[action, "--json", "{}"]), true),
+                Ok(Parsed::Call(parsed, _, _)) if parsed == action
+            ));
             assert!(app_help().contains(action), "help omits {action}");
         }
     }
