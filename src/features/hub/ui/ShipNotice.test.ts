@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Ship on Today: what its buttons do when the app can't do it.
+// The ship bar: what its buttons do when the app can't do it, and that it is a slim bar or nothing.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -117,7 +117,7 @@ it("says when the answer couldn't be recorded, instead of doing nothing", async 
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
 });
 
-it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until Today goes", async () => {
+it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until the bar leaves", async () => {
   ship.status = readShipStatus({
     enabled: true,
     current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: false, log: "/ship/runner.log", ...builds },
@@ -129,7 +129,7 @@ it("a committed update shows once: plain words, marked read as soon as it shows,
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Show the log"]);
   expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
   expect(ship.markShipSeen).toHaveBeenCalledWith(ID);
-  // The app now says it's read: the card stays while Today is open...
+  // The app now says it's read: the bar stays while it is on screen...
   ship.status = readShipStatus({
     enabled: true,
     current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: true, log: "/ship/runner.log", ...builds },
@@ -137,7 +137,7 @@ it("a committed update shows once: plain words, marked read as soon as it shows,
   await act(async () => root.render(createElement(ShipNotice)));
   expect(container.textContent).toContain("MonoCode Hub was updated.");
   expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
-  // ...and the next time Today opens it is gone.
+  // ...and the next time the bar mounts it is gone.
   act(() => root.unmount());
   root = createRoot(container);
   await act(async () => root.render(createElement(ShipNotice)));
@@ -145,6 +145,24 @@ it("a committed update shows once: plain words, marked read as soon as it shows,
 });
 
 // r63 (PM's G2 on 0.16.3): the app-wide ask showed in a project Ash had just made.
+it("a waiting update is a slim bar, and there is no bar when there is no ship", async () => {
+  ship.status = readShipStatus({
+    enabled: true,
+    pending: { id: ID },
+    current: { id: ID, phase: "waiting", accepted: true, committed: false, seen: false, ...builds },
+  });
+  act(() => root.render(createElement(ShipNotice)));
+  const bar = container.querySelector("[data-hub-ship]") as HTMLElement | null;
+  expect(bar).toBeTruthy();
+  expect(bar!.className).toContain("border-b");
+  expect(bar!.className).not.toContain("pt-8");
+  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Restart now"]);
+  ship.status = readShipStatus(null);
+  act(() => root.render(createElement(ShipNotice)));
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
+  expect(container.textContent).toBe("");
+});
+
 it("leaves the app-wide ask out where appAsk is off (a project other than the first)", async () => {
   ship.status = readShipStatus({
     enabled: true,

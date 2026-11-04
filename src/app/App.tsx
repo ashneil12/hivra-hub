@@ -210,6 +210,7 @@ import {
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
+import { ShipNotice } from "../features/hub/ui/ShipNotice";
 import {
   hubData,
   hubProjectFolder,
@@ -16830,6 +16831,8 @@ function Workspace({
                     insetLayout ? "" : " body-glass"
                   }`}
                 >
+                  {/* WP-06: ship news is a slim bar at the top of the main pane, above the coding team and every hub page. It renders nothing when there is nothing to say. */}
+                  <ShipNotice />
                   <div
                     className={
                       searchViewOpen ||

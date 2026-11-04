@@ -13,7 +13,6 @@ import { useProposalsVersion } from "../model/proposals";
 import { useTemplatesVersion } from "../model/templates";
 import { ProposalView } from "./ProposalView";
 import { ProjectPagesView } from "./ProjectPagesView";
-import { ShipNotice } from "./ShipNotice";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 
 /**
@@ -91,18 +90,12 @@ function HubHome() {
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {connection.status === "unreachable" ? (
-          <>
-            <ShipNotice />
-            <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />
-          </>
+          <AshOsDown message={connection.message} retrying={connection.retrying} onRetry={() => data.retry()} />
         ) : connection.status === "loading" || data.listProjects().length ? (
           // Reading the local store: a project's coding team opens a moment later, so say nothing rather than flash "No projects yet".
           <div data-hub-loading />
         ) : (
-          <>
-            <ShipNotice />
-            <FirstTodayEmpty />
-          </>
+          <FirstTodayEmpty />
         )}
       </div>
     </div>
