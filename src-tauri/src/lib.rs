@@ -778,6 +778,17 @@ pub fn run() {
             // WP-33: panels from plugins, and kept pages moved into My panels.
             panels::panels_catalog,
             panels::panels_migrate,
+            // WP-34: Creator mode. A scratch plugin, previewed in one view, then kept or undone.
+            plugins::creator::creator_start,
+            plugins::creator::creator_draft,
+            plugins::creator::creator_check,
+            plugins::creator::creator_state,
+            plugins::creator::creator_preview,
+            plugins::creator::creator_keep,
+            plugins::creator::creator_undo,
+            plugins::creator::creator_discard,
+            plugins::creator::creator_approve_mcp,
+            plugins::creator::creator_probe_mcp,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

@@ -14,7 +14,11 @@ pub mod mcp;
 pub mod registry;
 mod source;
 pub mod wiring;
+// WP-34: Creator mode, on top of the install path above.
+pub mod creator;
 
+#[cfg(test)]
+mod creator_tests;
 #[cfg(test)]
 mod defaults_tests;
 #[cfg(test)]
