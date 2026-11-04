@@ -222,7 +222,7 @@ describe("desktop gate", () => {
     expect(ran.code).toBe(0);
     expect(ctx.calls).toHaveLength(1);
     expect(ctx.calls[0].binary).toBe(ctx.binary);
-    expect(ctx.calls[0].args).toEqual(["click", "@s:e1"]);
+    expect(ctx.calls[0].args).toEqual(["click", "@s:e1", "--app", "Notes"]);
     expect(ctx.calls[0].args.join(" ")).not.toContain("hivra-app");
     expect(ctx.calls[0].args).not.toContain("--headed");
     expect(ctx.calls[0].options.shell).toBe(false);
@@ -293,7 +293,7 @@ describe("desktop gate", () => {
     expect(JSON.parse(asked.stdout).error.code).not.toBe("VISIBLE_NOT_ALLOWED");
   });
 
-  it("requires an app except for the safe commands, and only when the plugin is on", () => {
+  it("requires an allowed app, and refuses commands that are not on the list", () => {
     const ctx = setup();
     on(ctx);
     touch(ctx);
@@ -302,15 +302,19 @@ describe("desktop gate", () => {
     expect(JSON.parse(missing.stdout).error.message).toBe("Say which app.");
     expect(ctx.calls).toEqual([]);
 
-    const status = gate(ctx, ["status"]);
-    expect(status.code).toBe(0);
-    expect(ctx.calls.at(-1)?.args).toEqual(["status"]);
+    refusal(gate(ctx, ["status"]), "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+    allow(ctx, "Notes");
+    const snap = gate(ctx, ["snapshot", "--skeleton", "--app", "Notes", "-i", "--compact"]);
+    expect(snap.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["snapshot", "--skeleton", "--app", "Notes", "-i", "--compact"]);
 
     const projectOnly = setup();
     on(projectOnly, [projectOnly.project]);
     touch(projectOnly);
-    expect(gate(projectOnly, ["status"]).code).toBe(0);
-    expect(projectOnly.calls[0].args).toEqual(["status"]);
+    allow(projectOnly, "Notes");
+    expect(gate(projectOnly, ["snapshot", "--app", "Notes"]).code).toBe(0);
+    expect(projectOnly.calls[0].args).toContain("--app");
 
     const disabled = setup();
     off(disabled);
@@ -496,9 +500,10 @@ process.stdout.write(JSON.stringify({
 `,
     );
     chmodSync(stub, 0o755);
+    allow(ctx, "Notes");
     const pin = createHash("sha256").update(readFileSync(stub)).digest("hex");
     const result = runGate({
-      argv: ["--project", ctx.project, "status"],
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click"],
       env: {
         PATH: process.env.PATH,
         LC_ALL: "en_US.UTF-8",
@@ -513,7 +518,7 @@ process.stdout.write(JSON.stringify({
     });
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      argv: ["status"],
+      argv: ["click", "--app", "Notes"],
       leaked: [],
       lc: "en_US.UTF-8",
       path: true,
@@ -611,14 +616,66 @@ process.stdout.write(JSON.stringify({
     expect(wrong.stdout).not.toContain(ctx.binary);
   });
 
+  it("refuses press, screenshot, clipboard and batch unless they stay on the allowed app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const shapes = [
+      ["--hivra-app", "Notes", "press", "cmd+q"],
+      ["--hivra-app", "Notes", "screenshot", "--screen", "0"],
+      ["--hivra-app", "Notes", "screenshot", "--screen=0"],
+      ["batch", '[{"command":"press","args":{"combo":"cmd+q"}}]'],
+      ["list-windows"],
+      ["list-displays"],
+      ["session", "start", "--screenshots", "--hivra-app", "Notes"],
+    ];
+    for (const argv of shapes) {
+      const result = gate(ctx, argv);
+      expect(result.code).not.toBe(0);
+      expect(ctx.calls).toEqual([]);
+    }
+    refusal(gate(ctx, ["--hivra-app", "Notes", "press", "cmd+q"]), "VISIBLE_NOT_ALLOWED", "unsafe");
+    refusal(gate(ctx, ["screenshot", "--screen", "0", "--app", "Notes"]), "INVALID_ARGS", "unsafe");
+    refusal(gate(ctx, ["list-windows"]), "INVALID_ARGS", "unsafe");
+    refusal(gate(ctx, ["list-displays"]), "INVALID_ARGS", "unsafe");
+    refusal(gate(ctx, ["batch", "[]"]), "INVALID_ARGS", "unsafe");
+
+    const clip = gate(ctx, ["clipboard-get", "--hivra-app", "Notes"]);
+    expect(clip.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["clipboard-get", "--app", "Notes"]);
+
+    const typed = gate(ctx, ["type", "hello", "--hivra-app", "Notes"]);
+    expect(typed.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toContain("--app");
+    expect(ctx.calls.at(-1)?.args).toContain("Notes");
+
+    const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
+    expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
+    const pressed = gate(ctx, ["press", "cmd+q", "--hivra-app", "Notes"]);
+    expect(pressed.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["press", "cmd+q", "--app", "Notes"]);
+    const shot = gate(ctx, ["screenshot", "--app", "Notes"]);
+    expect(shot.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toContain("--app");
+    expect(ctx.calls.at(-1)?.args).not.toContain("--screen");
+    const session = gate(ctx, ["session", "start", "--screenshots", "--hivra-app", "Notes"]);
+    expect(session.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toContain("--screenshots");
+    expect(ctx.calls.at(-1)?.args).toContain("--app");
+  });
+
   it("treats a folder named ..foo as inside the enabled project", () => {
     const ctx = setup();
     const dot = path.join(ctx.project, "..foo");
     mkdirSync(dot);
     on(ctx, [ctx.project]);
     touch(ctx);
-    expect(gate(ctx, ["status"], { project: dot }).code).toBe(0);
-    expect(ctx.calls[0].args).toEqual(["status"]);
+    const next = allowApp(emptyConsent(), dot, "Notes");
+    expect(saveConsent(ctx.consent, 0, next).state?.revision).toBe(1);
+    const ran = gate(ctx, ["snapshot", "--app", "Notes"], { project: dot });
+    expect(ran.code).toBe(0);
+    expect(ctx.calls[0].args).toEqual(["snapshot", "--app", "Notes"]);
   });
 });
 

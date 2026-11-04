@@ -68,7 +68,43 @@ const VALUE_FLAGS = new Set([
   "--session",
   "--surface",
 ]);
-const SAFE = new Set(["status", "version", "permissions", "skills", "list-apps", "list-displays", "list-windows", "help"]);
+// Read-only and app-scoped. Anything not listed here is refused.
+const READ_ONLY = new Set(["snapshot", "find", "get", "is", "list-surfaces"]);
+// Acts on the allowed app. Headless unless the call itself passes --headed.
+const ACT = new Set([
+  "click",
+  "double-click",
+  "triple-click",
+  "right-click",
+  "type",
+  "set-value",
+  "clear",
+  "select",
+  "check",
+  "uncheck",
+  "toggle",
+  "expand",
+  "collapse",
+  "scroll",
+  "scroll-to",
+  "focus",
+  "launch",
+  "close-app",
+  "wait",
+  "clipboard-get",
+]);
+// Physical input or a pixel capture. These need the project's visible flag even with no --headed.
+const PHYSICAL = new Set([
+  "press",
+  "screenshot",
+  "hover",
+  "drag",
+  "mouse-move",
+  "mouse-click",
+  "mouse-wheel",
+  "mouse-down",
+  "mouse-up",
+]);
 const APP_COMMANDS = new Set(["launch", "close-app"]);
 const PASSED = new Set([
   "PATH",
@@ -501,6 +537,26 @@ function envPath(env, key, fallback) {
   return { path: value };
 }
 
+function hasFlag(args, name) {
+  return args.some((token) => token === name || token.startsWith(`${name}=`));
+}
+
+function policyFor(command, rest) {
+  if (command === "screenshot" && hasFlag(rest, "--screen")) {
+    return { error: "screenshot --screen is refused. Capture one allowed app, not the display." };
+  }
+  if (command === "batch") return { error: "batch is refused." };
+  if (READ_ONLY.has(command) || ACT.has(command)) return { visible: false };
+  if (PHYSICAL.has(command)) return { visible: true };
+  if (command === "session" && hasFlag(rest, "--screenshots")) return { visible: true };
+  return { error: "That command isn't allowed." };
+}
+
+function ensureApp(rest, app) {
+  if (hasFlag(rest, "--app")) return rest;
+  return [...rest, "--app", app];
+}
+
 function defaultSpawn(binary, args, options) {
   return spawnSync(binary, args, { ...options, encoding: "utf8", shell: false, windowsHide: true });
 }
@@ -648,15 +704,12 @@ export function runGate(options) {
   if (!on.on) {
     return refuse(command || "desktop", "DESKTOP_CONTROL_OFF", "Desktop control is off. The person has to turn it on.", "unsafe");
   }
+  if (!command) return refuse("", "INVALID_ARGS", "Say which command.", "unsafe");
+  const policy = policyFor(command, split.rest);
+  if (policy.error) return refuse(command, "INVALID_ARGS", policy.error, "unsafe");
   const appResult = collectApp(split.rest, split.gate["--hivra-app"], command);
   if (appResult.error) return refuse(command, "INVALID_ARGS", appResult.error, "unsafe");
-  if (!command) return refuse("", "INVALID_ARGS", "Say which command.", "unsafe");
-  if (!appResult.app) {
-    if (SAFE.has(command)) {
-      return spawnDesktop(command, binaryPath.path, env.HIVRA_DESKTOP_SHA256, split.rest, options.spawnImpl, env);
-    }
-    return refuse(command, "INVALID_ARGS", "Say which app.", "unsafe");
-  }
+  if (!appResult.app) return refuse(command, "INVALID_ARGS", "Say which app.", "unsafe");
   const decision = decide(consentPath.path, project, appResult.app);
   if (decision.busy) return refuse(command, "CONSENT_BUSY", "Desktop consent is busy. Try again.", "safe");
   if (decision.error) return refuse(command, decision.error, decision.message, decision.retry ?? "safe");
@@ -677,10 +730,17 @@ export function runGate(options) {
     );
   }
   // A new app asks for consent before visible control is considered. Don't strip the flag and continue.
-  if (isHeaded(split.rest) && !decision.visible) {
+  if ((policy.visible || isHeaded(split.rest)) && !decision.visible) {
     return refuse(command, "VISIBLE_NOT_ALLOWED", "Visible control is off for this project. Don't add --headed.", "unsafe");
   }
-  return spawnDesktop(command, binaryPath.path, env.HIVRA_DESKTOP_SHA256, split.rest, options.spawnImpl, env);
+  return spawnDesktop(
+    command,
+    binaryPath.path,
+    env.HIVRA_DESKTOP_SHA256,
+    ensureApp(split.rest, appResult.app),
+    options.spawnImpl,
+    env,
+  );
 }
 
 function isDirectRun() {

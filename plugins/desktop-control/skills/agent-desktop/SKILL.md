@@ -19,7 +19,7 @@ Workers use desktop apps through Hivra's gate, never by calling the `agent-deskt
 1. Resolve this file with `realpath`. The plugin root is two directories above `skills/agent-desktop`.
 2. The gate is `<root>/bin/gate.mjs`. Run it with `node`. Do not run `agent-desktop` yourself.
 3. Always pass `--project` as a full path to the project folder.
-4. On every call that touches an app, pass `--hivra-app "<App>"`. Also pass `--app "<App>"` when the underlying command accepts it (`snapshot`, `find`, `list-windows`, and the other commands that take `--app`). `launch` and `close-app` take the app as their first argument; still pass `--hivra-app` with the same name.
+4. On every call, pass `--hivra-app "<App>"` for an app this project allows. Also pass `--app "<App>"`. The gate adds `--app` if you only passed `--hivra-app`. `launch` and `close-app` take the app as their first argument; still pass `--hivra-app` with the same name.
 5. Do not pass `--headed` unless the person has allowed visible control for this project. Never add `--headed` to get past a headless failure.
 6. Every `agent-desktop` example below is the argument list the gate forwards. Put those arguments after the gate's own flags. Do not call the binary.
 
@@ -82,14 +82,18 @@ Action results carry `data.disposition` and errors carry `error.disposition`, ea
 
 ## Headless and headed
 
-Ref actions are headless by default. They use semantic accessibility calls and do not take focus, move the cursor, synthesize keys or use the clipboard. If no semantic path exists, the action fails closed. `--headed` is forwarded only when this project's visible control is allowed. Never switch to headed mode to recover from a headless failure. On Windows, headless `type` has no insert path; `set-value` is the headless way to set text.
+Ref actions are headless by default. They use semantic accessibility calls and do not take focus or move the cursor. If no semantic path exists, the action fails closed. `--headed` is forwarded only when this project's visible control is allowed. Never switch to headed mode to recover from a headless failure.
+
+`press`, `screenshot`, `hover`, `drag`, the mouse commands, and `session --screenshots` are visible control even without `--headed`. They need that project's visible flag. `screenshot --screen` is refused. `press`, `type`, `clipboard-get`, `screenshot` and every other command need `--app` of an app this project already allowed. Anything not on the gate's allow list, including `batch`, `status`, `list-windows` and `list-displays`, is refused.
+
+On Windows, headless `type` has no insert path; `set-value` is the headless way to set text.
 
 Password and other secure fields are redacted. You cannot read a password back. Do not try.
 
 ## First run
 
-When the plugin is on, `status`, `version`, `permissions`, `skills`, `list-apps`, `list-displays`, `list-windows` and `help` need no app. Anything else needs `--hivra-app`.
+Every command needs `--hivra-app` for an app this project allows. There is no command that runs with no app.
 
-1. `status` reports the platform, permissions and supported surfaces.
-2. `skills get platform` loads the skill for the OS the binary runs on.
-3. For flags, pass `<command> --help`. This skill does not repeat flag lists.
+1. Ask for the app. The gate records the ask and does not start the program.
+2. After the person allows it, `snapshot` reads that app.
+3. This skill does not repeat flag lists. A flag the gate does not know is refused.
