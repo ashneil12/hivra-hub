@@ -7,6 +7,7 @@ import {
   hiddenProjectFolders,
   hiddenProjectsLoaded,
   hiddenProjectsVersion,
+  hiddenProjectsWithheld,
 } from "../../trash/model/hidden";
 import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
 import { examplesOn } from "./examples";
@@ -198,6 +199,7 @@ function projectInTrash(project: HubProject, hidden: ReadonlySet<string>): boole
 }
 
 function withoutTrashedProjects(projects: HubProject[]): HubProject[] {
+  if (hiddenProjectsWithheld()) return [];
   if (!hiddenProjectsLoaded()) return projects;
   const hidden = hiddenProjectFolders();
   if (hidden.size === 0) return projects;

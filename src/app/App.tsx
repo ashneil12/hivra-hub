@@ -625,6 +625,7 @@ import {
   rebaseProjectData,
   removeProjectData,
 } from "../features/projects/model/projectData";
+import { removeProjectFromWindow } from "../features/trash/model/removeProject";
 import {
   forgetProjectLocation,
   rememberProjectLocation,
@@ -7371,6 +7372,7 @@ function Workspace({
         );
         return;
       }
+      const drop = () => {
       const wasCurrent = sameProjectPath(projectCwdRef.current, normalized);
       const remaining = options.purgeData
         ? forgetProject(normalized)
@@ -7420,15 +7422,6 @@ function Workspace({
           }
           lastPersisted.current.delete(session.id);
         }
-        void removeProjectData(normalized).catch((error: unknown) => {
-          setRecents(rememberProject(normalized));
-          void message(
-            error instanceof Error
-              ? error.message
-              : "The project could not be moved to the trash.",
-            { title: "MonoCode", kind: "error" },
-          );
-        });
       } else {
         for (const session of projectSessions) {
           if (session.busy) continue;
@@ -7495,6 +7488,24 @@ function Workspace({
           setComposerFocused(true);
         }
       }
+      };
+      // WP-76: the window drops the project only after the trash accepts it.
+      if (options.purgeData) {
+        void removeProjectFromWindow({
+          purgeData: true,
+          trash: () => removeProjectData(normalized).then(() => undefined),
+          applyLocal: drop,
+        }).catch((error: unknown) => {
+          void message(
+            error instanceof Error
+              ? error.message
+              : "The project could not be moved to the trash.",
+            { title: "MonoCode", kind: "error" },
+          );
+        });
+        return;
+      }
+      drop();
     },
     [activeTabId, invalidateLoadedSession, onSelectProject, persistSession],
   );

@@ -1,6 +1,7 @@
 // Settings → Trash. Deleted chats, Monos, projects, notes, docs and tasks, for 30 days.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { ConfirmDelete } from "../../../shared/ui/ConfirmDelete";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { purgeProjectLocal } from "../../projects/model/projectData";
@@ -13,6 +14,7 @@ import {
 import { restoreMonoRoster } from "../model/restore";
 import {
   groupTrash,
+  TRASH_CHANGED,
   withItLabel,
   type TrashListItem,
 } from "../model/trash";
@@ -61,10 +63,13 @@ export function TrashPage({
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState<TrashListItem | "empty" | null>(null);
   const [busy, setBusy] = useState(false);
+  const ticket = useRef(0);
 
   const load = useCallback(async () => {
+    const mine = ++ticket.current;
     try {
       const rows = await client.list();
+      if (mine !== ticket.current) return;
       if (!Array.isArray(rows)) {
         setError("Trash could not be read.");
         return;
@@ -72,6 +77,7 @@ export function TrashPage({
       setItems(rows.filter(isItem));
       setError(null);
     } catch {
+      if (mine !== ticket.current) return;
       // Not hearing back leaves the list as it was.
       setError("Trash could not be read. It will try again.");
     }
@@ -80,6 +86,26 @@ export function TrashPage({
   useEffect(() => {
     void load();
   }, [load, reloadToken]);
+
+  useEffect(() => {
+    let stop: (() => void) | undefined;
+    let dead = false;
+    void listen(TRASH_CHANGED, () => {
+      void load();
+    }).then(
+      (unlisten) => {
+        if (dead) unlisten();
+        else stop = unlisten;
+      },
+      () => {
+        // The event bridge can be down. Opening the page still reads the list.
+      },
+    );
+    return () => {
+      dead = true;
+      stop?.();
+    };
+  }, [load]);
 
   const fail = (reason: unknown) => {
     setError(reason instanceof Error ? reason.message : "That did not work. Try again.");
