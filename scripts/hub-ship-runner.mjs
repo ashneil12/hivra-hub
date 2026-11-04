@@ -219,6 +219,31 @@ export function dirSize(target) {
   return total;
 }
 
+// WP-09: on Windows a just-quit app's folder can stay locked for a moment (antivirus, handles closing), so the
+// app's own renames are tried again for a while there before a ship cancels or rolls back. Each try is logged.
+const RENAME_RETRY_MS = 10_000;
+const RENAME_STEP_MS = 250;
+const LOCKED_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Rename the app folder `from` to `to`, retrying a locked folder on Windows. The options are test seams. */
+export function renameApp(from, to, log = () => {}, { platform = process.platform, rename = fs.renameSync, now = Date.now, wait = sleepSync } = {}) {
+  const deadline = now() + RENAME_RETRY_MS;
+  for (;;) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      if (platform !== "win32" || !LOCKED_CODES.has(error.code) || now() >= deadline) throw error;
+      log(`renaming ${from} failed (${error.code}); trying again`);
+      wait(RENAME_STEP_MS);
+    }
+  }
+}
+
 /** Rename, or copy and remove when the two sides are on different volumes. */
 export function moveDir(from, to) {
   fs.mkdirSync(path.dirname(to), { recursive: true });
@@ -621,7 +646,7 @@ async function swap(ctx, ship) {
       const previous = path.join(ctx.dir, PREVIOUS_APP);
       if (exists(app)) {
         if (exists(previous)) throw new Error(`${previous} is in the way`);
-        fs.renameSync(app, previous);
+        renameApp(app, previous, (line) => appendLog(ctx.dir, line));
       }
       markStep(ship, "oldMoved");
       saveShip(ctx.dir, ship);
@@ -634,7 +659,7 @@ async function swap(ctx, ship) {
   try {
     if (!step(ship, "newMoved")) {
       fs.mkdirSync(path.dirname(app), { recursive: true });
-      fs.renameSync(stagedApp(ctx, ship), app);
+      renameApp(stagedApp(ctx, ship), app, (line) => appendLog(ctx.dir, line));
       markStep(ship, "newMoved");
       saveShip(ctx.dir, ship);
       testCrash(ship);
@@ -825,7 +850,7 @@ async function rollBack(ctx, ship) {
       if (exists(app) && stampOf(app)?.sha === ship.to?.sha) {
         const aside = path.join(ctx.dir, REJECTED_APP);
         fs.rmSync(aside, { recursive: true, force: true });
-        fs.renameSync(app, aside);
+        renameApp(app, aside, (line) => appendLog(ctx.dir, line));
       }
       markStep(ship, "newRemoved");
       saveShip(ctx.dir, ship);
@@ -835,7 +860,7 @@ async function rollBack(ctx, ship) {
       const previous = path.join(ctx.dir, PREVIOUS_APP);
       if (exists(previous)) {
         if (exists(app)) throw new Error(`something else is at ${app}`);
-        fs.renameSync(previous, app);
+        renameApp(previous, app, (line) => appendLog(ctx.dir, line));
       } else if (!(exists(app) && stampOf(app)?.sha === ship.from?.sha) && ship.from) {
         throw new Error(`the previous build isn't at ${previous}`);
       }

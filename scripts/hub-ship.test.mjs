@@ -19,7 +19,7 @@ import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
-import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
+import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, renameApp, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -169,6 +169,8 @@ while (!lock) {
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
   catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
 }
+// Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
+globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
 const m = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(lstart);
 const month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].indexOf(m[1]);
@@ -1298,6 +1300,7 @@ test("a lock another process holds is not taken, and is free once that process i
        const db = new DatabaseSync(${JSON.stringify(file)});
        db.exec("PRAGMA busy_timeout = 0");
        db.exec("BEGIN EXCLUSIVE");
+       globalThis.held = db; // a collected DatabaseSync closes and drops the lock
        process.stdout.write("held\\n");
        process.stdin.resume();`,
     ],
@@ -1360,4 +1363,36 @@ test("a start-time check that doesn't answer is never read as a gone process", (
     setStartTimeLog(null);
     clearStartCache();
   }
+});
+
+test("on Windows a briefly locked app folder is renamed again, for up to ten seconds, and each try is logged", () => {
+  const lines = [];
+  let clock = 0;
+  let calls = 0;
+  const busy = (code) => Object.assign(new Error(code), { code });
+  const rename = () => {
+    calls += 1;
+    if (calls < 3) throw busy(calls === 1 ? "EPERM" : "EBUSY");
+  };
+  renameApp("a", "b", (line) => lines.push(line), { platform: "win32", rename, now: () => clock, wait: (ms) => (clock += ms) });
+  assert.equal(calls, 3);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /EPERM/);
+
+  calls = 0;
+  clock = 0;
+  const stuck = () => {
+    calls += 1;
+    throw busy("EACCES");
+  };
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: stuck, now: () => clock, wait: (ms) => (clock += ms) }), /EACCES/);
+  assert.ok(clock >= 10_000 && clock < 11_000, "it gives up after about ten seconds");
+
+  calls = 0;
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "darwin", rename: stuck, now: () => 0, wait: () => {} }), /EACCES/);
+  assert.equal(calls, 1, "off Windows a failed rename is not retried");
+
+  calls = 0;
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: () => { calls += 1; throw busy("ENOENT"); }, now: () => 0, wait: () => {} }), /ENOENT/);
+  assert.equal(calls, 1, "only a locked folder is retried");
 });
