@@ -72,4 +72,8 @@ test("the row says which browser it drives", async ({ page }) => {
   await expect(missing).toContainText("Google Chrome isn't installed.");
   await missing.getByRole("button", { name: "Get the browser" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-get-browser", "1");
+
+  await page.goto("/tests/browser/browser-plugin.html?node=missing");
+  const noNode = page.getByRole("region", { name: "Browser profiles" });
+  await expect(noNode).toContainText("Node couldn't be found.");
 });

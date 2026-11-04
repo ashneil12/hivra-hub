@@ -17,6 +17,7 @@ const TRY_DOWNLOAD: &str = "The browser couldn't be downloaded. Try again.";
 const BUSY: &str = "The browser engine is already being installed.";
 const CHROME: &str = "This uses Google Chrome.";
 const NO_CHROME: &str = "Google Chrome isn't installed.";
+const NO_NODE: &str = "Node couldn't be found.";
 
 /// What Settings shows for the browser this plugin drives.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -43,10 +44,21 @@ pub fn chrome_look() -> ChromeLook {
 }
 
 pub fn engine_row(look: ChromeLook) -> EngineRow {
+    engine_row_for(look, absolute_node().is_ok())
+}
+
+pub fn engine_row_for(look: ChromeLook, node_found: bool) -> EngineRow {
     let chrome = chrome_present(&look);
+    let message = if !node_found {
+        NO_NODE
+    } else if chrome {
+        CHROME
+    } else {
+        NO_CHROME
+    };
     EngineRow {
         chrome,
-        message: if chrome { CHROME } else { NO_CHROME }.to_string(),
+        message: message.to_string(),
     }
 }
 
@@ -350,28 +362,47 @@ pub fn get_browser(data: &Path) -> Result<(), String> {
     fetch_chromium(data, &node, &cli)
 }
 
-fn absolute_node() -> Result<PathBuf, String> {
-    let mut command = Command::new("node");
-    command
-        .arg("-e")
-        .arg("process.stdout.write(process.execPath)");
-    command.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
+/// Node, the way the app finds the CLIs it launches: the login shell's PATH,
+/// then this process's PATH, then the fixed install dirs. A Dock launch only
+/// has launchd's PATH, which does not include Homebrew.
+pub(crate) fn absolute_node() -> Result<PathBuf, String> {
+    node_on(&crate::harness::gui_search_path())
+}
+
+fn node_on(search: &str) -> Result<PathBuf, String> {
+    match crate::harness::which_in_path(search, "node") {
+        Some(path) if path.is_absolute() => Ok(path),
+        Some(_) => Err("Node isn't an absolute path.".into()),
+        None => Err(NO_NODE.into()),
     }
-    command.stdin(Stdio::null());
-    let out = command
-        .output()
-        .map_err(|_| "Node couldn't be found.".to_string())?;
-    if !out.status.success() {
-        return Err("Node couldn't be found.".into());
+}
+
+/// The program a browser server is started with. A bare `node` is the resolved
+/// absolute one, so the engine (`node <data>/node_modules/@playwright/mcp/cli.js`)
+/// is that same binary.
+pub(crate) fn program_for_launch(declared: &Path) -> Result<PathBuf, String> {
+    program_on(declared, &crate::harness::gui_search_path())
+}
+
+fn program_on(declared: &Path, search: &str) -> Result<PathBuf, String> {
+    if is_bare_node(declared) {
+        return node_on(search);
     }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let text = text.trim();
-    if text.contains(['\n', '\r']) || !Path::new(text).is_absolute() {
-        return Err("Node isn't an absolute path.".into());
+    Ok(declared.to_path_buf())
+}
+
+fn is_bare_node(program: &Path) -> bool {
+    if program.components().count() != 1 {
+        return false;
     }
-    Ok(PathBuf::from(text))
+    let Some(name) = program.file_stem().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    if cfg!(windows) {
+        name.eq_ignore_ascii_case("node")
+    } else {
+        name == "node"
+    }
 }
 
 fn fetch_chromium(data: &Path, node: &Path, cli: &Path) -> Result<(), String> {
@@ -642,15 +673,48 @@ process.exit(1);
         let tmp = Tmp::new("chrome");
         let app = tmp.path().join("Google Chrome.app");
         std::fs::create_dir_all(&app).unwrap();
-        let present = engine_row(ChromeLook::At(app));
+        let present = engine_row_for(ChromeLook::At(app.clone()), true);
         assert!(present.chrome);
         assert_eq!(present.message, "This uses Google Chrome.");
-        let missing = engine_row(ChromeLook::Missing);
+        let missing = engine_row_for(ChromeLook::Missing, true);
         assert!(!missing.chrome);
         assert_eq!(missing.message, "Google Chrome isn't installed.");
-        let gone = engine_row(ChromeLook::At(tmp.path().join("no-such-chrome")));
+        let gone = engine_row_for(ChromeLook::At(tmp.path().join("no-such-chrome")), true);
         assert!(!gone.chrome);
         assert_eq!(gone.message, "Google Chrome isn't installed.");
+        let no_node = engine_row_for(ChromeLook::At(app), false);
+        assert_eq!(no_node.message, "Node couldn't be found.");
+    }
+
+    /// A Dock launch's PATH is `/usr/bin:/bin:/usr/sbin:/sbin`. Node installed
+    /// for the terminal still has to be found, because the lookup is the one
+    /// the app uses for its CLIs: that directory first, then the short PATH.
+    #[test]
+    fn a_short_launchd_path_still_finds_node_through_the_resolver() {
+        let tmp = Tmp::new("launchd");
+        let bin = tmp.path().join("homebrew").join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join(if cfg!(windows) { "node.exe" } else { "node" });
+        std::fs::write(&node, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let short = if cfg!(windows) {
+            r"C:\Windows\System32"
+        } else {
+            "/usr/bin:/bin:/usr/sbin:/sbin"
+        };
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        let search = format!("{}{sep}{short}", bin.display());
+        let found = node_on(&search).unwrap();
+        assert_eq!(found, node);
+        assert!(found.is_absolute());
+        assert_eq!(program_on(Path::new("node"), &search).unwrap(), node);
+        if let Ok(on_short) = node_on(short) {
+            assert_ne!(on_short, node);
+        }
     }
 
     #[test]

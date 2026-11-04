@@ -371,6 +371,11 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
         plan.args = super::verify::absolute_plugin_args(&plan.args, &loaded.root)?;
         plan.cwd = folder;
     }
+    // WP-43: the browser engine is `node <data>/node_modules/@playwright/mcp/cli.js`.
+    // A Dock launch cannot see Homebrew node on launchd's PATH.
+    if plugin == "browser" {
+        plan.program = crate::browser::engine::program_for_launch(&plan.program)?;
+    }
     let mut command = std::process::Command::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.cwd);
     // A plugin server starts from a clean environment: only what a program needs to run (`passed_env`) plus its own
