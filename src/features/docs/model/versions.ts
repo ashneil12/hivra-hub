@@ -1,4 +1,6 @@
-// Version rules translated from Orbit page_versions.rs (WP-72).
+// SPDX-License-Identifier: Apache-2.0
+// Translated from github.com/coollabsio/orbit apps/server/src/repositories/page_versions.rs (WP-72).
+// The upstream file does not carry a separate copyright line.
 // Orbit waits ten minutes between snapshots. Hivra does not: a version is saved
 // when the editor goes idle or the page closes, and on every agent edit.
 // Blank states and a state equal to the newest version are still skipped.

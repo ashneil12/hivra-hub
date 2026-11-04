@@ -1015,15 +1015,22 @@ class Converter {
     if (!href.trim()) return labelText;
     let destination = linkDestination(this.resolver.url(href));
     if (!labelText.trim()) labelText = escapeText(href, mode === "cell");
-    if (mode === "cell") destination = destination.replaceAll("|", "%7C");
+    if (mode === "cell") destination = destination.replace(/\|/g, "%7C");
     return `[${labelText}](${destination})`;
   }
 
   private table(content: Block["content"]): string {
     if (!content || Array.isArray(content) || !("rows" in content)) return "";
-    const rows = content.rows ?? [];
-    if (rows.length === 0) return "";
-    const table = rows.map((row) => row.cells.map((cell) => this.inline(cell.content, "cell").trim()));
+    const raw = content.rows;
+    if (!Array.isArray(raw) || raw.length === 0) return "";
+    const rows = raw.filter((row): row is { cells?: unknown } => !!row && typeof row === "object");
+    const table = rows.map((row) => {
+      const cells = Array.isArray(row.cells) ? row.cells : [];
+      return cells.map((cell) => {
+        const content = cell && typeof cell === "object" && "content" in cell ? cell.content : undefined;
+        return this.inline(content, "cell").trim();
+      });
+    });
     const columns = table.reduce((max, row) => Math.max(max, row.length), 0);
     if (!columns) return "";
     const line = (cells: string[]) => `| ${Array.from({ length: columns }, (_, index) => cells[index] ?? "").join(" | ")} |`;

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Translated from github.com/coollabsio/orbit apps/server/src/repositories/page_mentions.rs (WP-72).
+// The upstream file does not carry a separate copyright line.
 // Mention rules translated from Orbit page_mentions.rs (WP-72): a mention already
 // on the page is not new the next time it is saved. Hivra names pages, tasks,
 // chats and Monos. There is no inbox here; the caller hears which ones are new.

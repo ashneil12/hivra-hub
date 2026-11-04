@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react";
@@ -54,6 +55,11 @@ import {
 } from "../../workspace/model/tabGroups";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import { MarkdownSourceEditor } from "../../sessions/ui/MarkdownSourceEditor";
+import { getDocsMode, subscribeDocsMode } from "../../docs/docsMode";
+import { tauriGateway } from "../../docs/gatewayTauri";
+import { mentionCatalog, type CatalogChat } from "../../docs/model/mentionCatalog";
+import { DocsScreen } from "../../docs/ui/DocsScreen";
+import { listMonos } from "../../monos/model/mono";
 
 const MIN_WIDTH = 240;
 const MAX_WIDTH = 420;
@@ -96,9 +102,11 @@ type Props = {
   recents: RecentProject[];
   onClose: () => void;
   onToggleSidebar?: () => void;
+  /** WP-72: chats an @ mention can name. Asks and workers are left out. */
+  mentionChats?: readonly CatalogChat[];
 };
 
-export function NotesView({
+function NotesEditor({
   tabbed = false,
   active = true,
   besideRail = false,
@@ -383,6 +391,41 @@ export function NotesView({
       </div>
     </div>
   );
+}
+
+async function pickDocsFolder(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ directory: true, multiple: false, title: "Export pages" });
+  return typeof picked === "string" ? picked : null;
+}
+
+// WP-72: docs share this screen. The notes editor's hooks stay in NotesEditor,
+// so switching mode does not skip them.
+export function NotesView(props: Props) {
+  const docs = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
+  const gateway = useMemo(() => tauriGateway(), []);
+  const catalog = docs
+    ? mentionCatalog({
+        chats: props.mentionChats ?? [],
+        monos: listMonos(),
+        scope: props.scopeProject,
+      })
+    : [];
+  if (docs) {
+    return (
+      <DocsScreen
+        cwd={props.cwd}
+        scopeProject={props.scopeProject}
+        onClose={props.onClose}
+        gateway={gateway}
+        catalog={catalog}
+        idleMs={800}
+        saveFiles={saveNoteImagesFromFiles}
+        pickFolder={pickDocsFolder}
+      />
+    );
+  }
+  return <NotesEditor {...props} />;
 }
 
 type ProjectMarks = {
