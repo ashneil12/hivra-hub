@@ -2,7 +2,7 @@
 // (classifier.ts); this puts each wake in Rust's queue and delivers what an owner is owed as one turn.
 //
 // - **Add**: a wake goes into the queue once per owner and key (Rust dedupes, before and after a restart).
-// - **Drain**: every wake an owner is owed goes out as one hidden app turn (`fm-wake-<owner>-<through>`), through the
+// - **Drain**: once the first mate is idle, every wake it is owed goes out as one hidden app turn (`fm-wake-<owner>-<through>`), through the
 //   owner's own queue: it waits for the first mate to be idle and is never steered into running work, like a report.
 //   While one drained turn waits, later wakes wait for the next (it acknowledges only what it carried).
 // - **Acknowledge**: when that turn goes to the first mate, everything through its `through` is acknowledged; anything
@@ -157,6 +157,9 @@ export class WakeQueue {
           summary.dropped += await this.backend.disposeOwner(ownerId);
           continue;
         }
+        // Drained only when the first mate can take it: a busy one is looked at again on the next round, so the turn
+        // carries what is still true then (a notice about a worker that moved on meanwhile is dropped at the drain).
+        if (owner.busy) continue;
         // A drained turn already waiting in its queue carries what it carries; the rest wait for it to go out.
         if (owner.queuedMessages?.some((message) => message.id.startsWith(ownerMessagePrefix(ownerId)))) continue;
         const messages = [...new Set(open.filter((w) => w.ownerSession === ownerId && w.delivery === "queued").map((w) => w.deliveryMessage!).filter(Boolean))];

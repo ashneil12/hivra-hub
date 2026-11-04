@@ -153,6 +153,17 @@ describe("WakeQueue", () => {
     expect(read.queued).toHaveLength(0);
   });
 
+  it("waits for a busy first mate, so the turn says only what is still true when it can take it", async () => {
+    const { queue, queued, chats } = setup();
+    await queue.add(stall("a"));
+    chats.get("lead")!.busy = true;
+    await queue.deliver();
+    expect(queued).toHaveLength(0);
+    chats.get("lead")!.busy = false;
+    await queue.deliver();
+    expect(queued).toHaveLength(1);
+  });
+
   it("an owner whose chat is gone owes nothing; one removed from the queue is disposed", async () => {
     const { queue, store, chats } = setup();
     await queue.add(stall("a"));
