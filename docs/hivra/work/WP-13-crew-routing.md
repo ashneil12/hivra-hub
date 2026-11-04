@@ -2,7 +2,7 @@
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
-| B | M | 10 | no |
+| B | M | 10, 16 | no |
 
 ## Goal
 

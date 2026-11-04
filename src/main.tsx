@@ -27,6 +27,8 @@ import { consumeInstalledUpdate } from "./app/model/updateNotice";
 import { initializeProviderBinaryPaths } from "./features/providers/model/providerBinaryPaths";
 // Lets file commands reach a connected machine for `remote://` paths.
 import "./features/connections/model/remoteCommands";
+// WP-30: installed plugins' skills and MCP servers reach each Claude Code and Codex session.
+import "./features/plugins/model/pluginSessions";
 import "./styles/index.css";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { listenForEffortRefusals, setModelKeyStore, tauriModelKeyStore } from "./features/sessions/model/customModels";

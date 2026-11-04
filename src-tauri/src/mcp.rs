@@ -451,6 +451,33 @@ pub async fn mcp_discover(cwd: String) -> Result<Vec<McpConnection>, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Every MCP server name the person already uses for a session in `project` (any CLI, any scope). Plugin servers
+/// never take one of these (plugins/wiring.rs): a CLI would merge or swap the person's own entry with the plugin's.
+pub(crate) fn names_in_use(project: &Path) -> std::collections::BTreeSet<String> {
+    match dirs_home() {
+        Some(home) => names_in_use_under(Path::new(&home), project),
+        None => Default::default(),
+    }
+}
+
+pub(crate) fn names_in_use_under(
+    home: &Path,
+    project: &Path,
+) -> std::collections::BTreeSet<String> {
+    let codex_home = std::env::var_os("CODEX_HOME").map(PathBuf::from);
+    let opencode_config = std::env::var_os("OPENCODE_CONFIG").map(PathBuf::from);
+    discover(
+        home,
+        project,
+        codex_home.as_deref(),
+        &claude_desktop_config(home),
+        opencode_config.as_deref(),
+    )
+    .into_iter()
+    .map(|connection| connection.name)
+    .collect()
+}
+
 fn discover(
     home: &Path,
     project: &Path,

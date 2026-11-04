@@ -5,6 +5,7 @@
 // one-line `what` shown under its title.
 import type { Page } from "./pages";
 import type { BespokeSpec } from "./pageSpec";
+import { hasOwnCode } from "./ownCode";
 
 /** The request a ready-made page is kept with: how Pages knows the page is already there. */
 export const AGENTS_READY = "Ready-made: Agents";
@@ -116,13 +117,18 @@ function box(key, placeholder, send) {
   wrap.appendChild(input); wrap.appendChild(sendBtn); wrap.appendChild(btn("Cancel", () => { delete open[key]; draw(); }));
   return wrap;
 }
-// A row's first cell: a name, what sits under it, and (when there is one) what it is doing.
+// A row's first cells: a name and what sits under it, then (when there is one) what it is doing in its own column.
+// With nothing doing, the name spans both columns. "Doing" is a cell of the row, never inside the name's cell: inside
+// it, the state slid into the doing column and the buttons into the state's 124px, over the state (WP-01).
 function who(name, under, doing) {
   const cell = el("div", doing ? "" : "wide");
   cell.appendChild(el("div", "name", name));
   if (under) cell.appendChild(el("div", "under", under));
-  if (doing) cell.appendChild(el("div", "doing", doing));
-  return cell;
+  if (!doing) return cell;
+  const cells = document.createDocumentFragment();
+  cells.appendChild(cell);
+  cells.appendChild(el("div", "doing", doing));
+  return cells;
 }
 function fill(name, items, build) {
   const list = $('[data-list="' + name + '"]');
@@ -145,7 +151,9 @@ function restoreFocus(key) {
 const AGENTS_CSS =
   BASE_CSS +
   `
+@media (min-width:660px){
 .row{grid-template-columns:minmax(0,1.3fr) minmax(0,1.4fr) 124px 260px}
+}
 @media (max-width:659px){
 .worker .doing{padding-left:16px}
 .worker .acts{margin-left:4px}
@@ -545,10 +553,11 @@ export function readyWhat(request: string): string | undefined {
 /**
  * r63: a kept ready-made page draws today's ready-made code (html, css, js), so a fix to one (the Agents page's Message
  * buttons named for their agent) reaches pages kept by an older build. Only when it asks for exactly what the kept page
- * asks for: what Ash allowed never changes under him; any other page is returned as it is.
+ * asks for: what Ash allowed never changes under him; any other page is returned as it is. A ready-made page Ash used
+ * a new version of (Rebuild, then Use this version) keeps that version (ownCode.ts).
  */
 export function withReadySpec(page: Page): Page {
-  if (page.by !== READY_BY || page.spec.kind !== "bespoke") return page;
+  if (page.by !== READY_BY || page.spec.kind !== "bespoke" || hasOwnCode(page.id)) return page;
   const ready = READY_PAGES.find((r) => r.request === page.request);
   if (!ready) return page;
   const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && [...a].sort().join() === [...b].sort().join();

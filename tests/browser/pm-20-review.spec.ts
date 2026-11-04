@@ -22,8 +22,13 @@ test("a Page preview has no watermark; the bar says it is a preview", async ({ p
   await page.setViewportSize({ width: 1920, height: 1080 });
   await open(page);
   await page.getByRole("button", { name: /^Pages/ }).first().click();
-  const newButton = page.locator("[data-pages-new-button]").first();
-  if (await newButton.isVisible().catch(() => false)) await newButton.click();
+  // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
+  // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
+  await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
+  if (await page.locator("[data-pages-list]").count()) await page.locator("[data-pages-new-button]").first().click();
+  // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
+  // build here, as in agents-page, so the preview it draws is what this checks.
+  await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
   await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   await expect(page.locator("[data-block-calendar]").first()).toBeVisible({ timeout: 30_000 });

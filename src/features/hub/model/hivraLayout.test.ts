@@ -71,6 +71,7 @@ describe("the hooks in upstream files", () => {
 
   it("the Hub bundle never shows the new-layout invitation", () => {
     const app = readFileSync(join(here, "../../../app/App.tsx"), "utf8");
-    expect(app).toMatch(/\{IS_HUB_BUNDLE \? null : \(\s*<NewLayoutNotice\b/);
+    // WP-01: gated on hubDefaultsOn(), on in the Hub bundle (and on the hub dev page).
+    expect(app).toMatch(/\{hubDefaultsOn\(\) \? null : \(\s*<NewLayoutNotice\b/);
   });
 });
