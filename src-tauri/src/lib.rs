@@ -18,6 +18,8 @@ mod cursor_store;
 mod decisions;
 mod delegations;
 mod dev_fault;
+mod tasks; // WP-70: tasks shared by the person and their agents.
+
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
 // Hivra WP-13: crew rules, routing and reroute.
@@ -576,6 +578,11 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            // WP-70: tasks shared by the person and their agents.
+            tasks::commands::tasks_list,
+            tasks::commands::tasks_get,
+            tasks::commands::tasks_create,
+            tasks::commands::tasks_update,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             project_tests::run_project_tests,
