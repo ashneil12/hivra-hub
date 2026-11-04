@@ -1,12 +1,12 @@
 // WP-43. The browser plugin's MCP server: a proxy in front of Playwright MCP.
 // Ideas from Crest (MPL-2.0), not its code: a profile per agent, script evaluation off,
 // and passwords, cookies and sign-in headers kept out of tool output. Page content is
-// marked untrusted. The engine is spawned only while this process runs; nothing here
-// installs it.
+// marked untrusted. The engine is the pinned copy in the plugin's data folder.
+// This process only starts it, and only while it runs.
 
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { sameStart, startSeconds } from "./startTime.mjs";
 
@@ -169,20 +169,57 @@ export function personalBrowser(profile) {
   );
 }
 
-function readEngine(root) {
-  const fallback = {
-    command: "npx",
-    args: ["--no-install", "@playwright/mcp@0.0.49"],
-  };
-  if (!root) return fallback;
-  try {
-    const parsed = JSON.parse(readFileSync(join(root, "engine.json"), "utf8"));
-    const command = typeof parsed.command === "string" && parsed.command.trim() ? parsed.command.trim() : fallback.command;
-    const args = Array.isArray(parsed.args) ? parsed.args.filter((arg) => typeof arg === "string") : fallback.args;
-    return { command, args };
-  } catch {
-    return fallback;
+/** Known Google Chrome installs. A test can pass one root instead. */
+export function chromeRoots(env) {
+  if (Object.prototype.hasOwnProperty.call(env, "HIVRA_BROWSER_CHROME_ROOT")) {
+    const root = env.HIVRA_BROWSER_CHROME_ROOT ?? "";
+    return root ? [root] : [];
   }
+  if (process.platform === "darwin") return ["/Applications/Google Chrome.app"];
+  if (process.platform === "win32") {
+    const programs = [env.PROGRAMFILES, env["PROGRAMFILES(X86)"], env.LOCALAPPDATA];
+    return programs
+      .filter((dir) => typeof dir === "string" && dir)
+      .map((dir) => join(dir, "Google", "Chrome", "Application", "chrome.exe"));
+  }
+  return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable"];
+}
+
+export function chromeInstalled(roots) {
+  return roots.some((root) => {
+    try {
+      return Boolean(root) && existsSync(root);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function staysInside(root, file) {
+  const base = realpathSync(root);
+  const real = realpathSync(file);
+  const prefix = base.endsWith(sep) ? base : `${base}${sep}`;
+  return real === base || real.startsWith(prefix);
+}
+
+/** The pinned engine, inside the plugin data folder. Never npx, and never a checkout. */
+function pinnedEngine(env) {
+  const data = env.PLUGIN_DATA ?? "";
+  if (!data || !isAbsolute(data)) {
+    return { ok: false, message: "The browser engine isn't installed." };
+  }
+  const cli = join(data, "node_modules", "@playwright", "mcp", "cli.js");
+  if (!existsSync(cli)) {
+    return { ok: false, message: "The browser engine isn't installed." };
+  }
+  try {
+    if (!staysInside(data, cli)) {
+      return { ok: false, message: "The browser engine isn't in its own folder." };
+    }
+  } catch {
+    return { ok: false, message: "The browser engine isn't installed." };
+  }
+  return { ok: true, command: process.execPath, args: [realpathSync(cli)] };
 }
 
 /** How the engine is started. Headless unless the person asked to watch. */
@@ -198,6 +235,18 @@ export function launchPlan(env) {
   const headless = env.HIVRA_BROWSER_HEADLESS !== "0";
   const flags = ["--user-data-dir", profile];
   if (headless) flags.push("--headless");
+  // Google Chrome is the engine's default. When it is missing, use the browser this plugin downloads.
+  let browsersPath = "";
+  if (!chromeInstalled(chromeRoots(env))) {
+    flags.push("--browser", "chromium");
+    if (env.PLUGIN_DATA && isAbsolute(env.PLUGIN_DATA)) {
+      try {
+        browsersPath = join(realpathSync(env.PLUGIN_DATA), "browsers");
+      } catch {
+        browsersPath = "";
+      }
+    }
+  }
   if (env.HIVRA_BROWSER_COMMAND) {
     // Tests point this at a fake engine. The args are a JSON list; anything else is ignored.
     let args = [];
@@ -209,10 +258,19 @@ export function launchPlan(env) {
         args = [];
       }
     }
-    return { ok: true, command: env.HIVRA_BROWSER_COMMAND, args, headless, profile, own };
+    return { ok: true, command: env.HIVRA_BROWSER_COMMAND, args, headless, profile, own, browsersPath: "" };
   }
-  const engine = readEngine(env.PLUGIN_ROOT);
-  return { ok: true, command: engine.command, args: [...engine.args, ...flags], headless, profile, own };
+  const engine = pinnedEngine(env);
+  if (!engine.ok) return engine;
+  return {
+    ok: true,
+    command: engine.command,
+    args: [...engine.args, ...flags],
+    headless,
+    profile,
+    own,
+    browsersPath,
+  };
 }
 
 /** One JSON-RPC object, then a newline. MCP stdio is newline JSON, not Content-Length frames. */
@@ -456,9 +514,11 @@ function main() {
     process.stderr.write(`hivra browser: ${plan.message}\n`);
     process.exit(78);
   }
+  const childEnv = { ...process.env };
+  if (plan.browsersPath) childEnv.PLAYWRIGHT_BROWSERS_PATH = plan.browsersPath;
   const child = spawn(plan.command, plan.args, {
     stdio: ["pipe", "pipe", "inherit"],
-    env: process.env,
+    env: childEnv,
     windowsHide: true,
   });
   const pending = new Map();

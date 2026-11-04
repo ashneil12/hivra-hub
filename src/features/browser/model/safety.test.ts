@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from "node:child_process";
-import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -211,19 +211,43 @@ describe("passwords and cookies stay out of tool output", () => {
 describe("the engine starts headless, on this agent's profile", () => {
   const profile = "/tmp/hivra browser/Ada";
 
+  function plant(label: string): { data: string; cli: string; chrome: string } {
+    const data = mkdtempSync(join(tmpdir(), `hivra-browser-${label}-`));
+    temps.push(data);
+    const cli = join(data, "node_modules", "@playwright", "mcp", "cli.js");
+    mkdirSync(join(cli, ".."), { recursive: true });
+    writeFileSync(cli, "real\n");
+    const chrome = join(data, "Google Chrome.app");
+    mkdirSync(chrome);
+    return { data, cli: realpathSync(cli), chrome };
+  }
+
   it("is headless unless the person asked to watch", () => {
-    const hidden = launchPlan({ HIVRA_BROWSER_PROFILE: profile, PLUGIN_ROOT: PLUGIN });
+    const { data, cli, chrome } = plant("watch");
+    const hidden = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
     expect(hidden.ok).toBe(true);
     if (!hidden.ok) return;
+    expect(hidden.command).toBe(process.execPath);
+    expect(hidden.args[0]).toBe(cli);
     expect(hidden.headless).toBe(true);
     expect(hidden.args).toContain("--headless");
     expect(hidden.args).toContain(profile);
-    expect(hidden.args).toContain("--no-install");
-    expect(hidden.args.some((arg: string) => arg.includes("@playwright/mcp@"))).toBe(true);
+    expect(hidden.args).not.toContain("--browser");
+    expect(hidden.browsersPath).toBe("");
 
-    const shown = launchPlan({ HIVRA_BROWSER_PROFILE: profile, HIVRA_BROWSER_HEADLESS: "0" });
+    const shown = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      HIVRA_BROWSER_HEADLESS: "0",
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
     expect(shown.ok && shown.headless).toBe(false);
     expect(shown.ok && shown.args.includes("--headless")).toBe(false);
+    expect(shown.ok && shown.args.includes("--browser")).toBe(false);
   });
 
   it("refuses a relative path and the person's own browser unless they chose it", () => {
@@ -232,12 +256,109 @@ describe("the engine starts headless, on this agent's profile", () => {
     const chrome = "/Users/ash/Library/Application Support/Google/Chrome";
     const refused = launchPlan({ HIVRA_BROWSER_PROFILE: chrome });
     expect(refused.ok).toBe(false);
-    const chosen = launchPlan({ HIVRA_BROWSER_PROFILE: chrome, HIVRA_BROWSER_OWN_PROFILE: "1" });
+    const { data, chrome: installed } = plant("own");
+    const chosen = launchPlan({
+      HIVRA_BROWSER_PROFILE: chrome,
+      HIVRA_BROWSER_OWN_PROFILE: "1",
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: installed,
+    });
     expect(chosen.ok).toBe(true);
+    if (!chosen.ok) return;
+    expect(chosen.args).toContain(chrome);
+  });
+
+  it("starts the pinned engine in the plugin data folder, not from PATH or a checkout", () => {
+    const { data, cli, chrome } = plant("pin");
+    const checkout = mkdtempSync(join(tmpdir(), "hivra-browser-checkout-"));
+    temps.push(checkout);
+    const decoy = join(checkout, "node_modules", "@playwright", "mcp", "cli.js");
+    mkdirSync(join(decoy, ".."), { recursive: true });
+    writeFileSync(decoy, "decoy\n");
+    const plan = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_ROOT: checkout,
+      PLUGIN_DATA: data,
+      PATH: checkout,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.command).toBe(process.execPath);
+    expect(plan.command).not.toBe("npx");
+    expect(plan.command).not.toBe("node");
+    expect(plan.args[0]).toBe(cli);
+    expect(plan.args.join(" ")).not.toContain(checkout);
+    expect(plan.args.join(" ")).not.toContain("npx");
+    expect(plan.args).not.toContain("--no-install");
+    expect(readFileSync(decoy, "utf8")).toBe("decoy\n");
+
+    const empty = mkdtempSync(join(tmpdir(), "hivra-browser-empty-"));
+    temps.push(empty);
+    const missing = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_DATA: empty,
+      PATH: checkout,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
+    expect(missing.ok).toBe(false);
+    if (missing.ok) return;
+    expect(missing.message).toContain("isn't installed");
+  });
+
+  it("uses the downloaded browser when Chrome is missing, and a fake engine does not", () => {
+    const { data, cli } = plant("chromium");
+    const plan = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: "",
+    });
+    expect(plan.ok).toBe(true);
+    if (!plan.ok) return;
+    expect(plan.args[0]).toBe(cli);
+    const at = plan.args.indexOf("--browser");
+    expect(plan.args[at + 1]).toBe("chromium");
+    expect(plan.browsersPath).toBe(join(realpathSync(data), "browsers"));
+    expect(plan.args.join(" ")).not.toContain("Application Support");
+
+    const fake = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      HIVRA_BROWSER_COMMAND: process.execPath,
+      HIVRA_BROWSER_COMMAND_ARGS: JSON.stringify([FAKE]),
+      HIVRA_BROWSER_CHROME_ROOT: "",
+    });
+    expect(fake.ok).toBe(true);
+    if (!fake.ok) return;
+    expect(fake.command).toBe(process.execPath);
+    expect(fake.args).toEqual([FAKE]);
+    expect(fake.args).not.toContain("--browser");
+    expect(fake.browsersPath).toBe("");
+  });
+
+  it.runIf(process.platform !== "win32")("refuses an engine that is a link out of the data folder", () => {
+    const { data, chrome } = plant("link");
+    const outside = mkdtempSync(join(tmpdir(), "hivra-browser-outside-"));
+    temps.push(outside);
+    const outsideCli = join(outside, "cli.js");
+    writeFileSync(outsideCli, "out\n");
+    const cli = join(data, "node_modules", "@playwright", "mcp", "cli.js");
+    rmSync(cli);
+    symlinkSync(outsideCli, cli);
+    const plan = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
+    expect(plan.ok).toBe(false);
   });
 
   it("keeps a path with spaces as one argument", () => {
-    const plan = launchPlan({ HIVRA_BROWSER_PROFILE: profile, PLUGIN_ROOT: PLUGIN });
+    const { data, chrome } = plant("spaces");
+    const plan = launchPlan({
+      HIVRA_BROWSER_PROFILE: profile,
+      PLUGIN_DATA: data,
+      HIVRA_BROWSER_CHROME_ROOT: chrome,
+    });
     expect(plan.ok && plan.args.filter((arg: string) => arg === profile)).toEqual([profile]);
   });
 });
