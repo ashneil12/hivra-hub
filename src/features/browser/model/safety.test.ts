@@ -18,6 +18,7 @@ import {
   settle,
   UNTRUSTED,
 } from "../../../../plugins/browser/server.mjs";
+import { cimToEpoch, epochSeconds, sameStart, startSeconds } from "../../../../plugins/browser/startTime.mjs";
 
 const SERVER = fileURLToPath(new URL("../../../../plugins/browser/server.mjs", import.meta.url));
 const FAKE = fileURLToPath(new URL("./fakeEngine.mjs", import.meta.url));
@@ -388,6 +389,55 @@ function readPid(file: string): number {
   if (!Number.isInteger(pid) || pid < 2) throw new Error(`no pid in ${file}`);
   return pid;
 }
+
+describe("start times are one number", () => {
+  it("parses a UTC ps line and a Windows creation time as the same second", () => {
+    const seconds = String(Date.UTC(2026, 10, 4, 10, 0, 0) / 1000);
+    expect(epochSeconds("Wed Nov  4 10:00:00 2026")).toBe(seconds);
+    expect(epochSeconds("Wed Nov 4 10:00:00 2026")).toBe(seconds);
+    expect(cimToEpoch("20261104100000.000000+000")).toBe(seconds);
+    expect(cimToEpoch("20261104200000.000000+600")).toBe(seconds);
+    expect(epochSeconds("Mi 4. Nov 10:00:00 2026")).toBeNull();
+    expect(sameStart("Wed Nov  4 10:00:00 2026", seconds)).toBe("unknown");
+    expect(sameStart(seconds, seconds)).toBe("same");
+    expect(sameStart(seconds, String(Number(seconds) + 1))).toBe("gone");
+  });
+
+  it("does not treat a different start format as gone", () => {
+    expect(
+      rowState(
+        { pid: 5, started: "Wed Nov  4 10:00:00 2026" },
+        { alive: true, started: "1762250400" },
+      ),
+    ).toBe("unknown");
+    expect(
+      rowState({ pid: 5, started: "1762250400" }, { alive: true, started: "1762250401" }),
+    ).toBe("gone");
+  });
+
+  const onUnix = process.platform === "win32" ? it.skip : it;
+  onUnix("reads the same second when the clock text would differ", () => {
+    const child = spawn("sleep", ["30"], { stdio: "ignore" });
+    try {
+      const first = startSeconds(child.pid);
+      expect(first).toMatch(/^\d+$/);
+      expect(startSeconds(child.pid)).toBe(first);
+      const envOf = (tz: string) => ({ PATH: process.env.PATH ?? "", LANG: "C", TZ: tz });
+      const utc = execFileSync("ps", ["-p", String(child.pid), "-o", "lstart="], {
+        encoding: "utf8",
+        env: envOf("UTC"),
+      }).trim();
+      const zone = execFileSync("ps", ["-p", String(child.pid), "-o", "lstart="], {
+        encoding: "utf8",
+        env: { ...envOf("Pacific/Kiritimati"), LANG: "de_DE.UTF-8" },
+      }).trim();
+      expect(zone).not.toBe(utc);
+      expect(epochSeconds(utc)).toBe(first);
+    } finally {
+      child.kill("SIGKILL");
+    }
+  });
+});
 
 describe("the browser tree is only the process that was started", () => {
   it("does not treat an empty start time as the same process", () => {

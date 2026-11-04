@@ -64,8 +64,9 @@ struct StoredDrive {
     token: String,
     visible: bool,
     started_at_ms: u64,
-    /// `ps` start time (or the Windows creation time) captured when this session was recorded.
+    /// Epoch seconds from `plugins/browser/startTime.mjs`, captured when this session was recorded.
     /// A later process that reused the pid will not match, so Stop does not signal it.
+    /// A start string in another form is not a match and is not "gone".
     #[serde(default)]
     process_start: String,
     /// Written by the wrapper only after its browser tree is confirmed gone. Empty when this
@@ -246,16 +247,26 @@ fn read_lock(path: &Path) -> Option<LockOwner> {
     Some(owner)
 }
 
+fn settings_data(dir: &Path) -> &Path {
+    dir.parent().unwrap_or(dir)
+}
+
+fn lock_data(path: &Path) -> &Path {
+    path.parent().and_then(Path::parent).unwrap_or(path)
+}
+
 /// Alive, and still the process that took the lock. A reused pid, or a start time we can't
 /// match, is not the holder. An empty start time matches nothing: a crash while `ps` failed
-/// must not look like every later process. If the start time can't be read now, a live pid
-/// is treated as the holder so a flaky `ps` doesn't give the lock away.
-fn owner_alive(owner: &LockOwner) -> bool {
-    if !alive(owner.pid) {
+/// must not look like every later process. If the start time can't be read now, or the stored
+/// text is not epoch seconds, a live pid is treated as the holder so a flaky read doesn't
+/// give the lock away.
+fn owner_alive(data: &Path, owner: &LockOwner) -> bool {
+    if !alive(owner.pid) || owner.started.is_empty() {
         return false;
     }
-    match process_start(owner.pid) {
-        Ok(started) => !owner.started.is_empty() && started == owner.started,
+    match process_start(data, owner.pid) {
+        // A clock string and an epoch are not proof that the pid was reused.
+        Ok(started) => same_start(&owner.started, &started).unwrap_or(true),
         Err(_) => true,
     }
 }
@@ -281,7 +292,7 @@ fn release_dead_lock(path: &Path, nonce: &str) -> bool {
         return false;
     }
     match read_lock(&aside) {
-        Some(owner) if owner.nonce == nonce && !owner_alive(&owner) => {
+        Some(owner) if owner.nonce == nonce && !owner_alive(lock_data(path), &owner) => {
             let _ = std::fs::remove_file(&aside);
             true
         }
@@ -298,7 +309,7 @@ fn release_unreadable_lock(path: &Path) -> bool {
     if std::fs::rename(path, &aside).is_err() {
         return false;
     }
-    if read_lock(&aside).is_some_and(|owner| owner_alive(&owner)) {
+    if read_lock(&aside).is_some_and(|owner| owner_alive(lock_data(path), &owner)) {
         put_lock_back(path, &aside);
         return false;
     }
@@ -345,7 +356,7 @@ fn lock_settings(dir: &Path) -> Result<SettingsLock, String> {
     let path = dir.join("settings.lock");
     for _ in 0..100 {
         let nonce = uuid::Uuid::new_v4().to_string();
-        let started = match process_start(std::process::id()) {
+        let started = match process_start(settings_data(dir), std::process::id()) {
             Ok(started) if !started.is_empty() => started,
             _ => return Err(TRY_SETTINGS.into()),
         };
@@ -358,7 +369,7 @@ fn lock_settings(dir: &Path) -> Result<SettingsLock, String> {
         match claim_lock(dir, &path, &body, &nonce) {
             Ok(true) => return Ok(SettingsLock { path, nonce }),
             Ok(false) => match read_lock(&path) {
-                Some(owner) if owner_alive(&owner) => {
+                Some(owner) if owner_alive(settings_data(dir), &owner) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
                 Some(owner) => {
@@ -881,44 +892,71 @@ fn command_line(pid: u32) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-#[cfg(unix)]
-fn process_start(pid: u32) -> Result<String, String> {
-    let Some(pid) = pid_i32(pid) else {
-        return Err(NOT_OURS.into());
-    };
-    let mut command = Command::new("ps");
-    command.args(["-p", &pid.to_string(), "-o", "lstart="]);
-    allow_path(&mut command);
-    let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
-    if !out.status.success() {
-        return Err(NOT_CHECKED.into());
-    }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if text.is_empty() {
-        return Err(NOT_CHECKED.into());
-    }
-    Ok(text)
+fn helper_file(path: &Path) -> bool {
+    path.is_file() && path.file_name().is_some_and(|name| name == "startTime.mjs")
 }
 
-#[cfg(not(unix))]
-fn process_start(pid: u32) -> Result<String, String> {
+/// The wrapper and Stop both run this file. The installed copy wins, so a shipped
+/// app does not depend on the tree it was built from. Tests fall back to that tree.
+fn start_helper(data: &Path) -> Result<PathBuf, String> {
+    let installed = data
+        .join("plugins")
+        .join("installed")
+        .join("browser")
+        .join("startTime.mjs");
+    let bundled = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/browser/startTime.mjs");
+    let path = if helper_file(&installed) {
+        installed
+    } else if helper_file(&bundled) {
+        bundled
+    } else {
+        return Err(NOT_CHECKED.into());
+    };
+    let path = crate::fs::canonical(&path).map_err(|_| NOT_CHECKED.to_string())?;
+    if !helper_file(&path) {
+        return Err(NOT_CHECKED.into());
+    }
+    Ok(path)
+}
+
+fn is_epoch(text: &str) -> bool {
+    !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// `Ok(true)` is the same start. `Ok(false)` is a confirmed different process: both
+/// values are epoch seconds and they differ. Any other pair is not comparable, and
+/// that must not be reported as gone.
+fn same_start(recorded: &str, now: &str) -> Result<bool, String> {
+    let recorded = recorded.trim();
+    let now = now.trim();
+    if recorded.is_empty() || now.is_empty() {
+        return Err(NOT_CHECKED.into());
+    }
+    if recorded == now {
+        return Ok(true);
+    }
+    if is_epoch(recorded) && is_epoch(now) {
+        return Ok(false);
+    }
+    Err(NOT_CHECKED.into())
+}
+
+/// Epoch seconds, via the same helper the wrapper uses. A missing helper or a
+/// non-numeric reply is "couldn't check", not a start time.
+fn process_start(data: &Path, pid: u32) -> Result<String, String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
     };
-    let mut command = Command::new("powershell");
-    command.args([
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        &format!("(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CreationDate"),
-    ]);
+    let helper = start_helper(data)?;
+    let mut command = Command::new("node");
+    command.arg(&helper).arg(pid.to_string());
     allow_path(&mut command);
     let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
     if !out.status.success() {
         return Err(NOT_CHECKED.into());
     }
     let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if text.is_empty() {
+    if !is_epoch(&text) {
         return Err(NOT_CHECKED.into());
     }
     Ok(text)
@@ -1036,7 +1074,7 @@ fn defunct_line(line: &str) -> bool {
     text.contains("<defunct>") || text.contains("(defunct)")
 }
 
-fn confirm_session(pid: u32, token: &str, started: &str) -> Result<(), String> {
+fn confirm_session(data: &Path, pid: u32, token: &str, started: &str) -> Result<(), String> {
     if !minted_token(token) {
         return Err(NOT_OURS.into());
     }
@@ -1053,11 +1091,15 @@ fn confirm_session(pid: u32, token: &str, started: &str) -> Result<(), String> {
     if !token_in(&line, token) {
         return Err(NOT_OURS.into());
     }
-    let now = process_start(pid)?;
-    if started.is_empty() || now != started {
+    if started.is_empty() {
         return Err(NOT_OURS.into());
     }
-    Ok(())
+    let now = process_start(data, pid)?;
+    match same_start(started, &now) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(NOT_OURS.into()),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(unix)]
@@ -1097,12 +1139,12 @@ fn kill_one(pid: u32, kill: bool) -> Result<(), String> {
 
 /// Re-check the session, then signal only pids that still carry the token. Never a whole group
 /// unless every member is this browser.
-fn signal(pid: u32, token: &str, started: &str, kill: bool) -> Result<(), String> {
-    confirm_session(pid, token, started)?;
+fn signal(data: &Path, pid: u32, token: &str, started: &str, kill: bool) -> Result<(), String> {
+    confirm_session(data, pid, token, started)?;
     let targets = targets_for(pid, token);
     for target in &targets {
         if *target == pid {
-            confirm_session(*target, token, started)?;
+            confirm_session(data, *target, token, started)?;
         } else {
             let line = command_line(*target)?;
             if !token_in(&line, token) {
@@ -1195,33 +1237,34 @@ fn load_tree(data: &Path, token: &str) -> Result<Vec<TrackedPid>, String> {
 }
 
 /// `Ok(true)` means that recorded process is gone. `Ok(false)` means it is still the same one.
-fn recorded_gone(pid: u32, started: &str) -> Result<bool, String> {
+fn recorded_gone(data: &Path, pid: u32, started: &str) -> Result<bool, String> {
     if !alive(pid) {
         return Ok(true);
     }
     if started.is_empty() {
         return Err(NOT_CHECKED.into());
     }
-    match process_start(pid) {
-        Ok(now) if now == started => Ok(false),
-        Ok(_) => Ok(true),
+    let now = process_start(data, pid)?;
+    match same_start(started, &now) {
+        Ok(true) => Ok(false),
+        Ok(false) => Ok(true),
         Err(error) => Err(error),
     }
 }
 
-fn stop_tracked(row: &TrackedPid) -> Result<(), String> {
-    if recorded_gone(row.pid, &row.started)? {
+fn stop_tracked(data: &Path, row: &TrackedPid) -> Result<(), String> {
+    if recorded_gone(data, row.pid, &row.started)? {
         return Ok(());
     }
     kill_one(row.pid, false)?;
     if wait_gone(row.pid, 1500) {
         return Ok(());
     }
-    if recorded_gone(row.pid, &row.started)? {
+    if recorded_gone(data, row.pid, &row.started)? {
         return Ok(());
     }
     kill_one(row.pid, true)?;
-    if wait_gone(row.pid, 1500) || recorded_gone(row.pid, &row.started)? {
+    if wait_gone(row.pid, 1500) || recorded_gone(data, row.pid, &row.started)? {
         return Ok(());
     }
     Err(NOT_YET.into())
@@ -1230,7 +1273,7 @@ fn stop_tracked(row: &TrackedPid) -> Result<(), String> {
 fn stop_recorded_tree(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), String> {
     let rows = load_tree(data, &drive.token)?;
     for row in &rows {
-        stop_tracked(row)?;
+        stop_tracked(data, row)?;
     }
     remove_if_same(path, &drive.token);
     Ok(())
@@ -1263,7 +1306,7 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
     if !alive(drive.pid) {
         return finish_or_tree(data, &path, &drive);
     }
-    match confirm_session(drive.pid, &drive.token, &drive.process_start) {
+    match confirm_session(data, drive.pid, &drive.token, &drive.process_start) {
         Ok(()) => {}
         Err(error) if error == NOT_CHECKED => return Err(error),
         Err(error) if error == DEPARTED => return finish_or_tree(data, &path, &drive),
@@ -1272,7 +1315,7 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
             return Err(error);
         }
     }
-    if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, false) {
+    if let Err(error) = signal(data, drive.pid, &drive.token, &drive.process_start, false) {
         if error == DEPARTED {
             return finish_or_tree(data, &path, &drive);
         }
@@ -1287,7 +1330,7 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
     if wait_gone(drive.pid, 1500) {
         return finish_or_tree(data, &path, &drive);
     }
-    if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, true) {
+    if let Err(error) = signal(data, drive.pid, &drive.token, &drive.process_start, true) {
         if error == DEPARTED || !alive(drive.pid) {
             return finish_or_tree(data, &path, &drive);
         }
@@ -1463,7 +1506,7 @@ pub(crate) fn spawn_recorded(
         eprintln!("hivra browser: The browser didn't start. Try again. {error}");
         return Err(78);
     }
-    let started = match process_start(pid) {
+    let started = match process_start(data, pid) {
         Ok(started) => started,
         Err(error) => {
             end_child(child);
@@ -1580,7 +1623,7 @@ pub(crate) fn start_session(
     let child = command
         .spawn()
         .map_err(|error| format!("The test browser didn't start. Try again. {error}"))?;
-    let started = match process_start(child.id()) {
+    let started = match process_start(data, child.id()) {
         Ok(started) => started,
         Err(error) => {
             end_child(child);

@@ -44,6 +44,15 @@ fn row<'a>(profiles: &'a [Profile], id: &str) -> &'a Profile {
 }
 
 #[test]
+fn a_start_format_mismatch_is_not_a_different_process() {
+    assert!(same_start("1762250400", "1762250400").unwrap());
+    assert!(!same_start("1762250400", "1762250401").unwrap());
+    assert!(same_start("Wed Nov  4 10:00:00 2026", "1762250400").is_err());
+    assert!(same_start("Wed Nov  4 10:00:00 2026", "Mi Nov  4 23:00:00 2026").is_err());
+    assert!(same_start("", "1762250400").is_err());
+}
+
+#[test]
 fn a_bad_id_is_refused_and_deletes_nothing() {
     let tmp = Tmp::new();
     let keep = tmp.data().join("keep");
@@ -555,7 +564,7 @@ fn stop_ends_the_fake_server_and_leaves_the_other_process() {
             token: plan.token.clone(),
             visible: true,
             started_at_ms: 1,
-            process_start: process_start(server_pid).unwrap(),
+            process_start: process_start(tmp.data(), server_pid).unwrap(),
             done_path: String::new(),
         },
     )
@@ -606,7 +615,10 @@ fn the_recorded_pid_is_the_child_that_carries_the_token() {
     assert!(token_in(&line, &plan.token), "{line}");
     assert!(!defunct_line(&line), "{line}");
     assert!(!drive.process_start.is_empty());
-    assert_eq!(drive.process_start, process_start(drive.pid).unwrap());
+    assert_eq!(
+        drive.process_start,
+        process_start(tmp.data(), drive.pid).unwrap()
+    );
     let _ = child.kill();
     let _ = child.wait();
 }
@@ -715,7 +727,7 @@ fn a_defunct_process_is_already_gone() {
     let mut child = command.spawn().unwrap();
     let pid = child.id();
     wait_until(|| is_zombie(pid), "true never became a zombie");
-    let error = confirm_session(pid, &plan.token, "not-this-start").unwrap_err();
+    let error = confirm_session(tmp.data(), pid, &plan.token, "not-this-start").unwrap_err();
     assert_eq!(error, DEPARTED);
     let id = uuid::Uuid::new_v4().to_string();
     record_drive(
@@ -833,6 +845,86 @@ fn stop_follows_the_recorded_tree_when_the_wrapper_died_without_confirming() {
     );
     stop(tmp.data(), &drive.id).unwrap();
     assert!(!alive(hold_pid), "Stop ends the recorded browser");
+    assert!(
+        !path.is_file(),
+        "the drive goes only after that browser is gone"
+    );
+    let _ = child.wait();
+}
+
+/// `ps lstart` with a cleared environment, as Stop used to, or with the zone a wrapper kept.
+#[cfg(unix)]
+fn raw_lstart(pid: u32, zone: Option<&str>) -> String {
+    let mut command = std::process::Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", "lstart="]);
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    if let Some(zone) = zone {
+        command.env("LANG", "de_DE.UTF-8");
+        command.env("TZ", zone);
+    }
+    let out = command.output().expect("ps");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_stops_a_browser_when_start_times_would_format_differently() {
+    let tmp = Tmp::new();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/browser/server.mjs");
+    let late = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/lateChild.mjs");
+    let pid_file = tmp.data().join("hold.pid");
+    let mut command = std::process::Command::new("node");
+    command.arg(&server).arg(&plan.token);
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    allow_path(&mut command);
+    command.stdin(std::process::Stdio::piped());
+    command.env("HIVRA_BROWSER_PROFILE", &plan.profile);
+    command.env("HIVRA_BROWSER_HEADLESS", "1");
+    command.env("HIVRA_BROWSER_OWN_PROFILE", "0");
+    command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_DONE", &plan.done);
+    command.env("HIVRA_BROWSER_COMMAND", "node");
+    command.env(
+        "HIVRA_BROWSER_COMMAND_ARGS",
+        serde_json::json!([late.to_string_lossy(), "hold"]).to_string(),
+    );
+    command.env("HIVRA_LATE_PID", &pid_file);
+    // Stop's ps clears LANG and TZ. The wrapper used to keep them, so the same
+    // start was two different strings and Stop treated the browser as gone.
+    command.env("LANG", "de_DE.UTF-8");
+    command.env("TZ", "Pacific/Kiritimati");
+    let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let drive = load_drive(&path).unwrap();
+    let hold_pid = wait_pid_file(&pid_file);
+    let _end_hold = EndPid(hold_pid);
+    let cleared = raw_lstart(hold_pid, None);
+    let zoned = raw_lstart(hold_pid, Some("Pacific/Kiritimati"));
+    assert_ne!(
+        cleared, zoned,
+        "the two ps calls must format this start differently"
+    );
+    let tree = drives_dir(tmp.data()).join(format!("{}.tree", plan.token));
+    wait_until(
+        || tree_lists_pid(&tree, hold_pid),
+        "the wrapper never recorded the browser",
+    );
+    child.kill().unwrap();
+    wait_until(
+        || !alive(child.id()),
+        "the wrapper was still running after it was killed",
+    );
+    let _ = visible_drives(tmp.data()).unwrap();
+    stop(tmp.data(), &drive.id).unwrap();
+    assert!(
+        !alive(hold_pid),
+        "a different start format is not the browser being gone"
+    );
     assert!(
         !path.is_file(),
         "the drive goes only after that browser is gone"
