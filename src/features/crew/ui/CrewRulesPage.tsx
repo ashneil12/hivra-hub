@@ -57,20 +57,46 @@ export function CrewRulesPage({ cwd, initial }: Props) {
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const loadGen = useRef(0);
+  /** Unsaved row edits. A load that arrives after one must not put the old rows back. */
+  const dirty = useRef(false);
+  /** The scope a save in flight belongs to. A load for that same scope waits; a different scope does not. */
+  const saving = useRef("");
+  const scopeNow = useRef(scope);
+  const monoNow = useRef(monoId);
+  const cwdNow = useRef(cwd);
+  scopeNow.current = scope;
+  monoNow.current = monoId;
+  cwdNow.current = cwd;
+
+  function scopeIdOf(which: "project" | "mono", mono: string, folder: string | undefined): string {
+    return which === "project" ? (folder ?? "").trim() : mono.trim();
+  }
+
+  function here(): string {
+    return `${scopeNow.current}\0${scopeIdOf(scopeNow.current, monoNow.current, cwdNow.current)}`;
+  }
+
+  function applyLoaded(got: Loaded, key: string) {
+    if (Array.isArray(got.plugins)) setPlugins(got.plugins);
+    if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
+    if (dirty.current || saving.current === key) return;
+    setRows(Array.isArray(got.rules) ? got.rules.map(toRow) : []);
+    setRevision(typeof got.revision === "number" ? got.revision : 0);
+  }
 
   useEffect(() => {
     if (initial) return;
-    const scopeId = scope === "project" ? (cwd ?? "").trim() : monoId.trim();
+    const scopeId = scopeIdOf(scope, monoId, cwd);
     if (!scopeId) return;
+    // A new place starts from what is stored. Edits made after this line still count.
+    dirty.current = false;
+    const key = `${scope}\0${scopeId}`;
     const mine = ++loadGen.current;
     let alive = true;
     invoke<Loaded | undefined>("crew_rules_get", { scope, scopeId, project: cwd ?? null })
       .then((got) => {
         if (!alive || mine !== loadGen.current || !got || typeof got !== "object") return;
-        setRows(Array.isArray(got.rules) ? got.rules.map(toRow) : []);
-        setPlugins(Array.isArray(got.plugins) ? got.plugins : []);
-        setRevision(typeof got.revision === "number" ? got.revision : 0);
-        if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
+        applyLoaded(got, key);
       })
       .catch(() => {
         if (alive && mine === loadGen.current) {
@@ -82,21 +108,27 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     };
   }, [initial, scope, monoId, cwd]);
 
+  function changeRows(next: Row[] | ((current: Row[]) => Row[])) {
+    dirty.current = true;
+    setRows(next);
+  }
+
   function add() {
     const made = draftRule(draft);
     if (typeof made === "string") {
       setNotice(made);
       return;
     }
-    setRows((current) => [...current, toRow(made)]);
+    changeRows((current) => [...current, toRow(made)]);
     setDraft(EMPTY);
     setNotice(null);
   }
 
   async function save() {
     if (initial) return;
-    const scopeId = scope === "project" ? (cwd ?? "").trim() : monoId.trim();
-    if (!scopeId) {
+    const savingScope = scope;
+    const savingId = scopeIdOf(scope, monoId, cwd);
+    if (!savingId) {
       setNotice(scope === "project" ? "Open a project first." : "Name the Mono first.");
       return;
     }
@@ -109,19 +141,46 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       }
       rules.push({ labels: made.labels, paths: made.paths, cli: made.cli ?? null, model: made.model ?? null, effort: made.effort ?? null });
     }
+    const expected = revision;
+    const key = `${savingScope}\0${savingId}`;
+    saving.current = key;
     try {
       const got = await invoke<Loaded | undefined>("crew_rules_set", {
-        scope,
-        scopeId,
+        scope: savingScope,
+        scopeId: savingId,
         project: cwd ?? null,
         rules,
-        revision,
+        revision: expected,
         budget: null,
       });
-      if (got && typeof got.revision === "number") setRevision(got.revision);
+      if (here() !== key) {
+        setNotice("Those rules were saved for the other place. Reload to see them.");
+        return;
+      }
+      if (!got || typeof got.revision !== "number") {
+        setNotice("Those rules couldn't be saved.");
+        return;
+      }
+      const again = await invoke<Loaded | undefined>("crew_rules_get", {
+        scope: savingScope,
+        scopeId: savingId,
+        project: cwd ?? null,
+      });
+      if (here() !== key) {
+        setNotice("Those rules were saved for the other place. Reload to see them.");
+        return;
+      }
+      if (!again || again.revision !== got.revision) {
+        setNotice("These rules were saved in another window. Reload and try again.");
+        return;
+      }
+      setRevision(again.revision);
+      if (Array.isArray(again.signedIn)) setSignedIn(again.signedIn);
       setNotice("Saved.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Those rules couldn't be saved.");
+    } finally {
+      if (saving.current === key) saving.current = "";
     }
   }
 
@@ -179,13 +238,13 @@ export function CrewRulesPage({ cwd, initial }: Props) {
               options={EFFORTS.map((effort) => [effort, effort])}
               onChange={(effort) => update(index, { effort })}
             />
-            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} up`} disabled={index === 0} onClick={() => setRows((current) => moveRule(current, index, -1))}>
+            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} up`} disabled={index === 0} onClick={() => changeRows((current) => moveRule(current, index, -1))}>
               Move up
             </button>
-            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} down`} disabled={index === rows.length - 1} onClick={() => setRows((current) => moveRule(current, index, 1))}>
+            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} down`} disabled={index === rows.length - 1} onClick={() => changeRows((current) => moveRule(current, index, 1))}>
               Move down
             </button>
-            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Remove rule ${index + 1}`} onClick={() => setRows((current) => current.filter((_, at) => at !== index))}>
+            <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Remove rule ${index + 1}`} onClick={() => changeRows((current) => current.filter((_, at) => at !== index))}>
               Remove
             </button>
           </li>
@@ -223,7 +282,7 @@ export function CrewRulesPage({ cwd, initial }: Props) {
   );
 
   function update(index: number, patch: Partial<Row>) {
-    setRows((current) => current.map((row, at) => (at === index ? { ...row, ...patch } : row)));
+    changeRows((current) => current.map((row, at) => (at === index ? { ...row, ...patch } : row)));
   }
 }
 
