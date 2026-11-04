@@ -59,5 +59,6 @@ when the turn started; the person's own uncommitted edits and commits are never 
 | Caps refuse with a reason, never cut: 8 open tasks per first mate, 20 waiting messages per worker, message and question lengths | `firstmate/mod.rs` `check_fanout`, `steering.rs`, `decisions.rs` |
 
 Credits: the role rules, the brief scaffold, the isolation check, the status protocol and the steering section are
-adapted from [firstmate](https://github.com/kunchenguid/firstmate) (MIT, Copyright (c) 2026 Kun Chen). The planner
-rules follow ROMA's ideas (no text taken). See `NOTICE`.
+vendored verbatim from [firstmate](https://github.com/kunchenguid/firstmate) (MIT, Copyright (c) 2026 Kun Chen) in
+`vendor/firstmate-contract.md`. A one-line binding follows each block where Hivra has no status file, inbox directory
+or captain address. The planner rules follow ROMA's ideas (no text taken). See `NOTICE`.

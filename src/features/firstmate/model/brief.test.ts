@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { checkBrief, renderBrief, sectionProblem, withLegacyBriefParts, LEGACY_GOAL } from "./brief";
 import { briefView } from "../../sessions/model/briefView";
@@ -49,8 +51,11 @@ describe("the brief scaffold (Hivra WP-10)", () => {
       "## Status protocol",
       "## Steering",
     ]);
-    expect(own).toContain("never in the project's main checkout (/p)");
-    expect(own).toContain("stop at once: change nothing");
+    expect(own).toContain("**Verify isolation before anything else.**");
+    expect(own).toContain("STOP - do not branch or commit here");
+    expect(own).toContain("The primary checkout is /p.");
+    expect(own).toContain("The move IS the acknowledgement");
+    expect(own).toContain("edit it only to correct information that is factually wrong");
     expect(renderBrief({ intent: "a", spec: "b" }, { kind: "shared", folder: "/p" })).toContain("the shared folder /p, on purpose");
     expect(renderBrief({ intent: "a", spec: "b" }, { kind: "first-mate" })).toContain("read the project, never edit it");
     // A worker never talks to the person; a Lead still does, in its own chat, until WP-05.
@@ -63,9 +68,23 @@ describe("the brief scaffold (Hivra WP-10)", () => {
     expect(goalFromBrief(prompt)).toBe("npm test passes");
   });
 
+  it("keeps firstmate's vendored sentences verbatim in the prompt they belong to", () => {
+    const vendor = readFileSync(resolve(process.cwd(), "src/features/firstmate/vendor/firstmate-contract.md"), "utf8");
+    const own = renderBrief({ intent: "Ash: fix it", spec: "Change a.ts" }, { kind: "own-checkout", mainCheckout: "/p" });
+    const blocks = [...vendor.matchAll(/<!-- where: (contract|brief)[\s\S]*?-->\n```\n([\s\S]*?)```/g)];
+    expect(blocks.length).toBe(8);
+    for (const block of blocks) {
+      const text = block[2].trim();
+      const haystack = block[1] === "contract" ? FIRST_MATE_CONTRACT : own;
+      expect(haystack, text.slice(0, 60)).toContain(text);
+    }
+  });
+
   it("ships the role rules without the credit comment", () => {
     expect(FIRST_MATE_CONTRACT.startsWith("# The first mate contract")).toBe(true);
-    expect(FIRST_MATE_CONTRACT).toContain("**Never edit the project.**");
+    expect(FIRST_MATE_CONTRACT).toContain("**Never write to a project.**");
+    expect(FIRST_MATE_CONTRACT).toContain("**Never merge a PR without the captain's explicit word.**");
+    expect(FIRST_MATE_CONTRACT).toContain("**Never tear down unlanded work.**");
     expect(FIRST_MATE_CONTRACT).not.toContain("<!--");
   });
 
