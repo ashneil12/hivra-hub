@@ -12,7 +12,51 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/claude"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-creator/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"The Creator mono and the skills it uses to build a plugin.\",\"name\":\"hivra-creator\",\"version\":\"1.0.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-command",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-command"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-mono",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-mono"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-panel",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-panel"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-persona",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-persona"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-skill"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data/hivra-creator"
       },
       {
         "dir": true,
@@ -23,21 +67,55 @@
         "path": "app-data/plugins/installed"
       },
       {
+        "carried": "hivra-creator",
+        "path": "app-data/plugins/installed/hivra-creator"
+      },
+      {
         "carried": "pstack",
         "path": "app-data/plugins/installed/pstack"
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
         "path": "home"
+      },
+      {
+        "dir": true,
+        "path": "home/.agents"
+      },
+      {
+        "dir": true,
+        "path": "home/.agents/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-command",
+        "path": "home/.agents/skills/write-command"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-mono",
+        "path": "home/.agents/skills/write-mono"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-panel",
+        "path": "home/.agents/skills/write-panel"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-persona",
+        "path": "home/.agents/skills/write-persona"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
+        "path": "home/.agents/skills/write-skill"
       }
     ],
     "wiring": {
       "claudeMcpServers": {},
-      "claudePluginDirs": [],
+      "claudePluginDirs": [
+        "<TMP>/app-data/plugins/claude/hivra-creator"
+      ],
       "codexMcpServers": {},
       "reports": []
     }
@@ -55,6 +133,42 @@
       {
         "dir": true,
         "path": "app-data/plugins/claude"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-creator/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"The Creator mono and the skills it uses to build a plugin.\",\"name\":\"hivra-creator\",\"version\":\"1.0.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-creator/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-command",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-command"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-mono",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-mono"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-panel",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-panel"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-persona",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-persona"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
+        "path": "app-data/plugins/claude/hivra-creator/skills/write-skill"
       },
       {
         "dir": true,
@@ -310,6 +424,10 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/data/hivra-creator"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data/pstack"
       },
       {
@@ -317,12 +435,16 @@
         "path": "app-data/plugins/installed"
       },
       {
+        "carried": "hivra-creator",
+        "path": "app-data/plugins/installed/hivra-creator"
+      },
+      {
         "carried": "pstack",
         "path": "app-data/plugins/installed/pstack"
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
@@ -567,11 +689,32 @@
       {
         "link": "app-data/plugins/installed/pstack/skills/why",
         "path": "home/.agents/skills/why"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-command",
+        "path": "home/.agents/skills/write-command"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-mono",
+        "path": "home/.agents/skills/write-mono"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-panel",
+        "path": "home/.agents/skills/write-panel"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-persona",
+        "path": "home/.agents/skills/write-persona"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
+        "path": "home/.agents/skills/write-skill"
       }
     ],
     "wiring": {
       "claudeMcpServers": {},
       "claudePluginDirs": [
+        "<TMP>/app-data/plugins/claude/hivra-creator",
         "<TMP>/app-data/plugins/claude/pstack"
       ],
       "codexMcpServers": {},

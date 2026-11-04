@@ -34,6 +34,8 @@ import {
   type SourceList,
 } from "../model/discover";
 import { InstalledPlugins } from "./InstalledPlugins";
+// WP-34: Creator mode, a third tab. It builds a scratch plugin and does not run until the tab is open.
+import { CreatorScreen } from "../../creator/ui/CreatorScreen";
 import { VerifyOffer } from "./VerifyOffer";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -71,7 +73,7 @@ export function PluginsPage({ projectFolder }: { projectFolder?: string } = {}) 
   const [installing, setInstalling] = useState<string | null>(null);
   const [installed, setInstalled] = useState<Record<string, string>>({});
   const [installNote, setInstallNote] = useState<{ key: string; message: string } | null>(null);
-  const [tab, setTab] = useState<"discover" | "installed">("discover");
+  const [tab, setTab] = useState<"discover" | "installed" | "creator">("discover");
   const [kind, setKind] = useState<"url" | "github" | "file">("url");
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -215,8 +217,18 @@ export function PluginsPage({ projectFolder }: { projectFolder?: string } = {}) 
         >
           Installed
         </button>
+        {/* WP-34: build a plugin here, preview it in this view, then keep or undo it. */}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "creator"}
+          onClick={() => setTab("creator")}
+          className={tab === "creator" ? PRIMARY : BTN}
+        >
+          Creator
+        </button>
       </div>
-      {tab === "installed" ? <InstalledPlugins /> : (
+      {tab === "installed" ? <InstalledPlugins /> : tab === "creator" ? <CreatorScreen /> : (
       <>
       <div data-setting-id="plugin-discover" className="flex flex-col gap-4">
         {projectFolder ? <VerifyOffer projectFolder={projectFolder} /> : null}
