@@ -1,9 +1,11 @@
 // WP-23: the council's rules, in code (docs/hivra/work/WP-23-council.md, SPEC.md section 6).
 //
 // The protocol — a blind first round, an anonymised cross-exam, a stance line, a two-thirds tally that keeps the
-// minority, a chairman on another provider — comes from council-of-high-intelligence. There it is a prompt, so a model
-// can skip a step. Here each step is a function: a prompt is built with only what that step may see, and a reply that
+// minority, a chairman on another provider — comes from council-of-high-intelligence. The prompt text is copied in
+// prompts.ts. Here each step is a function: a prompt is built with only what that step may see, and a reply that
 // is the wrong shape is asked again once, then set aside. Nothing here calls a model.
+
+import { BLIND_TEMPLATE, CHAIRMAN_TEMPLATE, CROSS_TEMPLATE, STANCE_TEMPLATE } from "./prompts";
 
 export const PANEL_PRESETS = { quick: 2, triad: 3, full: 5 } as const;
 export type PanelPreset = keyof typeof PANEL_PRESETS;
@@ -54,13 +56,17 @@ export type Stance = {
   confidence: number;
   reason: string;
   weight: number;
+  /** Vote factor from CONFIDENCE high, med or low. Omitted means 1, so a displayed 0–100 does not shrink the vote. */
+  factor?: number;
+  /** The seat called the other option actively harmful. The minority report keeps that even when they lose. */
+  dealbreaker?: boolean;
 };
 
 export type Tally = {
   /** Set only when one option's weight reaches two thirds of the weight that voted. */
   winner?: string;
   consensus: boolean;
-  /** Weight counted (abstentions are not in it). */
+  /** Base weight counted, abstentions included. Confidence does not shrink this, so a hesitant panel cannot lower the bar. */
   total: number;
   /** The two-thirds line, as a fraction of `total`. Zero when nobody voted. */
   line: number;
@@ -234,25 +240,15 @@ export function chooseChairman(seats: readonly Pick<CouncilSeat, "id" | "family"
   return { seatId: chair.id, differentProvider: counts.size > 1 && seats.some((seat) => seat.family.toLowerCase() !== chair.family.toLowerCase()) };
 }
 
-export type PersonaBrief = { id: string; name: string; text: string };
+export type PersonaBrief = { id: string; name: string; text: string; method?: string };
 
 /** What one seat is told for the blind round. No other seat, and no other answer, is in it. */
 export function blindPrompt(question: string, persona: PersonaBrief | undefined): string {
-  const role = persona
-    ? `Your role is ${persona.name}.\n${persona.text.trim()}`
-    : "You have no assigned role. Answer in your own judgment.";
-  return [
-    "You are one seat on a council. Answer the question on your own.",
-    "You cannot see any other seat's answer. Do not agree with a position you have not been shown. Take a clear position.",
-    "Do not name yourself, your engine or your role.",
-    "",
-    "Question:",
-    question.trim(),
-    "",
-    role,
-    "",
-    "Reply with your answer in plain words.",
-  ].join("\n");
+  const identity = persona ? `${persona.name}\n${persona.text.trim()}` : "";
+  return BLIND_TEMPLATE.replace("{identity}", identity)
+    .replace("{problem}", question.trim())
+    .replace("{restatements}", "The person confirmed the question above before this round.")
+    .replace("{reasoning_method}", persona?.method?.trim() || "the method in your role");
 }
 
 /**
@@ -286,29 +282,19 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** The cross-exam. Names are already hidden; this prompt must not be given the seats' real names. */
+/** The cross-exam. Names are already hidden; this prompt must not be given the seats' real names. `{name}` is the member letter. */
 export function crossPrompt(question: string, me: string, answers: readonly { member: string; text: string }[]): string {
-  const lines = answers.map((answer) => `${answer.member}: ${answer.text.trim()}`).join("\n\n");
-  return [
-    `You are ${me}. Every seat is named Member A, Member B and so on, including you. You do not know who the others are.`,
-    "Read every answer. Say what is weak, what you would challenge, and where you have changed your mind.",
-    "Do not agree only to keep the peace. Do not guess who a member is.",
-    "",
-    "Question:",
-    question.trim(),
-    "",
-    "Answers:",
-    lines,
-  ].join("\n");
+  const lines = answers.map((answer) => `${answer.member}:\n${answer.text.trim()}`).join("\n\n");
+  return `${CROSS_TEMPLATE.split("{name}").join(me).replace("{outputs}", lines)}\n\nQuestion:\n${question.trim()}`;
 }
 
-export const STANCE_SHAPE = ["OPTION: <the position, in a few words>", "CONFIDENCE: <a whole number from 0 to 100>", "REASON: <one line>"].join("\n");
+export const STANCE_SHAPE = "STANCE: <one short option label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no";
 
 export function stancePrompt(question: string, me: string, answers: readonly { member: string; text: string }[], cross: readonly { member: string; text: string }[]): string {
   return [
-    `You are ${me}. Give your final position in exactly this shape, and nothing else. No greeting, no code fence, no extra line.`,
+    STANCE_TEMPLATE,
     "",
-    STANCE_SHAPE,
+    `You are ${me}. Names stay hidden.`,
     "",
     "Question:",
     question.trim(),
@@ -325,13 +311,18 @@ export function retryPrompt(shape: string, problem: string): string {
   return [`Your last reply was not in the right shape: ${problem}`, "Reply again in exactly this shape, and nothing else.", "", shape].join("\n");
 }
 
-export type ParsedStance = { option: string; confidence: number; reason: string };
+export type ParsedStance = { option: string; confidence: number; reason: string; factor?: number; dealbreaker?: boolean };
 export type ParseResult<T> = { ok: true; value: T } | { ok: false; problem: string };
 
-/** A final position. Three lines, in order, nothing else. */
+/**
+ * A final position. The copied protocol puts one STANCE line last. The three-line OPTION / CONFIDENCE / REASON shape
+ * is still accepted, so a reply written that way is not thrown away. Prose with no stance line is not a stance.
+ */
 export function parseStance(text: string): ParseResult<ParsedStance> {
   const lines = nonEmpty(text);
-  if (lines.length !== 3) return { ok: false, problem: "it needs exactly three lines: OPTION, CONFIDENCE and REASON." };
+  const last = lines[lines.length - 1] ?? "";
+  if (/^STANCE:/i.test(last)) return parseStanceLine(last);
+  if (lines.length !== 3) return { ok: false, problem: "the last line must be STANCE, CONFIDENCE (high, med or low) and DEALBREAKER (yes or no)." };
   const option = field(lines[0], "OPTION");
   const confidence = field(lines[1], "CONFIDENCE");
   const reason = field(lines[2], "REASON");
@@ -345,6 +336,28 @@ export function parseStance(text: string): ParseResult<ParsedStance> {
   return { ok: true, value: { option, confidence: n, reason } };
 }
 
+/** `STANCE: <label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no`, or a bare `STANCE: abstain`. */
+function parseStanceLine(line: string): ParseResult<ParsedStance> {
+  if (/^STANCE:\s*abstain\s*$/i.test(line)) {
+    return { ok: true, value: { option: "abstain", confidence: 0, reason: "Abstained.", factor: 1, dealbreaker: false } };
+  }
+  const match = /^STANCE:\s*(.+?)\s*\|\s*CONFIDENCE:\s*(high|med|low)\s*\|\s*DEALBREAKER:\s*(yes|no)\s*$/i.exec(line.trim());
+  if (!match) return { ok: false, problem: "the last line must be STANCE, CONFIDENCE (high, med or low) and DEALBREAKER (yes or no)." };
+  const option = match[1].trim();
+  if (!option || option.length > OPTION_MAX) return { ok: false, problem: `STANCE must be 1 to ${OPTION_MAX} characters.` };
+  const word = match[2].toLowerCase();
+  const confidence = word === "high" ? 100 : word === "med" ? 75 : 50;
+  const factor = word === "high" ? 1 : word === "med" ? 0.75 : 0.5;
+  const dealbreaker = match[3].toLowerCase() === "yes";
+  if (optionKey(option) === "abstain") {
+    return { ok: true, value: { option: "abstain", confidence, reason: "Abstained.", factor: 1, dealbreaker: false } };
+  }
+  return {
+    ok: true,
+    value: { option, confidence, reason: dealbreaker ? "Dealbreaker." : "Not a dealbreaker.", factor, dealbreaker },
+  };
+}
+
 function field(line: string, label: string): string | undefined {
   const match = new RegExp(`^${label}:\\s*(.*)$`, "i").exec(line.trim());
   return match ? match[1].trim() : undefined;
@@ -354,31 +367,41 @@ function nonEmpty(text: string): string[] {
   return text.replace(/\r\n?/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
 }
 
+function voteFactor(stance: Stance): number {
+  return stance.factor === 1 || stance.factor === 0.75 || stance.factor === 0.5 ? stance.factor : 1;
+}
+
 export function tally(stances: readonly Stance[], seated: readonly Pick<CouncilSeat, "id" | "member">[]): Tally {
   const voted = new Set(stances.map((stance) => stance.seatId));
   const abstained = seated.filter((seat) => !voted.has(seat.id)).map((seat) => seat.member);
   const display = new Map<string, string>();
   const weight = new Map<string, number>();
-  let total = 0;
+  let total = seated.filter((seat) => !voted.has(seat.id)).length;
+  const cast: Stance[] = [];
   for (const stance of stances) {
+    const base = Number.isFinite(stance.weight) && stance.weight > 0 ? stance.weight : 1;
+    total += base;
+    if (optionKey(stance.option) === "abstain") {
+      abstained.push(stance.member);
+      continue;
+    }
     const key = optionKey(stance.option);
     if (!key) continue;
+    cast.push(stance);
     if (!display.has(key)) display.set(key, clean(stance.option).slice(0, OPTION_MAX));
-    const add = Number.isFinite(stance.weight) && stance.weight > 0 ? stance.weight : 1;
-    weight.set(key, (weight.get(key) ?? 0) + add);
-    total += add;
+    weight.set(key, (weight.get(key) ?? 0) + base * voteFactor(stance));
   }
   const options = [...weight.entries()]
     .map(([key, w]) => ({ option: display.get(key) ?? key, weight: w, share: total > 0 ? w / total : 0 }))
     .sort((a, b) => b.weight - a.weight || a.option.localeCompare(b.option));
   const winner = options.find((option) => reachesTwoThirds(option.weight, total))?.option;
-  const minority = winner ? stances.filter((stance) => optionKey(stance.option) !== optionKey(winner)) : [...stances];
+  const minority = winner ? cast.filter((stance) => optionKey(stance.option) !== optionKey(winner)) : [...cast];
   return { ...(winner ? { winner } : {}), consensus: !!winner, total, line: total > 0 ? (total * 2) / 3 : 0, options, minority, abstained };
 }
 
 /** The minority report the chairman must carry, and that the verdict keeps even if the chairman drops it. */
 export function minorityReport(result: Tally): string {
-  if (result.total === 0) return "No seat gave a final position.";
+  if (result.options.length === 0) return "No seat gave a final position.";
   const lines = result.minority.map((stance) => `${stance.member} — ${clean(stance.option)} (${stance.confidence}): ${stance.reason}`);
   if (!result.consensus) return `No consensus\n${lines.join("\n")}`;
   return lines.length ? lines.join("\n") : "No one disagreed.";
@@ -386,20 +409,30 @@ export function minorityReport(result: Tally): string {
 
 export const VERDICT_SHAPE = ["UNRESOLVED:", "<questions still open, or None>", "KILL CRITERIA:", "<what would make this the wrong call, or None>", "NEXT STEP:", "<one concrete step>", "MINORITY REPORT:", "<the minority report, unchanged>"].join("\n");
 
-export function verdictPrompt(question: string, result: Tally, report: string): string {
+export function verdictPrompt(
+  question: string,
+  result: Tally,
+  report: string,
+  transcript?: { blind: readonly { member: string; text: string }[]; cross: readonly { member: string; text: string }[]; stances: readonly Stance[] },
+): string {
   const counts = result.options.map((option) => `${option.option}: ${option.weight} of ${result.total}`).join("\n");
+  const show = (rows: readonly { member: string; text: string }[]) => rows.map((row) => `${row.member}:\n${row.text.trim()}`).join("\n\n");
+  const positions = (transcript?.stances ?? []).map((stance) => `${stance.member}: ${stance.option} (${stance.confidence}). ${stance.reason}`).join("\n");
+  const chairman = CHAIRMAN_TEMPLATE.replace("{problem}", question.trim())
+    .replace("{round1}", transcript ? show(transcript.blind) : "Not collected.")
+    .replace("{round2}", transcript ? show(transcript.cross) : "Not collected.")
+    .replace("{round3}", positions || "Not collected.");
   return [
-    "You are the chair. You are not counting votes. The tally below is final.",
-    "Write the verdict in exactly this shape, and nothing else. No greeting, no code fence.",
+    chairman,
     "",
-    VERDICT_SHAPE,
-    "",
-    "Question:",
-    question.trim(),
-    "",
+    "The tally below is final. Do not change it, and do not invent a winner the tally does not have.",
     result.consensus ? `The council agreed on: ${result.winner}` : "The council did not reach two thirds. Do not invent a winner.",
     "Tally:",
     counts || "No votes.",
+    "",
+    "Write the verdict in exactly this shape, and nothing else. No greeting, no code fence.",
+    "",
+    VERDICT_SHAPE,
     "",
     "Minority report, copy this into MINORITY REPORT unchanged:",
     report,

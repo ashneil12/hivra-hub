@@ -100,7 +100,9 @@ export function CouncilView({
       live.current = false;
       return;
     }
-    const personaText = new Map(personas.map((persona) => [persona.id, { id: persona.id, name: persona.name, text: persona.body }]));
+    const personaText = new Map(
+      personas.map((persona) => [persona.id, { id: persona.id, name: persona.name, text: persona.body, ...(persona.method ? { method: persona.method } : {}) }]),
+    );
     const result = await runCouncil({
       question: base.question,
       seats: base.seats,

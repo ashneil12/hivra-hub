@@ -15,6 +15,7 @@ import {
   retryPrompt,
   seatNeedles,
   seatPanel,
+  stancePrompt,
   tally,
   verdictPrompt,
   type CouncilEngine,
@@ -38,6 +39,8 @@ function stance(partial: Partial<Stance> & Pick<Stance, "option">): Stance {
     confidence: partial.confidence ?? 50,
     reason: partial.reason ?? "Because.",
     weight: partial.weight ?? 1,
+    ...(partial.factor !== undefined ? { factor: partial.factor } : {}),
+    ...(partial.dealbreaker ? { dealbreaker: true } : {}),
   };
 }
 
@@ -91,9 +94,13 @@ it("hides real names behind member letters, longer names first", () => {
 });
 
 it("a blind prompt carries no other seat", () => {
-  const prompt = blindPrompt("Should we ship?", { id: "skeptic", name: "Skeptic", text: "Doubt it." });
+  const prompt = blindPrompt("Should we ship?", { id: "skeptic", name: "Skeptic", text: "Doubt it.", method: "formal-stepwise-verification" });
   expect(prompt).toContain("Should we ship?");
   expect(prompt).toContain("Skeptic");
+  expect(prompt).toContain("Doubt it.");
+  expect(prompt).toContain("Do NOT try to anticipate what other members will say.");
+  expect(prompt).toContain("Limit: 400 words maximum.");
+  expect(prompt).toContain("formal-stepwise-verification");
   expect(prompt).not.toMatch(/Member [A-Z]|Codex|SECRET-/);
   expect(blindPrompt("Ship?", undefined)).not.toContain("Your role is");
 });
@@ -101,6 +108,8 @@ it("a blind prompt carries no other seat", () => {
 it("the cross-exam names members and not engines", () => {
   const seat = seatPanel([{ cli: "claude", family: "Anthropic", label: "Claude Code", personaId: "skeptic" }], new Map(), "room")[0];
   const prompt = crossPrompt("Ship?", seat.member, [{ member: "Member B", text: "SECRET-b says Ada uses claude." }]);
+  expect(prompt).toContain("Anti-conformity directive.");
+  expect(prompt).toContain("Limit: 300 words maximum. You MUST engage at least 2 other members by label.");
   const hidden = anonymise(prompt, [{ member: seat.member, needles: seatNeedles(seat, "Skeptic") }]);
   expect(hidden).toContain("Member B");
   expect(hidden).toContain("SECRET-b");
@@ -126,6 +135,22 @@ it("parses a stance only when it is exactly three lines, and retries in those wo
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(retryPrompt("OPTION:", parsed.problem)).toContain(parsed.problem);
   }
+
+  expect(parseStance("I think we should ship it, strongly.")).toMatchObject({ ok: false });
+  expect(parseStance("Weighing it up.\nSTANCE: ship now | CONFIDENCE: high | DEALBREAKER: no")).toEqual({
+    ok: true,
+    value: { option: "ship now", confidence: 100, reason: "Not a dealbreaker.", factor: 1, dealbreaker: false },
+  });
+  expect(parseStance("STANCE: monorepo | CONFIDENCE: med | DEALBREAKER: yes")).toMatchObject({
+    ok: true,
+    value: { option: "monorepo", confidence: 75, factor: 0.75, dealbreaker: true, reason: "Dealbreaker." },
+  });
+  expect(parseStance("STANCE: hold | CONFIDENCE: low | DEALBREAKER: no")).toMatchObject({ ok: true, value: { confidence: 50, factor: 0.5 } });
+  expect(parseStance("STANCE: abstain")).toMatchObject({ ok: true, value: { option: "abstain", factor: 1, dealbreaker: false } });
+  expect(parseStance("STANCE: abstain | CONFIDENCE: low | DEALBREAKER: yes")).toMatchObject({ ok: true, value: { option: "abstain", dealbreaker: false } });
+  expect(parseStance("STANCE: ship | CONFIDENCE: many | DEALBREAKER: yes").ok).toBe(false);
+  expect(parseStance("STANCE: ship").ok).toBe(false);
+  expect(stancePrompt("Ship?", "Member A", [], [])).toContain("STANCE: <one short option label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no");
 });
 
 it("the two-thirds line is exact, and 3 of 5 is not enough", () => {
@@ -136,7 +161,11 @@ it("the two-thirds line is exact, and 3 of 5 is not enough", () => {
   expect(reachesTwoThirds(0, 0)).toBe(false);
 
   const won = tally(
-    [stance({ option: "Ship", member: "Member A" }), stance({ option: "Ship", member: "Member B" }), stance({ option: "Wait", member: "Member C" })],
+    [
+      stance({ option: "Ship", member: "Member A", seatId: "a" }),
+      stance({ option: "Ship", member: "Member B", seatId: "b" }),
+      stance({ option: "Wait", member: "Member C", seatId: "c" }),
+    ],
     [{ id: "a", member: "Member A" }, { id: "b", member: "Member B" }, { id: "c", member: "Member C" }],
   );
   expect(won.consensus).toBe(true);
@@ -178,6 +207,67 @@ it("the two-thirds line is exact, and 3 of 5 is not enough", () => {
   expect(minorityReport(unanimous)).toBe("No one disagreed.");
 });
 
+it("weights the vote by confidence, and an abstention still counts in the total", () => {
+  // 1.5 at high plus 1.0 at med is 2.25. The bar for a base total of 3.5 is 2.333, so this does not clear.
+  const almost = tally(
+    [
+      stance({ option: "Ship", weight: 1.5, confidence: 100, factor: 1, member: "Member A", seatId: "a" }),
+      stance({ option: "Ship", weight: 1, confidence: 75, factor: 0.75, member: "Member B", seatId: "b" }),
+      stance({ option: "abstain", weight: 1, member: "Member C", seatId: "c" }),
+    ],
+    [],
+  );
+  expect(almost.total).toBe(3.5);
+  expect(almost.options[0].weight).toBe(2.25);
+  expect(almost.consensus).toBe(false);
+  expect(reachesTwoThirds(2.25, 3.5)).toBe(false);
+  expect(almost.abstained).toEqual(["Member C"]);
+
+  const exact = tally(
+    [
+      stance({ option: "Ship", member: "Member A", seatId: "a" }),
+      stance({ option: "Ship", member: "Member B", seatId: "b" }),
+      stance({ option: "abstain", member: "Member C", seatId: "c" }),
+    ],
+    [],
+  );
+  expect(exact.consensus).toBe(true);
+  expect(exact.total).toBe(3);
+
+  const low = tally(
+    [
+      stance({ option: "Ship", factor: 0.5, confidence: 50, member: "Member A", seatId: "a" }),
+      stance({ option: "Ship", factor: 0.5, confidence: 50, member: "Member B", seatId: "b" }),
+      stance({ option: "Wait", factor: 1, confidence: 100, member: "Member C", seatId: "c" }),
+    ],
+    [],
+  );
+  expect(low.total).toBe(3);
+  expect(low.options.find((option) => option.option === "Ship")?.weight).toBe(1);
+  expect(low.consensus).toBe(false);
+
+  const blocked = tally(
+    [
+      stance({ option: "Ship", member: "Member A", seatId: "a", dealbreaker: true, reason: "Dealbreaker." }),
+      stance({ option: "Wait", member: "Member B", seatId: "b" }),
+      stance({ option: "Wait", member: "Member C", seatId: "c" }),
+    ],
+    [],
+  );
+  expect(blocked.consensus).toBe(true);
+  expect(blocked.winner).toBe("Wait");
+  expect(minorityReport(blocked)).toMatch(/Member A — Ship/);
+  expect(minorityReport(blocked)).toMatch(/Dealbreaker/);
+
+  const skipped = tally(
+    [stance({ option: "Ship", member: "Member A", seatId: "a" }), stance({ option: "Ship", member: "Member B", seatId: "b" })],
+    [{ id: "a", member: "Member A" }, { id: "b", member: "Member B" }, { id: "c", member: "Member C" }],
+  );
+  expect(skipped.total).toBe(3);
+  expect(skipped.consensus).toBe(true);
+  expect(skipped.abstained).toEqual(["Member C"]);
+});
+
 it("the chair is a different provider when one is seated, and still a seat when none is", () => {
   const mixed = [
     { id: "a", family: "Anthropic" },
@@ -203,8 +293,15 @@ it("a verdict has the four headings in order, and one next step", () => {
 
   const result = tally([stance({ option: "Ship" })], []);
   const report = minorityReport(result);
-  const prompt = verdictPrompt("Ship?", result, report);
+  const prompt = verdictPrompt("Ship?", result, report, {
+    blind: [{ member: "Member A", text: "Ship it." }],
+    cross: [{ member: "Member A", text: "Still shipping." }],
+    stances: [stance({ option: "Ship", member: "Member A" })],
+  });
+  expect(prompt).toContain("You are the Chairman of the Council of High Intelligence.");
+  expect(prompt).toContain("Lead with what the council does NOT know (Unresolved Questions).");
   expect(prompt).toContain("The tally below is final");
+  expect(prompt).toContain("Ship it.");
   expect(prompt).toContain(report);
   const fallback = fallbackVerdict(result, report);
   expect(fallback.fromChairman).toBe(false);

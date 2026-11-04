@@ -195,7 +195,16 @@ function stanceFrom(value: unknown): Stance | undefined {
   const confidence = whole(raw.confidence);
   const weight = typeof raw.weight === "number" && Number.isFinite(raw.weight) && raw.weight > 0 && raw.weight <= 10 ? raw.weight : undefined;
   if (!seatId || !member || !option || !reason || confidence === undefined || confidence > 100 || weight === undefined) return undefined;
-  return { seatId, member, option, confidence, reason, weight };
+  const stance: Stance = { seatId, member, option, confidence, reason, weight };
+  if (raw.factor !== undefined) {
+    if (raw.factor !== 1 && raw.factor !== 0.75 && raw.factor !== 0.5) return undefined;
+    stance.factor = raw.factor;
+  }
+  if (raw.dealbreaker !== undefined) {
+    if (typeof raw.dealbreaker !== "boolean") return undefined;
+    if (raw.dealbreaker) stance.dealbreaker = true;
+  }
+  return stance;
 }
 
 function metaFrom(value: unknown): CouncilMeta | undefined {
@@ -218,7 +227,7 @@ function tallyFrom(value: unknown): Tally | undefined {
   if (!value || typeof value !== "object") return undefined;
   const raw = value as Record<string, unknown>;
   if (typeof raw.consensus !== "boolean") return undefined;
-  const total = whole(raw.total);
+  const total = typeof raw.total === "number" && Number.isFinite(raw.total) && raw.total >= 0 && raw.total <= 1_000_000 ? raw.total : undefined;
   if (total === undefined || typeof raw.line !== "number" || !Number.isFinite(raw.line)) return undefined;
   const options = list(raw.options, (item) => {
     if (!item || typeof item !== "object") return undefined;

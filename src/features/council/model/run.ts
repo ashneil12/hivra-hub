@@ -198,6 +198,8 @@ export async function runCouncil(input: {
         option: item.result.value.option,
         confidence: item.result.value.confidence,
         reason: item.result.value.reason,
+        ...(item.result.value.factor !== undefined ? { factor: item.result.value.factor } : {}),
+        ...(item.result.value.dealbreaker ? { dealbreaker: true } : {}),
       });
     }
   }
@@ -210,7 +212,13 @@ export async function runCouncil(input: {
   if (chair) {
     run.chairmanId = chair.seatId;
     run.chairmanDifferent = chair.differentProvider;
-    const result = await shaped(chair.seatId, "verdict", verdictPrompt(input.question, run.tally, report), VERDICT_SHAPE, parseVerdict);
+    const result = await shaped(
+      chair.seatId,
+      "verdict",
+      verdictPrompt(input.question, run.tally, report, { blind: run.blind, cross: run.cross, stances: run.stances }),
+      VERDICT_SHAPE,
+      parseVerdict,
+    );
     if (result === "stopped" || stopped()) return finish(run, stats, "stopped");
     if (result === "skipped") run.verdict = fallbackVerdict(run.tally, report);
     else run.verdict = { ...result.value, minority: report, fromChairman: true };
