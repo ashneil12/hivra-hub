@@ -5,7 +5,7 @@
 // written next to the model's grade so a reader can check one against the other. report.md puts it all together.
 //
 //   node scripts/hub-realtest-grade.mjs evidence/realtest/<run>      # grade a finished run (again), on DeepSeek
-//   node scripts/hub-realtest-grade.mjs evidence/realtest/<run> --agents grok-sub   # or on Grok (or `claude`, only if named)
+//   node scripts/hub-realtest-grade.mjs evidence/realtest/<run> --agents claude   # on Claude, only if named
 //
 // The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, never Claude unless named.
 

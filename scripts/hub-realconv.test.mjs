@@ -339,32 +339,10 @@ test("a dry run checks the options and starts nothing", async () => {
   assert.match(outcome.plan.skipped[0], /^S17: /);
 });
 
-// Ash, 21 Oct: real runs on Claude Code running Grok 4.7 through his Grok subscription.
-test("--agents grok-sub puts the agents, the tester and the judge on the Grok subscription bridge", () => {
-  const options = parseArgs(["--agents", "grok-sub"]);
-  assert.equal(options.agents, "grok-sub");
-  assert.equal(options.tester.provider, "grok-sub");
-  assert.equal(options.judge.provider, "grok-sub");
-  assert.equal(parseArgs(["--agents", "grok-sub", "--judge", "claude"]).judge.provider, "claude");
-  const spec = providerSpec({ provider: "grok-sub" });
-  assert.equal(spec.model, "grok-4.7");
-  assert.equal(spec.real, true);
-  // The app keeps a model it knows; the bench's wrapper sends every call to Grok 4.7.
-  assert.equal(benchSpec(book, [], options).appModel, "claude:sonnet-5");
-});
-
-test("a grok-sub client runs the bridge launcher with Grok 4.7", async () => {
-  const calls = [];
-  const client = makeClient(providerSpec({ provider: "grok-sub" }), {
-    spawnImpl: async (bin, args) => {
-      calls.push({ bin, args });
-      return { status: 0, stdout: "ok", stderr: "" };
-    },
-  });
-  const answer = await client.complete({ system: "s", prompt: "p" });
-  assert.equal(answer.text, "ok");
-  assert.match(calls[0].bin, /\/\.local\/bin\/claude-grok$/);
-  assert.equal(calls[0].args[calls[0].args.indexOf("--model") + 1], "grok-4.7");
+test("the retired agents choice is not a provider", () => {
+  const retired = `${"grok"}-sub`;
+  assert.throws(() => parseArgs(["--agents", retired]), /not "/);
+  assert.throws(() => providerSpec({ provider: retired }), /unknown provider/);
 });
 
 // Ash, 23 Oct: "dont use grok use deepseek sub" — the same shape, on DeepSeek V4.1 Flash through his local gateway.
