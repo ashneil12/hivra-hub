@@ -796,12 +796,28 @@ pub fn run() {
             // WP-43: which browser, and downloading one when Chrome is missing.
             browser::browser_engine,
             browser::browser_get_browser,
+            // WP-44: desktop control stays off until it is installed and turned on.
+            plugins::desktop::desktop_consent_read,
+            plugins::desktop::desktop_consent_write,
+            plugins::desktop::desktop_control_install,
+            plugins::desktop::desktop_control_fetch,
             // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
             plugins::verify::plugins_verify_offer,
             plugins::verify::plugins_verify_decline,
             // WP-33: panels from plugins, and kept pages moved into My panels.
             panels::panels_catalog,
             panels::panels_migrate,
+            // WP-34: Creator mode. A scratch plugin, previewed in one view, then kept or undone.
+            plugins::creator::creator_start,
+            plugins::creator::creator_draft,
+            plugins::creator::creator_check,
+            plugins::creator::creator_state,
+            plugins::creator::creator_preview,
+            plugins::creator::creator_keep,
+            plugins::creator::creator_undo,
+            plugins::creator::creator_discard,
+            plugins::creator::creator_approve_mcp,
+            plugins::creator::creator_probe_mcp,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

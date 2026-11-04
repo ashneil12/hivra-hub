@@ -13,6 +13,8 @@ import { draftTeam, makeDraftedTeam } from "../../selfBuild/model/teamMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
 import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
 import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayChat";
+import { creatorDraft, creatorState } from "../../creator/model/creator";
+import { CREATOR_DRAFT_EVENT } from "../../creator/model/creatorEvents";
 import type { AgentAppHost } from "./agentApp";
 import { resolveRoom, teamLeadOf } from "./agentAppRooms";
 import { forUser } from "../../hub/model/userName";
@@ -26,11 +28,29 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
   ["today.change", ["ask", "projectOrder", "previewId", "apply"]],
   ["skills.learn", ["skill", "lesson", "from"]],
+  // WP-34: draft and state only. Preview, keep, undo, discard, approve and probe stay taps.
+  ["creator.draft", ["id", "revision", "files"]],
+  ["creator.state", ["id"]],
 ];
 
 /** Hands the change to a Claude Code worker in the preview copy (tasks.delegate, run in that folder). */
 /** Hivra WP-10: `intent` is Ash's own ask, which every brief carries (firstmate/model/brief.ts). */
 export type DelegateInFolder = (brief: string, title: string, folder: string, intent: string) => Promise<unknown>;
+
+function creatorSessionId(input: Record<string, unknown>): string {
+  if (typeof input.id !== "string" || input.id.trim() === "") throw new Error("id must be the creator session.");
+  return input.id;
+}
+
+function creatorFiles(input: Record<string, unknown>): { path: string; content: string }[] {
+  if (!Array.isArray(input.files) || input.files.length === 0) throw new Error("There's nothing to write.");
+  return input.files.map((file) => {
+    if (typeof file !== "object" || file === null) throw new Error("There's nothing to write.");
+    const row = file as Record<string, unknown>;
+    if (typeof row.path !== "string" || typeof row.content !== "string") throw new Error("There's nothing to write.");
+    return { path: row.path, content: row.content };
+  });
+}
 
 function seated(source: Session, host: AgentAppHost) {
   const mono = host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
@@ -117,6 +137,20 @@ export async function handleSelfBuild(
         note: forUser("A Claude Code worker is making it in a preview copy; your live hub is unchanged. Tell Ash in one line and end your turn. When its report comes back, call hub_change with changeId and ready true."),
       };
     }
+    case "creator.draft": {
+      const id = creatorSessionId(input);
+      if (typeof input.revision !== "number" || !Number.isInteger(input.revision) || input.revision < 0) {
+        throw new Error("revision must be the creator session's revision.");
+      }
+      const files = creatorFiles(input);
+      const drafted = await creatorDraft(id, input.revision, files);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(CREATOR_DRAFT_EVENT, { detail: drafted }));
+      }
+      return drafted;
+    }
+    case "creator.state":
+      return creatorState(creatorSessionId(input));
     case "skills.learn": {
       if (typeof input.skill !== "string" || !input.skill.trim())
         throw new Error('skill must be the skill\'s name, like "reviewing-a-diff".');

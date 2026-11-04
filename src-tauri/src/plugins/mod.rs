@@ -5,6 +5,8 @@
 
 mod compat;
 pub mod defaults;
+pub mod desktop;
+mod desktop_program;
 pub mod discover;
 mod fsutil;
 pub mod hivra;
@@ -15,9 +17,15 @@ pub mod registry;
 mod source;
 pub mod verify;
 pub mod wiring;
+// WP-34: Creator mode, on top of the install path above.
+pub mod creator;
 
 #[cfg(test)]
+mod creator_tests;
+#[cfg(test)]
 mod defaults_tests;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]

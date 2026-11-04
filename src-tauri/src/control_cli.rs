@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 66] = [
+const APP_ACTIONS: [&str; 68] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -150,6 +150,9 @@ const APP_ACTIONS: [&str; 66] = [
     "monos.retire",
     "pages.build",
     "hub.change",
+    // WP-34: the Creator Mono writes a draft and reads the reports. Preview, keep, undo, discard, approve and probe stay taps.
+    "creator.draft",
+    "creator.state",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -441,6 +444,8 @@ Actions:
   hub.change     {"ask"} starts a change to the hub in a preview copy;
                   {"changeId","ready":true} shows Ash Now | Preview; {"undo"}
                   undoes one applied part (MCP hub_change).
+  creator.draft  {"id","revision","files"} writes a creator draft (MCP creator_draft).
+  creator.state  {"id"} reads that creator session (MCP creator_state).
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.
@@ -766,6 +771,16 @@ mod tests {
         assert!(call(&["delegate", "--json", "[]"]).is_err());
         assert!(call(&["delegate", "--json", "{}", "--json", "{}"]).is_err());
         assert!(call(&["unknown"]).is_err());
+    }
+
+    #[test]
+    fn creator_actions_are_only_draft_and_state() {
+        let creator: Vec<&str> = APP_ACTIONS
+            .iter()
+            .copied()
+            .filter(|action| action.starts_with("creator."))
+            .collect();
+        assert_eq!(creator, vec!["creator.draft", "creator.state"]);
     }
     #[test]
     fn explains_help_and_malformed_invocations() {

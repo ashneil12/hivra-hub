@@ -136,7 +136,7 @@ describe("New project", () => {
     await until(async () => (await t.state()).memberships.some((m) => m.monoId === "moonrise-farm-lead" && m.role === "lead"), "registered as Lead");
     expect(templateOf("moonrise-farm").id).toBe("product-saas");
     expect(projectDraft()).toBeNull();
-    expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "moonrise-farm", item: "inbox" });
+    expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "moonrise-farm", item: "coding-team" });
   });
 
   it("'No code' makes a project without a folder; a clashing name is refused in place and nothing changes", async () => {

@@ -3,12 +3,14 @@
 // export, like anyone's), and never says "Ash" on a fresh install.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { HubOnboarding } from "./HubOnboarding";
 import { storedUserName } from "../model/userName";
 import { recordSetupFact, SETUP_FACT_IDS } from "../model/setupProof";
 import { listMonos } from "../../monos/model/mono";
+import { setHubDataSource } from "../model/hubData";
+import { mockHubData } from "../model/mockData";
 
 let root: Root;
 let container: HTMLElement;
@@ -24,6 +26,7 @@ afterEach(() => {
   act(() => root.unmount());
   container.remove();
   localStorage.clear();
+  setHubDataSource(undefined);
 });
 
 const button = (text: string) => [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text)) as HTMLButtonElement;
@@ -79,4 +82,55 @@ it("a ticked starter Mono is an ordinary Mono, not the template id", () => {
   expect(added).toHaveLength(1);
   expect(added[0]?.name).toBe("Coordinator");
   expect(added[0]?.id).not.toBe("coordinator");
+});
+
+it("a project that cannot be made stays on the card, with what was entered", async () => {
+  setHubDataSource(mockHubData, { getSnapshot: () => { throw new Error("timed out"); } } as never);
+  const closed = vi.fn();
+  act(() => root.render(createElement(HubOnboarding, { onClose: closed })));
+  typeName("Sam");
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  act(() => (container.querySelector('[data-hub-onboarding-cli="codex"]') as HTMLElement).click());
+  const project = container.querySelector("[data-hub-onboarding-project]") as HTMLInputElement;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    set.call(project, "Field notes");
+    project.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  act(() => (container.querySelector("[data-hub-onboarding-group]") as HTMLElement).click());
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  await act(async () => {
+    (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click();
+  });
+  expect(closed).not.toHaveBeenCalled();
+  expect(localStorage.getItem("monocode:hub-onboarded")).not.toBe("1");
+  expect(storedUserName()).toBe("");
+  expect(container.querySelector("[data-hub-onboarding-error]")?.textContent).toMatch(/could not be made/i);
+  expect((container.querySelector("[data-hub-onboarding-project]") as HTMLInputElement).value).toBe("Field notes");
+  expect(container.querySelector('[data-hub-onboarding-cli="codex"]')?.getAttribute("aria-checked")).toBe("true");
+  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("true");
+
+  setHubDataSource(mockHubData);
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  await act(async () => {
+    (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click();
+  });
+  expect(closed).toHaveBeenCalled();
+  expect(localStorage.getItem("monocode:hub-onboarded")).toBe("1");
+  expect(storedUserName()).toBe("Sam");
+});
+
+it("offers the CLIs, a project and a group on the same step, and none are required", () => {
+  act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 1 of 4");
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 4");
+  const clis = [...container.querySelectorAll("[data-hub-onboarding-cli]")];
+  expect(clis.map((box) => box.getAttribute("data-hub-onboarding-cli"))).toContain("claude");
+  expect(clis.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
+  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("false");
+  expect(container.querySelector("[data-hub-onboarding-project]")).toBeTruthy();
+  expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(5);
 });

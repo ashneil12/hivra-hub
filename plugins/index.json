@@ -66,7 +66,7 @@
     {
       "name": "desktop-control",
       "title": "Desktop control",
-      "description": "Workers use desktop apps through the accessibility tree. Off by default, with consent per app. Built on agent-desktop.",
+      "description": "Workers use desktop apps through the accessibility tree. Off by default, with consent per app. Built on agent-desktop 1.1.0.",
       "author": "Vercel Labs",
       "license": "Apache-2.0",
       "homepage": "https://github.com/vercel-labs/agent-desktop",

@@ -166,16 +166,27 @@ describe("pstack reaches every chat", () => {
   it("on (a fresh install): Claude Code and Codex sessions see every pstack skill", async () => {
     const { home } = layOut(snapshot.on);
     const claude = await claudeSees("claude-pstack-on");
+    const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
+    const expected = [...snapshot.skills, ...creator];
     expect(claude.args).toContain("--plugin-dir");
-    expect(claude.skills).toEqual(snapshot.skills);
-    expect(await codexSees("codex-pstack-on", home)).toEqual(snapshot.skills);
+    expect(claude.skills).toEqual(expect.arrayContaining(expected));
+    expect(claude.skills).toHaveLength(expected.length);
+    const codex = await codexSees("codex-pstack-on", home);
+    expect(codex).toEqual(expect.arrayContaining(expected));
+    expect(codex).toHaveLength(expected.length);
   });
 
-  it("switched off: neither sees any of them", async () => {
+  it("switched off: pstack's skills are gone and the Creator skills stay", async () => {
     const { home } = layOut(snapshot.off);
     const claude = await claudeSees("claude-pstack-off");
-    expect(claude.args).not.toContain("--plugin-dir");
-    expect(claude.skills).toEqual([]);
-    expect(await codexSees("codex-pstack-off", home)).toEqual([]);
+    const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
+    expect(claude.args).toContain("--plugin-dir");
+    expect(claude.skills).toEqual(expect.arrayContaining(creator));
+    expect(claude.skills).toHaveLength(creator.length);
+    expect(claude.skills).not.toContain("tdd");
+    const codex = await codexSees("codex-pstack-off", home);
+    expect(codex).toEqual(expect.arrayContaining(creator));
+    expect(codex).toHaveLength(creator.length);
+    expect(codex).not.toContain("tdd");
   });
 });

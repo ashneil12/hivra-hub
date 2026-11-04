@@ -82,6 +82,7 @@ import {
   noteCodingTeamChat,
   projectTapSelection,
 } from "../features/hub/model/codingTeam";
+import { chosenPresence, forgetCodingTeamHome, settleCodingTeam } from "../features/hub/model/codingTeamHome";
 import {
   codingTeamNamed,
   ensureMonoTeam,
@@ -821,6 +822,7 @@ import {
   removeMono,
   updateMono,
   saveMonoName,
+  saveMonoSessionId,
   saveOpenMono,
   subscribeMonos,
   type MonoState,
@@ -906,6 +908,8 @@ import {
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
+// WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
+import { CREATOR_MONO_ID, landCreatorBrief, setCreatorSessionHost } from "../features/creator/model/creatorChat";
 import {
   warmNativeSkills,
   isNativeCommandPrompt,
@@ -5508,7 +5512,7 @@ function Workspace({
       workspaceNavigation.cancel();
       const request = ++monoViewRequest.current;
       lastMonoIdRef.current = monoId;
-      const session = await ensureMonoSession(monoId, {
+      const opened = await ensureMonoSession(monoId, {
         home: homeDir,
         load: ensureOpenSession,
         create: (path) => newDefaultSession(path),
@@ -5517,6 +5521,12 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       });
+      // WP-34: a build that started before this window's sessions existed lands its brief here.
+      const session = opened && monoId === CREATOR_MONO_ID ? landCreatorBrief(opened) : opened;
+      if (session && session !== opened) {
+        sessionsRef.current = sessionsRef.current.map((item) => (item.id === session.id ? session : item));
+        setSessions(sessionsRef.current);
+      }
       if (!session || request !== monoViewRequest.current) return;
       // What the last Mono had open over its overview is its own; another
       // Mono opens on its list.
@@ -6314,7 +6324,11 @@ function Workspace({
         // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
         if (removed) forgetWaitingChat(sessionId);
         // A deleted chat leaves its project's coding team (an archived one can come back, and stays in it).
-        if (removed && mode === "delete") forgetCodingTeamChat(sessionId);
+        if (removed && mode === "delete") {
+          forgetCodingTeamChat(sessionId);
+          // WP-20: deleting the home chat forgets it, so the next open can land on the Lead's chat.
+          forgetCodingTeamHome(sessionId);
+        }
         if (removed && deleteWorktreePath && seed) {
           try {
             await onRemoveWorktree(seed.cwd, deleteWorktreePath, false);
@@ -7058,6 +7072,40 @@ function Workspace({
    * Lead's chat by default (`lead`), or the chat Ash was last in there. A project with no code folder has no coding
    * team: it opens on its own Inbox.
    */
+  // WP-20: one coding-team home per project. The Lead's existing chat, history kept. A chat is made only when there is none.
+  const applyCodingTeamHomes = useCallback((list: Session[]) => {
+    if (!codingTeamsOn()) return list;
+    let next = list;
+    let changed = false;
+    for (const project of hubData().listProjects()) {
+      const lead = leadMono(leadSpecFor(project));
+      const settled = settleCodingTeam({
+        project,
+        sessions: next,
+        ...(lead ? { lead: { id: lead.id, sessionId: lead.sessionId } } : {}),
+        notedIds: next.flatMap((row) => (codingTeamChatProject(row.id) === project.id ? [row.id] : [])),
+        present: chosenPresence(),
+        newId: crypto.randomUUID(),
+        allowCreate: true,
+        probe: { ghSignedIn: false },
+        bindLead: saveMonoSessionId,
+        // WP-20: the CLIs ticked at first launch are this team's CLI. An existing chat is not rewritten.
+        setLeadCli: (leadId, cli) => {
+          updateMono(leadId, (mono) => (mono.engine === cli ? mono : { ...mono, engine: cli }));
+        },
+        inflate: (draft) => {
+          const harness = (HARNESSES as readonly string[]).includes(draft.harness) ? (draft.harness as HarnessId) : "claude";
+          return { ...newSession(harness, draft.cwd), id: draft.id, firstMate: true, title: draft.title };
+        },
+      });
+      if (settled.changed) {
+        next = settled.sessions;
+        changed = true;
+      }
+    }
+    return changed ? next : list;
+  }, []);
+
   const openCodingTeam = useCallback(
     (projectId: string, target: CodingTeamTarget = {}) => {
       const project = hubData()
@@ -7072,6 +7120,12 @@ function Workspace({
         setHubSelection({ project: projectId, item: "inbox" });
         return;
       }
+      // WP-20: mark the home chat before the Lead opens, so the launch sees the first mate.
+      const settled = applyCodingTeamHomes(sessionsRef.current);
+      if (settled !== sessionsRef.current) {
+        sessionsRef.current = settled;
+        setSessions(settled);
+      }
       const lead = leadMono(leadSpecFor(project));
       if (lead && (target.lead ?? codingTeamView(project.id) === "lead")) {
         setHubSelection(projectTapSelection(project));
@@ -7084,9 +7138,21 @@ function Workspace({
       nameHubProject(project);
       onSelectProject(project.folder);
     },
-    [closeMonoView, onOpenMono, onSelectProject],
+    [applyCodingTeamHomes, closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
+  // WP-20: a Lead chat that loads after the project opened still becomes the one home. That needs a new chat in the
+  // list, so the walk over every project runs when the set of chats changes, not on each streamed block.
+  const codingTeamIdsKey = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  const codingTeamIdsSeen = useRef<string | null>(null);
+  useEffect(() => {
+    if (codingTeamIdsSeen.current === codingTeamIdsKey) return;
+    codingTeamIdsSeen.current = codingTeamIdsKey;
+    const settled = applyCodingTeamHomes(sessions);
+    if (settled === sessions) return;
+    sessionsRef.current = settled;
+    setSessions(settled);
+  }, [codingTeamIdsKey, sessions, applyCodingTeamHomes]);
   /**
    * Open a Mono's own team (hubNav.ts openMonoTeam, monoTeams.ts): its folder's workspace and Sessions list, the Mono's
    * chat pinned on top and its workers under it, on the Mono's chat by default (`owner`) or the chat Ash was last in
@@ -7119,6 +7185,20 @@ function Workspace({
   useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
   // A Mono's chat opened from anywhere, Settings included (hubNav.ts openMonoChat): in its team when it has one.
   useEffect(() => setMonoChatOpener((monoId) => void onOpenMono(monoId, { inTeam: true, leaveSettings: true })), [onOpenMono]);
+  // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
+  useEffect(() => setCreatorSessionHost({
+    home: homeDir,
+    load: ensureOpenSession,
+    create: (path) => newDefaultSession(path),
+    add: (created) => {
+      sessionsRef.current = [...sessionsRef.current, created];
+      setSessions(sessionsRef.current);
+    },
+    update: (next) => {
+      sessionsRef.current = sessionsRef.current.map((item) => (item.id === next.id ? next : item));
+      setSessions(sessionsRef.current);
+    },
+  }), [ensureOpenSession]);
   /**
    * A new chat in a project's coding team, as Ash's New session there makes one: the coding team opens and the chat
    * starts in the project's folder. Its id, or null for a project with no code folder. The benches' way in
