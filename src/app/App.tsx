@@ -112,6 +112,9 @@ import {
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
+// Hivra WP-11: the first mate's wake queue.
+import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
   waitingActivity,
@@ -2077,6 +2080,8 @@ function Workspace({
   const delegationsRef = useRef<DelegationTracker | null>(null);
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
+  // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
+  const firstMateWakesRef = useRef<WakeQueue | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -10025,6 +10030,11 @@ function Workspace({
       queueMonoSessionCompletionRef.current(monoId, message),
   });
   prWatchesRef.current = prWatches;
+  firstMateWakesRef.current = useFirstMateWakes({
+    sessionsRef,
+    queueWake: (ownerId, message) =>
+      queueMonoSessionCompletionRef.current(ownerId, message),
+  });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
@@ -10596,6 +10606,7 @@ function Workspace({
             if (accepted && head.monoSessionCompletion) {
               delegationsRef.current?.delivered(head.id);
               prWatchesRef.current?.delivered(head.id);
+              void firstMateWakesRef.current?.delivered(head.id);
             }
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
@@ -10679,6 +10690,7 @@ function Workspace({
     (sessionId: string, messageId: string) => {
       delegationsRef.current?.discarded(messageId);
       prWatchesRef.current?.discarded(messageId);
+      firstMateWakesRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId

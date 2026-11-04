@@ -97,6 +97,8 @@ mod trackpad_zoom;
 mod tray;
 mod verify_live;
 mod verify_stage;
+// Hivra WP-11: the watcher's wake queue and timers.
+mod watcher;
 mod window;
 mod window_frame;
 mod window_transfer;
@@ -518,6 +520,19 @@ pub fn run() {
             firstmate::firstmate_checkout_snapshot,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
+            // Hivra WP-11: the watcher's wake queue and timers.
+            watcher::watcher_wake_add,
+            watcher::watcher_wakes_open,
+            watcher::watcher_wakes_of,
+            watcher::watcher_wake_drain,
+            watcher::watcher_wake_ack,
+            watcher::watcher_wake_delivered,
+            watcher::watcher_wake_delivery,
+            watcher::watcher_dispose_owner,
+            watcher::watcher_timer_set,
+            watcher::watcher_timer_cancel,
+            watcher::watcher_timers,
+            watcher::watcher_tick,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,

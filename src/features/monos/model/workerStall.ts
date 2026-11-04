@@ -19,29 +19,34 @@
 //   `idleMs`: it stopped without reporting back.
 // A chat that waits on its own workers is never stalled: its workers are judged instead.
 import { appIdentity } from "../../../app/model/appIdentity";
-import { toolCallLabel, toolCallState } from "../../sessions/model/transcriptActivity";
-import type { Block, Session } from "../../sessions/model/session";
-import { isOpenDelegation, type Delegation, type DelegationTracker, type StallKind } from "./delegations";
+import type { Block } from "../../sessions/model/session";
+import { isOpenDelegation, type Delegation, type DelegationTracker } from "./delegations";
 import { serviceStallLine } from "./workerStuck";
+import { classifyLook, SILENCE_MS, type Decision, type Wake } from "../../firstmate/watcher/classifier";
 
-const MIN = 60_000;
-
-export type StallOptions = {
-  quietMs: number;
-  /** r87: busy with no progress this long after a provider error ("API Error: Server error", "API retry 3 of 10"). */
-  providerErrorMs?: number;
-  longToolMs: number;
-  idleMs: number;
-  loopRepeats: number;
-};
-
-export const STALL_DEFAULTS: StallOptions = {
-  quietMs: 6 * MIN,
-  providerErrorMs: MIN,
-  longToolMs: 20 * MIN,
-  idleMs: 6 * MIN,
-  loopRepeats: 6,
-};
+// Moved to the watcher (Hivra WP-11, firstmate/watcher/stall.ts); re-exported so callers keep their imports.
+import { lookAt } from "../../firstmate/watcher/look";
+import {
+  MIN,
+  PROVIDER_STALL_PREFIX,
+  STALL_DEFAULTS,
+  type Presence,
+  type Stall,
+  type StallOptions,
+  type WorkerChat,
+  type WorkerLook,
+} from "../../firstmate/watcher/stall";
+export { lookAt } from "../../firstmate/watcher/look";
+export {
+  judgeStall,
+  providerErrorAtEnd,
+  PROVIDER_STALL_PREFIX,
+  STALL_DEFAULTS,
+  type Presence,
+  type Stall,
+  type StallOptions,
+  type WorkerLook,
+} from "../../firstmate/watcher/stall";
 
 /** Minutes of silence before a busy worker counts as stuck (Settings key; the long-tool wait is at least 3x it). */
 export const STALL_MINUTES_KEY = "monocode:stall-minutes";
@@ -64,162 +69,6 @@ export function stallOptions(): StallOptions {
     idleMs: minutes * MIN,
     longToolMs: Math.max(STALL_DEFAULTS.longToolMs, 3 * minutes * MIN),
   };
-}
-
-/** `final`: the self-repair gave up; its plain line wins over the watcher's own (selfRepair.ts). */
-export type Stall = { kind: StallKind; reason: string; since: number; final?: boolean };
-
-type WorkerChat = Pick<Session, "busy" | "blocks" | "pendingQuestion" | "queuedMessages" | "queueStatus" | "usageLimit" | "cwd">;
-
-/** What a worker's transcript says right now. */
-export type WorkerLook = {
-  busy: boolean;
-  /** It waits on someone: a question it asked, or an approval. */
-  asking: boolean;
-  /** A message waits in its queue and will run next (a paused queue holds nothing). */
-  queued: boolean;
-  /** It stopped at a usage limit and waits it out. */
-  limited: boolean;
-  /** It gave up resuming itself after restarts and waits for someone to look. */
-  resumeStopped: boolean;
-  /** The step it is waiting on, when the newest one still runs. */
-  runningTool?: string;
-  /** The same finished step repeated at the end of this turn. */
-  repeat?: { title: string; count: number };
-  /** How many different steps this turn has taken (progress is this number growing). */
-  steps: number;
-  /** r87: the provider error the turn's newest step is, while nothing has followed it but retries and thinking. */
-  providerError?: string;
-};
-
-/** r87 (s14 r86 run 3): the reason a provider-error stall carries; the Lead is told once, with a retry offered. */
-export const PROVIDER_STALL_PREFIX = "Provider error";
-const PROVIDER_ERROR = /^\s*(?:API Error\b|API retry \d+ of \d+|.*\b(?:server error|overloaded|503|529)\b.*retry)/i;
-
-/** The provider error at the end of a turn: an error line, then only retries, notices and thinking since. */
-export function providerErrorAtEnd(turn: readonly Block[]): string | undefined {
-  for (let i = turn.length - 1; i >= 0; i--) {
-    const block = turn[i];
-    if (block.role === "reasoning") continue;
-    const text = (block.text ?? "").trim();
-    if ((block.role === "assistant" || block.role === "system") && PROVIDER_ERROR.test(text)) {
-      // The first error line of this run of retries names it best ("API Error: Server error mid-response").
-      for (let j = i - 1; j >= 0; j--) {
-        const earlier = turn[j];
-        if (earlier.role === "reasoning") continue;
-        if ((earlier.role === "assistant" || earlier.role === "system") && PROVIDER_ERROR.test((earlier.text ?? "").trim()) && /^API Error/i.test(earlier.text.trim()))
-          return earlier.text.trim().split("\n")[0].slice(0, 120);
-        if (!(earlier.role === "system" && PROVIDER_ERROR.test((earlier.text ?? "").trim()))) break;
-      }
-      return text.split("\n")[0].slice(0, 120);
-    }
-    if (block.role === "system" && !text) continue;
-    return undefined;
-  }
-  return undefined;
-}
-
-/** The blocks of the turn running now (or the last one): everything after its user message. */
-function currentTurn(blocks: readonly Block[]): readonly Block[] {
-  for (let i = blocks.length - 1; i >= 0; i--) if (blocks[i].role === "user") return blocks.slice(i + 1);
-  return blocks;
-}
-
-const callOf = (block: Block) => {
-  const preview = block.tool?.preview;
-  return JSON.stringify([block.tool?.kind ?? "", block.text || block.tool?.title || "", preview?.path ?? "", preview?.query ?? ""]);
-};
-const resultOf = (block: Block) =>
-  JSON.stringify([callOf(block), block.tool?.status ?? "", (block.tool?.detail ?? "").slice(0, 4_000)]);
-
-export function lookAt(chat: WorkerChat): WorkerLook {
-  const turn = currentTurn(chat.blocks);
-  const tools = turn.filter((block) => block.role === "tool" && block.tool);
-  const last = tools[tools.length - 1];
-  const running = last && toolCallState(last) === "pending" && !last.approval ? last : undefined;
-  const finished = running ? tools.slice(0, -1) : tools;
-  let repeat: WorkerLook["repeat"];
-  if (finished.length) {
-    const tail = resultOf(finished[finished.length - 1]);
-    let count = 0;
-    for (let i = finished.length - 1; i >= 0 && resultOf(finished[i]) === tail; i--) count++;
-    if (count > 1) repeat = { title: toolCallLabel(finished[finished.length - 1], chat.cwd), count };
-  }
-  const distinct = new Set(tools.map(callOf));
-  const said = turn.filter((block) => block.role === "assistant" && block.text.trim()).length;
-  const approval = turn.some((block) => !!block.approval && !block.approval.decided);
-  const lastBlock = chat.blocks[chat.blocks.length - 1];
-  const providerError = chat.busy ? providerErrorAtEnd(turn) : undefined;
-  return {
-    busy: !!chat.busy,
-    asking: !!chat.pendingQuestion || approval,
-    queued: !!chat.queuedMessages?.length && chat.queueStatus !== "paused",
-    limited: !!chat.usageLimit,
-    resumeStopped: lastBlock?.notice === "resume-stopped",
-    ...(running ? { runningTool: toolCallLabel(running, chat.cwd) } : {}),
-    ...(repeat ? { repeat } : {}),
-    steps: distinct.size + said,
-    ...(providerError ? { providerError } : {}),
-  };
-}
-
-/** What the watcher has seen of one worker chat. */
-export type Presence = {
-  /** When this window first saw it: the clock starts here, never earlier. */
-  watchedSince: number;
-  /** The last change it saw in the transcript or the turn, if any. */
-  lastChangeAt?: number;
-  /** The last time the turn took a step it hadn't taken before. */
-  lastProgressAt: number;
-  steps: number;
-  /** When the current run of repeats was first seen. */
-  repeatSince?: number;
-  /** r87: when the provider error at the end of its turn was first seen (retry lines that follow don't reset it). */
-  errorSince?: number;
-};
-
-/** Whether this worker is stuck right now, and how. */
-export function judgeStall(
-  look: WorkerLook,
-  presence: Presence,
-  now: number,
-  options: StallOptions = STALL_DEFAULTS,
-): Stall | null {
-  const lastActive = presence.lastChangeAt ?? presence.watchedSince;
-  if (look.busy && look.providerError && presence.errorSince !== undefined) {
-    const quiet = now - presence.errorSince;
-    if (quiet >= (options.providerErrorMs ?? MIN))
-      return {
-        kind: "quiet",
-        reason: `${PROVIDER_STALL_PREFIX}, no progress for ${Math.round(quiet / 1000)}s: ${look.providerError}`,
-        since: presence.errorSince,
-      };
-  }
-  if (look.busy) {
-    if (look.repeat && look.repeat.count >= options.loopRepeats)
-      return {
-        kind: "loop",
-        reason: `Repeating the same step: ${look.repeat.title} (${look.repeat.count} times)`,
-        since: presence.repeatSince ?? now,
-      };
-    const wait = look.runningTool ? options.longToolMs : options.quietMs;
-    if (!look.asking && now - lastActive >= wait)
-      return {
-        kind: "quiet",
-        reason: look.runningTool ? `Still running ${look.runningTool}` : "",
-        since: lastActive,
-      };
-    // An hour with no real progress is the hourly check's to judge (selfRepair.ts), on more than new steps.
-    return null;
-  }
-  if ((look.asking || look.queued || look.limited) && !look.resumeStopped) return null;
-  if (now - lastActive >= options.idleMs)
-    return {
-      kind: "idle",
-      reason: look.resumeStopped ? "Stopped resuming itself after restarts" : "Stopped without reporting back",
-      since: lastActive,
-    };
-  return null;
 }
 
 /**
@@ -260,6 +109,12 @@ export type StallWatchHost = {
   hourly?(row: Delegation): Stall | null;
   /** r87: a worker stuck after a provider error, once per error: its Lead is told and offered a retry. */
   providerStall?(row: Delegation, stall: Stall): void;
+  /** Hivra WP-11: a wake for the worker's first mate's durable queue (a stall notice, once per silent stretch). */
+  wake?(wake: Wake): void;
+  /** Hivra WP-11: the silence watchdog stops this worker (stop its turn, settle it failed and retryable). Once per row. */
+  silent?(row: Delegation, stop: Extract<Decision, { kind: "stop" }>): void;
+  /** How long silence lasts before the stop (tests; 20 minutes otherwise). */
+  silenceMs?(): number;
 };
 
 type Seen = Presence & { fingerprint: readonly unknown[] };
@@ -272,6 +127,10 @@ export class StallWatch {
   private seen = new Map<string, Seen>();
   private writing = new Set<string>();
   private toldProvider = new Map<string, number>();
+  /** Queue wakes already handed over this run (the queue itself says each key once, across restarts too). */
+  private woke = new Set<string>();
+  /** Rows the silence watchdog already stopped. */
+  private stopped = new Set<string>();
 
   constructor(private host: StallWatchHost) {}
 
@@ -327,18 +186,44 @@ export class StallWatch {
     else delete seen.errorSince;
     if (mode === "both") this.progress(seen, look, now);
     const waitsOnWorkers = this.host.openOwned(row.childSession) > 0;
-    const own = waitsOnWorkers ? null : judgeStall(look, seen, now, this.host.options?.() ?? stallOptions());
-    // Silence now (quiet, idle) says more than the hour's verdict; otherwise the hour's verdict stands while it holds.
-    const hourly = waitsOnWorkers ? null : (this.host.hourly?.(row) ?? null);
-    const stall = hourly?.final ? hourly : own && own.kind !== "loop" ? own : (hourly ?? own);
-    const changed = !!stall && (stall.kind !== stored || stall.reason !== (row.stallReason ?? ""));
-    if (stall && changed && mode === "both") this.write(row, stall);
-    if (stall && mode === "both" && stall.reason.startsWith(PROVIDER_STALL_PREFIX) && this.toldProvider.get(row.id) !== stall.since) {
-      this.toldProvider.set(row.id, stall.since);
-      this.host.providerStall?.(row, stall);
+    // Hivra WP-11: the classifier decides (firstmate/watcher/classifier.ts); this window carries it out.
+    const decisions = classifyLook(
+      {
+        kind: "look",
+        row,
+        look,
+        presence: seen,
+        waitsOnWorkers,
+        hourly: waitsOnWorkers ? null : (this.host.hourly?.(row) ?? null),
+        options: this.host.options?.() ?? stallOptions(),
+      },
+      now,
+      this.host.silenceMs?.() ?? SILENCE_MS,
+    );
+    for (const decision of decisions) {
+      if (decision.kind === "stall") {
+        // A stall is raised on the look; a clear lands at once, on any change.
+        if (decision.stall && mode !== "both") continue;
+        this.write(row, decision.stall);
+      } else if (decision.kind === "stop") {
+        if (mode !== "both") continue;
+        const key = `${row.id}:${row.generation}`;
+        if (this.stopped.has(key)) continue;
+        this.stopped.add(key);
+        this.host.silent?.(row, decision);
+      } else if (decision.kind === "wake" && mode === "both") {
+        const { wake } = decision;
+        if (wake.route === "provider-note" && wake.stall) {
+          // r87 (s14 r86 run 3: a worker sat three minutes on "API Error: Server error" and nobody heard): told once.
+          if (this.toldProvider.get(row.id) === wake.stall.since) continue;
+          this.toldProvider.set(row.id, wake.stall.since);
+          this.host.providerStall?.(row, wake.stall);
+        } else if (wake.route === "queue" && !this.woke.has(wake.key)) {
+          this.woke.add(wake.key);
+          this.host.wake?.(wake);
+        }
+      }
     }
-    // A stall only clears on something seen: activity after it began, or the worker now waiting on its own workers.
-    else if (!stall && stored && (moved || waitsOnWorkers)) this.write(row, null);
   }
 
   private write(row: Delegation, stall: Stall | null) {
