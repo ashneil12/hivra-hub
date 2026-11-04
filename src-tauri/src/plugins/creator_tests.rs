@@ -10,7 +10,9 @@ use serde_json::json;
 use super::compat::Target;
 use super::creator::{self, DraftFile};
 use super::fsutil;
-use super::install::{self, InstallResult};
+use super::install;
+#[cfg(unix)]
+use super::install::InstallResult;
 use super::manifest::{load_plugin, PLUGIN_SCHEMA_1_0_0};
 use super::mcp::MCP_SCHEMA_1_0_0;
 use super::registry::{self, Host};
@@ -801,6 +803,8 @@ fn draft_mcp(
     creator::draft(host, &started.id, started.revision, &files).unwrap()
 }
 
+// The fake servers and the args helper run only in the Unix tests: a script needs its mode bit to start.
+#[cfg(unix)]
 const ANSWERS: &str = r#"#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
@@ -838,6 +842,7 @@ while True:
         break
 "#;
 
+#[cfg(unix)]
 const SLEEPS: &str = r#"#!/usr/bin/env python3
 from pathlib import Path
 import time
@@ -1267,6 +1272,7 @@ fn a_new_draft_clears_mcp_approval_so_the_new_server_does_not_run_on_windows() {
     // The flag is checked above. Starting the script needs a Unix mode bit.
 }
 
+#[cfg(unix)]
 fn mcp_with_args(command: &str, args: &[&str]) -> String {
     json!({
         "$schema": MCP_SCHEMA_1_0_0,
