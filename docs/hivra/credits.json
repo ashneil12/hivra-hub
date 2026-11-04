@@ -233,6 +233,22 @@
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "plugins/desktop-control/skills/agent-desktop/SKILL.md",
       "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
+    },
+    {
+      "name": "Raven's chat importer",
+      "url": "https://github.com/EverMind-AI/Raven",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src/features/historyImport, src-tauri/src/history_import.rs",
+      "how": "Translated line by line from the importer. Tool noise is dropped, provenance is stricter, and a preview reads only the header (WP-50)"
+    },
+    {
+      "name": "Agent Zero's migrate-agents preview",
+      "url": "https://github.com/agent0ai/agent-zero",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
+      "where": "src/features/historyImport",
+      "how": "The chat preview and the Claude, Codex and Hermes readers, translated line by line. A preview counts from the header only (WP-50)"
     }
   ]
 }
