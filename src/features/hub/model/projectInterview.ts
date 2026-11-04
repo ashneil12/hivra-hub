@@ -3,7 +3,7 @@ import { plainTitle } from "../../../shared/text/plainTitle";
 // It asks what it needs and, when it has enough, ends a reply on a `project` block; that block becomes the preview
 // card. Nothing exists until Create. Each turn carries the chat so far, so a draft left and resumed just asks again.
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../../integrations/harness";
-import { FIRST_MATE_CONTRACT } from "../../firstmate/model/contract";
+import { FIRST_MATE_CONTRACT, withFirstMateContract } from "../../firstmate/model/contract";
 import { monoTurn } from "../../monos/model/monoFiles";
 import { loadDefaultModels } from "../../sessions/model/models";
 import type { HarnessId } from "../../sessions/model/session";
@@ -104,7 +104,8 @@ export async function askChiefOfStaff(name: string, lines: readonly InterviewLin
   const { harness, model } = interviewEngine();
   if (!canRunHarnessTextPrompt(harness)) throw new NoInterviewRuntime("This chat can't go on yet: no Claude runtime is connected on this Mac. Connect it in Settings and come back; your chat is kept.");
   const cwd = await homeDir();
-  const who = FIRST_MATE_CONTRACT;
+  // Not the raw text: a prompt that already carries the contract still loses the plain-English line when that switch is off.
+  const who = withFirstMateContract(FIRST_MATE_CONTRACT);
   const turn = async (prompt: string) =>
     parseInterviewReply(await runHarnessTextPrompt({ harness, cwd, model, prompt, timeoutMs: TURN_TIMEOUT_MS, signal }));
   const first = await turn(interviewPrompt(name, lines, who));
