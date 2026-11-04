@@ -498,7 +498,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             onSubmit={async (text: string, files: Attachment[]) => {
               // WP-23: /council convenes a council instead of sending the line to the room.
               const council = consumeCouncilCommand(text);
-              if (council.matched && files.length === 0) return requestCouncil(council.question);
+              if (council.matched) return requestCouncil(council.question, chat.memberIds);
               // Sending while the team is answering is fine: the room takes it up as soon as the current turn ends.
               if (!text.trim() && !files.length) return false;
               // Every file is kept by its path first (a pasted picture is saved to one); one that can't be kept stops

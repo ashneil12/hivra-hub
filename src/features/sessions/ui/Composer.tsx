@@ -153,6 +153,7 @@ import { UsageLimitAccountPicker } from "./UsageLimitAccountPicker";
 import { consumePlanCommand, PLAN_COMMAND } from "../model/plan";
 import { COUNCIL_COMMAND, consumeCouncilCommand } from "../../council/model/command";
 import { requestCouncil } from "../../council/model/host";
+import { monoForSession } from "../../monos/model/mono";
 import {
   consumeOperatorCommand,
   OPERATOR_COMMAND,
@@ -1407,7 +1408,8 @@ export function Composer({
     // WP-23: /council opens a council on the current project and never reaches the model.
     const councilCommand = consumeCouncilCommand(value);
     if (councilCommand.matched) {
-      if (!requestCouncil(councilCommand.question)) return;
+      const monoId = sessionId ? monoForSession(sessionId)?.id : undefined;
+      if (!requestCouncil(councilCommand.question, monoId ? [monoId] : [])) return;
       if (!ref.current) return;
       pasteGenerationRef.current += 1;
       ref.current.value = "";

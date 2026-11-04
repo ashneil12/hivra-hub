@@ -1,9 +1,7 @@
 // WP-23: how a council is convened from a chat, and how its verdict is handed on as an ordinary brief.
-import { invoke, isTauri } from "@tauri-apps/api/core";
 import { formatLeadBrief, type LeadBrief } from "../../hub/model/leadershipDelegation";
 import { appendMessage, createChat, saveCouncil } from "../../hub/model/hubChats";
 import { currentHubSelection, setHubSelection } from "../../hub/model/hubNav";
-import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
 import { defaultModelId, resolveModel } from "../../sessions/model/models";
 import { HARNESS_TITLE, HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availabilityState";
@@ -68,66 +66,103 @@ export function councilModelInUse(): CouncilModel | undefined {
   return councilModel;
 }
 
+/** One seat the running council can ask. `id` is the seat, `sessionId` is its own CLI session. */
+export type CouncilSeatCall = {
+  id: string;
+  cli: string;
+  model?: string;
+  sessionId: string;
+  label: string;
+};
+
 /**
- * One ask for every seat, through the same `model_quick_pick` a room already uses. No CLI is launched.
- * The verdict goes to a different connected provider when one is there. With no model connected, this is unset.
+ * How the app starts a seat and takes its answer. `ensure` returns the session id (making it when it is not open).
+ * `ask` is the same submit a room already uses. No CLI is launched from here.
+ */
+export type CouncilSeatHost = {
+  ensure(seat: CouncilSeatCall): string;
+  ask(sessionId: string, prompt: string, signal: AbortSignal): Promise<{ text: string; tokens?: number }>;
+};
+
+let seatHost: CouncilSeatHost | undefined;
+export function setCouncilSeatHost(host: CouncilSeatHost | undefined): void {
+  seatHost = host;
+}
+
+const notedSeats = new Map<string, CouncilSeatCall>();
+/** The seats of the council on screen, so an ask that names only a seat id still reaches that seat's CLI. */
+export function noteCouncilSeats(seats: readonly CouncilSeatCall[]): void {
+  notedSeats.clear();
+  for (const seat of seats) notedSeats.set(seat.id, seat);
+}
+
+function stopped(): DOMException {
+  return new DOMException("The council was stopped.", "AbortError");
+}
+
+function seatFor(input: { seatId: string; cli?: string; model?: string; sessionId?: string }): CouncilSeatCall | undefined {
+  const noted = notedSeats.get(input.seatId);
+  if (input.cli && input.sessionId) {
+    return {
+      id: input.seatId,
+      cli: input.cli,
+      ...(input.model ? { model: input.model } : noted?.model ? { model: noted.model } : {}),
+      sessionId: input.sessionId,
+      label: noted?.label ?? input.seatId,
+    };
+  }
+  return noted;
+}
+
+/**
+ * One ask per seat, through that seat's own CLI and session. The verdict is whichever seat the caller names (the chairman).
+ * With no seats, this is unset.
  */
 export function councilAsk(
-  models: readonly Pick<CustomModel, "id" | "provider" | "baseUrl" | "modelId">[],
-  ask: (model: Pick<CustomModel, "id" | "provider" | "baseUrl" | "modelId">, prompt: string) => Promise<string>,
+  seats: readonly { id: string; cli: string; model?: string; sessionId: string }[],
+  ask: (seat: { id: string; cli: string; model?: string; sessionId: string }, prompt: string) => Promise<string>,
 ): CouncilModel | undefined {
-  const connected = models.filter((model) => model.id && model.provider && model.modelId);
-  if (!connected.length) return undefined;
-  const usual = connected[0];
-  const chair = connected.find((model) => model.provider !== usual.provider) ?? usual;
-  return async ({ round, prompt, signal }) => {
-    if (signal.aborted) throw new DOMException("The council was stopped.", "AbortError");
-    const text = await ask(round === "verdict" ? chair : usual, prompt);
-    if (signal.aborted) throw new DOMException("The council was stopped.", "AbortError");
+  if (!seats.length) return undefined;
+  const byId = new Map(seats.map((seat) => [seat.id, seat]));
+  return async ({ seatId, prompt, signal, cli, model, sessionId }) => {
+    if (signal.aborted) throw stopped();
+    const listed = byId.get(seatId);
+    const seat = cli && sessionId ? { id: seatId, cli, model, sessionId } : listed;
+    if (!seat) throw new Error("That seat is not on this council.");
+    const text = await ask(seat, prompt);
+    if (signal.aborted) throw stopped();
     return { text: typeof text === "string" ? text : "" };
   };
 }
 
-/** Lend the room's connected model, once. Outside the app, or with nothing connected, a council can still be proposed. */
+/**
+ * Lend the app's seat host, once. Outside the app (no host), or when a model is already set, a council can still be proposed.
+ * Each ask goes to that seat's own session. The verdict round is just the chairman's seat.
+ */
 export function installCouncilModel(): void {
-  if (councilModel) return;
-  let inApp = false;
-  try {
-    inApp = isTauri();
-  } catch {
-    inApp = false;
-  }
-  if (!inApp) return;
-  let models: CustomModel[] = [];
-  try {
-    models = listCustomModels();
-  } catch {
-    models = [];
-  }
-  const built = councilAsk(models, (model, prompt) =>
-    invoke<string>("plugin:hub|model_quick_pick", {
-      provider: model.provider,
-      baseUrl: model.baseUrl,
-      modelId: model.modelId,
-      customModelId: model.id,
-      system: "You are one seat on a council. Answer only what the prompt asks.",
-      prompt,
-      timeoutMs: 120_000,
-    }),
-  );
-  if (built) councilModel = built;
+  if (councilModel || !seatHost) return;
+  const host = seatHost;
+  councilModel = async (input) => {
+    if (input.signal.aborted) throw stopped();
+    const seat = seatFor(input);
+    if (!seat) throw new Error("That seat is not on this council.");
+    const sessionId = host.ensure(seat);
+    const out = await host.ask(sessionId, input.prompt, input.signal);
+    if (input.signal.aborted) throw stopped();
+    return { text: typeof out?.text === "string" ? out.text : "", ...(typeof out?.tokens === "number" ? { tokens: out.tokens } : {}) };
+  };
 }
 
-export type CouncilSeatOpener = (seat: { sessionId: string; label: string }) => void;
+export type CouncilSeatOpener = (seat: { sessionId: string; label: string; id?: string; cli?: string; model?: string }) => void;
 let seatOpener: CouncilSeatOpener | undefined;
 export function setCouncilSeatOpener(open: CouncilSeatOpener | undefined): void {
   seatOpener = open;
 }
-export function openCouncilSeat(seat: { sessionId: string; label: string }): void {
+export function openCouncilSeat(seat: { sessionId: string; label: string; id?: string; cli?: string; model?: string }): void {
   seatOpener?.(seat);
 }
 
-export type CouncilDelegator = (brief: LeadBrief, record: CouncilRecord) => void;
+export type CouncilDelegator = (brief: LeadBrief, record: CouncilRecord, chatId: string) => void;
 let delegator: CouncilDelegator | undefined;
 export function setCouncilDelegator(next: CouncilDelegator | undefined): void {
   delegator = next;
@@ -151,7 +186,7 @@ export function postCouncilBrief(chatId: string, record: CouncilRecord): string 
   const text = formatLeadBrief("the council", brief);
   appendMessage(chatId, undefined, { from: "app", kind: "system", text });
   try {
-    delegator?.(brief, record);
+    delegator?.(brief, record, chatId);
   } catch {
     /* the brief is in the room either way */
   }
@@ -159,14 +194,19 @@ export function postCouncilBrief(chatId: string, record: CouncilRecord): string 
 }
 
 /**
- * `/council` from a first mate chat. Opens a new room on the current project and selects it. With no project chosen,
- * nothing is opened and the line is left for the caller to keep.
+ * `/council` from a chat. Opens a new room on the current project, with the members the caller names, and selects it.
+ * With no project chosen, nothing is opened and the line is left for the caller to keep.
  */
-export function requestCouncil(question: string): boolean {
+export function requestCouncil(question: string, memberIds: readonly string[] = []): boolean {
   const project = currentHubSelection().project;
   if (!project) return false;
   const asked = question.trim();
-  const chat = createChat(project, asked ? `Council: ${asked.slice(0, 60)}` : "Council", []);
+  const members: string[] = [];
+  for (const raw of memberIds) {
+    const id = raw.trim();
+    if (id && !members.includes(id)) members.push(id);
+  }
+  const chat = createChat(project, asked ? `Council: ${asked.slice(0, 60)}` : "Council", members);
   if (!saveCouncil(chat.id, blankProposal(asked), 0)) return false;
   setHubSelection({ project, item: `chat:${chat.id}` });
   return true;

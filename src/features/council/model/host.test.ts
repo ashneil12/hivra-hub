@@ -41,6 +41,11 @@ it("convenes on the current project, and two windows cannot overwrite one counci
   expect(first.council?.phase).toBe("propose");
   expect(first.memberIds).toEqual([]);
 
+  nav.setHubSelection({ project: "hub", item: "coding-team" });
+  expect(host.requestCouncil("who owns the price", ["chief-of-staff", "chief-of-staff", " frank "])).toBe(true);
+  const withMembers = nav.currentHubSelection().item.slice("chat:".length);
+  expect(chats.getChat(withMembers)!.memberIds).toEqual(["chief-of-staff", "frank"]);
+
   const again = chats.saveCouncil(id, { ...first.council!, question: "a later write" }, 0);
   expect(again).toBe(false);
   expect(chats.getChat(id)!.council?.question).toBe("should we ship");
@@ -79,6 +84,39 @@ it("a lost write adopts the row that won, and a newer local write is not rolled 
   expect(chats.getChat(chat.id)!.council?.question).toBe("second");
 });
 
+it("writes the council back when the stored row is missing", async () => {
+  const chats = await import("../../hub/model/hubChats");
+  let calls = 0;
+  await chats.loadRooms({
+    kind: "app",
+    load: async () => ({ rooms: [] }),
+    upsertRoom: async () => undefined,
+    upsertConversation: async () => undefined,
+    addMessage: async () => undefined,
+    updateMessage: async () => undefined,
+    read: async () => [],
+    import: async () => ({ rooms: 0, conversations: 0, messages: 0 }),
+    addOrigin: async () => undefined,
+    openOrigins: async () => [],
+    originDone: async () => false,
+    setCouncil: async (_id, expected, json) => {
+      calls += 1;
+      if (calls === 1) return { applied: false, revision: 0, json: "{}" };
+      const body = JSON.parse(json) as { revision: number; question: string };
+      expect(expected).toBe(0);
+      expect(body.revision).toBe(1);
+      expect(body.question).toBe("kept");
+      return { applied: true, revision: 1, json };
+    },
+  });
+  const chat = chats.createChat("hub", "Council", []);
+  expect(chats.saveCouncil(chat.id, blankProposal("kept"), 0)).toBe(true);
+  await chats.roomWritesSettled();
+  expect(calls).toBe(2);
+  expect(chats.getChat(chat.id)!.council?.question).toBe("kept");
+  expect(chats.getChat(chat.id)!.council?.revision).toBe(1);
+});
+
 it("hands the verdict to the room as a normal brief", async () => {
   const chats = await import("../../hub/model/hubChats");
   chats.resetRoomsForTests();
@@ -100,25 +138,27 @@ it("hands the verdict to the room as a normal brief", async () => {
   host.setCouncilDelegator(undefined);
 });
 
-it("asks the room's first model, and the verdict a different provider when one is connected", async () => {
+it("asks each seat through its own model, and the verdict through the chairman seat", async () => {
   const host = await import("./host");
   const { defaultModelId, resolveModel } = await import("../../sessions/model/models");
   expect(host.councilAsk([], async () => "")).toBeUndefined();
   const seen: string[] = [];
   const ask = host.councilAsk(
     [
-      { id: "grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok" },
-      { id: "other", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", modelId: "gpt" },
+      { id: "a", cli: "claude", model: "opus", sessionId: "s-a" },
+      { id: "b", cli: "codex", model: "gpt", sessionId: "s-b" },
+      { id: "c", cli: "grok", model: "grok-2", sessionId: "s-c" },
     ],
-    async (model) => {
-      seen.push(`${model.id}`);
+    async (seat) => {
+      seen.push(`${seat.id}:${seat.cli}:${seat.sessionId}`);
       return "noted";
     },
   );
   const signal = new AbortController().signal;
   expect((await ask!({ seatId: "a", round: "blind", prompt: "p", signal })).text).toBe("noted");
-  expect((await ask!({ seatId: "a", round: "verdict", prompt: "p", signal })).text).toBe("noted");
-  expect(seen).toEqual(["grok", "other"]);
+  expect((await ask!({ seatId: "c", round: "verdict", prompt: "p", signal })).text).toBe("noted");
+  expect(seen).toEqual(["a:claude:s-a", "c:grok:s-c"]);
+  await expect(ask!({ seatId: "nope", round: "blind", prompt: "p", signal })).rejects.toThrow(/not on this council/);
 
   host.installCouncilModel();
   expect(host.councilModelInUse()).toBeUndefined();

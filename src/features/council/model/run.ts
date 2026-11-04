@@ -32,6 +32,10 @@ export type CouncilModel = (input: {
   round: CouncilRoundName;
   prompt: string;
   signal: AbortSignal;
+  /** This seat's own CLI and session. The verdict round is the chairman's seat, not another model's. */
+  cli?: string;
+  model?: string;
+  sessionId?: string;
 }) => Promise<{ text: string; tokens?: number }>;
 
 export type CouncilAnswer = { seatId: string; member: string; text: string };
@@ -87,11 +91,24 @@ export async function runCouncil(input: {
     else stats.tokens += text.tokens;
   };
 
-  async function once(seatId: string, round: CouncilRoundName, prompt: string): Promise<{ text: string; tokens?: number } | "again" | "stopped"> {
+  type Asked = Pick<CouncilSeat, "id" | "cli" | "model" | "sessionId">;
+
+  async function once(seat: Asked, round: CouncilRoundName, prompt: string): Promise<{ text: string; tokens?: number } | "again" | "stopped"> {
     if (stopped()) return "stopped";
     stats.calls += 1;
     try {
-      const out = await Promise.race([input.model({ seatId, round, prompt, signal: input.signal }), listen(input.signal)]);
+      const out = await Promise.race([
+        input.model({
+          seatId: seat.id,
+          cli: seat.cli,
+          ...(seat.model ? { model: seat.model } : {}),
+          sessionId: seat.sessionId,
+          round,
+          prompt,
+          signal: input.signal,
+        }),
+        listen(input.signal),
+      ]);
       if (stopped()) return "stopped";
       if (!out || typeof out.text !== "string") {
         note("missing");
@@ -107,22 +124,22 @@ export async function runCouncil(input: {
   }
 
   /** One transport failure is tried again with the same prompt. A second failure skips the seat for this round. */
-  async function call(seatId: string, round: CouncilRoundName, prompt: string): Promise<{ text: string; tokens?: number } | "skipped" | "stopped"> {
-    const first = await once(seatId, round, prompt);
+  async function call(seat: Asked, round: CouncilRoundName, prompt: string): Promise<{ text: string; tokens?: number } | "skipped" | "stopped"> {
+    const first = await once(seat, round, prompt);
     if (first === "stopped") return "stopped";
     if (first !== "again") return first;
-    const second = await once(seatId, round, prompt);
+    const second = await once(seat, round, prompt);
     if (second === "again") return "skipped";
     return second;
   }
 
-  async function shaped<T>(seatId: string, round: CouncilRoundName, prompt: string, shape: string, parse: (text: string) => ParseResult<T>): Promise<{ value: T } | "skipped" | "stopped"> {
-    const first = await call(seatId, round, prompt);
+  async function shaped<T>(seat: Asked, round: CouncilRoundName, prompt: string, shape: string, parse: (text: string) => ParseResult<T>): Promise<{ value: T } | "skipped" | "stopped"> {
+    const first = await call(seat, round, prompt);
     if (first === "stopped" || first === "skipped") return first;
     const parsed = parse(first.text);
     if (parsed.ok) return { value: parsed.value };
-    if (!retried.includes(seatId)) retried.push(seatId);
-    const second = await call(seatId, round, retryPrompt(shape, parsed.problem));
+    if (!retried.includes(seat.id)) retried.push(seat.id);
+    const second = await call(seat, round, retryPrompt(shape, parsed.problem));
     if (second === "stopped" || second === "skipped") return second;
     const again = parse(second.text);
     return again.ok ? { value: again.value } : "skipped";
@@ -151,7 +168,7 @@ export async function runCouncil(input: {
   const blind = await Promise.all(
     input.seats.map(async (seat) => {
       const persona = seat.personaId ? input.personas.get(seat.personaId) : undefined;
-      const result = await shaped(seat.id, "blind", blindPrompt(input.question, persona), "A plain answer, and nothing else.", plain);
+      const result = await shaped(seat, "blind", blindPrompt(input.question, persona), "A plain answer, and nothing else.", plain);
       return { seat, result };
     }),
   );
@@ -167,7 +184,7 @@ export async function runCouncil(input: {
   const cross = await Promise.all(
     input.seats.map(async (seat) => {
       const prompt = anonymise(crossPrompt(input.question, seat.member, blindShown), needles);
-      const result = await shaped(seat.id, "cross", prompt, "A plain answer, and nothing else.", plain);
+      const result = await shaped(seat, "cross", prompt, "A plain answer, and nothing else.", plain);
       return { seat, result };
     }),
   );
@@ -183,7 +200,7 @@ export async function runCouncil(input: {
   const positions = await Promise.all(
     input.seats.map(async (seat) => {
       const prompt = anonymise(stancePrompt(input.question, seat.member, blindShown, crossShown), needles);
-      const result = await shaped(seat.id, "stance", prompt, STANCE_SHAPE, parseStance);
+      const result = await shaped(seat, "stance", prompt, STANCE_SHAPE, parseStance);
       return { seat, result };
     }),
   );
@@ -212,8 +229,9 @@ export async function runCouncil(input: {
   if (chair) {
     run.chairmanId = chair.seatId;
     run.chairmanDifferent = chair.differentProvider;
+    const chairSeat = input.seats.find((seat) => seat.id === chair.seatId);
     const result = await shaped(
-      chair.seatId,
+      chairSeat ?? { id: chair.seatId, cli: "", sessionId: "" },
       "verdict",
       verdictPrompt(input.question, run.tally, report, { blind: run.blind, cross: run.cross, stances: run.stances }),
       VERDICT_SHAPE,
