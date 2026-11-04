@@ -771,6 +771,8 @@ pub fn git_orchestration_worktree_remove(
         return Err("Close the terminals and agent processes using this worktree first.".into());
     }
     let tree = removal_target(&root, &path)?;
+    // Hivra WP-12: never remove a worker's copy whose work hasn't landed or merged.
+    crate::delivery::teardown::guard(&root, &path)?;
     let branch = tree.branch.clone();
     let conn = store.lock_conn()?;
     let removed = remove_with_sessions(&conn, &root, &path, true, true)?;
