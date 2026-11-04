@@ -770,6 +770,8 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     if ![COMPLETED, FAILED, CANCELLED].contains(&input.state.as_str()) {
         return Err("state must be completed, failed or cancelled".into());
     }
+    // WP-42: collect this run's .e2e files before the write transaction, so the walk doesn't hold the database.
+    let staged = stage_evidence(conn, &input);
     let review = review_json(input.self_review)?;
     let by = actor(input.by);
     let tx = conn
@@ -808,9 +810,12 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     // WP-10: the worker's final report in its typed shape (firstmate/report.rs), kept beside its words.
     row.report = row.result.as_deref().map(|result| {
         let mut report = crate::firstmate::report::parse(result);
-        // WP-42: proof under the worker's .e2e/ is part of the report. A missing folder changes nothing.
-        if let Some(folder) = child_folder(&tx, &row.child_session) {
-            crate::plugins::verify::merge_evidence(&mut report, &folder);
+        // WP-42: proof under the worker's .e2e/ from this run only. A missing folder, or a folder that moved
+        // while the files were read, changes nothing.
+        if let Some(staged) = &staged {
+            if child_folder(&tx, &row.child_session).as_ref() == Some(&staged.folder) {
+                crate::plugins::verify::append_evidence(&mut report, staged.files.clone());
+            }
         }
         report.to_json()
     });
@@ -826,6 +831,48 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         applied: true,
         row: Some(row),
     })
+}
+
+struct StagedProof {
+    folder: std::path::PathBuf,
+    files: Vec<String>,
+}
+
+/// When this run started: the row's `created_at`, or the latest `resumed` log time when that is later.
+fn run_started_ms(row: &Delegation) -> i64 {
+    let mut since = row.created_at;
+    for entry in &row.log {
+        if entry.get("event").and_then(Value::as_str) != Some("resumed") {
+            continue;
+        }
+        let Some(at) = entry.get("at").and_then(Value::as_i64) else {
+            continue;
+        };
+        if at > since {
+            since = at;
+        }
+    }
+    since
+}
+
+/// Read this run's proof before `settle` takes its write transaction. A row that will not be written, or a session
+/// with no folder, reads nothing.
+fn stage_evidence(conn: &Connection, input: &SettleInput) -> Option<StagedProof> {
+    if input
+        .result
+        .as_ref()
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
+        return None;
+    }
+    let row = get(conn, &input.id).ok()??;
+    if !row.is_open() || row.generation != input.generation {
+        return None;
+    }
+    let folder = child_folder(conn, &row.child_session)?;
+    let files = crate::plugins::verify::evidence_files(&folder, run_started_ms(&row));
+    Some(StagedProof { folder, files })
 }
 
 /// The folder a worker's proof lives in: its worktree when it has one, otherwise the session folder. A missing row,

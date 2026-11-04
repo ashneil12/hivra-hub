@@ -132,9 +132,16 @@ struct PackageMeta {
     license: Option<String>,
 }
 
-/// Called after a package is fetched and before the loader reads it. Any other package is left untouched, so a
-/// folder with no `plugin.json` is still refused. An existing `plugin.json` is never rewritten.
-pub(crate) fn prepare_package(root: &Path) -> Result<(), String> {
+/// Called after a package is fetched and before the loader reads it. Only the npm package `e2e` is wrapped. A local
+/// folder or a git checkout is left as it is, so a folder with no `plugin.json` is still refused. An existing
+/// `plugin.json` is never rewritten.
+pub(crate) fn prepare_package(root: &Path, source: &source::InstallSource) -> Result<(), String> {
+    let source::InstallSource::Npm { package, .. } = source else {
+        return Ok(());
+    };
+    if package != PACKAGE_NAME {
+        return Ok(());
+    }
     let Some(meta) = package_meta(root) else {
         return Ok(());
     };
@@ -355,29 +362,50 @@ fn write_new(root: &Path, rel: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Add `.e2e/` files to a worker's report. A missing folder, a link that leaves it, or a path that can't be read
-/// adds nothing and is not a failure. Paths are stored relative to the worktree, with `/` between parts.
-pub(crate) fn merge_evidence(report: &mut crate::firstmate::report::WorkerReport, worktree: &Path) {
+/// adds nothing and is not a failure. Only files last modified at or after `since_ms` (epoch milliseconds) are
+/// kept. Paths are stored relative to the worktree, with `/` between parts. Settle collects the files first
+/// (`evidence_files`) and applies them later (`append_evidence`), so this is the tests' one-call form.
+#[cfg(test)]
+pub(crate) fn merge_evidence(
+    report: &mut crate::firstmate::report::WorkerReport,
+    worktree: &Path,
+    since_ms: i64,
+) {
+    append_evidence(report, evidence_files(worktree, since_ms));
+}
+
+/// `.e2e/` files modified at or after `since_ms`, in walk order. A missing folder adds nothing. This only reads
+/// the filesystem, so a settle can call it before it opens its write transaction.
+pub(crate) fn evidence_files(worktree: &Path, since_ms: i64) -> Vec<String> {
     let Ok(root) = crate::fs::canonical(worktree) else {
-        return;
+        return Vec::new();
     };
     if !root.is_dir() {
-        return;
+        return Vec::new();
     }
     let e2e = root.join(".e2e");
     let Ok(meta) = std::fs::symlink_metadata(&e2e) else {
-        return;
+        return Vec::new();
     };
     if meta.file_type().is_symlink() || !meta.is_dir() {
-        return;
+        return Vec::new();
     }
     let Ok(e2e_root) = crate::fs::canonical(&e2e) else {
-        return;
+        return Vec::new();
     };
     if !e2e_root.starts_with(&root) {
-        return;
+        return Vec::new();
     }
     let mut found = Vec::new();
-    walk_e2e(&e2e_root, &root, &mut found);
+    walk_e2e(&e2e_root, &root, evidence_since(since_ms), &mut found);
+    found
+}
+
+/// Put already-collected proof onto a report, newest-run files only, without reading the disk again.
+pub(crate) fn append_evidence(
+    report: &mut crate::firstmate::report::WorkerReport,
+    mut found: Vec<String>,
+) {
     found.sort_by(|a, b| rank(a).cmp(&rank(b)).then(a.cmp(b)));
     let room = EVIDENCE_CAP.saturating_sub(report.evidence.len());
     let mut add = Vec::new();
@@ -393,6 +421,20 @@ pub(crate) fn merge_evidence(report: &mut crate::firstmate::report::WorkerReport
     report.evidence.extend(add);
 }
 
+fn evidence_since(since_ms: i64) -> Option<SystemTime> {
+    if since_ms <= 0 {
+        return Some(SystemTime::UNIX_EPOCH);
+    }
+    SystemTime::UNIX_EPOCH.checked_add(Duration::from_millis(since_ms as u64))
+}
+
+fn modified_in_run(meta: &std::fs::Metadata, since: Option<SystemTime>) -> bool {
+    let Some(since) = since else {
+        return false;
+    };
+    matches!(meta.modified(), Ok(modified) if modified >= since)
+}
+
 fn is_notable(rel: &str) -> bool {
     let name = rel.rsplit('/').next().unwrap_or(rel);
     name == "report.json" || name == "trace.md"
@@ -400,7 +442,7 @@ fn is_notable(rel: &str) -> bool {
 
 /// Breadth-first, so a top-level `report.json` is seen before a `cache/` that sorts first. `report.json` and
 /// `trace.md` are kept even after ordinary files have filled `WALK_CAP`. `SCAN_CAP` is the only hard stop.
-fn walk_e2e(dir: &Path, worktree: &Path, out: &mut Vec<String>) {
+fn walk_e2e(dir: &Path, worktree: &Path, since: Option<SystemTime>, out: &mut Vec<String>) {
     let mut notables = Vec::new();
     let mut rest = Vec::new();
     let mut queue = VecDeque::new();
@@ -433,7 +475,7 @@ fn walk_e2e(dir: &Path, worktree: &Path, out: &mut Vec<String>) {
                 dirs.push(path);
                 continue;
             }
-            if !meta.is_file() {
+            if !meta.is_file() || !modified_in_run(&meta, since) {
                 continue;
             }
             let Ok(canon) = crate::fs::canonical(&path) else {

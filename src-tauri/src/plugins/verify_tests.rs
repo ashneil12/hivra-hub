@@ -210,6 +210,14 @@ fn as_pairs(files: &[(String, String)]) -> Vec<(&str, &str)> {
         .collect()
 }
 
+fn npm_source(package: &str) -> InstallSource {
+    InstallSource::Npm {
+        package: package.into(),
+        version: "0.22.0".into(),
+        registry: None,
+    }
+}
+
 fn names(host: &Host) -> Vec<String> {
     registry::read(host)
         .unwrap()
@@ -421,6 +429,62 @@ fn the_e2e_server_runs_in_the_workers_project() {
 }
 
 #[test]
+fn verify_on_for_one_project_does_not_start_in_another() {
+    let (package, version) = pinned_npm();
+    let tmp = Tmp::new("project-scope");
+    let host = plugin_host(&tmp);
+    install_npm(
+        &host,
+        &tmp.path().join("stub"),
+        &package,
+        &version,
+        &as_pairs(&e2e_files(&version)),
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let here = tmp.path().join("this project");
+    let there = tmp.path().join("other project");
+    std::fs::create_dir_all(&here).unwrap();
+    std::fs::create_dir_all(&there).unwrap();
+    registry::enable(
+        &host,
+        "e2e-verify",
+        &Scope::Project(here.display().to_string()),
+    )
+    .unwrap();
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(
+        !entry.enabled.global,
+        "the offer must not turn it on everywhere"
+    );
+    assert!(
+        entry.enabled.projects.len() == 1,
+        "only the offered project is on: {:?}",
+        entry.enabled.projects
+    );
+
+    let key = "plugin-e2e-verify-e2e";
+    let there_wiring =
+        wiring::session_wiring(&host, Some(&there), Some("monocode"), &Default::default()).unwrap();
+    assert!(
+        !there_wiring.claude_mcp_servers.contains_key(key)
+            && !there_wiring.codex_mcp_servers.contains_key(key),
+        "another folder must not get the e2e server: {:?}",
+        there_wiring.claude_mcp_servers
+    );
+    let none = wiring::session_wiring(&host, None, Some("monocode"), &Default::default()).unwrap();
+    assert!(!none.claude_mcp_servers.contains_key(key));
+
+    let here_wiring =
+        wiring::session_wiring(&host, Some(&here), Some("monocode"), &Default::default()).unwrap();
+    assert!(
+        here_wiring.claude_mcp_servers.contains_key(key),
+        "the offered project must get the server"
+    );
+    assert!(here_wiring.codex_mcp_servers.contains_key(key));
+}
+
+#[test]
 fn an_agents_install_and_a_package_with_dependencies_wait_for_a_yes() {
     let (_package, version) = pinned_npm();
     let tmp = Tmp::new("wait");
@@ -479,7 +543,7 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
         let root = tmp.path().join(name);
         std::fs::create_dir_all(&root).unwrap();
         std::fs::write(root.join("package.json"), package_json(name, "1.0.0", "")).unwrap();
-        verify::prepare_package(&root).unwrap();
+        verify::prepare_package(&root, &npm_source(name)).unwrap();
         assert!(!root.join("plugin.json").exists(), "{name}");
     }
 
@@ -553,6 +617,38 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
     );
     assert!(!root.join("mcp.json").exists());
 
+    let local = tmp.path().join("local e2e");
+    std::fs::create_dir_all(local.join("src")).unwrap();
+    let manifest = package_json("e2e", "0.22.0", "");
+    std::fs::write(local.join("package.json"), &manifest).unwrap();
+    let err = install::install(
+        &host,
+        &quiet_tools(),
+        &InstallSource::Local {
+            path: local.display().to_string(),
+        },
+        RequestedBy::person(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("plugin.json"),
+        "a local folder with no plugin.json is refused: {err}"
+    );
+    assert!(
+        !local.join("plugin.json").exists(),
+        "Hivra must not rewrite a folder the person already has"
+    );
+    assert!(!local.join("mcp.json").exists());
+    assert!(!local.join("skills").exists());
+    assert_eq!(
+        std::fs::read_to_string(local.join("package.json")).unwrap(),
+        manifest
+    );
+    assert!(
+        !names(&host).iter().any(|name| name == "e2e-verify"),
+        "a local folder is not installed as Verify"
+    );
+
     let crlf = tmp.path().join("crlf");
     std::fs::create_dir_all(&crlf).unwrap();
     std::fs::write(
@@ -560,7 +656,7 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
         "{\r\n  \"name\": \"e2e\",\r\n  \"version\": \"0.22.0\",\r\n  \"license\": \"Apache-2.0\"\r\n}\r\n",
     )
     .unwrap();
-    verify::prepare_package(&crlf).unwrap();
+    verify::prepare_package(&crlf, &npm_source("e2e")).unwrap();
     let written = std::fs::read_to_string(crlf.join("plugin.json")).unwrap();
     assert!(written.contains("e2e-verify"));
     assert!(written.contains("Apache-2.0"));
@@ -572,7 +668,7 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
         "{\"name\":\"e2e\",\"version\":\"0.22.0\",\"license\":\"MIT\"}\n",
     )
     .unwrap();
-    verify::prepare_package(&mit).unwrap();
+    verify::prepare_package(&mit, &npm_source("e2e")).unwrap();
     let written = std::fs::read_to_string(mit.join("plugin.json")).unwrap();
     assert!(!written.contains("Apache-2.0"), "{written}");
 
@@ -584,7 +680,7 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
         let linked = tmp.path().join("linked-manifest");
         std::fs::create_dir_all(&linked).unwrap();
         std::os::unix::fs::symlink(&outside, linked.join("package.json")).unwrap();
-        verify::prepare_package(&linked).unwrap();
+        verify::prepare_package(&linked, &npm_source("e2e")).unwrap();
         assert!(!linked.join("plugin.json").exists());
         assert_eq!(std::fs::read_to_string(&outside).unwrap(), body);
 
@@ -598,7 +694,7 @@ fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
         )
         .unwrap();
         std::os::unix::fs::symlink(&outside_dir, linked_skills.join("skills")).unwrap();
-        let err = verify::prepare_package(&linked_skills).unwrap_err();
+        let err = verify::prepare_package(&linked_skills, &npm_source("e2e")).unwrap_err();
         assert!(err.contains("outside"), "{err}");
         assert!(!linked_skills.join("plugin.json").exists());
         assert!(!outside_dir.join("when-to-verify").exists());
@@ -933,8 +1029,8 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
     proof(&e2e, "shot.png", "png\n");
     proof(&e2e, "plüg.png", "png\n");
     let mut report = WorkerReport::default();
-    verify::merge_evidence(&mut report, &work);
-    verify::merge_evidence(&mut report, &work);
+    verify::merge_evidence(&mut report, &work, 0);
+    verify::merge_evidence(&mut report, &work, 0);
     assert_eq!(
         report.evidence,
         vec![
@@ -955,7 +1051,7 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
             .collect(),
         ..WorkerReport::default()
     };
-    verify::merge_evidence(&mut capped, &work);
+    verify::merge_evidence(&mut capped, &work, 0);
     assert_eq!(capped.evidence.len(), 50);
     assert!(capped
         .evidence
@@ -969,7 +1065,7 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
         proof(&folder, &format!("n{index}.txt"), "x\n");
     }
     let mut many = WorkerReport::default();
-    verify::merge_evidence(&mut many, &crowded);
+    verify::merge_evidence(&mut many, &crowded, 0);
     assert_eq!(many.evidence.len(), 50);
     assert!(many.evidence.iter().any(|item| item == ".e2e/report.json"));
 
@@ -982,7 +1078,7 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
         proof(&buried_e2e, &format!("cache/f{index:04}.txt"), "x\n");
     }
     let mut buried_report = WorkerReport::default();
-    verify::merge_evidence(&mut buried_report, &buried);
+    verify::merge_evidence(&mut buried_report, &buried, 0);
     assert!(
         buried_report
             .evidence
@@ -1004,10 +1100,10 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
     let absent = tmp.path().join("absent");
     std::fs::create_dir_all(&absent).unwrap();
     let mut empty = WorkerReport::default();
-    verify::merge_evidence(&mut empty, &absent);
+    verify::merge_evidence(&mut empty, &absent, 0);
     assert!(empty.evidence.is_empty());
     proof(&absent, ".e2e", "not a folder\n");
-    verify::merge_evidence(&mut empty, &absent);
+    verify::merge_evidence(&mut empty, &absent, 0);
     assert!(empty.evidence.is_empty());
 
     #[cfg(unix)]
@@ -1020,7 +1116,7 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
         proof(&linked_e2e, "report.json", "{}\n");
         std::os::unix::fs::symlink(&outside, linked_e2e.join("secret-marker.png")).unwrap();
         let mut report = WorkerReport::default();
-        verify::merge_evidence(&mut report, &linked);
+        verify::merge_evidence(&mut report, &linked, 0);
         assert!(report
             .evidence
             .iter()
@@ -1034,7 +1130,7 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
         std::fs::create_dir_all(&linked_dir).unwrap();
         std::os::unix::fs::symlink(&outside_dir, linked_dir.join(".e2e")).unwrap();
         let mut report = WorkerReport::default();
-        verify::merge_evidence(&mut report, &linked_dir);
+        verify::merge_evidence(&mut report, &linked_dir, 0);
         assert!(report.evidence.is_empty());
     }
 }
@@ -1198,4 +1294,96 @@ fn settling_a_worker_attaches_its_e2e_folder_and_a_miss_changes_nothing() {
     .unwrap();
     assert!(settled.applied);
     assert!(settled.row.unwrap().report.is_none());
+}
+
+fn set_mtime(path: &Path, ms: u64) {
+    OpenOptions::new()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_millis(ms))
+        .unwrap();
+}
+
+#[test]
+fn only_e2e_files_from_this_run_are_attached() {
+    let start = 1_700_000_000_000_i64;
+    let tmp = Tmp::new("fresh proof");
+    let old_dir = tmp.path().join("old run");
+    proof(&old_dir.join(".e2e"), "report.json", "{}\n");
+    set_mtime(&old_dir.join(".e2e/report.json"), (start - 60_000) as u64);
+    let new_dir = tmp.path().join("new run");
+    proof(&new_dir.join(".e2e"), "report.json", "{}\n");
+    set_mtime(&new_dir.join(".e2e/report.json"), start as u64);
+    let resumed_dir = tmp.path().join("resumed run");
+    proof(&resumed_dir.join(".e2e"), "report.json", "{}\n");
+    proof(
+        &resumed_dir.join(".e2e"),
+        "results/home/trace.md",
+        "trace\n",
+    );
+    set_mtime(&resumed_dir.join(".e2e/report.json"), start as u64);
+    set_mtime(
+        &resumed_dir.join(".e2e/results/home/trace.md"),
+        (start + 120_000) as u64,
+    );
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "old-worker", &old_dir.display().to_string(), None);
+    insert_session(&conn, "new-worker", &new_dir.display().to_string(), None);
+    insert_session(
+        &conn,
+        "resumed-worker",
+        &resumed_dir.display().to_string(),
+        None,
+    );
+
+    let old = delegations::record(&mut conn, launch("owner", "old", "old-worker"), start).unwrap();
+    let settled = delegations::settle(&mut conn, finish(&old.id, Some(PLAIN)), start + 1).unwrap();
+    assert!(
+        evidence_of(&settled.row.unwrap().report)
+            .iter()
+            .all(|item| item != ".e2e/report.json"),
+        "a report from before this run is not this worker's proof"
+    );
+
+    let new = delegations::record(&mut conn, launch("owner", "new", "new-worker"), start).unwrap();
+    let settled = delegations::settle(&mut conn, finish(&new.id, Some(PLAIN)), start + 1).unwrap();
+    assert!(
+        evidence_of(&settled.row.unwrap().report)
+            .iter()
+            .any(|item| item == ".e2e/report.json"),
+        "a report written as this run started is kept"
+    );
+
+    let resumed =
+        delegations::record(&mut conn, launch("owner", "again", "resumed-worker"), start).unwrap();
+    let again = delegations::reattach(&mut conn, "resumed-worker", true, None, start + 120_000)
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.generation, 2);
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: resumed.id,
+            generation: 2,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        start + 120_001,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "proof from before the resume is an earlier run: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the resumed run is kept: {evidence:?}"
+    );
 }
