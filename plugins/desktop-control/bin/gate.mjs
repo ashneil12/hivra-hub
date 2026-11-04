@@ -205,20 +205,6 @@ const REF_COMMANDS = new Set([
   "hover",
 ]);
 const APP_FLAG_COMMANDS = new Set(["snapshot", "find", "screenshot", "press", "list-surfaces", "wait"]);
-const SHELL_SURFACES = new Set([
-  "dock",
-  "taskbar",
-  "system-tray",
-  "system_tray",
-  "system-tray-overflow",
-  "system_tray_overflow",
-  "action-center",
-  "action_center",
-  "quick-settings",
-  "quick_settings",
-  "start-menu",
-  "start_menu",
-]);
 const APP_SURFACES = new Set([
   "window",
   "focused",
@@ -753,24 +739,44 @@ function readPin(pinPath) {
   return { sha256: sha };
 }
 
-function flagValue(args, name) {
+function flagValues(args, name) {
+  /** @type {string[]} */
+  const values = [];
   for (let i = 0; i < args.length; i += 1) {
     const token = args[i];
-    if (token === name) return args[i + 1] ?? "";
-    if (token.startsWith(`${name}=`)) return token.slice(name.length + 1);
+    if (token === name) values.push(args[i + 1] ?? "");
+    else if (typeof token === "string" && token.startsWith(`${name}=`)) values.push(token.slice(name.length + 1));
+  }
+  return values;
+}
+
+// The desktop program keeps the last value of a repeated flag. Checking only the
+// first would forward a later --surface, --root, or --app. Any repeat is refused.
+function repeatedFlag(args) {
+  /** @type {Map<string, number>} */
+  const counts = new Map();
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    const key = flagKey(token);
+    if (!key) continue;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!token.includes("=") && VALUE_FLAGS.has(key)) {
+      const next = args[i + 1];
+      if (next !== undefined && !next.startsWith("-")) i += 1;
+    }
+  }
+  for (const count of counts.values()) {
+    if (count > 1) return "That flag was given twice.";
   }
   return null;
 }
 
-function surfaceProblem(command, rest) {
-  const value = flagValue(rest, "--surface");
-  if (value == null) return null;
+function surfaceValueProblem(command, value) {
   if (command !== "snapshot" && command !== "find") return "That surface isn't on the allowed app.";
-  const key = value.trim().toLowerCase();
+  const key = String(value ?? "").trim().toLowerCase();
   if (APP_SURFACES.has(key)) return null;
   // menu-bar-extras with an app name is that app's own status item. The gate always sets that app.
   if (STATUS_SURFACES.has(key)) return null;
-  if (SHELL_SURFACES.has(key) || key.length === 0) return "That surface isn't on the allowed app.";
   return "That surface isn't on the allowed app.";
 }
 
@@ -781,25 +787,84 @@ function seenApp(seen, id, app) {
   return typeof bound === "string" && bound.trim().toLowerCase() === app.trim().toLowerCase();
 }
 
-function rootProblem(command, rest, app, seen) {
-  if (command !== "snapshot" && command !== "find") return null;
-  const value = flagValue(rest, "--root");
-  if (value == null) return null;
-  const match = REF_RE.exec(value);
+function refProblem(value, app, seen) {
+  const match = typeof value === "string" ? REF_RE.exec(value) : null;
   if (!match || !seenApp(seen, match[1], app)) return "That ref isn't from this app's snapshot.";
   return null;
 }
 
-function rememberRefs(seen, app, stdout) {
+function positionalTokens(args, command) {
+  /** @type {string[]} */
+  const out = [];
+  let seenCommand = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (!seenCommand) {
+      if (token === command) seenCommand = true;
+      continue;
+    }
+    if (token === "--") continue;
+    if (token.startsWith("-")) {
+      if (!token.includes("=") && VALUE_FLAGS.has(token)) {
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith("-")) i += 1;
+      }
+      continue;
+    }
+    out.push(token);
+  }
+  return out;
+}
+
+function targetProblem(command, rest, app, seen) {
+  for (const value of flagValues(rest, "--surface")) {
+    const problem = surfaceValueProblem(command, value);
+    if (problem) return problem;
+  }
+  for (const value of flagValues(rest, "--root")) {
+    const problem = refProblem(value, app, seen);
+    if (problem) return problem;
+  }
+  for (const value of flagValues(rest, "--element")) {
+    const problem = refProblem(value, app, seen);
+    if (problem) return problem;
+  }
+  // A window id comes from list-windows, which is refused, so none can be proven.
+  if (flagValues(rest, "--window-id").length > 0) return "That window isn't on the allowed app.";
+  for (const token of positionalTokens(rest, command)) {
+    if (!REF_RE.test(token)) continue;
+    const problem = refProblem(token, app, seen);
+    if (problem) return problem;
+  }
+  return null;
+}
+
+function claimedSnapshotIds(rest, command) {
+  /** @type {Set<string>} */
+  const ids = new Set();
+  const add = (value) => {
+    const match = typeof value === "string" ? REF_RE.exec(value) : null;
+    if (match) ids.add(match[1]);
+  };
+  for (const value of flagValues(rest, "--root")) add(value);
+  for (const value of flagValues(rest, "--element")) add(value);
+  for (const token of positionalTokens(rest, command)) add(token);
+  return ids;
+}
+
+function rememberRefs(seen, app, stdout, claimedIds) {
   if (!seen || typeof seen !== "object") return;
   if (!seen.apps || typeof seen.apps !== "object") seen.apps = {};
   const text = asText(stdout);
-  for (const match of text.matchAll(/"snapshot_id"\s*:\s*"([A-Za-z0-9_-]+)"/g)) {
-    if (seen.apps[match[1]] === undefined) seen.apps[match[1]] = app;
-  }
-  for (const match of text.matchAll(/@([A-Za-z0-9_-]+):e\d+/g)) {
-    if (seen.apps[match[1]] === undefined) seen.apps[match[1]] = app;
-  }
+  // Only the snapshot this command just took. A later id in the text, or a ref
+  // the command named that was not already this app, is not recorded as this app.
+  const match = /"snapshot_id"\s*:\s*"([A-Za-z0-9_-]+)"/.exec(text);
+  if (!match) return;
+  const id = match[1];
+  const bound = seen.apps[id];
+  const already = typeof bound === "string" && bound.trim().toLowerCase() === app.trim().toLowerCase();
+  if (claimedIds && claimedIds.has(id) && !already) return;
+  if (bound === undefined) seen.apps[id] = app;
 }
 
 function stripAppFlag(args) {
@@ -964,6 +1029,8 @@ export function runGate(options) {
   const split = splitArgs(argv);
   if (split.error) return refuse("", "INVALID_ARGS", split.error, "unsafe");
   const command = commandOf(split.rest);
+  const repeated = repeatedFlag(split.rest);
+  if (repeated) return refuse(command, "INVALID_ARGS", repeated, "unsafe");
   if (!split.gate["--project"]) return refuse(command, "INVALID_ARGS", "Give a project folder.", "unsafe");
   const projectResult = resolveProject(split.gate["--project"]);
   if (projectResult.error) return refuse(command, projectResult.error, projectResult.message, projectResult.retry);
@@ -1005,17 +1072,15 @@ export function runGate(options) {
   if ((policy.visible || isHeaded(split.rest)) && !decision.visible) {
     return refuse(command, "VISIBLE_NOT_ALLOWED", "Visible control is off for this project. Don't add --headed.", "unsafe");
   }
-  const surface = surfaceProblem(command, split.rest);
-  if (surface) return refuse(command, "INVALID_ARGS", surface, "unsafe");
-  const rooted = rootProblem(command, split.rest, appResult.app, options.seen);
-  if (rooted) return refuse(command, "INVALID_ARGS", rooted, "unsafe");
+  const target = targetProblem(command, split.rest, appResult.app, options.seen);
+  if (target) return refuse(command, "INVALID_ARGS", target, "unsafe");
   const forwarded = scopeForward(command, split.rest, appResult.app, options.seen);
   if (forwarded.error) return refuse(command, "INVALID_ARGS", forwarded.error, "unsafe");
   const pinned = readPin(launch.pin);
   if (pinned.code) return refuse(command, pinned.code, pinned.message, pinned.retry);
   const result = spawnDesktop(command, launch.binary, pinned.sha256, forwarded.args, options.spawnImpl, env);
   if (result.code === 0 && (command === "snapshot" || command === "find")) {
-    rememberRefs(options.seen, appResult.app, result.stdout);
+    rememberRefs(options.seen, appResult.app, result.stdout, claimedSnapshotIds(split.rest, command));
   }
   return result;
 }

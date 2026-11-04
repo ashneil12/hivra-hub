@@ -1281,6 +1281,158 @@ describe("desktop gate, app launch", () => {
     }
   });
 
+  it("refuses snapshot and find when --surface is repeated, and does not echo the later value", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const cases = [
+      ["snapshot", "--surface", "window", "--surface", "dock"],
+      ["snapshot", "--surface=window", "--surface=dock"],
+      ["snapshot", "--surface", "dock", "--surface", "window"],
+      ["find", "--surface", "window", "--surface", "dock"],
+      ["find", "--role", "button", "--surface", "window", "--surface", "dock"],
+      ["find", "--surface=window", "--surface=dock"],
+    ];
+    for (const argv of cases) {
+      const result = launched(ctx, argv);
+      refusal(result, "INVALID_ARGS", "unsafe");
+      expect(ctx.calls, argv.join(" ")).toEqual([]);
+      expect(result.stdout, argv.join(" ")).not.toContain("dock");
+    }
+  });
+
+  it("does not record a snapshot id that is not already this app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    ctx.seen.apps.s1 = "Notes";
+    const echoed = launched(
+      ctx,
+      ["snapshot", "--app", "Notes"],
+      '{"ok":true,"data":{"snapshot_id":"s2","refs":["@s2:e2","@mail:e4"],"also":{"snapshot_id":"mail"}}}\n',
+    );
+    expect(echoed.code).toBe(0);
+    expect(ctx.seen.apps.s2).toBe("Notes");
+    expect(ctx.seen.apps.mail).toBeUndefined();
+    expect(ctx.seen.apps.s1).toBe("Notes");
+
+    const rooted = launched(
+      ctx,
+      ["snapshot", "--root", "@s1:e2", "--root", "@mail:e4"],
+      '{"snapshot_id":"mail"}\n',
+    );
+    refusal(rooted, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(1);
+    expect(ctx.seen.apps.mail).toBeUndefined();
+    expect(rooted.stdout).not.toContain("mail");
+  });
+
+  it("checks wait --element, and any other saved ref, against the allowed app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    ctx.seen.apps.s1 = "Notes";
+    ctx.seen.apps.mail = "Mail";
+    const allowed = launched(ctx, ["wait", "--element", "@s1:e2"]);
+    expect(allowed.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["wait", "--element", "@s1:e2", "--app", "Notes"]);
+
+    const foreign = launched(ctx, ["wait", "--element", "@mail:e1"]);
+    refusal(foreign, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(1);
+    expect(foreign.stdout).not.toContain("@mail");
+
+    const equals = launched(ctx, ["wait", "--element=@mail:e1"]);
+    refusal(equals, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(1);
+
+    const click = launched(ctx, ["click", "@s1:e2", "@mail:e1"]);
+    refusal(click, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(1);
+
+    const rooted = launched(ctx, ["snapshot", "--root", "@s1:e2"]);
+    expect(rooted.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["snapshot", "--root", "@s1:e2", "--app", "Notes"]);
+  });
+
+  it("refuses every forwarded command when a target flag is repeated or names another app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
+    expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
+    ctx.seen.apps.s1 = "Notes";
+    ctx.seen.apps.mail = "Mail";
+    const forwarded = [
+      "click",
+      "double-click",
+      "triple-click",
+      "right-click",
+      "clear",
+      "focus",
+      "toggle",
+      "check",
+      "uncheck",
+      "expand",
+      "collapse",
+      "scroll-to",
+      "get",
+      "is",
+      "type",
+      "set-value",
+      "select",
+      "scroll",
+      "hover",
+      "launch",
+      "close-app",
+      "snapshot",
+      "find",
+      "screenshot",
+      "press",
+      "list-surfaces",
+      "wait",
+    ];
+    const base = (command: string): string[] => {
+      if (command === "type" || command === "set-value") return [command, "@s1:e2", "hello"];
+      if (command === "select") return [command, "@s1:e2", "Red"];
+      if (command === "scroll") return [command, "@s1:e2", "--direction", "down"];
+      if (command === "get") return [command, "@s1:e2", "--property", "text"];
+      if (command === "launch" || command === "close-app") return [command, "Notes"];
+      if (command === "press") return [command, "cmd+q"];
+      if (command === "wait") return [command, "200"];
+      if (command === "find") return [command, "--role", "button"];
+      if (command === "snapshot" || command === "screenshot" || command === "list-surfaces") return [command];
+      return [command, "@s1:e2"];
+    };
+    const attacks: Array<{ name: string; args: string[]; hidden: string }> = [
+      { name: "--surface twice", args: ["--surface", "window", "--surface", "dock"], hidden: "dock" },
+      { name: "--surface from outside the app", args: ["--surface", "dock"], hidden: "dock" },
+      { name: "--root twice", args: ["--root", "@s1:e2", "--root", "@mail:e1"], hidden: "@mail" },
+      { name: "--root from another app", args: ["--root", "@mail:e1"], hidden: "@mail" },
+      { name: "--window-id twice", args: ["--window-id", "w-notes", "--window-id", "w-mail"], hidden: "w-mail" },
+      { name: "--window-id from another app", args: ["--window-id", "w-mail"], hidden: "w-mail" },
+      { name: "--element twice", args: ["--element", "@s1:e2", "--element", "@mail:e1"], hidden: "@mail" },
+      { name: "--element from another app", args: ["--element", "@mail:e1"], hidden: "@mail" },
+      { name: "a ref from another app", args: ["@mail:e1"], hidden: "@mail" },
+      { name: "--app twice", args: ["--app", "Notes", "--app", "Notes"], hidden: "" },
+    ];
+    for (const command of forwarded) {
+      for (const attack of attacks) {
+        const before = ctx.calls.length;
+        const label = `${command} ${attack.name}`;
+        const result = launched(ctx, [...base(command), ...attack.args]);
+        expect(result.code, label).not.toBe(0);
+        expect(ctx.calls, label).toHaveLength(before);
+        refusal(result, "INVALID_ARGS", "unsafe");
+        if (attack.hidden) expect(result.stdout, label).not.toContain(attack.hidden);
+      }
+    }
+  });
+
   it("does not tell the worker to run the gate or the binary", () => {
     const skill = readFileSync(
       path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../plugins/desktop-control/skills/agent-desktop/SKILL.md"),
