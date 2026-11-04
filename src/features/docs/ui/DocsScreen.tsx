@@ -8,7 +8,7 @@ import { markdownOf } from "../gateway";
 import { toStoredContent } from "../model/content";
 import { mentionCatalog } from "../model/mentionCatalog";
 import { migrateNote } from "../model/migrate";
-import { DocSaveQueue, SaveConflict, SaveTimeout, type SaveResult } from "../model/saveQueue";
+import { DocSaveQueue, SaveConflict, type SaveResult } from "../model/saveQueue";
 import { canMove, childrenOf, dropToMove, type DropZone } from "../model/tree";
 import { emptyParagraph, type Block, type MentionTarget } from "../model/types";
 import { BlockEditor } from "./BlockEditor";
@@ -21,6 +21,8 @@ type Draft = {
   dirty: boolean;
   ready: boolean;
   version: number;
+  /** A save lost a compare-and-swap. Do not write this draft until the user edits again. */
+  conflicted: boolean;
 };
 
 type Props = {
@@ -65,6 +67,8 @@ export function DocsScreen({
   const [dragId, setDragId] = useState<string | null>(null);
   const drafts = useRef(new Map<string, Draft>());
   const queues = useRef(new Map<string, DocSaveQueue<DocRecord>>());
+  const flushing = useRef(new Set<string>());
+  const retryTimers = useRef(new Map<string, number>());
   const selectedRef = useRef<string | null>(null);
   const tokenRef = useRef(0);
   const gatewayRef = useRef(gateway);
@@ -79,7 +83,14 @@ export function DocsScreen({
   function ensure(id: string): Draft {
     let draft = drafts.current.get(id);
     if (!draft) {
-      draft = { title: "", blocks: [emptyParagraph(newId("b"))], dirty: false, ready: false, version: 0 };
+      draft = {
+        title: "",
+        blocks: [emptyParagraph(newId("b"))],
+        dirty: false,
+        ready: false,
+        version: 0,
+        conflicted: false,
+      };
       drafts.current.set(id, draft);
     }
     return draft;
@@ -99,63 +110,93 @@ export function DocsScreen({
     setPages(listed.filter((page) => inProjectScope(page.sourceCwd, scopeProject)));
   }
 
-  async function flush(id: string, attempt = 0): Promise<void> {
+  function scheduleRetry(id: string, delay: number) {
+    const existing = retryTimers.current.get(id);
+    if (existing) window.clearTimeout(existing);
+    const timer = window.setTimeout(() => {
+      retryTimers.current.delete(id);
+      void flushRef.current(id);
+    }, delay);
+    retryTimers.current.set(id, timer);
+  }
+
+  async function flush(id: string): Promise<void> {
+    // One update at a time. A second call while the first is in flight waits for it to finish.
+    if (flushing.current.has(id)) return;
     const draft = drafts.current.get(id);
-    if (!draft?.ready || !draft.dirty) return;
+    // A conflicted draft is the text that lost. Leaving the page must not write it.
+    if (!draft?.ready || !draft.dirty || draft.conflicted) return;
+    flushing.current.add(id);
     const savedTitle = draft.title;
     const savedBlocks = draft.blocks;
     const stored = toStoredContent(savedBlocks);
     const body = markdownOf(stored);
     const blocksJson = JSON.stringify(stored);
     const queue = queueFor(id, draft.version);
+    // The timer only says the save is still waiting. It does not abandon the request.
+    const banner = window.setTimeout(() => {
+      if (selectedRef.current === id) setWaiting(true);
+    }, SAVE_WAIT_MS);
     try {
       const saved = await queue.enqueue((expectedVersion) =>
-        withTimeout(
-          gatewayRef.current
-            .update({
-              id,
-              title: savedTitle,
-              body,
-              blocksJson,
-              expectedVersion,
-              snapshot: true,
-              origin: "person",
-              authorName: "You",
-            })
-            .then((result): SaveResult<DocRecord> => {
-              if (result.status === "conflict") throw new SaveConflict(result.version);
-              return { version: result.page.version, value: result.page };
-            }),
-          SAVE_WAIT_MS,
-        ),
+        gatewayRef.current
+          .update({
+            id,
+            title: savedTitle,
+            body,
+            blocksJson,
+            expectedVersion,
+            snapshot: true,
+            origin: "person",
+            authorName: "You",
+          })
+          .then((result): SaveResult<DocRecord> => {
+            if (result.status === "conflict") throw new SaveConflict(result.version);
+            return { version: result.page.version, value: result.page };
+          }),
       );
+      window.clearTimeout(banner);
       const current = drafts.current.get(id);
-      if (current && current.blocks === savedBlocks && current.title === savedTitle) current.dirty = false;
       if (current) current.version = saved.version;
+      const stillThisEdit = current && current.blocks === savedBlocks && current.title === savedTitle;
+      if (stillThisEdit) current.dirty = false;
       if (selectedRef.current === id) {
         setWaiting(false);
         const rows = await gatewayRef.current.versions(id);
         if (selectedRef.current === id) setVersions(rows);
       }
+      if (current?.dirty && !current.conflicted) scheduleRetry(id, 0);
     } catch (err) {
-      if (err instanceof SaveConflict && attempt < 2) {
+      window.clearTimeout(banner);
+      if (err instanceof SaveConflict) {
         const current = drafts.current.get(id);
-        if (current) current.version = err.currentVersion;
-        await flush(id, attempt + 1);
+        if (current) {
+          current.version = err.currentVersion;
+          current.conflicted = true;
+        }
+        if (selectedRef.current === id) {
+          setWaiting(false);
+          setError("The page changed somewhere else");
+        }
         return;
       }
-      if (err instanceof SaveTimeout || queue.timedOut) {
-        if (selectedRef.current === id) setWaiting(true);
-        return;
-      }
-      if (selectedRef.current === id) {
-        setError(err instanceof Error ? err.message : "The page could not be saved");
-      }
+      // A thrown save is not finished. Try the same edit again.
+      scheduleRetry(id, 500);
+    } finally {
+      flushing.current.delete(id);
     }
   }
 
   const flushRef = useRef(flush);
   flushRef.current = flush;
+
+  useEffect(() => {
+    const timers = retryTimers.current;
+    return () => {
+      for (const timer of timers.values()) window.clearTimeout(timer);
+      timers.clear();
+    };
+  }, []);
 
   useEffect(() => {
     void refresh().catch((err: unknown) => {
@@ -191,6 +232,10 @@ export function DocsScreen({
       });
       return;
     }
+    // The previous page stays on screen until this one loads. Clear it so a
+    // keystroke cannot be saved as the page that is still opening.
+    setTitle("");
+    setBlocks([emptyParagraph(newId("b"))]);
     void (async () => {
       try {
         let page = await gatewayRef.current.get(id);
@@ -240,19 +285,21 @@ export function DocsScreen({
 
   function editTitle(value: string) {
     if (!selectedId) return;
-    const draft = ensure(selectedId);
+    const draft = drafts.current.get(selectedId);
+    if (!draft?.ready) return;
     draft.title = value;
     draft.dirty = true;
-    draft.ready = true;
+    draft.conflicted = false;
     setTitle(value);
   }
 
   function editBlocks(next: Block[]) {
     if (!selectedId) return;
-    const draft = ensure(selectedId);
+    const draft = drafts.current.get(selectedId);
+    if (!draft?.ready) return;
     draft.blocks = next;
     draft.dirty = true;
-    draft.ready = true;
+    draft.conflicted = false;
     setBlocks(next);
   }
 
@@ -265,6 +312,7 @@ export function DocsScreen({
     draft.dirty = false;
     draft.ready = true;
     draft.version = 0;
+    draft.conflicted = false;
     try {
       const result = await gateway.create({
         id,
@@ -287,12 +335,12 @@ export function DocsScreen({
     }
   }
 
-  async function movePage(id: string, parentId: string | null, index: number) {
+  async function movePage(id: string, parentId: string | null, index: number, siblingIds: string[]) {
     const draft = ensure(id);
     const queue = queueFor(id, draft.version);
     try {
       const saved = await queue.enqueue(async (expectedVersion) => {
-        const result = await gateway.move({ id, parentId, index, expectedVersion });
+        const result = await gateway.move({ id, parentId, index, expectedVersion, siblingIds });
         if (result.status === "conflict") throw new SaveConflict(result.version);
         return { version: result.page.version, value: result.page };
       });
@@ -318,7 +366,10 @@ export function DocsScreen({
       if (!canMove(visible, dragId, parentId)) setError("A page cannot move into itself");
       return;
     }
-    void movePage(dragId, move.parentId, move.index);
+    const siblingIds = childrenOf(visible, move.parentId)
+      .map((item) => item.id)
+      .filter((item) => item !== dragId);
+    void movePage(dragId, move.parentId, move.index, siblingIds);
   }
 
   async function restore(version: number) {
@@ -345,6 +396,7 @@ export function DocsScreen({
       draft.title = saved.value.title === "Untitled" ? "" : saved.value.title;
       draft.blocks = blocksFrom(saved.value);
       draft.ready = true;
+      draft.conflicted = false;
       queues.current.set(id, new DocSaveQueue(saved.version));
       setTitle(draft.title);
       setBlocks(draft.blocks);
@@ -580,18 +632,3 @@ function PageTree({
   );
 }
 
-function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new SaveTimeout()), ms);
-    work.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-}
