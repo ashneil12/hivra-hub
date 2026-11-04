@@ -2,7 +2,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo } from "react";
-import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
+import { learnSkillLesson, takeBackSkillLesson } from "../../selfBuild/model/skillLearn";
 import { parseDoc, type MemoryDoc } from "../model/doc";
 import { MemoryReview, type ImportRow, type MemoryPorts } from "./MemoryReview";
 
@@ -26,6 +26,7 @@ function realPorts(): MemoryPorts {
     writeSkill: async (name, lesson) => {
       await learnSkillLesson({ skill: name, lesson, by: "memory" });
     },
+    undoSkill: (name, lesson) => takeBackSkillLesson(name, lesson),
   };
 }
 

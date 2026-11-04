@@ -1,4 +1,5 @@
-// WP-51: accept, reject, edit, delete, search. A skill is not written here; the screen writes it only after an accept.
+// WP-51: accept, reject, edit, delete, search. A skill file and a draft stamp are written
+// only after this window's compare-and-swap lands, and a later failure puts that write back.
 
 import { ftsMatch } from "../vendor/mercuryBelief";
 import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryItem } from "./doc";
@@ -119,24 +120,102 @@ function sameDoc(a: MemoryDoc, b: MemoryDoc): boolean {
   return a.generation === b.generation && a.items === b.items && a.doneTurns === b.doneTurns && a.imports === b.imports;
 }
 
+export type CommitResult = { doc: MemoryDoc; applied: boolean };
+
 /** Writes only on top of the revision just read. A mismatch loads again and reapplies. A throw is not final. */
 export async function commitDoc(
   load: () => Promise<MemoryDoc>,
   save: (revision: number, doc: MemoryDoc) => Promise<boolean>,
   change: (doc: MemoryDoc) => MemoryDoc,
-): Promise<MemoryDoc> {
+): Promise<CommitResult> {
   let latest = parseDoc(await load());
   for (let attempt = 0; attempt < 5; attempt++) {
     const doc = attempt === 0 ? latest : parseDoc(await load());
     latest = doc;
     const next = change(doc);
-    if (sameDoc(next, doc)) return doc;
+    if (sameDoc(next, doc)) return { doc, applied: false };
     try {
       const saved = await save(doc.revision, { ...next, revision: doc.revision });
-      if (saved) return { ...next, revision: doc.revision + 1 };
+      if (saved) return { doc: { ...next, revision: doc.revision + 1 }, applied: true };
     } catch {
       // The folder was busy or away. Try again on the next read.
     }
   }
+  throw new MemoryDeferred();
+}
+
+function reopenSkill(doc: MemoryDoc, id: string, name: string, lesson: string): MemoryDoc {
+  const item = doc.items.find((candidate) => candidate.id === id);
+  if (!item || item.action !== "skill" || item.state !== "confirmed" || !item.skill) return doc;
+  if (item.skill.name !== name || item.skill.lesson !== lesson) return doc;
+  return replaceItem(doc, { ...item, state: "unreviewed" });
+}
+
+/** Confirms the skill, then writes its file. A lost accept writes nothing. A failed write puts the row back. */
+export async function acceptSkill(
+  load: () => Promise<MemoryDoc>,
+  save: (revision: number, doc: MemoryDoc) => Promise<boolean>,
+  writeSkill: (name: string, lesson: string) => Promise<void>,
+  undoSkill: (name: string, lesson: string) => Promise<void>,
+  id: string,
+  now: number,
+): Promise<CommitResult> {
+  const accepted = await commitDoc(load, save, (doc) => acceptItem(doc, id, now).doc);
+  if (!accepted.applied) return accepted;
+  const item = accepted.doc.items.find((candidate) => candidate.id === id);
+  if (!item || item.action !== "skill" || item.state !== "confirmed" || !item.skill) return accepted;
+  const { name, lesson } = item.skill;
+  try {
+    await writeSkill(name, lesson);
+  } catch {
+    const rolled = await commitDoc(load, save, (doc) => reopenSkill(doc, id, name, lesson));
+    const stillConfirmed = rolled.doc.items.some(
+      (candidate) => candidate.id === id && candidate.action === "skill" && candidate.state === "confirmed" && candidate.skill?.name === name,
+    );
+    if (!stillConfirmed) {
+      try {
+        await undoSkill(name, lesson);
+      } catch {
+        // The row is unreviewed again. A later accept writes the lesson if it is missing.
+      }
+    }
+    throw new MemoryDeferred();
+  }
+  return accepted;
+}
+
+function dropImport(doc: MemoryDoc, id: string): MemoryDoc {
+  if (!doc.imports[id]) return doc;
+  const items = doc.items.filter((item) => item.source.kind !== "import" || item.source.ref !== id);
+  const imports = { ...doc.imports };
+  delete imports[id];
+  return bump({ ...doc, items, imports });
+}
+
+/**
+ * Stores this window's import decision, then stamps the draft with that same decision.
+ * A lost save does not stamp. A stamp that does not land removes the facts again.
+ */
+export async function stampImport(
+  load: () => Promise<MemoryDoc>,
+  save: (revision: number, doc: MemoryDoc) => Promise<boolean>,
+  review: (id: string, decision: "confirmed" | "rejected") => Promise<boolean>,
+  update: (doc: MemoryDoc) => MemoryDoc,
+  id: string,
+): Promise<CommitResult & { stamped: boolean }> {
+  const saved = await commitDoc(load, save, update);
+  if (!saved.applied) return { ...saved, stamped: false };
+  const decision = saved.doc.imports[id];
+  if (decision !== "confirmed" && decision !== "rejected") return { ...saved, stamped: false };
+  let landed = false;
+  try {
+    landed = await review(id, decision);
+  } catch {
+    // A timeout is not a decision. The facts are put back so this can be tried again.
+    landed = false;
+  }
+  if (landed) return { ...saved, stamped: true };
+  const rolled = await commitDoc(load, save, (doc) => dropImport(doc, id));
+  if (rolled.doc.imports[id]) throw new MemoryDeferred();
   throw new MemoryDeferred();
 }

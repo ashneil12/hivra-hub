@@ -5,12 +5,14 @@ import { mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
 import {
   acceptImport,
   acceptItem,
+  acceptSkill,
   commitDoc,
   deleteItem,
   editItem,
   rejectImport,
   rejectItem,
   searchMemory,
+  stampImport,
 } from "../model/review";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -23,6 +25,7 @@ export type MemoryPorts = {
   proposals: () => Promise<ImportRow[]>;
   reviewImport: (id: string, decision: "confirmed" | "rejected") => Promise<boolean>;
   writeSkill: (name: string, lesson: string) => Promise<void>;
+  undoSkill: (name: string, lesson: string) => Promise<void>;
 };
 
 function stateLabel(state: MemoryItem["state"]): string {
@@ -64,13 +67,35 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     setBusy(true);
     setNote("");
     try {
-      const next = await commitDoc(portsRef.current.load, portsRef.current.save, update);
-      setDoc(next);
+      const result = await commitDoc(portsRef.current.load, portsRef.current.save, update);
+      setDoc(result.doc);
       setFailed(false);
-      return true;
+      return result.applied;
     } catch {
       setNote("Memory could not be saved this time. It can be tried again.");
       return false;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function decideImport(row: ImportRow, update: (doc: MemoryDoc) => MemoryDoc) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setNote("");
+    try {
+      const result = await stampImport(portsRef.current.load, portsRef.current.save, portsRef.current.reviewImport, update, row.id);
+      setDoc(result.doc);
+      setFailed(false);
+      if (!result.stamped) return;
+      const decision = result.doc.imports[row.id];
+      if (decision !== "confirmed" && decision !== "rejected") return;
+      setImports((current) => current.map((item) => (item.id === row.id ? { ...item, status: decision } : item)));
+    } catch {
+      setNote("Memory could not be saved this time. It can be tried again.");
+      void refresh();
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -133,18 +158,26 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                     className={BTN}
                     disabled={busy}
                     onClick={() => {
-                      const skill = item.skill;
-                      if (!skill || busyRef.current) return;
+                      if (busyRef.current) return;
                       busyRef.current = true;
                       setBusy(true);
+                      setNote("");
                       void (async () => {
                         try {
-                          await ports.writeSkill(skill.name, skill.lesson);
-                          const next = await commitDoc(ports.load, ports.save, (current) => acceptItem(current, item.id, Date.now()).doc);
-                          setDoc(next);
-                          setNote("");
+                          const result = await acceptSkill(
+                            portsRef.current.load,
+                            portsRef.current.save,
+                            portsRef.current.writeSkill,
+                            portsRef.current.undoSkill,
+                            item.id,
+                            Date.now(),
+                          );
+                          setDoc(result.doc);
+                          setFailed(false);
+                          if (!result.applied) setNote("That skill was not saved. It can be accepted again.");
                         } catch {
                           setNote("That skill was not saved. It can be accepted again.");
+                          void refresh();
                         } finally {
                           busyRef.current = false;
                           setBusy(false);
@@ -196,14 +229,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                   type="button"
                   className={BTN}
                   disabled={busy}
-                  onClick={() =>
-                    void (async () => {
-                      const saved = await change((current) => acceptImport(current, row, Date.now()));
-                      if (!saved) return;
-                      await portsRef.current.reviewImport(row.id, "confirmed").catch(() => false);
-                      setImports((current) => current.map((item) => (item.id === row.id ? { ...item, status: "confirmed" } : item)));
-                    })()
-                  }
+                  onClick={() => void decideImport(row, (current) => acceptImport(current, row, Date.now()))}
                 >
                   {`Accept import from ${row.project}`}
                 </button>
@@ -211,14 +237,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                   type="button"
                   className={BTN}
                   disabled={busy}
-                  onClick={() =>
-                    void (async () => {
-                      const saved = await change((current) => rejectImport(current, row.id));
-                      if (!saved) return;
-                      await portsRef.current.reviewImport(row.id, "rejected").catch(() => false);
-                      setImports((current) => current.map((item) => (item.id === row.id ? { ...item, status: "rejected" } : item)));
-                    })()
-                  }
+                  onClick={() => void decideImport(row, (current) => rejectImport(current, row.id))}
                 >
                   {`Reject import from ${row.project}`}
                 </button>

@@ -71,6 +71,10 @@ function Harness() {
         holder.__skills = (holder.__skills ?? 0) + 1;
         if (!name) throw new Error("missing");
       },
+      undoSkill: async (name) => {
+        const holder = window as unknown as { __skills: number };
+        if (name) holder.__skills = Math.max(0, (holder.__skills ?? 0) - 1);
+      },
     }),
     [doc, fails],
   );

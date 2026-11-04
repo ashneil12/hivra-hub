@@ -113,3 +113,15 @@ it("the same lesson twice changes nothing, and a made-up skill name is refused",
   expect(flowChanges(SKILL_LEARN)).toHaveLength(1);
   await expect(learnSkillLesson({ ...input, skill: "!!!" })).rejects.toThrow("lowercase letters");
 });
+
+it("taking a lesson back rewrites that skill file and does not invent another path", async () => {
+  const { learnSkillLesson, takeBackSkillLesson } = await wire();
+  await learnSkillLesson({ skill: "Reviewing a diff", lesson: "Read the caller first.", by: "memory" });
+  await takeBackSkillLesson("reviewing-a-diff", "Read the caller first.");
+  expect(disk.files.get(SKILL)).not.toContain("Read the caller first.");
+  const before = [...disk.files.keys()];
+  await takeBackSkillLesson("../secrets", "nope");
+  await takeBackSkillLesson("reviewing-a-diff", "Read the caller first.");
+  expect([...disk.files.keys()]).toEqual(before);
+  expect([...disk.files.keys()].every((path) => path.startsWith("/Users/ash/.agents/skills/"))).toBe(true);
+});
