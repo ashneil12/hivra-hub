@@ -10,9 +10,13 @@ import {
   launchPlan,
   mergeRows,
   dropConfirmedGone,
+  goneAfterStop,
   nextSeen,
+  parentDied,
   pidsConfirmedGone,
   prepareTools,
+  stopWindowsTree,
+  windowsStopResult,
   redact,
   rowState,
   settle,
@@ -696,6 +700,51 @@ describe("the browser tree is only the process that was started", () => {
     expect(pidsConfirmedGone([])).toBe(true);
   });
 
+  it("does not call a failed process list a stopped browser", () => {
+    expect(goneAfterStop(null, [])).toBe(false);
+    expect(goneAfterStop(null, ["gone"])).toBe(false);
+    expect(goneAfterStop([{ pid: 10, started: "engine" }], ["gone"])).toBe(true);
+    expect(goneAfterStop([{ pid: 10, started: "engine" }], ["unknown"])).toBe(false);
+    expect(goneAfterStop([{ pid: 10, started: "engine" }], [])).toBe(false);
+  });
+
+  it("stops a windows tree with taskkill and does not treat a failed kill as gone", () => {
+    const calls: { file: string; args: string[]; timeout: number }[] = [];
+    const ok = stopWindowsTree(4242, (file, args, options) => {
+      calls.push({ file, args, timeout: options.timeout });
+      return { status: 0 };
+    });
+    expect(calls).toEqual([
+      { file: "taskkill", args: ["/PID", "4242", "/T", "/F"], timeout: 2000 },
+    ]);
+    expect(ok).toEqual({ stopped: true, confirmed: false });
+
+    const missing = stopWindowsTree(4242, () => {
+      const error = new Error("not found") as NodeJS.ErrnoException;
+      error.code = "ENOENT";
+      throw error;
+    });
+    expect(missing).toEqual({ stopped: false, confirmed: false });
+
+    expect(stopWindowsTree(4242, () => ({ status: 1 }))).toEqual({ stopped: false, confirmed: false });
+
+    const timedOut = stopWindowsTree(4242, () => {
+      const error = new Error("timed out") as NodeJS.ErrnoException;
+      error.code = "ETIMEDOUT";
+      throw error;
+    });
+    expect(timedOut.confirmed).toBe(false);
+    expect(timedOut.stopped).toBe(false);
+    expect(stopWindowsTree(0, () => ({ status: 0 })).stopped).toBe(false);
+    const row = [{ pid: 4242, started: "boot" }];
+    expect(windowsStopResult({ stopped: false, confirmed: false }, null, ["gone"])).toBe("failed");
+    expect(windowsStopResult(missing, null, ["gone"])).toBe("failed");
+    expect(windowsStopResult(ok, null, ["gone"])).toBe("unknown");
+    expect(windowsStopResult(ok, row, ["gone"])).toBe("clear");
+    expect(windowsStopResult(ok, row, ["same"])).toBe("unknown");
+    expect(windowsStopResult(timedOut, row, ["gone"])).toBe("failed");
+  });
+
   it("drops a tracked pid only once that pid is confirmed gone", () => {
     const seen = [
       { pid: 10, started: "engine" },
@@ -791,7 +840,35 @@ describe("the wrapper does not leave the browser behind", () => {
     }
   });
 
-  it("stops the browser when its parent dies", async () => {
+  it("notices a dead parent even when its pid did not change", () => {
+    const dead = () => {
+      const error = new Error("no such process") as NodeJS.ErrnoException;
+      error.code = "ESRCH";
+      throw error;
+    };
+    const aliveParent = () => {};
+    const denied = () => {
+      const error = new Error("denied") as NodeJS.ErrnoException;
+      error.code = "EPERM";
+      throw error;
+    };
+    expect(parentDied(10, 10, dead, "win32")).toBe(true);
+    expect(parentDied(10, 10, dead, "linux")).toBe(true);
+    expect(parentDied(10, 10, aliveParent, "win32")).toBe(false);
+    expect(parentDied(10, 10, denied, "win32")).toBe(false);
+    expect(parentDied(10, 1, aliveParent, "linux")).toBe(true);
+    expect(parentDied(10, 10, aliveParent, "linux")).toBe(false);
+    let probed = false;
+    expect(
+      parentDied(10, 1, () => {
+        probed = true;
+      }, "win32"),
+    ).toBe(false);
+    expect(probed).toBe(true);
+  });
+
+  // mkfifo is Unix. Windows reports ENOENT, so only this parent check stays here.
+  it.runIf(process.platform !== "win32")("stops the browser when its parent dies", async () => {
     const dir = mkdtempSync(join(tmpdir(), "hivra-browser-parent-"));
     temps.push(dir);
     const pidFile = join(dir, "child.pid");

@@ -322,6 +322,55 @@ export function answerFromEngine(pending, message) {
   return message;
 }
 
+// Unix reparents an orphan, so a new ppid means the parent died. Windows keeps
+// the old ppid, so a live check is required there too. EPERM means it is still
+// there: we are just not allowed to signal it.
+export function parentDied(parent, ppid, kill, platform = process.platform) {
+  if (!Number.isInteger(parent) || parent <= 0) return false;
+  if (platform !== "win32" && ppid !== parent) return true;
+  if (typeof kill !== "function") return false;
+  try {
+    kill(parent, 0);
+    return false;
+  } catch (error) {
+    return error?.code !== "EPERM";
+  }
+}
+
+const WINDOWS_TREE_KILL_MS = 2000;
+
+// taskkill's own exit is not proof the processes are gone. A throw, a timeout,
+// or a non-zero status is not gone either, and the run cannot wait past the timeout.
+export function stopWindowsTree(pid, run) {
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) {
+    return { stopped: false, confirmed: false };
+  }
+  if (typeof run !== "function") return { stopped: false, confirmed: false };
+  const options = { timeout: WINDOWS_TREE_KILL_MS, windowsHide: true };
+  try {
+    const result = run("taskkill", ["/PID", String(pid), "/T", "/F"], options);
+    const status = result && typeof result === "object" && "status" in result ? result.status : 0;
+    if (status !== 0 && status != null) return { stopped: false, confirmed: false };
+    return { stopped: true, confirmed: false };
+  } catch {
+    return { stopped: false, confirmed: false };
+  }
+}
+
+function runTaskkill(file, args, options) {
+  const env = {};
+  for (const key of ["PATH", "SystemRoot", "WINDIR", "ComSpec"]) {
+    const value = process.env[key];
+    if (typeof value === "string" && value) env[key] = value;
+  }
+  execFileSync(file, args, {
+    timeout: options?.timeout ?? WINDOWS_TREE_KILL_MS,
+    windowsHide: true,
+    stdio: "ignore",
+    env,
+  });
+}
+
 function descendantPids(root) {
   if (!root || root === process.pid) return [];
   const wanted = new Set([root]);
@@ -375,6 +424,14 @@ function probeProcess(pid) {
 }
 
 function snapshotTree(root) {
+  // Windows has no `ps`. The pid we started is still recorded; its tree is
+  // stopped with taskkill, not by walking a listing.
+  if (process.platform === "win32") {
+    if (!Number.isInteger(root) || root <= 0 || root === process.pid) return [];
+    // The start time is a PowerShell query. Skip it here so a stuck query cannot
+    // hold the stop. An empty start is unknown, never gone.
+    return [{ pid: root, started: "" }];
+  }
   const pids = descendantPids(root);
   if (pids == null) return null;
   return pids.map((pid) => ({ pid, started: readStart(pid) }));
@@ -434,6 +491,22 @@ export function dropConfirmedGone(rows, probeOf) {
 
 export function pidsConfirmedGone(states) {
   return Array.isArray(states) && states.every((state) => state === "gone");
+}
+
+// A missing listing is not an empty tree. An empty state list is not proof either.
+export function goneAfterStop(listing, states) {
+  if (listing == null) return false;
+  if (!Array.isArray(listing) || listing.length === 0) return false;
+  if (!Array.isArray(states) || states.length === 0) return false;
+  return pidsConfirmedGone(states);
+}
+
+// "failed" is not gone. "unknown" is not gone. Only a kill that landed, and a
+// listing we actually hold, can be "clear".
+export function windowsStopResult(killed, listing, states) {
+  if (!killed || killed.stopped !== true) return "failed";
+  if (goneAfterStop(listing, states)) return "clear";
+  return "unknown";
 }
 
 export function settle(states) {
@@ -525,6 +598,7 @@ function main() {
   let stopping = false;
   let seen = [];
   const parent = process.ppid;
+  let parentWatch;
   const treeWatch = setInterval(() => {
     if (stopping || !child.pid) return;
     seen = nextSeen(seen, snapshotTree(child.pid));
@@ -538,6 +612,51 @@ function main() {
     if (stopping) return;
     stopping = true;
     clearInterval(treeWatch);
+    if (parentWatch) clearInterval(parentWatch);
+    if (process.platform === "win32") {
+      const pid = child.pid;
+      if (!Number.isInteger(pid) || pid <= 0) {
+        process.exit(code === 0 ? 1 : code);
+        return;
+      }
+      const known = seen.find((row) => row.pid === pid);
+      const started = (known && known.started) || "";
+      // A live pid is still the process we started. A dead one may have been reused,
+      // so taskkill runs only while it is alive.
+      const before = probeProcess(pid);
+      const killed = before.alive ? stopWindowsTree(pid, runTaskkill) : { stopped: true, confirmed: false };
+      const row = { pid, started };
+      const held = mergeRows(seen, [row]);
+      const states = held.map((item) => rowState(item, probeProcess(item.pid)));
+      // A failed taskkill is not a listing, and a failed listing is not gone.
+      let result = windowsStopResult(killed, before.alive && !killed.stopped ? null : held, states);
+      seen = dropConfirmedGone(held, (item) => probeProcess(item.pid));
+      publishTree(seen);
+      if (result === "failed") {
+        process.exit(code === 0 ? 1 : code);
+        return;
+      }
+      if (result !== "clear") {
+        const deadline = Date.now() + 1000;
+        const timer = setInterval(() => {
+          const now = held.map((item) => rowState(item, probeProcess(item.pid)));
+          result = windowsStopResult(killed, held, now);
+          if (result === "clear" || Date.now() >= deadline) {
+            clearInterval(timer);
+            if (result !== "clear") {
+              process.exit(code === 0 ? 1 : code);
+              return;
+            }
+            const proved = markTreeGone();
+            process.exit(!proved && code === 0 ? 1 : code);
+          }
+        }, 30);
+        return;
+      }
+      const proved = markTreeGone();
+      process.exit(!proved && code === 0 ? 1 : code);
+      return;
+    }
     const fresh = child.pid ? snapshotTree(child.pid) : [];
     if (fresh == null && seen.length === 0) {
       process.exit(code === 0 ? 1 : code);
@@ -551,8 +670,8 @@ function main() {
   }
   process.on("SIGTERM", () => shutdown(0));
   process.on("SIGINT", () => shutdown(0));
-  const parentWatch = setInterval(() => {
-    if (process.ppid !== parent) shutdown(0);
+  parentWatch = setInterval(() => {
+    if (parentDied(parent, process.ppid, (pid, signal) => process.kill(pid, signal))) shutdown(0);
   }, 200);
   parentWatch.unref();
   process.stdin.on("end", () => shutdown(0));
