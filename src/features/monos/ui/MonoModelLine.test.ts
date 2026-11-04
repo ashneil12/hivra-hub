@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 // Port map idea 2: the model as small text above the box. A click moves to the next model and says so for 7 s
-// (UniiChat Pick.ts move, main.ts toast); the chevron (our addition) opens the menu; on the Grok bridge it reads Grok 4.7.
+// (UniiChat Pick.ts move, main.ts toast); the chevron (our addition) opens the menu.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -13,13 +13,6 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   subscribeHarnessAvailability: () => () => undefined,
 }));
 vi.mock("../../../integrations/harness/core/registry", () => ({ refreshHarnessCatalogs: () => Promise.resolve() }));
-const bridge = vi.hoisted(() => ({ on: false }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () => ({
-  claudeRunsOnGrok: () => bridge.on,
-  onGrokBridge: (harness: string | undefined) => harness === "claude" && bridge.on,
-  GROK_BRIDGE_LABEL: "Grok 4.7",
-  claudePillName: (name: string, onGrok: boolean) => (onGrok ? "Grok 4.7" : name.replace(/^Claude /, "")),
-}));
 
 import { MODEL_NOTE_MS, MonoModelLine } from "./MonoModelLine";
 import { resetHarnessModelOverlays } from "../../sessions/model/models";
@@ -31,7 +24,6 @@ beforeEach(() => {
   vi.useFakeTimers();
   localStorage.clear();
   resetHarnessModelOverlays();
-  bridge.on = false;
   el = document.createElement("div");
   document.body.append(el);
   root = createRoot(el);
@@ -74,16 +66,6 @@ it("the chevron opens the whole menu and changes nothing", () => {
   act(() => chevron.click());
   expect(chevron.getAttribute("aria-expanded")).toBe("true");
   expect(onChange).not.toHaveBeenCalled();
-});
-
-it("on the Grok bridge it reads Grok 4.7, and a click opens the menu instead of stepping through Claude names", () => {
-  bridge.on = true;
-  const onChange = render("claude", "claude:sonnet");
-  expect(name().textContent).toContain("Grok 4.7");
-  expect(el.querySelector("[data-model-menu]")).not.toBeNull();
-  act(() => name().click());
-  expect(onChange).not.toHaveBeenCalled();
-  expect(name().getAttribute("aria-expanded")).toBe("true");
 });
 
 // Live 22 Oct: on a Lead chat running Ash's DeepSeek model, one click on "DeepSeek · billed separately" switched it

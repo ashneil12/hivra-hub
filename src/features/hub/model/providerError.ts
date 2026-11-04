@@ -1,6 +1,6 @@
 /**
  * A model provider's failure in Ash's words. Ash OS passes a failed model call through as developer text
- * ("model call failed (grok/grok-4.7): HTTP 524: {"type":"error",...}"); Ash reads one plain sentence instead
+ * ("model call failed (grok/grok-4): HTTP 524: {"type":"error",...}"); Ash reads one plain sentence instead
  * (C3 live 22 Oct: the raw 524 JSON showed on Pages). Anything that isn't a provider failure comes back unchanged.
  */
 const PROVIDERS: [RegExp, string][] = [

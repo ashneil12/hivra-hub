@@ -1,5 +1,5 @@
-// The Checker (docs/PHASE-2-DESIGN.md, H6): one small Mono, on whatever model the runtime gives it (grok-4.7 on the Grok
-// bridge). Since 21 Oct it runs once after each dump (dumpCheck.ts, useHubChecks.ts) and never on a schedule: its old
+// The Checker (docs/PHASE-2-DESIGN.md, H6): one small Mono, on the app's default Claude model.
+// Since 21 Oct it runs once after each dump (dumpCheck.ts, useHubChecks.ts) and never on a schedule: its old
 // hourly audit (`checker-hourly`) is never given, and switched off where an older install has it. A finding reaches
 // the chat owning the message privately (hubChecks.ts delivers it as a `[MonoCode check]` turn), and the owner, who has
 // the full context, answers right or fixed.
@@ -11,7 +11,7 @@
 // - no delegation: tasks.* refuses it (agentAppTasks.ts) and its context never teaches the delegate tool.
 // It never nags: Ash never hears from it (its runs end quiet), and Ash OS holds one open check per message, no repeats
 // after two "right" answers and at most three new checks per chat a day.
-import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
+import { defaultClaudeModelId } from "../../sessions/model/defaultClaudeModel";
 import { addMono, findMono } from "../../monos/model/mono";
 import { updateHabits } from "../../monos/model/monoHabits";
 import { isMonoRemovedByUser } from "./builtInMonos";
@@ -40,7 +40,7 @@ I never start work, message Ash, or move or close anything. One note per dump at
 /** The hourly audit it used to run (retired 21 Oct: the light look after each dump replaced it, dumpCheck.ts). */
 export const CHECKER_HABIT_ID = "checker-hourly";
 
-/** The roster entry it starts as: no projects (it reads, not folders), Claude Code on Grok 4.7, named (bridgeModels.ts). */
+/** The roster entry it starts as: no projects (it reads, not folders), Claude Code on the default Claude model. */
 export function checkerRosterEntry() {
   return {
     id: CHECKER_MONO_ID,
@@ -49,7 +49,7 @@ export function checkerRosterEntry() {
     color: "hsl(210 6% 50%)",
     projects: [] as string[],
     engine: "claude",
-    engineModel: MONO_BRIDGE_MODEL_ID,
+    engineModel: defaultClaudeModelId(),
     instructions: forUser(CHECKER_SOUL),
   };
 }

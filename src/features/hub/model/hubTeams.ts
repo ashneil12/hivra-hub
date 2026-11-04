@@ -8,7 +8,7 @@
 //
 // The team room is a normal hub group chat (hubChats.createChat) in the team's first project, so it reuses the
 // group-room code: members, conversations, the picked answerer and its replies.
-import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
+import { defaultClaudeModelId } from "../../sessions/model/defaultClaudeModel";
 import { useSyncExternalStore } from "react";
 import { addMember, createChat, deleteChat } from "./hubChats";
 import { catalogEntry, setMonoConnectors } from "./hubConnectors";
@@ -239,11 +239,11 @@ export type MakeDeps = {
 export const appDeps: MakeDeps = {
   createMono: (projects) => createMono(projects),
   name: saveMonoName,
-  // A Claude Code Mono names Grok 4.7 (bridgeModels.ts); another engine starts on its own default.
+  // A Claude Code Mono starts on the app's default Claude model; another engine starts on its own default.
   engine: (monoId, engine) =>
     void updateMono(monoId, (mono) => {
       const { engineModel: _, ...rest } = mono;
-      return { ...rest, engine, ...(engine === "claude" ? { engineModel: MONO_BRIDGE_MODEL_ID } : {}) };
+      return { ...rest, engine, ...(engine === "claude" ? { engineModel: defaultClaudeModelId() } : {}) };
     }),
   writeSoul: async (monoId, soul) => {
     const files = await loadMonoFiles(monoId);

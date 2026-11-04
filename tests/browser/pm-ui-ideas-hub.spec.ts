@@ -24,17 +24,15 @@ const area = async (page: Page, name: string, box: { x: number; y: number; width
   const y = Math.max(0, box.y - pad);
   await page.screenshot({ path: `${SHOTS}/${name}.png`, clip: { x, y, width: box.width + 2 * pad, height: box.height + 2 * pad } });
 };
-const onGrokBridge = (page: Page) =>
+const seedClaude = (page: Page) =>
   page.addInitScript(() => {
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
-    // Claude Code on Grok 4.7 through the bridge launcher, as on Ash's Mac (claudeGrokBridge.ts).
-    localStorage.setItem("monocode.providerBinaryPaths.v1", JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }));
   });
 
 test("a coding team's own chat: Stop in the send spot during a turn, its own turn only; the model line above the box", async ({ page }) => {
   const now = Date.now();
-  await onGrokBridge(page);
+  await seedClaude(page);
   await page.addInitScript(
     ({ chat, folder, at }) => {
       if (sessionStorage.getItem("seeded")) return;
@@ -66,9 +64,9 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   const field = box.locator("textarea");
   await expect(field).toBeVisible({ timeout: 15_000 });
 
-  // The model as text above the box, Grok 4.7 on the bridge, with a chevron; no model picker in the toolbar.
+  // The model as text above the box, with a chevron; no model picker in the toolbar.
   const line = pane.locator("[data-mono-model-line]");
-  await expect(line).toContainText("Grok 4.7");
+  await expect(line).toContainText("Sonnet 5");
   await expect(pane.locator("[data-model-menu]")).toBeVisible();
   await expect(box.locator("button[aria-haspopup]").filter({ hasText: /Sonnet|Claude/ })).toHaveCount(0);
 

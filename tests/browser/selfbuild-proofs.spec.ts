@@ -30,7 +30,6 @@ const dev = <T>(page: Page, code: string, arg?: unknown) =>
 const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: [] };
 
 async function open(page: Page) {
-  // Ash's Claude Code runs on Grok 4.7 through his Grok subscription (claudeGrokBridge.ts): the bridge launcher is its CLI.
   await page.addInitScript(() => {
     localStorage.setItem(
       "monocode.lastModel",
@@ -39,10 +38,6 @@ async function open(page: Page) {
     localStorage.setItem(
       "monocode.defaultModels",
       JSON.stringify({ claude: "claude:sonnet-5" }),
-    );
-    localStorage.setItem(
-      "monocode.providerBinaryPaths.v1",
-      JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }),
     );
   });
   await openLocalHub(page, "&fakeClaude");

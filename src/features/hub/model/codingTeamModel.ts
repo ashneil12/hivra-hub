@@ -4,11 +4,7 @@
 // saves a model whose key it saved). Without one they start on the usual default, and the project's options say so.
 // A project's own provider default always wins (models.ts folderDefaultChoice).
 //
-// The Grok bridge (Ash, 21 Oct 21:03: both Claude Code on Grok 4.7 AND the DeepSeek default): a custom model runs
-// through Claude Code with the hub's router (claude.ts customModelRoute). A chat on a non-Grok Other model leaves the
-// bridge (claudeGrokBridge.ts routedOffBridge): it starts on the plain `claude` with the router and DeepSeek's own key,
-// so the DeepSeek default holds on a Mac whose Claude Code runs through the bridge. GROK_BRIDGE_MODEL (grok-4.7) is
-// still forced on every other Claude Code chat: no model chosen (a Claude model), or a Grok model.
+// A custom model runs through Claude Code with the hub's router (claude.ts customModelRoute).
 import { pathKey } from "../../../shared/lib/paths";
 import { CUSTOM_MODEL_PREFIX, effortLabel, listCustomModels, type CustomModel } from "../../sessions/model/customModels";
 import { setFolderDefaultChoice, type FolderDefaultChoice } from "../../sessions/model/models";

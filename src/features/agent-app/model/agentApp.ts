@@ -22,7 +22,7 @@ import {
   preferredModelId,
   resolveModel,
 } from "../../sessions/model/models";
-import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -689,9 +689,9 @@ function startLaunch(
     throw new Error(`${chosenHarness} is not available in MonoCode`);
   const requestedModel = optionalString(input.model, "model");
   const model = requestedModel
-    ? // One of Ash's own models ("Other models") keeps its own id; the router reads its route (customModels.ts). On a
-      // subscription bridge, so do its Grok 4.7 and DeepSeek (bridgeModels.ts), which no catalog lists: a worker the
-      // app routes to DeepSeek was refused here as an unknown model (28 Oct), and the Lead fell back to the Grok CLI.
+    ? // One of Ash's own models ("Other models") keeps its own id; the router reads its route (customModels.ts). On the
+      // DeepSeek launcher, so does DeepSeek, which no catalog lists: a worker the app routes there was refused here
+      // as an unknown model, and the Lead fell back to another CLI.
       chosenHarness === "claude" &&
       (isCustomModelId(requestedModel) || (isBridgeModelId(requestedModel) && claudeRunsOnSubscriptionBridge()))
       ? resolveModel(chosenHarness, requestedModel)

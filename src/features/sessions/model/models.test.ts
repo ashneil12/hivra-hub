@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { RETIRED_GROK_MODEL_ID } from "./grokRetirement";
 import { newSession, type HarnessId } from "./session";
 import {
   MODELS,
@@ -238,6 +239,19 @@ describe("provider defaults", () => {
     });
     expect(preferredModelId("claude")).toBe("claude:deepseek-v4.1-flash");
     expect(preferredModelId("cursor")).toBe("cursor:grok-4.6");
+  });
+
+  it("reading a retired Claude model does not rewrite it when another provider is saved", () => {
+    localStorage.setItem(
+      "monocode.defaultModels",
+      JSON.stringify({ claude: RETIRED_GROK_MODEL_ID }),
+    );
+    expect(loadDefaultModels().claude).toBe(defaultModelId("claude"));
+    saveDefaultModel("codex", "codex:gpt-5.5");
+    expect(JSON.parse(localStorage.getItem("monocode.defaultModels")!).claude).toBe(
+      RETIRED_GROK_MODEL_ID,
+    );
+    expect(loadDefaultModels().claude).toBe("claude:sonnet-5");
   });
 
   it("falls back to lastModel for the default provider when no map exists", () => {

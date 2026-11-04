@@ -1,16 +1,10 @@
 // The model as small text above a Mono's composer (port map idea 2). After UniiChat (Apache-2.0, VictorTaelin/UniiChat
 // @ 0500bf6): web/src/Html.ts pick_html puts the knobs after a hairline above the box, a click on one moves it on
 // (Pick.ts move), and the change is said for 7 s (web/src/main.ts hear() and toast(): "Now <model>."). Ours names no
-// price (the hub has none), and a chevron opens the whole menu (ModelPicker `cycle`). On the Grok bridge every Claude
-// Code chat runs Grok 4.7 whatever Claude model it names, so the line says Grok 4.7 and a click opens the menu instead
-// of stepping through names that would all run the same model.
+// price (the hub has none), and a chevron opens the whole menu (ModelPicker `cycle`).
 import { useEffect, useState, type ComponentProps } from "react";
 import { ModelControlPills, ModelPicker } from "../../sessions/ui/ModelPicker";
-import { GROK_BRIDGE_LABEL, onGrokBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { isCustomModelId } from "../../sessions/model/customModels";
-
-// The one source for "what really runs" (claudeGrokBridge.ts), shared with the transcript's turn header.
-export { GROK_BRIDGE_LABEL };
 
 /** UniiChat main.ts toast(): how long "Now <model>." stays. */
 export const MODEL_NOTE_MS = 7000;
@@ -19,9 +13,7 @@ type PickerProps = ComponentProps<typeof ModelPicker>;
 
 export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hideSettings" | "chevron" | "noIcon">) {
   const [note, setNote] = useState<string | null>(null);
-  const onGrok = onGrokBridge(props.harness, props.model);
-  // One of Ash's own models ("DeepSeek · billed separately") is a name, not a knob: a click opens the menu. Stepping on
-  // from it went to the next subscription model and left his model (live 22 Oct: DeepSeek -> "Now Sonnet 5.").
+  // One of Ash's own models is a name, not a knob: a click opens the menu.
   const custom = isCustomModelId(props.model);
   useEffect(() => {
     if (!note) return;
@@ -41,8 +33,8 @@ export function MonoModelLine(props: Omit<PickerProps, "variant" | "cycle" | "hi
         chevron
         noIcon
         variant="text"
-        triggerLabel={onGrok ? GROK_BRIDGE_LABEL : props.triggerLabel}
-        cycle={onGrok || custom ? undefined : (name) => setNote(`Now ${name}.`)}
+        triggerLabel={props.triggerLabel}
+        cycle={custom ? undefined : (name) => setNote(`Now ${name}.`)}
       />
       <ModelControlPills
         harness={props.harness}

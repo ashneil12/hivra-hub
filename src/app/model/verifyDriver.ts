@@ -475,7 +475,7 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok: true, mono: mono.id, longChat: on };
     }
     case "defaults":
-      host.setDefaults(String(action.model ?? "claude:grok-4.7"), String(action.effort ?? "medium"));
+      host.setDefaults(String(action.model ?? "claude:sonnet-5"), String(action.effort ?? "medium"));
       return { ok: true };
     case "send": {
       const to = action.to as DriverTarget;

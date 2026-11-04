@@ -5,7 +5,6 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { chatOnGrokBridge, ranModel, ranModelText, shownModelName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { AgentTranscript } from "./AgentTranscript";
 import { useSessionSnapshot } from "../model/sessionStateStore";
 import { TranscriptFind } from "./TranscriptFind";
@@ -123,7 +122,7 @@ export function AgentTabView({
       </div>
     );
   }
-  const model = ranModelText(ranModel(session.harness, shownModelName(session.harness, findModel(session.model)?.name ?? session.model, chatOnGrokBridge({ model: session.model, modelSettings: session.modelSettings }))));
+  const model = findModel(session.model)?.name ?? session.model;
   return (
     <div data-agent-tab className="flex h-full min-h-0 flex-col">
       <div className="relative min-h-0 flex-1">

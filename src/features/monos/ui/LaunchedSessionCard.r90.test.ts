@@ -1,19 +1,17 @@
 // @vitest-environment happy-dom
-// r90 (Ash, Critiquito): on the Grok bench a DeepSeek-recorded worker ran on Grok 4.7. Its card names what ran first,
-// keeps that whole, and puts the reason after it in grey, which gives way first when the card is squeezed.
+// A DeepSeek-recorded worker names the model it stored. The title stays whole and wraps when the card is squeezed.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it } from "vitest";
 
-vi.mock("../../../app/model/appIdentity", () => ({ appIdentity: () => ({ verify: { grok: true } }) }));
 const { LaunchedSessionCard } = await import("./LaunchedSessionCard");
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let r: Root | undefined;
 afterEach(() => act(() => r?.unmount()));
 
-// r95 (PM, worker card a): the engine chip is gone from the card; what ran, and why, is in its tooltip.
-it("names Grok 4.7, the effort and 'DeepSeek wasn't available' in the card's tooltip, with no engine chip", async () => {
+// r95 (PM, worker card a): the engine chip is gone from the card; what ran is in its tooltip.
+it("names DeepSeek V4.1 Flash and the effort in the card's tooltip, with no engine chip", async () => {
   const host = document.createElement("div");
   document.body.append(host);
   r = createRoot(host);
@@ -21,7 +19,7 @@ it("names Grok 4.7, the effort and 'DeepSeek wasn't available' in the card's too
   await act(async () => r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "working", title: launch.title }, onOpen: () => undefined })));
   expect(host.querySelector("[data-launched-model]")).toBeNull();
   const card = host.querySelector("[data-launched-session]")!;
-  expect(card.getAttribute("title")).toMatch(/ · Runs on Grok 4\.7 · DeepSeek wasn't available, High effort$/);
+  expect(card.getAttribute("title")).toMatch(/ · Runs on DeepSeek V4\.1 Flash, High effort$/);
   expect(card.getAttribute("title")).not.toMatch(/key|provider|bridge/i);
 });
 
