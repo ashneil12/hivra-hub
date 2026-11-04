@@ -200,25 +200,65 @@ describe("Discover (WP-32)", () => {
     });
     const install = vi.mocked(invoke).mock.calls.filter((call) => call[0] === "plugins_install");
     expect(install).toEqual([
-      ["plugins_install", { source: { kind: "git", url: "https://github.com/cursor/plugins", commit: COMMIT, path: "pstack" } }],
+      ["plugins_install", {
+        source: { kind: "git", url: "https://github.com/cursor/plugins", commit: COMMIT, path: "pstack" },
+        requestedBy: { kind: "person" },
+      }],
     ]);
     expect(container.querySelector("[data-installed]")).toBeNull();
     expect(container.querySelector("[data-install-error]")?.textContent).toBe("Install isn't in this build yet. Nothing was installed.");
     expect(container.querySelector("[data-install]")).not.toBeNull();
   });
 
-  it("shows the installer's own words when it succeeds", async () => {
+  it("says a person's install is in, and off until they switch it on", async () => {
     vi.mocked(invoke).mockImplementation(async (command: string) => {
       if (command === "plugins_discover") return payload();
-      if (command === "plugins_install") return { message: "Installed pstack." };
+      if (command === "plugins_install") return { status: "installed", entry: { name: "pstack" }, reports: [] };
       return undefined;
     });
     await render();
     await act(async () => {
       container.querySelector<HTMLButtonElement>("[data-install]")!.click();
     });
-    expect(container.querySelector("[data-installed]")?.textContent).toBe("Installed pstack.");
+    expect(container.querySelector("[data-installed]")?.textContent).toBe(
+      "Installed pstack. It's off until you switch it on in Settings > Plugins.",
+    );
     expect(container.querySelector("[data-install]")).toBeNull();
+    expect(container.textContent).not.toContain("Installed.");
+  });
+
+  it("shows a waiting install, including the commands, and never says it was installed", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "plugins_discover") return payload();
+      if (command === "plugins_install") {
+        return { status: "waiting", request: { steps: [{ run: ["npm", "install"], cwd: ".", why: "dependencies" }] } };
+      }
+      return undefined;
+    });
+    await render();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-install]")!.click();
+    });
+    expect(container.querySelector("[data-installed]")?.textContent).toBe(
+      "Waiting for your OK in the Inbox. npm install",
+    );
+    expect(container.querySelector("[data-installed]")?.textContent).not.toContain("Installed");
+    expect(container.querySelector("[data-install]")).toBeNull();
+  });
+
+  it("treats a result that is not installed or waiting as a failure", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "plugins_discover") return payload();
+      if (command === "plugins_install") return { message: "Installed." };
+      return undefined;
+    });
+    await render();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>("[data-install]")!.click();
+    });
+    expect(container.querySelector("[data-installed]")).toBeNull();
+    expect(container.querySelector("[data-install-error]")?.textContent).toBe("It wasn't installed.");
+    expect(container.textContent).not.toContain("Installed.");
   });
 
   it("keeps the last list when a refresh fails, and a late listing cannot replace it", async () => {

@@ -114,7 +114,7 @@ pub fn load_mcp(root: &Path, reports: &mut Vec<Report>) -> Vec<McpServer> {
     out
 }
 
-/// Server names are 1-64 letters, digits, `-` and `_`, without `__`: the characters every CLI accepts in a server
+/// Server names are 1-64 letters, digits, `-` and `_`, without `__` and not ending in `_`: the characters every CLI accepts in a server
 /// name, and nothing Claude Code's `mcp__<server>__<tool>` split could cut, so the name a session sees
 /// (`plugin-<plugin>-<server>`, wiring.rs) keeps the plugin's server name unchanged.
 pub(crate) fn server_name_problem(name: &str) -> Option<&'static str> {
@@ -130,6 +130,11 @@ pub(crate) fn server_name_problem(name: &str) -> Option<&'static str> {
     if name.contains("__") {
         // Claude Code reads tool names as mcp__<server>__<tool>, splitting on "__".
         return Some("its name can't hold \"__\".");
+    }
+    if name.ends_with('_') {
+        // WP-31: `plugin-<plugin>-srv_` plus a tool reads `mcp__plugin-<plugin>-srv___tool`, and the split on the
+        // first "__" after the server would cut one "_" off the tool's name instead of the server's.
+        return Some("its name can't end in \"_\".");
     }
     None
 }

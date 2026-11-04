@@ -84,13 +84,23 @@ pub fn session_wiring(
             if changed.is_empty() {
                 out.claude_plugin_dirs.push(shim.to_string());
             } else {
-                out.reports.push(Report::new(
-                    &entry.name,
-                    format!(
-                        "Its skills were left out of this session: {} no longer pass the check.",
-                        changed.join(", ")
-                    ),
-                ));
+                let mut message = format!(
+                    "Its skills were left out of this session: {} no longer pass the check.",
+                    changed.join(", ")
+                );
+                // Codex reads the link, not this session's wiring, so a skill that no longer passes is unlinked too.
+                if entry.enabled.global {
+                    match registry::unlink_skills(host, &entry.name, &changed) {
+                        Ok(gone) if !gone.is_empty() => message.push_str(&format!(
+                            " Removed from the skills folder: {}.",
+                            gone.join(", ")
+                        )),
+                        Err(why) => message
+                            .push_str(&format!(" The skills folder couldn't be updated: {why}.")),
+                        Ok(_) => {}
+                    }
+                }
+                out.reports.push(Report::new(&entry.name, message));
             }
         }
         for server in loaded

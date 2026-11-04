@@ -35,6 +35,8 @@ import { listenForEffortRefusals, setModelKeyStore, tauriModelKeyStore } from ".
 import { hydrateRosterFromHome, enableTauriHome } from "./features/monos/model/monoHome";
 import { setMonoHomeRoot } from "./features/hub/model/hubMcp";
 import { DevRibbon } from "./app/shell/DevRibbon";
+// WP-16: one-time note after a retired launcher path is cleared.
+import { GrokRetirementNote } from "./features/sessions/ui/GrokRetirementNote";
 import { ChangeBar } from "./features/selfBuild/ui/ChangeBar";
 
 // "Other models": in the app, keys go to the Keychain and key tests hit the provider (dev browser keeps the stub).
@@ -149,6 +151,7 @@ void Promise.all([
             historyCwd={historyCwd}
           />
           <DevRibbon />
+          <GrokRetirementNote />
         </BootGate>
       </React.StrictMode>,
     );

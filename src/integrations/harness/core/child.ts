@@ -366,7 +366,7 @@ export async function spawnChild(
     customModelId: string;
     reasoningEffort?: string;
   },
-  /** The provider's default CLI, not the configured one (a Claude chat routed off the Grok bridge launcher). */
+  /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
 ): Promise<void> {
   livePid.delete(sessionId);

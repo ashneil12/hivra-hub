@@ -54,16 +54,14 @@ pub struct Plan {
     /// it then). Only with `claudeBinary`, so only ever to the fake Claude, which keeps a goal the way 2.1.302 does.
     #[serde(default)]
     pub goals: bool,
-    /// The bench's Claude Code runs on Grok 4.7 through the Grok subscription bridge (scripts/hub-realtest.mjs
-    /// `--grok-sub`): the window treats Claude Code as on Grok, as it does when Ash's CLI path is `claude-grok`.
-    /// Only with `claudeBinary`.
-    #[serde(default)]
-    pub grok: bool,
     /// The bench's Claude Code runs on DeepSeek through the local gateway launcher (scripts/hub-realtest.mjs
     /// `--deepseek-sub`): no Claude sign-in holds its workers back, as when Ash's CLI path is `claude-deepseek`.
     /// Only with `claudeBinary`.
     #[serde(default)]
     pub deepseek: bool,
+    /// Old plans set this for a launcher this app no longer runs. Parsed so those plans still start, then ignored.
+    #[serde(default, rename = "grok", skip_serializing)]
+    pub retired_bridge: bool,
     /// How long a worker may be silent before the window marks it stalled (monos/model/workerStall.ts), so the bench
     /// sees a stall in seconds instead of minutes. 1 s to 10 min.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,18 +111,10 @@ pub fn parse(text: &str) -> Result<Plan, String> {
             return Err("verify plan: driver must be an existing absolute folder".into());
         }
     }
-    if plan.grok && plan.claude_binary.is_none() {
-        return Err(
-            "verify plan: grok needs claudeBinary (the bench's Claude on the bridge)".into(),
-        );
-    }
     if plan.deepseek && plan.claude_binary.is_none() {
         return Err(
-            "verify plan: deepseek needs claudeBinary (the bench's Claude on the bridge)".into(),
+            "verify plan: deepseek needs claudeBinary (the bench's Claude on the launcher)".into(),
         );
-    }
-    if plan.grok && plan.deepseek {
-        return Err("verify plan: grok and deepseek are two different bridges; pass one".into());
     }
     if plan.goals && plan.claude_binary.is_none() {
         return Err(
@@ -233,9 +223,6 @@ pub fn window_info(plan: &Plan) -> Value {
     }
     if plan.driver.is_some() {
         info["driver"] = Value::Bool(true);
-    }
-    if plan.grok {
-        info["grok"] = Value::Bool(true);
     }
     if plan.deepseek {
         info["deepseek"] = Value::Bool(true);
@@ -412,21 +399,14 @@ mod tests {
     }
 
     #[test]
-    fn a_bench_on_the_grok_bridge_says_so_to_the_window() {
+    fn an_old_plan_that_names_the_retired_bridge_still_runs_as_plain_claude() {
         let plan = parse(&with_claude(
             r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true}"#,
         ))
         .unwrap();
-        assert!(plan.grok);
-        assert_eq!(window_info(&plan)["grok"], true);
-        let off = parse(&with_claude(
-            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude"}"#,
-        ))
-        .unwrap();
-        assert!(window_info(&off).get("grok").is_none());
-        assert!(parse(r#"{"version":1,"runId":"a","grok":true}"#)
-            .unwrap_err()
-            .contains("grok"));
+        assert!(plan.retired_bridge);
+        assert!(window_info(&plan).get("grok").is_none());
+        assert!(!plan.deepseek);
     }
 
     #[test]
@@ -441,9 +421,6 @@ mod tests {
         assert!(parse(r#"{"version":1,"runId":"a","deepseek":true}"#)
             .unwrap_err()
             .contains("deepseek"));
-        assert!(parse(&with_claude(r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","grok":true,"deepseek":true}"#))
-        .unwrap_err()
-        .contains("pass one"));
     }
 
     #[test]

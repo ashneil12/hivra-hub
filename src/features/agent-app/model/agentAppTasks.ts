@@ -55,21 +55,17 @@ import {
 } from "../../monos/model/workerPool";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
-import { appIdentity } from "../../../app/model/appIdentity";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
-import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import {
   bridgeFamily,
-  GROK_BRIDGE_MODEL_ID,
-  GROK_BRIDGE_NAME,
-  unavailableNote,
   isClaudeAliasModel,
   WORKER_BRIDGE_MODEL_ID,
-} from "../../sessions/model/bridgeModels";
+} from "../../sessions/model/deepseekBridge";
 
 /**
  * How many workers a project runs at once (board H8, monos/model/workerPool.ts). The app builds it on the delegation
@@ -385,20 +381,12 @@ function launchEffort(launch: Pick<QuickLaunch, "harness" | "model" | "modelSett
  */
 export function launchModelName(
   launch: Pick<QuickLaunch, "harness" | "model" | "modelSettings">,
-  benchGrok: boolean = appIdentity()?.verify?.grok === true,
 ): string | undefined {
   if (!launch.model) return undefined;
   const name = resolveModel(launch.harness, launch.model).name;
-  // r83 (c02: "running on DeepSeek V4.1 Flash" while every call ran on grok-4.7): the Grok bench holds every Claude Code
-  // call to Grok 4.7, DeepSeek-named workers too (monoSessionCompletion.ts completionTitle), so a start says so.
-  // r90 (Ash): the name comes from the hub's own model record; on the Grok bench a non-Grok record says what ran beside it.
-  const recorded = launch.harness === "claude" ? claudePillName(name) : name;
-  const fellBack = launch.harness === "claude" && benchGrok && recorded !== GROK_BRIDGE_NAME;
-  const shown = fellBack ? GROK_BRIDGE_NAME : recorded;
+  const shown = launch.harness === "claude" ? name.replace(/^Claude /, "") : name;
   const effort = launchEffort(launch);
-  // r90 (Critiquito): what ran, its effort, then the quiet reason, as the worker card shows it.
-  const line = effort ? `${shown} · ${effort}` : shown;
-  return fellBack ? `${line} · ${unavailableNote(recorded)}` : line;
+  return effort ? `${shown} · ${effort}` : shown;
 }
 
 /** A model id from any harness, or a family ("sonnet") among the caller's own harness's models. */
@@ -409,13 +397,11 @@ function taskModel(
 ): { harness: HarnessId; model: string } | undefined {
   if (value === undefined) return undefined;
   const wanted = text(value, "model", 128);
-  // On a subscription bridge Grok and DeepSeek go by their own names (bridgeModels.ts), whatever harness the id names:
-  // grok:grok-4.6 is the Grok CLI, and a worker on it ran outside the bridge (28 Oct), so it means the bridge's Grok 4.7.
+  // On the DeepSeek launcher a Grok or DeepSeek name runs as DeepSeek. A Claude name
+  // is only a label there: the worker takes the launcher's own route.
   if (onBridge) {
     const family = bridgeFamily(wanted.replace(/^[a-z][a-z0-9-]*:/i, ""));
-    if (family === "grok") return { harness: "claude", model: GROK_BRIDGE_MODEL_ID };
-    if (family === "deepseek") return { harness: "claude", model: WORKER_BRIDGE_MODEL_ID };
-    // A Claude name is only a label there, listed or not: the worker takes the bridge's own route (DeepSeek, high).
+    if (family === "grok" || family === "deepseek") return { harness: "claude", model: WORKER_BRIDGE_MODEL_ID };
     if (family === "claude") return undefined;
   }
   // One of Ash's own models ("Other models"): it runs through Claude Code's router, as the picker starts it.
@@ -691,12 +677,10 @@ async function delegate(
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
-  // On a subscription bridge a Claude name is only a label: a worker it names runs on DeepSeek like any other (Ash,
-  // 27 Oct: workers on DeepSeek; bridgeModels.ts). Grok or DeepSeek, named, is kept.
+  // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
   const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
   const askedModel = taskModel(input.model, source, onBridge);
-  // Workers on the bridge run only Grok 4.7 or DeepSeek through Claude Code (Ash, 27 Oct): another engine's model (the
-  // Grok CLI, Codex, Cursor...) named by the Lead runs as the bridge's DeepSeek instead, and the Lead hears why.
+  // On the DeepSeek launcher another engine's model runs as DeepSeek instead, and the Lead hears why.
   const offBridgeAsk =
     onBridge && askedModel !== undefined && askedModel.harness !== "claude" ? String(input.model) : undefined;
   const namedModel =

@@ -275,11 +275,10 @@ FAIL on 010dfbcf (`evidence/verify-live-base/`). The browser proof (`tests/brows
 | `tests/realtest/scenarios/*.json` | scenario files (`baseline.json`, `smoke.json`, `chatflow.json`) |
 | `tests/realtest/benchmark.json` | the benchmark items the grader uses |
 
-## On Grok 4.7 through the Grok subscription
+## Which model the bench runs
 
 **Default model (Ash, 27 Oct): no test or run may use his Claude subscription.** With no flag, realtest and realconv run
 every chat, helper call, tester, judge and the grader on DeepSeek V4.1 Flash through `~/.local/bin/claude-deepseek`
 (`--deepseek-sub`, `--agents deepseek-sub`). The Claude login is used only on an explicit `--agents claude` (realtest) or
-`--agents claude:<model>` (realconv).
-
-`--grok-sub` or `--agents grok-sub` (realtest and realconv) runs every Claude Code call, chats and helper calls, on Grok 4.7 through Ash's bridge launcher `~/.local/bin/claude-grok` (Claude Code against his local gateway, signed in to Grok with his SuperGrok subscription). No Claude login or Claude budget is used; realconv's tester and judge go there too unless named. The bench only checks the launcher is there; it never reads the gateway key or the Grok sign-in. If the gateway's Grok sign-in lapses, Ash runs `claude-grok --bridge-login` himself.
+`--agents claude:<model>` (realconv). Haiku test workers (`--agents haiku-test`) use the Anthropic test key; their grader
+still runs on the DeepSeek launcher.

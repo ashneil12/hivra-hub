@@ -3,17 +3,22 @@
 //! CLI's session. Plugins never run code in the app's process: their code runs only as MCP servers (separate
 //! processes, through `plugin-mcp`) or, for panels, inside the Pages sandbox.
 
+mod compat;
 pub mod defaults;
 pub mod discover;
 mod fsutil;
 pub mod hivra;
+mod install;
 pub mod manifest;
 pub mod mcp;
 pub mod registry;
+mod source;
 pub mod wiring;
 
 #[cfg(test)]
 mod defaults_tests;
+#[cfg(test)]
+mod install_tests;
 #[cfg(test)]
 mod tests;
 
@@ -106,6 +111,65 @@ pub fn plugins_disable(
 #[tauri::command(async)]
 pub fn plugins_uninstall(app: tauri::AppHandle, name: String) -> Result<registry::Outcome, String> {
     registry::uninstall(&host(&app)?, &name)
+}
+
+/// Install a pinned source. An agent's request, or anything that would run a command, waits for the person's OK.
+#[tauri::command(async)]
+pub fn plugins_install(
+    app: tauri::AppHandle,
+    source: source::InstallSource,
+    requested_by: Option<install::RequestedBy>,
+) -> Result<install::InstallResult, String> {
+    install::install(
+        &host(&app)?,
+        &source::Tools::app(),
+        &source,
+        requested_by.unwrap_or_default(),
+    )
+}
+
+/// Update an installed plugin to another pinned version. The installed one stays until the new one validates.
+#[tauri::command(async)]
+pub fn plugins_update(
+    app: tauri::AppHandle,
+    name: String,
+    source: source::InstallSource,
+    requested_by: Option<install::RequestedBy>,
+) -> Result<install::InstallResult, String> {
+    install::update(
+        &host(&app)?,
+        &source::Tools::app(),
+        &name,
+        &source,
+        requested_by.unwrap_or_default(),
+    )
+}
+
+/// The person said yes to a waiting install.
+#[tauri::command(async)]
+pub fn plugins_approve(
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<install::InstallResult, String> {
+    install::approve(&host(&app)?, &source::Tools::app(), &id)
+}
+
+/// The person said no. Nothing was installed.
+#[tauri::command(async)]
+pub fn plugins_decline(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    install::decline(&host(&app)?, &id)
+}
+
+/// Installs and updates waiting for the person's OK, oldest first.
+#[tauri::command(async)]
+pub fn plugins_pending(app: tauri::AppHandle) -> Result<Vec<install::PendingRequest>, String> {
+    Ok(install::pending(&host(&app)?))
+}
+
+/// Go back to the version the last update replaced.
+#[tauri::command(async)]
+pub fn plugins_rollback(app: tauri::AppHandle, name: String) -> Result<registry::Outcome, String> {
+    install::rollback(&host(&app)?, &name)
 }
 
 /// What a session in `cwd` gets from the plugins: Claude Code's `--plugin-dir`s and MCP entries, Codex's MCP entries.

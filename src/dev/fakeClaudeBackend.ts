@@ -5,7 +5,6 @@
 // `window.__fakeClaude.next.push("ask" | "402" | "529" | "hold" | "reply" | "say:<text>")` (an empty list replies), and reads what the
 // app answered the questions with in `window.__fakeClaude.answers`. Never shipped: only hub-dev.html loads it.
 import type { ChildBackend } from "../integrations/harness/core/child";
-import { claudeRunsOnGrok, GROK_BRIDGE_MODEL } from "../integrations/harness/providers/claude/claudeGrokBridge";
 import fixture402 from "../integrations/harness/providers/claude/fixtures/claude-cli-2.1.302/402-billing.ndjson?raw";
 import fixture529 from "../integrations/harness/providers/claude/fixtures/claude-cli-2.1.302/529-overloaded.ndjson?raw";
 
@@ -77,7 +76,7 @@ export function fakeClaudeBackend(): ChildBackend {
     }
     const what = state.next.shift() ?? "reply";
     await later(120);
-    emit(sessionId, { type: "system", subtype: "init", session_id: conversation(sessionId), model: claudeRunsOnGrok() ? GROK_BRIDGE_MODEL : "claude-sonnet-5", tools: [] });
+    emit(sessionId, { type: "system", subtype: "init", session_id: conversation(sessionId), model: "claude-sonnet-5", tools: [] });
     if (RECORDED[what]) {
       for (const line of RECORDED[what].split("\n").filter((l) => l.trim())) {
         const record = JSON.parse(line) as Record<string, unknown>;

@@ -16,15 +16,14 @@
 //     prints when the model is down or the account is out of credit; r88: with `worker: true` only a worker's chat, and
 //     with `hang: n` (SCRIPTED provider stall) only the retry lines, then n seconds of nothing before the prompt goes on;
 //   - leaves a routed chat's model and effort alone (a custom model through the hub's loopback router, isRouted);
-//   - on the Grok bridge (REALTEST_GROK_BRIDGE=1, `--grok-sub`) holds every call, helpers too, to REALTEST_MODEL;
 //   - on Haiku test workers (REALTEST_HAIKU_TEST=1, `--agents haiku-test`) runs every call on Haiku with Ash's Anthropic
 //     test key (ANTHROPIC_TEST_API_KEY, from this process or launchd's environment) and a sign-in-free config folder, so
 //     no Claude login or subscription is ever in reach; with no key it refuses to start. The key is never logged;
 //   - refuses to start a turn once REALTEST_STATE/stop exists (the run's budget is spent): an error result, no model.
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it. The bench points REALTEST_REAL_CLAUDE
-// at the DeepSeek launcher by default (Ash, 27 Oct), at the Grok bridge on `--agents grok-sub`, and at the real Claude
-// CLI only on `--agents claude`, so this pass-through never reaches Ash's Claude subscription unless someone asks.
+// at the DeepSeek launcher by default (Ash, 27 Oct), and at the real Claude CLI only on `--agents claude`, so this
+// pass-through never reaches Ash's Claude subscription unless someone asks.
 
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -86,11 +85,9 @@ export function haikuTestEnv(env, key, config) {
 const KEEP_EFFORTS = new Set(["low", "medium"]);
 
 /** The model to really run: haiku stays (cheap helper calls), everything else is the test model. */
-export function pickModel(asked, { grok = process.env.REALTEST_GROK_BRIDGE === "1", haiku = HAIKU_TEST } = {}) {
+export function pickModel(asked, { haiku = HAIKU_TEST } = {}) {
   // Haiku test workers: the test key is for Haiku only, so every call is Haiku whatever the app asked.
   if (haiku) return "haiku";
-  // On the Grok bridge (--grok-sub) every call is Grok 4.7: the gateway has no Haiku.
-  if (grok) return MODEL;
   return asked && KEEP_MODELS.test(asked) ? asked : MODEL;
 }
 export function pickEffort(asked) {

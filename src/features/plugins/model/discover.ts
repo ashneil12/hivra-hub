@@ -248,21 +248,48 @@ export function offersInstall(entry: Entry): boolean {
 }
 
 export function installOutcome(result: unknown): { ok: boolean; message: string } {
+  // WP-31's InstallResult is `{ status: "installed", entry, reports }` or `{ status: "waiting", request }`.
+  // A click with no `requestedBy: { kind: "person" }` comes back waiting. Anything else is not an install.
   if (result == null) return { ok: false, message: "Install isn't in this build yet. Nothing was installed." };
-  if (typeof result === "string") {
-    const message = result.trim();
-    return message ? { ok: true, message } : { ok: false, message: "Install didn't say what happened. Nothing was installed." };
+  if (typeof result !== "object") return { ok: false, message: "It wasn't installed." };
+  const record = result as { status?: unknown; entry?: unknown; request?: unknown };
+  if (record.status === "installed") {
+    const name = installedName(record.entry);
+    if (!name) return { ok: false, message: "It wasn't installed." };
+    return { ok: true, message: `Installed ${name}. It's off until you switch it on in Settings > Plugins.` };
   }
-  if (typeof result === "object") {
-    const record = result as { ok?: unknown; error?: unknown; message?: unknown };
-    if (record.ok === false) {
-      const error = typeof record.error === "string" ? record.error.trim() : "";
-      return { ok: false, message: error || "It wasn't installed." };
-    }
-    if (typeof record.message === "string" && record.message.trim()) return { ok: true, message: record.message.trim() };
-    return { ok: true, message: "Installed." };
+  if (record.status === "waiting") {
+    const commands = waitingCommands(record.request);
+    const message = commands.length === 0
+      ? "Waiting for your OK in the Inbox"
+      : `Waiting for your OK in the Inbox. ${commands.join("; ")}`;
+    return { ok: true, message };
   }
-  return { ok: false, message: "Install didn't say what happened. Nothing was installed." };
+  return { ok: false, message: "It wasn't installed." };
+}
+
+function installedName(entry: unknown): string | undefined {
+  if (!entry || typeof entry !== "object") return;
+  const name = (entry as { name?: unknown }).name;
+  if (typeof name !== "string") return;
+  const text = name.replace(/\r/g, "").trim();
+  if (!text || text.includes("\0")) return;
+  return text;
+}
+
+function waitingCommands(request: unknown): string[] {
+  if (!request || typeof request !== "object") return [];
+  const steps = (request as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return [];
+  const commands: string[] = [];
+  for (const step of steps) {
+    if (!step || typeof step !== "object") continue;
+    const run = (step as { run?: unknown }).run;
+    if (!Array.isArray(run)) continue;
+    const parts = run.filter((part): part is string => typeof part === "string" && part.trim() !== "");
+    if (parts.length > 0) commands.push(parts.join(" "));
+  }
+  return commands;
 }
 
 export function statusText(status: Status): string {

@@ -756,6 +756,14 @@ pub fn run() {
             plugins::plugins_disable,
             plugins::plugins_uninstall,
             plugins::plugins_session_wiring,
+            // WP-31: pinned install, update, rollback, and the person's OK.
+            plugins::plugins_install,
+            plugins::plugins_update,
+            plugins::plugins_approve,
+            plugins::plugins_decline,
+            plugins::plugins_pending,
+            plugins::plugins_rollback,
+            // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
             search::search_project,
             search::cancel_project_search,
@@ -772,7 +780,7 @@ pub fn run() {
             verify_live::verify_live_messages,
             verify_live::verify_live_quit,
             harness::harness_resolve_claude,
-            harness::harness_claude_grok_bridge,
+            // WP-16: the retired launcher command is gone.
             harness::claude_mcp_list,
             mcp::mcp_discover,
             mcp::mcp_add,

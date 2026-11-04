@@ -69,7 +69,9 @@ installFakeTauri("discover", (command, args) => {
       },
     ];
   }
-  if (command === "plugins_install") return { message: "Installed pstack." };
+  if (command === "plugins_install") {
+    return { status: "installed", entry: { name: "pstack" }, reports: [] };
+  }
   throw new Error(`Discover fixture refused ${command}`);
 });
 

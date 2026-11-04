@@ -10,14 +10,13 @@
 //   npm run hub:realconv -- --scenes S5 --tester xai --tester-model grok-4 --tester-key-env XAI_API_KEY \
 //                           --judge deepseek --judge-model deepseek-chat --judge-key-env DEEPSEEK_API_KEY
 //   npm run hub:realconv -- --scenes S10 --agents custom:grok --custom-model ~/grok-model.json
-//   npm run hub:realconv -- --scenes S10,S5,S14 --agents grok-sub   # everything on Grok 4.7 via the Grok subscription
 //   npm run hub:realconv -- --scenes S10,S5,S14 --agents deepseek-sub  # everything on DeepSeek V4.1 Flash (local gateway)
 //   npm run hub:realconv -- --list          # the scenes and which can run
 //   npm run hub:realconv -- --dry-run ...   # check the options and print the plan; nothing starts
 //
-// Defaults (Ash, 27 Oct: no test or run may use his Claude subscription): agents, tester and judge on deepseek-sub;
-// `--agents grok-sub` moves all three to Grok. Claude runs only when someone names it (`--agents claude:<model>`,
-// `--tester claude`, `--judge claude`). Keys: only from a variable Ash names with --*-key-env, never found on their own.
+// Defaults (Ash, 27 Oct: no test or run may use his Claude subscription): agents, tester and judge on deepseek-sub.
+// Claude runs only when someone names it (`--agents claude:<model>`, `--tester claude`, `--judge claude`). Keys: only
+// from a variable Ash names with --*-key-env, never found on their own.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -41,9 +40,9 @@ export function parseArgs(argv, env = process.env) {
     effort: value(`--${who}-effort`),
   });
   const agents = value("--agents", "deepseek-sub");
-  if (!/^(claude:[\w.-]+|custom:[\w.-]+|grok-sub|deepseek-sub|haiku-test)$/.test(agents)) throw new Error(`--agents is claude:<model> or custom:<id> (or grok-sub, deepseek-sub, haiku-test), not "${agents}"`);
-  // The tester and judge go where the agents go unless named; never Claude by default, even with Claude agents.
-  const llmDefault = agents === "grok-sub" || agents === "haiku-test" ? "grok-sub" : "deepseek-sub";
+  if (!/^(claude:[\w.-]+|custom:[\w.-]+|deepseek-sub|haiku-test)$/.test(agents)) throw new Error(`--agents is claude:<model> or custom:<id> (or deepseek-sub, haiku-test), not "${agents}"`);
+  // The tester and judge stay on DeepSeek unless named; never Claude by default, even with Claude agents.
+  const llmDefault = "deepseek-sub";
   return {
     scenes: value("--scenes", "S10,S5,S14").split(",").map((s) => s.trim().toUpperCase()).filter(Boolean),
     agents,
@@ -107,8 +106,8 @@ export function benchSpec(book, scenes, options) {
     leak: book.leak,
     // The wrapper holds Claude chats to this alias (sonnet unless Ash asked for another); routed chats are left alone.
     model: claudeModel ? claudeModel.split("-")[0] : book.model ?? "sonnet",
-    // On grok-sub or deepseek-sub the app keeps its Claude default; the bench's wrapper sends every call to the bridge.
-    appModel: options.agents === "grok-sub" || options.agents === "deepseek-sub" ? "claude:sonnet-5" : options.agents === "haiku-test" ? "claude:haiku-4.5" : options.agents,
+    // On deepseek-sub the app keeps its Claude default; the bench's wrapper sends every call to the launcher.
+    appModel: options.agents === "deepseek-sub" ? "claude:sonnet-5" : options.agents === "haiku-test" ? "claude:haiku-4.5" : options.agents,
     effort: book.effort ?? "medium",
     budget: { ...book.budget, maxMinutes: options.maxMinutes ?? Math.min(book.budget?.maxMinutes ?? 100, minutes) },
     scenarios: [],
@@ -151,7 +150,7 @@ export async function runRealconv(options, { bench, clients } = {}) {
   const runBench = bench ?? (await import("./hub-realtest.mjs")).runBench;
   let out = null;
   const outcome = await runBench(
-    { build: options.build, keep: options.keep, grade: false, slot: options.slot, maxTurns: options.maxTurns, maxMinutes: options.maxMinutes, maxRequests: null, only: [], claudeConfigs: options.claudeConfigs ?? [], grokSub: options.agents === "grok-sub", deepseekSub: options.agents === "deepseek-sub", ...(options.agents === "haiku-test" ? { haikuTest: true } : {}) },
+    { build: options.build, keep: options.keep, grade: false, slot: options.slot, maxTurns: options.maxTurns, maxMinutes: options.maxMinutes, maxRequests: null, only: [], claudeConfigs: options.claudeConfigs ?? [], deepseekSub: options.agents === "deepseek-sub", ...(options.agents === "haiku-test" ? { haikuTest: true } : {}) },
     {
       spec,
       label: "realconv",
