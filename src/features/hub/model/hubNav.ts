@@ -33,6 +33,11 @@ function read(): HubSelection {
   return cached;
 }
 
+/** The project and item on screen. `/council` reads this without the app shell. */
+export function currentHubSelection(): HubSelection {
+  return read();
+}
+
 export function setHubSelection(next: HubSelection): void {
   cached = next;
   try {

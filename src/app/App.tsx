@@ -109,6 +109,7 @@ import {
   leadBriefPrompt,
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
+import { bindCouncilApp } from "../features/council/model/seatSessions";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -10289,6 +10290,50 @@ function Workspace({
   // conversation; a busy Mono gets the room's wake in its queue. Also its router, private messages between Monos, and
   // work delegated from a room coming back to it (app/hooks/useRoomRunner.ts).
   const onStopRef = useRef<(sessionId: string, managed?: boolean) => unknown>(() => undefined);
+  // WP-23: a seat tab opens that seat's session. Read on each open, so the first render is not frozen in.
+  const showCouncilSeatRef = useRef<(sessionId: string) => void>(() => undefined);
+  showCouncilSeatRef.current = (sessionId) => {
+    if (focusOpenSession(sessionId)) return;
+    const session = sessionsRef.current.find((s) => s.id === sessionId);
+    if (!session) return;
+    const tab = newTab(session.id);
+    appendTab(tab, session.cwd);
+    setActiveTabId(tab.id);
+    setComposerFocused(false);
+  };
+  useEffect(() => {
+    // WP-23: each seat is a session on its own CLI, its tab opens that session, and the first mate who convened gets the brief.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindCouncilApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      show: (sessionId) => showCouncilSeatRef.current(sessionId),
+      cwd: () => folder,
+      hand: (monoId, text) => {
+        void ensureMonoSession(monoId, {
+          home: homeDir,
+          load: (id) => ensureOpenSessionRef.current(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => {
+            sessionsRef.current = [...sessionsRef.current, created];
+            setSessions(sessionsRef.current);
+          },
+        }).then((session) => {
+          if (session) void submitSessionRef.current(session.id, text, [], { followsUp: true });
+        });
+      },
+    });
+  }, []);
   const roomsHost = useRoomRunner({
     sessions,
     sessionsRef,
