@@ -746,6 +746,15 @@ pub fn add(store: &SessionStore, gh: &dyn Gh, input: AddInput, now: i64) -> Resu
     w.last_error = None;
     w.updated_at = now;
     save(&tx, &w)?;
+    // Hivra WP-12: the first read is stored as already told, so a checked PR that is already
+    // green or red would stay "checking". Tell its delivery now. Later polls only report changes.
+    if let Err(error) = crate::delivery::events::note_current(&tx, &repo, input.number, &read, now)
+    {
+        eprintln!(
+            "delivery: the registration read for {repo}#{} wasn't applied: {error}",
+            input.number
+        );
+    }
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
     nudge();
@@ -1101,7 +1110,7 @@ fn apply(
         };
     let mut changed = before != (w.status.clone(), w.memo.clone(), w.title.clone());
     // Hivra WP-12: CI red, CI green, merged and closed feed delivery (and WP-11's classifier).
-    let delivery_news =
+    let mut delivery_news =
         crate::delivery::events::classify(read, report.as_ref().map(|r| r.changes.as_slice()));
     match (read.state, report) {
         (PrState::Merged, _) => {
@@ -1150,8 +1159,18 @@ fn apply(
     }
     save(&tx, &w)?;
     let head = read.detail.head_sha.as_deref();
-    if let Err(error) = crate::delivery::events::record(&tx, &w.repo, w.number, head, &delivery_news, now) {
-        eprintln!("delivery events for {}#{} weren't recorded: {error}", w.repo, w.number);
+    // A delivery still checking takes this read's current checks: the first read was already told,
+    // so a delta may never arrive.
+    if let Ok(Some(open)) = crate::delivery::deliver::by_pr(&tx, &w.repo, w.number) {
+        crate::delivery::events::include_current(&mut delivery_news, read, &open.state);
+    }
+    if let Err(error) =
+        crate::delivery::events::record(&tx, &w.repo, w.number, head, &delivery_news, now)
+    {
+        eprintln!(
+            "delivery events for {}#{} weren't recorded: {error}",
+            w.repo, w.number
+        );
     }
     tx.commit().map_err(|e| e.to_string())?;
     if changed {

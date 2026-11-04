@@ -140,7 +140,12 @@ pub(crate) fn landed_in(checkout: &Path, project: &Path) -> Result<bool, String>
     if patch.is_empty() {
         return Ok(true);
     }
-    let (already, _, _) = git(project, &["apply", "--check", "-R", "-"], None, Some(&patch))?;
+    let (already, _, _) = git(
+        project,
+        &["apply", "--check", "-R", "-"],
+        None,
+        Some(&patch),
+    )?;
     Ok(already)
 }
 

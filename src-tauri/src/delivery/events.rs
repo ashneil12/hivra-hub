@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use super::deliver::{self, CHECKING, CLOSED, FAILED, FIXING, MERGED, READY};
 use super::github::Github;
-use crate::pr_watch::eval::{gate, Change};
+use crate::pr_watch::eval::{gate, Change, Check, CheckStatus};
 use crate::pr_watch::github::{PrRead, PrState};
 
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
@@ -61,6 +61,98 @@ pub struct Event {
     pub created_at: i64,
 }
 
+fn checks_detail(checks: &[&Check]) -> String {
+    checks
+        .iter()
+        .map(|check| match &check.url {
+            Some(url) => format!("{} ({url})", check.name),
+            None => check.name.clone(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// The pull request's current checks, as one piece of news. Pending checks, and a pull request
+/// with no checks, are not news: it stays "checking" until something is actually green or red.
+pub fn current(read: &PrRead) -> Option<News> {
+    match read.state {
+        PrState::Merged => Some(News {
+            kind: Kind::Merged,
+            detail: read.merge_sha.clone(),
+        }),
+        PrState::Closed => Some(News {
+            kind: Kind::Closed,
+            detail: None,
+        }),
+        PrState::Open => {
+            let (checks, _) = gate(&read.detail.checks);
+            let red: Vec<&Check> = checks
+                .iter()
+                .copied()
+                .filter(|c| c.status.failed())
+                .collect();
+            if !red.is_empty() {
+                return Some(News {
+                    kind: Kind::CiRed,
+                    detail: Some(checks_detail(&red)),
+                });
+            }
+            if checks.is_empty() || checks.iter().any(|c| c.status == CheckStatus::Pending) {
+                return None;
+            }
+            Some(News {
+                kind: Kind::CiGreen,
+                detail: None,
+            })
+        }
+    }
+}
+
+fn settles(kind: Kind) -> bool {
+    matches!(
+        kind,
+        Kind::CiRed | Kind::CiGreen | Kind::Merged | Kind::Closed
+    )
+}
+
+/// A checked delivery's first look. The PR watch's later reads only report what changed, and its
+/// first read is stored as already told, so a pull request that is already green or red would
+/// otherwise stay "checking" forever.
+pub fn include_current(news: &mut Vec<News>, read: &PrRead, state: &str) {
+    if state != CHECKING || news.iter().any(|item| settles(item.kind)) {
+        return;
+    }
+    if let Some(item) = current(read) {
+        news.push(item);
+    }
+}
+
+/// Applies [`current`] to a delivery that is still checking. Later reads go through [`include_current`].
+pub fn note_current(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    read: &PrRead,
+    now: i64,
+) -> Result<Vec<String>, String> {
+    let Some(delivery) = deliver::by_pr(conn, repo, number)? else {
+        return Ok(Vec::new());
+    };
+    let mut news = Vec::new();
+    include_current(&mut news, read, &delivery.state);
+    if news.is_empty() {
+        return Ok(Vec::new());
+    }
+    record(
+        conn,
+        repo,
+        number,
+        read.detail.head_sha.as_deref(),
+        &news,
+        now,
+    )
+}
+
 /// What one read says that delivery cares about. `changes` is the PR watch's report for an open pull request (none
 /// when it merged or closed).
 pub fn classify(read: &PrRead, changes: Option<&[Change]>) -> Vec<News> {
@@ -84,16 +176,7 @@ pub fn classify(read: &PrRead, changes: Option<&[Change]>) -> Vec<News> {
         match change {
             Change::ChecksFailed(checks) => news.push(News {
                 kind: Kind::CiRed,
-                detail: Some(
-                    checks
-                        .iter()
-                        .map(|c| match &c.url {
-                            Some(url) => format!("{} ({url})", c.name),
-                            None => c.name.clone(),
-                        })
-                        .collect::<Vec<_>>()
-                        .join("; "),
-                ),
+                detail: Some(checks_detail(&checks.iter().collect::<Vec<_>>())),
             }),
             Change::ChecksPassed { .. } => news.push(News {
                 kind: Kind::CiGreen,
@@ -160,8 +243,19 @@ pub fn record(
                 (Kind::Merged, _) => Some("Merged.".into()),
                 (Kind::Closed, _) => Some("Closed without merging.".into()),
             };
-            deliver::set_state(conn, &delivery.id, state, rounds, detail.as_deref(), now)?;
-            changed.push(delivery.id);
+            // The state we read is part of the write, so a later result that already moved the row is kept.
+            if deliver::move_state(
+                conn,
+                &delivery.id,
+                &delivery.state,
+                delivery.fix_rounds,
+                state,
+                rounds,
+                detail.as_deref(),
+                now,
+            )? {
+                changed.push(delivery.id);
+            }
         }
     }
     Ok(changed)
@@ -220,10 +314,7 @@ const LOG_MAX: usize = 4_000;
 pub fn fix_ask(gh: &dyn Github, repo: &str, number: u64) -> Result<String, String> {
     let read = gh.read_pr(repo, number)?;
     let (checks, _) = gate(&read.detail.checks);
-    let red: Vec<_> = checks
-        .into_iter()
-        .filter(|c| c.status.failed())
-        .collect();
+    let red: Vec<_> = checks.into_iter().filter(|c| c.status.failed()).collect();
     if red.is_empty() {
         return Err(format!("{repo}#{number} has no failing checks now."));
     }
@@ -246,7 +337,9 @@ pub fn fix_ask(gh: &dyn Github, repo: &str, number: u64) -> Result<String, Strin
                 if let Ok(log) = gh.run(None, &args) {
                     let tail: String = {
                         let chars: Vec<char> = log.chars().collect();
-                        chars[chars.len().saturating_sub(LOG_MAX)..].iter().collect()
+                        chars[chars.len().saturating_sub(LOG_MAX)..]
+                            .iter()
+                            .collect()
                     };
                     ask.push_str(&format!("```\n{}\n```\n", tail.trim()));
                 }

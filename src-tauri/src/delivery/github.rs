@@ -5,7 +5,6 @@
 //! stand-in, exactly as the PR watch does; the daily app never reads it.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use crate::pr_watch::bounded;
@@ -43,9 +42,10 @@ impl Github for CliGithub {
 
     fn run(&self, dir: Option<&Path>, args: &[String]) -> Result<String, String> {
         let program = program().ok_or_else(|| {
-            "GitHub CLI (`gh`) is not installed, so Hivra can't open or merge pull requests.".to_string()
+            "GitHub CLI (`gh`) is not installed, so Hivra can't open or merge pull requests."
+                .to_string()
         })?;
-        let mut command = Command::new(program);
+        let mut command = super::child(program);
         command
             .args(args)
             .env("GH_PROMPT_DISABLED", "1")
@@ -82,7 +82,12 @@ impl Github for CliGithub {
 pub fn signed_in(gh: &dyn Github) -> bool {
     gh.run(
         None,
-        &["auth".into(), "status".into(), "--hostname".into(), "github.com".into()],
+        &[
+            "auth".into(),
+            "status".into(),
+            "--hostname".into(),
+            "github.com".into(),
+        ],
     )
     .is_ok()
 }
@@ -123,8 +128,10 @@ pub(crate) mod fake {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|r| r.first().map(String::as_str) == Some(first)
-                    && r.get(1).map(String::as_str) == Some(second))
+                .filter(|r| {
+                    r.first().map(String::as_str) == Some(first)
+                        && r.get(1).map(String::as_str) == Some(second)
+                })
                 .cloned()
                 .collect()
         }

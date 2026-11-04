@@ -49,6 +49,9 @@ pub struct Stored {
     pub project: String,
     pub mode: Option<Mode>,
     pub merge_without_asking: bool,
+    /// When this row was written. None when the project has no row yet: a later write passes it back so a stale
+    /// window can't overwrite a newer choice.
+    pub updated_at: Option<i64>,
 }
 
 /// What the project can do: a GitHub remote, and `gh` signed in.
@@ -74,31 +77,65 @@ pub struct Effective {
     pub probe: Probe,
     /// Why the chosen mode can't run now, in words (a PR mode with no GitHub remote, or `gh` signed out).
     pub blocked: Option<String>,
+    /// The stored row's `updated_at`, for the next write. None when nothing is stored.
+    pub updated_at: Option<i64>,
 }
 
-/// A project folder as one key: its canonical path where it exists.
+/// A project folder as one key: its canonical path where it exists, otherwise the same path with
+/// `.` and `..` folded out, so two windows naming one folder land on one row.
 pub fn key(project: &str) -> String {
     let trimmed = project.trim();
-    crate::fs::canonical(crate::fs::expand_home(trimmed))
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| trimmed.to_string())
+    let expanded = crate::fs::expand_home(trimmed);
+    match crate::fs::canonical(&expanded) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(_) => lexical(&expanded),
+    }
+}
+
+fn lexical(path: &std::path::Path) -> String {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            // `..` folds out a real segment. It does not walk off a root, and a `..` that escapes a
+            // relative path stays, so `../a` and `a` are not the same key.
+            Component::ParentDir => match out.components().next_back() {
+                Some(Component::Normal(_)) => {
+                    out.pop();
+                }
+                Some(Component::ParentDir) | None => out.push(".."),
+                // `.` is never stored, and `..` does not walk off a root.
+                Some(Component::CurDir | Component::RootDir | Component::Prefix(_)) => {}
+            },
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out.to_string_lossy().into_owned()
 }
 
 pub fn get(conn: &Connection, project: &str) -> Result<Stored, String> {
     let project = key(project);
     let found = conn
         .query_row(
-            "SELECT mode, merge_without_asking FROM delivery_settings WHERE project = ?1",
+            "SELECT mode, merge_without_asking, updated_at FROM delivery_settings WHERE project = ?1",
             [&project],
-            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
         )
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(match found {
-        Some((mode, yolo)) => Stored {
+        Some((mode, yolo, updated_at)) => Stored {
             project,
             mode: mode.as_deref().and_then(Mode::parse),
             merge_without_asking: yolo != 0,
+            updated_at: Some(updated_at),
         },
         None => Stored {
             project,
@@ -107,28 +144,61 @@ pub fn get(conn: &Connection, project: &str) -> Result<Stored, String> {
     })
 }
 
+fn changed_elsewhere() -> String {
+    "Those delivery settings changed in another window. Look again, then set them.".into()
+}
+
+fn constraint(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(err, _)
+            if err.code == rusqlite::ErrorCode::ConstraintViolation
+    )
+}
+
+/// Writes the choice. `expected_updated_at` is the `updated_at` last read (none when there was no row). A write that
+/// isn't based on that row is refused, so two windows can't overwrite each other.
 pub fn set(
     conn: &Connection,
     project: &str,
     mode: Option<Mode>,
     merge_without_asking: bool,
+    expected_updated_at: Option<i64>,
     now: i64,
 ) -> Result<Stored, String> {
     let project = key(project);
     if project.is_empty() {
         return Err("Which project? Its folder is needed.".into());
     }
-    conn.execute(
-        "INSERT INTO delivery_settings (project, mode, merge_without_asking, updated_at) VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(project) DO UPDATE SET mode = ?2, merge_without_asking = ?3, updated_at = ?4",
-        params![project, mode.map(Mode::as_str), merge_without_asking as i64, now],
-    )
-    .map_err(|e| e.to_string())?;
-    get(conn, &project)
+    let existing = get(conn, &project)?;
+    if existing.updated_at != expected_updated_at {
+        return Err(changed_elsewhere());
+    }
+    let mode_text = mode.map(Mode::as_str);
+    let yolo = merge_without_asking as i64;
+    let wrote = if expected_updated_at.is_none() {
+        conn.execute(
+            "INSERT INTO delivery_settings (project, mode, merge_without_asking, updated_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![project, mode_text, yolo, now],
+        )
+    } else {
+        conn.execute(
+            "UPDATE delivery_settings SET mode = ?2, merge_without_asking = ?3, updated_at = ?4
+             WHERE project = ?1 AND updated_at = ?5",
+            params![project, mode_text, yolo, now, expected_updated_at],
+        )
+    };
+    match wrote {
+        Ok(0) => Err(changed_elsewhere()),
+        Ok(_) => get(conn, &project),
+        Err(error) if constraint(&error) => Err(changed_elsewhere()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = std::process::Command::new("git")
+    let out = super::child("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -196,5 +266,6 @@ pub fn effective(stored: Stored, probe: &Probe) -> Effective {
         merge_without_asking: stored.merge_without_asking,
         probe: probe.clone(),
         blocked,
+        updated_at: stored.updated_at,
     }
 }

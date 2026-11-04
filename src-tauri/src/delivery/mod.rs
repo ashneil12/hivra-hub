@@ -28,6 +28,57 @@ use tauri::State;
 
 use crate::session_store::{now_millis, SessionStore};
 
+/// What a git or `gh` child may see. Anything else in this process (tokens, agent variables) stays here.
+const CHILD_ENV: &[&str] = &[
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "USERNAME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "http_proxy",
+    "https_proxy",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "GIT_SSL_CAINFO",
+    "GIT_EXEC_PATH",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "SystemRoot",
+    "PATHEXT",
+    "COMSPEC",
+];
+
+/// A child process with an allow-listed environment and a fixed PATH. Callers add their own
+/// `GIT_*` / `GH_*` switches.
+pub(crate) fn child(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command.env_clear();
+    for key in CHILD_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    command.env("PATH", crate::connectors::launch::safe_path());
+    command
+}
+
 /// Tauri event: `{ids}` of deliveries whose state changed.
 pub const CHANGED: &str = "hivra:deliveries-changed";
 
@@ -109,12 +160,14 @@ pub fn delivery_settings_set(
     project: String,
     mode: Option<settings::Mode>,
     merge_without_asking: bool,
+    expected_updated_at: Option<i64>,
 ) -> Result<settings::Stored, String> {
     settings::set(
         &*store.lock_conn()?,
         &project,
         mode,
         merge_without_asking,
+        expected_updated_at,
         now_millis(),
     )
 }
@@ -155,11 +208,24 @@ pub fn delivery_deliver(
                 now_millis(),
             );
             match watched {
-                Ok(_) => crate::pr_watch::nudge(),
+                Ok(_) => {
+                    crate::pr_watch::nudge();
+                    // The registration read may already have settled a checked PR (green, or its one fix round).
+                    if let Ok(Some(fresh)) = deliver::get(&*store.lock_conn()?, &delivered.id) {
+                        delivered = fresh;
+                    }
+                }
                 Err(error) => {
                     let note = format!("The pull request is open, but it isn't watched: {error}");
                     let conn = store.lock_conn()?;
-                    deliver::set_state(&conn, &delivered.id, &delivered.state, 0, Some(&note), now_millis())?;
+                    deliver::set_state(
+                        &conn,
+                        &delivered.id,
+                        &delivered.state,
+                        0,
+                        Some(&note),
+                        now_millis(),
+                    )?;
                     delivered.detail = Some(note);
                 }
             }
@@ -218,9 +284,7 @@ pub fn delivery_merges(
 
 /// WP-11's classifier reads these; `consume` marks them taken.
 #[tauri::command(async)]
-pub fn delivery_events_open(
-    store: State<'_, SessionStore>,
-) -> Result<Vec<events::Event>, String> {
+pub fn delivery_events_open(store: State<'_, SessionStore>) -> Result<Vec<events::Event>, String> {
     events::open(&*store.lock_conn()?)
 }
 

@@ -90,7 +90,9 @@ pub struct MergeRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Allow {
     /// The person's word: `by` says how they gave it.
-    Person { by: String },
+    Person {
+        by: String,
+    },
     /// The project's "merge without asking" switch.
     Switch,
     Nobody,
@@ -99,7 +101,9 @@ pub enum Allow {
 /// What `decide` says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Decision {
-    Merge { allowed_by: String },
+    Merge {
+        allowed_by: String,
+    },
     Refuse(String),
     /// Needs the person's word for this head.
     Ask(String),
@@ -128,11 +132,17 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
         return Decision::Refuse(format!("{pr}'s head commit couldn't be read."));
     }
     if read.detail.mergeability == Mergeability::Conflicting {
-        return Decision::Refuse(format!("{pr} conflicts with its base; bring it up to date first."));
+        return Decision::Refuse(format!(
+            "{pr} conflicts with its base; bring it up to date first."
+        ));
     }
     let (checks, required) = gate(&read.detail.checks);
     let which = if required { "required " } else { "" };
-    let red: Vec<&Check> = checks.iter().copied().filter(|c| c.status.failed()).collect();
+    let red: Vec<&Check> = checks
+        .iter()
+        .copied()
+        .filter(|c| c.status.failed())
+        .collect();
     if !red.is_empty() {
         return Decision::Refuse(format!(
             "{pr} has {which}checks that failed ({}). Red is never merged.",
@@ -216,8 +226,8 @@ pub struct LoggedMerge {
 }
 
 fn repo_key(repo: &str) -> Result<String, String> {
-    let (owner, name) =
-        split_repo(repo).ok_or_else(|| "repo must be owner/name, like ashneil12/hivra".to_string())?;
+    let (owner, name) = split_repo(repo)
+        .ok_or_else(|| "repo must be owner/name, like ashneil12/hivra".to_string())?;
     Ok(format!("{owner}/{name}").to_ascii_lowercase())
 }
 
@@ -243,7 +253,12 @@ pub fn approve(
     Ok(())
 }
 
-fn approval(conn: &Connection, repo: &str, number: u64, head: &str) -> Result<Option<String>, String> {
+fn approval(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+) -> Result<Option<String>, String> {
     use rusqlite::OptionalExtension;
     conn.query_row(
         "SELECT approved_by FROM delivery_merge_approvals WHERE repo = ?1 AND number = ?2 AND head_sha = ?3",
@@ -319,7 +334,17 @@ pub fn merge(
         Ok(read) => read,
         Err(error) => {
             let reason = format!("{repo}#{number} couldn't be read from GitHub: {error}");
-            record(&conn, &repo, number, None, "refused", None, &request.caller, Some(&reason), now)?;
+            record(
+                &conn,
+                &repo,
+                number,
+                None,
+                "refused",
+                None,
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
             return Ok(MergeOutcome::Refused { reason });
         }
     };
@@ -359,11 +384,31 @@ pub fn merge(
     let decision = decide(&read, open.as_deref(), &allow);
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
-            record(&conn, &repo, number, Some(&head), "refused", None, &request.caller, Some(&reason), now)?;
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "refused",
+                None,
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
             return Ok(MergeOutcome::Refused { reason });
         }
         Decision::Ask(question) => {
-            record(&conn, &repo, number, Some(&head), "asked", None, &request.caller, Some(&question), now)?;
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "asked",
+                None,
+                &request.caller,
+                Some(&question),
+                now,
+            )?;
             return Ok(MergeOutcome::NeedsYou {
                 head_sha: head,
                 question,
@@ -389,7 +434,17 @@ pub fn merge(
     let conn = store.lock_conn()?;
     match ran {
         Ok(_) => {
-            record(&conn, &repo, number, Some(&head), "merged", Some(&allowed_by), &request.caller, None, now)?;
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "merged",
+                Some(&allowed_by),
+                &request.caller,
+                None,
+                now,
+            )?;
             Ok(MergeOutcome::Merged {
                 head_sha: head,
                 allowed_by,
@@ -397,7 +452,17 @@ pub fn merge(
         }
         Err(error) => {
             let reason = format!("GitHub didn't merge {repo}#{number}: {error}");
-            record(&conn, &repo, number, Some(&head), "failed", Some(&allowed_by), &request.caller, Some(&reason), now)?;
+            record(
+                &conn,
+                &repo,
+                number,
+                Some(&head),
+                "failed",
+                Some(&allowed_by),
+                &request.caller,
+                Some(&reason),
+                now,
+            )?;
             Ok(MergeOutcome::Refused { reason })
         }
     }

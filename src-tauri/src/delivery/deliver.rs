@@ -76,7 +76,8 @@ pub struct Delivery {
     pub updated_at: i64,
 }
 
-const COLUMNS: &str = "id, delegation_id, project, checkout, mode, state, repo, number, url, branch, fix_rounds, \
+const COLUMNS: &str =
+    "id, delegation_id, project, checkout, mode, state, repo, number, url, branch, fix_rounds, \
                        detail, created_at, updated_at";
 
 fn from_row(row: &Row<'_>) -> rusqlite::Result<Delivery> {
@@ -161,6 +162,29 @@ fn insert(conn: &Connection, d: &Delivery) -> Result<(), String> {
     Ok(())
 }
 
+/// Moves a delivery only when it is still in `from_state` with `from_rounds`. False when a newer
+/// write already moved it: the caller keeps that newer state.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn move_state(
+    conn: &Connection,
+    id: &str,
+    from_state: &str,
+    from_rounds: i64,
+    state: &str,
+    fix_rounds: i64,
+    detail: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    let updated = conn
+        .execute(
+            "UPDATE work_deliveries SET state = ?2, fix_rounds = ?3, detail = COALESCE(?4, detail), updated_at = ?5
+             WHERE id = ?1 AND state = ?6 AND fix_rounds = ?7",
+            params![id, state, fix_rounds, detail, now, from_state, from_rounds],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(updated == 1)
+}
+
 pub(crate) fn set_state(
     conn: &Connection,
     id: &str,
@@ -185,7 +209,7 @@ pub fn announce(app: &AppHandle, ids: &[String]) {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = std::process::Command::new("git")
+    let out = super::child("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -208,7 +232,10 @@ fn clip(text: &str, max: usize) -> String {
         return text.trim().to_string();
     }
     let kept: String = text.chars().take(max).collect();
-    format!("{}\n\n… (cut; the rest is in the delegation)", kept.trim_end())
+    format!(
+        "{}\n\n… (cut; the rest is in the delegation)",
+        kept.trim_end()
+    )
 }
 
 /// The pull request's body: the brief, then the worker's report as evidence, with its opinion of its own work kept
@@ -291,7 +318,8 @@ pub fn pr_from_output(text: &str) -> Option<(String, u64)> {
     text.split_whitespace().find_map(|word| {
         let rest = word.trim().strip_prefix("https://github.com/")?;
         let mut parts = rest.trim_end_matches('/').split('/');
-        let (owner, name, pull, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+        let (owner, name, pull, number) =
+            (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
         (pull == "pull")
             .then(|| number.parse().ok())
             .flatten()
@@ -300,11 +328,18 @@ pub fn pr_from_output(text: &str) -> Option<(String, u64)> {
 }
 
 fn default_base(checkout: &Path, remote: &str) -> String {
-    git(checkout, &["symbolic-ref", "--short", &format!("refs/remotes/{remote}/HEAD")])
-        .ok()
-        .and_then(|r| r.split_once('/').map(|(_, b)| b.to_string()))
-        .filter(|b| !b.is_empty())
-        .unwrap_or_else(|| "main".into())
+    git(
+        checkout,
+        &[
+            "symbolic-ref",
+            "--short",
+            &format!("refs/remotes/{remote}/HEAD"),
+        ],
+    )
+    .ok()
+    .and_then(|r| r.split_once('/').map(|(_, b)| b.to_string()))
+    .filter(|b| !b.is_empty())
+    .unwrap_or_else(|| "main".into())
 }
 
 /// Delivers by the project's mode (module docs). Nothing is recorded when it refuses.
@@ -319,7 +354,10 @@ pub fn deliver(
     let checkout = crate::fs::canonical(crate::fs::expand_home(input.checkout.trim()))
         .map_err(|e| format!("The worker's copy can't be opened: {e}"))?;
     if checkout == project {
-        return Err("The worker worked in the project's main checkout, so there is no copy to deliver.".into());
+        return Err(
+            "The worker worked in the project's main checkout, so there is no copy to deliver."
+                .into(),
+        );
     }
     let row = match &input.delegation_id {
         Some(id) => delegations::tree(&*store.lock_conn()?, id)?
@@ -361,7 +399,10 @@ pub fn deliver(
             }
             .into();
             delivery.detail = Some(match landing.outcome.as_str() {
-                "landed" => format!("Landed in the project (not committed): {}", landing.files.join(", ")),
+                "landed" => format!(
+                    "Landed in the project (not committed): {}",
+                    landing.files.join(", ")
+                ),
                 "already" => "The project already had these changes.".into(),
                 "nothing" => "The worker changed no files.".into(),
                 _ => format!(
@@ -379,9 +420,14 @@ pub fn deliver(
             let repo = probe.github_repo.clone().unwrap_or_default();
             let branch = git(&checkout, &["rev-parse", "--abbrev-ref", "HEAD"])?;
             if branch == "HEAD" || branch.is_empty() {
-                return Err("The worker's copy isn't on a branch, so there is nothing to push.".into());
+                return Err(
+                    "The worker's copy isn't on a branch, so there is nothing to push.".into(),
+                );
             }
-            let dirty = git(&checkout, &["status", "--porcelain", "--untracked-files=normal"])?;
+            let dirty = git(
+                &checkout,
+                &["status", "--porcelain", "--untracked-files=normal"],
+            )?;
             if !dirty.is_empty() {
                 return Err(format!(
                     "The worker left uncommitted changes in {}; a pull request carries commits only. Have it commit \
@@ -398,17 +444,33 @@ pub fn deliver(
                 &checkout,
                 &["rev-list", "--count", &format!("{remote}/{base}..HEAD")],
             )
-            .or_else(|_| git(&checkout, &["rev-list", "--count", &format!("{base}..HEAD")]))
+            .or_else(|_| {
+                git(
+                    &checkout,
+                    &["rev-list", "--count", &format!("{base}..HEAD")],
+                )
+            })
             .unwrap_or_default();
             if ahead == "0" {
-                return Err(format!("{branch} has no commits beyond {base}, so there is nothing to deliver."));
+                return Err(format!(
+                    "{branch} has no commits beyond {base}, so there is nothing to deliver."
+                ));
             }
             git(
                 &checkout,
-                &["push", "--set-upstream", &remote, &format!("HEAD:refs/heads/{branch}")],
+                &[
+                    "push",
+                    "--set-upstream",
+                    &remote,
+                    &format!("HEAD:refs/heads/{branch}"),
+                ],
             )
             .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
-            let body = pr_body(effective.mode, input.brief.as_deref(), input.report.as_deref());
+            let body = pr_body(
+                effective.mode,
+                input.brief.as_deref(),
+                input.report.as_deref(),
+            );
             let body_file = std::env::temp_dir().join(format!("hivra-pr-body-{}.md", delivery.id));
             std::fs::write(&body_file, body).map_err(|e| e.to_string())?;
             let title = input
@@ -416,7 +478,13 @@ pub fn deliver(
                 .clone()
                 .filter(|t| !t.trim().is_empty())
                 .unwrap_or_else(|| branch.clone());
-            let title: String = title.lines().next().unwrap_or("").chars().take(200).collect();
+            let title: String = title
+                .lines()
+                .next()
+                .unwrap_or("")
+                .chars()
+                .take(200)
+                .collect();
             let created = gh.run(
                 Some(&checkout),
                 &[
@@ -453,7 +521,9 @@ pub fn deliver(
                 READY
             }
             .into();
-            delivery.detail = Some(format!("Pushed {branch} and opened a pull request into {base}."));
+            delivery.detail = Some(format!(
+                "Pushed {branch} and opened a pull request into {base}."
+            ));
         }
     }
     insert(&*store.lock_conn()?, &delivery)?;

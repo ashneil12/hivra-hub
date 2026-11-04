@@ -26,7 +26,10 @@ impl Drop for Temp {
 }
 
 fn temp(tag: &str) -> Temp {
-    let dir = std::env::temp_dir().join(format!("hivra-delivery-{tag}-{}", uuid::Uuid::new_v4().simple()));
+    let dir = std::env::temp_dir().join(format!(
+        "hivra-delivery-{tag}-{}",
+        uuid::Uuid::new_v4().simple()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     Temp(crate::fs::canonical(&dir).unwrap())
 }
@@ -35,7 +38,14 @@ fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
         .arg(dir)
-        .args(["-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false"])
+        .args([
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
         .args(args)
         .output()
         .unwrap();
@@ -76,11 +86,18 @@ fn fixture(tag: &str) -> Fixture {
     git(&project, &["init", "-q", "-b", "main"]);
     git(&project, &["config", "user.name", "Test"]);
     git(&project, &["config", "user.email", "test@example.com"]);
-    git(&project, &["remote", "add", "origin", "https://github.com/acme/web.git"]);
+    git(
+        &project,
+        &["remote", "add", "origin", "https://github.com/acme/web.git"],
+    );
     let bare_url = format!("file://{}", bare.to_string_lossy().replace('\\', "/"));
     git(
         &project,
-        &["config", &format!("url.{bare_url}.insteadOf"), "https://github.com/acme/web.git"],
+        &[
+            "config",
+            &format!("url.{bare_url}.insteadOf"),
+            "https://github.com/acme/web.git",
+        ],
     );
     std::fs::write(project.join("a.txt"), "one\n").unwrap();
     git(&project, &["add", "a.txt"]);
@@ -92,7 +109,15 @@ fn fixture(tag: &str) -> Fixture {
     let copy = copies.join("work");
     git(
         &project,
-        &["worktree", "add", "-q", "-b", "work", copy.to_str().unwrap(), "main"],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "work",
+            copy.to_str().unwrap(),
+            "main",
+        ],
     );
     let copy = crate::fs::canonical(&copy).unwrap();
     Fixture {
@@ -114,7 +139,9 @@ fn check(name: &str, status: CheckStatus, required: bool) -> Check {
     Check {
         name: name.into(),
         status,
-        url: Some(format!("https://github.com/acme/web/actions/runs/99/job/{name}")),
+        url: Some(format!(
+            "https://github.com/acme/web/actions/runs/99/job/{name}"
+        )),
         required,
     }
 }
@@ -149,7 +176,10 @@ fn green(head: &str) -> PrRead {
     pr(
         PrState::Open,
         head,
-        vec![check("build", CheckStatus::Success, true), check("lint", CheckStatus::Success, true)],
+        vec![
+            check("build", CheckStatus::Success, true),
+            check("lint", CheckStatus::Success, true),
+        ],
     )
 }
 
@@ -158,10 +188,34 @@ fn store() -> SessionStore {
 }
 
 fn set_mode(store: &SessionStore, project: &Path, mode: Option<Mode>, yolo: bool) {
-    settings::set(&*store.lock_conn().unwrap(), project.to_str().unwrap(), mode, yolo, 1).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let current = settings::get(&conn, project.to_str().unwrap()).unwrap();
+    settings::set(
+        &conn,
+        project.to_str().unwrap(),
+        mode,
+        yolo,
+        current.updated_at,
+        current.updated_at.unwrap_or(0) + 1,
+    )
+    .unwrap();
 }
 
-const REPORT: &str = "## Report\nSummary: Saving no longer drops the last line.\nFiles changed:\n- a.txt\nChecks:\n- npm test: passed (14 passed)\nEvidence:\n- commit abc123\nOpen questions:\n- none\n\nI think it works great now.";
+const REPORT: &str = "\
+## Report
+Summary: Saving no longer drops the last line.
+Files changed:
+- a.txt
+Checks:
+- npm test: passed (14 passed)
+Evidence:
+- commit abc1234
+Open questions:
+- none
+
+## Self-review
+I think it works great now.
+";
 
 // ---- settings ----------------------------------------------------------------------------------------------------------
 
@@ -181,18 +235,118 @@ fn the_default_is_checked_pr_with_a_github_remote_and_gh_signed_in_otherwise_loc
     let no_remote = Probe::default();
     assert_eq!(settings::default_mode(&no_remote), Mode::Local);
 
+    // The same folder is one key, including ".." and a path that isn't there yet.
+    let via_dot = f.project.join("..").join(f.project.file_name().unwrap());
+    assert_eq!(
+        settings::key(f.project.to_str().unwrap()),
+        settings::key(via_dot.to_str().unwrap())
+    );
+    assert_eq!(
+        settings::key("/no/such/hivra-wp12/../place"),
+        settings::key("/no/such/place")
+    );
+    assert_eq!(
+        settings::key("/no/such/hivra-wp12/foo/../../bar"),
+        settings::key("/no/such/bar")
+    );
+    assert_eq!(
+        settings::key("/../../no/such/hivra-wp12"),
+        settings::key("/no/such/hivra-wp12")
+    );
+    // A space or a non-ascii name is part of the key, and `..` still folds.
+    assert_eq!(
+        settings::key("/no/such/My Project/../café"),
+        settings::key("/no/such/café")
+    );
+    assert_eq!(
+        settings::key("/no/such/hivra-wp12/"),
+        settings::key("/no/such/hivra-wp12")
+    );
+    // A `..` that leaves a relative path is not thrown away, so it does not collide with a bare name.
+    assert_ne!(
+        settings::key("hivra-wp12-not-a-folder/../../../hivra-wp12-escaped-key"),
+        settings::key("hivra-wp12-escaped-key")
+    );
+    #[cfg(windows)]
+    assert_eq!(
+        settings::key(r"C:\no\such\hivra-wp12\..\place"),
+        settings::key(r"C:\no\such\place")
+    );
+
     // A stored choice wins; "merge without asking" is off until switched on.
     let s = store();
-    let stored = settings::get(&*s.lock_conn().unwrap(), f.project.to_str().unwrap()).unwrap();
-    assert_eq!((stored.mode, stored.merge_without_asking), (None, false));
+    let stored = settings::get(&s.lock_conn().unwrap(), f.project.to_str().unwrap()).unwrap();
+    assert_eq!(
+        (stored.mode, stored.merge_without_asking, stored.updated_at),
+        (None, false, None)
+    );
     let e = settings::effective(stored, &probe);
-    assert_eq!((e.mode, e.defaulted, e.blocked.is_none()), (Mode::CheckedPr, true, true));
+    assert_eq!(
+        (e.mode, e.defaulted, e.blocked.is_none()),
+        (Mode::CheckedPr, true, true)
+    );
     set_mode(&s, &f.project, Some(Mode::Pr), true);
-    let stored = settings::get(&*s.lock_conn().unwrap(), f.project.to_str().unwrap()).unwrap();
-    assert_eq!((stored.mode, stored.merge_without_asking), (Some(Mode::Pr), true));
+    let stored = settings::get(&s.lock_conn().unwrap(), f.project.to_str().unwrap()).unwrap();
+    assert_eq!(
+        (stored.mode, stored.merge_without_asking),
+        (Some(Mode::Pr), true)
+    );
     // A PR mode with nothing to push to says why instead of pretending.
     let blocked = settings::effective(stored, &no_remote);
     assert!(blocked.blocked.unwrap().contains("no GitHub remote"));
+}
+
+#[test]
+fn a_stale_settings_write_does_not_overwrite_a_newer_choice() {
+    let s = store();
+    let project = "/no/such/hivra-wp12-settings";
+    let conn = s.lock_conn().unwrap();
+    let first = settings::set(&conn, project, Some(Mode::Local), false, None, 10).unwrap();
+    assert_eq!(first.updated_at, Some(10));
+    let stale = settings::set(&conn, project, Some(Mode::Pr), true, None, 11).unwrap_err();
+    assert!(stale.contains("another window"), "{stale}");
+    let wrong = settings::set(&conn, project, Some(Mode::Pr), true, Some(9), 12).unwrap_err();
+    assert!(wrong.contains("another window"), "{wrong}");
+    let kept = settings::get(&conn, project).unwrap();
+    assert_eq!(
+        (kept.mode, kept.merge_without_asking, kept.updated_at),
+        (Some(Mode::Local), false, Some(10))
+    );
+    let fresh = settings::set(&conn, project, Some(Mode::Pr), true, Some(10), 13).unwrap();
+    assert_eq!(
+        (fresh.mode, fresh.merge_without_asking, fresh.updated_at),
+        (Some(Mode::Pr), true, Some(13))
+    );
+
+    // The same folder, named with a space and "..", is one row. A real directory, so the canonical path is the key.
+    let root = Temp(std::env::temp_dir().join(format!("hivra-wp12-key-{}", std::process::id())));
+    let dir = root.0.join("My Project").join("café");
+    std::fs::create_dir_all(&dir).unwrap();
+    // `café/../café` exists, so this goes through the canonical path, not the lexical fallback.
+    let via = dir.join("..").join("café");
+    assert_eq!(
+        settings::key(dir.to_str().unwrap()),
+        settings::key(via.to_str().unwrap())
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn a_git_child_does_not_inherit_the_process_environment() {
+    let out = super::child("sh")
+        .args(["-c", "printf '%s' \"$CARGO_MANIFEST_DIR\""])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "a cargo variable reached git's environment: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 // ---- local -------------------------------------------------------------------------------------------------------------
@@ -215,11 +369,23 @@ fn local_lands_the_change_in_the_project_and_pushes_nothing() {
         10,
     )
     .unwrap();
-    assert_eq!((d.mode.as_str(), d.state.as_str()), ("local", deliver::LANDED));
-    assert_eq!(std::fs::read_to_string(f.project.join("a.txt")).unwrap(), "two\n");
-    assert!(!git_ok(&f.bare, &["rev-parse", "--verify", "refs/heads/work"]), "nothing is pushed");
+    assert_eq!(
+        (d.mode.as_str(), d.state.as_str()),
+        ("local", deliver::LANDED)
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.project.join("a.txt")).unwrap(),
+        "two\n"
+    );
+    assert!(
+        !git_ok(&f.bare, &["rev-parse", "--verify", "refs/heads/work"]),
+        "nothing is pushed"
+    );
     assert!(gh.ran("pr", "create").is_empty());
-    assert_eq!(deliver::list(&*s.lock_conn().unwrap(), None).unwrap(), vec![d]);
+    assert_eq!(
+        deliver::list(&s.lock_conn().unwrap(), None).unwrap(),
+        vec![d]
+    );
 }
 
 // ---- PR and checked PR -------------------------------------------------------------------------------------------------
@@ -245,27 +411,48 @@ fn pr_pushes_the_branch_and_opens_a_pull_request_with_the_brief_and_evidence() {
         10,
     )
     .unwrap();
-    assert_eq!(git(&f.bare, &["rev-parse", "refs/heads/work"]), head, "the branch is on the remote");
+    assert_eq!(
+        git(&f.bare, &["rev-parse", "refs/heads/work"]),
+        head,
+        "the branch is on the remote"
+    );
     let created = gh.ran("pr", "create");
     assert_eq!(created.len(), 1);
     let args = &created[0];
     let value = |flag: &str| args[args.iter().position(|a| a == flag).unwrap() + 1].clone();
     assert_eq!(value("--repo"), "acme/web");
-    assert_eq!((value("--head"), value("--base")), ("work".into(), "main".into()));
+    assert_eq!(
+        (value("--head"), value("--base")),
+        ("work".into(), "main".into())
+    );
     assert_eq!(value("--title"), "Fix the save bug");
     let body = gh.bodies.lock().unwrap()[0].clone();
-    assert!(body.contains("## Brief\n\nSaving drops the last line. Fix it."), "{body}");
-    assert!(body.contains("Saving no longer drops the last line."), "{body}");
+    assert!(
+        body.contains("## Brief\n\nSaving drops the last line. Fix it."),
+        "{body}"
+    );
+    assert!(
+        body.contains("Saving no longer drops the last line."),
+        "{body}"
+    );
     assert!(body.contains("- `npm test`: passed (14 passed)"), "{body}");
-    assert!(body.contains("- commit abc123"), "{body}");
+    assert!(body.contains("- commit abc1234"), "{body}");
     // The worker's own opinion is kept apart and never presented as evidence.
-    let opinion = body.find("not evidence").expect("the worker's own view is labelled");
-    assert!(body.find("I think it works great now.").unwrap() > opinion, "{body}");
+    let opinion = body
+        .find("not evidence")
+        .expect("the worker's own view is labelled");
+    assert!(
+        body.find("I think it works great now.").unwrap() > opinion,
+        "{body}"
+    );
     assert_eq!(d.state, deliver::READY);
     assert_eq!((d.repo.as_deref(), d.number), (Some("acme/web"), Some(7)));
     assert_eq!(d.url.as_deref(), Some("https://github.com/acme/web/pull/7"));
     // Nothing went into the project's checkout.
-    assert_eq!(std::fs::read_to_string(f.project.join("a.txt")).unwrap(), "one\n");
+    assert_eq!(
+        std::fs::read_to_string(f.project.join("a.txt")).unwrap(),
+        "one\n"
+    );
 }
 
 #[test]
@@ -283,9 +470,14 @@ fn a_pr_mode_refuses_uncommitted_work_and_records_nothing() {
     };
     let error = deliver::deliver(&s, &gh, input, 10).unwrap_err();
     assert!(error.contains("uncommitted"), "{error}");
-    assert!(!git_ok(&f.bare, &["rev-parse", "--verify", "refs/heads/work"]));
+    assert!(!git_ok(
+        &f.bare,
+        &["rev-parse", "--verify", "refs/heads/work"]
+    ));
     assert!(gh.ran("pr", "create").is_empty());
-    assert!(deliver::list(&*s.lock_conn().unwrap(), None).unwrap().is_empty());
+    assert!(deliver::list(&s.lock_conn().unwrap(), None)
+        .unwrap()
+        .is_empty());
 
     // With nothing beyond its base there is nothing to deliver either.
     let g = fixture("empty");
@@ -295,7 +487,9 @@ fn a_pr_mode_refuses_uncommitted_work_and_records_nothing() {
         checkout: g.copy.to_string_lossy().into(),
         ..Default::default()
     };
-    assert!(deliver::deliver(&s, &gh, input, 10).unwrap_err().contains("nothing to deliver"));
+    assert!(deliver::deliver(&s, &gh, input, 10)
+        .unwrap_err()
+        .contains("nothing to deliver"));
     // A signed-out gh blocks a PR mode before anything is pushed.
     let mut signed_out = FakeGithub::new(vec![]);
     signed_out.signed_in = false;
@@ -305,8 +499,13 @@ fn a_pr_mode_refuses_uncommitted_work_and_records_nothing() {
         checkout: g.copy.to_string_lossy().into(),
         ..Default::default()
     };
-    assert!(deliver::deliver(&s, &signed_out, input, 10).unwrap_err().contains("gh isn't signed in"));
-    assert!(!git_ok(&g.bare, &["rev-parse", "--verify", "refs/heads/work"]));
+    assert!(deliver::deliver(&s, &signed_out, input, 10)
+        .unwrap_err()
+        .contains("gh isn't signed in"));
+    assert!(!git_ok(
+        &g.bare,
+        &["rev-parse", "--verify", "refs/heads/work"]
+    ));
 }
 
 fn checked_delivery(s: &SessionStore, f: &Fixture) -> deliver::Delivery {
@@ -323,7 +522,11 @@ fn checked_delivery(s: &SessionStore, f: &Fixture) -> deliver::Delivery {
         10,
     )
     .unwrap();
-    assert_eq!(d.state, deliver::CHECKING, "checked PR isn't ready until green");
+    assert_eq!(
+        d.state,
+        deliver::CHECKING,
+        "checked PR isn't ready until green"
+    );
     d
 }
 
@@ -343,7 +546,10 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
     let state = |conn: &rusqlite::Connection| deliver::get(conn, &d.id).unwrap().unwrap();
 
     // First red: one fix round.
-    assert_eq!(events::record(&conn, "acme/web", 7, Some("h1"), &red_news(), 20).unwrap(), vec![d.id.clone()]);
+    assert_eq!(
+        events::record(&conn, "acme/web", 7, Some("h1"), &red_news(), 20).unwrap(),
+        vec![d.id.clone()]
+    );
     let now = state(&conn);
     assert_eq!((now.state.as_str(), now.fix_rounds), (deliver::FIXING, 1));
     assert!(now.detail.unwrap().contains("one fix round"));
@@ -352,8 +558,13 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
     assert_eq!(state(&conn).state, deliver::FAILED);
     // Every event is kept for WP-11's classifier, tied to the delivery.
     let open = events::open(&conn).unwrap();
-    assert_eq!(open.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(), vec!["ci-red", "ci-red"]);
-    assert!(open.iter().all(|e| e.delivery_id.as_deref() == Some(d.id.as_str())));
+    assert_eq!(
+        open.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+        vec!["ci-red", "ci-red"]
+    );
+    assert!(open
+        .iter()
+        .all(|e| e.delivery_id.as_deref() == Some(d.id.as_str())));
     assert_eq!(events::consume(&conn, &[open[0].id], 40).unwrap(), 1);
     assert_eq!(events::open(&conn).unwrap().len(), 1);
     drop(conn);
@@ -369,16 +580,96 @@ fn checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red() {
         detail: None,
     }];
     events::record(&conn, "acme/web", 7, Some("h2"), &green, 60).unwrap();
-    assert_eq!(deliver::get(&conn, &e.id).unwrap().unwrap().state, deliver::READY);
+    assert_eq!(
+        deliver::get(&conn, &e.id).unwrap().unwrap().state,
+        deliver::READY
+    );
     let merged = [News {
         kind: Kind::Merged,
         detail: Some("m3rg3".into()),
     }];
     events::record(&conn, "acme/web", 7, Some("h2"), &merged, 70).unwrap();
-    assert_eq!(deliver::get(&conn, &e.id).unwrap().unwrap().state, deliver::MERGED);
+    assert_eq!(
+        deliver::get(&conn, &e.id).unwrap().unwrap().state,
+        deliver::MERGED
+    );
     // A merged delivery stays merged.
-    events::record(&conn, "acme/web", 7, None, &[News { kind: Kind::Closed, detail: None }], 80).unwrap();
-    assert_eq!(deliver::get(&conn, &e.id).unwrap().unwrap().state, deliver::MERGED);
+    events::record(
+        &conn,
+        "acme/web",
+        7,
+        None,
+        &[News {
+            kind: Kind::Closed,
+            detail: None,
+        }],
+        80,
+    )
+    .unwrap();
+    assert_eq!(
+        deliver::get(&conn, &e.id).unwrap().unwrap().state,
+        deliver::MERGED
+    );
+}
+
+#[test]
+fn a_checked_pr_already_green_or_red_on_the_first_read_settles_once() {
+    let f = fixture("first-read");
+    let s = store();
+    let d = checked_delivery(&s, &f);
+    let conn = s.lock_conn().unwrap();
+    // The watch's first read is "already told", so classify sees no change. The delivery still has to leave checking.
+    let green = green("h1");
+    assert!(events::classify(&green, Some(&[])).is_empty());
+    let moved = events::note_current(&conn, "acme/web", 7, &green, 20).unwrap();
+    assert_eq!(moved, vec![d.id.clone()]);
+    assert_eq!(
+        deliver::get(&conn, &d.id).unwrap().unwrap().state,
+        deliver::READY
+    );
+    // Told again, it stays ready: the first read must not also count as a failure later.
+    assert!(events::note_current(&conn, "acme/web", 7, &green, 21)
+        .unwrap()
+        .is_empty());
+    drop(conn);
+
+    let red = pr(
+        PrState::Open,
+        "h2",
+        vec![check("build", CheckStatus::Failure, true)],
+    );
+    let g = fixture("first-read-red");
+    let e = checked_delivery(&s, &g);
+    let conn = s.lock_conn().unwrap();
+    // Newest acme/web#7 is this delivery. One red starts the fix round; the same red again does not fail it.
+    let moved = events::note_current(&conn, "acme/web", 7, &red, 30).unwrap();
+    assert_eq!(moved, vec![e.id.clone()]);
+    let now = deliver::get(&conn, &e.id).unwrap().unwrap();
+    assert_eq!((now.state.as_str(), now.fix_rounds), (deliver::FIXING, 1));
+    assert!(events::note_current(&conn, "acme/web", 7, &red, 31)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        deliver::get(&conn, &e.id).unwrap().unwrap().state,
+        deliver::FIXING
+    );
+    // A newer red, after that round, fails it. A write that still thinks the row is checking does not.
+    assert!(!deliver::move_state(
+        &conn,
+        &e.id,
+        deliver::CHECKING,
+        0,
+        deliver::FAILED,
+        1,
+        None,
+        32
+    )
+    .unwrap());
+    events::record(&conn, "acme/web", 7, Some("h3"), &red_news(), 33).unwrap();
+    assert_eq!(
+        deliver::get(&conn, &e.id).unwrap().unwrap().state,
+        deliver::FAILED
+    );
 }
 
 #[test]
@@ -388,18 +679,67 @@ fn pr_watch_reads_classify_as_ci_red_green_merged_and_closed() {
         &green("h1"),
         Some(&[
             Change::ChecksFailed(vec![red]),
-            Change::ChecksPassed { count: 2, required: true },
+            Change::ChecksPassed {
+                count: 2,
+                required: true,
+            },
             Change::Conflicting,
         ]),
     );
-    assert_eq!(news.iter().map(|n| n.kind).collect::<Vec<_>>(), vec![Kind::CiRed, Kind::CiGreen]);
-    assert!(news[0].detail.as_deref().unwrap().contains("actions/runs/99"));
+    assert_eq!(
+        news.iter().map(|n| n.kind).collect::<Vec<_>>(),
+        vec![Kind::CiRed, Kind::CiGreen]
+    );
+    assert!(news[0]
+        .detail
+        .as_deref()
+        .unwrap()
+        .contains("actions/runs/99"));
     assert_eq!(events::classify(&green("h1"), Some(&[])), vec![]);
     let merged = events::classify(&pr(PrState::Merged, "h1", vec![]), None);
-    assert_eq!(merged, vec![News { kind: Kind::Merged, detail: Some("m3rg3".into()) }]);
-    assert_eq!(events::classify(&pr(PrState::Closed, "h1", vec![]), None)[0].kind, Kind::Closed);
-    assert_eq!(events::run_id("https://github.com/a/b/actions/runs/123/job/456"), Some("123"));
+    assert_eq!(
+        merged,
+        vec![News {
+            kind: Kind::Merged,
+            detail: Some("m3rg3".into())
+        }]
+    );
+    assert_eq!(
+        events::classify(&pr(PrState::Closed, "h1", vec![]), None)[0].kind,
+        Kind::Closed
+    );
+    assert_eq!(
+        events::run_id("https://github.com/a/b/actions/runs/123/job/456"),
+        Some("123")
+    );
     assert_eq!(events::run_id("https://example.com/ci/1"), None);
+    // Already green or red, with no *change* since the watch's first read, is still news for a delivery that is checking.
+    let mut quiet = events::classify(&green("h1"), Some(&[]));
+    events::include_current(&mut quiet, &green("h1"), deliver::CHECKING);
+    assert_eq!(
+        quiet,
+        vec![News {
+            kind: Kind::CiGreen,
+            detail: None
+        }]
+    );
+    let mut already = quiet.clone();
+    events::include_current(&mut already, &green("h1"), deliver::READY);
+    assert_eq!(
+        already, quiet,
+        "a settled delivery is not told the same thing again"
+    );
+    assert_eq!(
+        events::current(&pr(PrState::Open, "h1", vec![])),
+        None,
+        "no checks is not green"
+    );
+    let pending = pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Pending, true)],
+    );
+    assert_eq!(events::current(&pending), None);
 }
 
 #[test]
@@ -407,7 +747,10 @@ fn the_fix_round_carries_the_failing_log() {
     let read = pr(
         PrState::Open,
         "h1",
-        vec![check("build", CheckStatus::Failure, true), check("lint", CheckStatus::Success, true)],
+        vec![
+            check("build", CheckStatus::Failure, true),
+            check("lint", CheckStatus::Success, true),
+        ],
     );
     let gh = FakeGithub::new(vec![read]);
     let ask = events::fix_ask(&gh, "acme/web", 7).unwrap();
@@ -422,21 +765,36 @@ fn the_fix_round_carries_the_failing_log() {
 // ---- the merge path ----------------------------------------------------------------------------------------------------
 
 fn person() -> Allow {
-    Allow::Person { by: "person (Inbox)".into() }
+    Allow::Person {
+        by: "person (Inbox)".into(),
+    }
 }
 
 #[test]
 fn decide_refuses_red_pending_drafts_conflicts_and_open_decisions() {
-    let refused = |read: &PrRead, open: Option<&str>, allow: &Allow| match decide(read, open, allow) {
+    let refused = |read: &PrRead, open: Option<&str>, allow: &Allow| match decide(read, open, allow)
+    {
         Decision::Refuse(why) => why,
         other => panic!("expected a refusal, got {other:?}"),
     };
-    let red = pr(PrState::Open, "h1", vec![check("build", CheckStatus::Failure, true)]);
+    let red = pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Failure, true)],
+    );
     assert!(refused(&red, None, &person()).contains("Red is never merged"));
     assert!(refused(&red, None, &Allow::Switch).contains("Red is never merged"));
-    let cancelled = pr(PrState::Open, "h1", vec![check("build", CheckStatus::Cancelled, false)]);
+    let cancelled = pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Cancelled, false)],
+    );
     assert!(refused(&cancelled, None, &person()).contains("failed"));
-    let pending = pr(PrState::Open, "h1", vec![check("build", CheckStatus::Pending, true)]);
+    let pending = pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Pending, true)],
+    );
     assert!(refused(&pending, None, &person()).contains("still running"));
     let mut draft = green("h1");
     draft.draft = true;
@@ -452,28 +810,50 @@ fn decide_refuses_red_pending_drafts_conflicts_and_open_decisions() {
     // Green: the person's word merges, the switch merges, nobody's word asks.
     assert_eq!(
         decide(&green("h1"), None, &person()),
-        Decision::Merge { allowed_by: "person (Inbox)".into() }
+        Decision::Merge {
+            allowed_by: "person (Inbox)".into()
+        }
     );
-    assert!(matches!(decide(&green("h1"), None, &Allow::Switch), Decision::Merge { .. }));
-    assert!(matches!(decide(&green("h1"), None, &Allow::Nobody), Decision::Ask(_)));
+    assert!(matches!(
+        decide(&green("h1"), None, &Allow::Switch),
+        Decision::Merge { .. }
+    ));
+    assert!(matches!(
+        decide(&green("h1"), None, &Allow::Nobody),
+        Decision::Ask(_)
+    ));
     // Only the required checks decide when some are required (as the PR watch counts them).
     let optional_red = pr(
         PrState::Open,
         "h1",
-        vec![check("build", CheckStatus::Success, true), check("flaky", CheckStatus::Failure, false)],
+        vec![
+            check("build", CheckStatus::Success, true),
+            check("flaky", CheckStatus::Failure, false),
+        ],
     );
-    assert!(matches!(decide(&optional_red, None, &person()), Decision::Merge { .. }));
+    assert!(matches!(
+        decide(&optional_red, None, &person()),
+        Decision::Merge { .. }
+    ));
     // No checks is not green: the switch alone can't merge it.
     let unchecked = pr(PrState::Open, "h1", vec![]);
-    assert!(matches!(decide(&unchecked, None, &Allow::Switch), Decision::Ask(_)));
-    assert!(matches!(decide(&unchecked, None, &person()), Decision::Merge { .. }));
+    assert!(matches!(
+        decide(&unchecked, None, &Allow::Switch),
+        Decision::Ask(_)
+    ));
+    assert!(matches!(
+        decide(&unchecked, None, &person()),
+        Decision::Merge { .. }
+    ));
 }
 
 fn agent_merge(repo: &str) -> MergeRequest {
     MergeRequest {
         repo: repo.into(),
         number: 7,
-        caller: Caller::Agent { session: "lead-1".into() },
+        caller: Caller::Agent {
+            session: "lead-1".into(),
+        },
         project: None,
         delegation_id: None,
         method: Method::Merge,
@@ -485,11 +865,17 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     let s = store();
     let gh = FakeGithub::new(vec![green("h1")]);
     let asked = merge::merge(&s, &gh, agent_merge("acme/web"), 10).unwrap();
-    assert!(matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "h1"), "{asked:?}");
-    assert!(gh.ran("pr", "merge").is_empty(), "nothing merges without the person's word");
+    assert!(
+        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "h1"),
+        "{asked:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "nothing merges without the person's word"
+    );
 
     // The person allows h1; a push since (h2) needs their word again.
-    merge::approve(&*s.lock_conn().unwrap(), "Acme/Web", 7, "h1", "person", 20).unwrap();
+    merge::approve(&s.lock_conn().unwrap(), "Acme/Web", 7, "h1", "person", 20).unwrap();
     let moved = FakeGithub::new(vec![green("h2")]);
     assert!(matches!(
         merge::merge(&s, &moved, agent_merge("acme/web"), 30).unwrap(),
@@ -498,20 +884,34 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     assert!(moved.ran("pr", "merge").is_empty());
 
     let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 40).unwrap();
-    assert!(matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "h1" && allowed_by.contains("person")));
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "h1" && allowed_by.contains("person"))
+    );
     let calls = gh.ran("pr", "merge");
     assert_eq!(
         calls[0],
-        ["pr", "merge", "7", "--repo", "acme/web", "--merge", "--match-head-commit", "h1"]
+        [
+            "pr",
+            "merge",
+            "7",
+            "--repo",
+            "acme/web",
+            "--merge",
+            "--match-head-commit",
+            "h1"
+        ]
     );
 
     // Every attempt is logged, with who allowed the merge.
-    let log = merge::log(&*s.lock_conn().unwrap(), "acme/web", 7).unwrap();
+    let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
     assert_eq!(
         log.iter().map(|l| l.outcome.as_str()).collect::<Vec<_>>(),
         vec!["asked", "asked", "merged"]
     );
-    assert_eq!(log[2].allowed_by.as_deref(), Some("person (approved this head)"));
+    assert_eq!(
+        log[2].allowed_by.as_deref(),
+        Some("person (approved this head)")
+    );
     assert_eq!(log[2].caller, "agent lead-1");
 }
 
@@ -523,21 +923,32 @@ fn the_switch_merges_green_without_asking_and_never_red() {
     let mut request = agent_merge("acme/web");
     request.project = Some(f.project.to_string_lossy().into());
 
-    let red = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![check("build", CheckStatus::Failure, true)])]);
+    let red = FakeGithub::new(vec![pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Failure, true)],
+    )]);
     let refused = merge::merge(&s, &red, request.clone(), 10).unwrap();
-    assert!(matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Red is never merged")));
+    assert!(
+        matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Red is never merged"))
+    );
     assert!(red.ran("pr", "merge").is_empty());
 
     let gh = FakeGithub::new(vec![green("h1")]);
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
-    assert!(matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking")));
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking"))
+    );
     assert_eq!(gh.ran("pr", "merge").len(), 1);
 
     // Switched off again (the default), the same green pull request asks.
     set_mode(&s, &f.project, Some(Mode::Pr), false);
     let mut again = agent_merge("acme/web");
     again.project = Some(f.project.to_string_lossy().into());
-    assert!(matches!(merge::merge(&s, &gh, again, 30).unwrap(), MergeOutcome::NeedsYou { .. }));
+    assert!(matches!(
+        merge::merge(&s, &gh, again, 30).unwrap(),
+        MergeOutcome::NeedsYou { .. }
+    ));
 }
 
 #[test]
@@ -566,7 +977,9 @@ fn an_open_question_on_the_work_blocks_even_the_persons_merge() {
     .unwrap();
     let gh = FakeGithub::new(vec![green("h1")]);
     let request = MergeRequest {
-        caller: Caller::Person { via: "Inbox".into() },
+        caller: Caller::Person {
+            via: "Inbox".into(),
+        },
         delegation_id: Some(row.id.clone()),
         ..agent_merge("acme/web")
     };
@@ -581,14 +994,18 @@ fn an_open_question_on_the_work_blocks_even_the_persons_merge() {
 #[test]
 fn the_inbox_merge_button_goes_through_the_same_path() {
     let s = store();
-    let red = FakeGithub::new(vec![pr(PrState::Open, "h1", vec![check("build", CheckStatus::Failure, true)])]);
+    let red = FakeGithub::new(vec![pr(
+        PrState::Open,
+        "h1",
+        vec![check("build", CheckStatus::Failure, true)],
+    )]);
     let error = merge::by_person(&s, &red, "acme/web", 7, Method::Squash, "Inbox", 10).unwrap_err();
     assert!(error.contains("Red is never merged"), "{error}");
     assert!(red.ran("pr", "merge").is_empty());
     let gh = FakeGithub::new(vec![green("h1")]);
     merge::by_person(&s, &gh, "acme/web", 7, Method::Squash, "Inbox", 20).unwrap();
     assert!(gh.ran("pr", "merge")[0].contains(&"--squash".to_string()));
-    let log = merge::log(&*s.lock_conn().unwrap(), "acme/web", 7).unwrap();
+    let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
     assert_eq!(log[1].allowed_by.as_deref(), Some("person (Inbox)"));
     assert_eq!(Method::from_action("close"), None);
 }
@@ -606,7 +1023,10 @@ fn teardown_keeps_a_copy_whose_work_has_not_landed_or_merged() {
     std::fs::write(f.copy.join("b.txt"), "more\n").unwrap();
     assert!(teardown::guard(&f.project, &f.copy).is_err());
     // Landed (as land.rs does it, uncommitted in the project): it may go.
-    assert_eq!(crate::land::land(&f.copy, &f.project).unwrap().outcome, "landed");
+    assert_eq!(
+        crate::land::land(&f.copy, &f.project).unwrap().outcome,
+        "landed"
+    );
     assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Landed);
     // The project changes the same lines afterwards: the work is no longer all there, so it is kept again.
     std::fs::write(f.project.join("a.txt"), "three\n").unwrap();
@@ -617,7 +1037,10 @@ fn teardown_keeps_a_copy_whose_work_has_not_landed_or_merged() {
     commit(&g.copy, "a.txt", "two\n");
     git(&g.project, &["merge", "-q", "--ff-only", "work"]);
     assert_eq!(teardown::guard(&g.project, &g.copy).unwrap(), Safe::Merged);
-    assert_eq!(teardown::guard(&g.project, &g.project.join("gone")).unwrap(), Safe::Missing);
+    assert_eq!(
+        teardown::guard(&g.project, &g.project.join("gone")).unwrap(),
+        Safe::Missing
+    );
 }
 
 #[test]
@@ -625,7 +1048,10 @@ fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
     use crate::worktree_janitor::{gather, verdict, Context, Kind as TreeKind, Outcome, Policy};
     let f = fixture("janitor");
     commit(&f.copy, "a.txt", "two\n");
-    assert_eq!(crate::land::land(&f.copy, &f.project).unwrap().outcome, "landed");
+    assert_eq!(
+        crate::land::land(&f.copy, &f.project).unwrap().outcome,
+        "landed"
+    );
     let facts = gather(&f.copy, TreeKind::Linked, &Context::default());
     let week_later = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

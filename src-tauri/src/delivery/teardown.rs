@@ -25,7 +25,7 @@ pub enum Safe {
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    std::process::Command::new("git")
+    super::child("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -36,7 +36,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> bool {
 }
 
 fn clean(worktree: &Path) -> bool {
-    std::process::Command::new("git")
+    super::child("git")
         .arg("-C")
         .arg(worktree)
         .args(["status", "--porcelain", "--untracked-files=normal"])
@@ -51,7 +51,12 @@ pub fn guard(project: &Path, worktree: &Path) -> Result<Safe, String> {
     if !worktree.exists() {
         return Ok(Safe::Missing);
     }
-    if clean(worktree) && git_ok(project, &["merge-base", "--is-ancestor", &head(worktree)?, "HEAD"]) {
+    if clean(worktree)
+        && git_ok(
+            project,
+            &["merge-base", "--is-ancestor", &head(worktree)?, "HEAD"],
+        )
+    {
         return Ok(Safe::Merged);
     }
     if crate::land::landed_in(worktree, project)? {
@@ -65,7 +70,7 @@ pub fn guard(project: &Path, worktree: &Path) -> Result<Safe, String> {
 }
 
 fn head(worktree: &Path) -> Result<String, String> {
-    let out = std::process::Command::new("git")
+    let out = super::child("git")
         .arg("-C")
         .arg(worktree)
         .args(["rev-parse", "HEAD"])
