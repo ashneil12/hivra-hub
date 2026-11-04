@@ -1,4 +1,4 @@
-import { MONO_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
+import { defaultClaudeModelId } from "../../sessions/model/defaultClaudeModel";
 import { isMonoRemovedByUser } from "./builtInMonos";
 import { isGlobalProject } from "./hubProjects";
 // Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes them on
@@ -235,9 +235,9 @@ export function ensureProjectLeads(projects: readonly HubProject[], register?: R
           name: lead.name,
           ...look,
           projects: project.folder ? [project.folder] : [],
-          // Claude Code on Grok 4.7, named (Ash, 27 Oct: no Claude subscription anywhere; bridgeModels.ts).
+          // Claude Code on the app's default Claude model.
           engine: "claude",
-          engineModel: MONO_BRIDGE_MODEL_ID,
+          engineModel: defaultClaudeModelId(),
           instructions: leadSoul(lead, project.folder),
         })
       )

@@ -172,7 +172,7 @@ describe("routeWorker", () => {
 describe("routeWorker on a subscription bridge", () => {
   it("runs every worker on DeepSeek at high effort, named, whatever the job", () => {
     for (const difficulty of [judgeTask({}), judgeTask({ hard: true })]) {
-      for (const model of ["claude:grok-4.7", "claude:sonnet-5", "claude:opus-5-5", "custom:grok-own"]) {
+      for (const model of ["claude:sonnet-5", "claude:opus-5-5", "custom:own-1"]) {
         expect(routeWorker(claude(model), difficulty, undefined, true)).toMatchObject({
           harness: "claude",
           model: "claude:deepseek-v4.1-flash",
@@ -180,12 +180,12 @@ describe("routeWorker on a subscription bridge", () => {
         });
       }
     }
-    expect(routeWorker(claude("claude:grok-4.7"), judgeTask({}), undefined, true)?.why).toContain("DeepSeek");
+    expect(routeWorker(claude("claude:sonnet-5"), judgeTask({}), undefined, true)?.why).toContain("DeepSeek");
   });
 
   it("passes a DeepSeek chat's own model on, and keeps a project's saved worker model", () => {
     expect(routeWorker(claude("claude:deepseek-v4.1-flash"), judgeTask({ hard: true }), undefined, true)).toBeUndefined();
-    const saved = routeWorker(claude("claude:grok-4.7"), judgeTask({}), { model: "custom:ds-1" }, true);
+    const saved = routeWorker(claude("claude:sonnet-5"), judgeTask({}), { model: "custom:ds-1" }, true);
     expect(saved?.model).toBe("custom:ds-1");
   });
 });

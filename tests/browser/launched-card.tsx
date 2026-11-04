@@ -4,9 +4,9 @@ import { LaunchedSessionCard } from "../../src/features/monos/ui/LaunchedSession
 import "../../src/styles/index.css";
 
 // r94 (item 3, s15 SCRIPTED 8c60): the worker card as DelegationBatchRow lays it out under a Lead's reply (card, then
-// "Stalled" and "Stop" beside it), at the chat width the URL asks for, on the Grok bridge as in the live run.
+// "Stalled" and "Stop" beside it), at the chat width the URL asks for.
 const width = Number(new URLSearchParams(location.search).get("w") ?? "640");
-const launch = { sessionId: "w1", cwd: "/repo/tally", title: new URLSearchParams(location.search).get("t") ?? "Show tally count on the board", harness: "claude" as const, model: "claude:grok-4.7", effort: "High" };
+const launch = { sessionId: "w1", cwd: "/repo/tally", title: new URLSearchParams(location.search).get("t") ?? "Show tally count on the board", harness: "claude" as const, model: "claude:sonnet-5", effort: "High" };
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

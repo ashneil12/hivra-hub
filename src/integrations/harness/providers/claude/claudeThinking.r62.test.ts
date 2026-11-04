@@ -1,11 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * r62 (bridge log 28 Oct: 639 requests "thinking: budget zero not allowed | provider=xai model=grok-4.7 ... clamped_to=0").
- * Measured against a stand-in endpoint (Claude Code 2.1.x): every --effort level sends `thinking: {type: "adaptive"}`
- * plus `output_config.effort`, which the gateway places; only `alwaysThinkingEnabled: false` sends
- * `thinking: {type: "disabled"}`, which the gateway turns into the budget 0 Grok refuses. So on a bridge no process may
- * turn thinking off; what was off asks for low effort.
+ * On the DeepSeek launcher no process may turn thinking off. What was off, with no effort set, asks for low effort.
+ * An explicit effort is kept as it was.
  */
 let cliPath: string | null = null;
 vi.mock("../../../../features/providers/model/providerBinaryPaths", () => ({
@@ -22,8 +19,8 @@ const flag = (args: string[], name: string) => {
 };
 const settingsOf = (args: string[]) => JSON.parse(flag(args, "--settings") ?? "{}") as Record<string, unknown>;
 
-describe("thinking on the subscription bridges", () => {
-  for (const launcher of ["claude-grok", "claude-deepseek"]) {
+describe("thinking on the DeepSeek launcher", () => {
+  for (const launcher of ["claude-deepseek"]) {
     it(`never turns thinking off on ${launcher}, at any effort, helper or chat`, () => {
       cliPath = `/Users/ash/.local/bin/${launcher}`;
       for (const effort of [undefined, "low", "medium", "high", "xhigh", "max"]) {
@@ -37,14 +34,14 @@ describe("thinking on the subscription bridges", () => {
   }
 
   it("asks for low effort where thinking was off and no effort was set", () => {
-    cliPath = "/Users/ash/.local/bin/claude-grok";
+    cliPath = "/Users/ash/.local/bin/claude-deepseek";
     const args = buildClaudeSpawnArgs({ model: "claude-haiku-4-5", isolated: true, settings: { alwaysThinkingEnabled: false } });
     expect(flag(args, "--effort")).toBe("low");
   });
 
-  it("keeps an explicit effort, stepped to Grok's levels", () => {
-    cliPath = "/Users/ash/.local/bin/claude-grok";
-    expect(flag(buildClaudeSpawnArgs({ effort: "max", settings: { alwaysThinkingEnabled: false } }), "--effort")).toBe("xhigh");
+  it("keeps an explicit effort as it was", () => {
+    cliPath = "/Users/ash/.local/bin/claude-deepseek";
+    expect(flag(buildClaudeSpawnArgs({ effort: "max", settings: { alwaysThinkingEnabled: false } }), "--effort")).toBe("max");
     expect(flag(buildClaudeSpawnArgs({ effort: "medium" }), "--effort")).toBe("medium");
   });
 

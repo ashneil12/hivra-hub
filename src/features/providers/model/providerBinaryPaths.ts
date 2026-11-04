@@ -1,4 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  isRetiredGrokLauncherPath,
+  retireGrokLauncherOnce,
+} from "../../sessions/model/grokRetirement";
 import type { HarnessId } from "../../sessions/model/session";
 
 export type ConfigurableBinaryProvider = HarnessId;
@@ -24,12 +28,20 @@ function readProviderBinaryPaths(): StoredBinaryPaths {
 const runtimeBinaryPaths = readProviderBinaryPaths();
 
 export async function initializeProviderBinaryPaths(): Promise<void> {
+  // WP-16: drop a stored retired-launcher path before asking Rust, including when that
+  // call times out. The in-memory path is cleared too, so this window does not
+  // keep launching the retired launcher.
+  const retired = retireGrokLauncherOnce(localStorage);
+  if (retired.cleared || isRetiredGrokLauncherPath(runtimeBinaryPaths.claude ?? "")) {
+    delete runtimeBinaryPaths.claude;
+  }
   const active = await invoke<StoredBinaryPaths>("harness_runtime_binary_paths", {
     paths: readProviderBinaryPaths(),
   });
   for (const provider of Object.keys(runtimeBinaryPaths)) {
     delete runtimeBinaryPaths[provider as ConfigurableBinaryProvider];
   }
+  if (isRetiredGrokLauncherPath(active.claude ?? "")) delete active.claude;
   Object.assign(runtimeBinaryPaths, active);
 }
 

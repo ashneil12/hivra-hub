@@ -780,7 +780,7 @@ pub fn run() {
             verify_live::verify_live_messages,
             verify_live::verify_live_quit,
             harness::harness_resolve_claude,
-            harness::harness_claude_grok_bridge,
+            // WP-16: the retired launcher command is gone.
             harness::claude_mcp_list,
             mcp::mcp_discover,
             mcp::mcp_add,

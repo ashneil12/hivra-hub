@@ -1,5 +1,5 @@
-import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
-import { DEEPSEEK_BRIDGE_NAME } from "../../sessions/model/bridgeModels";
+import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
+import { DEEPSEEK_BRIDGE_NAME } from "../../sessions/model/deepseekBridge";
 import { useEffect, useRef, useState } from "react";
 import { Popover, type PopoverAnchor } from "../../../shared/ui/Popover";
 import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
@@ -301,7 +301,7 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
         {choice && chosen
           ? `Each job here runs on ${chosen.name.replace(/^Claude /, "")}${effort ? ` at ${choice.effort ?? effort.value} effort` : ""}, unless the job names its own model.`
           : claudeRunsOnSubscriptionBridge()
-            ? `Each job here runs on ${DEEPSEEK_BRIDGE_NAME} at high effort, unless the job names Grok 4.7.`
+            ? `Each job here runs on ${DEEPSEEK_BRIDGE_NAME} at high effort.`
             : `Each job here runs on Sonnet; one marked hard, a heavy job, a retry, or a job covering 8 or more files gets a stronger model.`}
       </p>
       {/* E7: which model the coding team starts on (DeepSeek on High when set up), and why when it isn't. */}

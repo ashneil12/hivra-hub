@@ -13,12 +13,6 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   subscribeHarnessAvailability: () => () => undefined,
 }));
 vi.mock("../../../integrations/harness/core/registry", () => ({ refreshHarnessCatalogs: () => Promise.resolve() }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", () => ({
-  claudeRunsOnGrok: () => false,
-  onGrokBridge: () => false,
-  GROK_BRIDGE_LABEL: "Grok 4.7",
-  claudePillName: (name: string) => name.replace(/^Claude /, ""),
-}));
 
 import { resetHarnessModelOverlays } from "../../sessions/model/models";
 import { DelegatedChatNotice } from "./DelegationNotices";
