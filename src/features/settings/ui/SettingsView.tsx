@@ -1,6 +1,7 @@
 import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
 import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
 import { UserNameField } from "../../hub/ui/UserNameField";
+import { HIVRA_LAYOUT_FIXED } from "../../hub/model/hivraLayout";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
@@ -2973,6 +2974,8 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
       <ChatBackgroundCard appearance={appearance} />
 
       <Group title="Layout">
+        {/* WP-03: Hivra has one layout, so no switch (src/features/hub/model/hivraLayout.ts). */}
+        {HIVRA_LAYOUT_FIXED ? null : (
         <Row
           id="inset-layout"
           label="Layout"
@@ -2988,6 +2991,7 @@ function AppearancePage({ appearance }: { appearance: AppearanceSettings }) {
             onChange={(value) => appearance.onInsetLayout(value === "focused")}
           />
         </Row>
+        )}
         <Row
           id="collapsed-project-rail"
           label="Collapsed project rail"

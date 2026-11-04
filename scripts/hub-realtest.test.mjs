@@ -30,9 +30,9 @@ test("the memory stand-in joins a real chat's servers, never a helper's", () => 
   const config = JSON.stringify({ mcpServers: { monocode: { command: "/app/monocode", args: ["mcp"] } } });
   const out = withMemory(["--allowedTools", "mcp__monocode__*", "--mcp-config", config], { memoryDir: "/m", state: "/s", cwd: "/p", node: "node" });
   const servers = JSON.parse(out[3]).mcpServers;
-  assert.deepEqual(Object.keys(servers), ["monocode", "ash-os"]);
-  assert.equal(servers["ash-os"].env.REALTEST_MEMORY_DIR, "/m");
-  assert.match(out[1], /mcp__ash-os__ash_recall/);
+  assert.deepEqual(Object.keys(servers), ["monocode", "memory"]);
+  assert.equal(servers.memory.env.REALTEST_MEMORY_DIR, "/m");
+  assert.match(out[1], /mcp__memory__ash_recall/);
   const helper = ["--mcp-config", '{"mcpServers":{}}'];
   assert.deepEqual(withMemory(helper, { memoryDir: "/m" }), helper);
   assert.deepEqual(withMemory(["--mcp-config", config], { memoryDir: undefined }), ["--mcp-config", config]);

@@ -13,7 +13,7 @@
 //! 3. The runner waits for this process to exit, backs up the database files and `monos/`, renames the old app to
 //!    `previous.app.off`, moves the staged build into place ("trial") and opens it.
 //! 4. The new build ([`startup`] returns [`Boot::Trial`]) holds auto-resume, habits and automations ([`holding`]) until
-//!    its window, database and hub bridge are up ([`ship_ready`]), then writes `committed.json`.
+//!    its window and database are up ([`ship_ready`]), then writes `committed.json`.
 //! 5. No commit in time, or an early exit, and the runner rolls back: the old app and the database copy go back.
 //! 6. `receipt.json` and `runner.log` say what happened; Today shows it and the shipping Lead's resume note carries it.
 //!
@@ -68,7 +68,6 @@ static SHIP_MARKER: &str = "MONOCODE-SHIP:1";
 
 const WATCH_EVERY: Duration = Duration::from_secs(2);
 const RETRY_QUIT_EVERY: Duration = Duration::from_secs(5);
-const BRIDGE_WAIT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -899,8 +898,8 @@ pub fn holding() -> bool {
         .unwrap_or(false)
 }
 
-/// The window calls this once it has drawn the workspace. The database and the hub bridge are checked off the main
-/// thread; when all three are up, the build commits.
+/// The window calls this once it has drawn the workspace. The database is checked off the main thread; when both are
+/// up, the build commits.
 #[tauri::command]
 pub fn ship_ready(app: AppHandle) -> Value {
     if let Some((id, dir)) = begin_checks(&TRIAL) {
@@ -945,13 +944,12 @@ fn record_commit(
 
 fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
     let db = check_database(app);
-    let bridge = check_bridge(dir);
+    // WP-04 retired the Ash OS bridge, so the trial no longer waits on it.
     let checks = json!({
         "window": true,
         "database": match &db { Ok(sessions) => json!({"ok": true, "sessions": sessions}), Err(e) => json!({"ok": false, "error": e}) },
-        "bridge": match &bridge { Ok(said) => json!({"ok": true, "said": said}), Err(e) => json!({"ok": false, "error": e}) },
     });
-    if db.is_err() || bridge.is_err() {
+    if db.is_err() {
         log(dir, &format!("trial checks failed: {checks}"));
         let _ = write_json(&dir.join(TRIAL_CHECKS), &checks);
         end_checks(&TRIAL, false);
@@ -991,43 +989,6 @@ fn check_database(app: &AppHandle) -> Result<i64, String> {
     let conn = store.lock_conn()?;
     conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
         .map_err(|error| format!("The database didn't answer: {error}"))
-}
-
-/// The bridge must be up if it was up before the update (the old app wrote that down when it accepted the build). If
-/// it was already down, a down bridge isn't this build's fault.
-fn check_bridge(dir: &Path) -> Result<String, String> {
-    let before = read_json(&dir.join(ACCEPTED)).and_then(|accepted| {
-        accepted
-            .get("bridge")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    });
-    let required = before.as_deref() == Some("up");
-    let deadline = Instant::now()
-        + if required {
-            BRIDGE_WAIT
-        } else {
-            Duration::ZERO
-        };
-    loop {
-        match crate::hub::probe() {
-            Ok(()) => return Ok("up".into()),
-            Err(error) if !required => {
-                return Ok(format!(
-                    "not required (before the update: {}): {}",
-                    before.as_deref().unwrap_or("unknown"),
-                    error.message
-                ))
-            }
-            Err(error) if Instant::now() >= deadline => {
-                return Err(format!(
-                    "The hub bridge was up before the update and isn't now: {}",
-                    error.message
-                ))
-            }
-            Err(_) => std::thread::sleep(Duration::from_secs(2)),
-        }
-    }
 }
 
 // ---- the watcher (the app being replaced) ----------------------------------------------------------------------------
@@ -1101,25 +1062,16 @@ fn consider(ship: &Ship) {
     if !accepted.exists() {
         match verify_staged(ship) {
             Ok(()) => {
-                let bridge = if crate::hub::probe().is_ok() {
-                    "up"
-                } else {
-                    "down"
-                };
                 let stamp = instance::stamp();
                 let note = json!({
                     "pid": std::process::id(),
                     "sha": stamp.sha,
                     "at": now_iso(),
-                    "bridge": bridge,
                 });
                 if write_json(&accepted, &note).is_err() {
                     return;
                 }
-                log(
-                    &ship.dir,
-                    &format!("accepted the staged build (bridge {bridge})"),
-                );
+                log(&ship.dir, "accepted the staged build");
             }
             Err(reason) => {
                 let _ = write_json(&refused, &json!({ "reason": reason, "at": now_iso() }));

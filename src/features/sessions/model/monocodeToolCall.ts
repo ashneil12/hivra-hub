@@ -15,7 +15,10 @@ export type DelegateToolName =
   | "task_wait"
   | "task_cancel"
   | "task_cannot"
-  | "task_answer";
+  | "task_answer"
+  // Hivra WP-14.
+  | "task_message"
+  | "ask_person";
 
 /**
  * T3's verb table (packages/shared/src/t3McpToolPresentation.ts, MIT): what the tool does, while it runs, once it is
@@ -46,6 +49,14 @@ const DELEGATE_TOOLS: Record<
   task_answer: {
     labels: ["Answer", "Answering", "Answered", "a worker's question"],
     count: { noun: "worker's question", id: (output) => output.taskId },
+  },
+  task_message: {
+    labels: ["Message", "Messaging", "Messaged", "a worker"],
+    count: { noun: "message", id: (output) => output.messageId },
+  },
+  ask_person: {
+    labels: ["Ask", "Asking", "Asked", "you a decision"],
+    count: { noun: "decision", id: (output) => output.key },
   },
 };
 

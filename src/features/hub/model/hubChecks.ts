@@ -1,15 +1,19 @@
 // Checks reach the chat that owns one of Ash's messages (docs/PHASE-2-DESIGN.md, decision 4 and H6).
 //
+// WP-04: Ash OS is retired, so no checks arrive until WP-14's decision store (localHub/decisions.ts); the history below
+// is how they were delivered, and a check's own prompt is used as given. The owner answers in its reply ("Right: ...",
+// "Fixed: ..."), with no Ash OS tools.
+//
 // The checker (hubChecker.ts) leaves its findings in Ash OS. The hub store pulls the ones not yet delivered
-// (`ash-hub-checks`, on feed topic `checks` and at boot) and the app hands each to its owner's chat as one
+// (`checks`, on feed topic `checks` and at boot) and the app hands each to its owner's chat as one
 // `[MonoCode check]` turn (app/hooks/useHubChecks.ts):
 // - only when that chat is idle, with nothing queued and nothing waiting on Ash: a check never interrupts or steers;
 // - once per check: the turn carries the receipt `mono-check-<id>`, so a check pulled again (a restart before Ash OS
 //   heard it was delivered) is only confirmed, never sent twice;
-// - then `ash-hub-check-delivered`. The owner answers with ash_record {check: {id, verdict: right|fixed, note}};
+// - then `check-delivered`. The owner answers with ash_record {check: {id, verdict: right|fixed, note}};
 // - the chat shows it as a quiet collapsed card (hub/ui/CheckTurnCard.tsx): never as Ash's words, never on Today, no
 //   unread count and no notification.
-// A check for a chat outside the hub has nothing to deliver here: Ash OS hands it back on that chat's own next ash-os
+// A check for a chat outside the hub has nothing to deliver here: Ash OS hands it back on that chat's own next Ash OS
 // call. Ash OS lists only checks for chats the app runs; one naming a chat this app doesn't have is left alone too.
 import type { Block, MonoCheck, Session } from "../../sessions/model/session";
 import { claimEvidenceOf, lastReply, type ClaimEvidence } from "./claimEvidence";
@@ -19,7 +23,7 @@ import { forUser } from "./userName";
 /** Every check turn starts with this, so nothing takes it for Ash's own words (the studio's sweep skips it). */
 export const CHECK_PREFIX = "[MonoCode check]";
 
-/** One check as `ash-hub-checks` lists it. */
+/** One check as `checks` lists it. */
 export type HubCheck = {
   id: string;
   dumpId: string;
@@ -40,7 +44,7 @@ const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim
 
 /** A turn of our own when Ash OS sent none (it always does): the same answer instruction. */
 function fallbackPrompt(id: string, dumpId: string, finding: string): string {
-  return forUser`${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it (ash_dump_status ${dumpId}). If it was handled right as it is, answer with ash_record check {"id": "${id}", "verdict": "right", "note": "<why>"}. If not, fix it first, then answer with verdict "fixed" and say what you did.`;
+  return forUser`${CHECK_PREFIX} The checker looked at Ash's message (dump ${dumpId}) that this chat owns and found: ${finding}\nLook at it here (check ${id}). If it was handled right as it is, start your reply with "Right:" and say why. If not, fix it first, then start your reply with "Fixed:" and say what you did.`;
 }
 
 export function mapCheck(raw: unknown): HubCheck | undefined {
@@ -66,7 +70,7 @@ export function mapCheck(raw: unknown): HubCheck | undefined {
   };
 }
 
-/** `ash-hub-checks`' answer, oldest first, each check once. */
+/** `checks`' answer, oldest first, each check once. */
 export function mapChecks(raw: unknown): HubCheck[] {
   const list = raw && typeof raw === "object" ? (raw as { checks?: unknown }).checks : undefined;
   const seen = new Set<string>();
@@ -214,7 +218,7 @@ export type CheckDeliveryHost = {
   current(sessionId: string): Session | undefined;
   /** Send the check's turn: a hidden, internal user turn with the check's receipt. Resolves whether it was taken. */
   submit(sessionId: string, check: HubCheck): Promise<boolean>;
-  /** `ash-hub-check-delivered`. */
+  /** `check-delivered`. */
   delivered(ids: string[]): Promise<void>;
   monoExists(id: string): boolean;
   now?(): number;

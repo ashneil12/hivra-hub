@@ -1,8 +1,7 @@
 // @vitest-environment happy-dom
-import { beforeEach, expect, it, vi } from "vitest";
-import { HubCallError, type HubTransport } from "../../hub/model/hubTransport";
+import { beforeEach, expect, it } from "vitest";
 import { undoBotChange } from "../../hub/model/botChanges";
-import { buildPage, SEATED_ONLY_PAGES } from "./buildPage";
+import { BUILD_MOVED, buildPage, checkBuiltSpec, SEATED_ONLY_PAGES } from "./buildPage";
 import { handleBridgeCall, KEYS_REFUSAL } from "./bridge";
 import { checkBespokePage } from "./designCheck";
 import { approvedPermissions, keepPage, pageFromSpec, resetPagesForTest } from "./pages";
@@ -11,31 +10,24 @@ import { CSP, SANDBOX, bespokeSrcdoc } from "./sandbox";
 import { stubPageSpec } from "./stubPages";
 
 const roster = [{ id: "projects-manager" }];
-const answering = (answer: unknown): HubTransport => ({ call: async () => answer as never, openFeed: () => () => undefined });
-const failing = (e: unknown): HubTransport => ({ call: async () => { throw e; }, openFeed: () => () => undefined });
 const req = { projectId: "hivra", monoId: "projects-manager", prompt: "a page" };
 const bespoke = (over: Partial<BespokeSpec> = {}): BespokeSpec => ({ kind: "bespoke", title: "Example: room", html: "<p class='t'>Hi</p>", css: ".t{color:var(--color-content)}", permissions: [], ...over });
 
 beforeEach(() => { localStorage.clear(); resetPagesForTest(); });
 
-it("only a seated Mono may build; a temporary worker is turned away before anything is sent", async () => {
-  const call = vi.fn();
-  const r = await buildPage({ ...req, monoId: "worker-7f3" }, { roster, transport: { call, openFeed: () => () => undefined } });
+it("only a seated Mono may build; a temporary worker is turned away before anything else", async () => {
+  const r = await buildPage({ ...req, monoId: "worker-7f3" }, { roster, stub: true });
   expect(r).toEqual({ status: "turned-down", reason: SEATED_ONLY_PAGES });
-  expect(call).not.toHaveBeenCalled();
 });
 
-it("calls the backend through the hub transport and validates what comes back", async () => {
-  const call = vi.fn(async () => stubPageSpec("EXO bugs"));
-  const r = await buildPage(req, { roster, transport: { call: call as never, openFeed: () => () => undefined } });
-  expect(call).toHaveBeenCalledWith("ash-hub-build-page", { ...req, wait: 30 });
-  expect(r.status).toBe("ready");
-  expect((await buildPage(req, { roster, transport: answering({ kind: "blocks", title: "x", blocks: [{ kind: "video", title: "v" }] }) })).status).toBe("turned-down");
+it("a built page is validated before it is ready (a Mono's page_build, or the dev stub)", async () => {
+  expect(checkBuiltSpec(stubPageSpec("EXO bugs")).status).toBe("ready");
+  expect(checkBuiltSpec({ kind: "blocks", title: "x", blocks: [{ kind: "video", title: "v" }] }).status).toBe("turned-down");
+  expect((await buildPage(req, { roster, stub: true })).status).toBe("ready");
 });
 
-it("an unwired backend shows Not connected yet instead of pretending", async () => {
-  const r = await buildPage(req, { roster, transport: failing(new HubCallError("unreachable", "down")) });
-  expect(r.status).toBe("not-connected");
+it("outside the dev stub the Build button says pages are built from a Mono's chat now (WP-04), never pretends", async () => {
+  expect(await buildPage(req, { roster, stub: false })).toEqual({ status: "not-connected", reason: BUILD_MOVED });
 });
 
 it("bundles the restyled Tremor-style bar list as an allowed block", () => {

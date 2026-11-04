@@ -4,7 +4,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import type { Delegation } from "../../monos/model/delegations";
-import { handleAgentApp, type AgentAppHost, type QueuedBrief } from "./agentApp";
+import { type AgentAppHost, type QueuedBrief } from "./agentApp";
+import { handleWithBriefParts as handleAgentApp, TEST_INTENT } from "../../firstmate/testing/briefParts";
+import { renderBrief } from "../../firstmate/model/brief";
 import type { AgentAppTasksHost } from "./agentAppTasks";
 
 beforeEach(() => {
@@ -89,7 +91,8 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     expect(h.briefLead).toHaveBeenCalledWith(source, expect.objectContaining({ id: "chief-of-staff" }), {
       lead: "hub",
       requestId: "app-cos-chat-b1",
-      brief: "Ash: \"ship the room\"",
+      // Hivra WP-10: a Lead is a first mate; its brief comes from the same template, read-only on the project.
+      brief: renderBrief({ intent: TEST_INTENT, spec: "Ash: \"ship the room\"" }, { kind: "first-mate" }),
       title: "Ash: \"ship the room\"",
       goal: "the room shows the report",
       askIds: ["a_1"],

@@ -1,0 +1,151 @@
+{
+  "about": "Made by src-tauri/src/plugins/tests.rs (the_wiring_snapshot_for_the_session_test_is_current). Don't edit by hand.",
+  "files": [
+    {
+      "dir": true,
+      "path": "app-data/plugins"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/claude"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/claude/demo"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/claude/demo/.claude-plugin"
+    },
+    {
+      "path": "app-data/plugins/claude/demo/.claude-plugin/plugin.json",
+      "text": "{\"name\":\"demo\",\"version\":\"1.0.0\"}"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/claude/demo/skills"
+    },
+    {
+      "link": "app-data/plugins/installed/demo/skills/demo-skill",
+      "path": "app-data/plugins/claude/demo/skills/demo-skill"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/data"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/data/demo"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/installed"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/installed/demo"
+    },
+    {
+      "path": "app-data/plugins/installed/demo/mcp.json",
+      "text": "{\"$schema\":\"https://agent-plugins.org/schemas/1.0.0/mcp.schema.json\",\"mcpServers\":{\"tools\":{\"args\":[\"${PLUGIN_ROOT}/server/index.mjs\"],\"command\":\"node\",\"cwd\":\"${PLUGIN_DATA}\",\"type\":\"stdio\"}}}"
+    },
+    {
+      "path": "app-data/plugins/installed/demo/plugin.json",
+      "text": "{\"$schema\":\"https://agent-plugins.org/schemas/1.0.0/plugin.schema.json\",\"name\":\"demo\",\"version\":\"1.0.0\"}"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/installed/demo/server"
+    },
+    {
+      "path": "app-data/plugins/installed/demo/server/index.mjs",
+      "text": "<scripts/fake-mcp-server.mjs>"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/installed/demo/skills"
+    },
+    {
+      "dir": true,
+      "path": "app-data/plugins/installed/demo/skills/demo-skill"
+    },
+    {
+      "path": "app-data/plugins/installed/demo/skills/demo-skill/SKILL.md",
+      "text": "---\nname: demo-skill\ndescription: A skill from a plugin.\n---\n\n# demo-skill\n"
+    },
+    {
+      "dir": true,
+      "path": "home/.agents"
+    },
+    {
+      "dir": true,
+      "path": "home/.agents/skills"
+    },
+    {
+      "link": "app-data/plugins/installed/demo/skills/demo-skill",
+      "path": "home/.agents/skills/demo-skill"
+    }
+  ],
+  "launch": {
+    "plugin-demo-tools": {
+      "args": [
+        "<TMP>/app-data/plugins/installed/demo/server/index.mjs"
+      ],
+      "cwd": "<TMP>/app-data/plugins/data/demo",
+      "env": {
+        "PLUGIN_DATA": "<TMP>/app-data/plugins/data/demo",
+        "PLUGIN_ROOT": "<TMP>/app-data/plugins/installed/demo"
+      },
+      "launcherArgs": [
+        "plugin-mcp",
+        "--root",
+        "<TMP>/app-data/plugins",
+        "--agents-skills",
+        "<TMP>/home/.agents/skills",
+        "--plugin",
+        "demo",
+        "--server",
+        "tools"
+      ],
+      "program": "node"
+    }
+  },
+  "wiring": {
+    "claudeMcpServers": {
+      "plugin-demo-tools": {
+        "args": [
+          "plugin-mcp",
+          "--root",
+          "<TMP>/app-data/plugins",
+          "--agents-skills",
+          "<TMP>/home/.agents/skills",
+          "--plugin",
+          "demo",
+          "--server",
+          "tools"
+        ],
+        "command": "<CLI>"
+      }
+    },
+    "claudePluginDirs": [
+      "<TMP>/app-data/plugins/claude/demo"
+    ],
+    "codexMcpServers": {
+      "plugin-demo-tools": {
+        "args": [
+          "plugin-mcp",
+          "--root",
+          "<TMP>/app-data/plugins",
+          "--agents-skills",
+          "<TMP>/home/.agents/skills",
+          "--plugin",
+          "demo",
+          "--server",
+          "tools"
+        ],
+        "command": "<CLI>"
+      }
+    },
+    "reports": []
+  }
+}

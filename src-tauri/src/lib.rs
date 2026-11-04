@@ -2,6 +2,8 @@ use tauri::Manager;
 
 mod account_identity;
 mod artifacts;
+// WP-04: the one-time, read-only import from the retired Ash OS bridge.
+mod ash_os_import;
 mod automations;
 pub mod autopilot;
 mod azure_devops;
@@ -13,20 +15,23 @@ pub mod connectors;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod decisions;
 mod delegations;
 mod dev_fault;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
 mod external_editor;
+mod firstmate;
 mod fs;
 mod gates;
 mod gitlab;
 mod harness;
 mod harness_runs;
 mod harness_updates;
-mod hub;
 mod hub_keychain;
+// WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
+mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 mod jira;
@@ -36,6 +41,8 @@ mod launch_guard;
 mod linear;
 mod link_preview;
 mod live_turns;
+// WP-04: projects, Monos per project and kept Pages, in the app's own database.
+mod local_hub;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -57,6 +64,8 @@ mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
+pub mod plugins;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -79,6 +88,8 @@ mod session_store;
 pub mod ship;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-14: steering messages to running workers.
+mod steering;
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -345,7 +356,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(hub::init())
+        .plugin(hub_plugin::init())
         .plugin(instance::plugin(&app_info))
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -376,6 +387,10 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
+            let _ = plugins::host(app.handle());
+            // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
+            plugins::defaults::start(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app
@@ -496,6 +511,20 @@ pub fn run() {
             delegations::delegations_list_open,
             delegations::delegations_followed_into,
             delegations::delegations_tree,
+            // Hivra WP-10: the first mate contract.
+            firstmate::firstmate_check_depth,
+            firstmate::firstmate_set_question_owner,
+            firstmate::firstmate_parse_report,
+            firstmate::firstmate_checkout_snapshot,
+            firstmate::firstmate_checkout_check,
+            firstmate::firstmate_checkout_revert,
+            steering::steering_record,
+            steering::steering_pending,
+            steering::steering_list,
+            steering::steering_settle,
+            decisions::decisions_ask,
+            decisions::decisions_answer,
+            decisions::decisions_list,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
@@ -691,6 +720,14 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            // WP-30: plugins.
+            plugins::plugins_list,
+            plugins::plugins_inspect,
+            plugins::plugins_install_local,
+            plugins::plugins_enable,
+            plugins::plugins_disable,
+            plugins::plugins_uninstall,
+            plugins::plugins_session_wiring,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
@@ -702,6 +739,8 @@ pub fn run() {
             harness::harness_runtime_binary_paths,
             verify_live::verify_live_take,
             verify_live::verify_live_done,
+            // WP-04: the bench's mid-run messages, from its plan (the stub that answered them is retired).
+            verify_live::verify_live_messages,
             verify_live::verify_live_quit,
             harness::harness_resolve_claude,
             harness::harness_claude_grok_bridge,

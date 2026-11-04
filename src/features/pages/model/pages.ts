@@ -8,6 +8,7 @@ import type { Capability, PageBlock, PageSpec } from "./pageSpec";
 import { validatePageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 import { forUser } from "../../hub/model/userName";
+import { hasOwnCode, setOwnCode } from "./ownCode";
 
 export type { BlockKind, PageBlock } from "./pageSpec";
 
@@ -16,10 +17,10 @@ export type { BlockKind, PageBlock } from "./pageSpec";
  * Keep (or Keep and allow, approving the page's asks) or Throw away. Undo in Bot changes takes a page away and revokes
  * its permissions.
  *
- * Where kept pages live: Ash OS's record (`ash-hub-pages`, `ash-hub-page-update`, `ash-hub-page-remove`) whenever the
- * hub reads Ash OS, so every window and device sees the same pages, a Mono's pin shows, and Today can place a page.
- * Pages kept on this Mac before that are sent to the record once (and a copy stays under `monocode:pages.before-record`).
- * Only the example data (no Ash OS) keeps pages in this Mac's own storage, as before.
+ * Where kept pages live: the hub's local record (`pages`, `page-update`, `page-remove`; hub/model/localHub, WP-04,
+ * the record WP-33 takes over), so every window sees the same pages and a Mono's pin shows. Pages kept in this window's
+ * own storage before that are sent to the record once (and a copy stays under `monocode:pages.before-record`). Only the
+ * example data keeps pages in this window's own storage, as before.
  */
 export type Page = {
   id: string;
@@ -262,7 +263,7 @@ async function importLocalOnce(store: HubStore): Promise<void> {
   for (const p of mine) {
     if (have.has(p.id)) continue;
     try {
-      await store.act("ash-hub-page-update", {
+      await store.act("page-update", {
         pageId: p.id, spec: p.spec, projectId: p.projectId ?? "today", ...(p.monoId ? { monoId: p.monoId } : {}), by: p.by, request: p.request,
         kept: true, permissions: p.permissions, ...(p.pinned ? { pinned: true, pinnedBy: p.pinnedBy ?? "you" } : {}),
       });
@@ -326,7 +327,7 @@ export function keepPage(page: Page, now = Date.now(), opts: { allow?: boolean }
     ? { pageId: page.id, kept: true, permissions }
     : { pageId: page.id, spec: page.spec, projectId: page.projectId, ...(page.monoId ? { monoId: page.monoId } : {}), by: page.by, request: page.request, kept: true, permissions };
   // The Bot changes row (with its Undo) only once Ash OS has kept it.
-  return write(b.store, page.id, kept, "ash-hub-page-update", payload).then((ok) => {
+  return write(b.store, page.id, kept, "page-update", payload).then((ok) => {
     if (ok) recordPageChange(page.id, page.by, page.title);
     return ok;
   });
@@ -342,7 +343,7 @@ async function setRemoved(id: string, removed: boolean): Promise<string | undefi
     return undefined;
   }
   const next = p ? { ...p, removed, permissions: removed || p.spec.kind !== "bespoke" ? [] : p.spec.permissions } : null;
-  return (await write(b.store, id, next, "ash-hub-page-remove", { pageId: id, ...(removed ? {} : { restore: true }) })) ? undefined : problem;
+  return (await write(b.store, id, next, "page-remove", { pageId: id, ...(removed ? {} : { restore: true }) })) ? undefined : problem;
 }
 setPageHooks({ remove: (id) => setRemoved(id, true), restore: (id) => setRemoved(id, false) });
 
@@ -359,7 +360,7 @@ export function allowPage(id: string): void {
     changed();
     return;
   }
-  void write(b.store, id, { ...p, permissions }, "ash-hub-page-update", { pageId: id, permissions }).then((ok) => ok && recordPageChange(p.id, p.by, p.title));
+  void write(b.store, id, { ...p, permissions }, "page-update", { pageId: id, permissions }).then((ok) => ok && recordPageChange(p.id, p.by, p.title));
 }
 /**
  * Pages from a setup file. They come back with no permissions: a file can't grant a page anything, so its asks wait
@@ -384,7 +385,7 @@ export async function importPages(list: Page[]): Promise<{ added: number; failed
   const failed: string[] = [];
   // One at a time: each refusal's reason is read before the next write replaces it.
   for (const p of add) {
-    const ok = await write(b.store, p.id, p, "ash-hub-page-update", {
+    const ok = await write(b.store, p.id, p, "page-update", {
       pageId: p.id, spec: p.spec, projectId: p.projectId ?? "today", ...(p.monoId ? { monoId: p.monoId } : {}), by: p.by, request: p.request, kept: true, permissions: [],
     });
     if (ok) added++;
@@ -404,27 +405,31 @@ function keptWith(page: Page, spec: PageSpec, allowNew: boolean): Capability[] {
 /**
  * "Use this version": the page takes its new version's code in place (same page, pin and place on Today) and keeps what
  * Ash allowed that it still asks for; `allowNew` (his "Use it and allow") approves its new asks too. A version with an
- * `id` is Ash OS's (`ash-hub-page-update useVersion`); one without is the example data's, used on this Mac.
+ * `id` is the record's (`page-update useVersion`); one without is the example data's, used on this Mac.
  */
 export function useNewVersion(page: Page, version: { id?: string; spec: PageSpec }, opts: { allowNew?: boolean } = {}): Promise<boolean> {
   const allowNew = !!opts.allowNew;
   const permissions = keptWith(page, version.spec, allowNew);
   const next: Page = { ...page, spec: version.spec, title: version.spec.title, permissions, newVersion: undefined };
+  // The version Ash used is his page's code from now on (ownCode.ts); a refused write leaves it as it was.
+  const had = hasOwnCode(page.id);
+  setOwnCode(page.id, true);
+  const kept = (ok: boolean) => { if (!ok) setOwnCode(page.id, had); return ok; };
   const b = backend();
   if (b.kind === "local" || !version.id) {
-    if (b.kind === "record") return write(b.store, page.id, next, "ash-hub-page-update", { pageId: page.id, spec: version.spec, permissions });
+    if (b.kind === "record") return write(b.store, page.id, next, "page-update", { pageId: page.id, spec: version.spec, permissions }).then(kept);
     local = local.map((p) => (p.id === page.id ? next : p));
     saveLocal(local);
     changed();
     return Promise.resolve(true);
   }
-  return write(b.store, page.id, next, "ash-hub-page-update", { pageId: page.id, useVersion: version.id, ...(allowNew ? { permissions } : {}) });
+  return write(b.store, page.id, next, "page-update", { pageId: page.id, useVersion: version.id, ...(allowNew ? { permissions } : {}) }).then(kept);
 }
 /** "Throw away" on a new version: the page stays as it was. */
 export function dropNewVersion(page: Page, versionId: string): Promise<boolean> {
   const b = backend();
   if (b.kind === "local") return Promise.resolve(true);
-  return write(b.store, page.id, { ...page, newVersion: undefined }, "ash-hub-page-update", { pageId: page.id, dropVersion: versionId });
+  return write(b.store, page.id, { ...page, newVersion: undefined }, "page-update", { pageId: page.id, dropVersion: versionId });
 }
 
 /** Ash's pin toggle (by "you"), or a Mono pinning the page it built (by its name). */
@@ -444,7 +449,7 @@ async function applyPin(page: Page, pinned: boolean, pinnedBy: string | undefine
     changed();
     return undefined;
   }
-  const ok = await write(b.store, page.id, next, "ash-hub-page-update", { pageId: page.id, pinned, ...(pinned ? { pinnedBy: next.pinnedBy } : {}) });
+  const ok = await write(b.store, page.id, next, "page-update", { pageId: page.id, pinned, ...(pinned ? { pinnedBy: next.pinnedBy } : {}) });
   return ok ? undefined : problem;
 }
 setPinHook(async (id, pinned) => {

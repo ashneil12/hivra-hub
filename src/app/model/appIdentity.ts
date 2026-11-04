@@ -46,6 +46,8 @@ export type VerifyPlan = {
   grok?: boolean;
   /** The real bench's Claude Code runs on DeepSeek through the local gateway launcher (`--deepseek-sub`). */
   deepseek?: boolean;
+  /** Hub projects the copy's local store starts with (added once; the bench's projects used to come from a stub). */
+  projects?: Array<{ id: string; name: string; folder?: string }>;
 };
 
 export type AppIdentity = {
@@ -70,6 +72,14 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
     ...(value.driver === true ? { driver: true } : {}),
     ...(value.grok === true ? { grok: true } : {}),
     ...(value.deepseek === true ? { deepseek: true } : {}),
+    ...(Array.isArray(value.projects)
+      ? {
+          projects: value.projects
+            .filter(isRecord)
+            .filter((p) => typeof p.id === "string" && typeof p.name === "string")
+            .map((p) => ({ id: p.id as string, name: p.name as string, ...(typeof p.folder === "string" ? { folder: p.folder } : {}) })),
+        }
+      : {}),
     ...(isRecord(kickoff) &&
     typeof kickoff.project === "string" &&
     typeof kickoff.monoName === "string" &&

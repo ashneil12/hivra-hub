@@ -148,6 +148,17 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN self_review TEXT;",
         )?;
     }
+    // Hivra WP-10 (firstmate/): who an open question waits on, the completion gates' verdict and the worker's typed report.
+    let has_contract = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'question_owner'")?
+        .exists([])?;
+    if !has_contract {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN question_owner TEXT;
+             ALTER TABLE delegations ADD COLUMN gate_verdict TEXT;
+             ALTER TABLE delegations ADD COLUMN report TEXT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -197,6 +208,15 @@ pub struct Delegation {
     pub stall_reason: Option<String>,
     /// Since when it has been stuck this way (its last activity, or the start of the loop), epoch ms.
     pub stalled_at: Option<i64>,
+    /// WP-10: who the open question waits on, `first-mate` (none) or `person` (firstmate/status.rs).
+    pub question_owner: Option<String>,
+    /// WP-10: the completion gates' verdict (`pending`, `passed`, `failed`); none when no gates apply. Written by WP-40.
+    pub gate_verdict: Option<String>,
+    /// WP-10: the worker's typed final report, as JSON (firstmate/report.rs), parsed from its result when it settles.
+    pub report: Option<String>,
+    /// WP-10: the one status shown anywhere (firstmate/status.rs), kept in step with the row on every change.
+    pub status: crate::firstmate::status::Status,
+    pub status_notice: Option<String>,
 }
 
 impl Delegation {
@@ -236,13 +256,21 @@ impl Delegation {
     fn touch(&mut self, now: i64) {
         self.updated_at = now;
         self.version += 1;
+        self.refresh_status();
+    }
+
+    /// WP-10: the shown status follows the row (firstmate/status.rs is the only place it is computed).
+    fn refresh_status(&mut self) {
+        let derived = crate::firstmate::status::status_of(self);
+        self.status = derived.status;
+        self.status_notice = derived.notice;
     }
 }
 
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review";
+     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report";
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
@@ -284,7 +312,20 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         stalled_at: row.get(33)?,
         review_required: row.get::<_, i64>(34)? != 0,
         self_review: row.get(35)?,
-    })
+        question_owner: row.get(36)?,
+        gate_verdict: row.get(37)?,
+        report: row.get(38)?,
+        status: crate::firstmate::status::Status::Working,
+        status_notice: None,
+    }
+    .with_status())
+}
+
+impl Delegation {
+    fn with_status(mut self) -> Self {
+        self.refresh_status();
+        self
+    }
 }
 
 fn query(
@@ -302,7 +343,7 @@ fn query(
     Ok(rows)
 }
 
-fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
     Ok(query(conn, "WHERE id = ?1", &[&id])?.into_iter().next())
 }
 
@@ -311,7 +352,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
              ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, \
-             ?35, ?36)"
+             ?35, ?36, ?37, ?38, ?39)"
         ),
         params![
             d.id,
@@ -350,6 +391,9 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.stalled_at,
             i64::from(d.review_required),
             d.self_review,
+            d.question_owner,
+            d.gate_verdict,
+            d.report,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -358,11 +402,21 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
 
 /// Writes back everything a move can change. The outbox's own columns are left alone.
 fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
+    // WP-10: every move refreshes the shown status (touch); a move that forgot would show a stale one.
+    debug_assert_eq!(
+        (d.status, d.status_notice.clone()),
+        {
+            let derived = crate::firstmate::status::status_of(d);
+            (derived.status, derived.notice)
+        },
+        "a delegation was saved with a stale status"
+    );
     conn.execute(
         "UPDATE delegations SET generation = ?2, state = ?3, error_class = ?4, error = ?5, retryable = ?6,
            resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
            updated_at = ?12, settled_at = ?13, log = ?14, version = ?15, stall_kind = ?16, stall_reason = ?17,
-           stalled_at = ?18, review_required = ?19, self_review = ?20
+           stalled_at = ?18, review_required = ?19, self_review = ?20, question_owner = ?21, gate_verdict = ?22,
+           report = ?23
          WHERE id = ?1",
         params![
             d.id,
@@ -385,6 +439,9 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.stalled_at,
             i64::from(d.review_required),
             d.self_review,
+            d.question_owner,
+            d.gate_verdict,
+            d.report,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -656,6 +713,11 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         stall_kind: None,
         stall_reason: None,
         stalled_at: None,
+        question_owner: None,
+        gate_verdict: None,
+        report: None,
+        status: crate::firstmate::status::Status::Working,
+        status_notice: None,
     };
     row.note(
         now,
@@ -665,6 +727,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             .map(|f| json!({ "follow": f }))
             .unwrap_or_else(|| json!({})),
     );
+    row.refresh_status();
     insert(&tx, &row)?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(row)
@@ -738,8 +801,14 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.retryable = input.retryable;
     row.resets_at = input.resets_at;
     row.pending_question = None;
+    row.question_owner = None;
     row.unstall();
     row.settled_at = Some(now);
+    // WP-10: the worker's final report in its typed shape (firstmate/report.rs), kept beside its words.
+    row.report = row
+        .result
+        .as_deref()
+        .map(|result| crate::firstmate::report::parse(result).to_json());
     let mut detail = json!({ "state": row.state, "generation": row.generation });
     if let Some(class) = &row.error_class {
         detail["error_class"] = json!(class);
@@ -893,6 +962,8 @@ pub fn set_question_with(
         "answered"
     };
     row.pending_question = question;
+    // WP-10: a new question (or its answer) goes to the first mate first; it passes one on with set_question_owner.
+    row.question_owner = None;
     row.note(now, &by, event, question_detail(detail));
     row.touch(now);
     save(&tx, &row)?;
@@ -1412,6 +1483,83 @@ pub fn bind_chat(conn: &mut Connection, input: ChatBindInput, now: i64) -> Resul
 }
 
 // ---- Tauri commands ----------------------------------------------------------------------------------------------------
+
+// ---- Hivra WP-10: the first mate contract's additions (firstmate/) -------------------------------------------------
+
+/// How many delegations sit above a chat: 0 for a chat nobody briefed (a first mate the person talks to), 1 for a worker
+/// or a first mate briefed by one, and so on. It follows the open rows that name the chat as their child, then each
+/// row's `parent_id` up to its root; the deepest chain counts.
+pub fn depth_above(conn: &Connection, session: &str) -> Result<usize, String> {
+    let mut deepest = 0;
+    for row in open_for_child(conn, session)? {
+        let mut depth = 1;
+        let mut seen = HashSet::from([row.id.clone()]);
+        let mut parent = row.parent_id.clone();
+        while let Some(id) = parent {
+            // A broken or looping chain stops counting; it can't grow without end.
+            if !seen.insert(id.clone()) || depth > 16 {
+                break;
+            }
+            match get(conn, &id)? {
+                Some(above) => {
+                    depth += 1;
+                    parent = above.parent_id;
+                }
+                None => break,
+            }
+        }
+        deepest = deepest.max(depth);
+    }
+    Ok(deepest)
+}
+
+/// A first mate passes its worker's open question on to the person (`person`), or takes it back (`first-mate`). Only
+/// an open question of this generation moves.
+pub fn set_question_owner(
+    conn: &mut Connection,
+    id: &str,
+    generation: i64,
+    owner: &str,
+    by: Option<String>,
+    now: i64,
+) -> Result<Change, String> {
+    use crate::firstmate::status::{QUESTION_FOR_FIRST_MATE, QUESTION_FOR_PERSON};
+    let owner = match owner {
+        QUESTION_FOR_PERSON => Some(QUESTION_FOR_PERSON.to_string()),
+        QUESTION_FOR_FIRST_MATE => None,
+        _ => return Err("a question is for the person or the first mate".into()),
+    };
+    let by = actor(by);
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(mut row) = get(&tx, id)? else {
+        return Ok(Change {
+            applied: false,
+            row: None,
+        });
+    };
+    if row.state != QUESTION || row.generation != generation || row.question_owner == owner {
+        return Ok(Change {
+            applied: false,
+            row: Some(row),
+        });
+    }
+    row.note(
+        now,
+        &by,
+        "question-owner",
+        json!({ "for": owner.as_deref().unwrap_or(QUESTION_FOR_FIRST_MATE) }),
+    );
+    row.question_owner = owner;
+    row.touch(now);
+    save(&tx, &row)?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Change {
+        applied: true,
+        row: Some(row),
+    })
+}
 
 fn changed(app: &AppHandle, rows: &[&Delegation]) {
     if rows.is_empty() {

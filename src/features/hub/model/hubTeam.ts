@@ -108,7 +108,7 @@ export async function seedFrankAshAsks(read: Read = readAgentFile, write: Write 
 /**
  * Every team Mono becomes a member of every one of Ash's projects that has a folder (never the global `ash` memory),
  * once per Mono and project: a project Ash later takes off a Mono stays off. `register` tells Ash OS
- * (`ash-hub-mono-project-add`, role member); its failures are ignored. Returns "<mono>|<project>" for each new tie.
+ * (`mono-project-add`, role member); its failures are ignored. Returns "<mono>|<project>" for each new tie.
  */
 export function tieTeamToProjects(
   projects: readonly HubProject[],

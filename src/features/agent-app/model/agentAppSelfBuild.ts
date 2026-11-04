@@ -29,7 +29,8 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
 ];
 
 /** Hands the change to a Claude Code worker in the preview copy (tasks.delegate, run in that folder). */
-export type DelegateInFolder = (brief: string, title: string, folder: string) => Promise<unknown>;
+/** Hivra WP-10: `intent` is Ash's own ask, which every brief carries (firstmate/model/brief.ts). */
+export type DelegateInFolder = (brief: string, title: string, folder: string, intent: string) => Promise<unknown>;
 
 function seated(source: Session, host: AgentAppHost) {
   const mono = host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
@@ -109,7 +110,7 @@ export async function handleSelfBuild(
       if (typeof input.ask !== "string" || !input.ask.trim()) throw new Error(forUser("ask must be Ash's words for the change"));
       const title = typeof input.title === "string" ? input.title : undefined;
       const { changeId, folder } = await startHubChange(input.ask.trim(), title, me.name);
-      const task = await delegate(hubChangeBrief(input.ask.trim(), folder), title ?? "Change the hub", folder);
+      const task = await delegate(hubChangeBrief(input.ask.trim(), folder), title ?? "Change the hub", folder, input.ask.trim());
       return {
         changeId,
         task,

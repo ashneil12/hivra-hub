@@ -38,7 +38,7 @@ and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
 yours, stored as a task: its report comes back to you as a [MonoCode report] turn once you are idle, even across \
-restarts, and its questions as [MonoCode question] turns. Put the full context in brief and the finish line in goal, say \
+restarts, and its questions as [MonoCode question] turns. Put Ash's ask in intent, the build instructions in brief and the finish line in goal, say \
 in one line what you started, and end your turn instead of polling. task_status reads results, task_wait blocks on a \
 short job, task_cancel stops a task and everything beneath it, task_cannot says you cannot finish one (one plain line on \
 what is in the way: it goes to Ash at once), task_answer answers a worker's question. pr_watch wakes \
@@ -207,10 +207,10 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "brief": { "type": "string", "description": "The whole job: Ash's own words quoted, the context, the checkout, what it may change, the checks to run and the result and evidence you expect back, ending with a short self-review (what it would do differently next time)." },
+                    "brief": { "type": "string", "description": "The spec: only the build instructions the ask needs, the checkout, what it may change, what stays out of scope, and the checks to run. The worker gets your intent, this spec and the goal inside the app's brief template, which already asks for its report and self-review." },
                     "title": { "type": "string", "description": "A short job name, like \"Fix the save bug\". Defaults to the brief's first line." },
                     "asks": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "The Ash OS ask ids (a_...) this job covers." },
-                    "goal": { "type": "string", "description": "Done when: the condition that finishes the job." },
+                    "goal": { "type": "string", "description": "The definition of done: the condition that finishes the job, as a check someone can run." },
                     "project": { "type": "string", "description": "The hub project id, folder path or name. Omit when you have one project." },
                     "model": { "type": "string", "description": "Usually omit it. On Ash's Grok bridge every worker runs on DeepSeek at high effort (a Claude name there means DeepSeek too); grok-4.7 or one of Ash's own models (custom:<id>) is kept when named, and another engine's model (grok:..., codex:...) runs on DeepSeek too. Off the bridge, omitted means Sonnet for a usual job, a stronger model for a hard one (hard, heavy, scope or redoes), or this project's saved worker model." },
                     "effort": { "type": "string", "description": "The model's effort setting, when it has one." },
@@ -226,7 +226,7 @@ fn tools() -> Value {
                     "redoes": { "type": "string", "description": "The taskId of one of your tasks that failed or stopped moving that this one takes on: name it on one delegation to retry it, on several at once to split it. Ash sees on its card what you did. It works in that task's own checkout (its worktree, with the half-done work still there), or a fresh one, never the shared checkout unless you say isolation shared. The old task keeps going until you stop it with task_cancel." },
                     "files": { "type": "array", "items": { "type": "string" }, "maxItems": 30, "description": "The project files or folders this job will change (e.g. packages/ui/src/App.tsx), when you know them. A job that shares one with a job still running in the project waits and starts by itself once that one has landed, from the project with its work in, so two workers never edit the same file at once. If it belongs with the running job instead, send that job a follow-up rather than a second job." }
                 },
-                "required": ["brief"],
+                "required": ["intent", "brief", "goal"],
                 "additionalProperties": false
             },
             "annotations": { "title": "Delegate a task", "destructiveHint": true, "openWorldHint": true }
@@ -485,13 +485,67 @@ fn tools() -> Value {
             "annotations": { "title": "Teach a skill a lesson", "destructiveHint": false, "openWorldHint": false }
         }
     ]);
+    // Hivra WP-10: the brief's intent, which the model fills (added here: one more field in the literal above passes
+    // json!'s recursion limit).
+    tools[0]["inputSchema"]["properties"]["intent"] = json!({
+        "type": "string",
+        "description": "Ash's own ask, in his words, with the context needed to read it. Don't widen it. The app writes the rest of the brief around it (Hivra's brief template) and refuses an empty or placeholder one."
+    });
     if let Value::Array(list) = &mut tools {
+        let after_answer = list
+            .iter()
+            .position(|tool| tool["name"] == "task_answer")
+            .map_or(list.len(), |at| at + 1);
+        list.splice(after_answer..after_answer, steering_tools());
         list.extend(crate::pr_watch::mcp::tools());
     }
     tools
 }
 
-const DELEGATE_APP_FIELDS: [&str; 15] = [
+/// Hivra WP-14's tools, listed after task_answer (built apart: one literal with them passes json!'s recursion limit).
+fn steering_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "task_message",
+            "title": "Message a running task",
+            "description": "Send one of your running tasks' workers a message: a correction, a missing detail, a change of plan. It is stored before it is sent, so it is never lost to a restart, and goes in the way the worker's CLI allows: into its running turn when it can (whenBusy auto, the default, or steer), otherwise held and sent as its next turn (whenBusy queue always waits for the next turn). The result says whether it went in, is held, or failed. Use it instead of a second delegate_task for work that belongs with the running task. Keep the same clientRequestId when retrying so it is never sent twice.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "taskId": { "type": "string", "description": "The task (t-...) from delegate_task." },
+                    "text": { "type": "string", "maxLength": 8000, "description": "The message, as you would brief it: what changes and why." },
+                    "whenBusy": { "type": "string", "enum": ["auto", "steer", "queue"], "default": "auto" },
+                    "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never sends twice." }
+                },
+                "required": ["taskId", "text"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Message a running task", "destructiveHint": false }
+        }),
+        json!({
+            "name": "ask_person",
+            "title": "Ask the person a decision",
+            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. A worker can't use this: its question goes to its own first mate.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "maxLength": 120, "description": "A stable name for the question: letters, digits, - _ . : /." },
+                    "question": { "type": "string", "maxLength": 2000, "description": "The question, plainly, with what it decides." },
+                    "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "minItems": 2, "maxItems": 6 },
+                    "recommended": { "type": "string", "description": "The option you recommend, exactly as written in options." },
+                    "taskIds": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Your tasks (t-...) that wait on the answer." },
+                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." }
+                },
+                "required": ["key", "question", "options", "recommended"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Ask the person a decision", "destructiveHint": false }
+        }),
+    ]
+}
+
+const DELEGATE_APP_FIELDS: [&str; 16] = [
+    "intent",
     "brief",
     "title",
     "asks",
@@ -596,6 +650,28 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             call.app
                 .call("tasks.answer", &pick(object, &fields), &new_request_id())
         }
+        "task_message" => {
+            let fields = ["taskId", "text", "whenBusy"];
+            let object = arguments(args, &["taskId", "text", "whenBusy", "clientRequestId"])?;
+            let request_id = match object.get("clientRequestId") {
+                None => new_request_id(),
+                Some(Value::String(id)) if valid_request_id(id) => id.clone(),
+                _ => {
+                    return Err(
+                        "clientRequestId must be letters, digits, - and _ (up to 100 characters)"
+                            .into(),
+                    )
+                }
+            };
+            call.app
+                .call("tasks.message", &pick(object, &fields), &request_id)
+        }
+        "ask_person" => {
+            let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
+            let object = arguments(args, &fields)?;
+            call.app
+                .call("tasks.ask", &pick(object, &fields), &new_request_id())
+        }
         "room_post" => {
             let fields = ["room", "text", "replyTo", "conversation", "reaction"];
             let object = arguments(args, &fields)?;
@@ -618,7 +694,8 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             crate::pr_watch::mcp::call(call.app, name, args)
         }
         _ => Err(format!(
-            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, room_post, \
+            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_message, \
+             ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
              skills_learn, pr_watch, pr_unwatch or pr_watches."
         )),
@@ -1178,6 +1255,8 @@ mod tests {
                 "task_cancel",
                 "task_cannot",
                 "task_answer",
+                "task_message",
+                "ask_person",
                 "room_post",
                 "room_read",
                 "mono_message",

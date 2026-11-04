@@ -1,17 +1,15 @@
 // The memory a project's Lead and its workers start with (Ash, 19 Oct: agents have global and per-project memory; a
-// project never reads another project's memory). Ash OS composes it (`ash-hub-memory-primer`, its ashos/core.py
-// memory_primer): the project's current never-do rules and decisions, then Ash's global ones (`ash`),
-// newest first, in MEMORY.md's own short form and bounded in size. The app puts it ahead of a Lead's fresh
-// conversation (a new or rotated session: monoFiles.ts `projectMemory`) and in a worker's brief (agentAppTasks.ts), so
-// nobody has to remember to call ash_recall. It is in the prompt, so an engine with no ash-os tools gets it too.
+// project never reads another project's memory). Ash OS used to compose a primer of it; that service is retired with
+// the bridge (WP-04), so there is no composed primer by default and the block says where the memory files are. The app
+// puts it ahead of a Lead's fresh conversation (a new or rotated session: monoFiles.ts `projectMemory`) and in a
+// worker's brief (agentAppTasks.ts). A caller that has a primer source passes `call` (WP-51's memory curator).
 //
 // A chat's project is its ASH_PROJECT (hubMcp.ts chatProjects): a Lead's own, inherited by its workers. The leadership
 // team, other Monos and plain chats have none and get no primer: they read memory as before.
-import { chatProjects, hasAshOsTools } from "./hubMcp";
-import { tauriHubTransport } from "./hubTransport";
+import { chatProjects } from "./hubMcp";
 import { forUser } from "./userName";
 
-/** What Ash OS answers (`ash-hub-memory-primer`). */
+/** A composed primer (the shape Ash OS used to answer). */
 export type MemoryPrimer = {
   project: string;
   name?: string;
@@ -48,8 +46,8 @@ function isPrimer(value: unknown): value is MemoryPrimer {
 }
 
 /**
- * The primer for one project, from Ash OS: cached for PRIMER_TTL_MS, one call at a time per project, and undefined
- * when Ash OS can't be reached in PRIMER_TIMEOUT_MS or answers something else.
+ * The primer for one project from `call`: cached for PRIMER_TTL_MS, one call at a time per project, and undefined
+ * without a source, when it doesn't answer in PRIMER_TIMEOUT_MS, or answers something else.
  */
 export async function fetchMemoryPrimer(
   project: string,
@@ -60,11 +58,12 @@ export async function fetchMemoryPrimer(
   if (hit && now() - hit.at < PRIMER_TTL_MS) return hit.primer;
   const inflight = pending.get(project);
   if (inflight) return inflight;
-  const call: Call = options.call ?? ((action, payload) => tauriHubTransport.call(action, payload));
+  const call = options.call;
+  if (!call) return undefined;
   const read = (async () => {
     try {
       const answer = await Promise.race([
-        call("ash-hub-memory-primer", { project }),
+        call("memory-primer", { project }),
         new Promise<undefined>((resolve) => setTimeout(() => resolve(undefined), options.timeoutMs ?? PRIMER_TIMEOUT_MS)),
       ]);
       if (!isPrimer(answer) || !answer.text.trim()) return undefined;
@@ -81,32 +80,24 @@ export async function fetchMemoryPrimer(
 }
 
 export type PrimerReader = {
-  /** The chat calls the ash-os tools (a Claude Code session with Ash's entry): it can search further itself. */
-  tools: boolean;
-  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it with ash_remember (r76: his answer to its own question too). */
+  /** A worker reports what Ash decides to whoever briefed it; a Lead saves it in the memory files (r76: his answer to its own question too). */
   worker: boolean;
 };
 
 /**
- * The block a session reads: the primer and what to do for more. Without a primer (Ash OS unreachable) it says how to
- * read the memory instead, so nothing is worse than before.
+ * The block a session reads: the primer and what to do for more. Without a primer it says how to read the memory
+ * instead. There are no memory tools since Ash OS is retired (WP-04): every engine reads and writes the files.
  */
 export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefined, reader: PrimerReader): string {
   const folder = primer?.memory_dir ?? `~/agent-memory/${project}`;
   const own = forUser`You read and write only ${project}'s memory and Ash's global memory (ash); never another project's.`;
   if (!primer) {
-    return forUser`<project_memory>\nAsh OS could not load ${project}'s memory just now. Before you act, read it: ${
-      reader.tools
-        ? forUser`ash_recall with project "${project}" (its current decisions and never-do rules, plus Ash's global ones).`
-        : `${folder}/MEMORY.md and ~/agent-memory/ash/MEMORY.md.`
-    } ${own}\n</project_memory>`;
+    return forUser`<project_memory>\nBefore you act, read ${project}'s memory: ${folder}/MEMORY.md and ~/agent-memory/ash/MEMORY.md. ${own}\n</project_memory>`;
   }
-  const more = reader.tools
-    ? forUser`For anything not here (older lines, what Ash said, what changed and when), search with ash_recall: a query, project "${project}". ${own}${
-        reader.worker ? "" : forUser(" Save to it with ash_remember at once when Ash makes a call: he answers a question you asked him, or says remember, lock or from now on (project ash only for how Ash works in every project). A half-made or contested thought stays unsaved.")
-      }`
-    : forUser`This chat has no Ash OS tools: for more, read never.md and decisions.md in ${folder}. ${own}`;
-  return forUser`<project_memory>\nAsh OS loaded this at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
+  const more = forUser`For more, read never.md and decisions.md in ${folder}. ${own}${
+    reader.worker ? "" : forUser(` Save to ${folder}/decisions.md at once when Ash makes a call: he answers a question you asked him, or says remember, lock or from now on (~/agent-memory/ash/ only for how Ash works in every project). A half-made or contested thought stays unsaved.`)
+  }`;
+  return forUser`<project_memory>\nThis was loaded at the start of this conversation: what holds now for ${primer.name ?? project} and how Ash works. Ash's latest words beat it; it beats the code, docs and plans. Act on it without repeating it back.${
     reader.worker ? forUser(" Anything Ash decides while you work goes in your report to whoever briefed you.") : ""
   }\n\n${primer.text.trim()}\n\n${more}\n</project_memory>`;
 }
@@ -117,13 +108,13 @@ export function memoryPrimerBlock(project: string, primer: MemoryPrimer | undefi
  */
 export async function leadMemoryBlock(
   sessionId: string,
-  harness: string,
+  _harness: string,
   options: { call?: Call } = {},
 ): Promise<string | undefined> {
   const [project] = chatProjects(sessionId);
   if (!project) return undefined;
   const primer = await fetchMemoryPrimer(project, options);
-  return memoryPrimerBlock(project, primer, { tools: hasAshOsTools(harness), worker: false });
+  return memoryPrimerBlock(project, primer, { worker: false });
 }
 
 /**
@@ -132,12 +123,11 @@ export async function leadMemoryBlock(
  */
 export async function workerMemoryBlock(
   ownerSessionId: string,
-  harness: string,
+  _harness: string,
   options: { call?: Call } = {},
 ): Promise<string | undefined> {
   const [project] = chatProjects(ownerSessionId);
   if (!project) return undefined;
   const primer = await fetchMemoryPrimer(project, options);
-  // The worker's own engine decides: on Claude Code it has the ash-os tools (scoped to this project).
-  return memoryPrimerBlock(project, primer, { tools: hasAshOsTools(harness), worker: true });
+  return memoryPrimerBlock(project, primer, { worker: true });
 }

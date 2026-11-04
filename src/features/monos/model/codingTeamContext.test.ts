@@ -22,7 +22,7 @@ describe("codingTeamContext", () => {
   it("is the hub note, the project and the team chat rules, and nothing else: under 1.9 KB before memory (r97: the Lead no-overreach line)", () => {
     const text = codingTeamContext(TEAM);
     expect(text.startsWith(`${hubNote()}\n\n- This`)).toBe(true);
-    expect(text).toContain("- This chat is in EXO's coding team (Ash OS project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
+    expect(text).toContain("- This chat is in EXO's coding team (project `vg-game`), working in /Users/ash/Projects/vg-game. EXO lead keeps the project's board.");
     expect(text).toContain("- Hub tools: hand work to another Mono");
     expect(text).not.toMatch(/money/i);
     expect(text).not.toContain("<project_memory>");

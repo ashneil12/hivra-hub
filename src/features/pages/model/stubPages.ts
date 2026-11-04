@@ -1,5 +1,5 @@
 // Dev only (localStorage "monocode:pages-dev-stub" = "1"): the old keyword matcher standing in for a Mono's build,
-// plus example bespoke pages. The real build is the backend's `ash-hub-build-page` (docs/pages-build-contract.md).
+// plus example bespoke pages. The real build is the backend's `build-page` (docs/pages-build-contract.md).
 import type { BespokeSpec, BlockKind, BlocksSpec, PageBlock } from "./pageSpec";
 
 type Topic = { words: RegExp; title: string; list: string; rows: [string, "ok" | "warn" | "bad", string][]; chart: string; status: [string, string]; note: string; order: BlockKind[] };

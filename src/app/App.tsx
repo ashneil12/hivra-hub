@@ -16,6 +16,7 @@ import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
@@ -67,8 +68,8 @@ import {
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
-import { chatMonoOwner, hasAshOsTools, hasDelegateTool } from "../features/hub/model/hubMcp";
-import { hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
+import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
+import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
 import {
   codingTeamChatProject,
   codingTeamName,
@@ -644,6 +645,11 @@ import {
   type AddToChatRequest,
 } from "../features/sessions/model/quoteDraft";
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
+// Hivra WP-10: a first mate reads and never edits (features/firstmate/).
+import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useSteering } from "../features/firstmate/hooks/useSteering";
+import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -828,7 +834,6 @@ import {
   verifyRun,
   watchVerifyMessages,
 } from "./model/verifyKickoff";
-import { tauriHubTransport } from "../features/hub/model/hubTransport";
 import {
   delegationActions,
   delegationRows,
@@ -3359,12 +3364,11 @@ function Workspace({
     const cwd = sidebarCwd;
     const session = newWorkspaceSession(cwd, sessionDefaults?.runtimeMode);
     // An untouched New session tab for this project is already open: go to
-    // it rather than stacking another empty one beside it.
-    const blank = reusableBlankSessionTab(
-      tabsRef.current,
-      sessionsRef.current,
-      session,
-    );
+    // it rather than stacking another empty one beside it. A Hub default
+    // (hubDefaultsOn): upstream's own build appends a new tab every time.
+    const blank = hubDefaultsOn()
+      ? reusableBlankSessionTab(tabsRef.current, sessionsRef.current, session)
+      : undefined;
     if (blank) {
       setActiveTabId(blank.tabId);
       setComposerFocused(true);
@@ -9023,6 +9027,7 @@ function Workspace({
                 controlsAgents:
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
+                ...firstMateLaunch(current),
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9081,6 +9086,7 @@ function Workspace({
                 operatorAccess ||
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
+              ...firstMateLaunch(current),
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -9191,7 +9197,8 @@ function Workspace({
           if (monosNow) appContext.push(monosNow);
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
-          const appended = hasAshOsTools(current.harness) && !rawCommand;
+          // WP-04: this is the engine alone; it used to ride on "has the Ash OS tools", which no chat has any more.
+          const appended = appendsHubNote(current.harness, !!rawCommand);
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             const noteKey = handedFiles.soulHash;
@@ -9523,13 +9530,13 @@ function Workspace({
       if (sessionId) onSubmit(sessionId, kickoff.prompt);
     });
   }, [onOpenMono, onSubmit, windowTransfer]);
-  // ...and Ash's messages the bench sends mid-run (the stub's ash-hub-verify-messages): each into its Mono's chat, as
+  // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
     const runId = verifyRun();
     if (!runId || windowTransfer) return;
     return watchVerifyMessages(runId, {
-      list: () => tauriHubTransport.call("ash-hub-verify-messages", { runId }),
+      list: () => invoke("verify_live_messages"),
       send: async (message) => {
         // Into a group room, as Ash writes there (hub/model/roomConductor.ts).
         if (message.room) return sendVerifyRoomMessage(message.room, message.prompt);
@@ -10142,6 +10149,13 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
+  const steering = useSteering(sessions, {
+    chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
+    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    submit: async (id, text, { appRequestId, steer }) =>
+      await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
+  });
 
   useMobileWorkspace({
     sessions,
@@ -11876,6 +11890,7 @@ function Workspace({
               isMonoSession(sessionId) ||
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
+            ...firstMateLaunch(current),
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -12750,7 +12765,8 @@ function Workspace({
           sessionId: job.ownerSession,
           requestId: job.requestId,
           action: "tasks.delegate",
-          input: job.input,
+          // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
+          input: withLegacyBriefParts(job.input, job.title),
         });
       },
       failed: (job, error) =>
@@ -13642,6 +13658,7 @@ function Workspace({
             habits: { load: loadHabits, update: updateHabits },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
+              firstMate: steering,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),
@@ -15950,6 +15967,7 @@ function Workspace({
 
   // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions, liveBusySessionIds);
+  useFirstMateCheckoutGuard(sessions);
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();
@@ -16424,7 +16442,7 @@ function Workspace({
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}
-      onOpenInbox={onHubOpenInbox}
+      onOpenInbox={hubDefaultsOn() ? onHubOpenInbox : onOpenInbox}
       onOpenInboxItem={onOpenLinkedWorkItem}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onOpenAutomations={onOpenAutomations}
@@ -17100,8 +17118,9 @@ function Workspace({
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
-              not prompt for the new one; it stays in Settings → Appearance. */}
-          {IS_HUB_BUNDLE ? null : (
+              not prompt for the new one; it stays in Settings → Appearance.
+              The hub's dev page doesn't either (hubDefaultsOn). */}
+          {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}

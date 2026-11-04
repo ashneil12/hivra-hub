@@ -1,3 +1,8 @@
+> **3 November 2026 (WP-04): the Ash OS bridge is retired.** Everything below that talks to Ash OS (the plugin's
+> `hub_call`, port 18767, the stub, the live proxy, the `ash-os` MCP entry) is history, kept for the design rules it
+> records (Unit 7's Being built rule, among others). The last commit with the bridge is tagged `archive/ash-os-bridge`;
+> what the app keeps itself is in `src/features/hub/model/localHub/` and `src-tauri/src/local_hub.rs`.
+
 # Update: 20 October 2026, one permanent home per Mono (branch cos/mono-homes)
 
 Decided 20 Oct (Grok Bot leadership, from Alfred's audit: 14 sets of Mono folders on the Mac, the live leads on the 15 Oct
@@ -110,27 +115,27 @@ orchestrators", "agents should chat as well not just do".
 # Update: 20 October 2026, Phase 4 (branch hub/4-pages-newproject)
 
 Pages, Change the hub, Today's board and New project now go through Ash OS (exo-cc-studio `docs/HUB-BACKEND.md`):
-- **Pages** (`pages/model/pages.ts`): kept pages are Ash OS's record (`ash-hub-pages` incl. removed, read by the
+- **Pages** (`pages/model/pages.ts`): kept pages are Ash OS's record (`pages` incl. removed, read by the
   hub store and its `pages` feed topic). Keep / Keep and allow / pin / Allow / Bot changes Undo-Redo call
-  `ash-hub-page-update` and `ash-hub-page-remove`; a tap shows at once and a refusal puts it back with the reason
+  `page-update` and `page-remove`; a tap shows at once and a refusal puts it back with the reason
   (`pagesProblem`). Pages kept on this Mac before are sent once (copy in `monocode:pages.before-record`). Only the
   example data keeps pages locally. `buildPage` sends `wait: 30` (hub.rs then allows 45 s) and maps "<Mono> is still
   building..." to a still-building card; Try again collects the same build. The in-app runner path is gone.
 - **Change the hub / Edit Today** (`hubChange/`): previews send `wait: 30` (still building + Try again); Apply,
-  Undo, Redo go through the live store (re-reading changes, layout, projects). History from `ash-hub-changes` under
+  Undo, Redo go through the live store (re-reading changes, layout, projects). History from `changes` under
   the ask box, the last change on Today, and Bot changes (`setHubChangeSource`) all read the same record rows.
-- **Today** draws `ash-hub-layout` (`snap.today`): since, setup, needs, being-built (quiet list, hidden when idle),
+- **Today** draws `layout` (`snap.today`): since, setup, needs, being-built (quiet list, hidden when idle),
   and kept pages placed by a change. A project's Inbox keeps its fixed order.
 - **Projects** (`model/projectActions.ts`): the strip is Ash OS's list in its order (the hard-coded four are gone).
   Shapes are Ash OS's 14 (`projectShapes.ts`; "ghost" reads as gamepad), grey glyphs on the tile; the tile menu
-  (right-click, long-press, the hover dots) picks a shape (`ash-hub-project-rename {icon_shape}`), renames
-  (`name`), and Remove from hub archives (`ash-hub-project-archive`, counts first, Undo unarchives). Emoji / image
+  (right-click, long-press, the hover dots) picks a shape (`project-rename {icon_shape}`), renames
+  (`name`), and Remove from hub archives (`project-archive`, counts first, Undo unarchives). Emoji / image
   stay this Mac's own overrides. Local names are moved to Ash OS once. Move up / down is still local only (the
   studio has no direct reorder call; an applied `strip.order` change clears the local order).
 - **New project**: the Chief of Staff questions are still scripted; the preview card shows what Create makes (code
   folder `~/Projects/<id>` / an existing folder / none, own memory, team + "<Project> lead", icon). Create calls
-  `ash-hub-project-create`, seeds the Lead (`hubLeads.ensureProjectLeads` now covers every strip project) and
-  registers it (`ash-hub-mono-project-add`).
+  `project-create`, seeds the Lead (`hubLeads.ensureProjectLeads` now covers every strip project) and
+  registers it (`mono-project-add`).
 - Stub: `scripts/hub-stub-studio.mjs` (HUB_STUB_BUILD_MS sets build time). The read-only live proxy allows
   `pages`, `layout`, `changes`.
 
@@ -150,7 +155,7 @@ only behind the dev flag `monocode:hub-examples` (what `hub-dev.html` sets).
 **Wired:** projects (strip, names, shapes, folders; parked projects are left off
 the strip), Needs (shown, Later as an opening list, `older` as a shut "Older (n)"
 group in no count, ticks, Looks right marked seen), Since (text, time), Ash's
-last-active time (`ash-hub-active`), jobs (Being built, amber Stuck rows, the red
+last-active time (`active`), jobs (Being built, amber Stuck rows, the red
 "Needs you" row and its See options sheet), and the live change feed.
 **Not wired yet** is listed below.
 
@@ -158,7 +163,7 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
 - `src-tauri/src/hub.rs` is the Rust plugin `hub`, the only door to Ash OS:
   `hub_call(action, payload)`, `hub_events_open(after)`, `hub_events_close()`.
   It reads Ash OS's key from `~/.local/share/exo-cc-studio/token` on every call
-  (Ash OS writes a new one at each start), sends only `ash-hub-<name>` actions
+  (Ash OS writes a new one at each start), sends only `<name>` actions
   to `127.0.0.1:18767`, and returns errors as `{kind, message}` in plain words.
   The key is never given to the webview (CSP also blocks the webview from
   reaching Ash OS; `hubWebviewGuard.test.ts` keeps the front end free of the key,
@@ -189,7 +194,7 @@ How it fits together (all new code under `src/features/hub/model/` unless noted)
   rendering call `useHubDataVersion()` (it also starts the store).
 - `hubActivity.ts`: real use only (typing or a click; not scrolling, hovering,
   window focus or reopening the app; ignored while the window is hidden). Reports the time of the latest input to
-  `ash-hub-active`, at most once a minute, never from a timer, so an idle open
+  `active`, at most once a minute, never from a timer, so an idle open
   window changes nothing. The first input after a 30-minute gap is reported at
   once; Ash OS decides what counts as leaving and sets "Since".
 - Timestamps are ISO from Ash OS (`Need.since`, `doneAt`, `sinceAt`,
@@ -239,16 +244,16 @@ count of the waiting list.)
 
 **One action per row, as Ash OS names it.** A Looks-right row whose
 `actionType` is `accept` shows Ash OS's label (**Looks right**) and calls
-`ash-hub-need-accept {id}` (app-only in Ash OS; being added there, proven against
+`need-accept {id}` (app-only in Ash OS; being added there, proven against
 the stub). A Looks-right row that still comes as action `open` (`s:<ask>`) has one
-button, **Seen**, calling `ash-hub-need-seen`. Either way the row ticks off. A job the Lead gave up on is one row:
+button, **Seen**, calling `need-seen`. Either way the row ticks off. A job the Lead gave up on is one row:
 `CircleWord` (14px red circle, plain grey "Needs you") then **See options**.
 That opens `OptionsSheet`: what was tried, then Try again tonight, Try it a
 different way… (a hint box, Send), Pause this job, Drop it, from
-`ash-hub-job-options`; the pick goes through `ash-hub-job-act`, the sheet closes
+`job-options`; the pick goes through `job-act`, the sheet closes
 and the row ticks off. A refusal ("That job isn't waiting on you.") shows in
 plain words and the sheet stays. See options on a **question** row
-(`question:<id>`) opens `QuestionSheet` (`ash-hub-question` / `ash-hub-answer`,
+(`question:<id>`) opens `QuestionSheet` (`question` / `answer`,
 branch `ash-os-hub-answer`; fixture `fixtures/ash-os-real-shapes-answer.json` from
 that branch's code). Most questions have no options (127 of 145 open on 15 Oct),
 so the sheet always shows the suggestion with **Go with this** (quick `agree`,
@@ -263,7 +268,7 @@ needs its update. **Open** and **Start** rows open `DetailSheet` (title, why,
 detail; no ids). A refused action (e.g. Looks right on work without evidence)
 shows Ash OS's words under the row.
 
-**Being built (jobs).** `snap.jobs` is `ash-hub-jobs` grouped under the Mono
+**Being built (jobs).** `snap.jobs` is `jobs` grouped under the Mono
 running each job, in Ash OS's order, merged stably (`mergeJobGroups`): a job that
 changes state keeps its row, a new one joins the end of its group. The feed's
 `jobs` topic re-reads it. `liveJobs.ts` turns a job into the same row the example
@@ -274,12 +279,12 @@ line and "Sent to coding team lead at 2:20pm · Got it" on a third; Needs you
 "last active" label is counted from `lastActiveAt` against a clock that ticks
 every 30 s (`useNow`), in fixed-width columns, so it changes in place. No helper
 or worker is ever named. When Ash leaves the page the finished jobs he had in
-front of him are sent to `ash-hub-job-seen` and go (React's dev double-run does
+front of him are sent to `job-seen` and go (React's dev double-run does
 not count as leaving). Stuck jobs also appear on Today and the Inbox as amber
 rows with no button (`StuckItem.quiet`); a given-up job is not among them, it is
 the red Needs row. Clicking a job opens a small story built from what Ash OS
 says (started, tried, sent, "got it"); there is no step log to show yet.
-A service without `ash-hub-jobs` just means nothing is being built. Watched pull requests (`features/pr-watch`, a
+A service without `jobs` just means nothing is being built. Watched pull requests (`features/pr-watch`, a
 Mono's `pr_watch`) are this app's own rows, not Ash OS's: each live watch is a "Waiting on CI" job under its Mono
 (`prWatchJobs.ts`), with the pull request's state on a second line and Stop watching in its story.
 
@@ -291,7 +296,7 @@ team's Monos rail shows it), gets a soul in Ash's words (orchestrator, his full
 words to workers, `sonnet` workers, its memory loads by itself, `ash_dump` verbatim,
 verify, Looks right only when critical, its identity), is written to
 `<app data>/monos/<id>/SOUL.md` right away, and is registered in Ash OS as the
-project's Lead (`ash-hub-mono-project-add`, role lead). Never re-made, renamed or
+project's Lead (`mono-project-add`, role lead). Never re-made, renamed or
 re-souled. A Lead's chats start in its project's folder (`monoWorkspace.ts`);
 other Monos still start at home. Every hub chat's Claude Code session gets one
 `--mcp-config` (`model/hubMcp.ts`, through `claudeExtraArgs.ts`; MonoCode
@@ -304,9 +309,9 @@ however deep, so Ash OS lets them reach only that project's memory and `ash`;
 none for the leadership team, other Monos and plain chats), and for a Mono's own
 chat the delegate tool (`monocode mcp`, Phase 2 H3). A Lead's fresh conversation
 (a new or rotated session) and its workers' briefs start with the project's
-memory primer (`model/hubMemoryPrimer.ts`, `ash-hub-memory-primer`: its current
+memory primer (`model/hubMemoryPrimer.ts`, `memory-primer`: its current
 never-do rules and decisions and Ash's global ones, bounded), in the prompt, so
-an engine with no ash-os tools gets it too.
+an engine with no Ash OS tools gets it too.
 Checked with Claude Code 2.1.302 on 19 Oct: a `--mcp-config` entry replaces the
 user-scope server of the same name, `${VAR}` in its env and args is expanded from
 Claude Code's own environment (an unset one stays literal), and a stdio server
@@ -320,12 +325,12 @@ sticks): `ash_checker_queue`, one `ash_checker_note` per flagged message, always
 work, three ways, each tested (`hubChecker.test.ts`): the app lane (`agentApp.ts` `CHECKER_ACTIONS`: models.list,
 memory.*, soul.read only, for its chat and its habit runs); its tool list (`hubMcp.ts` `checkerToolArgs`: ash-os as
 role `checker`, no delegate tool, `--tools Bash,Read,Grep,Glob`, `--disallowedTools` Agent, Task, Edit, Write,
-NotebookEdit, `Bash(ash:*)`, `Bash(claude:*)`, its ash-os tools pre-approved); no delegation (tasks.* refused, its
-context is `<checker_rules>`, never the session or delegate rules). Delivery: the store pulls `ash-hub-checks` at boot
+NotebookEdit, `Bash(ash:*)`, `Bash(claude:*)`, its Ash OS tools pre-approved); no delegation (tasks.* refused, its
+context is `<checker_rules>`, never the session or delegate rules). Delivery: the store pulls `checks` at boot
 and on feed topic `checks` (`onChecks`); `CheckDelivery` hands each to its owner's chat (a Mono's current chat, made
 if missing; a hub chat by id; never the checker, a worker or a chat outside the hub) only when that chat is idle with
 nothing queued or waiting on Ash, one per chat at a time, as an internal user turn with `monoCheck` and the receipt
-`mono-check-<id>` (so a restart only confirms it), then `ash-hub-check-delivered`. The chat shows it as one quiet
+`mono-check-<id>` (so a restart only confirms it), then `check-delivered`. The chat shows it as one quiet
 collapsed line (`ui/CheckTurnCard.tsx`: "Checker's note · answered: right", the note and the answer behind a click);
 no unread count, no notification, never on Today. Owners learn to answer from `<check_rules>` (`checkerRules.ts`, with
 the delegate rules): `ash_record check {id, verdict, note}`, then "Right: ..." or "Fixed: ...". A dev copy can opt in
@@ -378,7 +383,7 @@ take the screenshots.
 ### Look at the REAL Ash OS in the browser dev page
 A browser can't read the key file, so `scripts/hub-live-proxy.mjs` stands in for
 the Rust plugin: it binds 127.0.0.1, reads the key per request, adds it to
-`ash-hub-*` calls and forwards them to 127.0.0.1:18767; the page never sees it
+`hub` calls and forwards them to 127.0.0.1:18767; the page never sees it
 and nothing prints it. It is **read-only** by default (reads only; activity,
 seen, job choices, owners and projects get a 403, so looking can't move Ash's
 real "Since" time or touch a job); `--allow-writes` lifts that.
@@ -414,9 +419,9 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 
 ### Not wired yet (their mock paths stay behind the examples flag)
 - **Jobs against the live service:** the code is wired and proven against the
-  stub and the jobs branch's own answers, but `ash-hub-jobs` is not live yet
+  stub and the jobs branch's own answers, but `jobs` is not live yet
   (branch `ash-os-hub-jobs`): today Being built says nobody is working.
-  `ash-hub-job-owner`, `-work-owner`, `-unreachable` (the app telling Ash OS a
+  `job-owner`, `-work-owner`, `-unreachable` (the app telling Ash OS a
   Lead's session could not start) are not called.
 - **Group chats** and the chat engine (`hubChats.ts`), Today's chat box.
 - **Builds & playtests** (`hubBuilds.ts`, "only Ash marks played").
@@ -429,8 +434,8 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
 - **Question and gate Needs buttons** (See options on a question, Open, Start)
   still do nothing: Ash OS has no `need-act`, `gate-done` or question options.
   **Show details** is not rendered (`details` is read into the store, not shown).
-- **Unsorted Needs** (`unsorted` in `ash-hub-needs`) are not read or shown.
-- **Monos rail by membership** (`ash-hub-mono-projects`) and `ASH_MONO_ID`
+- **Unsorted Needs** (`unsorted` in `needs`) are not read or shown.
+- **Monos rail by membership** (`mono-projects`) and `ASH_MONO_ID`
   identity: Monos still come from MonoCode's own roster.
 - Capture hook, heartbeat for the doctor banner, keep-alive and launch at login.
 - Not verified: the plugin inside a running Tauri window (see the report).
@@ -481,7 +486,7 @@ Being built rendered live). Rust: `cargo test --lib hub::` in `src-tauri`.
   H4 sets one, every question is Ash's).
 - **Older questions** (`ui/OlderQuestions.tsx`): the retired studio queue as one quiet "Older questions (N)" line at
   the bottom of Today, in no badge. Opened: answer any row with its sheet, or "Dismiss all older than 3 days / 1 week /
-  2 weeks / 1 month" (`ash-hub-older-dismiss`, Ash only; their asks are parked, never dropped). Ash OS (branch
+  2 weeks / 1 month" (`older-dismiss`, Ash only; their asks are parked, never dropped). Ash OS (branch
   `ash-os-questions`) adds no new questions to the queue and keeps only red-line gates and failures as Needs.
 - Agents are told how to ask (`model/askAshRules.ts`, in every Mono's context): decide what they can, ask only what
   truly needs Ash, in their own chat, always with a pick; workers ask their Lead.

@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
-// PM redo proofs for themes (F3, PM-21) in the real app in a browser: hub-dev.html reading the stub Ash OS.
+// PM redo proofs for themes (F3, PM-21) in the real app in a browser: hub-dev.html reading the app's own local store.
 // One photo per screen. A browser preview only, not Ash's Mac.
 //   PM_PROOF_SPEC=pm-themes.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -17,16 +16,10 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 async function open(page: Page) {
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);

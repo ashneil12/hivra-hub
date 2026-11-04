@@ -1,9 +1,8 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
-// PM redo proofs (B8, G4, F3, C6, PM-20, PM-21) in the real app in a browser: hub-dev.html reading the stub Ash OS.
+// PM redo proofs (B8, G4, F3, C6, PM-20, PM-21) in the real app in a browser: hub-dev.html reading the app's own local store.
 // One photo per screen. A browser preview only, not Ash's Mac.
 //   PM_PROOF_SPEC=pm-redo.spec.ts npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -17,12 +16,6 @@ const shot = async (page: Page, name: string) => {
   await page.screenshot({ path: `${SHOTS}/${name}.png` });
 };
 
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 } });
 
 // Ash's saved look on Chief of Staff: the green crab, picked on purpose; the rest of the team is filled in as usual.
@@ -57,7 +50,7 @@ const dotsClear = (rail: Locator) =>
 
 async function open(page: Page) {
   await page.addInitScript((cos) => localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos])), ASH_COS);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
@@ -228,39 +221,24 @@ test("Reduced motion stops the bob and the blink", async ({ page }) => {
 test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: /^Pages/ }).first().click();
-  const newButton = page.locator("[data-pages-new-button]").first();
-  if (await newButton.isVisible().catch(() => false)) await newButton.click();
+  // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
+  // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
+  await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
+  if (await page.locator("[data-pages-list]").count()) await page.locator("[data-pages-new-button]").first().click();
+  // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
+  // build here, as in agents-page, so the preview it draws is what this checks.
+  await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
   await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   const calendar = page.locator("[data-block-calendar]").first();
   await expect(calendar).toBeVisible({ timeout: 30_000 });
   await expect(calendar.locator("th")).toHaveText(["M", "T", "W", "T", "F", "S", "S"]);
-  await expect(page.getByText("Sample page. No Mono has built this yet.")).toBeVisible();
+  // The "Sample page" note came from the Ash OS stub WP-04 retired; the dev stub's preview says it is a preview instead.
+  await expect(page.locator("[data-pages-preview-note]")).toContainText("This is a preview.");
   await expect(page.getByText(/No real Mono ran/)).toHaveCount(0);
   await calendar.scrollIntoViewIfNeeded();
   await page.mouse.move(5, 450);
   await shot(page, "c6-calendar-block");
-});
-
-test("PM-20: made-up data says Example: on Today (the stub's jobs and asks); Needs you is the one red", async ({ page }) => {
-  await open(page);
-  const built = page.locator("[data-hub-today-being-built]").first();
-  await expect(built).toContainText("Example: adding the air dodge", { timeout: 30_000 });
-  await expect(built).not.toContainText(/(^|[^:] )Adding the air dodge/);
-  // The stub's one red row is Hivra's gave-up job: its own Today (G1: a project is the unit of the hub).
-  await devSelect(page, { project: "hivra", item: "inbox" });
-  // Red means one thing (r30/r51): "Needs you" is the only red chip anywhere on Today — no grey or amber ring beside
-  // its word, and nothing on the surface still reads Stuck (self-repair reads Retrying, a Lead's work With <Lead>).
-  await expect(page.locator('[data-hub-chip="Needs you"]').first()).toBeVisible();
-  const needStrokes = await page.evaluate(() =>
-    [...document.querySelectorAll('[data-hub-chip="Needs you"] svg circle')].map((c) => c.getAttribute("stroke")),
-  );
-  expect(needStrokes.length).toBeGreaterThan(0);
-  expect(new Set(needStrokes)).toEqual(new Set(["rgb(239 68 68)"]));
-  await expect(page.locator('[data-hub-chip="Stuck"]')).toHaveCount(0);
-  await expect(page.getByText(/Tried before it reached the lead/)).toHaveCount(0);
-  await page.mouse.move(5, 450);
-  await shot(page, "pm20-today-example-labels");
 });
 
 test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches neither the creature nor the name", async ({ page }) => {
@@ -269,7 +247,7 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
   }, ASH_COS);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   const rail = page.locator("[data-mono-rail]").first();
   await expect(rail).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });

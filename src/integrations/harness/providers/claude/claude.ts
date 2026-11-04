@@ -1025,7 +1025,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       // access chosen later on any other process restarts it (claudeLaunchDelta).
       ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass, offBridge }),
       ...workerCheckoutsArgs(input.cwd),
-      ...(await claudeExtraArgs(input.sessionId)),
+      // WP-30: the cwd lets installed plugins add their skills and MCP servers (claudeExtraArgs.ts).
+      ...(await claudeExtraArgs(input.sessionId, input.cwd)),
       // The hub's additions ride on Claude Code's own system prompt, never in place of it.
       ...claudeAppendArgs(claudeAppend(input.sessionId)),
     ],
@@ -2658,6 +2659,7 @@ function claudeLaunchFor(input: HarnessSessionInput): ClaudeLaunch {
     hooks: options.settings?.disableAllHooks !== true,
     autoCompactWindow: options.settings?.autoCompactWindow,
     ...(claudeAppend(input.sessionId) ? { appendKey: claudeAppend(input.sessionId)!.key } : {}),
+    ...(options.firstMate ? { firstMate: true } : {}),
   };
 }
 
@@ -2790,6 +2792,7 @@ function launchOptions(
   sessionId?: string;
   settings?: ClaudeCliSettings;
   routedModel?: string;
+  firstMate?: boolean;
 } {
   const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
   const native = route ? route.modelId : nativeModelId(input.model);
@@ -2834,6 +2837,8 @@ function launchOptions(
     sessionId: resume ? undefined : sessionId,
     settings: Object.keys(settings).length > 0 ? settings : undefined,
     routedModel: route ? route.modelId : undefined,
+    // Hivra WP-10: a first mate starts without file-editing tools.
+    ...(input.firstMate ? { firstMate: true } : {}),
   };
 }
 

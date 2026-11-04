@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { openLocalHub } from "./localHub";
 
 // Round 20 proofs (a browser fixture, not Ash's Mac; tests/browser/agent-notes.tsx, made-up data labelled Example:):
 // agent-to-agent notes in a Lead's chat (one quiet line, a clickable name; notes landing together fold into one line
@@ -15,7 +16,8 @@ test("a single note, a folded group collapsed and expanded", async ({ page }) =>
   const single = page.locator("[data-agent-note]").first();
   await expect(single).toBeVisible({ timeout: 60_000 });
   // Round 21: the brief's line repeats the worker's label, so it is said once.
-  await expect(single).toHaveText('EXO lead messaged Worker "Example: fix the save bug"');
+  // r91: a brief reads "handed a job to" (agentNotes.ts noteVerb).
+  await expect(single).toHaveText('EXO lead handed a job to Worker "Example: fix the save bug"');
   const style = await single.evaluate((el) => {
     const s = getComputedStyle(el);
     return { bg: s.backgroundColor, radius: s.borderRadius, border: s.borderTopWidth, lines: Math.round(el.getBoundingClientRect().height / parseFloat(s.lineHeight)) };
@@ -56,15 +58,11 @@ test("a stuck item's Open chat opens the Lead's chat, not the worker's", async (
 });
 
 // A8: a Mono's Sessions tab shows only running work; with none, it says so plainly (no ghost words).
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
 test("A8: an empty Sessions list says nothing is running right now", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  const stub = await startStub({ jobs: true, dev: true });
-  try {
+  {
     await page.setViewportSize({ width: 1440, height: 900 });
-    await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+    await openLocalHub(page);
     await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
     const notNow = page.getByRole("button", { name: "Not now" });
     await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
@@ -77,7 +75,5 @@ test("A8: an empty Sessions list says nothing is running right now", async ({ pa
     await page.mouse.move(5, 450);
     await page.waitForTimeout(400);
     await page.screenshot({ path: `${SHOTS}/pm-20-sessions-empty.png` });
-  } finally {
-    await stub.close();
   }
 });

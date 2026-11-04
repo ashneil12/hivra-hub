@@ -45,7 +45,7 @@ function folders() {
   };
 }
 
-const SOUL = "# Chief of Staff\n\n## Role\nRuns the day\n\n## Skills\n- ash-os\n- dump-triage\n";
+const SOUL = "# Chief of Staff\n\n## Role\nRuns the day\n\n## Skills\n- memory-notes\n- dump-triage\n";
 
 /** This Mac: projects, Monos (one on Codex), teams with conversations, connectors, Pages, models, settings. */
 async function seed(a: Awaited<ReturnType<typeof app>>) {
@@ -90,7 +90,7 @@ it("the setup goes out as files and comes back as the same document", async () =
   // Each Mono says which engine it runs on, never assumed Claude.
   expect(doc.monos.find((m) => m.id === "hivra-lead")!.engine).toEqual({ harness: "codex" });
   expect(files["setup/monos/hivra-lead/sheet.md"]).toContain("Engine: Codex");
-  expect(doc.monos.find((m) => m.id === "chief-of-staff")).toMatchObject({ role: "Runs the day", skills: ["ash-os", "dump-triage"], team: "leadership", projectIds: ["hivra"] });
+  expect(doc.monos.find((m) => m.id === "chief-of-staff")).toMatchObject({ role: "Runs the day", skills: ["memory-notes", "dump-triage"], team: "leadership", projectIds: ["hivra"] });
   expect(doc.monos.find((m) => m.id === "hivra-lead")!.team).toBe("lead");
   // Every Mono folder has a MEMORY.md; an empty one isn't memory and doesn't travel.
   const empty = a.doc.buildSetupDoc({ monoFiles: { "hivra-lead": { "SOUL.md": "# s", "MEMORY.md": "  \n" } }, workspace: false });
@@ -139,7 +139,7 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
   const here = [{ ...PROJECTS[0], folder: "/Volumes/New/hivra" }, PROJECTS[1]];
   const b = await app(here);
   expect(b.mono.listMonos()).toEqual([]);
-  const pending = { name: "export", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: { "ash-os": true, "dump-triage": false } };
+  const pending = { name: "export", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: { "memory-notes": true, "dump-triage": false } };
   const plan = b.plan.planImport(pending);
   expect(plan.monos.map((m) => [m.mono.id, m.state, m.engineLabel])).toEqual([["chief-of-staff", "new", "Claude Code · opus"], ["hivra-lead", "new", "Codex"]]);
   expect(plan.monos[0].folders).toEqual(["/Volumes/New/hivra"]);

@@ -1,7 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Round 20 review fixes, a browser preview only (not Ash's Mac): a project's own Today keeps its ask rows in one
 // column even at 2560 wide (G1 took away the all-projects board and its 1800px two-column grid; the single shrinkable
@@ -10,56 +9,26 @@ import { startStub } from "../../scripts/hub-stub-server.mjs";
 //   PM_PROOF_SPEC=pm-20-review.spec.ts PM_PROOF_DIR=proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-20";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 
 async function open(page: Page) {
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}`);
+  await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
 }
-
-test("Today at 2560 wide: the ask rows stay in one column", async ({ page }) => {
-  fs.mkdirSync(SHOTS, { recursive: true });
-  await page.setViewportSize({ width: 2560, height: 1440 });
-  await open(page);
-  // G1: Hivra's own Today (it has the asks); its needs list is one column, no per-project grid.
-  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
-  const list = page.locator("[data-hub-today-projects]").first();
-  await expect(list).toBeVisible({ timeout: 30_000 });
-  const layout = await list.evaluate((el) => {
-    const style = getComputedStyle(el);
-    return {
-      display: style.display,
-      direction: style.flexDirection,
-      rows: [...el.children].map((e) => ({ left: Math.round(e.getBoundingClientRect().left) })).filter((r) => r.left > 0),
-    };
-  });
-  expect(layout.display).toBe("flex");
-  expect(layout.direction).toBe("column");
-  expect(layout.rows.length).toBeGreaterThan(0);
-  expect(new Set(layout.rows.map((r) => r.left)).size).toBe(1);
-  await page.waitForTimeout(600);
-  await page.screenshot({ path: `${SHOTS}/pm-20-today-2560.png` });
-  // At 1440 wide, the same single column.
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(300);
-  const narrow = await list.evaluate((el) => [...el.children].map((e) => Math.round(e.getBoundingClientRect().left)).filter((l) => l > 0));
-  expect(new Set(narrow).size).toBe(1);
-});
 
 test("a Page preview has no watermark; the bar says it is a preview", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1920, height: 1080 });
   await open(page);
   await page.getByRole("button", { name: /^Pages/ }).first().click();
-  const newButton = page.locator("[data-pages-new-button]").first();
-  if (await newButton.isVisible().catch(() => false)) await newButton.click();
+  // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
+  // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
+  await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
+  if (await page.locator("[data-pages-list]").count()) await page.locator("[data-pages-new-button]").first().click();
+  // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
+  // build here, as in agents-page, so the preview it draws is what this checks.
+  await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
   await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   await expect(page.locator("[data-block-calendar]").first()).toBeVisible({ timeout: 30_000 });

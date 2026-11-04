@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # Hivra: a draft PR runs no jobs. Every work package opens one as soon as it starts, and the free
+    # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
+    # queue. Marking a PR ready for review runs everything.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
@@ -11,6 +15,7 @@ concurrency:
 
 jobs:
   release-channel:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Release channel isolation
     runs-on: ubuntu-latest
     permissions:
@@ -28,6 +33,7 @@ jobs:
       - run: node --test scripts/hub-dev-loop.test.cjs
 
   mobile:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Mobile checks
     runs-on: ubuntu-latest
     permissions:
@@ -53,6 +59,7 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -66,6 +73,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium webkit
+      # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
+      - name: Hivra layout (Hub flag)
+        run: npx playwright test -c tests/browser/hivra-layout.config.ts
       - run: npm run test:browser
       - name: Upload browser failure traces
         if: failure()
@@ -77,6 +87,7 @@ jobs:
           if-no-files-found: ignore
 
   host:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: false
       matrix:
@@ -99,6 +110,7 @@ jobs:
       - run: npm run host:package
 
   check:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     strategy:
       fail-fast: false
       matrix:
@@ -129,6 +141,7 @@ jobs:
       - run: cargo test
 
   appimage:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -194,6 +207,7 @@ jobs:
         run: bash scripts/assert-appimage-host-libs.sh
 
   rpm:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: RPM build (${{ matrix.image }})
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}

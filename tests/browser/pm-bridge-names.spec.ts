@@ -1,19 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-// @ts-expect-error plain .mjs helper
-import { startStub } from "../../scripts/hub-stub-server.mjs";
+import { openLocalHub } from "./localHub";
 
 // Rounds 15 and 16: with Claude Code on the Grok bridge, no surface names a Claude model or shows Claude's mark (the
 // chat toolbar's model picker and its menu, the chat card and its hover preview, the tab, the turn header), and the
 // usage chip is gone (its numbers are the Claude plan's). They all read claudeGrokBridge.ts. Also, rail names and the turn header line
 // keep at least 4.5:1 in every state. Example data only. A browser preview, not Ash's Mac.
 const SHOTS = process.env.PM_PROOF_DIR ?? "test-results/pm-bridge-names";
-type Stub = { url: string; close(): Promise<void> };
-let stub: Stub;
-test.beforeAll(async () => {
-  stub = await startStub({ jobs: true, dev: true });
-});
-test.afterAll(async () => stub?.close());
 test.use({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 
 const FOLDER = "/Users/example/Projects/vg-game";
@@ -85,7 +78,7 @@ const shotOf = async (page: Page, name: string, selector: string, pad = 8) => {
 
 async function openChat(page: Page, bridge: boolean, inset = false) {
   await seed(page, bridge, inset);
-  await page.goto(`/hub-dev.html?stub=${encodeURIComponent(stub.url)}&fakeClaude`);
+  await openLocalHub(page, "&fakeClaude");
   await expect(page.getByRole("button", { name: /^EXO/ }).first()).toBeVisible({ timeout: 60_000 });
   await closeOffer(page);
   await page.getByRole("button", { name: /^EXO/ }).first().click();
@@ -139,9 +132,9 @@ test("on the Grok bridge: no Claude model name or logo anywhere, no usage chip, 
   // No usage chip, no popover, and no footer chip in its place: those numbers are the Claude plan's.
   await expect(page.getByRole("button", { name: /usage details$/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Refresh usage" })).toHaveCount(0);
-  // The chat's mark is an empty slot (no Claude starburst, no slashed Grok circle).
+  // r102 (61ebb49): the chat's mark is a neutral grey chat mark (no Claude starburst, no slashed Grok circle).
   const card = page.locator(SURFACES.card).first();
-  await expect(card.locator("[data-model-mark-empty]")).toHaveCount(1);
+  await expect(card.locator("[data-model-mark-neutral]")).toHaveCount(1);
   await expect(card.locator("img")).toHaveCount(0);
   await shotOf(page, "pm-16-toolbar-picker", "[data-composer-box]:visible");
   await shotOf(page, "pm-16-chat-card", SURFACES.card);
@@ -167,14 +160,19 @@ test("on the Grok bridge: no Claude model name or logo anywhere, no usage chip, 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
 
-  // A turn: its header says Grok 4.7 working, the whole line one grey, and at least 4.5:1.
+  // A turn. While it runs its header is the one live status line (Critiquito, 29 Oct), with no Claude name or mark; once
+  // it ends the header says Grok 4.7 worked, the whole line one grey, and at least 4.5:1.
   await page.evaluate(() => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push("hold"));
   const field = page.locator("[data-composer-box]:visible textarea").first();
   await field.fill("Example: and the changelog");
   await field.press("Enter");
-  const title = page.locator("[data-live-fold-title]").first();
-  await expect(title).toContainText(/Grok 4\.7 working/, { timeout: 15_000 });
-  await page.waitForTimeout(1300);
+  await expect(page.getByRole("status").filter({ hasText: /^(Thinking|Writing)/ }).first()).toBeVisible({ timeout: 15_000 });
+  expect(await claudeTraces(page, "body")).toEqual([]);
+  // The fake holds the turn once it has said "On it."; release before that would end nothing.
+  await expect(page.getByText("On it.", { exact: true }).last()).toBeVisible({ timeout: 15_000 });
+  await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
+  const title = page.getByText(/^Grok 4\.7 worked/).last();
+  await expect(title).toBeVisible({ timeout: 15_000 });
   expect(await title.evaluate((el) => [...el.querySelectorAll("*")].length)).toBe(0);
   expect(await title.evaluate((el) => getComputedStyle(el).backgroundImage)).toBe("none");
   expect(await contrast(title)).toBeGreaterThanOrEqual(4.5);
@@ -183,7 +181,6 @@ test("on the Grok bridge: no Claude model name or logo anywhere, no usage chip, 
   const row = title.locator("xpath=ancestor::*[contains(@class,'items-center')][1]");
   await row.evaluate((el) => el.setAttribute("data-proof-header", ""));
   await shotOf(page, "pm-16-turn-header", "[data-proof-header]", 12);
-  await page.evaluate(() => (window as unknown as { __fakeClaude: { release(): void } }).__fakeClaude.release());
 });
 
 test("on the Grok bridge: the chat card's hover preview names Grok 4.7, no logo, on the more solid glass", async ({ page }) => {
