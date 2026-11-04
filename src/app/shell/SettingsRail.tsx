@@ -41,6 +41,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   activity: Clock, // WP-78
   dashboards: DashboardSquare,
   portable: CloudUpload,
+  history: Clock, // WP-50
   connectors: Zap,
   teams: Chatting,
 };

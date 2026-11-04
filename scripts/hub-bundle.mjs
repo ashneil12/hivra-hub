@@ -25,10 +25,30 @@ export function kindOf(identifier) {
   return null;
 }
 
+/**
+ * A string value from an XML plist. Binary plists are left to PlistBuddy, which is macOS-only.
+ * WP-09: Windows and Linux tests write the XML plist the ship fixtures already use.
+ */
+function readXmlPlistString(plist, key) {
+  let bytes;
+  try {
+    bytes = readFileSync(plist);
+  } catch {
+    return null;
+  }
+  if (bytes.subarray(0, 6).toString() === "bplist") return null;
+  const match = new RegExp(`<key>${key}</key>\\s*<string>([^<]*)</string>`).exec(bytes.toString("utf8"));
+  if (!match) return null;
+  const value = match[1].replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&amp;", "&").trim();
+  return value || null;
+}
+
 /** CFBundleIdentifier from the bundle's Info.plist, or null. */
 export function readIdentifier(app) {
   const plist = path.join(app, "Contents/Info.plist");
   if (!existsSync(plist)) return null;
+  // WP-09: PlistBuddy stays the macOS reader (real bundles are binary plists).
+  if (process.platform !== "darwin") return readXmlPlistString(plist, "CFBundleIdentifier");
   try {
     return execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleIdentifier", plist], {
       stdio: ["ignore", "pipe", "ignore"],
@@ -44,6 +64,7 @@ export function readIdentifier(app) {
 export function readVersion(app) {
   const plist = path.join(app, "Contents/Info.plist");
   if (!existsSync(plist)) return null;
+  if (process.platform !== "darwin") return readXmlPlistString(plist, "CFBundleShortVersionString");
   try {
     const value = execFileSync("/usr/libexec/PlistBuddy", ["-c", "Print :CFBundleShortVersionString", plist], {
       stdio: ["ignore", "pipe", "ignore"],

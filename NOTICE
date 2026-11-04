@@ -90,6 +90,20 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/activity.rs
   bounded_text, bounded_metadata and the newest-first page translated from apps/server/src/audit.rs to rusqlite (WP-78). The 90-day keep, the initiator and the activity screen are Hivra's.
 
+- Raven's chat importer
+  Source: https://github.com/EverMind-AI/Raven
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src/features/historyImport, src-tauri/src/history_import.rs
+  Translated line by line from the importer. Tool noise is dropped, provenance is stricter, and a preview reads only the header (WP-50).
+
+- Agent Zero's migrate-agents preview
+  Source: https://github.com/agent0ai/agent-zero
+  License: MIT
+  Copyright (c) 2025 Agent Zero, s.r.o.
+  Used in: src/features/historyImport
+  The chat preview and the Claude, Codex and Hermes readers, translated line by line. A preview counts from the header only (WP-50).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

@@ -789,6 +789,13 @@ fn runner_submit_args(label: &str, node: &str, dir: &Path, home: &str) -> Vec<St
 
 /// The runner keeps going under launchd (or as a plain detached process when the ship said so).
 fn restart_runner(ship: &Ship) {
+    // WP-09: a Windows task or a systemd unit, from the script this ship stored.
+    // macOS has no service record, so this does not run there.
+    #[cfg(not(target_os = "macos"))]
+    if crate::platform::ship::rerun(&ship.doc, &ship.dir) {
+        log(&ship.dir, "restarted the runner (service)");
+        return;
+    }
     if let (Some(label), Some(domain), Some(plist)) = (
         ship.doc.pointer("/launchd/label").and_then(Value::as_str),
         ship.doc.pointer("/launchd/domain").and_then(Value::as_str),
@@ -871,32 +878,33 @@ fn reopen(ship: &mut Ship) {
     let app = ship.app_path();
     let direct = ship.text("/launch/mode") == "direct";
     let result = if direct {
-        let mut command = Command::new(app.join("Contents/MacOS/monocode"));
+        let mut pairs = Vec::new();
         if let Some(env) = ship.doc.pointer("/launch/env").and_then(Value::as_object) {
             for (key, value) in env {
                 if let Some(value) = value.as_str() {
-                    command.env(key, value);
+                    pairs.push((key.clone(), value.to_string()));
                 }
             }
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        command.spawn().map(|_| ())
+        // The binary inside the bundle, including monocode.exe on Windows.
+        // The ship's launch env is overlaid; it is not dropped.
+        crate::platform::ship::spawn_app_env(&app, &pairs)
     } else {
         // -n: this process (the build being put aside) still runs under the same identifier, and a plain open would
         // only bring it to the front.
-        Command::new("/usr/bin/open")
-            .arg("-n")
-            .arg(&app)
-            .status()
-            .map(|_| ())
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("/usr/bin/open")
+                .arg("-n")
+                .arg(&app)
+                .status()
+                .map(|_| ())
+        }
+        // WP-09: no Launch Services off the Mac. The binary is the one inside the bundle.
+        #[cfg(not(target_os = "macos"))]
+        {
+            crate::platform::ship::spawn_app(&app)
+        }
     };
     match result {
         Ok(()) => {
