@@ -99,6 +99,10 @@ mod session_store;
 pub mod ship;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-81 / WP-82: one download-and-verify helper for pinned tools.
+mod pinned_tool;
+// Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
+mod worktree_pool;
 // Hivra WP-14: steering messages to running workers.
 mod steering;
 mod tool_detail;
@@ -729,6 +733,10 @@ pub fn run() {
             worktrees::git_worktree_remove,
             worktrees::git_orchestration_worktree_remove,
             worktrees::git_orchestration_branch_remove,
+            worktree_pool::worktree_pool_status,
+            worktree_pool::worktree_pool_settings,
+            worktree_pool::worktree_pool_set_settings,
+            worktree_pool::worktree_pool_prune,
             project_file::project_file_status,
             project_file::project_file_import,
             project_file::project_file_forget,
