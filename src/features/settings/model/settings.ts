@@ -28,6 +28,7 @@ export type SettingsSectionId =
   | "mcp"
   | "skills"
   | "plugins"
+  | "crew"
   | "monos"
   | "teams"
   | "inbox"
@@ -170,6 +171,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Plugins you can add, what each one does and its licence, and the indexes they come from.",
     keywords: "discover plugin install marketplace index licence license",
+  },
+  {
+    id: "crew",
+    group: "agents",
+    label: "Crew",
+    description: "Which CLI, model and effort a task uses, in the order you set.",
+    keywords: "crew rules routing cli model effort reroute labels paths",
   },
   {
     id: "monos",
@@ -658,6 +666,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "plugins",
     label: "Plugin indexes",
     keywords: "index source bundled github marketplace url file",
+  },
+  {
+    id: "crew-rules",
+    section: "crew",
+    label: "Crew rules",
+    keywords: "routing cli model effort reroute labels paths",
   },
 ];
 
