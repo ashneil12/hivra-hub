@@ -1260,6 +1260,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
     crate::ship::ensure_acceptance_table(conn)?;
+    // WP-78: the activity log. In place, so an older build still opens this file.
+    crate::activity::ensure_tables(conn)?;
     Ok(())
 }
 
