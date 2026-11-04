@@ -27,6 +27,10 @@ pub struct LiveTurnsPayload {
     pub session_ids: Vec<String>,
 }
 
+pub(crate) fn sorted_ids(by_window: &HashMap<String, HashSet<String>>) -> Vec<String> {
+    sorted_union(by_window)
+}
+
 fn sorted_union(by_window: &HashMap<String, HashSet<String>>) -> Vec<String> {
     let mut ids: Vec<String> = by_window.values().flatten().cloned().collect();
     ids.sort();
@@ -77,6 +81,32 @@ impl LiveTurns {
     pub fn list(&self) -> Vec<String> {
         let map = self.by_window.lock().unwrap_or_else(|e| e.into_inner());
         sorted_union(&map)
+    }
+
+    pub(crate) fn lock_map(&self) -> std::sync::MutexGuard<'_, HashMap<String, HashSet<String>>> {
+        self.by_window.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[cfg(test)]
+    pub fn mutex_is_free(&self) -> bool {
+        self.by_window.try_lock().is_ok()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static HOLD_PROBE: std::cell::Cell<Option<fn(&LiveTurns)>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub fn set_hold_probe(probe: Option<fn(&LiveTurns)>) {
+    HOLD_PROBE.with(|cell| cell.set(probe));
+}
+
+#[cfg(test)]
+pub fn run_hold_probe(live: &LiveTurns) {
+    if let Some(probe) = HOLD_PROBE.with(|cell| cell.get()) {
+        probe(live);
     }
 }
 

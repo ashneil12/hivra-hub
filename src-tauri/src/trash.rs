@@ -127,6 +127,7 @@ pub struct TrashListItem {
     pub payload: String,
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Emptied {
     /// Roots only. Children that went with a root are not counted again (Orbit `empty_trash`).
@@ -152,7 +153,12 @@ pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS trash_items_batch_idx
            ON trash_items (trashed_with_kind, trashed_with_id);
          CREATE INDEX IF NOT EXISTS trash_items_deleted_idx
-           ON trash_items (deleted_at);",
+           ON trash_items (deleted_at);
+         CREATE TABLE IF NOT EXISTS trash_clock (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           n INTEGER NOT NULL
+         );
+         INSERT OR IGNORE INTO trash_clock (id, n) VALUES (1, 0);",
     )
 }
 
@@ -181,7 +187,7 @@ pub fn trash(
             already: true,
         });
     }
-    insert_row(&tx, root, now, &root.kind, &root.id)?;
+    let version = insert_row(&tx, root, now, &root.kind, &root.id)?;
     for child in children {
         if check_item(child).is_err() {
             continue;
@@ -193,7 +199,7 @@ pub fn trash(
     }
     tx.commit()?;
     Ok(Trashed {
-        version: 1,
+        version,
         already: false,
     })
 }
@@ -260,6 +266,7 @@ pub fn restore(
     Ok(restored)
 }
 
+#[cfg(test)]
 pub fn delete_forever(
     conn: &Connection,
     kind: &str,
@@ -293,6 +300,7 @@ pub fn delete_forever(
 }
 
 /// Every direct root, with no 30-day cutoff (Orbit `empty_trash`).
+#[cfg(test)]
 pub fn empty(conn: &Connection) -> Result<Emptied, TrashError> {
     let tx = conn.unchecked_transaction()?;
     let roots = direct_rows(&tx, None)?;
@@ -468,23 +476,58 @@ fn check_item(item: &Item) -> Result<(), TrashError> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    static FAIL_INSERTS: std::cell::Cell<i32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn fail_next_inserts(count: i32) {
+    FAIL_INSERTS.with(|cell| cell.set(count));
+}
+
+fn next_version(conn: &Connection) -> Result<i64, TrashError> {
+    let changed = conn.execute("UPDATE trash_clock SET n = n + 1 WHERE id = 1", [])?;
+    if changed == 0 {
+        conn.execute("INSERT INTO trash_clock (id, n) VALUES (1, 1)", [])?;
+        return Ok(1);
+    }
+    let version: i64 = conn.query_row("SELECT n FROM trash_clock WHERE id = 1", [], |row| {
+        row.get(0)
+    })?;
+    Ok(version)
+}
+
 fn insert_row(
     conn: &Connection,
     item: &Item,
     now: i64,
     with_kind: &str,
     with_id: &str,
-) -> Result<(), TrashError> {
+) -> Result<i64, TrashError> {
+    #[cfg(test)]
+    if FAIL_INSERTS.with(|cell| {
+        let left = cell.get();
+        if left > 0 {
+            cell.set(left - 1);
+            true
+        } else {
+            false
+        }
+    }) {
+        return Err(TrashError::Db("ledger down".into()));
+    }
     let (parent_kind, parent_id) = clean_parent(
         &item.kind,
         item.parent_kind.as_deref(),
         item.parent_id.as_deref(),
     );
+    let version = next_version(conn)?;
     conn.execute(
         "INSERT INTO trash_items (
            kind, item_id, title, parent_kind, parent_id, deleted_at,
            trashed_with_kind, trashed_with_id, version, payload
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, ?9)",
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         params![
             item.kind,
             item.id,
@@ -494,10 +537,11 @@ fn insert_row(
             now,
             with_kind,
             with_id,
+            version,
             clean_payload(&item.payload),
         ],
     )?;
-    Ok(())
+    Ok(version)
 }
 
 fn clean_parent(
@@ -859,6 +903,287 @@ fn copy_symlink(source: &Path, dest: &Path) -> Result<(), TrashError> {
 
 // ---- commands ---------------------------------------------------------------
 
+/// The running check and the ledger insert are one step. The live-turn lock stays held until the
+/// row is in, so a turn that starts in between cannot land in the trash.
+pub fn commit_if_idle(
+    conn: &Connection,
+    live: &crate::live_turns::LiveTurns,
+    root: &Item,
+    children: &[Item],
+    now: i64,
+) -> Result<Trashed, TrashError> {
+    let guard = live.lock_map();
+    let running = crate::live_turns::sorted_ids(&guard);
+    let busy = match root.kind.as_str() {
+        "chat" => running.iter().any(|id| id == &root.id),
+        "project" => child_is_running(children, &running),
+        _ => false,
+    };
+    if busy {
+        return Err(TrashError::Running);
+    }
+    #[cfg(test)]
+    crate::live_turns::run_hold_probe(live);
+    let trashed = trash(conn, root, children, false, now)?;
+    drop(guard);
+    Ok(trashed)
+}
+
+#[derive(Debug)]
+pub(crate) struct HardDeleted {
+    pub rows: Vec<TrashRow>,
+    pub images: Vec<String>,
+}
+
+fn preflight_images(conn: &Connection, rows: &[TrashRow]) -> Result<Vec<String>, TrashError> {
+    let mut images = Vec::new();
+    for row in rows {
+        if row.kind == "chat" {
+            images.extend(
+                crate::session_store::collect_chat_image_paths(conn, &row.id)
+                    .map_err(TrashError::Db)?,
+            );
+        }
+    }
+    Ok(images)
+}
+
+fn apply_domain_sql(conn: &Connection, row: &TrashRow) -> Result<(), TrashError> {
+    match row.kind.as_str() {
+        "chat" => crate::session_store::delete_session(conn, &row.id)
+            .map_err(|error| TrashError::Db(error.to_string())),
+        "note" => crate::notes::purge_note(conn, &row.id)
+            .map_err(|error| TrashError::Db(error.to_string())),
+        "task" => delete_optional_row(conn, "tasks", &row.id),
+        "doc" => delete_optional_row(conn, "docs", &row.id),
+        _ => Ok(()),
+    }
+}
+
+/// Read every chat's images first. Then, in one transaction, drop the ledger rows and the domain
+/// rows. Nothing is destroyed if a later read throws.
+pub(crate) fn hard_delete_root(
+    conn: &Connection,
+    kind: &str,
+    id: &str,
+    version: i64,
+) -> Result<HardDeleted, TrashError> {
+    let Some(row) = read_row(conn, kind, id)? else {
+        return Err(TrashError::NotFound);
+    };
+    if !is_direct(&row) {
+        return Err(TrashError::NotTrashed);
+    }
+    if row.version != version {
+        return Err(TrashError::Conflict);
+    }
+    let rows = batch_rows(conn, kind, id)?;
+    let images = preflight_images(conn, &rows)?;
+    let tx = conn.unchecked_transaction()?;
+    let changed = tx.execute(
+        "DELETE FROM trash_items WHERE kind = ?1 AND item_id = ?2 AND version = ?3",
+        params![kind, id, version],
+    )?;
+    if changed == 0 {
+        return Err(TrashError::Conflict);
+    }
+    tx.execute(
+        "DELETE FROM trash_items WHERE trashed_with_kind = ?1 AND trashed_with_id = ?2",
+        params![kind, id],
+    )?;
+    for row in &rows {
+        apply_domain_sql(&tx, row)?;
+    }
+    tx.commit()?;
+    Ok(HardDeleted { rows, images })
+}
+
+pub(crate) fn hard_empty(conn: &Connection) -> Result<HardDeleted, TrashError> {
+    let roots = direct_rows(conn, None)?;
+    let mut rows = Vec::new();
+    for root in &roots {
+        rows.extend(batch_rows(conn, &root.kind, &root.id)?);
+    }
+    let images = preflight_images(conn, &rows)?;
+    let tx = conn.unchecked_transaction()?;
+    for root in &roots {
+        tx.execute(
+            "DELETE FROM trash_items WHERE trashed_with_kind = ?1 AND trashed_with_id = ?2",
+            params![root.kind, root.id],
+        )?;
+    }
+    for row in &rows {
+        apply_domain_sql(&tx, row)?;
+    }
+    tx.commit()?;
+    Ok(HardDeleted { rows, images })
+}
+
+fn reinsert_rows(conn: &Connection, rows: &[TrashRow]) -> Result<(), TrashError> {
+    let tx = conn.unchecked_transaction()?;
+    for row in rows {
+        tx.execute(
+            "INSERT OR IGNORE INTO trash_items (
+               kind, item_id, title, parent_kind, parent_id, deleted_at,
+               trashed_with_kind, trashed_with_id, version, payload
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                row.kind,
+                row.id,
+                row.title,
+                row.parent_kind,
+                row.parent_id,
+                row.deleted_at,
+                row.trashed_with_kind,
+                row.trashed_with_id,
+                row.version,
+                row.payload,
+            ],
+        )?;
+    }
+    tx.commit()?;
+    Ok(())
+}
+
+fn remove_files_or_restore(
+    app: &AppHandle,
+    store: &SessionStore,
+    deleted: &HardDeleted,
+) -> Result<(), String> {
+    let mut remaining = deleted.rows.clone();
+    for row in &deleted.rows {
+        if let Err(error) = apply_files(app, row) {
+            let conn = store.lock_conn()?;
+            if let Err(again) = reinsert_rows(&conn, &remaining) {
+                return Err(format!("{error}; rollback failed: {again}"));
+            }
+            return Err(error.to_string());
+        }
+        remaining.remove(0);
+    }
+    if !deleted.images.is_empty() {
+        if let Err(error) = crate::fs::delete_generated_images_sync(app, &deleted.images) {
+            eprintln!("Generated image cleanup will need a retry: {error}");
+        }
+    }
+    Ok(())
+}
+
+fn restore_mono_pair(
+    trash_root: &Path,
+    id: &str,
+    original: &Path,
+    team: &Path,
+) -> Result<(), TrashError> {
+    let moved = restore_into(trash_root, id, original)?;
+    let team_name = format!("{id}.team");
+    if let Err(error) = restore_into(trash_root, &team_name, team) {
+        if matches!(moved, MoveOutcome::Moved(_)) {
+            match move_into(trash_root, original, id) {
+                Ok(_) => return Err(error),
+                Err(rollback) => {
+                    return Err(TrashError::Io(format!(
+                        "{error}; rollback failed: {rollback}"
+                    )));
+                }
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn undo_parked(trash_root: &Path, parked: &[(&str, &Path)]) -> Result<(), TrashError> {
+    let mut problems = Vec::new();
+    for (name, original) in parked {
+        if let Err(error) = restore_into(trash_root, name, original) {
+            problems.push(format!("{name}: {error}"));
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(TrashError::Io(format!(
+            "rollback failed: {}",
+            problems.join("; ")
+        )))
+    }
+}
+
+/// The ledger write for folders already sitting in the trash. A failed write puts the folders
+/// back. If they cannot come back, the ledger is tried again so the trash can still list them.
+pub fn record_after_moves(
+    conn: &Connection,
+    trash_root: &Path,
+    parked: &[(String, PathBuf)],
+    root: &Item,
+    children: &[Item],
+    now: i64,
+) -> Result<Trashed, TrashError> {
+    match trash(conn, root, children, false, now) {
+        Ok(trashed) => Ok(trashed),
+        Err(error) => {
+            let refs: Vec<(&str, &Path)> = parked
+                .iter()
+                .map(|(name, path)| (name.as_str(), path.as_path()))
+                .collect();
+            match undo_parked(trash_root, &refs) {
+                Ok(()) => Err(error),
+                Err(rollback) => match trash(conn, root, children, false, now) {
+                    Ok(_) => Err(TrashError::Io(format!(
+                        "{error}; rollback failed: {rollback}; the trash still lists it"
+                    ))),
+                    Err(again) => Err(TrashError::Io(format!(
+                        "{error}; rollback failed: {rollback}; ledger retry failed: {again}"
+                    ))),
+                },
+            }
+        }
+    }
+}
+
+fn mono_item(mono: &MonoTrash) -> Item {
+    Item {
+        kind: "mono".into(),
+        id: mono.id.clone(),
+        title: mono.title.clone(),
+        parent_kind: None,
+        parent_id: None,
+        payload: mono.payload.clone(),
+    }
+}
+
+fn keep_or_undo(
+    store: &SessionStore,
+    trash_root: &Path,
+    parked: &[(String, PathBuf)],
+    mono: &MonoTrash,
+    error: TrashError,
+) -> String {
+    let refs: Vec<(&str, &Path)> = parked
+        .iter()
+        .map(|(name, path)| (name.as_str(), path.as_path()))
+        .collect();
+    match undo_parked(trash_root, &refs) {
+        Ok(()) => error.to_string(),
+        Err(rollback) => {
+            let Ok(mut conn) = store.lock_conn() else {
+                return format!(
+                    "{error}; rollback failed: {rollback}; ledger retry failed: Session store is locked"
+                );
+            };
+            cancel_mono_work(&mut conn, &mono.id);
+            let children = mono_children(&conn, mono);
+            match trash(&conn, &mono_item(mono), &children, false, now_millis()) {
+                Ok(_) => format!("{error}; rollback failed: {rollback}; the trash still lists it"),
+                Err(again) => {
+                    format!("{error}; rollback failed: {rollback}; ledger retry failed: {again}")
+                }
+            }
+        }
+    }
+}
+
 fn emit(app: &AppHandle) {
     let _ = app.emit(CHANGED, ());
 }
@@ -892,7 +1217,9 @@ pub fn trash_restore(
             Ok(items)
         }
         Err(error) => {
-            let _ = park_files(&app, &row);
+            if let Err(rollback) = park_files(&app, &row) {
+                return Err(format!("{error}; rollback failed: {rollback}"));
+            }
             Err(error.to_string())
         }
     }
@@ -917,16 +1244,13 @@ pub fn trash_delete_forever(
     if row.version != version {
         return Err(TrashError::Conflict.to_string());
     }
-    let rows = batch_rows(&conn, &kind, &id).map_err(|error| error.to_string())?;
-    for row in &rows {
-        apply_domain(&app, &conn, row).map_err(|error| error.to_string())?;
-        apply_files(&app, row).map_err(|error| error.to_string())?;
-    }
-    let removed = delete_forever(&conn, &kind, &id, version).map_err(|error| error.to_string())?;
+    let deleted =
+        hard_delete_root(&conn, &kind, &id, version).map_err(|error| error.to_string())?;
     drop(conn);
+    remove_files_or_restore(&app, &store, &deleted)?;
     emit(&app);
     let _ = app.emit(crate::reminders::CHANGED, ());
-    Ok(removed.iter().filter(|row| is_direct(row)).count() as u64)
+    Ok(deleted.rows.iter().filter(|row| is_direct(row)).count() as u64)
 }
 
 #[derive(Debug, Serialize)]
@@ -938,22 +1262,13 @@ pub struct EmptyResult {
 #[tauri::command]
 pub fn trash_empty(app: AppHandle, store: State<'_, SessionStore>) -> Result<EmptyResult, String> {
     let conn = store.lock_conn()?;
-    let roots = direct_rows(&conn, None).map_err(|error| error.to_string())?;
-    let mut rows = Vec::new();
-    for root in &roots {
-        rows.extend(batch_rows(&conn, &root.kind, &root.id).map_err(|error| error.to_string())?);
-    }
-    for row in &rows {
-        apply_domain(&app, &conn, row).map_err(|error| error.to_string())?;
-        apply_files(&app, row).map_err(|error| error.to_string())?;
-    }
-    let emptied = empty(&conn).map_err(|error| error.to_string())?;
+    let deleted = hard_empty(&conn).map_err(|error| error.to_string())?;
+    let purged = deleted.rows.iter().filter(|row| is_direct(row)).count() as u64;
     drop(conn);
+    remove_files_or_restore(&app, &store, &deleted)?;
     emit(&app);
     let _ = app.emit(crate::reminders::CHANGED, ());
-    Ok(EmptyResult {
-        purged: emptied.purged,
-    })
+    Ok(EmptyResult { purged })
 }
 
 #[tauri::command]
@@ -967,11 +1282,10 @@ pub fn trash_project(
     let conn = store.lock_conn()?;
     let children = project_children(&conn, &folder).map_err(|error| error.to_string())?;
     // A chat that is still running, in this window or another, keeps the project where it is.
-    if child_is_running(&children, &live.list()) {
-        return Err(RUNNING_CHAT.to_string());
-    }
-    let trashed = trash(
+    // The check and the insert hold the live-turn lock together.
+    let trashed = commit_if_idle(
         &conn,
+        &live,
         &Item {
             kind: "project".into(),
             id: folder,
@@ -981,7 +1295,6 @@ pub fn trash_project(
             payload: "{}".into(),
         },
         &children,
-        false,
         now_millis(),
     )
     .map_err(|error| error.to_string())?;
@@ -1034,38 +1347,29 @@ pub fn trash_mono(
     let source = root.join(&mono.id);
     let team = data.join("mono-teams").join(&mono.id);
     let trash_root = data.join("trash");
-    let moved = move_into(&trash_root, &source, &mono.id).map_err(|error| error.to_string())?;
     let team_name = format!("{}.team", mono.id);
-    if let Err(error) = move_into(&trash_root, &team, &team_name) {
-        if let MoveOutcome::Moved(_) = moved {
-            let _ = restore_into(&trash_root, &mono.id, &source);
-        }
-        return Err(error.to_string());
+    let mut parked: Vec<(String, PathBuf)> = Vec::new();
+    match move_into(&trash_root, &source, &mono.id).map_err(|error| error.to_string())? {
+        MoveOutcome::Moved(_) => parked.push((mono.id.clone(), source.clone())),
+        MoveOutcome::Missing => {}
+    }
+    match move_into(&trash_root, &team, &team_name) {
+        Ok(MoveOutcome::Moved(_)) => parked.push((team_name, team.clone())),
+        Ok(MoveOutcome::Missing) => {}
+        Err(error) => return Err(keep_or_undo(&store, &trash_root, &parked, &mono, error)),
     }
     let mut conn = store.lock_conn()?;
     cancel_mono_work(&mut conn, &mono.id);
     let children = mono_children(&conn, &mono);
-    let trashed = match trash(
+    let trashed = record_after_moves(
         &conn,
-        &Item {
-            kind: "mono".into(),
-            id: mono.id.clone(),
-            title: mono.title.clone(),
-            parent_kind: None,
-            parent_id: None,
-            payload: mono.payload.clone(),
-        },
+        &trash_root,
+        &parked,
+        &mono_item(&mono),
         &children,
-        false,
         now_millis(),
-    ) {
-        Ok(trashed) => trashed,
-        Err(error) => {
-            let _ = restore_into(&trash_root, &mono.id, &source);
-            let _ = restore_into(&trash_root, &team_name, &team);
-            return Err(error.to_string());
-        }
-    };
+    )
+    .map_err(|error| error.to_string())?;
     drop(conn);
     emit(&app);
     Ok(trashed)
@@ -1146,10 +1450,8 @@ fn restore_files(app: &AppHandle, row: &TrashRow) -> Result<(), TrashError> {
     let trash_root = data.join("trash");
     if row.kind == "mono" {
         let original = crate::mono::resolved_root(&data).join(&row.id);
-        restore_into(&trash_root, &row.id, &original)?;
-        let team_name = format!("{}.team", row.id);
         let team = data.join("mono-teams").join(&row.id);
-        restore_into(&trash_root, &team_name, &team)?;
+        restore_mono_pair(&trash_root, &row.id, &original, &team)?;
     }
     if row.kind == "note" {
         let name = format!("note-{}", row.id);
@@ -1266,16 +1568,6 @@ pub fn park_note_assets(app: &AppHandle, note_id: &str) -> Result<(), TrashError
     move_into(&data.join("trash"), &source, &format!("note-{note_id}")).map(|_| ())
 }
 
-pub fn unpark_note_assets(app: &AppHandle, note_id: &str) -> Result<(), TrashError> {
-    validate_id(note_id, "note").map_err(|_| TrashError::Invalid("id"))?;
-    let data = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| TrashError::Io(error.to_string()))?;
-    let original = data.join("note-assets").join(note_id);
-    restore_into(&data.join("trash"), &format!("note-{note_id}"), &original).map(|_| ())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,7 +1647,7 @@ mod tests {
             child("task", "task1", "project", "/work/app"),
             child("doc", "doc1", "project", "/work/app"),
         ];
-        trash(&conn, &project, &children, false, 50).unwrap();
+        let trashed = trash(&conn, &project, &children, false, 50).unwrap();
         assert_eq!(
             deleted_at(&conn, "chat", "earlier"),
             1,
@@ -1380,7 +1672,7 @@ mod tests {
             "a child is not its own row"
         );
 
-        restore(&conn, "project", "/work/app", 1, 50).unwrap();
+        restore(&conn, "project", "/work/app", trashed.version, 50).unwrap();
         assert!(!is_trashed(&conn, "chat", "with").unwrap());
         assert!(!is_trashed(&conn, "task", "task1").unwrap());
         assert!(!is_trashed(&conn, "doc", "doc1").unwrap());
@@ -1409,7 +1701,8 @@ mod tests {
             5,
         )
         .unwrap();
-        let restored = restore(&conn, "chat", "with", 1, 5).unwrap();
+        let chat_version = read_row(&conn, "chat", "with").unwrap().unwrap().version;
+        let restored = restore(&conn, "chat", "with", chat_version, 5).unwrap();
         assert_eq!(restored.len(), 1);
         assert!(restored[0].detached);
         let cwd: String = conn
@@ -1421,7 +1714,8 @@ mod tests {
         assert!(is_trashed(&conn, "project", "/work/app").unwrap());
         assert!(is_trashed(&conn, "task", "task1").unwrap());
 
-        let task = restore(&conn, "task", "task1", 1, 5).unwrap();
+        let task_version = read_row(&conn, "task", "task1").unwrap().unwrap().version;
+        let task = restore(&conn, "task", "task1", task_version, 5).unwrap();
         assert!(task[0].detached);
         let project_id: Option<String> = conn
             .query_row(
@@ -1588,6 +1882,183 @@ mod tests {
         assert_eq!(again.version, 1);
         assert_eq!(deleted_at(&conn, "chat", "c1"), 1);
         assert!(!is_trashed(&conn, "task", "t1").unwrap());
+    }
+
+    #[test]
+    fn a_restored_item_trashed_again_does_not_reuse_its_version() {
+        let conn = memory();
+        let first = trash(&conn, &item("chat", "c1", "One"), &[], false, 1).unwrap();
+        let old = first.version;
+        restore(&conn, "chat", "c1", old, 2).unwrap();
+        let second = trash(&conn, &item("chat", "c1", "One"), &[], false, 3).unwrap();
+        assert_ne!(second.version, old);
+        assert_eq!(
+            delete_forever(&conn, "chat", "c1", old).unwrap_err(),
+            TrashError::Conflict
+        );
+        assert!(read_row(&conn, "chat", "c1").unwrap().is_some());
+        delete_forever(&conn, "chat", "c1", second.version).unwrap();
+        assert!(read_row(&conn, "chat", "c1").unwrap().is_none());
+    }
+
+    struct ResetInserts;
+    impl Drop for ResetInserts {
+        fn drop(&mut self) {
+            fail_next_inserts(0);
+        }
+    }
+
+    thread_local! {
+        static LIVE_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    fn probe_live_lock(live: &crate::live_turns::LiveTurns) {
+        LIVE_LOCK_HELD.with(|cell| cell.set(!live.mutex_is_free()));
+    }
+
+    #[test]
+    fn the_live_lock_stays_held_until_the_row_is_inserted() {
+        use crate::live_turns::{set_hold_probe, LiveTurns};
+        let _reset = ResetInserts;
+        LIVE_LOCK_HELD.with(|cell| cell.set(false));
+        set_hold_probe(Some(probe_live_lock));
+        let live = LiveTurns::default();
+        let conn = memory();
+        commit_if_idle(&conn, &live, &item("chat", "c1", "C"), &[], 1).unwrap();
+        set_hold_probe(None);
+        assert!(LIVE_LOCK_HELD.with(|cell| cell.get()));
+        assert!(is_trashed(&conn, "chat", "c1").unwrap());
+    }
+
+    #[test]
+    fn a_later_chat_image_failure_removes_nothing() {
+        use crate::session_store::{fail_chat_image_read_for, SessionStore};
+        let _reset = ResetInserts;
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        for id in ["chat-a", "chat-b"] {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd, archived) VALUES (?1, '/work/app', 'codex', 'test', 'supervised', 'Test', '[]', 0, 0, NULL, 0)",
+                params![id],
+            )
+            .unwrap();
+        }
+        let mut project = item("project", "/work/app", "App");
+        project.payload = "{}".into();
+        let children = vec![
+            Item {
+                kind: "chat".into(),
+                id: "chat-a".into(),
+                title: "A".into(),
+                parent_kind: Some("project".into()),
+                parent_id: Some("/work/app".into()),
+                payload: "{}".into(),
+            },
+            Item {
+                kind: "chat".into(),
+                id: "chat-b".into(),
+                title: "B".into(),
+                parent_kind: Some("project".into()),
+                parent_id: Some("/work/app".into()),
+                payload: "{}".into(),
+            },
+        ];
+        let trashed = trash(&conn, &project, &children, false, 10).unwrap();
+        fail_chat_image_read_for(Some("chat-b"));
+        let error = hard_delete_root(&conn, "project", "/work/app", trashed.version).unwrap_err();
+        fail_chat_image_read_for(None);
+        assert!(error.to_string().contains("chat-b"), "{error}");
+        for id in ["chat-a", "chat-b"] {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "{id} was destroyed");
+            assert!(
+                is_trashed(&conn, "chat", id).unwrap(),
+                "{id} left the ledger"
+            );
+        }
+        let restored = restore(&conn, "project", "/work/app", trashed.version, 11).unwrap();
+        assert!(restored.iter().any(|item| item.id == "chat-a"));
+        assert!(restored.iter().any(|item| item.id == "chat-b"));
+    }
+
+    #[test]
+    fn a_failed_team_restore_puts_the_mono_folder_back() {
+        let tmp = Tmp::new("team-rollback");
+        let trash_root = tmp.0.join("trash");
+        let mono = tmp.0.join("monos").join("mono1");
+        let team = tmp.0.join("teams").join("mono1");
+        std::fs::create_dir_all(&mono).unwrap();
+        std::fs::write(mono.join("soul"), "soul").unwrap();
+        std::fs::create_dir_all(&team).unwrap();
+        std::fs::write(team.join("habit"), "habit").unwrap();
+        move_into(&trash_root, &mono, "mono1").unwrap();
+        move_into(&trash_root, &team, "mono1.team").unwrap();
+        std::fs::create_dir_all(&team).unwrap();
+        let error = restore_mono_pair(&trash_root, "mono1", &mono, &team).unwrap_err();
+        assert_eq!(error, TrashError::Conflict);
+        assert_eq!(
+            std::fs::read_to_string(trash_root.join("mono1").join("soul")).unwrap(),
+            "soul"
+        );
+        assert!(!mono.join("soul").exists());
+    }
+
+    #[test]
+    fn a_blocked_rollback_is_reported_and_the_ledger_keeps_the_folder() {
+        let _reset = ResetInserts;
+        let tmp = Tmp::new("blocked-rollback");
+        let conn = memory();
+        let trash_root = tmp.0.join("trash");
+        let mono = tmp.0.join("monos").join("mono1");
+        std::fs::create_dir_all(&mono).unwrap();
+        std::fs::write(mono.join("soul"), "soul").unwrap();
+        move_into(&trash_root, &mono, "mono1").unwrap();
+        std::fs::create_dir_all(&mono).unwrap();
+        fail_next_inserts(1);
+        let error = record_after_moves(
+            &conn,
+            &trash_root,
+            &[("mono1".into(), mono.clone())],
+            &item("mono", "mono1", "Mono"),
+            &[],
+            1,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("rollback failed"), "{message}");
+        assert!(message.contains("ledger down"), "{message}");
+        assert!(is_trashed(&conn, "mono", "mono1").unwrap());
+        assert_eq!(
+            std::fs::read_to_string(trash_root.join("mono1").join("soul")).unwrap(),
+            "soul"
+        );
+
+        fail_next_inserts(8);
+        let other = tmp.0.join("monos").join("mono2");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("soul"), "soul").unwrap();
+        move_into(&trash_root, &other, "mono2").unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let error = record_after_moves(
+            &conn,
+            &trash_root,
+            &[("mono2".into(), other)],
+            &item("mono", "mono2", "Mono"),
+            &[],
+            2,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("rollback failed"), "{message}");
+        assert!(message.contains("ledger retry failed"), "{message}");
+        assert!(!is_trashed(&conn, "mono", "mono2").unwrap());
+        assert!(trash_root.join("mono2").join("soul").exists());
     }
 
     #[test]

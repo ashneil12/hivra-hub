@@ -202,10 +202,19 @@ pub fn notes_delete(
         .flatten();
     drop(conn);
     // WP-76: images move first. If the ledger insert fails, they come back.
+    // A failed rollback is returned, and the ledger is tried again so the folder stays listed.
     crate::trash::park_note_assets(&app, &id).map_err(|error| error.to_string())?;
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let name = format!("note-{id}");
+    let original = data.join("note-assets").join(&id);
     let conn = store.lock_conn()?;
-    let parked = crate::trash::trash(
+    let parked = crate::trash::record_after_moves(
         &conn,
+        &data.join("trash"),
+        &[(name, original)],
         &crate::trash::Item {
             kind: "note".into(),
             id: id.clone(),
@@ -215,12 +224,10 @@ pub fn notes_delete(
             payload: "{}".into(),
         },
         &[],
-        false,
         crate::session_store::now_millis(),
     );
     drop(conn);
     if let Err(error) = parked {
-        let _ = crate::trash::unpark_note_assets(&app, &id);
         return Err(error.to_string());
     }
     let _ = app.emit(crate::trash::CHANGED, ());
