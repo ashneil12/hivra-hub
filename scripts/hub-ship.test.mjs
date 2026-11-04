@@ -420,8 +420,9 @@ test("a temporary HOME is recognised, and the runner's LaunchAgent restarts only
   assert.match(plist, /<key>Label<\/key>\s*<string>test\.monocode-hub-ship\.x<\/string>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/);
   assert.match(plist, /<key>AbandonProcessGroup<\/key>\s*<true\/>/);
-  assert.match(plist, new RegExp(`<key>HOME</key>\\s*<string>${root.replace(/[/.]/g, "\\$&")}</string>`));
-  assert.match(plist, /<string>\/tmp\/ship dir\/runner\.mjs<\/string>/);
+  const escapeRe = (value) => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  assert.match(plist, new RegExp(`<key>HOME</key>\\s*<string>${escapeRe(root)}</string>`));
+  assert.match(plist, new RegExp(`<string>${escapeRe(path.join("/tmp/ship dir", "runner.mjs"))}</string>`));
 });
 
 test("a ship commits: the new build is in place, the old one kept, the database backed up byte for byte", async () => {
@@ -922,6 +923,23 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.ok(answer.previousKeptAt.startsWith(path.join(homePaths(w.home).archive, "legacy-")));
 });
 
+/** chmod 0 on Unix. On Windows that does not deny read, so icacls does, and the deny is removed afterwards. */
+function denyRead(file) {
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0);
+    return () => fs.chmodSync(file, 0o600);
+  }
+  const user = process.env.USERNAME;
+  if (!user) throw new Error("USERNAME is not set");
+  const icacls = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "icacls.exe");
+  const deny = spawnSync(icacls, [file, "/deny", `${user}:(R)`], { encoding: "utf8" });
+  if (deny.status !== 0) throw new Error((deny.stderr || deny.stdout || deny.error?.message || "icacls /deny failed").trim());
+  return () => {
+    const back = spawnSync(icacls, [file, "/remove:d", user], { encoding: "utf8" });
+    if (back.status !== 0) throw new Error((back.stderr || back.stdout || "icacls /remove:d failed").trim());
+  };
+}
+
 test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fails leaves the old app installed", () => {
   const legacy = (w) =>
     spawnSync(NODE, ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--legacy", "--json", "--repo", w.repo], {
@@ -936,19 +954,22 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
   assert.equal(stampOf(unsigned.app).sha, SHA_A);
 
   // ditto stops on a file it can't read, after copying part of the bundle.
+  // chmod 0 does not deny read on Windows; an icacls deny does, and is taken off again so the temp tree can go.
   const w = world();
   const locked = path.join(w.bundle, "Contents/Resources/locked");
   fs.writeFileSync(locked, "unreadable");
-  fs.chmodSync(locked, 0);
+  const restoreRead = denyRead(locked);
   try {
     result = legacy(w);
   } finally {
-    fs.chmodSync(locked, 0o600);
+    restoreRead();
   }
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /Copying the bundle failed/);
   assert.equal(stampOf(w.app).sha, SHA_A, "the old app is still installed");
-  assert.deepEqual(fs.readdirSync(path.dirname(w.app)), ["MonoCode Hub.app"], "no half copy left beside it");
+  // Linux keeps the app beside its data folder in ~/.local/share, so the check is the leftover copy, not the whole directory.
+  const half = fs.readdirSync(path.dirname(w.app)).filter((name) => name.includes(".installing"));
+  assert.deepEqual(half, [], "no half copy left beside it");
   assert.equal(fs.existsSync(homePaths(w.home).archive), false, "nothing was moved aside");
   if (process.platform === "darwin") assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
 });
@@ -976,7 +997,7 @@ test("a fake app quits by itself once the test run that started it is gone", asy
 test("a ship also copies the Monos' permanent home, byte for byte, and never needs one", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "monos-home-"));
   try {
-    assert.equal(monosHome("/Users/ash"), "/Users/ash/agent-memory/monos");
+    assert.equal(monosHome("/Users/ash"), path.join("/Users/ash", "agent-memory", "monos"));
     const home = path.join(root, "agent-memory", "monos");
     const backup = path.join(root, "backup");
     assert.equal(backupMonoHome(home, backup), null);
@@ -1078,7 +1099,8 @@ test("r53 drill: the default ship starts a detached runner, asks launchd for not
   assert.equal(staged.launchd, null, "no launchd job");
   assert.equal(staged.launcher, "detach");
   const pid = staged.runner.pid;
-  const ps = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().split(/\s+/).map(Number);
+  const psOut = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+  const ps = String(psOut ?? "").trim().split(/\s+/).filter(Boolean).map(Number);
   if (ps.length === 3) {
     assert.equal(ps[2], pid, "the runner leads its own process group");
     assert.notEqual(ps[1], process.pid, "and is nobody's child here");
