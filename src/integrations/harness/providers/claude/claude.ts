@@ -865,7 +865,7 @@ export function restoreClaudeTaskLists(
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const planning = input.intent === "plan";
   // WP-41: one wiring snapshot feeds the append text and the plugin dirs, before the launch key is compared.
-  const plugins = await claudePluginLaunch(input.cwd);
+  const plugins = await claudePluginLaunch(input.cwd, input.sessionId);
   const sessionAppend = plugins.append;
   noteSessionAppend(input.sessionId, sessionAppend);
   const append = mergeClaudeAppend(claudeAppend(input.sessionId), sessionAppend);

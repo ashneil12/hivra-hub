@@ -236,6 +236,44 @@ describe("listing (WP-32)", () => {
     expect(plugins.every((p) => p.entry.status !== "not-compatible" || p.entry.name === "mystery")).toBe(true);
   });
 
+  it("offers install for the browser plugin's own folder and refuses a path that leaves it", () => {
+    const payload = readDiscoverPayload([
+      {
+        source: { kind: "bundled" },
+        index: {
+          title: "Hivra plugins",
+          format: "hivra",
+          skipped: [],
+          entries: [
+            entry({
+              name: "browser",
+              status: "available",
+              version: "1.0.0",
+              source: { kind: "local", path: "/Users/ash/Worktrees/hivra-wp-43/plugins/browser" },
+            }),
+            entry({
+              name: "elsewhere",
+              status: "available",
+              source: { kind: "local", path: "/tmp/../etc" },
+            }),
+          ],
+        },
+      },
+    ]);
+    expect(payload.ok).toBe(true);
+    if (!payload.ok) return;
+    const plugins = listPlugins(payload.results);
+    const browser = plugins.find((plugin) => plugin.entry.name === "browser");
+    expect(browser?.entry.source).toEqual({
+      kind: "local",
+      path: "/Users/ash/Worktrees/hivra-wp-43/plugins/browser",
+    });
+    expect(offersInstall(browser!.entry)).toBe(true);
+    expect(installSourceText(browser!.entry.source!)).toContain("plugins/browser");
+    const elsewhere = plugins.find((plugin) => plugin.entry.name === "elsewhere");
+    expect(offersInstall(elsewhere!.entry)).toBe(false);
+  });
+
   it("treats a missing or broken payload as a failed read, not as incompatible plugins", () => {
     for (const raw of [undefined, null, { plugins: [] }, "nope"]) {
       const outcome = readDiscoverPayload(raw);

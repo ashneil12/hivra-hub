@@ -557,6 +557,127 @@ fn fetch_npm(
     })
 }
 
+/// A real npm `sha512-` pin: 64 decoded bytes, not a placeholder and not a truncated hash.
+pub(crate) fn real_sha512_pin(text: &str) -> bool {
+    let Some(body) = text.strip_prefix("sha512-") else {
+        return false;
+    };
+    use base64::Engine;
+    match base64::engine::general_purpose::STANDARD.decode(body) {
+        Ok(bytes) => bytes.len() == 64,
+        Err(_) => false,
+    }
+}
+
+fn engine_spec(package: &str, version: &str) -> bool {
+    if package.is_empty()
+        || package.len() > 214
+        || package.contains("..")
+        || package.starts_with('/')
+        || package.ends_with('/')
+    {
+        return false;
+    }
+    let scoped = package.starts_with('@');
+    let at = package.matches('@').count();
+    let slashes = package.matches('/').count();
+    let shape = if scoped {
+        at == 1 && slashes == 1
+    } else {
+        at == 0 && slashes == 0
+    };
+    if !shape
+        || !package.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'@' | b'/' | b'-' | b'_' | b'.')
+        })
+    {
+        return false;
+    }
+    !version.is_empty()
+        && version.len() <= 100
+        && !version.contains("..")
+        && !version.starts_with(['.', '-'])
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+}
+
+/// Download one exact package and unpack it into `dest`. The pin is checked before npm starts.
+/// The registry checksum and the tarball's own checksum must both be that pin. Install scripts
+/// are not run. Nothing is unpacked until both checks pass.
+pub(crate) fn pack_exact(
+    tools: &Tools,
+    package: &str,
+    version: &str,
+    integrity: &str,
+    dest: &Path,
+    work: &Path,
+) -> Result<(), String> {
+    if !real_sha512_pin(integrity) {
+        return Err(
+            "The browser engine pin isn't a real checksum, so it was not installed.".into(),
+        );
+    }
+    if !engine_spec(package, version) {
+        return Err("The browser engine isn't the pinned one.".into());
+    }
+    let spec = format!("{package}@{version}");
+    let mut view = tools.command(&tools.npm);
+    view.args(["view", "--json"]).arg(&spec).current_dir(work);
+    let entry = run(view, "npm view")?;
+    let entry: Value =
+        serde_json::from_slice(&entry).map_err(|_| format!("npm couldn't describe {spec}."))?;
+    let entry = match entry {
+        Value::Array(mut items) => items.pop().unwrap_or(Value::Null),
+        other => other,
+    };
+    if entry.get("version").and_then(Value::as_str) != Some(version) {
+        return Err(format!("npm has no {spec}."));
+    }
+    let registry = entry
+        .get("dist")
+        .and_then(|dist| dist.get("integrity"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if registry != integrity {
+        return Err(format!(
+            "The pinned checksum for {spec} doesn't match the registry, so it was refused."
+        ));
+    }
+    let folder = package.replace('/', "-");
+    let download = work.join("download").join(&folder);
+    std::fs::create_dir_all(&download).map_err(|error| error.to_string())?;
+    let mut pack = tools.command(&tools.npm);
+    pack.args(["pack", "--json", "--ignore-scripts", "--pack-destination"])
+        .arg(&download)
+        .arg(&spec)
+        .current_dir(&download);
+    let packed = run(pack, "npm pack")?;
+    let filename = serde_json::from_slice::<Value>(&packed)
+        .ok()
+        .and_then(|value| value.get(0)?.get("filename")?.as_str().map(str::to_string))
+        .ok_or_else(|| format!("npm pack didn't say where it put {spec}."))?;
+    let path = Path::new(&filename);
+    let Some(name) = path.file_name() else {
+        return Err("npm pack named no file.".into());
+    };
+    if Path::new(name) != path {
+        return Err("npm pack named a path, not a file.".into());
+    }
+    let tarball = download.join(name);
+    let bytes =
+        std::fs::read(&tarball).map_err(|error| format!("The package can't be read: {error}"))?;
+    if sha512_integrity(&bytes) != integrity {
+        return Err(format!(
+            "The downloaded {spec} doesn't match the pinned checksum, so it was refused."
+        ));
+    }
+    std::fs::create_dir_all(dest).map_err(|error| error.to_string())?;
+    unpack_tar(flate2::read::GzDecoder::new(&bytes[..]), dest, true)?;
+    let _ = fsutil::remove_tree(&download);
+    Ok(())
+}
+
 pub fn sha512_integrity(bytes: &[u8]) -> String {
     use base64::Engine;
     use sha2::Digest;

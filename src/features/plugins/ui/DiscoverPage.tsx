@@ -34,6 +34,8 @@ import {
   type SourceList,
 } from "../model/discover";
 import { InstalledPlugins } from "./InstalledPlugins";
+// WP-43: profiles sit on the installed list, not on Discover's first paint.
+import { BrowserProfiles } from "../../browser/ui/BrowserProfiles";
 // WP-34: Creator mode, a third tab. It builds a scratch plugin and does not run until the tab is open.
 import { CreatorScreen } from "../../creator/ui/CreatorScreen";
 import { VerifyOffer } from "./VerifyOffer";
@@ -228,7 +230,13 @@ export function PluginsPage({ projectFolder }: { projectFolder?: string } = {}) 
           Creator
         </button>
       </div>
-      {tab === "installed" ? <InstalledPlugins /> : tab === "creator" ? <CreatorScreen /> : (
+      {tab === "installed" ? (
+        <>
+          <InstalledPlugins />
+          {/* WP-43: each agent's browser profile. */}
+          <BrowserProfiles />
+        </>
+      ) : tab === "creator" ? <CreatorScreen /> : (
       <>
       <div data-setting-id="plugin-discover" className="flex flex-col gap-4">
         {projectFolder ? <VerifyOffer projectFolder={projectFolder} /> : null}

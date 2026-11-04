@@ -419,6 +419,15 @@ fn commit(
     } else {
         outcome
     };
+    // WP-43: install the pinned browser engine into the plugin's data folder. A failure here
+    // (no npm, a pin that is not a real checksum) does not undo the plugin.
+    if request.name == "browser" {
+        let _ = crate::browser::engine::install_engine(
+            &host.installed("browser"),
+            &host.data("browser"),
+            tools,
+        );
+    }
     drop_pending(host, dir);
     Ok(InstallResult::Installed {
         entry: outcome.entry.map(Box::new),

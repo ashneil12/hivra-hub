@@ -1,0 +1,12 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "browser",
+  "version": "1.0.0",
+  "description": "A real browser for agents, with a profile per agent, safe defaults and a visible Stop.",
+  "author": {
+    "name": "Hivra"
+  },
+  "homepage": "https://github.com/ashneil12/hivra-hub",
+  "license": "MIT",
+  "keywords": ["browser", "playwright", "web"]
+}

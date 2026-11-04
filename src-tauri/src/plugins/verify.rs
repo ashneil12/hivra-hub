@@ -627,6 +627,10 @@ fn to_install_source(source: &discover::InstallSource) -> source::InstallSource 
             tag: None,
             path: path.clone(),
         },
+        // WP-43: a plugin can be pinned to its own folder. That is a local install, not an npm package.
+        discover::InstallSource::Local { path } => {
+            source::InstallSource::Local { path: path.clone() }
+        }
     }
 }
 
