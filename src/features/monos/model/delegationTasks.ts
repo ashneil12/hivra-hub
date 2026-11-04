@@ -4,6 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { QuestionRouter, TaskWaits } from "./delegationQuestions";
@@ -156,6 +157,9 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
+    // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
+    saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
+    decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.now ? { now: deps.now } : {}),
