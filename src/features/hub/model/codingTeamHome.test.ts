@@ -121,14 +121,13 @@ describe("a new project gets one coding team", () => {
     expect(again.sessions[0]?.id).toBe("home-1");
   });
 
-  it("does not create while a Lead exists but its chat does not", () => {
+  it("does not create while a Lead exists but its chat does not, unless creation was asked", () => {
     const plan = planCodingTeam({
       project,
       sessions: [],
       lead: { id: "field-notes-lead" },
       present: [],
       newId: "blank",
-      allowCreate: true,
       probe: { ghSignedIn: false },
     });
     expect(plan.waiting).toBe(true);
@@ -237,6 +236,32 @@ describe("two windows and bad stored values", () => {
     expect(codingTeamHomeId("field-notes")).toBe("winner");
   });
 
+  it("a second window's stored home wins over this window's cache", () => {
+    expect(codingTeamHomeId("field-notes")).toBeUndefined();
+    localStorage.setItem("monocode:coding-team-home", JSON.stringify({ "field-notes": "theirs" }));
+    expect(compareAndSwapCodingTeamHome("field-notes", undefined, "mine")).toBe(false);
+    expect(codingTeamHomeId("field-notes")).toBe("theirs");
+
+    const blocks = [{ id: "w", text: "theirs" }];
+    const settled = settleCodingTeam({
+      project,
+      sessions: [session("theirs", blocks), session("mine", [{ id: "m", text: "mine" }])],
+      lead: { id: "field-notes-lead", sessionId: "mine" },
+      present: [],
+      newId: "x",
+      probe: { ghSignedIn: false },
+    });
+    expect(settled.plan.homeId).toBe("theirs");
+    expect(settled.sessions.find((row) => row.id === "theirs")?.blocks).toBe(blocks);
+    expect(codingTeamHomeId("field-notes")).toBe("theirs");
+
+    forgetCodingTeamHome("mine");
+    expect(codingTeamHomeId("field-notes")).toBe("theirs");
+    localStorage.setItem("monocode:coding-team-home", JSON.stringify({ "field-notes": "newer" }));
+    forgetCodingTeamHome("theirs");
+    expect(JSON.parse(localStorage.getItem("monocode:coding-team-home")!)).toEqual({ "field-notes": "newer" });
+  });
+
   it("ignores a broken, empty or unsafe stored map", () => {
     localStorage.setItem("monocode:coding-team-home", "{");
     expect(codingTeamHomeId("field-notes")).toBeUndefined();
@@ -279,6 +304,46 @@ describe("two windows and bad stored values", () => {
 });
 
 describe("crew default and delivery default", () => {
+  it("a ticked CLI is the new coding team's harness, and the Lead takes it", () => {
+    const bind = vi.fn();
+    const setLeadCli = vi.fn();
+    const made = settleCodingTeam({
+      project,
+      sessions: [],
+      lead: { id: "field-notes-lead" },
+      present: [{ cli: "codex", installed: true, signedIn: true }],
+      newId: "home-1",
+      allowCreate: true,
+      probe: { ghSignedIn: false },
+      bindLead: bind,
+      setLeadCli,
+    });
+    expect(made.plan.cli).toBe("codex");
+    expect(made.plan.created).toBe(true);
+    expect(made.sessions).toEqual([
+      { id: "home-1", cwd: folder, blocks: [], firstMate: true, harness: "codex", title: "Coding team" },
+    ]);
+    expect(bind).toHaveBeenCalledWith("field-notes-lead", "home-1");
+    expect(setLeadCli).toHaveBeenCalledTimes(1);
+    expect(setLeadCli).toHaveBeenCalledWith("field-notes-lead", "codex");
+
+    setLeadCli.mockClear();
+    const again = settleCodingTeam({
+      project,
+      sessions: made.sessions,
+      lead: { id: "field-notes-lead", sessionId: "home-1" },
+      present: [{ cli: "codex", installed: true, signedIn: true }],
+      newId: "home-2",
+      allowCreate: true,
+      probe: { ghSignedIn: false },
+      setLeadCli,
+    });
+    expect(again.sessions).toHaveLength(1);
+    expect(again.sessions[0]?.id).toBe("home-1");
+    expect(again.sessions[0]?.harness).toBe("codex");
+    expect(setLeadCli).not.toHaveBeenCalled();
+  });
+
   it("uses Claude Code when it is signed in, else the first signed-in CLI, else none", () => {
     expect(planCodingTeam({ project, sessions: [], present, newId: "n", probe: { ghSignedIn: false } }).cli).toBe("claude");
     expect(

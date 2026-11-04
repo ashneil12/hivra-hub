@@ -53,21 +53,23 @@ function cleanToken(value: unknown): string | undefined {
   return text;
 }
 
+/** The stored map, read again each time. Two windows share localStorage, not this module's last copy. */
 function readHomes(): Record<string, string> {
-  if (homes) return homes;
-  homes = {};
   try {
     const raw = JSON.parse(localStorage.getItem(HOME_KEY) ?? "{}") as unknown;
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return homes;
-    for (const [key, value] of Object.entries(raw)) {
-      const id = cleanToken(key);
-      const sessionId = cleanToken(value);
-      if (id && sessionId) homes[id] = sessionId;
+    const next: Record<string, string> = {};
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      for (const [key, value] of Object.entries(raw)) {
+        const id = cleanToken(key);
+        const sessionId = cleanToken(value);
+        if (id && sessionId) next[id] = sessionId;
+      }
     }
+    homes = next;
+    return next;
   } catch {
-    homes = {};
+    return homes ?? {};
   }
-  return homes;
 }
 
 function writeHomes(next: Record<string, string>): void {
@@ -92,7 +94,10 @@ export function compareAndSwapCodingTeamHome(projectId: string, expected: string
   const current = readHomes()[id];
   if (current === sessionId) return true;
   if (current !== expected) return false;
-  writeHomes({ ...readHomes(), [id]: sessionId });
+  const fresh = readHomes();
+  if (fresh[id] === sessionId) return true;
+  if (fresh[id] !== expected) return false;
+  writeHomes({ ...fresh, [id]: sessionId });
   return true;
 }
 
@@ -101,10 +106,11 @@ export function forgetCodingTeamHome(chatId: string): void {
   if (!id) return;
   const map = readHomes();
   const projectId = Object.keys(map).find((key) => map[key] === id);
-  if (!projectId || map[projectId] !== id) return;
-  const next = { ...map };
+  if (!projectId) return;
+  const fresh = readHomes();
+  if (fresh[projectId] !== id) return;
+  const next = { ...fresh };
   delete next[projectId];
-  if (readHomes()[projectId] !== id) return;
   writeHomes(next);
 }
 
@@ -162,7 +168,7 @@ export type PlanInput = {
   notedIds?: readonly string[];
   present: readonly Presence[];
   newId: string;
-  /** Make a chat only when there is no Lead to wait for. The app leaves this off. */
+  /** Make the home chat when the project has none yet, including a Lead that has no chat. */
   allowCreate?: boolean;
   probe: { githubRepo?: string | null; ghSignedIn?: boolean };
 };
@@ -210,8 +216,6 @@ export function planCodingTeam(input: PlanInput): CodingTeamPlan {
     }
   }
 
-  if (input.lead) return { ...plan, waiting: true };
-
   const newId = cleanToken(input.newId);
   if (input.allowCreate && newId) {
     const cli = plan.cli && isCli(plan.cli) ? plan.cli : "claude";
@@ -219,6 +223,7 @@ export function planCodingTeam(input: PlanInput): CodingTeamPlan {
       ...plan,
       homeId: newId,
       created: true,
+      adoptLead: !!input.lead && !input.lead.sessionId,
       create: { id: newId, cwd: folder, blocks: [], harness: cli, firstMate: true, title: "Coding team" },
     };
   }
@@ -229,6 +234,10 @@ export type SettleInput<S extends HomeSession> = PlanInput & {
   sessions: readonly S[];
   /** Called when the home is a chat the Lead did not already point at. */
   bindLead?: (leadId: string, sessionId: string) => void;
+  /** The Lead's CLI, set only when this call creates the home. An existing chat is left as it is. */
+  setLeadCli?: (leadId: string, cli: string) => void;
+  /** Turn the planned chat into the app's session. Tests use the plan's own object. */
+  inflate?: (draft: NonNullable<CodingTeamPlan["create"]>) => S;
 };
 
 /**
@@ -259,7 +268,7 @@ export function settleCodingTeam<S extends HomeSession>(input: SettleInput<S>): 
   let sessions = input.sessions as S[];
   let changed = false;
   if (plan.create && !byId.has(plan.create.id)) {
-    sessions = [...sessions, plan.create as S];
+    sessions = [...sessions, input.inflate ? input.inflate(plan.create) : (plan.create as S)];
     changed = true;
   }
   const patchId = plan.patch?.id ?? plan.create?.id;
@@ -272,6 +281,7 @@ export function settleCodingTeam<S extends HomeSession>(input: SettleInput<S>): 
   }
   if (!plan.waiting && plan.homeId) noteCodingTeamChat(plan.homeId, projectId);
   if (plan.adoptLead && input.lead && !input.lead.sessionId && plan.homeId) input.bindLead?.(input.lead.id, plan.homeId);
+  if (plan.created && plan.adoptLead && input.lead && plan.cli) input.setLeadCli?.(input.lead.id, plan.cli);
   return { sessions: changed ? sessions : (input.sessions as S[]), changed, plan };
 }
 
