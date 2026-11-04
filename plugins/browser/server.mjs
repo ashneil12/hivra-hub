@@ -5,7 +5,7 @@
 // installs it.
 
 import { execFileSync, spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -255,7 +255,7 @@ function descendantPids(root) {
       })
       .filter(Boolean);
   } catch {
-    return [root];
+    return null;
   }
   let grew = true;
   while (grew) {
@@ -280,30 +280,29 @@ function stillAlive(pid) {
   }
 }
 
-function processStarted(pid) {
+function readStart(pid) {
   try {
-    return execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8" }).trim();
+    return text || null;
   } catch {
-    return "";
+    return null;
   }
 }
 
-function snapshotTree(root) {
-  return descendantPids(root)
-    .map((pid) => ({ pid, started: processStarted(pid) }))
-    .filter((row) => row.started || row.pid === root);
+function probeProcess(pid) {
+  const alive = stillAlive(pid);
+  return { alive, started: alive ? readStart(pid) : "" };
 }
 
-function sameProcess(row) {
-  if (!row || row.pid === process.pid) return false;
-  if (!stillAlive(row.pid)) return false;
-  if (!row.started) return true;
-  return processStarted(row.pid) === row.started;
+function snapshotTree(root) {
+  const pids = descendantPids(root);
+  if (pids == null) return null;
+  return pids.map((pid) => ({ pid, started: readStart(pid) || "" }));
 }
 
 function signalRows(rows, signal) {
   for (const row of rows) {
-    if (!sameProcess(row)) continue;
+    if (rowState(row, probeProcess(row.pid)) !== "same") continue;
     try {
       process.kill(row.pid, signal);
     } catch {
@@ -312,24 +311,77 @@ function signalRows(rows, signal) {
   }
 }
 
-function mergeRows(left, right) {
+export function mergeRows(left, right) {
   const byPid = new Map();
-  for (const row of [...left, ...right]) {
-    if (!byPid.has(row.pid)) byPid.set(row.pid, row);
+  for (const row of [...(left || []), ...(right || [])]) {
+    if (!row || !Number.isInteger(row.pid)) continue;
+    const prev = byPid.get(row.pid);
+    if (!prev) {
+      byPid.set(row.pid, row);
+      continue;
+    }
+    // A later look can fill in a start time. It must not replace one we already trust.
+    if (!prev.started && row.started) byPid.set(row.pid, row);
   }
   return [...byPid.values()];
+}
+
+// "same" is signalled. "unknown" means ps failed, so the browser is not gone.
+// "foreign" is a live pid we never identified. It is not this browser.
+export function rowState(row, probe) {
+  if (!row || row.pid === process.pid) return "gone";
+  if (!probe || !probe.alive) return "gone";
+  if (probe.started == null) return "unknown";
+  if (!row.started) return "foreign";
+  if (probe.started !== row.started) return "gone";
+  return "same";
+}
+
+export function nextSeen(previous, snapshot) {
+  if (snapshot == null) return previous;
+  return snapshot;
+}
+
+export function settle(states) {
+  if (states.includes("unknown")) return "unknown";
+  if (states.includes("same")) return "wait";
+  return "clear";
+}
+
+function markTreeGone() {
+  const file = process.env.HIVRA_BROWSER_DONE || "";
+  if (!file) return true;
+  if (!isAbsolute(file) || file.split(/[\\/]/).includes("..")) return false;
+  const base = file.split(/[\\/]/).pop() || "";
+  if (!/^hivra-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.gone$/.test(base)) {
+    return false;
+  }
+  try {
+    writeFileSync(file, "gone\n");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function waitForRows(rows, code) {
   const started = Date.now();
   const timer = setInterval(() => {
-    const left = rows.filter(sameProcess);
-    if (left.length === 0) {
+    const states = rows.map((row) => rowState(row, probeProcess(row.pid)));
+    const outcome = settle(states);
+    if (outcome === "clear") {
       clearInterval(timer);
-      process.exit(code);
+      const proved = markTreeGone();
+      process.exit(!proved && code === 0 ? 1 : code);
       return;
     }
-    if (Date.now() - started >= 1000) signalRows(left, "SIGKILL");
+    if (Date.now() - started >= 1000) {
+      signalRows(rows, "SIGKILL");
+      if (outcome === "unknown") {
+        clearInterval(timer);
+        process.exit(code === 0 ? 1 : code);
+      }
+    }
   }, 30);
 }
 
@@ -351,7 +403,7 @@ function main() {
   let seen = [];
   const parent = process.ppid;
   const treeWatch = setInterval(() => {
-    if (!stopping && child.pid) seen = snapshotTree(child.pid);
+    if (!stopping && child.pid) seen = nextSeen(seen, snapshotTree(child.pid));
   }, 200);
   treeWatch.unref();
   // Snapshot the tree first, with each pid's start time. Signalling the engine reparents
@@ -361,7 +413,11 @@ function main() {
     stopping = true;
     clearInterval(treeWatch);
     const fresh = child.pid ? snapshotTree(child.pid) : [];
-    const rows = mergeRows(seen, fresh);
+    if (fresh == null && seen.length === 0) {
+      process.exit(code === 0 ? 1 : code);
+      return;
+    }
+    const rows = mergeRows(seen, fresh == null ? [] : fresh);
     signalRows(rows, "SIGTERM");
     waitForRows(rows, code);
   }

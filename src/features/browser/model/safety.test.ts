@@ -1,5 +1,5 @@
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { closeSync, constants, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,8 +8,12 @@ import {
   answerFromEngine,
   isEvaluateTool,
   launchPlan,
+  mergeRows,
+  nextSeen,
   prepareTools,
   redact,
+  rowState,
+  settle,
   UNTRUSTED,
 } from "../../../../plugins/browser/server.mjs";
 
@@ -327,6 +331,40 @@ function readPid(file: string): number {
   return pid;
 }
 
+describe("the browser tree is only the process that was started", () => {
+  it("does not treat an empty start time as the same process", () => {
+    expect(rowState({ pid: 5, started: "" }, { alive: true, started: "boot" })).toBe("foreign");
+    expect(mergeRows([{ pid: 5, started: "" }], [{ pid: 5, started: "boot" }])).toEqual([
+      { pid: 5, started: "boot" },
+    ]);
+    expect(mergeRows([{ pid: 5, started: "boot" }], [{ pid: 5, started: "later" }])).toEqual([
+      { pid: 5, started: "boot" },
+    ]);
+    expect(mergeRows([{ pid: 5, started: "boot" }], [{ pid: 5, started: "" }])).toEqual([
+      { pid: 5, started: "boot" },
+    ]);
+  });
+
+  it("does not treat a failed ps as the browser being gone", () => {
+    expect(rowState({ pid: 5, started: "boot" }, { alive: true, started: null })).toBe("unknown");
+    expect(settle(["unknown"])).toBe("unknown");
+    expect(settle(["gone", "foreign"])).toBe("clear");
+    expect(settle(["same"])).toBe("wait");
+  });
+
+  it("keeps the browser it already saw when listing processes fails", () => {
+    const seen = [
+      { pid: 10, started: "engine" },
+      { pid: 11, started: "chrome" },
+    ];
+    expect(nextSeen(seen, null)).toEqual(seen);
+    expect(mergeRows(seen, [{ pid: 10, started: "engine" }])).toContainEqual({
+      pid: 11,
+      started: "chrome",
+    });
+  });
+});
+
 describe("the wrapper does not leave the browser behind", () => {
   function browserEnv(dir: string, args: string[], extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     return {
@@ -406,6 +444,9 @@ describe("the wrapper does not leave the browser behind", () => {
     temps.push(dir);
     const pidFile = join(dir, "child.pid");
     const wrapperFile = join(dir, "wrapper.pid");
+    const fifo = join(dir, "stdin.fifo");
+    execFileSync("mkfifo", [fifo]);
+    const held = openSync(fifo, constants.O_RDWR | constants.O_NONBLOCK);
     const parent = spawn(
       process.execPath,
       [
@@ -414,7 +455,7 @@ describe("the wrapper does not leave the browser behind", () => {
         [
           "import { spawn } from 'node:child_process';",
           "import { writeFileSync } from 'node:fs';",
-          "const wrapper = spawn(process.execPath, [process.argv[1], process.argv[2]], { env: process.env, stdio: ['pipe', 'ignore', 'inherit'] });",
+          "const wrapper = spawn(process.execPath, [process.argv[1], process.argv[2]], { env: process.env, stdio: [3, 'ignore', 'inherit'] });",
           "writeFileSync(process.argv[3], String(wrapper.pid));",
           "setInterval(() => {}, 1000);",
         ].join(" "),
@@ -424,7 +465,7 @@ describe("the wrapper does not leave the browser behind", () => {
       ],
       {
         env: browserEnv(dir, [LATE, "hold"], { HIVRA_LATE_PID: pidFile }),
-        stdio: ["ignore", "ignore", "pipe"],
+        stdio: ["ignore", "ignore", "pipe", held],
       },
     );
     try {
@@ -433,10 +474,15 @@ describe("the wrapper does not leave the browser behind", () => {
       const wrapper = readPid(wrapperFile);
       expect(alive(child)).toBe(true);
       expect(alive(wrapper)).toBe(true);
-      parent.kill("SIGTERM");
+      parent.kill("SIGKILL");
       expect(await waitFor(() => !alive(parent.pid ?? 0), 3000)).toBe(true);
       expect(await waitFor(() => !alive(wrapper) && !alive(child), 3000)).toBe(true);
     } finally {
+      try {
+        closeSync(held);
+      } catch {
+        // already closed
+      }
       if (parent.pid && alive(parent.pid)) parent.kill("SIGKILL");
       for (const file of [wrapperFile, pidFile]) {
         if (!existsSync(file)) continue;
