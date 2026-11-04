@@ -6,9 +6,10 @@
 //! Translated from Raven's importer (Apache-2.0) and Agent Zero's migrate-agents
 //! preview (MIT). Tool noise is dropped and a line without a source is refused.
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{ErrorKind, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -92,6 +93,8 @@ pub struct ProposalIn {
     pub conversation_id: String,
     pub project: String,
     #[serde(default)]
+    pub source_key: String,
+    #[serde(default)]
     pub applied: bool,
 }
 
@@ -171,6 +174,30 @@ fn at_cap(report: &ListReport, limits: Limits) -> bool {
 }
 
 /// Copies `model_router::chat_url`, which is private. Ollama with no `/v1` gets one.
+fn loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
+}
+
+/// The import calls only the host that belongs to the provider. A custom
+/// address is refused: `may_route` would allow any https URL, and the chat
+/// must not be sent there.
+pub fn import_destination_allowed(route: &CustomRoute) -> bool {
+    let Ok(parsed) = url::Url::parse(route.base_url.trim()) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+    let host = host.trim_matches(['[', ']']).to_ascii_lowercase();
+    match route.provider.as_str() {
+        "ollama" => parsed.scheme() == "http" && loopback_host(&host),
+        "xai" => parsed.scheme() == "https" && host == "api.x.ai",
+        "openrouter" => parsed.scheme() == "https" && host == "openrouter.ai",
+        "deepseek" => parsed.scheme() == "https" && host == "api.deepseek.com",
+        _ => false,
+    }
+}
+
 pub fn completions_url(provider: &str, base: &str) -> String {
     let base = base.trim().trim_end_matches('/');
     if provider == "ollama" && !base.ends_with("/v1") {
@@ -345,19 +372,29 @@ fn consider(root: &Path, path: &Path, now: SystemTime, limits: Limits, report: &
     });
 }
 
-fn walk(root: &Path, dir: &Path, now: SystemTime, limits: Limits, report: &mut ListReport) {
-    if report.truncated || at_cap(report, limits) {
-        report.truncated = true;
-        return;
-    }
+fn rel_key(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root).ok().map(crate::fs::path_to_js)
+}
+
+fn is_skipped(root: &Path, path: &Path, skip: &HashSet<String>) -> bool {
+    rel_key(root, path).is_some_and(|rel| skip.contains(&rel))
+}
+
+fn walk(
+    root: &Path,
+    dir: &Path,
+    now: SystemTime,
+    limits: Limits,
+    skip: &HashSet<String>,
+    report: &mut ListReport,
+) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     let mut paths: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
     paths.sort_by_key(|entry| entry.file_name());
     for entry in paths {
-        if report.truncated || at_cap(report, limits) {
-            report.truncated = true;
+        if report.truncated {
             return;
         }
         let path = entry.path();
@@ -368,6 +405,18 @@ fn walk(root: &Path, dir: &Path, now: SystemTime, limits: Limits, report: &mut L
         let Ok(file_type) = entry.file_type() else {
             continue;
         };
+        // A chat already submitted does not count toward the cap, and does not
+        // stop the walk, so a later run can reach the chats past it.
+        if is_jsonl(&path)
+            && (file_type.is_file() || file_type.is_symlink())
+            && is_skipped(root, &path, skip)
+        {
+            continue;
+        }
+        if at_cap(report, limits) {
+            report.truncated = true;
+            return;
+        }
         if file_type.is_symlink() {
             match crate::fs::canonical(&path) {
                 Ok(target) if target.starts_with(root) && target.is_file() && is_jsonl(&path) => {
@@ -378,7 +427,7 @@ fn walk(root: &Path, dir: &Path, now: SystemTime, limits: Limits, report: &mut L
             continue;
         }
         if file_type.is_dir() {
-            walk(root, &path, now, limits, report);
+            walk(root, &path, now, limits, skip, report);
             continue;
         }
         if file_type.is_file() && is_jsonl(&path) {
@@ -387,11 +436,155 @@ fn walk(root: &Path, dir: &Path, now: SystemTime, limits: Limits, report: &mut L
     }
 }
 
-pub fn list_tree(
+fn lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn roots_match(requested: &Path, allowed: &Path) -> bool {
+    match (
+        crate::fs::canonical(requested),
+        crate::fs::canonical(allowed),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => lexical(requested) == lexical(allowed),
+    }
+}
+
+fn source_dirs(
+    home: &Path,
+    hermes_env: Option<&str>,
+    windows: bool,
+    local_app_data: Option<&str>,
+    source: &str,
+) -> Result<Vec<PathBuf>, String> {
+    match source {
+        "claude_code" => Ok(vec![home.join(".claude").join("projects")]),
+        "codex" => Ok(vec![
+            home.join(".codex").join("sessions"),
+            home.join(".codex").join("archived_sessions"),
+        ]),
+        "hermes" => Ok(vec![resolve_hermes_home(
+            home,
+            hermes_env,
+            windows,
+            local_app_data,
+        )]),
+        _ => Err("That source isn't one of the chats you can read.".into()),
+    }
+}
+
+fn confirm_root(
+    home: &Path,
+    hermes_env: Option<&str>,
+    windows: bool,
+    local_app_data: Option<&str>,
+    root: &Path,
+    source: &str,
+) -> Result<(), String> {
+    let dirs = source_dirs(home, hermes_env, windows, local_app_data, source)?;
+    if dirs.iter().any(|dir| roots_match(root, dir)) {
+        Ok(())
+    } else {
+        Err("That folder isn't one of the chat folders.".into())
+    }
+}
+
+/// Submitted chats are left out of the next list. A Hermes session key
+/// (`file#id`) does not hide the rest of that file.
+fn skip_paths(state: Option<&Value>, source: &str) -> HashSet<String> {
+    let mut skip = HashSet::new();
+    let Some(entries) = state
+        .and_then(|value| value.get("entries"))
+        .and_then(Value::as_object)
+    else {
+        return skip;
+    };
+    let prefix = format!("{source}:");
+    for (key, entry) in entries {
+        if entry.get("status").and_then(Value::as_str) != Some("submitted") {
+            continue;
+        }
+        let Some(source_key) = key.strip_prefix(&prefix) else {
+            continue;
+        };
+        if source_key.is_empty() || (source == "hermes" && source_key.contains('#')) {
+            continue;
+        }
+        skip.insert(source_key.to_string());
+    }
+    skip
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn list_checked(
+    home: &Path,
+    hermes_env: Option<&str>,
+    windows: bool,
+    local_app_data: Option<&str>,
+    root: &Path,
+    source: &str,
+    state: Option<&Value>,
+    now: SystemTime,
+    limits: Limits,
+) -> Result<ListReport, String> {
+    confirm_root(home, hermes_env, windows, local_app_data, root, source)?;
+    let skip = skip_paths(state, source);
+    if skip.is_empty() {
+        return list_tree(root, source, now, limits);
+    }
+    list_tree_skip(root, source, now, limits, &skip)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn read_checked(
+    home: &Path,
+    hermes_env: Option<&str>,
+    windows: bool,
+    local_app_data: Option<&str>,
+    root: &Path,
+    rel: &str,
+    source: &str,
+    max_bytes: u64,
+) -> Result<String, String> {
+    confirm_root(home, hermes_env, windows, local_app_data, root, source)?;
+    let rel_path = Path::new(rel);
+    if rel_path.is_absolute()
+        || rel_path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err("That file isn't in the folder.".into());
+    }
+    if !is_jsonl(rel_path) {
+        return Err("That isn't a chat file.".into());
+    }
+    let joined = root.join(rel_path);
+    match fs::symlink_metadata(&joined) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err("That file isn't in the folder.".into());
+        }
+        Ok(_) => {}
+        Err(_) => return Err("That file isn't in the folder.".into()),
+    }
+    read_transcript(root, rel, max_bytes)
+}
+
+fn list_tree_skip(
     root: &Path,
     source: &str,
     now: SystemTime,
     limits: Limits,
+    skip: &HashSet<String>,
 ) -> Result<ListReport, String> {
     if !root.exists() {
         return Ok(empty_report(true));
@@ -403,8 +596,17 @@ pub fn list_tree(
     }
     let mut report = empty_report(false);
     report.database = source == "hermes" && root.join("state.db").is_file();
-    walk(&root, &root, now, limits, &mut report);
+    walk(&root, &root, now, limits, skip, &mut report);
     Ok(report)
+}
+
+pub fn list_tree(
+    root: &Path,
+    source: &str,
+    now: SystemTime,
+    limits: Limits,
+) -> Result<ListReport, String> {
+    list_tree_skip(root, source, now, limits, &HashSet::new())
 }
 
 pub fn read_transcript(root: &Path, rel: &str, max_bytes: u64) -> Result<String, String> {
@@ -432,7 +634,7 @@ fn clean_error(value: &Value) -> Value {
     let Some(text) = value.as_str() else {
         return Value::Null;
     };
-    if text.is_empty() || !scrubber().findings(text).is_empty() {
+    if text.is_empty() || has_secret(text) {
         return Value::Null;
     }
     Value::String(text.chars().take(ERROR_LIMIT).collect())
@@ -503,22 +705,11 @@ fn backup_corrupt(path: &Path) -> Result<(), String> {
     fs::rename(path, backup).map_err(|_| "Couldn't move the broken state aside.".to_string())
 }
 
-fn load_unlocked(dir: &Path) -> Result<Loaded, String> {
-    let path = dir.join("state.json");
-    let text = match fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(err) if err.kind() == ErrorKind::NotFound => {
-            return Ok(Loaded {
-                revision: 0,
-                state: empty_state(),
-            });
-        }
-        Err(_) => return Err("Couldn't read the progress.".to_string()),
-    };
-    match serde_json::from_str::<Value>(&text) {
+fn parse_loaded(path: &Path, text: &str) -> Result<Loaded, String> {
+    match serde_json::from_str::<Value>(text) {
         Ok(value) => Ok(interpret(value)),
         Err(_) => {
-            backup_corrupt(&path)?;
+            backup_corrupt(path)?;
             Ok(Loaded {
                 revision: 0,
                 state: empty_state(),
@@ -527,19 +718,59 @@ fn load_unlocked(dir: &Path) -> Result<Loaded, String> {
     }
 }
 
+fn load_unlocked(dir: &Path) -> Result<Loaded, String> {
+    let path = dir.join("state.json");
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            let backup = path.with_extension("json.bak");
+            match fs::read_to_string(&backup) {
+                Ok(text) => {
+                    // Put the previous progress back. If that rename fails, still
+                    // read what was saved rather than starting the import over.
+                    if fs::rename(&backup, &path).is_err() && !path.is_file() {
+                        return parse_loaded(&backup, &text);
+                    }
+                    fs::read_to_string(&path).unwrap_or(text)
+                }
+                Err(err) if err.kind() == ErrorKind::NotFound => {
+                    return Ok(Loaded {
+                        revision: 0,
+                        state: empty_state(),
+                    });
+                }
+                Err(_) => return Err("Couldn't read the progress.".to_string()),
+            }
+        }
+        Err(_) => return Err("Couldn't read the progress.".to_string()),
+    };
+    parse_loaded(&path, &text)
+}
+
 pub fn load_state(dir: &Path) -> Result<Loaded, String> {
     let _guard = state_lock();
     load_unlocked(dir)
 }
 
 fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
+    if !to.exists() {
+        return fs::rename(from, to).map_err(|_| "Couldn't save the progress.".to_string());
+    }
+    // Move the current file aside first. It is never deleted before the new
+    // one is in its place, and a failed second rename puts it back.
+    let backup = to.with_extension("json.bak");
+    if backup.exists() {
+        fs::remove_file(&backup).map_err(|_| "Couldn't save the progress.".to_string())?;
+    }
+    fs::rename(to, &backup).map_err(|_| "Couldn't save the progress.".to_string())?;
     match fs::rename(from, to) {
         Ok(()) => Ok(()),
-        Err(_) if to.exists() => {
-            fs::remove_file(to).map_err(|_| "Couldn't save the progress.".to_string())?;
-            fs::rename(from, to).map_err(|_| "Couldn't save the progress.".to_string())
+        Err(_) => {
+            if !to.exists() {
+                let _ = fs::rename(&backup, to);
+            }
+            Err("Couldn't save the progress.".to_string())
         }
-        Err(_) => Err("Couldn't save the progress.".to_string()),
     }
 }
 
@@ -568,6 +799,19 @@ pub fn cas_state(dir: &Path, expected: u64, state: Value) -> Result<bool, String
     Ok(true)
 }
 
+fn same_chat(folder: &Path, proposal: &ProposalIn) -> bool {
+    let Ok(text) = fs::read_to_string(folder.join("proposal.json")) else {
+        return false;
+    };
+    let Ok(meta) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    meta.get("source").and_then(Value::as_str) == Some(proposal.source.as_str())
+        && meta.get("conversationId").and_then(Value::as_str)
+            == Some(proposal.conversation_id.as_str())
+        && meta.get("sourceKey").and_then(Value::as_str).unwrap_or("") == proposal.source_key
+}
+
 fn sourced(markdown: &str) -> bool {
     if markdown.trim().is_empty() {
         return false;
@@ -578,7 +822,7 @@ fn sourced(markdown: &str) -> bool {
 }
 
 fn has_secret(text: &str) -> bool {
-    !scrubber().findings(text).is_empty()
+    scrubber().has_secret(text)
 }
 
 fn inside(parent: &Path, child: &Path) -> bool {
@@ -620,7 +864,10 @@ pub fn write_proposal(dir: &Path, proposal: &ProposalIn) -> Result<(), String> {
     match fs::create_dir(&folder) {
         Ok(()) => {}
         Err(err) if err.kind() == ErrorKind::AlreadyExists => {
-            return Err("A draft with that id is already there.".into());
+            if same_chat(&folder, proposal) {
+                return Err("This chat was already drafted.".into());
+            }
+            return Err("That draft belongs to a different chat.".into());
         }
         Err(_) => return Err("The draft could not be saved.".into()),
     }
@@ -632,6 +879,7 @@ pub fn write_proposal(dir: &Path, proposal: &ProposalIn) -> Result<(), String> {
         "source": proposal.source,
         "conversationId": proposal.conversation_id,
         "project": proposal.project,
+        "sourceKey": proposal.source_key,
     });
     let markdown_path = folder.join("how-you-work.md");
     let meta_path = folder.join("proposal.json");
@@ -663,7 +911,7 @@ pub fn ask_with(
     if prompt.chars().count() > PROMPT_LIMIT {
         return refused("That chat is too long to send.");
     }
-    if !may_route(route) {
+    if !import_destination_allowed(route) || !may_route(route) {
         return refused("That model can't be used for this.");
     }
     let token = match session_token(&route.provider, key) {
@@ -752,18 +1000,43 @@ pub fn history_import_roots() -> Result<Roots, String> {
 }
 
 #[tauri::command]
-pub fn history_import_list(root: String, source: String) -> Result<ListReport, String> {
-    list_tree(
+pub fn history_import_list(
+    app: AppHandle,
+    root: String,
+    source: String,
+) -> Result<ListReport, String> {
+    let home = crate::dirs_home().ok_or_else(|| "This Mac has no home folder.".to_string())?;
+    let env_home = std::env::var("HERMES_HOME").ok();
+    let local = std::env::var("LOCALAPPDATA").ok();
+    let loaded = load_state(&store_dir(&app)?)?;
+    list_checked(
+        Path::new(&home),
+        env_home.as_deref(),
+        cfg!(windows),
+        local.as_deref(),
         Path::new(&root),
         &source,
+        Some(&loaded.state),
         SystemTime::now(),
         Limits::production(),
     )
 }
 
 #[tauri::command]
-pub fn history_import_read(root: String, path: String) -> Result<String, String> {
-    read_transcript(Path::new(&root), &path, MAX_READ_BYTES)
+pub fn history_import_read(root: String, path: String, source: String) -> Result<String, String> {
+    let home = crate::dirs_home().ok_or_else(|| "This Mac has no home folder.".to_string())?;
+    let env_home = std::env::var("HERMES_HOME").ok();
+    let local = std::env::var("LOCALAPPDATA").ok();
+    read_checked(
+        Path::new(&home),
+        env_home.as_deref(),
+        cfg!(windows),
+        local.as_deref(),
+        Path::new(&root),
+        &path,
+        &source,
+        MAX_READ_BYTES,
+    )
 }
 
 #[tauri::command]
@@ -793,7 +1066,7 @@ pub async fn history_import_ask(route: CustomRoute, prompt: String) -> Result<As
     if prompt.chars().count() > PROMPT_LIMIT {
         return Ok(refused("That chat is too long to send."));
     }
-    if !may_route(&route) {
+    if !import_destination_allowed(&route) || !may_route(&route) {
         return Ok(refused("That model can't be used for this."));
     }
     let key = if route.provider == "ollama" {
@@ -862,6 +1135,7 @@ mod tests {
             source: "claude_code".into(),
             conversation_id: "sess-1".into(),
             project: "notes".into(),
+            source_key: "notes/chat.jsonl".into(),
             applied: false,
         }
     }
@@ -1313,5 +1587,290 @@ mod tests {
             resolve_hermes_home(&home, None, true, None),
             home.join("AppData").join("Local").join("hermes")
         );
+    }
+
+    #[test]
+    fn submitted_chats_do_not_fill_the_next_list() {
+        let tmp = Tmp::new();
+        let home = tmp.path.join("home");
+        let projects = home.join(".claude").join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        for name in ["a.jsonl", "b.jsonl", "c.jsonl"] {
+            let file = projects.join(name);
+            fs::write(&file, b"{}\n").unwrap();
+            age(&file);
+        }
+        let limits = Limits {
+            max_files: 2,
+            ..Limits::production()
+        };
+        let now = SystemTime::now();
+        let first = list_checked(
+            &home,
+            None,
+            false,
+            None,
+            &projects,
+            "claude_code",
+            None,
+            now,
+            limits,
+        )
+        .unwrap();
+        assert!(first.truncated);
+        assert_eq!(
+            first
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.jsonl", "b.jsonl"]
+        );
+        let state = json!({
+            "entries": {
+                "claude_code:a.jsonl": { "status": "submitted", "timestamp": 1 },
+                "claude_code:b.jsonl": { "status": "submitted", "timestamp": 1 }
+            }
+        });
+        let second = list_checked(
+            &home,
+            None,
+            false,
+            None,
+            &projects,
+            "claude_code",
+            Some(&state),
+            now,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(second.files.len(), 1);
+        assert_eq!(second.files[0].path, "c.jsonl");
+        assert!(!second.truncated);
+
+        let hermes = home.join(".hermes");
+        let session = hermes.join("sessions");
+        fs::create_dir_all(&session).unwrap();
+        let file = session.join("a.jsonl");
+        fs::write(&file, b"{}\n").unwrap();
+        age(&file);
+        let open = json!({
+            "entries": {
+                "hermes:sessions/a.jsonl#one": { "status": "submitted", "timestamp": 1 }
+            }
+        });
+        let still = list_checked(
+            &home,
+            None,
+            false,
+            None,
+            &hermes,
+            "hermes",
+            Some(&open),
+            now,
+            limits,
+        )
+        .unwrap();
+        assert_eq!(still.files.len(), 1);
+        let done = json!({
+            "entries": {
+                "hermes:sessions/a.jsonl": { "status": "submitted", "timestamp": 1 }
+            }
+        });
+        let skipped = list_checked(
+            &home,
+            None,
+            false,
+            None,
+            &hermes,
+            "hermes",
+            Some(&done),
+            now,
+            limits,
+        )
+        .unwrap();
+        assert!(skipped.files.is_empty());
+        assert!(!skipped.truncated);
+    }
+
+    #[test]
+    fn list_and_read_stay_inside_the_turned_on_source() {
+        let tmp = Tmp::new();
+        let home = tmp.path.join("home");
+        let projects = home.join(".claude").join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        let key = home.join("key.txt");
+        fs::write(&key, b"SECRET").unwrap();
+        let err = list_checked(
+            &home,
+            None,
+            false,
+            None,
+            &home,
+            "claude_code",
+            None,
+            SystemTime::now(),
+            Limits::production(),
+        )
+        .unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+        fs::write(projects.join("key.txt"), b"SECRET").unwrap();
+        let err = read_checked(
+            &home,
+            None,
+            false,
+            None,
+            &projects,
+            "key.txt",
+            "claude_code",
+            MAX_READ_BYTES,
+        )
+        .unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+        let err = read_checked(
+            &home,
+            None,
+            false,
+            None,
+            &projects,
+            "../key.txt",
+            "claude_code",
+            MAX_READ_BYTES,
+        )
+        .unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+        let outside = tmp.path.join("elsewhere");
+        fs::create_dir_all(&outside).unwrap();
+        let err = read_checked(
+            &home,
+            None,
+            false,
+            None,
+            &outside,
+            "key.txt",
+            "claude_code",
+            MAX_READ_BYTES,
+        )
+        .unwrap_err();
+        assert!(!err.contains("SECRET"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_refuses_a_symlink_even_inside_the_root() {
+        let tmp = Tmp::new();
+        let home = tmp.path.join("home");
+        let projects = home.join(".claude").join("projects");
+        fs::create_dir_all(&projects).unwrap();
+        let real = projects.join("real.jsonl");
+        fs::write(&real, b"SECRET_LINK").unwrap();
+        std::os::unix::fs::symlink(&real, projects.join("link.jsonl")).unwrap();
+        let err = read_checked(
+            &home,
+            None,
+            false,
+            None,
+            &projects,
+            "link.jsonl",
+            "claude_code",
+            MAX_READ_BYTES,
+        )
+        .unwrap_err();
+        assert!(!err.contains("SECRET_LINK"), "{err}");
+    }
+
+    #[test]
+    fn a_different_chat_does_not_take_the_draft() {
+        let tmp = Tmp::new();
+        let dir = tmp.path.join("store");
+        let first = proposal("- Decides on Tuesday [src: sess-1 #m2]\n");
+        write_proposal(&dir, &first).unwrap();
+        let mut other = proposal("- Something else [src: sess-2 #m1]\n");
+        other.conversation_id = "sess-2".into();
+        let err = write_proposal(&dir, &other).unwrap_err();
+        assert!(err.to_lowercase().contains("different"), "{err}");
+        assert!(!err.to_lowercase().contains("already"), "{err}");
+        let saved = fs::read_to_string(
+            dir.join("proposals")
+                .join("hi-abcdef01")
+                .join("how-you-work.md"),
+        )
+        .unwrap();
+        assert_eq!(saved, first.markdown);
+    }
+
+    #[test]
+    fn key_name_secret_is_not_stored() {
+        assert!(has_secret("token=abcdefgh"));
+        assert!(!has_secret("token=short"));
+        let tmp = Tmp::new();
+        let dir = tmp.path.join("store");
+        let named = proposal("- token=abcdefgh [src: sess-1 #m1]\n");
+        let err = write_proposal(&dir, &named).unwrap_err();
+        assert!(err.to_lowercase().contains("secret"), "{err}");
+        assert!(!dir.join("proposals").exists());
+    }
+
+    #[test]
+    fn ask_does_not_post_to_an_arbitrary_url() {
+        let mut posted = false;
+        let ollama = route("ollama", "https://example.com", "llama3.2");
+        let outcome = ask_with(&ollama, "hello", None, |_, _, _| {
+            posted = true;
+            PostResult::Answer("no".into())
+        });
+        assert!(!posted);
+        assert_eq!(outcome.kind, "refused");
+        posted = false;
+        let xai = route("xai", "https://example.com/v1", "grok-2");
+        let outcome = ask_with(&xai, "hello", Some("xai-key"), |_, _, _| {
+            posted = true;
+            PostResult::Answer("no".into())
+        });
+        assert!(!posted);
+        assert_eq!(outcome.kind, "refused");
+        posted = false;
+        let custom = route("custom", "https://example.com/v1", "my-model");
+        let outcome = ask_with(&custom, "hello", Some("custom-key"), |_, _, _| {
+            posted = true;
+            PostResult::Answer("no".into())
+        });
+        assert!(!posted, "a custom address is still an arbitrary url");
+        assert_eq!(outcome.kind, "refused");
+    }
+
+    #[test]
+    fn progress_replace_keeps_the_previous_file() {
+        let tmp = Tmp::new();
+        let dir = tmp.path.join("store");
+        fs::create_dir_all(&dir).unwrap();
+        let first = json!({
+            "entries": {
+                "claude_code:a.jsonl": { "status": "submitted", "timestamp": 1, "error": null }
+            }
+        });
+        assert!(cas_state(&dir, 0, first).unwrap());
+        let second = json!({
+            "entries": {
+                "claude_code:a.jsonl": { "status": "submitted", "timestamp": 1, "error": null },
+                "claude_code:b.jsonl": { "status": "submitted", "timestamp": 2, "error": null }
+            }
+        });
+        assert!(cas_state(&dir, 1, second).unwrap());
+        let backup: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("state.json.bak")).unwrap()).unwrap();
+        assert_eq!(backup["revision"], 1);
+        assert!(backup["state"]["entries"]["claude_code:a.jsonl"].is_object());
+        assert!(backup["state"]["entries"]
+            .get("claude_code:b.jsonl")
+            .is_none());
+        let current: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("state.json")).unwrap()).unwrap();
+        assert_eq!(current["revision"], 2);
+        fs::remove_file(dir.join("state.json")).unwrap();
+        let loaded = load_state(&dir).unwrap();
+        assert_eq!(loaded.revision, 1);
+        assert!(loaded.state["entries"]["claude_code:a.jsonl"].is_object());
+        assert!(loaded.state["entries"].get("claude_code:b.jsonl").is_none());
     }
 }
