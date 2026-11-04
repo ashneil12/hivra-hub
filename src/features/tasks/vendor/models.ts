@@ -1,8 +1,15 @@
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Source: https://github.com/coollabsio/orbit
+// Original path: apps/web/src/features/tasks/api/models.ts
+// The upstream file has no file-level copyright line. See ./LICENSE.
 // Shapes the vendored Orbit helpers read.
 // Rewritten because Orbit's models.ts imports generated API types (`@orbit/api/generated/types.gen`)
 // and workspace members (`@/features/workspaces/models`) that Hivra does not build.
-// Source: https://github.com/coollabsio/orbit (Apache-2.0), apps/web/src/features/tasks/api/models.ts.
-// The upstream file has no file-level copyright line.
 
 /** Only `id` and `name`. Orbit's User lives with workspace membership, which these helpers never read. */
 export interface User {

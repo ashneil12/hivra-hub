@@ -1,6 +1,14 @@
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Source: https://github.com/coollabsio/orbit
+// Original path: packages/api/src/generated/types.gen.ts
+// The upstream file has no file-level copyright line. See ./LICENSE.
 // Shapes Orbit's generated API types give the vendored helpers.
 // Rewritten because `@orbit/api/generated/types.gen` is generated server code Hivra does not build.
-// Source: https://github.com/coollabsio/orbit (Apache-2.0). The upstream files have no file-level copyright line.
 
 export interface LabelRecord {
   id: string;
