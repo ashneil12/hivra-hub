@@ -8,7 +8,8 @@ use std::time::{Duration, SystemTime};
 use super::desktop::{self, ConsentDoc, PendingAsk, ProjectConsent};
 use super::fsutil;
 use super::manifest::load_plugin;
-use super::registry::{self, Host, Source};
+use super::registry::{self, Host, Scope, Source};
+use super::wiring;
 
 struct Tmp(PathBuf);
 
@@ -329,4 +330,62 @@ fn consent_is_refused_until_the_plugin_is_installed() {
         "Desktop control isn't installed."
     );
     assert!(!host.root.join("data").exists());
+}
+
+#[test]
+fn the_app_starts_the_desktop_server_with_its_own_paths() {
+    let tmp = Tmp::new("mcp");
+    let host = host_in(&tmp);
+    registry::install_local(&host, &source_plugin(), Source::local(&source_plugin())).unwrap();
+    registry::enable(&host, "desktop-control", &Scope::Global).unwrap();
+    let args = vec![
+        "--root".into(),
+        host.root.display().to_string(),
+        "--plugin".into(),
+        "desktop-control".into(),
+        "--server".into(),
+        "desktop".into(),
+    ];
+    std::env::set_var("HIVRA_DESKTOP_REGISTRY", "/tmp/worker-registry.json");
+    let command = wiring::prepare_launch(&args).unwrap();
+    std::env::remove_var("HIVRA_DESKTOP_REGISTRY");
+
+    let env = |key: &str| -> Option<String> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == key)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    };
+    assert!(env("HIVRA_DESKTOP_REGISTRY").is_none());
+    let registry = host.root.join("registry.json").display().to_string();
+    assert_eq!(
+        env("DESKTOP_LAUNCH_REGISTRY").as_deref(),
+        Some(registry.as_str())
+    );
+    let data = host.data("desktop-control");
+    let consent = data.join("consent.json").display().to_string();
+    assert_eq!(
+        env("DESKTOP_LAUNCH_CONSENT").as_deref(),
+        Some(consent.as_str())
+    );
+    let binary = env("DESKTOP_LAUNCH_BINARY").unwrap();
+    assert_eq!(binary, data.join("agent-desktop").display().to_string());
+    let installed = host.installed("desktop-control").display().to_string();
+    assert!(
+        !binary.starts_with(&installed),
+        "binary {binary} is inside the plugin"
+    );
+    let pin = host
+        .installed("desktop-control")
+        .join("pin.json")
+        .display()
+        .to_string();
+    assert_eq!(env("DESKTOP_LAUNCH_PIN").as_deref(), Some(pin.as_str()));
+    let args: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    assert!(args.iter().any(|arg| arg == "--mcp"), "{args:?}");
+    assert_eq!(command.get_program().to_string_lossy(), "node");
 }

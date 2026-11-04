@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 use std::ffi::OsString;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -280,7 +280,37 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
     for (key, value) in &plan.env {
         command.env(key, value);
     }
+    // WP-44: the desktop gate's paths come from this app, after the environment was cleared, so a
+    // worker's HIVRA_DESKTOP_* variables are not there. The pin is the installed plugin's pin.json.
+    if plugin == "desktop-control" {
+        for (key, value) in desktop_launch_env(&host, &plugin) {
+            command.env(key, value);
+        }
+    }
     Ok(command)
+}
+
+/// Registry, consent and the pinned binary live in the app's plugin data, outside the installed
+/// plugin folder. The pin file is the copy installed with the plugin.
+pub(crate) fn desktop_launch_env(host: &Host, plugin: &str) -> Vec<(String, PathBuf)> {
+    vec![
+        (
+            "DESKTOP_LAUNCH_REGISTRY".into(),
+            host.root.join("registry.json"),
+        ),
+        (
+            "DESKTOP_LAUNCH_CONSENT".into(),
+            host.data(plugin).join("consent.json"),
+        ),
+        (
+            "DESKTOP_LAUNCH_BINARY".into(),
+            host.data(plugin).join("agent-desktop"),
+        ),
+        (
+            "DESKTOP_LAUNCH_PIN".into(),
+            host.installed(plugin).join("pin.json"),
+        ),
+    ]
 }
 
 /// Variables a plugin server inherits: the path, home, user, locale, time zone, terminal and temp folders, and on
