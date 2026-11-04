@@ -15,7 +15,8 @@ export type IndexSource =
 
 export type InstallSource =
   | { kind: "git"; url: string; commit: string; path?: string }
-  | { kind: "npm"; package: string; version: string; registry?: string };
+  | { kind: "npm"; package: string; version: string; registry?: string }
+  | { kind: "local"; path: string };
 
 export type Status = "available" | "planned" | "not-compatible" | "listed-only" | "not-this-platform";
 export type Format = "hivra" | "dsh" | "claude-marketplace";
@@ -317,6 +318,7 @@ export function installSourceText(source: InstallSource): string {
     const where = source.path ? ` (${source.path})` : "";
     return `${source.url} at ${source.commit.slice(0, 7)}${where}`;
   }
+  if (source.kind === "local") return source.path;
   const registry = source.registry ? ` from ${source.registry}` : "";
   return `${source.package} ${source.version}${registry}`;
 }
@@ -555,9 +557,25 @@ function sanitizeAdds(value: unknown): Adds[] {
   return adds;
 }
 
+/** An absolute folder with no `..` segment. A relative path, or one that leaves its root, is dropped. */
+function localInstallPath(value: string): string | undefined {
+  if (value.includes("\0")) return;
+  const path = value.trim();
+  const absolute = path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
+  if (!absolute) return;
+  if (path.split(/[\\/]/).includes("..")) return;
+  return path;
+}
+
 function installSource(value: unknown): InstallSource | undefined {
   if (!value || typeof value !== "object") return;
   const record = value as { kind?: unknown; url?: unknown; commit?: unknown; path?: unknown; package?: unknown; version?: unknown; registry?: unknown };
+  if (record.kind === "local") {
+    if (typeof record.path !== "string") return;
+    const path = localInstallPath(record.path);
+    if (!path) return;
+    return { kind: "local", path };
+  }
   if (record.kind === "git") {
     if (typeof record.url !== "string" || typeof record.commit !== "string") return;
     const url = gitUrl(record.url);

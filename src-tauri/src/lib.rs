@@ -70,6 +70,8 @@ mod pasteboard;
 mod pi_usage;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
+// WP-43: a browser profile per agent, and Stop.
+pub mod browser;
 // WP-33: plugin panels, the catalog and the My panels migration.
 mod panels;
 mod portable;
@@ -785,6 +787,17 @@ pub fn run() {
             plugins::plugins_rollback,
             // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
+            // WP-43: browser profiles and the visible Stop.
+            browser::browser_profiles,
+            browser::browser_clear,
+            browser::browser_watch,
+            browser::browser_choose_own,
+            browser::browser_drives,
+            browser::browser_stop,
+            browser::browser_stop_all,
+            // WP-43: which browser, and downloading one when Chrome is missing.
+            browser::browser_engine,
+            browser::browser_get_browser,
             // WP-44: desktop control stays off until it is installed and turned on.
             plugins::desktop::desktop_consent_read,
             plugins::desktop::desktop_consent_write,

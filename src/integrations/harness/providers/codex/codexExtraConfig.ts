@@ -2,7 +2,7 @@
 // servers here (src/features/plugins/model/pluginSessions.ts); nothing is registered in MonoCode itself, so its
 // sessions are unchanged. Codex lays the `config` of `thread/start` / `thread/resume` over the user's own config as
 // a session layer and merges tables, so `mcp_servers` entries are added beside the user's servers, not instead.
-type Provider = (cwd: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+type Provider = (cwd: string, sessionId?: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
 
 let provider: Provider | undefined;
 
@@ -11,9 +11,9 @@ export function setCodexExtraConfig(next: Provider | undefined): void {
 }
 
 /** Extra config for a session in `cwd`; never throws. */
-export async function codexExtraConfig(cwd: string): Promise<Record<string, unknown>> {
+export async function codexExtraConfig(cwd: string, sessionId?: string): Promise<Record<string, unknown>> {
   try {
-    return (await provider?.(cwd)) ?? {};
+    return (await provider?.(cwd, sessionId)) ?? {};
   } catch {
     return {};
   }

@@ -2958,7 +2958,7 @@ fn which_via_login_shell(name: &str) -> Option<PathBuf> {
     which_in_path(&gui_search_path(), name)
 }
 
-fn which_in_path(path: &str, name: &str) -> Option<PathBuf> {
+pub(crate) fn which_in_path(path: &str, name: &str) -> Option<PathBuf> {
     std::env::split_paths(std::ffi::OsStr::new(path)).find_map(|dir| {
         if dir.as_os_str().is_empty() {
             return None;
