@@ -1238,10 +1238,39 @@ fn pid_alive(pid: u32) -> bool {
     {
         pid > 0 && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows_pid_alive(pid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
+    }
+}
+
+/// `OpenProcess` + `GetExitCodeProcess`. A process that has already exited is not alive.
+/// Exit code 259 is `STILL_ACTIVE`; a process that really exited with 259 looks alive,
+/// and that collision is accepted. Pid 0 is not a process.
+#[cfg(windows)]
+fn windows_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE
     }
 }
 
@@ -1292,13 +1321,18 @@ pub fn watch_main(args: &[String]) -> i32 {
         Verdict::Idle(_) => 0,
         Verdict::Retire => {
             println!("autopilot-watch: autopilot ended; removing {}", watch.label);
-            if let Err(error) = remove_agent(
+            // macOS takes the LaunchAgent out. Everywhere else, the task or the unit.
+            #[cfg(target_os = "macos")]
+            let removed = remove_agent(
                 &SystemLaunchd,
                 &watch.label,
                 &watch.domain,
                 &watch.plist,
                 &data_dir,
-            ) {
+            );
+            #[cfg(not(target_os = "macos"))]
+            let removed = crate::platform::relaunch::remove(&watch.label, &watch.plist, &data_dir);
+            if let Err(error) = removed {
                 eprintln!("autopilot-watch: {error}");
             }
             0
@@ -1323,12 +1357,27 @@ pub fn watch_main(args: &[String]) -> i32 {
                 "autopilot-watch: the app stopped without quitting; reopening {}",
                 bundle.display()
             );
-            match Command::new("/usr/bin/open").arg(&bundle).status() {
-                Ok(status) if status.success() => 0,
-                Ok(status) => status.code().unwrap_or(1),
-                Err(error) => {
-                    eprintln!("autopilot-watch: open failed: {error}");
-                    1
+            // macOS stays on Launch Services. Windows and Linux run the bundle binary
+            // (`monocode.exe` where the build produced one).
+            #[cfg(target_os = "macos")]
+            {
+                match Command::new("/usr/bin/open").arg(&bundle).status() {
+                    Ok(status) if status.success() => 0,
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(error) => {
+                        eprintln!("autopilot-watch: open failed: {error}");
+                        1
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                match crate::platform::ship::spawn_app(&bundle) {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        eprintln!("autopilot-watch: open failed: {error}");
+                        1
+                    }
                 }
             }
         }
@@ -1527,6 +1576,7 @@ fn sync(app: &AppHandle, what: &str) {
             &plan.program,
             &plan.data_dir,
             &plan.plist,
+            &plan.domain,
             &mut installed,
             last_end(&switches),
         );
@@ -1810,6 +1860,13 @@ pub fn autopilot_resumes(store: State<'_, SessionStore>) -> Result<Vec<Resume>, 
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(windows)]
+    #[test]
+    fn the_running_process_is_alive_and_pid_zero_is_not() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
+    }
 
     const HOUR: i64 = 60 * 60 * 1000;
     const T0: i64 = 1_760_000_000_000;
