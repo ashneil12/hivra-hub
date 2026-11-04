@@ -324,9 +324,7 @@ fn version_source(
     package: &str,
     version: &str,
 ) -> Result<InstallSource, String> {
-    let source = value
-        .and_then(Value::as_object)
-        .ok_or("has no source")?;
+    let source = value.and_then(Value::as_object).ok_or("has no source")?;
     match source.get("type").and_then(Value::as_str) {
         Some("git") => {
             let url = source
@@ -359,7 +357,9 @@ fn version_source(
                 .and_then(Value::as_str)
                 .unwrap_or(package);
             if !npm_package_ok(package) {
-                return Err(format!("names npm package {package:?}, which isn't a valid npm name"));
+                return Err(format!(
+                    "names npm package {package:?}, which isn't a valid npm name"
+                ));
             }
             let registry = match source.get("registry") {
                 None => None,
@@ -380,10 +380,7 @@ fn version_source(
 }
 
 /// The newest valid version of an entry's `versions` list, with its pinned source.
-fn newest_version(
-    object: &Obj,
-    package: &str,
-) -> Result<(String, InstallSource), String> {
+fn newest_version(object: &Obj, package: &str) -> Result<(String, InstallSource), String> {
     let versions = object
         .get("versions")
         .and_then(Value::as_array)
@@ -462,7 +459,8 @@ const CONTRIBUTION_KINDS: &[&str] = &[
 ];
 
 fn read_hivra(object: &Obj, platform: &str) -> Result<Index, String> {
-    let title = localized(object.get("title")).ok_or("This Hivra index has no title. Nothing was listed.")?;
+    let title = localized(object.get("title"))
+        .ok_or("This Hivra index has no title. Nothing was listed.")?;
     let items = object
         .get("plugins")
         .and_then(Value::as_array)
@@ -476,7 +474,9 @@ fn read_hivra(object: &Obj, platform: &str) -> Result<Index, String> {
                 entry.name
             )),
             Ok(entry) => entries.push(entry),
-            Err(reason) => skipped.push(format!("Plugin {} {reason}.", entry_label(item, position))),
+            Err(reason) => {
+                skipped.push(format!("Plugin {} {reason}.", entry_label(item, position)))
+            }
         }
     }
     Ok(Index {
@@ -558,7 +558,9 @@ fn contributions(value: Option<&Value>) -> Result<Vec<Adds>, String> {
     let Some(value) = value else {
         return Ok(Vec::new());
     };
-    let object = value.as_object().ok_or("has a contributes field that isn't an object")?;
+    let object = value
+        .as_object()
+        .ok_or("has a contributes field that isn't an object")?;
     let mut adds = Vec::new();
     for kind in CONTRIBUTION_KINDS {
         let Some(item) = object.get(*kind) else {
@@ -588,14 +590,23 @@ fn contributions(value: Option<&Value>) -> Result<Vec<Adds>, String> {
                 names: Vec::new(),
             },
             Value::Bool(false) => continue,
-            _ => return Err(format!("has a {kind} entry that is neither names nor a count")),
+            _ => {
+                return Err(format!(
+                    "has a {kind} entry that is neither names nor a count"
+                ))
+            }
         };
         if add.count != Some(0) {
             adds.push(add);
         }
     }
-    if let Some(unknown) = object.keys().find(|k| !CONTRIBUTION_KINDS.contains(&k.as_str())) {
-        return Err(format!("says it adds {unknown:?}, which Hivra doesn't know"));
+    if let Some(unknown) = object
+        .keys()
+        .find(|k| !CONTRIBUTION_KINDS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "says it adds {unknown:?}, which Hivra doesn't know"
+        ));
     }
     Ok(adds)
 }
@@ -603,7 +614,8 @@ fn contributions(value: Option<&Value>) -> Result<Vec<Adds>, String> {
 // ---------------------------------------------------------------------------------------------------------------
 // DeepSeek Harness market index, format 1 (packages/util/plugin-market-index, MIT)
 
-pub const DSH_REASON: &str = "A DeepSeek Harness bundle: it runs inside DeepSeek Harness's own agent loop, which \
+pub const DSH_REASON: &str =
+    "A DeepSeek Harness bundle: it runs inside DeepSeek Harness's own agent loop, which \
                               Hivra doesn't have.";
 
 fn read_dsh(object: &Obj) -> Result<Index, String> {
@@ -626,7 +638,9 @@ fn read_dsh(object: &Obj) -> Result<Index, String> {
                 entry.name
             )),
             Ok(entry) => entries.push(entry),
-            Err(reason) => skipped.push(format!("Plugin {} {reason}.", entry_label(item, position))),
+            Err(reason) => {
+                skipped.push(format!("Plugin {} {reason}.", entry_label(item, position)))
+            }
         }
     }
     Ok(Index {
@@ -694,12 +708,19 @@ const CLAUDE_LEFT_OUT: &[(&str, &str)] = &[
     ("outputStyles", "output styles"),
 ];
 
-pub const CLAUDE_REASON: &str = "A Claude Code plugin. Hivra can use its skills and MCP servers, but can't install \
+pub const CLAUDE_REASON: &str =
+    "A Claude Code plugin. Hivra can use its skills and MCP servers, but can't install \
                                  Claude Code's plugin layout yet.";
 
 fn read_claude(object: &Obj, origin: &Origin) -> Result<Index, String> {
-    let name = object.get("name").and_then(text).ok_or("This marketplace has no name.")?;
-    let items = object.get("plugins").and_then(Value::as_array).ok_or("no plugins")?;
+    let name = object
+        .get("name")
+        .and_then(text)
+        .ok_or("This marketplace has no name.")?;
+    let items = object
+        .get("plugins")
+        .and_then(Value::as_array)
+        .ok_or("no plugins")?;
     let metadata = object.get("metadata").and_then(Value::as_object);
     let plugin_root = metadata
         .and_then(|m| m.get("pluginRoot"))
@@ -714,7 +735,9 @@ fn read_claude(object: &Obj, origin: &Origin) -> Result<Index, String> {
                 entry.name
             )),
             Ok(entry) => entries.push(entry),
-            Err(reason) => skipped.push(format!("Plugin {} {reason}.", entry_label(item, position))),
+            Err(reason) => {
+                skipped.push(format!("Plugin {} {reason}.", entry_label(item, position)))
+            }
         }
     }
     let owner = author_of(object.get("owner"));
@@ -732,12 +755,20 @@ fn read_claude(object: &Obj, origin: &Origin) -> Result<Index, String> {
     })
 }
 
-fn claude_entry(value: &Value, origin: &Origin, plugin_root: Option<&str>) -> Result<Entry, String> {
+fn claude_entry(
+    value: &Value,
+    origin: &Origin,
+    plugin_root: Option<&str>,
+) -> Result<Entry, String> {
     let object = value.as_object().ok_or("isn't an object")?;
     let name = object
         .get("name")
         .and_then(text)
-        .filter(|n| n.len() <= 64 && n.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)))
+        .filter(|n| {
+            n.len() <= 64
+                && n.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        })
         .ok_or("has no usable name")?;
     let version = object.get("version").and_then(text);
     let source = claude_source(object.get("source"), origin, plugin_root);
@@ -835,7 +866,11 @@ fn path_list(kind: &str, value: &Value) -> Adds {
 }
 
 /// A marketplace entry's source, pinned, or `None` when it names no exact commit or version.
-fn claude_source(value: Option<&Value>, origin: &Origin, plugin_root: Option<&str>) -> Option<InstallSource> {
+fn claude_source(
+    value: Option<&Value>,
+    origin: &Origin,
+    plugin_root: Option<&str>,
+) -> Option<InstallSource> {
     match value? {
         // A folder inside the marketplace's own repository: pinned only when the marketplace was read at a commit.
         Value::String(relative) => {
@@ -867,15 +902,24 @@ fn claude_source(value: Option<&Value>, origin: &Origin, plugin_root: Option<&st
                 "github" => {
                     let repo = source.get("repo").and_then(Value::as_str)?;
                     let (owner, name) = repo.split_once('/')?;
-                    let segment_ok =
-                        |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+                    let segment_ok = |s: &str| {
+                        !s.is_empty()
+                            && s.chars()
+                                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+                    };
                     if !segment_ok(owner) || !segment_ok(name) || name.contains('/') {
                         return None;
                     }
                     Some(InstallSource::Git {
-                        url: format!("https://github.com/{owner}/{}", name.trim_end_matches(".git")),
+                        url: format!(
+                            "https://github.com/{owner}/{}",
+                            name.trim_end_matches(".git")
+                        ),
                         commit: pinned_commit?,
-                        path: source.get("path").and_then(Value::as_str).and_then(repo_path),
+                        path: source
+                            .get("path")
+                            .and_then(Value::as_str)
+                            .and_then(repo_path),
                     })
                 }
                 "url" | "git" | "git-subdir" => Some(InstallSource::Git {
@@ -885,18 +929,23 @@ fn claude_source(value: Option<&Value>, origin: &Origin, plugin_root: Option<&st
                         .map(|u| u.trim_end_matches(".git"))
                         .and_then(git_url)?,
                     commit: pinned_commit?,
-                    path: source.get("path").and_then(Value::as_str).and_then(repo_path),
+                    path: source
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .and_then(repo_path),
                 }),
                 "npm" => {
                     let package = source.get("package").and_then(Value::as_str)?;
                     let version = source.get("version").and_then(Value::as_str)?;
-                    (npm_package_ok(package) && exact_version(version)).then(|| InstallSource::Npm {
-                        package: package.into(),
-                        version: version.into(),
-                        registry: source
-                            .get("registry")
-                            .and_then(Value::as_str)
-                            .and_then(|r| web_url(r, false)),
+                    (npm_package_ok(package) && exact_version(version)).then(|| {
+                        InstallSource::Npm {
+                            package: package.into(),
+                            version: version.into(),
+                            registry: source
+                                .get("registry")
+                                .and_then(Value::as_str)
+                                .and_then(|r| web_url(r, false)),
+                        }
                     })
                 }
                 _ => None,

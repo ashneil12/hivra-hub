@@ -76,18 +76,24 @@ pub fn platform() -> &'static str {
 }
 
 /// Read every source, each on its own: one that fails reports why and the others still list.
-pub fn discover(sources: &[IndexSource], fetch: &dyn Fn(&str) -> Result<Fetched, String>) -> Vec<IndexResult> {
+pub fn discover(
+    sources: &[IndexSource],
+    fetch: &dyn Fn(&str) -> Result<Fetched, String>,
+) -> Vec<IndexResult> {
     let mut results = Vec::new();
     for (position, source) in sources.iter().enumerate() {
         if position >= MAX_SOURCES {
             results.push(IndexResult {
                 source: source.clone(),
                 index: None,
-                error: Some(format!("Discover reads at most {MAX_SOURCES} indexes; this one was left out.")),
+                error: Some(format!(
+                    "Discover reads at most {MAX_SOURCES} indexes; this one was left out."
+                )),
             });
             continue;
         }
-        let read = read_source(source, fetch).and_then(|(text, origin)| read_index(&text, &origin, platform()));
+        let read = read_source(source, fetch)
+            .and_then(|(text, origin)| read_index(&text, &origin, platform()));
         results.push(match read {
             Ok(index) => IndexResult {
                 source: source.clone(),
@@ -131,10 +137,15 @@ fn read_source(
             let (owner, name) = github_repo(repo)
                 .ok_or("A GitHub source is written owner/repository. Nothing was listed.")?;
             let commit = match git_ref.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
-                Some(r) if r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit()) => r.to_ascii_lowercase(),
+                Some(r) if r.len() == 40 && r.chars().all(|c| c.is_ascii_hexdigit()) => {
+                    r.to_ascii_lowercase()
+                }
                 other => {
                     let r = other.unwrap_or("HEAD");
-                    if !r.chars().all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c)) {
+                    if !r
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || "._/-".contains(c))
+                    {
                         return Err("That branch or tag name isn't one GitHub allows.".into());
                     }
                     resolve_commit(&owner, &name, r, fetch)?
@@ -142,7 +153,10 @@ fn read_source(
             };
             let url = format!("https://raw.githubusercontent.com/{owner}/{name}/{commit}/.claude-plugin/marketplace.json");
             let fetched = fetch(&url).map_err(|e| {
-                format!("{e} (looked for .claude-plugin/marketplace.json in {owner}/{name} at {})", &commit[..7])
+                format!(
+                    "{e} (looked for .claude-plugin/marketplace.json in {owner}/{name} at {})",
+                    &commit[..7]
+                )
             })?;
             Ok((
                 fetched.text,
@@ -156,12 +170,21 @@ fn read_source(
 }
 
 fn read_file(path: &Path) -> Result<String, String> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| format!("Couldn't open {} ({e}). Nothing was listed.", path.display()))?;
+    let file = std::fs::File::open(path).map_err(|e| {
+        format!(
+            "Couldn't open {} ({e}). Nothing was listed.",
+            path.display()
+        )
+    })?;
     let mut text = String::new();
     file.take(MAX_INDEX_BYTES + 1)
         .read_to_string(&mut text)
-        .map_err(|e| format!("Couldn't read {} as text ({e}). Nothing was listed.", path.display()))?;
+        .map_err(|e| {
+            format!(
+                "Couldn't read {} as text ({e}). Nothing was listed.",
+                path.display()
+            )
+        })?;
     if text.len() as u64 > MAX_INDEX_BYTES {
         return Err(too_big());
     }
@@ -169,15 +192,25 @@ fn read_file(path: &Path) -> Result<String, String> {
 }
 
 fn too_big() -> String {
-    format!("This index is larger than {} MB. Nothing was listed.", MAX_INDEX_BYTES / (1024 * 1024))
+    format!(
+        "This index is larger than {} MB. Nothing was listed.",
+        MAX_INDEX_BYTES / (1024 * 1024)
+    )
 }
 
 /// `owner/name`, each a GitHub-shaped segment.
 pub fn github_repo(repo: &str) -> Option<(String, String)> {
-    let repo = repo.trim().trim_start_matches("https://github.com/").trim_end_matches('/');
+    let repo = repo
+        .trim()
+        .trim_start_matches("https://github.com/")
+        .trim_end_matches('/');
     let (owner, name) = repo.split_once('/')?;
     let name = name.trim_end_matches(".git");
-    let ok = |s: &str| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    };
     (ok(owner) && ok(name)).then(|| (owner.to_string(), name.to_string()))
 }
 
@@ -189,7 +222,8 @@ fn resolve_commit(
     fetch: &dyn Fn(&str) -> Result<Fetched, String>,
 ) -> Result<String, String> {
     let url = format!("https://api.github.com/repos/{owner}/{name}/commits/{git_ref}");
-    let fetched = fetch(&url).map_err(|e| format!("Couldn't find {git_ref} in {owner}/{name}: {e}"))?;
+    let fetched =
+        fetch(&url).map_err(|e| format!("Couldn't find {git_ref} in {owner}/{name}: {e}"))?;
     let value: serde_json::Value = serde_json::from_str(&fetched.text)
         .map_err(|_| format!("GitHub didn't say which commit {git_ref} is in {owner}/{name}."))?;
     value
@@ -206,9 +240,11 @@ pub fn raw_github_origin(url: &str) -> Option<Origin> {
     let mut parts = rest.splitn(4, '/');
     let (owner, name, commit) = (parts.next()?, parts.next()?, parts.next()?);
     let (owner, name) = github_repo(&format!("{owner}/{name}"))?;
-    (commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit())).then(|| Origin::Repository {
-        url: format!("https://github.com/{owner}/{name}"),
-        commit: commit.to_ascii_lowercase(),
+    (commit.len() == 40 && commit.chars().all(|c| c.is_ascii_hexdigit())).then(|| {
+        Origin::Repository {
+            url: format!("https://github.com/{owner}/{name}"),
+            commit: commit.to_ascii_lowercase(),
+        }
     })
 }
 
@@ -221,7 +257,9 @@ pub fn fetch_https(url: &str) -> Result<Fetched, String> {
     let mut current = url.to_string();
     for _ in 0..5 {
         if !current.starts_with("https://") {
-            return Err("The index moved to an address that isn't https. Nothing was listed.".into());
+            return Err(
+                "The index moved to an address that isn't https. Nothing was listed.".into(),
+            );
         }
         let response = match agent
             .get(&current)
@@ -231,7 +269,9 @@ pub fn fetch_https(url: &str) -> Result<Fetched, String> {
         {
             Ok(response) => response,
             Err(ureq::Error::Status(status, response)) if (300..400).contains(&status) => response,
-            Err(ureq::Error::Status(404, _)) => return Err("Not found (404). Nothing was listed.".into()),
+            Err(ureq::Error::Status(404, _)) => {
+                return Err("Not found (404). Nothing was listed.".into())
+            }
             Err(ureq::Error::Status(status, _)) => {
                 return Err(format!("The server answered {status}. Nothing was listed."))
             }
@@ -257,7 +297,10 @@ pub fn fetch_https(url: &str) -> Result<Fetched, String> {
         if text.len() as u64 > MAX_INDEX_BYTES {
             return Err(too_big());
         }
-        return Ok(Fetched { text, url: final_url });
+        return Ok(Fetched {
+            text,
+            url: final_url,
+        });
     }
     Err("The index redirected too many times. Nothing was listed.".into())
 }

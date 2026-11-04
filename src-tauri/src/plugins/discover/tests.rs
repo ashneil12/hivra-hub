@@ -11,8 +11,12 @@ use super::*;
 const COMMIT: &str = "6ea74587e384e1a8035c09ae33a46fe3f881eb9b";
 
 fn fixture(name: &str) -> String {
-    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/discover/fixtures").join(name))
-        .unwrap()
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/plugins/discover/fixtures")
+            .join(name),
+    )
+    .unwrap()
 }
 
 fn read(text: &str) -> Index {
@@ -20,7 +24,11 @@ fn read(text: &str) -> Index {
 }
 
 fn entry<'a>(index: &'a Index, name: &str) -> &'a Entry {
-    index.entries.iter().find(|e| e.name == name).unwrap_or_else(|| panic!("{name} not listed"))
+    index
+        .entries
+        .iter()
+        .find(|e| e.name == name)
+        .unwrap_or_else(|| panic!("{name} not listed"))
 }
 
 fn no_fetch(url: &str) -> Result<Fetched, String> {
@@ -49,7 +57,16 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     assert_eq!(index.format, Format::Hivra);
     assert!(index.skipped.is_empty(), "{:?}", index.skipped);
     let names: Vec<&str> = index.entries.iter().map(|e| e.name.as_str()).collect();
-    assert_eq!(names, ["pstack", "e2e-verify", "browser", "desktop-control", "council-personas"]);
+    assert_eq!(
+        names,
+        [
+            "pstack",
+            "e2e-verify",
+            "browser",
+            "desktop-control",
+            "council-personas"
+        ]
+    );
 
     let pstack = entry(&index, "pstack");
     assert_eq!(pstack.status, Status::Available);
@@ -68,16 +85,30 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     let skills = &pstack.adds[0];
     assert_eq!(skills.kind, "skills");
     assert_eq!(skills.count, Some(58));
-    let fixture_skills = std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack/skills"))
-        .unwrap()
-        .count();
+    let fixture_skills = std::fs::read_dir(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack/skills"),
+    )
+    .unwrap()
+    .count();
     assert_eq!(fixture_skills, 58);
 
-    for planned in ["e2e-verify", "browser", "desktop-control", "council-personas"] {
+    for planned in [
+        "e2e-verify",
+        "browser",
+        "desktop-control",
+        "council-personas",
+    ] {
         let e = entry(&index, planned);
         assert_eq!(e.status, Status::Planned, "{planned}");
-        assert!(e.source.is_none(), "{planned} must not carry an install source");
-        assert!(e.reason.as_deref().unwrap().contains("WP-"), "{planned}: {:?}", e.reason);
+        assert!(
+            e.source.is_none(),
+            "{planned} must not carry an install source"
+        );
+        assert!(
+            e.reason.as_deref().unwrap().contains("WP-"),
+            "{planned}: {:?}",
+            e.reason
+        );
     }
 }
 
@@ -111,10 +142,25 @@ fn hivra_entries_validate_one_by_one() {
     assert_eq!(good.version.as_deref(), Some("1.10.0"));
     assert_eq!(
         good.source,
-        Some(InstallSource::Npm { package: "@me/good".into(), version: "1.10.0".into(), registry: None })
+        Some(InstallSource::Npm {
+            package: "@me/good".into(),
+            version: "1.10.0".into(),
+            registry: None
+        })
     );
-    let kinds: Vec<(&str, Option<u32>)> = good.adds.iter().map(|a| (a.kind.as_str(), a.count)).collect();
-    assert_eq!(kinds, [("skills", Some(2)), ("mcpServers", Some(1)), ("crewRules", None)]);
+    let kinds: Vec<(&str, Option<u32>)> = good
+        .adds
+        .iter()
+        .map(|a| (a.kind.as_str(), a.count))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            ("skills", Some(2)),
+            ("mcpServers", Some(1)),
+            ("crewRules", None)
+        ]
+    );
     assert_eq!(good.status, Status::Available);
 
     let windows = entry(&index, "windows-only");
@@ -141,9 +187,15 @@ fn broken_indexes_list_nothing_and_say_why() {
     for (text, says) in [
         ("not json", "isn't valid JSON"),
         ("[1, 2]", "isn't a JSON object"),
-        (r#"{ "format": 2, "plugins": [] }"#, "format Hivra doesn't know"),
+        (
+            r#"{ "format": 2, "plugins": [] }"#,
+            "format Hivra doesn't know",
+        ),
         (r#"{ "plugins": [] }"#, "isn't a plugin index Hivra knows"),
-        (r#"{ "format": "hivra-plugin-index/1", "plugins": [] }"#, "has no title"),
+        (
+            r#"{ "format": "hivra-plugin-index/1", "plugins": [] }"#,
+            "has no title",
+        ),
     ] {
         let error = read_index(text, &Origin::Elsewhere, "macos").unwrap_err();
         assert!(error.contains(says), "{text}: {error}");
@@ -152,10 +204,19 @@ fn broken_indexes_list_nothing_and_say_why() {
 
 #[test]
 fn exact_versions_follow_semver() {
-    for ok in ["0.0.0", "1.2.3", "1.0.0-rc.1", "1.0.0-alpha.beta.1+build.5", "10.20.30"] {
+    for ok in [
+        "0.0.0",
+        "1.2.3",
+        "1.0.0-rc.1",
+        "1.0.0-alpha.beta.1+build.5",
+        "10.20.30",
+    ] {
         assert!(exact_version(ok), "{ok}");
     }
-    for bad in ["1.2", "^1.2.3", "~1.2.3", "01.2.3", "1.2.3-01", "1.2.3-", "latest", "*", ">=1.0.0", "1.2.3 "] {
+    for bad in [
+        "1.2", "^1.2.3", "~1.2.3", "01.2.3", "1.2.3-01", "1.2.3-", "latest", "*", ">=1.0.0",
+        "1.2.3 ",
+    ] {
         assert!(!exact_version(bad), "{bad}");
     }
 }
@@ -169,7 +230,11 @@ fn dsh_entries_map_and_are_marked_not_compatible() {
     assert_eq!(index.title, "Example Market");
     assert_eq!(index.description.as_deref(), Some("Community bundles"));
     assert_eq!(index.entries.len(), 2);
-    assert!(index.skipped[0].contains("\"dsh-floating\""), "{:?}", index.skipped);
+    assert!(
+        index.skipped[0].contains("\"dsh-floating\""),
+        "{:?}",
+        index.skipped
+    );
 
     let foo = entry(&index, "@scope/dsh-foo");
     assert_eq!(foo.title, "Foo");
@@ -177,11 +242,18 @@ fn dsh_entries_map_and_are_marked_not_compatible() {
     assert_eq!(foo.author.as_deref(), Some("Jane Doe"));
     assert_eq!(foo.category.as_deref(), Some("Productivity"));
     assert_eq!(foo.keywords, ["review"]);
-    assert_eq!(foo.repository.as_deref(), Some("https://github.com/jane/dsh-plugins"));
+    assert_eq!(
+        foo.repository.as_deref(),
+        Some("https://github.com/jane/dsh-plugins")
+    );
     assert_eq!(foo.version.as_deref(), Some("1.10.0"));
     assert_eq!(
         foo.source,
-        Some(InstallSource::Npm { package: "@scope/dsh-foo".into(), version: "1.10.0".into(), registry: None })
+        Some(InstallSource::Npm {
+            package: "@scope/dsh-foo".into(),
+            version: "1.10.0".into(),
+            registry: None
+        })
     );
 
     let bar = entry(&index, "dsh-bar");
@@ -204,12 +276,19 @@ fn dsh_entries_map_and_are_marked_not_compatible() {
 
 #[test]
 fn claude_marketplace_entries_map_their_portable_parts() {
-    let origin = Origin::Repository { url: "https://github.com/acme/tools".into(), commit: COMMIT.into() };
+    let origin = Origin::Repository {
+        url: "https://github.com/acme/tools".into(),
+        commit: COMMIT.into(),
+    };
     let index = read_index(&fixture("claude-marketplace.json"), &origin, "macos").unwrap();
     assert_eq!(index.format, Format::ClaudeMarketplace);
     assert_eq!(index.title, "team-tools (Example Team)");
     assert_eq!(index.description.as_deref(), Some("Plugins our team uses"));
-    assert!(index.skipped.iter().any(|s| s.contains("\"bad name!\"")), "{:?}", index.skipped);
+    assert!(
+        index.skipped.iter().any(|s| s.contains("\"bad name!\"")),
+        "{:?}",
+        index.skipped
+    );
 
     let reviewer = entry(&index, "reviewer");
     assert_eq!(reviewer.version.as_deref(), Some("2.1.0"));
@@ -218,15 +297,30 @@ fn claude_marketplace_entries_map_their_portable_parts() {
     let adds: Vec<(&str, Vec<&str>)> = reviewer
         .adds
         .iter()
-        .map(|a| (a.kind.as_str(), a.names.iter().map(String::as_str).collect()))
+        .map(|a| {
+            (
+                a.kind.as_str(),
+                a.names.iter().map(String::as_str).collect(),
+            )
+        })
         .collect();
-    assert_eq!(adds, [("skills", vec!["review", "summarise"]), ("mcpServers", vec!["github"])]);
+    assert_eq!(
+        adds,
+        [
+            ("skills", vec!["review", "summarise"]),
+            ("mcpServers", vec!["github"])
+        ]
+    );
     assert_eq!(reviewer.left_out, ["slash commands", "hooks"]);
     // A relative source is a folder of the marketplace's repository, at the commit it was read at, under pluginRoot
     // only when it isn't written "./".
     assert_eq!(
         reviewer.source,
-        Some(InstallSource::Git { url: "https://github.com/acme/tools".into(), commit: COMMIT.into(), path: Some("reviewer".into()) })
+        Some(InstallSource::Git {
+            url: "https://github.com/acme/tools".into(),
+            commit: COMMIT.into(),
+            path: Some("reviewer".into())
+        })
     );
     assert_eq!(reviewer.status, Status::ListedOnly);
     assert_eq!(reviewer.reason.as_deref(), Some(CLAUDE_REASON));
@@ -236,7 +330,11 @@ fn claude_marketplace_entries_map_their_portable_parts() {
     assert!(formatter.reason.as_deref().unwrap().contains("only hooks"));
     assert_eq!(
         formatter.source,
-        Some(InstallSource::Git { url: "https://github.com/acme/tools".into(), commit: COMMIT.into(), path: Some("plugins/formatter".into()) })
+        Some(InstallSource::Git {
+            url: "https://github.com/acme/tools".into(),
+            commit: COMMIT.into(),
+            path: Some("plugins/formatter".into())
+        })
     );
 
     let github = entry(&index, "from-github");
@@ -257,7 +355,11 @@ fn claude_marketplace_entries_map_their_portable_parts() {
 
     assert_eq!(
         entry(&index, "from-npm").source,
-        Some(InstallSource::Npm { package: "@acme/claude-plugin".into(), version: "1.4.2".into(), registry: None })
+        Some(InstallSource::Npm {
+            package: "@acme/claude-plugin".into(),
+            version: "1.4.2".into(),
+            registry: None
+        })
     );
 
     // Read without a known commit, relative sources aren't pinned.
@@ -268,7 +370,10 @@ fn claude_marketplace_entries_map_their_portable_parts() {
 #[test]
 fn the_real_cursor_marketplace_reads() {
     // cursor/plugins' `.claude-plugin/marketplace.json` at 6ea74587, unchanged.
-    let origin = Origin::Repository { url: "https://github.com/cursor/plugins".into(), commit: COMMIT.into() };
+    let origin = Origin::Repository {
+        url: "https://github.com/cursor/plugins".into(),
+        commit: COMMIT.into(),
+    };
     let index = read_index(&fixture("cursor-marketplace.json"), &origin, "linux").unwrap();
     assert_eq!(index.title, "cursor-plugins (Cursor)");
     let pstack = entry(&index, "pstack");
@@ -285,10 +390,21 @@ fn the_real_cursor_marketplace_reads() {
 
 #[test]
 fn nothing_but_the_hivra_index_is_ever_offered_for_install() {
-    let origin = Origin::Repository { url: "https://github.com/acme/tools".into(), commit: COMMIT.into() };
-    for text in [fixture("dsh-index.json"), fixture("claude-marketplace.json"), fixture("cursor-marketplace.json")] {
+    let origin = Origin::Repository {
+        url: "https://github.com/acme/tools".into(),
+        commit: COMMIT.into(),
+    };
+    for text in [
+        fixture("dsh-index.json"),
+        fixture("claude-marketplace.json"),
+        fixture("cursor-marketplace.json"),
+    ] {
         let index = read_index(&text, &origin, "macos").unwrap();
-        assert!(index.entries.iter().all(|e| e.status != Status::Available), "{}", index.title);
+        assert!(
+            index.entries.iter().all(|e| e.status != Status::Available),
+            "{}",
+            index.title
+        );
     }
 }
 
@@ -301,18 +417,39 @@ fn sources_read_on_their_own_and_one_failure_spares_the_rest() {
     std::fs::write(&file, fixture("dsh-index.json")).unwrap();
     let sources = vec![
         IndexSource::Bundled,
-        IndexSource::File { path: file.to_string_lossy().into_owned() },
-        IndexSource::File { path: tmp.0.join("missing.json").to_string_lossy().into_owned() },
-        IndexSource::Url { url: "http://example.com/index.json".into() },
-        IndexSource::Github { repo: "not a repo".into(), git_ref: None },
+        IndexSource::File {
+            path: file.to_string_lossy().into_owned(),
+        },
+        IndexSource::File {
+            path: tmp.0.join("missing.json").to_string_lossy().into_owned(),
+        },
+        IndexSource::Url {
+            url: "http://example.com/index.json".into(),
+        },
+        IndexSource::Github {
+            repo: "not a repo".into(),
+            git_ref: None,
+        },
     ];
     let results = discover(&sources, &no_fetch);
     assert_eq!(results.len(), 5);
     assert_eq!(results[0].index.as_ref().unwrap().format, Format::Hivra);
     assert_eq!(results[1].index.as_ref().unwrap().format, Format::Dsh);
-    assert!(results[2].error.as_deref().unwrap().contains("Couldn't open"));
-    assert!(results[3].error.as_deref().unwrap().contains("must be an https address"));
-    assert!(results[4].error.as_deref().unwrap().contains("owner/repository"));
+    assert!(results[2]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("Couldn't open"));
+    assert!(results[3]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("must be an https address"));
+    assert!(results[4]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("owner/repository"));
 }
 
 #[test]
@@ -325,9 +462,18 @@ fn a_github_marketplace_is_read_at_its_resolved_commit() {
         } else {
             fixture("cursor-marketplace.json")
         };
-        Ok(Fetched { text, url: url.to_string() })
+        Ok(Fetched {
+            text,
+            url: url.to_string(),
+        })
     };
-    let results = discover(&[IndexSource::Github { repo: "https://github.com/cursor/plugins.git".into(), git_ref: None }], &fetch);
+    let results = discover(
+        &[IndexSource::Github {
+            repo: "https://github.com/cursor/plugins.git".into(),
+            git_ref: None,
+        }],
+        &fetch,
+    );
     assert_eq!(
         *asked.borrow(),
         [
@@ -336,23 +482,49 @@ fn a_github_marketplace_is_read_at_its_resolved_commit() {
         ]
     );
     let index = results[0].index.as_ref().unwrap();
-    assert!(matches!(&entry(index, "pstack").source, Some(InstallSource::Git { commit, .. }) if commit == COMMIT));
+    assert!(
+        matches!(&entry(index, "pstack").source, Some(InstallSource::Git { commit, .. }) if commit == COMMIT)
+    );
 
     // A full commit needs no lookup; a ref with shell characters is refused before anything is fetched.
     asked.borrow_mut().clear();
-    discover(&[IndexSource::Github { repo: "cursor/plugins".into(), git_ref: Some(COMMIT.into()) }], &fetch);
+    discover(
+        &[IndexSource::Github {
+            repo: "cursor/plugins".into(),
+            git_ref: Some(COMMIT.into()),
+        }],
+        &fetch,
+    );
     assert_eq!(asked.borrow().len(), 1);
-    let refused = discover(&[IndexSource::Github { repo: "cursor/plugins".into(), git_ref: Some("main;rm -rf".into()) }], &no_fetch);
+    let refused = discover(
+        &[IndexSource::Github {
+            repo: "cursor/plugins".into(),
+            git_ref: Some("main;rm -rf".into()),
+        }],
+        &no_fetch,
+    );
     assert!(refused[0].error.is_some());
 }
 
 #[test]
 fn a_raw_github_url_at_a_commit_pins_relative_sources() {
-    let url = format!("https://raw.githubusercontent.com/cursor/plugins/{COMMIT}/.claude-plugin/marketplace.json");
-    let fetch = |u: &str| Ok(Fetched { text: fixture("cursor-marketplace.json"), url: u.to_string() });
+    let url = format!(
+        "https://raw.githubusercontent.com/cursor/plugins/{COMMIT}/.claude-plugin/marketplace.json"
+    );
+    let fetch = |u: &str| {
+        Ok(Fetched {
+            text: fixture("cursor-marketplace.json"),
+            url: u.to_string(),
+        })
+    };
     let results = discover(&[IndexSource::Url { url: url.clone() }], &fetch);
-    assert!(entry(results[0].index.as_ref().unwrap(), "pstack").source.is_some());
-    assert_eq!(raw_github_origin("https://raw.githubusercontent.com/cursor/plugins/main/x.json"), None);
+    assert!(entry(results[0].index.as_ref().unwrap(), "pstack")
+        .source
+        .is_some());
+    assert_eq!(
+        raw_github_origin("https://raw.githubusercontent.com/cursor/plugins/main/x.json"),
+        None
+    );
 }
 
 #[test]
@@ -360,8 +532,17 @@ fn an_index_over_the_size_limit_is_refused() {
     let tmp = Tmp::new();
     let file = tmp.0.join("big.json");
     std::fs::write(&file, vec![b' '; (MAX_INDEX_BYTES + 1) as usize]).unwrap();
-    let results = discover(&[IndexSource::File { path: file.to_string_lossy().into_owned() }], &no_fetch);
-    assert!(results[0].error.as_deref().unwrap().contains("larger than 4 MB"));
+    let results = discover(
+        &[IndexSource::File {
+            path: file.to_string_lossy().into_owned(),
+        }],
+        &no_fetch,
+    );
+    assert!(results[0]
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("larger than 4 MB"));
 }
 
 #[test]
@@ -373,9 +554,18 @@ fn sources_round_trip_as_the_settings_list_stores_them() {
         { "kind": "file", "path": "~/index.json" }
     ]))
     .unwrap();
-    assert_eq!(sources[2], IndexSource::Github { repo: "cursor/plugins".into(), git_ref: Some("main".into()) });
+    assert_eq!(
+        sources[2],
+        IndexSource::Github {
+            repo: "cursor/plugins".into(),
+            git_ref: Some("main".into())
+        }
+    );
     let back = serde_json::to_value(&sources).unwrap();
-    assert_eq!(back[2], json!({ "kind": "github", "repo": "cursor/plugins", "ref": "main" }));
+    assert_eq!(
+        back[2],
+        json!({ "kind": "github", "repo": "cursor/plugins", "ref": "main" })
+    );
 }
 
 // ----- Listing never executes anything ---------------------------------------------------------------------------
@@ -404,8 +594,22 @@ fn listing_never_executes_anything() {
         ("mod.rs", include_str!("mod.rs")),
         ("readers.rs", include_str!("readers.rs")),
     ] {
-        let code: String = source.lines().filter(|l| !l.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
-        for banned in ["std::process", "Command::new", "process::Command", "load_plugin", "install_local", "registry::", "plugin-mcp", "tauri::api::shell", "spawn("] {
+        let code: String = source
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for banned in [
+            "std::process",
+            "Command::new",
+            "process::Command",
+            "load_plugin",
+            "install_local",
+            "registry::",
+            "plugin-mcp",
+            "tauri::api::shell",
+            "spawn(",
+        ] {
             assert!(!code.contains(banned), "{file} uses {banned}");
         }
     }
@@ -417,8 +621,14 @@ fn listing_never_executes_anything() {
     for name in ["one", "two"] {
         let dir = tmp.0.join(name);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("plugin.json"), json!({ "$schema": crate::plugins::manifest::PLUGIN_SCHEMA_1_0_0, "name": name }).to_string()).unwrap();
-        let touch = json!({ "command": "sh", "args": ["-c", format!("touch {}", marker.display())] });
+        std::fs::write(
+            dir.join("plugin.json"),
+            json!({ "$schema": crate::plugins::manifest::PLUGIN_SCHEMA_1_0_0, "name": name })
+                .to_string(),
+        )
+        .unwrap();
+        let touch =
+            json!({ "command": "sh", "args": ["-c", format!("touch {}", marker.display())] });
         std::fs::write(dir.join("mcp.json"), json!({ "$schema": crate::plugins::mcp::MCP_SCHEMA_1_0_0, "mcpServers": { "s": touch } }).to_string()).unwrap();
         std::fs::write(dir.join("package.json"), json!({ "name": name, "scripts": { "postinstall": format!("touch {}", marker.display()) } }).to_string()).unwrap();
     }
@@ -433,7 +643,15 @@ fn listing_never_executes_anything() {
     let file = tmp.0.join("index.json");
     std::fs::write(&file, index.to_string()).unwrap();
     let before = tree(&tmp.0);
-    let results = discover(&[IndexSource::File { path: file.to_string_lossy().into_owned() }, IndexSource::Bundled], &no_fetch);
+    let results = discover(
+        &[
+            IndexSource::File {
+                path: file.to_string_lossy().into_owned(),
+            },
+            IndexSource::Bundled,
+        ],
+        &no_fetch,
+    );
     assert_eq!(results[0].index.as_ref().unwrap().entries.len(), 2);
     assert_eq!(tree(&tmp.0), before);
     assert!(!marker.exists());
