@@ -145,6 +145,10 @@ pub struct DocMove {
     pub parent_id: Option<String>,
     pub index: i64,
     pub expected_version: i64,
+    /// Siblings the caller ordered against, not including the moved page.
+    /// A list that no longer matches the parent is a stale move.
+    #[serde(default)]
+    pub sibling_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -664,7 +668,15 @@ pub(crate) fn move_doc(conn: &Connection, input: &DocMove) -> Result<DocWrite, S
             return Err("A page cannot move into itself".into());
         }
     }
-    let mut siblings = sibling_ids(conn, input.parent_id.as_deref(), &input.id)?;
+    // The caller's sibling list is the order it decided against. If a page has
+    // moved since, applying that order would rewrite the wrong parent.
+    let fresh = sibling_ids(conn, input.parent_id.as_deref(), &input.id)?;
+    if fresh != input.sibling_ids {
+        return Ok(DocWrite::Conflict {
+            version: current.version,
+        });
+    }
+    let mut siblings = fresh;
     let index = input.index.max(0) as usize;
     let index = index.min(siblings.len());
     siblings.insert(index, input.id.clone());
@@ -677,6 +689,12 @@ pub(crate) fn move_doc(conn: &Connection, input: &DocMove) -> Result<DocWrite, S
         return Ok(saved(current, Vec::new()));
     }
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let again = sibling_ids(&tx, input.parent_id.as_deref(), &input.id)?;
+    if again != input.sibling_ids {
+        return Ok(DocWrite::Conflict {
+            version: current.version,
+        });
+    }
     let changed = tx
         .execute(
             "UPDATE notes
@@ -700,11 +718,27 @@ pub(crate) fn move_doc(conn: &Connection, input: &DocMove) -> Result<DocWrite, S
         if id == &input.id {
             continue;
         }
-        tx.execute(
-            "UPDATE notes SET sort_order = ?1 WHERE id = ?2",
-            params![order as i64, id],
-        )
+        // Only a page that is still under this parent. A row that moved is a conflict,
+        // and the move above is rolled back with the transaction.
+        let updated = match input.parent_id.as_deref() {
+            Some(parent) => tx.execute(
+                "UPDATE notes SET sort_order = ?1
+                 WHERE id = ?2 AND parent_id = ?3 AND content_kind = 'note' AND trashed_at IS NULL",
+                params![order as i64, id, parent],
+            ),
+            None => tx.execute(
+                "UPDATE notes SET sort_order = ?1
+                 WHERE id = ?2 AND parent_id IS NULL AND content_kind = 'note' AND trashed_at IS NULL",
+                params![order as i64, id],
+            ),
+        }
         .map_err(|e| e.to_string())?;
+        if updated == 0 {
+            let version = get_doc(&tx, &input.id)?
+                .map(|page| page.version)
+                .unwrap_or(input.expected_version);
+            return Ok(DocWrite::Conflict { version });
+        }
     }
     tx.commit().map_err(|e| e.to_string())?;
     let page = get_doc(conn, &input.id)?.ok_or_else(|| "Page was not found".to_string())?;
@@ -942,7 +976,7 @@ fn write_export(
         format!("{directory}{slug}.md")
     };
     let path = place_file(job.root, &relative)?;
-    std::fs::write(&path, page_markdown(page)).map_err(|e| e.to_string())?;
+    write_page_file(&path, &page_markdown(page))?;
     job.files.push(relative);
     if !job.tree {
         return Ok(());
@@ -995,6 +1029,36 @@ fn place_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("This page has no safe file name".into());
     }
     Ok(full)
+}
+
+/// Writes the page without following a symlink at the destination. A link
+/// whose target sits outside the folder must not be overwritten.
+fn write_page_file(path: &Path, contents: &str) -> Result<(), String> {
+    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err("This page has no safe file name".into());
+    }
+    write_nofollow(path, contents)
+}
+
+#[cfg(unix)]
+fn write_nofollow(path: &Path, contents: &str) -> Result<(), String> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| "This page has no safe file name".to_string())?;
+    file.write_all(contents.as_bytes())
+        .map_err(|_| "This page has no safe file name".to_string())?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_nofollow(path: &Path, contents: &str) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|_| "This page has no safe file name".to_string())
 }
 
 fn safe_slug(slug: &str) -> Result<&str, String> {
@@ -1378,6 +1442,41 @@ fn version_by_number(
 ) -> Result<Option<DocVersion>, String> {
     list_versions(conn, note_id)
         .map(|versions| versions.into_iter().find(|row| row.version == version))
+}
+
+/// Keeps the row's text as a version before Notes replaces it. A blank page,
+/// and text that is already the newest version, are left alone.
+pub(crate) fn keep_note_text(conn: &Connection, id: &str) -> Result<(), String> {
+    let Some(page) = get_doc(conn, id)? else {
+        return Ok(());
+    };
+    let blank =
+        page.body.trim().is_empty() && (page.title.trim().is_empty() || page.title == "Untitled");
+    if blank {
+        return Ok(());
+    }
+    let newest = newest_version(conn, id)?;
+    if same_as_newest(
+        &page.title,
+        &page.body,
+        page.blocks_json.as_deref(),
+        newest.as_ref(),
+    ) {
+        return Ok(());
+    }
+    let author = author_of("person", "notes", "Notes")?;
+    insert_version(
+        conn,
+        &VersionWrite {
+            note_id: id,
+            title: &page.title,
+            body: &page.body,
+            blocks: page.blocks_json.as_deref(),
+            kind: "auto",
+            author: &author,
+            now: now_millis(),
+        },
+    )
 }
 
 fn same_as_newest(
@@ -1859,6 +1958,7 @@ mod tests {
                 parent_id: Some("child".into()),
                 index: 0,
                 expected_version: parent.version,
+                sibling_ids: Vec::new(),
             },
         );
         assert!(refused.unwrap_err().contains("itself"));
@@ -1893,6 +1993,7 @@ mod tests {
                     parent_id: None,
                     index: 0,
                     expected_version: get_doc(&conn, "child").unwrap().unwrap().version,
+                    sibling_ids: vec!["page-1".into()],
                 },
             )
             .unwrap(),
@@ -2081,5 +2182,200 @@ mod tests {
             .unwrap()
             .trashed_at
             .is_some());
+    }
+
+    #[test]
+    fn a_notes_save_bumps_the_version_so_a_stale_docs_save_cannot_replace_it() {
+        let conn = memory();
+        let created = saved_page(
+            create_doc(
+                &conn,
+                &DocCreate {
+                    body: "one".into(),
+                    blocks_json: Some(r#"[{"id":"a","type":"paragraph"}]"#.into()),
+                    ..page("Plan", "one")
+                },
+            )
+            .unwrap(),
+        );
+        let typed = saved_page(
+            update_doc(
+                &conn,
+                &DocUpdate {
+                    id: "page-1".into(),
+                    title: "Plan".into(),
+                    body: "two".into(),
+                    blocks_json: Some(r#"[{"id":"b","type":"paragraph"}]"#.into()),
+                    expected_version: created.version,
+                    snapshot: false,
+                    origin: "person".into(),
+                    author_id: "ash".into(),
+                    author_name: "Ash".into(),
+                    tags: None,
+                },
+            )
+            .unwrap(),
+        );
+        crate::notes::upsert_content(
+            &conn,
+            &crate::notes::NoteUpsert {
+                id: "page-1".into(),
+                title: "Plan".into(),
+                body: "from notes".into(),
+                tags: Vec::new(),
+                source_session_id: None,
+                source_cwd: None,
+                finalize_slug: false,
+            },
+            "note",
+            None,
+        )
+        .unwrap();
+        let after = get_doc(&conn, "page-1").unwrap().unwrap();
+        assert_eq!(after.body, "from notes");
+        assert!(after.version > typed.version);
+        let kept = list_versions(&conn, "page-1").unwrap();
+        assert!(
+            kept.iter().any(|row| row.body == "two"),
+            "the text notes replaced must already be a version"
+        );
+        let stale = update_doc(
+            &conn,
+            &DocUpdate {
+                id: "page-1".into(),
+                title: "Plan".into(),
+                body: "stale".into(),
+                blocks_json: Some("[]".into()),
+                expected_version: typed.version,
+                snapshot: true,
+                origin: "person".into(),
+                author_id: "ash".into(),
+                author_name: "Ash".into(),
+                tags: None,
+            },
+        )
+        .unwrap();
+        assert!(matches!(stale, DocWrite::Conflict { .. }));
+        assert_eq!(
+            get_doc(&conn, "page-1").unwrap().unwrap().body,
+            "from notes"
+        );
+    }
+
+    #[test]
+    fn a_stale_reorder_does_not_rewrite_a_page_that_already_moved() {
+        let conn = memory();
+        for (id, title) in [("a", "A"), ("b", "B"), ("c", "C"), ("folder", "Folder")] {
+            saved_page(
+                create_doc(
+                    &conn,
+                    &DocCreate {
+                        id: id.into(),
+                        title: title.into(),
+                        body: title.into(),
+                        ..page(title, title)
+                    },
+                )
+                .unwrap(),
+            );
+        }
+        let moved = move_doc(
+            &conn,
+            &DocMove {
+                id: "c".into(),
+                parent_id: Some("folder".into()),
+                index: 0,
+                expected_version: get_doc(&conn, "c").unwrap().unwrap().version,
+                sibling_ids: Vec::new(),
+            },
+        );
+        let moved = saved_page(moved.unwrap());
+        assert_eq!(moved.parent_id.as_deref(), Some("folder"));
+        let c_sort = moved.sort_order;
+        let b_sort = get_doc(&conn, "b").unwrap().unwrap().sort_order;
+        let a_parent = get_doc(&conn, "a").unwrap().unwrap().parent_id.clone();
+        let stale = move_doc(
+            &conn,
+            &DocMove {
+                id: "a".into(),
+                parent_id: None,
+                index: 0,
+                expected_version: get_doc(&conn, "a").unwrap().unwrap().version,
+                sibling_ids: vec!["b".into(), "c".into()],
+            },
+        )
+        .unwrap();
+        assert!(
+            matches!(stale, DocWrite::Conflict { .. }),
+            "a move built from an old sibling list must not be written"
+        );
+        let c = get_doc(&conn, "c").unwrap().unwrap();
+        assert_eq!(c.parent_id.as_deref(), Some("folder"));
+        assert_eq!(c.sort_order, c_sort);
+        assert_eq!(get_doc(&conn, "b").unwrap().unwrap().sort_order, b_sort);
+        assert_eq!(get_doc(&conn, "a").unwrap().unwrap().parent_id, a_parent);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_does_not_follow_a_symlink_file() {
+        use std::os::unix::fs::symlink;
+        let conn = memory();
+        saved_page(
+            create_doc(
+                &conn,
+                &DocCreate {
+                    body: "secret".into(),
+                    ..page("Plan", "secret")
+                },
+            )
+            .unwrap(),
+        );
+        let dir = std::env::temp_dir().join(format!("hivra-wp72-link-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("hivra-wp72-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "kept").unwrap();
+        symlink(&outside, dir.join("plan.md")).unwrap();
+        let exported = export_doc(&conn, "page-1", &dir, false);
+        assert!(exported.is_err(), "a symlink file must not be overwritten");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept");
+        assert!(std::fs::symlink_metadata(dir.join("plan.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&outside).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn export_does_not_follow_a_symlink_file() {
+        use std::os::windows::fs::symlink_file;
+        let conn = memory();
+        saved_page(
+            create_doc(
+                &conn,
+                &DocCreate {
+                    body: "secret".into(),
+                    ..page("Plan", "secret")
+                },
+            )
+            .unwrap(),
+        );
+        let dir = std::env::temp_dir().join(format!("hivra-wp72-link-{}", uuid::Uuid::new_v4()));
+        let outside = std::env::temp_dir().join(format!("hivra-wp72-out-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "kept").unwrap();
+        // Creating a symlink can be refused without extra rights. That is a skip, not a pass.
+        if symlink_file(&outside, dir.join("plan.md")).is_err() {
+            std::fs::remove_dir_all(&dir).unwrap();
+            std::fs::remove_file(&outside).unwrap();
+            return;
+        }
+        let exported = export_doc(&conn, "page-1", &dir, false);
+        assert!(exported.is_err(), "a symlink file must not be overwritten");
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "kept");
+        std::fs::remove_dir_all(&dir).unwrap();
+        std::fs::remove_file(&outside).unwrap();
     }
 }

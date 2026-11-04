@@ -358,6 +358,10 @@ fn upsert_note(conn: &Connection, note: &NoteUpsert) -> rusqlite::Result<Note> {
     upsert_content(conn, note, "note", None)
 }
 
+fn note_failed(message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(message.into())
+}
+
 pub(crate) fn upsert_content(
     conn: &Connection,
     note: &NoteUpsert,
@@ -417,23 +421,58 @@ pub(crate) fn upsert_content(
         // WP-72: a Notes edit that changes the Markdown drops the derived blocks.
         // The next Docs open converts again. The same body keeps them. `body` on
         // the right is the row's current value, not the new one.
-        conn.execute(
-            "UPDATE notes
-             SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
-                 source_cwd = ?6, slug = ?7, slug_pending = ?8,
-                 blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END
-             WHERE id = ?5",
-            params![
-                title,
-                body,
-                tags_json,
-                updated_at,
-                note.id,
-                project_cwd,
-                slug,
-                slug_pending
-            ],
-        )?;
+        // A text change also keeps the row as a version and bumps doc_version, so
+        // a Docs client still holding the old version cannot put that text back.
+        if kind == "note" && (title != existing.title || body != existing.body) {
+            let tx = conn.unchecked_transaction()?;
+            let doc_version: i64 = tx.query_row(
+                "SELECT COALESCE(doc_version, 0) FROM notes WHERE id = ?1",
+                params![note.id],
+                |row| row.get(0),
+            )?;
+            crate::docs::keep_note_text(&tx, &note.id).map_err(note_failed)?;
+            let changed = tx.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END,
+                     doc_version = doc_version + 1
+                 WHERE id = ?5 AND doc_version = ?9",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending,
+                    doc_version
+                ],
+            )?;
+            if changed != 1 {
+                return Err(note_failed("The page changed somewhere else"));
+            }
+            tx.commit()?;
+        } else {
+            conn.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END
+                 WHERE id = ?5",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending
+                ],
+            )?;
+        }
         Ok(Note {
             id: note.id.clone(),
             slug,
