@@ -139,7 +139,7 @@ it("parses a stance only when it is exactly three lines, and retries in those wo
   expect(parseStance("I think we should ship it, strongly.")).toMatchObject({ ok: false });
   expect(parseStance("Weighing it up.\nSTANCE: ship now | CONFIDENCE: high | DEALBREAKER: no")).toEqual({
     ok: true,
-    value: { option: "ship now", confidence: 100, reason: "Not a dealbreaker.", factor: 1, dealbreaker: false },
+    value: { option: "ship now", confidence: 100, reason: "Weighing it up.", factor: 1, dealbreaker: false },
   });
   expect(parseStance("STANCE: monorepo | CONFIDENCE: med | DEALBREAKER: yes")).toMatchObject({
     ok: true,
@@ -151,6 +151,33 @@ it("parses a stance only when it is exactly three lines, and retries in those wo
   expect(parseStance("STANCE: ship | CONFIDENCE: many | DEALBREAKER: yes").ok).toBe(false);
   expect(parseStance("STANCE: ship").ok).toBe(false);
   expect(stancePrompt("Ship?", "Member A", [], [])).toContain("STANCE: <one short option label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no");
+});
+
+it("keeps each seat's own reason sentence in the minority report", () => {
+  const parsed = parseStance("The price is not tested.\nSTANCE: Wait | CONFIDENCE: high | DEALBREAKER: yes");
+  expect(parsed).toEqual({
+    ok: true,
+    value: { option: "Wait", confidence: 100, reason: "The price is not tested.", factor: 1, dealbreaker: true },
+  });
+  if (!parsed.ok) return;
+  const earlier = parseStance("First thought.\nThe launch can wait.\nSTANCE: Wait | CONFIDENCE: med | DEALBREAKER: no");
+  expect(earlier).toMatchObject({ ok: true, value: { reason: "The launch can wait.", dealbreaker: false } });
+  expect(parseStance(`${"x".repeat(201)}\nSTANCE: Wait | CONFIDENCE: high | DEALBREAKER: no`).ok).toBe(false);
+
+  const report = minorityReport(
+    tally(
+      [
+        stance({ option: "Ship", member: "Member A", seatId: "a" }),
+        stance({ option: "Ship", member: "Member B", seatId: "b" }),
+        stance({ option: "Wait", member: "Member C", seatId: "c", reason: parsed.value.reason, dealbreaker: true }),
+      ],
+      [],
+    ),
+  );
+  expect(report).toContain("Member C — Wait");
+  expect(report).toContain("The price is not tested.");
+  expect(report).not.toContain("Dealbreaker.");
+  expect(report).not.toContain("Not a dealbreaker.");
 });
 
 it("the two-thirds line is exact, and 3 of 5 is not enough", () => {

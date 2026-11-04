@@ -321,7 +321,7 @@ export type ParseResult<T> = { ok: true; value: T } | { ok: false; problem: stri
 export function parseStance(text: string): ParseResult<ParsedStance> {
   const lines = nonEmpty(text);
   const last = lines[lines.length - 1] ?? "";
-  if (/^STANCE:/i.test(last)) return parseStanceLine(last);
+  if (/^STANCE:/i.test(last)) return parseStanceLine(last, lines.length > 1 ? lines[lines.length - 2] : undefined);
   if (lines.length !== 3) return { ok: false, problem: "the last line must be STANCE, CONFIDENCE (high, med or low) and DEALBREAKER (yes or no)." };
   const option = field(lines[0], "OPTION");
   const confidence = field(lines[1], "CONFIDENCE");
@@ -336,8 +336,12 @@ export function parseStance(text: string): ParseResult<ParsedStance> {
   return { ok: true, value: { option, confidence: n, reason } };
 }
 
-/** `STANCE: <label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no`, or a bare `STANCE: abstain`. */
-function parseStanceLine(line: string): ParseResult<ParsedStance> {
+/**
+ * `STANCE: <label> | CONFIDENCE: high|med|low | DEALBREAKER: yes|no`, or a bare `STANCE: abstain`.
+ * The line above, when there is one, is that seat's own reason. The dealbreaker flag is kept as well.
+ */
+function parseStanceLine(line: string, sentence?: string): ParseResult<ParsedStance> {
+  if (sentence && sentence.length > REASON_MAX) return { ok: false, problem: `REASON must be one line of 1 to ${REASON_MAX} characters.` };
   if (/^STANCE:\s*abstain\s*$/i.test(line)) {
     return { ok: true, value: { option: "abstain", confidence: 0, reason: "Abstained.", factor: 1, dealbreaker: false } };
   }
@@ -352,10 +356,8 @@ function parseStanceLine(line: string): ParseResult<ParsedStance> {
   if (optionKey(option) === "abstain") {
     return { ok: true, value: { option: "abstain", confidence, reason: "Abstained.", factor: 1, dealbreaker: false } };
   }
-  return {
-    ok: true,
-    value: { option, confidence, reason: dealbreaker ? "Dealbreaker." : "Not a dealbreaker.", factor, dealbreaker },
-  };
+  const reason = sentence || (dealbreaker ? "Dealbreaker." : "Not a dealbreaker.");
+  return { ok: true, value: { option, confidence, reason, factor, dealbreaker } };
 }
 
 function field(line: string, label: string): string | undefined {
