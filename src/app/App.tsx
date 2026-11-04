@@ -50,6 +50,7 @@ import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
+import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -13070,24 +13071,53 @@ function Workspace({
             if (gateDue(result)) {
               const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
               const projectId = delegation?.project ?? hubProjectIdFor(project);
-              const run = checkout && projectId
-                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []) })
+              // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
+              // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
+              // come back as not run. A brief with no plan still returns nothing and falls through.
+              const briefGates = row
+                ? await briefGatesFor({
+                    delegationId: row.id,
+                    checkout: checkout ?? row.id,
+                    projectId,
+                    signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
+                    report: result.result ?? "",
+                    failures: gateFailures,
+                  })
                 : null;
-              if (run && !run.ok) gateFailures += 1;
-              const verdict = gateVerdict(run, gateFailures);
-              if (verdict === "resend" && run) {
-                // The worker's next report is a whole one again, not a self-review joined to this one.
+              if (briefGates?.action === "resend") {
+                gateFailures += 1;
                 firstReport = undefined;
-                const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
-                  monoNote: gateAskNote(run),
+                const accepted = await submitSessionRef.current(sessionId, briefGates.ask, [], {
+                  monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(gateFailedResult(result, run));
+                if (!accepted) finish(briefGates.failed(result));
                 return;
               }
-              if (verdict === "deliver-failed" && run) {
-                finish(gateFailedResult(result, run));
+              if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
+                finish(briefGates.apply(result));
                 return;
+              }
+              if (!briefGates) {
+                const run = checkout && projectId
+                  ? await runWorkerGate({ projectId, checkout, signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []) })
+                  : null;
+                if (run && !run.ok) gateFailures += 1;
+                const verdict = gateVerdict(run, gateFailures);
+                if (verdict === "resend" && run) {
+                  // The worker's next report is a whole one again, not a self-review joined to this one.
+                  firstReport = undefined;
+                  const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
+                    monoNote: gateAskNote(run),
+                    onSettled: (next) => void turnEnded(next, true),
+                  });
+                  if (!accepted) finish(gateFailedResult(result, run));
+                  return;
+                }
+                if (verdict === "deliver-failed" && run) {
+                  finish(gateFailedResult(result, run));
+                  return;
+                }
               }
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.
