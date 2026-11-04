@@ -135,6 +135,29 @@ export function copyBundle(from, to, options = {}) {
  * Windows prefers monocode.exe, then a spawn spec written beside the stamp
  * (the stamp file itself is a shell script Windows cannot CreateProcess).
  */
+/**
+ * A spawn spec may name only a file inside the bundle. The path is canonicalised
+ * first, so a symlink or `..` that leaves the bundle is refused.
+ */
+export function acceptedSpawnCommand(bundle, spec, platform = process.platform) {
+  const command = spec?.command;
+  const args = spec?.args;
+  const p = platform === "win32" ? path.win32 : path.posix;
+  if (typeof command !== "string" || !p.isAbsolute(command)) return null;
+  if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) return null;
+  let realCommand;
+  let realBundle;
+  try {
+    realCommand = fs.realpathSync(command);
+    realBundle = fs.realpathSync(bundle);
+    if (!fs.statSync(realCommand).isFile()) return null;
+  } catch {
+    return null;
+  }
+  if (!isInside(realCommand, realBundle, platform)) return null;
+  return { command: realCommand, args };
+}
+
 export function appCommand(app) {
   const binary = path.join(app, "Contents", "MacOS", "monocode");
   if (process.platform !== "win32") return { command: binary, args: [] };
@@ -142,14 +165,12 @@ export function appCommand(app) {
   if (fs.existsSync(exe)) return { command: exe, args: [] };
   try {
     const spec = JSON.parse(fs.readFileSync(`${binary}.spawn.json`, "utf8"));
-    const command = spec?.command;
-    const args = spec?.args;
-    if (typeof command !== "string" || !path.win32.isAbsolute(command) || !fs.existsSync(command)) return { command: binary, args: [] };
-    if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) return { command: binary, args: [] };
-    return { command, args };
+    const accepted = acceptedSpawnCommand(app, spec, "win32");
+    if (accepted) return accepted;
   } catch {
-    return { command: binary, args: [] };
+    // A missing or unreadable spec falls through to the stamp binary.
   }
+  return { command: binary, args: [] };
 }
 
 /** PowerShell single-quoted literal. An apostrophe is doubled. Ported from host/windows.ts. */
@@ -235,7 +256,7 @@ function assertUnitName(name) {
  * A long-running user unit for the ship runner. Restart=on-failure matches
  * launchd's KeepAlive SuccessfulExit=false. Linger is not enabled here.
  */
-export function runnerSystemdUnit({ unitName, nodePath, runnerPath, shipDir, home }) {
+export function runnerSystemdUnit({ unitName, nodePath, runnerPath, shipDir, home, path: binPath = "/usr/bin:/bin:/usr/sbin:/sbin" }) {
   assertUnitName(unitName);
   const exec = [nodePath, "--disable-warning=ExperimentalWarning", runnerPath, shipDir].map(execStartQuote).join(" ");
   return `[Unit]
@@ -245,6 +266,7 @@ Description=MonoCode Hub ship runner
 Type=simple
 ExecStart=${exec}
 Environment=${unitQuote(`HOME=${home}`)}
+Environment=${unitQuote(`PATH=${binPath}`)}
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -333,7 +355,69 @@ export function detachPath(platform = process.platform, env = process.env) {
   if (platform === "win32") {
     const root = env.SystemRoot || "C:\\Windows";
     const system = path.win32.join(root, "System32");
-    return [system, path.win32.join(system, "WindowsPowerShell", "v1.0")].join(";");
+    const powershell = path.win32.join(system, "WindowsPowerShell", "v1.0");
+    const seen = new Set();
+    const parts = [];
+    const user = typeof env.PATH === "string" ? env.PATH : "";
+    for (const entry of [...user.split(";"), system, powershell]) {
+      if (entry.length === 0) continue;
+      const key = entry.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      parts.push(entry);
+    }
+    return parts.join(";");
   }
   return "/usr/bin:/bin:/usr/sbin:/sbin";
+}
+
+/** What the trial app may see. The runner's own environment is not copied through. */
+const TRIAL_ENV_KEYS = [
+  "ALLUSERSPROFILE",
+  "APPDATA",
+  "CFFIXED_USER_HOME",
+  "COMSPEC",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "DISPLAY",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HUB_SHIP_TEST_OWNER",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "MONOCODE_NO_ALERT",
+  "NUMBER_OF_PROCESSORS",
+  "OS",
+  "PATH",
+  "PATHEXT",
+  "PROCESSOR_ARCHITECTURE",
+  "PROGRAMDATA",
+  "SHELL",
+  "SystemRoot",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERNAME",
+  "USERPROFILE",
+  "WAYLAND_DISPLAY",
+  "WINDIR",
+  "XDG_DATA_HOME",
+  "XDG_RUNTIME_DIR",
+];
+
+export function trialAppEnv(parent = {}, launchEnv = {}) {
+  const out = {};
+  for (const key of TRIAL_ENV_KEYS) {
+    const value = parent[key];
+    if (typeof value === "string" && value.length > 0) out[key] = value;
+  }
+  for (const [key, value] of Object.entries(launchEnv ?? {})) {
+    if (typeof key === "string" && typeof value === "string") out[key] = value;
+  }
+  return out;
 }

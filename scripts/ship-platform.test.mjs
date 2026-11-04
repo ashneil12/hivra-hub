@@ -9,6 +9,7 @@ import { test } from "node:test";
 import {
   APP_NAME,
   HUB_IDENTIFIER,
+  acceptedSpawnCommand,
   appCommand,
   copyBundle,
   defaultLauncher,
@@ -24,6 +25,7 @@ import {
   runnerTaskRemoveScript,
   runnerTaskScript,
   systemdBooted,
+  trialAppEnv,
   unitQuote,
 } from "./ship-platform.mjs";
 
@@ -129,6 +131,15 @@ test("a detached Windows runner keeps System32 on PATH", () => {
   assert.equal(win, "D:\\Windows\\System32;D:\\Windows\\System32\\WindowsPowerShell\\v1.0");
 });
 
+test("a detached Windows runner keeps the user's PATH as well as System32", () => {
+  const win = detachPath("win32", { SystemRoot: "D:\\Windows", PATH: "C:\\Users\\ada\\bin;C:\\Tools" });
+  assert.ok(win.startsWith("C:\\Users\\ada\\bin;C:\\Tools;"), win);
+  assert.match(win, /D:\\Windows\\System32/);
+  assert.match(win, /WindowsPowerShell\\v1\.0/);
+  assert.equal(detachPath("darwin", { PATH: "/custom/bin" }), "/usr/bin:/bin:/usr/sbin:/sbin");
+  assert.equal(detachPath("linux", { PATH: "/custom/bin" }), "/usr/bin:/bin:/usr/sbin:/sbin");
+});
+
 test("a direct launch adds nothing on macOS", () => {
   assert.deepEqual(portableIsolatedEnv("/tmp/home", "darwin"), {});
   assert.equal(portableIsolatedEnv("/tmp/home", "linux").XDG_DATA_HOME, "/tmp/home/.local/share");
@@ -173,6 +184,16 @@ test("the systemd unit restarts on failure and does not enable linger", () => {
   assert.match(unit, /UMask=0077/);
   assert.match(unit, /ship\$\$\/runner\.mjs/);
   assert.match(unit, /Environment="HOME=\/home\/ada"/);
+  assert.match(unit, /Environment="PATH=\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"/);
+  const withPath = runnerSystemdUnit({
+    unitName: "monocode-hub-ship-1.service",
+    nodePath: "/usr/bin/node",
+    runnerPath: "/home/ada/runner.mjs",
+    shipDir: "/home/ada/ship",
+    home: "/home/ada",
+    path: "/home/ada/bin:/usr/bin",
+  });
+  assert.match(withPath, /Environment="PATH=\/home\/ada\/bin:\/usr\/bin"/);
   assert.doesNotMatch(unit, /linger/i);
   assert.doesNotMatch(unit, /loginctl/);
   assert.throws(() =>
@@ -211,6 +232,53 @@ test("copyBundle copies the tree", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a spawn command outside the bundle is refused", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ship-spawn-"));
+  try {
+    const bundle = path.join(root, "MonoCode Hub.app");
+    const inside = path.join(bundle, "Contents", "MacOS", "helper");
+    const outside = path.join(root, "cmd");
+    const sibling = path.join(root, "MonoCode Hub.app-evil", "cmd");
+    fs.mkdirSync(path.dirname(inside), { recursive: true });
+    fs.mkdirSync(path.dirname(sibling), { recursive: true });
+    fs.writeFileSync(inside, "");
+    fs.writeFileSync(outside, "");
+    fs.writeFileSync(sibling, "");
+    assert.equal(acceptedSpawnCommand(bundle, { command: outside, args: [] }), null);
+    assert.equal(acceptedSpawnCommand(bundle, { command: sibling, args: ["x"] }), null);
+    const ok = acceptedSpawnCommand(bundle, { command: inside, args: ["--ok"] });
+    assert.equal(ok.command, fs.realpathSync(inside));
+    assert.deepEqual(ok.args, ["--ok"]);
+    assert.equal(acceptedSpawnCommand(bundle, { command: inside, args: [1] }), null);
+    const link = path.join(bundle, "Contents", "MacOS", "linked");
+    try {
+      fs.symlinkSync(outside, link);
+      assert.equal(acceptedSpawnCommand(bundle, { command: link, args: [] }), null, "a symlink out of the bundle is refused");
+    } catch (error) {
+      if (error.code !== "EPERM" && error.code !== "ENOTSUP") throw error;
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the trial app does not inherit the runner's secrets", () => {
+  const env = trialAppEnv(
+    {
+      PATH: "C:\\Users\\ada\\bin;C:\\Windows\\System32",
+      HOME: "C:\\Users\\ada",
+      AWS_SECRET_ACCESS_KEY: "nope",
+      HUB_SHIP_TEST_OWNER: "4",
+    },
+    { HOME: "C:\\temp\\home", MONOCODE_NO_ALERT: "1" },
+  );
+  assert.match(env.PATH, /ada\\bin/);
+  assert.equal(env.HOME, "C:\\temp\\home");
+  assert.equal(env.MONOCODE_NO_ALERT, "1");
+  assert.equal(env.HUB_SHIP_TEST_OWNER, "4");
+  assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
 });
 
 test("appCommand on macOS is the bundle binary and ignores a spawn spec", () => {

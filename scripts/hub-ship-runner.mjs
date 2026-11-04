@@ -28,7 +28,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 // WP-09: Windows process start, bundle spawn and copy. macOS still uses ps, ditto and the binary path.
-import { appCommand, copyBundle, processStartWindows } from "./ship-platform.mjs";
+import { appCommand, copyBundle, processStartWindows, trialAppEnv } from "./ship-platform.mjs";
 
 export const STATE = "state.json";
 export const RUNNER_LOCK = "runner.lock";
@@ -616,10 +616,16 @@ function launch(ctx, ship, purpose) {
   if (ship.launch?.mode === "direct") {
     const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
     const spec = appCommand(app);
+    // macOS direct launch keeps the process environment and overlays the ship's.
+    // Off macOS the trial app gets an allow-list, never the runner's whole environment.
+    const env =
+      process.platform === "darwin"
+        ? { ...process.env, ...(ship.launch.env ?? {}) }
+        : trialAppEnv(process.env, ship.launch.env);
     const child = spawn(spec.command, spec.args, {
       detached: true,
       stdio: ["ignore", out, out],
-      env: { ...process.env, ...(ship.launch.env ?? {}) },
+      env,
     });
     child.unref();
     fs.closeSync(out);
@@ -635,7 +641,7 @@ function launch(ctx, ship, purpose) {
     const child = spawn(spec.command, spec.args, {
       detached: true,
       stdio: ["ignore", out, out],
-      env: { ...process.env, ...(ship.launch?.env ?? {}) },
+      env: trialAppEnv(process.env, ship.launch?.env),
     });
     child.unref();
     fs.closeSync(out);

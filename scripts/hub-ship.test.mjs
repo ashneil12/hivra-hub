@@ -17,7 +17,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, homePaths, isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand } from "./ship-platform.mjs";
 import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
 
@@ -275,10 +275,17 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
   );
   // WP-09: Windows cannot execute the stamp script. The runner spawns node from this spec.
   if (process.platform === "win32") {
+    // The spawn command has to live inside the bundle. A hard link keeps one node binary.
+    const nodeInBundle = path.join(app, "Contents", "MacOS", "node.exe");
+    try {
+      fs.linkSync(NODE, nodeInBundle);
+    } catch {
+      fs.copyFileSync(NODE, nodeInBundle);
+    }
     fs.writeFileSync(
       `${binary}.spawn.json`,
       JSON.stringify({
-        command: NODE,
+        command: nodeInBundle,
         args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), binary],
       }),
     );
@@ -517,6 +524,46 @@ test("a rollback drill goes all the way to a commit, then puts the old build bac
   assert.match(state.reason, /Rollback drill/);
   assert.equal(stampOf(w.app).sha, SHA_A);
   assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db);
+});
+
+test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not register a service", async () => {
+  const w = world();
+  const result = spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    { env: w.env, encoding: "utf8" },
+  );
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.equal(result.status, 0, JSON.stringify(answer));
+  const state = await until("the drill", settled(answer.shipDir, "rolled-back"));
+  remember(answer.shipDir);
+  assert.equal(state.launcher, "detach");
+  assert.equal(state.service, null);
+  assert.equal(state.trial.committedInDrill, true);
+  assert.equal(stampOf(w.app).sha, SHA_A);
+});
+
+test("a drill refuses a home that is not temporary, and Windows can take USERPROFILE", async () => {
+  assert.equal(homeFromEnv({ USERPROFILE: "C:\\Users\\ada" }, "win32"), "C:\\Users\\ada");
+  assert.equal(homeFromEnv({ HOME: "D:\\temp", USERPROFILE: "C:\\Users\\ada" }, "win32"), "D:\\temp");
+  assert.equal(homeFromEnv({ HOME: "" , USERPROFILE: "C:\\Users\\ada" }, "win32"), "C:\\Users\\ada");
+  assert.equal(homeFromEnv({ USERPROFILE: "C:\\Users\\ada" }, "darwin"), null);
+  assert.equal(homeFromEnv({}, "linux"), null);
+  assert.equal(isIsolatedHome(os.userInfo().homedir), false);
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  process.env.HOME = os.userInfo().homedir;
+  let pending;
+  try {
+    // main reads HOME before its first await, so restore before yielding to other tests.
+    pending = main(["--drill-rollback", "--json", "--repo", os.tmpdir()]);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedProfile;
+  }
+  assert.equal(await pending, 1);
 });
 
 test("the running app refusing the build calls the ship off without changing anything", async () => {
@@ -872,7 +919,7 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.equal(answer.ok, true);
   assert.equal(stampOf(w.app).sha, w.sha);
   assert.equal(stampOf(answer.previousKeptAt).sha, SHA_A);
-  assert.ok(answer.previousKeptAt.startsWith(path.join(w.home, "Archive/monocode/ships/legacy-")));
+  assert.ok(answer.previousKeptAt.startsWith(path.join(homePaths(w.home).archive, "legacy-")));
 });
 
 test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fails leaves the old app installed", () => {
@@ -901,16 +948,18 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /Copying the bundle failed/);
   assert.equal(stampOf(w.app).sha, SHA_A, "the old app is still installed");
-  assert.deepEqual(fs.readdirSync(path.join(w.home, "Applications")), ["MonoCode Hub.app"], "no half copy left beside it");
-  assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
+  assert.deepEqual(fs.readdirSync(path.dirname(w.app)), ["MonoCode Hub.app"], "no half copy left beside it");
+  assert.equal(fs.existsSync(homePaths(w.home).archive), false, "nothing was moved aside");
+  if (process.platform === "darwin") assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
 });
 
 test("a fake app quits by itself once the test run that started it is gone", async () => {
   const w = world();
   // A stand-in for a test run that was killed: the app's owner is a process that ends while the app runs.
-  const owner = spawn("/bin/sleep", ["1"], { stdio: "ignore" });
+  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { stdio: "ignore" });
   const exited = new Promise((resolve) => owner.on("exit", resolve));
-  const child = spawn(path.join(w.app, "Contents/MacOS/monocode"), [], {
+  const spec = appCommand(w.app);
+  const child = spawn(spec.command, spec.args, {
     env: { ...w.env, HUB_SHIP_TEST_OWNER: String(owner.pid) },
     detached: true,
     stdio: "ignore",

@@ -79,6 +79,16 @@ export function homePaths(home) {
   });
 }
 
+/**
+ * The home a ship uses. Windows cmd sets USERPROFILE and often leaves HOME unset.
+ * An empty string counts as unset.
+ */
+export function homeFromEnv(env, platform = process.platform) {
+  if (typeof env.HOME === "string" && env.HOME.length > 0) return env.HOME;
+  if (platform === "win32" && typeof env.USERPROFILE === "string" && env.USERPROFILE.length > 0) return env.USERPROFILE;
+  return null;
+}
+
 /** Whether `home` is a temporary HOME rather than the user's own (os.userInfo reads the user database). */
 export function isIsolatedHome(home) {
   const real = os.userInfo().homedir;
@@ -405,6 +415,7 @@ function serviceFor(launcher, { id, node, dir, home }) {
         runnerPath: path.join(dir, "runner.mjs"),
         shipDir: dir,
         home,
+        path: process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin",
       }),
     };
   }
@@ -686,8 +697,13 @@ export async function main(argv = process.argv.slice(2)) {
     console.error(`hub-ship: ${error.message}`);
     return 2;
   }
-  const home = process.env.HOME;
+  const home = homeFromEnv(process.env);
   if (!home) return out({ ok: false, error: "HOME isn't set." });
+  // A drill swaps the installed app. Off macOS that would register a real task
+  // unless the home is temporary. The same check on every platform.
+  if (options.drill && !isIsolatedHome(home)) {
+    return out({ ok: false, refusals: ["A drill only runs under a temporary HOME."] });
+  }
   const paths = homePaths(home);
   let repo;
   try {
