@@ -231,6 +231,15 @@ mockIPC(
     if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
     if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
     if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
+    // WP-06: a browser spec seeds a ship summary (`monocode:dev-ship`). Missing or bad JSON is no ship.
+    if (cmd === "ship_status") {
+      try {
+        const raw = localStorage.getItem("monocode:dev-ship");
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;
   },
