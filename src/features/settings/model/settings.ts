@@ -39,6 +39,7 @@ export type SettingsSectionId =
   | "dashboards"
   | "portable"
   | "backups"
+  | "history"
   | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -122,6 +123,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "A checked copy on a schedule. Bring back one chat, Mono, doc or task, or put everything back.",
     keywords: "backup restore snapshot schedule hourly daily chat mono doc task",
+  },
+  {
+    id: "history",
+    group: "app",
+    label: "Chat history",
+    description:
+      "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
+    keywords: "history import claude codex hermes transcript memory",
   },
   {
     id: "connectors",

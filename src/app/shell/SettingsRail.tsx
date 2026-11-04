@@ -14,7 +14,7 @@ import {
   Zap,
   Chatting,
   Code,
-  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder } from "../../shared/ui/icons";
+  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -42,6 +42,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   portable: CloudUpload,
   // WP-75: checked backups.
   backups: Folder,
+  history: Clock, // WP-50
   connectors: Zap,
   teams: Chatting,
 };

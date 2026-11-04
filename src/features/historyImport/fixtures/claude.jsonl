@@ -1,0 +1,10 @@
+{"type":"custom-title","customTitle":"Notes","sessionId":"sess-1"}
+{"type":"user","sessionId":"sess-1","cwd":"/work/notes","timestamp":"2026-01-03T10:00:00Z","message":{"role":"user","content":"I like small commits"}}
+{"type":"assistant","sessionId":"sess-1","timestamp":"2026-01-03T10:01:00Z","message":{"role":"assistant","content":[{"type":"thinking","thinking":"THINKING_NOISE"},{"type":"text","text":"Small commits are easier to review."},{"type":"tool_use","name":"bash","input":{}}]}}
+{"type":"user","sessionId":"sess-1","timestamp":"2026-01-03T10:02:00Z","message":{"role":"user","content":[{"type":"tool_result","content":"TOOL_NOISE_MARKER"},{"type":"text","text":"Thanks"}]}}
+{"type":"user","isMeta":true,"timestamp":"2026-01-03T10:03:00Z","message":{"role":"user","content":"META_NOISE"}}
+{"type":"user","isSidechain":true,"timestamp":"2026-01-03T10:04:00Z","message":{"role":"user","content":"SIDECHAIN_NOISE"}}
+{"type":"user","isApiErrorMessage":true,"timestamp":"2026-01-03T10:05:00Z","message":{"role":"user","content":"API_ERROR_NOISE"}}
+{"isCompactSummary":true,"timestamp":"2026-01-03T10:06:00Z","message":{"role":"user","content":"COMPACT_NOISE"}}
+{"type":"user","sessionId":"sess-1","message":{"role":"user","content":"NO_TIME"}}
+not json

@@ -10,6 +10,7 @@ import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
+import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
@@ -693,6 +694,10 @@ export function SettingsView({
               {section === "portable" ? <PortablePage /> : null}
               {/* WP-75: checked backups, one item or everything. */}
               {section === "backups" ? <BackupsPage /> : null}
+              {section === "history" ? (
+                // WP-50: past chats, only with a person's OK, drafted for review.
+                <HistoryImportScreen />
+              ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (

@@ -35,6 +35,8 @@ mod gitlab;
 mod harness;
 mod harness_runs;
 mod harness_updates;
+// WP-50: read past chats, with a person's OK, into a proposal.
+mod history_import;
 mod hub_keychain;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
 mod hub_plugin;
@@ -97,6 +99,8 @@ mod search;
 mod self_build;
 mod session_store;
 pub mod ship;
+// WP-09: Windows and Linux seams for ship, keep-awake, relaunch and secrets.
+mod platform;
 mod skills;
 pub mod ssh_askpass;
 // Hivra WP-14: steering messages to running workers.
@@ -1038,6 +1042,14 @@ pub fn run() {
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
+            // WP-50: past chats, only with a person's OK, drafted for review.
+            history_import::history_import_roots,
+            history_import::history_import_list,
+            history_import::history_import_read,
+            history_import::history_import_load_state,
+            history_import::history_import_cas_state,
+            history_import::history_import_write_proposal,
+            history_import::history_import_ask,
         ])
         .build(context)
         .expect("error while building MonoCode");

@@ -171,6 +171,28 @@ jobs:
       - run: cargo test
         if: matrix.part != 'web'
 
+  ship:
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: Ship drill
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The suite runs `hub-ship.mjs --drill-rollback` with no --launcher, under the
+      # temporary HOME `world()` makes. HOME and USERPROFILE here are also temporary,
+      # so a drill cannot fall through to the runner's real profile on any OS.
+      - name: hub:ship -- --drill-rollback under a temporary HOME
+        env:
+          HOME: ${{ runner.temp }}/monocode-hub-ship-home
+          USERPROFILE: ${{ runner.temp }}/monocode-hub-ship-home
+        run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
+
   appimage:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: AppImage host libraries
