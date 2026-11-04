@@ -15,6 +15,7 @@ import {
   saveMonoRoomSession,
   saveMonoSessionId,
 } from "./mono";
+import { stampFirstMate } from "./monoMate";
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
 import { leadWorkingFolder } from "../../hub/model/hubLeads";
@@ -52,7 +53,8 @@ async function loadMonoSession(
   if (!mono) return undefined;
   if (mono.sessionId) {
     const existing = await host.load(mono.sessionId);
-    if (existing) return existing;
+    // WP-21: a Mono's chat is a first mate. The same object, so the open list keeps the flag.
+    if (existing) return stampFirstMate(existing);
   }
   // A project's Lead (the hub's "<Project> lead") works in its project's folder; any other Mono starts at home.
   const home = leadWorkingFolder(monoId) ?? (await host.home());
@@ -63,7 +65,7 @@ async function loadMonoSession(
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
-  const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
+  const session: Session = stampFirstMate({ ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" });
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
@@ -104,14 +106,15 @@ async function loadMonoRoomSession(
   const known = monoRoomSession(monoId, chatId, convId);
   if (known) {
     const existing = await host.load(known);
-    if (existing) return existing;
+    // WP-21: a room chat is the same Mono, so it is a first mate too.
+    if (existing) return stampFirstMate(existing);
   }
   const home = leadWorkingFolder(monoId) ?? (await host.home());
   if (!findMono(monoId)) return undefined;
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
-  const session: Session = { ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" };
+  const session: Session = stampFirstMate({ ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" });
   if (!saveMonoRoomSession(monoId, chatId, convId, session.id)) return undefined;
   host.add(session);
   return session;
@@ -128,13 +131,14 @@ export async function resetMonoSession(
 ): Promise<Session> {
   const monoId = monoForSession(current.id)?.id;
   const stopped = (await host.stop(current.id)) ?? current;
-  const fresh = newSession(
+  // WP-21: the new chat is still this Mono's, so it stays a first mate.
+  const fresh = stampFirstMate(newSession(
     stopped.harness,
     stopped.cwd,
     stopped.model,
     stopped.runtimeMode,
     stopped.modelSettings,
-  );
+  ));
   // A failed deletion must leave the original conversation selected.
   await host.remove(stopped);
   forgetAgentContext(current.id);

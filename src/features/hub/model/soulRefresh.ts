@@ -22,6 +22,8 @@
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
 import { invoke } from "@tauri-apps/api/core";
 import { listMonos, type Mono } from "../../monos/model/mono";
+import { keepsEditedSoul } from "../../monos/model/soulKeep";
+import { normalizeSoulText } from "../../monos/model/vendor/mercurySoul";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
@@ -174,6 +176,26 @@ export function planSoulRefresh(current: string, template: string, lastTemplate?
   // Nothing of the app's changes lands (only Ash's own parts would move around): leave the soul as it is.
   if (norm(after) === norm(current) || (!updated.length && !added.length && !dropped.length)) return { kind: "nothing-to-change" };
   return { kind: "apply", after, updated, added, dropped, skipped, keptDropped, knownBaseline: !!seed };
+}
+
+/** A section whose text is not the recorded template (Mercury) stays as the person wrote it, including skills. */
+function restoreEditedSections(
+  current: string,
+  planned: string,
+  baseline: string,
+): { after: string; edited: Set<string> } {
+  const mine = new Map(soulSections(current).map((section) => [section.key, section.text]));
+  const seed = new Map(soulSections(baseline).map((section) => [section.key, section.text]));
+  const edited = new Set<string>();
+  for (const [key, text] of mine) {
+    const was = seed.get(key);
+    if (was !== undefined && normalizeSoulText(text) !== normalizeSoulText(was)) edited.add(key);
+  }
+  if (!edited.size) return { after: planned, edited };
+  const after = `${soulSections(planned)
+    .map((section) => (edited.has(section.key) ? (mine.get(section.key) ?? section.text) : section.text))
+    .join("\n\n")}\n`;
+  return { after, edited };
 }
 
 /**
@@ -402,7 +424,9 @@ export async function refreshSouls(
         const match = await matchSeededSoul(soul.text, values);
         if (match && !keptOld && values?.folder?.trim() && match.folder !== values.folder.trim())
           notes.push(`${name}'s old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.`);
-        if (!match) {
+        // WP-21: not a known template (Mercury). An edited soul is left as it is.
+        // Trailing spaces on a line still count as the template, not as an edit.
+        if (!match && keepsEditedSoul(soul.text, [template])) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
             recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
@@ -412,8 +436,22 @@ export async function refreshSouls(
         }
         baseline = soul.text;
       }
-      const plan = planSoulRefresh(soul.text, template, baseline);
+      let plan = planSoulRefresh(soul.text, template, baseline);
+      // WP-21: a section the person edited is not replaced, skills included. Mercury's line trim is the compare.
+      if (plan.kind === "apply" && baseline != null) {
+        const restored = restoreEditedSections(soul.text, plan.after, baseline);
+        if (restored.edited.size) {
+          const updated = plan.updated.filter((key) => !restored.edited.has(key));
+          const skipped = [...plan.skipped];
+          for (const key of restored.edited) {
+            if (plan.updated.includes(key) && !skipped.includes(key)) skipped.push(key);
+          }
+          if (norm(restored.after) === norm(soul.text) || (!updated.length && !plan.added.length && !plan.dropped.length)) continue;
+          plan = { ...plan, after: restored.after, updated, skipped };
+        }
+      }
       if (plan.kind === "current") {
+        // WP-21: trailing spaces are still this template. The person's file is not rewritten for that.
         if (last.text !== template) {
           await files.write(monoId, SOUL_TEMPLATE_FILE, template, last.hash);
           recorded.push(monoId);

@@ -46,6 +46,7 @@ import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import type { AgentAppHost } from "./agentApp";
 import {
@@ -473,7 +474,24 @@ function withOffBridgeWhy(route: WorkerRoute | undefined, asked: string | undefi
 }
 
 /** Who delegates: a Mono's own chat (signed with its name), or a coding-team chat (signed "<Project> coding team"). */
-type TaskOwner = { name: string; mono?: { id: string; name?: string }; team?: { project: string; folder: string } };
+type TaskOwner = {
+  name: string;
+  mono?: { id: string; name?: string; crewRules?: unknown };
+  team?: { project: string; folder: string };
+};
+
+/** A Mono's stored crew rules, checked again before they leave this process. A broken one is dropped. */
+function carriedMonoRules(rules: unknown): CrewRule[] {
+  if (!Array.isArray(rules)) return [];
+  const out: CrewRule[] = [];
+  for (const rule of rules) {
+    const clean = sanitizeRule(rule, "person");
+    if (!clean) continue;
+    out.push(clean);
+    if (out.length >= 40) break;
+  }
+  return out;
+}
 
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
 function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
@@ -789,12 +807,14 @@ async function delegate(
     const baselineModel = model?.model ?? source.model;
     try {
       const override = callerOverride(namedModel, input.effort);
+      const monoRules = carriedMonoRules(owner.mono?.crewRules);
       const answer = await tasks.crewRoute({
         labels: crewLabels(areasNamed(title, brief)),
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
         ...(override ? { override } : {}),
         ...(folder ? { project: folder } : {}),
         ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
+        ...(monoRules.length ? { monoRules } : {}),
       });
       const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
       if (next.harness && isHarnessAvailable(next.harness)) {
