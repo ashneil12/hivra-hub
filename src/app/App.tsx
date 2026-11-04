@@ -7129,13 +7129,18 @@ function Workspace({
     [applyCodingTeamHomes, closeMonoView, onOpenMono, onSelectProject],
   );
   useEffect(() => (codingTeamsOn() ? setCodingTeamOpener(openCodingTeam) : undefined), [openCodingTeam]);
-  // WP-20: a Lead chat that loads after the project opened still becomes the one home.
+  // WP-20: a Lead chat that loads after the project opened still becomes the one home. That needs a new chat in the
+  // list, so the walk over every project runs when the set of chats changes, not on each streamed block.
+  const codingTeamIdsKey = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  const codingTeamIdsSeen = useRef<string | null>(null);
   useEffect(() => {
+    if (codingTeamIdsSeen.current === codingTeamIdsKey) return;
+    codingTeamIdsSeen.current = codingTeamIdsKey;
     const settled = applyCodingTeamHomes(sessions);
     if (settled === sessions) return;
     sessionsRef.current = settled;
     setSessions(settled);
-  }, [sessions, applyCodingTeamHomes]);
+  }, [codingTeamIdsKey, sessions, applyCodingTeamHomes]);
   /**
    * Open a Mono's own team (hubNav.ts openMonoTeam, monoTeams.ts): its folder's workspace and Sessions list, the Mono's
    * chat pinned on top and its workers under it, on the Mono's chat by default (`owner`) or the chat Ash was last in
