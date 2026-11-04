@@ -41,6 +41,13 @@ Third-party components Hivra adds:
   Used in: src/features/crew/model/failure.ts, src/features/crew/model/budget.ts, src-tauri/src/crew/failure.rs, src-tauri/src/crew/budget.rs
   failure.py and failure_policy.py translated to TypeScript and Rust (WP-13). The checks and their order are the original's. A boolean is not a retry count.
 
+- Puppetmaster's session lease and idempotent launch key
+  Source: https://github.com/professorpalmer/Puppetmaster
+  License: MIT
+  Copyright (c) 2026 Cary
+  Used in: host/firstmate/lease.ts, host/firstmate/records.ts
+  session_lease.py and create_or_get_job translated to TypeScript (WP-60). The same launch key returns the same worker; the same key with a different request is a conflict. A live holder is not replaced, and a dead one counts as released. Node's flock is per-process, so the lease is held in the host process as well as a pid file.
+
 - pstack (default plugin)
   Source: https://github.com/cursor/plugins/tree/main/pstack
   License: MIT
@@ -61,6 +68,13 @@ Third-party components Hivra adds:
   Copyright (c) 2026 nyk
   Used in: src/features/council/personas, src/features/council/model/prompts.ts
   The 18 council personas and the blind, cross-exam, stance and chairman prompts, copied with the MIT notice (WP-23).
+
+- Mercury's soul migration check
+  Source: https://github.com/cosmicstack-labs/mercury-agent
+  License: MIT
+  Copyright © 2026 Cosmic Stack
+  Used in: src/features/monos/model/vendor/mercurySoul.ts
+  needsMigration and normalizeSoulText copied from src/soul/identity.ts (WP-21). The legacy template list is passed in, because Mercury's stored souls are Cosmic Stack text and are not included.
 
 - agent-desktop skill
   Source: https://github.com/vercel-labs/agent-desktop

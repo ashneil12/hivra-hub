@@ -120,6 +120,8 @@ import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
 // WP-43: Stop stays on screen while a browser is showing.
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
+// Hivra WP-60: a remote project's report, shown in the chat that started it.
+import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
 import { OPEN_CREW } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
@@ -839,6 +841,7 @@ import {
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
+import { monoTurnNote } from "../features/monos/model/monoMate";
 import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
@@ -9312,7 +9315,8 @@ function Workspace({
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
                 : undefined;
-              const note = withFirstMateContract(monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
+              // WP-21: a Mono's turn is the first mate contract plus its soul.
+              const note = monoTurnNote(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
@@ -9323,7 +9327,7 @@ function Workspace({
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(leadNoteName),
                     }
                   : {}),
-              }));
+              });
               if (appended) setHubNote(sessionId, { key: noteKey, text: note });
               else appContext.push(note);
               notedMono = true;
@@ -9982,6 +9986,25 @@ function Workspace({
   );
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
+  // WP-60: a remote project's result lands in the chat that started it, once.
+  useEffect(
+    () =>
+      bindRemoteReports({
+        isOrchestrator: isOrchestratorChat,
+        isRemoving: (id) => removingSessionIds.current.has(id),
+        ensureOpen: (id) => ensureOpenSession(id),
+        place: (entry) => {
+          let placed = false;
+          updateSessionState(sessionsRef, setSessions, (current) => {
+            const next = placeRemoteReport(current, entry);
+            placed = next.placed;
+            return next.sessions;
+          });
+          return placed;
+        },
+      }),
+    [ensureOpenSession],
+  );
   const monoCompletionBatches = useRef<MonoSessionCompletionBatches | null>(
     null,
   );
@@ -13873,6 +13896,8 @@ function Workspace({
                   ...(codingTeamsOn() && monoTeam(mono.id)
                     ? { team: monoTeam(mono.id)!.folder }
                     : {}),
+                  // WP-21: this Mono's crew rules go with the route.
+                  ...(mono.crewRules?.length ? { crewRules: mono.crewRules } : {}),
                 }
               );
             },

@@ -3,6 +3,7 @@
 // flag, kept here for the first mate UI (WP-15) to show with its revert offer. Nothing is reverted without the person's
 // tap (`revert`).
 import { invoke } from "@tauri-apps/api/core";
+import { isMonoSession } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 
 export type CheckoutSnapshot = {
@@ -45,12 +46,13 @@ export type FlaggedTurn = {
 };
 
 /** Whether a chat is a first mate (WP-20 and WP-21 set it on the coding team's and the Monos' chats). */
-export function isFirstMate(session: Pick<Session, "firstMate">): boolean {
-  return session.firstMate === true;
+export function isFirstMate(session: Pick<Session, "firstMate" | "id">): boolean {
+  // WP-21: a Mono's chat is a first mate even when the flag was not stored with the session.
+  return session.firstMate === true || (!!session.id && isMonoSession(session.id));
 }
 
 /** The launch input a first mate's turn adds (integrations/harness/core/types.ts `firstMate`). */
-export function firstMateLaunch(session: Pick<Session, "firstMate">): { firstMate?: true } {
+export function firstMateLaunch(session: Pick<Session, "firstMate" | "id">): { firstMate?: true } {
   return isFirstMate(session) ? { firstMate: true } : {};
 }
 

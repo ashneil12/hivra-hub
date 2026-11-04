@@ -40,11 +40,11 @@ in Settings, under About.
 - [OpenMausBot](https://github.com/milind-soni/OpenMausBot): rooms with responder modes, goal mode, teams and playbooks as one file.
 - [OpenBot](https://github.com/CopilotKit/openbot): approval gates, an audit trail, typed handoffs and quiet digests.
 - [Rerun](https://github.com/rerun-build/rerun): remote engine pairing, a memory curator and approval cards (ideas only).
-- [Puppetmaster](https://github.com/professorpalmer/Puppetmaster): completion gates, typed artifacts with evidence, failure reroutes.
+- [Puppetmaster](https://github.com/professorpalmer/Puppetmaster): completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys.
 - [Raven](https://github.com/EverMind-AI/Raven): "finished" is not "succeeded", status from the registry, provenance-required memory.
 - [PandaCode](https://github.com/aicodeking/pandacode): native protocol per CLI, warm processes, steering and a silence watchdog (ideas only).
 - [ROMA](https://github.com/sentient-agi/ROMA): a fast path for small tasks and planner rules (ideas only).
-- [AgentOS](https://github.com/akua-dev/agentos): assignments as the unit of accountability and decision gates.
+- [AgentOS](https://github.com/akua-dev/agentos): assignments as the unit of accountability, decision gates and native-session custody.
 - [UniiChat](https://github.com/VictorTaelin/uniichat): the long-chat summary tree behind monoTree.
 - [OptMem](https://github.com/VictorTaelin/OptMem): lessons on a distilled fact layer (ideas only).
 - [Mercury](https://github.com/cosmicstack-labs/mercury-agent): soul files upgrades never overwrite and owner approval.

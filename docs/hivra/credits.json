@@ -64,7 +64,7 @@
       "name": "Puppetmaster",
       "url": "https://github.com/professorpalmer/Puppetmaster",
       "licence": "MIT",
-      "gave": "completion gates, typed artifacts with evidence, failure reroutes"
+      "gave": "completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys"
     },
     {
       "name": "Raven",
@@ -88,7 +88,7 @@
       "name": "AgentOS",
       "url": "https://github.com/akua-dev/agentos",
       "licence": "MIT",
-      "gave": "assignments as the unit of accountability and decision gates"
+      "gave": "assignments as the unit of accountability, decision gates and native-session custody"
     },
     {
       "name": "UniiChat",
@@ -187,6 +187,14 @@
       "how": "failure.py and failure_policy.py translated to TypeScript and Rust (WP-13). The checks and their order are the original's. A boolean is not a retry count."
     },
     {
+      "name": "Puppetmaster's session lease and idempotent launch key",
+      "url": "https://github.com/professorpalmer/Puppetmaster",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Cary",
+      "where": "host/firstmate/lease.ts, host/firstmate/records.ts",
+      "how": "session_lease.py and create_or_get_job translated to TypeScript (WP-60). The same launch key returns the same worker; the same key with a different request is a conflict. A live holder is not replaced, and a dead one counts as released."
+    },
+    {
       "name": "pstack (default plugin)",
       "url": "https://github.com/cursor/plugins/tree/main/pstack",
       "licence": "MIT",
@@ -209,6 +217,14 @@
       "copyright": "Copyright (c) 2026 nyk",
       "where": "src/features/council/personas, src/features/council/model/prompts.ts",
       "how": "The 18 council personas and the blind, cross-exam, stance and chairman prompts, copied with the MIT notice (WP-23)"
+    },
+    {
+      "name": "Mercury's soul migration check",
+      "url": "https://github.com/cosmicstack-labs/mercury-agent",
+      "licence": "MIT",
+      "copyright": "Copyright © 2026 Cosmic Stack",
+      "where": "src/features/monos/model/vendor/mercurySoul.ts",
+      "how": "needsMigration and normalizeSoulText copied from src/soul/identity.ts (WP-21). The legacy template list is passed in, because Mercury's stored souls are Cosmic Stack text and are not included"
     },
     {
       "name": "agent-desktop skill",

@@ -386,6 +386,39 @@ describe("refreshSouls with no recorded template: a lead soul is left alone; the
     });
   });
 
+  it("does not rewrite a soul when only trailing spaces differ from the template", async () => {
+    const f = fakeFiles();
+    const spaced = NEW_LEAD.replace("- review-pr", "- review-pr  ");
+    f.set("lead-w", "SOUL.md", spaced);
+    f.set("lead-w", "MEMORY.md", "Ash wrote this.\r\n");
+    const result = await refreshSouls(f, [{ monoId: "lead-w", name: "Hivra lead", template: NEW_LEAD }], DAY);
+    expect(result.skipped).not.toContain("lead-w");
+    expect(f.get("lead-w", "SOUL.md")).toBe(spaced);
+    expect(f.get("lead-w", "MEMORY.md")).toBe("Ash wrote this.\r\n");
+  });
+
+  it("does not replace a section the person edited, including skills, and leaves their memory", async () => {
+    const f = fakeFiles();
+    const mine = NEW_LEAD.replace("- You are mainly an orchestrator.", "- Ash: leave this section alone.").replace(
+      "- review-pr",
+      "- review-pr\n- my-own-skill",
+    );
+    f.set("lead-edit", "SOUL.md", mine);
+    f.set("lead-edit", SOUL_TEMPLATE_FILE, NEW_LEAD);
+    f.set("lead-edit", "MEMORY.md", "Remember the save button.\r\n");
+    const newer = NEW_LEAD.replace("- You are mainly an orchestrator.", "- You orchestrate.")
+      .replace("- Your workers ask you, not Ash.", "- Your workers ask you, not Ash.\n- Ask before handing work to Ash.")
+      .replace("- review-pr", "- review-pr\n- human-writing");
+    await refreshSouls(f, [{ monoId: "lead-edit", name: "Hivra lead", template: newer }], DAY);
+    const soul = f.get("lead-edit", "SOUL.md")!;
+    expect(soul).toContain("- Ash: leave this section alone.");
+    expect(soul).not.toContain("- You orchestrate.");
+    expect(soul).toContain("- Ask before handing work to Ash.");
+    expect(soul).toContain("- my-own-skill");
+    expect(soul).not.toContain("- human-writing");
+    expect(f.get("lead-edit", "MEMORY.md")).toBe("Remember the save button.\r\n");
+  });
+
   it("leaves an edited soul alone, with one plain row and no Undo", async () => {
     const f = fakeFiles();
     const edited = hivra.soul.replace("- Parallel work is fine.", "- Ash: never touch the token page.\n- Parallel work is fine.");

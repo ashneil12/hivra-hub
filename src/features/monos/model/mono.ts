@@ -1,3 +1,4 @@
+import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import { chatQuestion, gateQuestion } from "../../hub/model/chatQuestions";
 import { forUser } from "../../hub/model/userName";
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
@@ -78,6 +79,12 @@ export type Mono = {
    * as they are, and New conversation still starts a fresh one.
    */
   longChat?: boolean;
+  /** WP-21: pinned contacts stay at the top of the list. */
+  pinned?: boolean;
+  /** WP-21: a muted contact stays in the list, without an unread badge. */
+  muted?: boolean;
+  /** WP-21: this Mono's crew rules. They beat the project's when its chat launches crew. */
+  crewRules?: CrewRule[];
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -207,6 +214,19 @@ export function migrateLegacyMonoStorage(): void {
   }
 }
 
+/** A hand-edited roster is untrusted. A broken rule is dropped. At most 40. */
+function parseCrewRules(value: unknown): CrewRule[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rules: CrewRule[] = [];
+  for (const entry of value) {
+    const rule = sanitizeRule(entry, "person");
+    if (!rule) continue;
+    rules.push(rule);
+    if (rules.length >= 40) break;
+  }
+  return rules.length ? rules : undefined;
+}
+
 function newMonoId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -226,6 +246,7 @@ function parseMono(value: unknown): Mono | undefined {
   const engineModel = text("engineModel");
   const legacyProject = text("legacyProject");
   const role = text("role");
+  const crewRules = parseCrewRules(entry.crewRules);
   const roomSessions = Object.fromEntries(
     Object.entries(record(entry.roomSessions)).filter(
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
@@ -249,6 +270,10 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(entry.longChat === true ? { longChat: true } : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
+    // WP-21: only a real true counts. A string or 1 from a hand-edited roster is not pinned or muted.
+    ...(entry.pinned === true ? { pinned: true } : {}),
+    ...(entry.muted === true ? { muted: true } : {}),
+    ...(crewRules ? { crewRules } : {}),
     ...(instructions ? { instructions } : {}),
     ...(engine ? { engine } : {}),
     ...(engine && engineModel ? { engineModel } : {}),
@@ -288,6 +313,26 @@ function saveRoster(roster: readonly Mono[]): void {
   // The durable copy: MONOS.json in the Monos' home (monoHome.ts).
   rosterSaved(roster);
   window.dispatchEvent(new CustomEvent(MONOS_CHANGED));
+}
+
+export type RosterCommit = "saved" | "lost" | "missing";
+
+/**
+ * WP-21: write the roster only when it is still the one just read, then read it back.
+ * A change that landed in between is applied again. A write that does not stick is lost.
+ */
+export function commitRoster(change: (roster: Mono[]) => Mono[] | null): RosterCommit {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const before = listMonos();
+    const token = JSON.stringify(before);
+    const next = change(before);
+    if (next == null) return "missing";
+    if (JSON.stringify(listMonos()) !== token) continue;
+    saveRoster(next);
+    if (JSON.stringify(listMonos()) !== JSON.stringify(next)) continue;
+    return "saved";
+  }
+  return "lost";
 }
 
 export function findMono(id: string): Mono | undefined {
@@ -468,6 +513,17 @@ export function removeMono(id: string): void {
   markMonoRemovedByUser(id, findMono(id)?.name);
   removeMonoBackground(id);
   saveRoster(listMonos().filter((mono) => mono.id !== id));
+}
+
+/** WP-21: drop one roster entry only when the roster is still the one just read. */
+export function removeMonoIfCurrent(id: string): RosterCommit {
+  const current = findMono(id);
+  if (!current) return "missing";
+  const result = commitRoster((roster) => (roster.some((mono) => mono.id === id) ? roster.filter((mono) => mono.id !== id) : null));
+  if (result !== "saved") return result;
+  markMonoRemovedByUser(id, current.name);
+  removeMonoBackground(id);
+  return "saved";
 }
 
 /**

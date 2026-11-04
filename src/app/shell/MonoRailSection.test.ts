@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { createMono } from "../../features/monos/model/mono";
+import { createMono, findMono, listMonos, updateMono } from "../../features/monos/model/mono";
 import { loadMonosEnabled } from "../../features/settings/model/settings";
 import { MonoRailSection } from "./MonoRailSection";
 
@@ -68,6 +68,55 @@ it("lists monos once there are some, with the plus in the header", () => {
   render();
   expect(intro()).toBeNull();
   expect(container.querySelectorAll('[aria-label="New mono"]')).toHaveLength(1);
+});
+
+it("puts a pinned Mono first and shows no unread badge on a muted one", () => {
+  const milo = createMono();
+  const ada = createMono();
+  updateMono(milo.id, (mono) => ({ ...mono, name: "Milo", muted: true }));
+  updateMono(ada.id, (mono) => ({ ...mono, name: "Ada", pinned: true }));
+  render({ unseenCounts: new Map([[milo.id, 4], [ada.id, 2]]) });
+  const names = [...container.querySelectorAll("[data-mono-primary-name]")].map((el) => el.textContent);
+  expect(names[0]).toBe("Ada");
+  expect(names).toContain("Milo");
+  expect([...container.querySelectorAll("[data-mono-unread]")].map((el) => el.textContent)).toEqual(["2"]);
+});
+
+it("pins, mutes and renames from the options menu", () => {
+  const milo = createMono();
+  const ada = createMono();
+  updateMono(milo.id, (mono) => ({ ...mono, name: "Milo" }));
+  updateMono(ada.id, (mono) => ({ ...mono, name: "Ada" }));
+  render({ unseenCounts: new Map([[ada.id, 3]]) });
+  const names = () => [...container.querySelectorAll("[data-mono-primary-name]")].map((el) => el.textContent);
+  const item = (label: string) =>
+    [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((el) => el.textContent?.replace(/\s+/g, " ").trim() === label);
+  act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Ada options"]')!.click());
+  expect(item("Pin")).toBeTruthy();
+  expect(item("Mute")).toBeTruthy();
+  expect(item("Duplicate")).toBeTruthy();
+  expect(item("Edit profile")).toBeTruthy();
+  expect(item("Remove")).toBeUndefined();
+  act(() => item("Pin")!.click());
+  expect(names()[0]).toBe("Ada");
+  expect(findMono(ada.id)?.pinned).toBe(true);
+  act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Ada options"]')!.click());
+  act(() => item("Mute")!.click());
+  expect([...container.querySelectorAll("[data-mono-unread]")].map((el) => el.textContent)).toEqual([]);
+  expect(findMono(ada.id)?.muted).toBe(true);
+  act(() => document.body.querySelector<HTMLButtonElement>('button[aria-label="Ada options"]')!.click());
+  act(() => item("Edit profile")!.click());
+  const input = document.body.querySelector<HTMLInputElement>('[aria-label="Mono name"]');
+  expect(input).not.toBeNull();
+  act(() => {
+    const proto = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+    proto?.set?.call(input, "Ada L");
+    input!.dispatchEvent(new Event("input", { bubbles: true }));
+    input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
+  expect(names()).toContain("Ada L");
+  expect(findMono(ada.id)?.name).toBe("Ada L");
+  expect(listMonos().some((mono) => mono.id === milo.id)).toBe(true);
 });
 
 it("counts a mono's unread replies, except the one open", () => {
