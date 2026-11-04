@@ -1690,12 +1690,13 @@ function Workspace({
     setRightPanelClosing(false);
     saveRightPanelOpen(true);
   }, []);
-  // WP-15: a brief line opens the Crew tab.
+  // WP-15: a brief line opens the Crew tab. Classic uses the sidebar; the inset layout uses its panel.
+  const openCrewTab = useRef<() => void>(() => {});
   useEffect(() => {
-    const onCrew = () => showRightPanel("crew");
+    const onCrew = () => openCrewTab.current();
     window.addEventListener(OPEN_CREW, onCrew);
     return () => window.removeEventListener(OPEN_CREW, onCrew);
-  }, [showRightPanel]);
+  }, []);
   const onToggleRightPanel = useCallback(() => {
     const next = !rightPanelOpenRef.current;
     rightPanelOpenRef.current = next;
@@ -2460,6 +2461,11 @@ function Workspace({
     },
     [showRightPanel],
   );
+  // WP-15: the brief line opens Crew in the sidebar Hivra actually shows.
+  openCrewTab.current = () => {
+    if (insetLayoutRef.current) showRightPanel("crew");
+    else setSidebarTab("crew");
+  };
   const sidebarCwdKey =
     sidebarCwd && sidebarCwd !== "~" ? normalizeProjectPath(sidebarCwd) : null;
   const historyFailed =

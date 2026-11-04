@@ -122,13 +122,15 @@ export const SHOW_EXCLUDED_FILES_DEFAULT = false;
 export const SHOW_EXCLUDED_FILES_CHANGE_EVENT =
   "monocode:showexcludedfileschange";
 
-export type SidebarTabId = "files" | "sessions" | "changes" | "inbox";
+export type SidebarTabId = "files" | "sessions" | "changes" | "inbox" | "crew";
 
 const DEFAULT_SIDEBAR_TAB_ORDER: SidebarTabId[] = [
   "sessions",
   "inbox",
   "files",
   "changes",
+  // WP-15: Crew sits in Classic's sidebar, beside History.
+  "crew",
 ];
 
 export const THEME_HUE_MIN = 0;
@@ -969,7 +971,9 @@ function isSidebarTabId(value: unknown): value is SidebarTabId {
     value === "files" ||
     value === "sessions" ||
     value === "changes" ||
-    value === "inbox"
+    value === "inbox" ||
+    // WP-15: Crew is a Classic sidebar tab.
+    value === "crew"
   );
 }
 

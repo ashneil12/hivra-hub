@@ -291,6 +291,8 @@ const COMPACT_TAB_ICONS: Record<SidebarTab, typeof PanelLeft> = {
   inbox: Inbox,
   files: FileScript,
   changes: GitBranch,
+  // WP-15: Crew in the compact rail.
+  crew: CircleDot,
 };
 
 function projectPathBusy(
@@ -2206,6 +2208,8 @@ function SidebarComponent({
   );
 
   const onTabPick = (itemId: SidebarTab) => {
+    // WP-15: picking Crew shows everyone. A brief line sets the filter on its own.
+    if (itemId === "crew") clearCrewFocus();
     onTabChange(itemId);
   };
 
@@ -2213,6 +2217,8 @@ function SidebarComponent({
     if (drawerMode) {
       setDrawerOpen(!(drawerVisible && tab === itemId));
     }
+    // WP-15: picking Crew shows everyone. A brief line sets the filter on its own.
+    if (itemId === "crew") clearCrewFocus();
     onTabChange(itemId);
   };
 
@@ -2701,8 +2707,8 @@ function SidebarComponent({
     </>
   );
 
-  // WP-15: the crew for this project. Mounted only while its tab is open.
-  const crewPane = paneHost && paneTab === "crew" ? (
+  // WP-15: the crew for this project. Classic mounts it in the sidebar; the inset layout uses the right panel.
+  const crewPane = paneTab === "crew" ? (
     <div role="tabpanel" aria-label="Crew" className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <CrewPanel project={cwd} sessions={sessions} onOpenSession={onSelectLocalSession} />
     </div>
@@ -3274,6 +3280,7 @@ function SidebarComponent({
           )}
         </div>
         {paneHost ? null : changesPane}
+        {paneHost ? null : crewPane}
         {showSidebarFooter ? (
           <>
             <LiveAgentsPreview
