@@ -1636,3 +1636,80 @@ fn an_export_names_its_files_with_forward_slashes_on_every_platform() {
         "# Soul\n"
     );
 }
+
+/// WP-78: the activity log is part of the workspace export. A secret in a summary does not survive, a row older
+/// than 90 days stays out, and importing the same file again adds nothing.
+#[test]
+fn the_activity_log_is_in_the_export_without_the_secret_and_a_second_import_adds_nothing() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let now = crate::session_store::now_millis();
+    {
+        let store = SessionStore::open(source.db_path.clone()).unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO activity (id, kind, actor_role, initiator_role, project, target, summary, link, at)
+             VALUES ('act-fresh', 'git.push', 'app', 'person', 'acme/web', 'work', ?1, '', ?2)",
+            params![format!("Pushed the branch. {GITHUB}"), now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO activity (id, kind, actor_role, initiator_role, summary, at)
+             VALUES ('act-old', 'git.push', 'app', 'person', 'Pushed long ago.', ?1)",
+            params![now - crate::activity::RETENTION_MS - 86_400_000],
+        )
+        .unwrap();
+        let _: (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+    }
+
+    let dest = out.0.join("export");
+    let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+    assert_eq!(report.counts["activity"], 1);
+    assert_no_secrets(&dest);
+    let text = String::from_utf8(
+        export_texts(&dest)
+            .get("workspace/activity.json")
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    assert!(!text.contains("ghp_"), "{text}");
+    assert!(text.contains("[secret removed]"), "{text}");
+    assert!(!text.contains("act-old"), "{text}");
+    assert!(!text.contains("Pushed long ago"), "{text}");
+
+    let target_store = open_store(&target);
+    let preview = inspect(&target, &dest.to_string_lossy()).unwrap();
+    assert_eq!(preview.workspace.unwrap().activity, 1);
+
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport::default()),
+    };
+    let conn = target_store.lock_conn().unwrap();
+    let imported = import_held(&target, &conn, &request).unwrap();
+    assert_eq!(imported.activity_added, 1, "{imported:?}");
+    assert_eq!(imported.sessions_added, 0);
+    let again = import_held(&target, &conn, &request).unwrap();
+    assert_eq!(again.activity_added, 0, "{again:?}");
+
+    let page = crate::activity::list(&conn, &crate::activity::ListQuery::default(), now).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id, "act-fresh");
+    assert!(
+        !page.entries[0].summary.contains("ghp_"),
+        "{}",
+        page.entries[0].summary
+    );
+    assert!(scrubber().findings(&page.entries[0].summary).is_empty());
+    assert!(page.entries[0].summary.contains("[secret removed]"));
+}
