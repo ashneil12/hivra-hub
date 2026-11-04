@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 72] = [
+const APP_ACTIONS: [&str; 76] = [
     "app.version",
     "app.ship",
     "models.list",
