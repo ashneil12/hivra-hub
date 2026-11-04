@@ -60,3 +60,16 @@ test("each agent keeps its own profile, and a chosen folder is not deleted", asy
   await expect(page.locator("body")).not.toHaveAttribute("data-deleted", /milo/);
   await expect(milo).toHaveCount(0);
 });
+
+test("the row says which browser it drives", async ({ page }) => {
+  await page.goto("/tests/browser/browser-plugin.html");
+  const list = page.getByRole("region", { name: "Browser profiles" });
+  await expect(list).toContainText("This uses Google Chrome.");
+  await expect(list.getByRole("button", { name: "Get the browser" })).toHaveCount(0);
+
+  await page.goto("/tests/browser/browser-plugin.html?chrome=missing");
+  const missing = page.getByRole("region", { name: "Browser profiles" });
+  await expect(missing).toContainText("Google Chrome isn't installed.");
+  await missing.getByRole("button", { name: "Get the browser" }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-get-browser", "1");
+});

@@ -18,6 +18,16 @@ let profiles: Profile[] = [
 const deleted: string[] = [];
 
 installFakeTauri("main", (command, args) => {
+  const missing = new URLSearchParams(window.location.search).get("chrome") === "missing";
+  if (command === "browser_engine") {
+    return missing
+      ? { chrome: false, message: "Google Chrome isn't installed." }
+      : { chrome: true, message: "This uses Google Chrome." };
+  }
+  if (command === "browser_get_browser") {
+    document.body.dataset.getBrowser = "1";
+    return null;
+  }
   if (command === "browser_drives") return drives;
   if (command === "browser_stop") {
     drives = drives.filter((drive) => drive.id !== args.id);

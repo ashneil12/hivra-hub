@@ -37,7 +37,9 @@ pub use wiring::run_main;
 #[cfg(test)]
 pub(crate) use compat::Target;
 pub(crate) use install::{update as update_plugin, InstallResult, RequestedBy};
-pub(crate) use source::{InstallSource, Tools};
+#[cfg(test)]
+pub(crate) use source::sha512_integrity;
+pub(crate) use source::{pack_exact, real_sha512_pin, InstallSource, Tools};
 
 static MANAGED_SKILLS: OnceLock<PathBuf> = OnceLock::new();
 

@@ -1703,5 +1703,20 @@ pub fn browser_stop_all(app: tauri::AppHandle) -> Result<(), String> {
     stop_all(&app_data(&app)?)
 }
 
+/// Which browser the engine drives. Chrome when it is installed, and a plain line when it is not.
+#[tauri::command(async)]
+pub fn browser_engine() -> engine::EngineRow {
+    engine::engine_row(engine::chrome_look())
+}
+
+/// Download Chromium into the plugin's data folder. This does not use the person's Chrome profile.
+#[tauri::command(async)]
+pub fn browser_get_browser(app: tauri::AppHandle) -> Result<(), String> {
+    let host = crate::plugins::host(&app)?;
+    engine::get_browser(&host.data("browser"))
+}
+
+pub(crate) mod engine;
+
 #[cfg(test)]
 mod tests;

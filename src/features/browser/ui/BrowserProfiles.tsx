@@ -4,6 +4,18 @@ import { invoke } from "@tauri-apps/api/core";
 import { takeLatest } from "../model/latest";
 
 type Profile = { id: string; name: string; watch: boolean; own: boolean; path: string };
+type Engine = { chrome: boolean; message: string };
+
+function isEngine(value: unknown): value is Engine {
+  if (!value || typeof value !== "object") return false;
+  const row = value as { chrome?: unknown; message?: unknown };
+  return (
+    typeof row.chrome === "boolean" &&
+    typeof row.message === "string" &&
+    row.message.length > 0 &&
+    row.message.length <= 200
+  );
+}
 
 const BTN =
   "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -21,7 +33,12 @@ export function BrowserProfiles() {
   const [open, setOpen] = useState<string | null>(null);
   const [folder, setFolder] = useState("");
   const [hint, setHint] = useState<string | null>(null);
+  const [engine, setEngine] = useState<Engine | null>(null);
+  const [engineHint, setEngineHint] = useState<string | null>(null);
+  const [getting, setGetting] = useState(false);
   const ticket = useRef(0);
+  const engineTicket = useRef(0);
+  const getTicket = useRef(0);
 
   const apply = useCallback((asked: number, next: Profile[] | undefined, problem: string | null) => {
     if (takeLatest(asked, ticket.current, true) === undefined) return;
@@ -39,6 +56,40 @@ export function BrowserProfiles() {
   useEffect(() => {
     load();
   }, [load]);
+
+  useEffect(() => {
+    const asked = ++engineTicket.current;
+    let live = true;
+    invoke("browser_engine")
+      .then((value) => {
+        if (!live || asked !== engineTicket.current) return;
+        setEngine(isEngine(value) ? value : null);
+      })
+      .catch(() => {
+        if (live && asked === engineTicket.current) setEngine(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const getBrowser = () => {
+    const asked = ++getTicket.current;
+    setGetting(true);
+    setEngineHint(null);
+    invoke("browser_get_browser")
+      .then(() => {
+        if (asked !== getTicket.current) return;
+        setEngineHint(null);
+      })
+      .catch((reason) => {
+        if (asked !== getTicket.current) return;
+        setEngineHint(note(reason));
+      })
+      .finally(() => {
+        if (asked === getTicket.current) setGetting(false);
+      });
+  };
 
   const ask = (command: string, args: Record<string, unknown>) => {
     const asked = ++ticket.current;
@@ -61,6 +112,17 @@ export function BrowserProfiles() {
     <section aria-label="Browser profiles" className="mt-6 flex flex-col gap-3">
       <h3 className="text-[13px] font-medium text-content">Browser profiles</h3>
       <p className="text-[13px] text-content/70">Each agent keeps its own logins here, not in your browser.</p>
+      {engine ? (
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-[13px] text-content/70">{engine.message}</p>
+          {engine.chrome ? null : (
+            <button type="button" className={BTN} disabled={getting} onClick={getBrowser}>
+              Get the browser
+            </button>
+          )}
+        </div>
+      ) : null}
+      {engineHint ? <p className="text-[13px] text-content/70">{engineHint}</p> : null}
       {error ? <p className="text-[13px] text-content/70">{error}</p> : null}
       {profiles.length === 0 ? <p className="text-[13px] text-content/50">No browser profiles yet.</p> : null}
       <ul className="flex flex-col gap-3">

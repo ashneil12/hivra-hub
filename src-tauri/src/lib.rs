@@ -793,6 +793,9 @@ pub fn run() {
             browser::browser_drives,
             browser::browser_stop,
             browser::browser_stop_all,
+            // WP-43: which browser, and downloading one when Chrome is missing.
+            browser::browser_engine,
+            browser::browser_get_browser,
             // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
             plugins::verify::plugins_verify_offer,
             plugins::verify::plugins_verify_decline,
