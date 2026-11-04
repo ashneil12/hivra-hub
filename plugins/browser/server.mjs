@@ -15,6 +15,10 @@ const SECRET_KEY =
   /^(password|passwd|pwd|cookie|set-cookie|authorization|proxy-authorization|x-csrf-token|x-xsrf-token)$/i;
 const HEADER_LINE =
   /^(cookie|set-cookie|authorization|proxy-authorization|x-csrf-token|x-xsrf-token)\s*:\s*.*$/gim;
+const SNAPSHOT_PASSWORD =
+  /^(\s*(?:-\s*)?(?:textbox|input|searchbox|combobox)\s+"[^"\n]*password[^"\n]*"(?:\s+\[[^\]]*\])?\s*:\s*)(.*)$/i;
+const INLINE_SECRET =
+  /(^|[^\w-])((?:set-cookie|cookie|password|passwd|pwd)\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\s]+)/gi;
 const PAGE_TOOL = /snapshot|content|navigate|page|html|text|console|network|pdf/i;
 
 export function isEvaluateTool(name) {
@@ -92,6 +96,13 @@ function asJson(text) {
   }
 }
 
+function redactLine(line) {
+  const snapshot = line.replace(SNAPSHOT_PASSWORD, (all, lead, value) =>
+    String(value).trim() === "" ? all : `${lead}[redacted]`,
+  );
+  return snapshot.replace(INLINE_SECRET, (_all, pre, lead) => `${pre}${lead}[redacted]`);
+}
+
 function redactText(text) {
   const headers = text.replace(HEADER_LINE, (line) => `${line.split(":")[0]}: [redacted]`);
   const whole = asJson(headers);
@@ -101,8 +112,8 @@ function redactText(text) {
     .split("\n")
     .map((line) => {
       const parsed = asJson(line);
-      if (parsed === undefined) return line;
-      return line.replace(line.trim(), parsed);
+      if (parsed !== undefined) return line.replace(line.trim(), parsed);
+      return redactLine(line);
     })
     .join("\n");
 }

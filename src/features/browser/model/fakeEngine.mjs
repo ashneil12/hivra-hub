@@ -54,7 +54,7 @@ process.stdin.on("data", (chunk) => {
           content: [
             {
               type: "text",
-              text: 'Cookie: session=secret\n{"password":"swordfish"}\nThe password field is on the form.',
+              text: 'Cookie: session=secret\ntextbox "Password": swordfish\n{"password":"swordfish"}\nlanded; cookie=supersecretvalue; done\nThe password field is on the form.',
             },
             { type: "password", value: "swordfish" },
           ],

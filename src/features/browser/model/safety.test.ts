@@ -94,6 +94,26 @@ describe("passwords and cookies stay out of tool output", () => {
     expect(redact({ title: "", items: [] })).toEqual({ title: "", items: [] });
     expect(redact(null)).toBeNull();
   });
+
+  it("redacts a password snapshot line and a cookie value that is not on its own line", () => {
+    const out = redact({
+      content: [
+        {
+          type: "text",
+          text: 'textbox "Password": swordfish\nThe password field is on the form.',
+        },
+        { type: "text", text: "landed; cookie=supersecretvalue; done" },
+      ],
+    }) as { content: Array<{ text?: string }> };
+    const snapshot = out.content[0]?.text ?? "";
+    expect(snapshot).toContain('textbox "Password": [redacted]');
+    expect(snapshot).toContain("The password field is on the form.");
+    expect(snapshot).not.toContain("swordfish");
+    const cookie = out.content[1]?.text ?? "";
+    expect(cookie).toContain("landed;");
+    expect(cookie).toContain("[redacted]");
+    expect(cookie).not.toContain("supersecretvalue");
+  });
 });
 
 describe("the engine starts headless, on this agent's profile", () => {
@@ -224,8 +244,10 @@ describe("the proxy in front of a fake engine", () => {
       result: { content: Array<{ text?: string; value?: string }>; headers: { Cookie: string; "Content-Type": string } };
     };
     expect(snap.result.content[0]?.text).toContain("Cookie: [redacted]");
+    expect(snap.result.content[0]?.text).toContain('textbox "Password": [redacted]');
     expect(snap.result.content[0]?.text).toContain("The password field is on the form.");
     expect(snap.result.content[0]?.text).not.toContain("swordfish");
+    expect(snap.result.content[0]?.text).not.toContain("supersecretvalue");
     expect(snap.result.content[1]?.value).toBe("[redacted]");
     expect(snap.result.headers.Cookie).toBe("[redacted]");
     expect(snap.result.headers["Content-Type"]).toBe("text/html");
