@@ -165,6 +165,17 @@ pub fn cas(dir: &Path, expected: u64, doc: Value) -> Result<bool, String> {
         return Ok(false);
     }
     let tmp = path.with_extension("json.tmp");
+    // A link at the temp path would be followed by File::create and would
+    // overwrite whatever it points at. Remove the link itself first.
+    if is_symlink(&tmp) {
+        if !parent_inside(dir, &tmp) {
+            return Err("Couldn't save memory.".to_string());
+        }
+        fs::remove_file(&tmp).map_err(|_| "Couldn't save memory.".to_string())?;
+        if is_symlink(&tmp) {
+            return Err("Couldn't save memory.".to_string());
+        }
+    }
     let mut file = File::create(&tmp).map_err(|_| "Couldn't save memory.".to_string())?;
     std::io::Write::write_all(&mut file, &bytes)
         .map_err(|_| "Couldn't save memory.".to_string())?;
@@ -308,6 +319,34 @@ mod tests {
         assert!(fs::read_to_string(outside.join("doc.json"))
             .unwrap()
             .contains(secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_temp_file_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        let outside = tmp.path.join("outside.json");
+        let marker = "keep-these-bytes";
+        fs::write(&outside, marker).unwrap();
+        let dir = tmp.path.join("memory");
+        fs::create_dir(&dir).unwrap();
+        symlink(&outside, dir.join("doc.json.tmp")).unwrap();
+        assert!(cas(&dir, 0, json!({"items": []})).unwrap());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), marker);
+        let doc = dir.join("doc.json");
+        assert!(doc.is_file());
+        assert!(!is_symlink(&doc));
+        assert!(fs::read_to_string(&doc)
+            .unwrap()
+            .contains("\"revision\": 1"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symlink_temp_file_is_not_followed() {
+        // Creating a symlink needs extra rights here. The unix test covers it.
+        assert!(cfg!(windows));
     }
 
     #[cfg(windows)]

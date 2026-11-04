@@ -779,9 +779,26 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
 
 fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = path.parent() {
+        if is_link(parent) {
+            return Err("Couldn't save the progress.".to_string());
+        }
         fs::create_dir_all(parent).map_err(|_| "Couldn't save the progress.".to_string())?;
     }
     let tmp = path.with_extension("json.tmp");
+    // A link at the temp path would be followed by the write and would
+    // overwrite whatever it points at. Remove the link itself first.
+    if is_link(&tmp) {
+        let Some(parent) = path.parent() else {
+            return Err("Couldn't save the progress.".to_string());
+        };
+        if is_link(parent) || tmp.parent() != Some(parent) || !inside(parent, parent) {
+            return Err("Couldn't save the progress.".to_string());
+        }
+        fs::remove_file(&tmp).map_err(|_| "Couldn't save the progress.".to_string())?;
+        if is_link(&tmp) {
+            return Err("Couldn't save the progress.".to_string());
+        }
+    }
     fs::write(&tmp, bytes).map_err(|_| "Couldn't save the progress.".to_string())?;
     replace_file(&tmp, path)
 }
@@ -2202,6 +2219,41 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_symlink_proposal_is_not_listed() {
+        // Creating a symlink needs extra rights here. The unix test covers it.
+        assert!(cfg!(windows));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_temp_file_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        let outside = tmp.path.join("outside.json");
+        let marker = "keep-these-bytes";
+        fs::write(&outside, marker).unwrap();
+        plant(
+            &tmp.path,
+            "hi-abcdef01",
+            "- Likes small commits [src: sess-1 #m1]\n",
+        );
+        symlink(
+            &outside,
+            tmp.path.join("proposals/hi-abcdef01/proposal.json.tmp"),
+        )
+        .unwrap();
+        assert!(review_proposal(&tmp.path, "hi-abcdef01", "confirmed").unwrap());
+        assert_eq!(fs::read_to_string(&outside).unwrap(), marker);
+        let meta_path = tmp.path.join("proposals/hi-abcdef01/proposal.json");
+        assert!(meta_path.is_file());
+        assert!(!is_link(&meta_path));
+        let meta: Value = serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
+        assert_eq!(meta["status"], "confirmed");
+        assert_eq!(meta["applied"], false);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symlink_temp_file_is_not_followed() {
         // Creating a symlink needs extra rights here. The unix test covers it.
         assert!(cfg!(windows));
     }
