@@ -8,6 +8,7 @@ import type { Capability, PageBlock, PageSpec } from "./pageSpec";
 import { validatePageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 import { forUser } from "../../hub/model/userName";
+import { hasOwnCode, setOwnCode } from "./ownCode";
 
 export type { BlockKind, PageBlock } from "./pageSpec";
 
@@ -410,15 +411,19 @@ export function useNewVersion(page: Page, version: { id?: string; spec: PageSpec
   const allowNew = !!opts.allowNew;
   const permissions = keptWith(page, version.spec, allowNew);
   const next: Page = { ...page, spec: version.spec, title: version.spec.title, permissions, newVersion: undefined };
+  // The version Ash used is his page's code from now on (ownCode.ts); a refused write leaves it as it was.
+  const had = hasOwnCode(page.id);
+  setOwnCode(page.id, true);
+  const kept = (ok: boolean) => { if (!ok) setOwnCode(page.id, had); return ok; };
   const b = backend();
   if (b.kind === "local" || !version.id) {
-    if (b.kind === "record") return write(b.store, page.id, next, "page-update", { pageId: page.id, spec: version.spec, permissions });
+    if (b.kind === "record") return write(b.store, page.id, next, "page-update", { pageId: page.id, spec: version.spec, permissions }).then(kept);
     local = local.map((p) => (p.id === page.id ? next : p));
     saveLocal(local);
     changed();
     return Promise.resolve(true);
   }
-  return write(b.store, page.id, next, "page-update", { pageId: page.id, useVersion: version.id, ...(allowNew ? { permissions } : {}) });
+  return write(b.store, page.id, next, "page-update", { pageId: page.id, useVersion: version.id, ...(allowNew ? { permissions } : {}) }).then(kept);
 }
 /** "Throw away" on a new version: the page stays as it was. */
 export function dropNewVersion(page: Page, versionId: string): Promise<boolean> {

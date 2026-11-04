@@ -343,7 +343,7 @@ fn query(
     Ok(rows)
 }
 
-fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
     Ok(query(conn, "WHERE id = ?1", &[&id])?.into_iter().next())
 }
 

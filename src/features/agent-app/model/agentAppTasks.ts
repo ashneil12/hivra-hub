@@ -61,6 +61,7 @@ import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integra
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
+import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import {
   bridgeFamily,
   GROK_BRIDGE_MODEL_ID,
@@ -122,6 +123,9 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.cancel", ["taskId", "reason"]],
   ["tasks.cannot", ["taskId", "reason"]],
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
+  // Hivra WP-14 (firstmate/model/steering.ts).
+  ["tasks.message", ["taskId", "text", "whenBusy"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
 ];
 
 /** What a delegation's row records beyond a plain monitored launch. */
@@ -174,6 +178,8 @@ export type AgentAppTasksHost = {
    * with the reason (src-tauri/src/firstmate/mod.rs check_depth).
    */
   checkDepth?(ownerSession: string): Promise<number>;
+  /** Hivra WP-14: steering messages and decisions (firstmate/model/steering.ts). */
+  firstMate?: FirstMateTasksHost;
   /**
    * The agent says it cannot finish this task, with its plain reason (the declared `blocked` stall, delegations.rs). It
    * is Ash's at once; it stands until the row moves. False: the row moved before it could be recorded.
@@ -1191,6 +1197,27 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
   return { project, ...limits, line: limitsLine(projectName(folder), limits) };
 }
 
+/** Hivra WP-14: task_message and ask_person, on the caller's own tasks. */
+async function firstMateTool(
+  source: Session,
+  requestId: string,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+) {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!tasks.firstMate) throw new Error("This build can't steer workers or ask the person yet.");
+  if (action === "tasks.message") {
+    const [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 128)]);
+    return taskMessage(source, requestId, input, row, tasks.firstMate);
+  }
+  const ids = taskIds(input.taskIds) ?? [];
+  const rows = ids.length ? await ownRows(source, tasks, ids) : [];
+  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
+  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
+}
+
 /** The `tasks.*` actions (agentApp.ts dispatches them here after checking their fields). */
 export function handleTasks(
   source: Session,
@@ -1215,6 +1242,9 @@ export function handleTasks(
       return answer(source, input, host);
     case "tasks.workers":
       return Promise.resolve().then(() => workers(source, input, host));
+    case "tasks.message":
+    case "tasks.ask":
+      return firstMateTool(source, requestId, action, input, host);
   }
   return Promise.reject(new Error(`Unknown app action: ${action}`));
 }

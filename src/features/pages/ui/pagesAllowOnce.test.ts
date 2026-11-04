@@ -81,3 +81,12 @@ it("the Agents page names each row's buttons for its agent, and a page kept by a
   const mine = { ...old, by: "Projects Manager" };
   expect(withReadySpec(mine)).toBe(mine);
 });
+
+it("a ready-made page Ash used a new version of keeps that version (the ready-made code doesn't replace it)", async () => {
+  const { setOwnCode } = await import("../model/ownCode");
+  const changedByAsh = { ...pageFromSpec({ ...agents.spec, html: `${agents.spec.html}<p data-rebuilt>mine</p>` }, agents.request, READY_BY, "today", [], 1), id: "p-mine" };
+  expect(withReadySpec(changedByAsh)).not.toBe(changedByAsh);
+  setOwnCode("p-mine", true);
+  expect(withReadySpec(changedByAsh)).toBe(changedByAsh);
+  setOwnCode("p-mine", false);
+});

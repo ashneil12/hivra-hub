@@ -173,6 +173,10 @@ export function liveStep(blocks: readonly Block[], cwd?: string, detail: StepDet
   for (const block of seen) if (isToolBlock(block)) lastTool = block;
   const lastStep = lastTool ? toolStep(lastTool, cwd, detail) : undefined;
   const thinking = (key: string): LiveStep => (lastStep ? { key, label: "Thinking", lastStep } : { key, label: "Thinking" });
+  // The words a Lead wrote as it started a workflow ("Workflow started.") were written while the run went on. Once the
+  // run has ended and nothing came after them, the Lead is deciding what comes next, not writing (workflow-run.spec.ts).
+  const before = seen[seen.indexOf(latest) - 1];
+  if (isProseBlock(latest) && before?.workflowRun) return thinking(`after:${before.id}`);
   if (isToolBlock(latest)) {
     const status = latest.tool?.status?.toLowerCase();
     if (latest.tool?.background && !DONE.has(status ?? "")) return { key: `bg:${latest.id}`, label: "Waiting on a background task" };

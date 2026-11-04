@@ -15,6 +15,7 @@ pub mod connectors;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod decisions;
 mod delegations;
 mod dev_fault;
 mod devin_config;
@@ -87,6 +88,8 @@ mod session_store;
 pub mod ship;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-14: steering messages to running workers.
+mod steering;
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -386,6 +389,8 @@ pub fn run() {
             }
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
+            // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
+            plugins::defaults::start(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app
@@ -513,6 +518,13 @@ pub fn run() {
             firstmate::firstmate_checkout_snapshot,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
+            steering::steering_record,
+            steering::steering_pending,
+            steering::steering_list,
+            steering::steering_settle,
+            decisions::decisions_ask,
+            decisions::decisions_answer,
+            decisions::decisions_list,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,

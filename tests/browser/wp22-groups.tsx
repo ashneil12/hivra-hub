@@ -1,0 +1,44 @@
+import { createRoot } from "react-dom/client";
+import { ensureBuiltInMonos } from "../../src/features/hub/model/builtInMonos";
+import { createChat, getChat, setGroupChatRunner, setRoomDecider } from "../../src/features/hub/model/hubChats";
+import { GroupChatView } from "../../src/features/hub/ui/GroupChatView";
+import "../../src/styles/index.css";
+
+// WP-22 proof fixture (browser preview, not Ash's Mac; made-up data labelled Example:): the real room view with a
+// stand-in for each Mono's session and no quick model. The lead's goal turn asks Ash to choose, so a goal run ends on
+// needs input.
+
+Object.assign(window, {
+  __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
+  __TAURI_INTERNALS__: {
+    metadata: { currentWindow: { label: "main" }, currentWebview: { label: "main" } },
+    transformCallback: () => 0,
+    invoke: async (command: string) => (command === "plugin:event|listen" ? 0 : null),
+  },
+});
+
+localStorage.clear();
+ensureBuiltInMonos();
+const room = createChat("hub", "Example: launch room", ["chief-of-staff", "projects-manager", "frank"]);
+setRoomDecider(null);
+setGroupChatRunner({
+  run: async (request) => {
+    await new Promise((r) => setTimeout(r, 300));
+    if (request.monoId === "chief-of-staff" && request.prompt.includes("<room_control>"))
+      return {
+        kind: "reply",
+        text: 'Example: two prices are on the table, 9 or 12 a month.\n<room_control>{"status":"needs_input","reason":"Ash picks between 9 and 12 a month"}</room_control>',
+      };
+    return { kind: "reply", text: request.monoId === "chief-of-staff" ? "Example: morning." : "NO_REPLY" };
+  },
+  stop: () => undefined,
+});
+Object.assign(window, { __wp22Room: () => getChat(room.id) });
+
+createRoot(document.getElementById("root")!).render(
+  <div className="flex h-full" data-proof-room>
+    <main className="flex h-full min-w-0 flex-1 flex-col">
+      <GroupChatView chatId={room.id} projectId="hub" />
+    </main>
+  </div>,
+);

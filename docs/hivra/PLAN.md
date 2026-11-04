@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-33 work packages in four waves. A wave's packages run in parallel; a package starts when everything it depends on
+34 work packages in four waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -60,10 +60,11 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 
 | WP | Title | Size | Depends on | Grok OK |
 | --- | --- | --- | --- | --- |
-| [05](work/WP-05-personas-to-monos.md) | Leadership personas become Mono templates | M | 10, 30 | no |
+| [05](work/WP-05-personas-to-monos.md) | Leadership personas become Mono templates | M | 10, 16, 30 | no |
 | [11](work/WP-11-watcher.md) | Watcher and wake queue | L | 10 | no |
 | [12](work/WP-12-delivery.md) | Delivery modes and merge authority | M | 10 | no |
-| [13](work/WP-13-crew-routing.md) | Crew routing and reroute | M | 10 | no |
+| [13](work/WP-13-crew-routing.md) | Crew routing and reroute | M | 10, 16 | no |
+| [16](work/WP-16-retire-grok-bridge.md) | Retire the Grok bridge | M | 01, 22 | no |
 | [14](work/WP-14-steering-decisions.md) | Steering and decisions | M | 10 | no |
 | [40](work/WP-40-gates.md) | Completion and verdict gates | M | 10 | no |
 | [31](work/WP-31-plugin-install.md) | Plugin install, update, rollback | L | 30 | no |
@@ -112,7 +113,7 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 
 - **`App.tsx` conflicts.** It is about 17,000 lines and several packages hook into it. Keep hooks small, merge
   App.tsx-touching PRs one at a time, rebase the rest.
-- **Retiring code that is still used.** Packages 04, 05 and 06 search for every caller and remove code and tests
+- **Retiring code that is still used.** Packages 04, 05, 06 and 16 search for every caller and remove code and tests
   together; the daily app keeps running its shipped build until Ash ships the wave.
 - **Native-only behaviour.** Browser specs can't see the native window. Any package touching windows, menus,
   Keychain, or the bundle keeps its dev-copy check open until done.

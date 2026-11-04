@@ -32,6 +32,8 @@ const READ_MAX: i64 = 200;
 /// Origins nobody came back for are let go after this long.
 const ORIGIN_KEEP: i64 = 14 * 24 * 60 * 60_000;
 const KINDS: [&str; 4] = ["ash", "mono", "system", "notice"];
+/// WP-22: a room's responder modes besides the default ("everyone", stored as none).
+const RESPONDERS: [&str; 4] = ["lead", "mentions", "everyone", "auto"];
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -92,7 +94,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            key TEXT PRIMARY KEY,
            value TEXT NOT NULL
          );",
-    )
+    )?;
+    // WP-22: who answers in the room. Added after the first rooms were written: older stores get the column here, and an
+    // older build (a ship rollback) never reads it, so its rooms answer as they always did.
+    let has_responder = conn
+        .prepare("SELECT 1 FROM pragma_table_info('rooms') WHERE name = 'responder'")?
+        .exists([])?;
+    if !has_responder {
+        conn.execute_batch("ALTER TABLE rooms ADD COLUMN responder TEXT;")?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
@@ -105,6 +116,9 @@ pub struct RoomInput {
     pub is_default: bool,
     #[serde(default)]
     pub lead_id: Option<String>,
+    /// WP-22: lead, mentions, everyone or auto; none is everyone.
+    #[serde(default)]
+    pub responder: Option<String>,
     #[serde(default)]
     pub seated: bool,
     #[serde(default)]
@@ -198,6 +212,8 @@ pub struct Room {
     pub is_default: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lead_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub responder: Option<String>,
     pub seated: bool,
     pub created_at: i64,
     pub updated_at: i64,
@@ -286,6 +302,14 @@ fn check_room(input: &RoomInput) -> Result<(), String> {
     if let Some(lead) = &input.lead_id {
         id_ok(lead, "lead id")?;
     }
+    if let Some(mode) = &input.responder {
+        if !RESPONDERS.contains(&mode.as_str()) {
+            return Err(format!(
+                "responder must be one of {}",
+                RESPONDERS.join(", ")
+            ));
+        }
+    }
     if input.member_ids.len() > MEMBERS_MAX {
         return Err(format!("a room has at most {MEMBERS_MAX} members"));
     }
@@ -340,8 +364,8 @@ fn upsert_room_in(
     let created = input.created_at.unwrap_or(now);
     let inserted = conn
         .execute(
-            "INSERT OR IGNORE INTO rooms (id, project_id, name, is_default, lead_id, seated, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT OR IGNORE INTO rooms (id, project_id, name, is_default, lead_id, seated, created_at, updated_at, responder)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 input.id,
                 input.project_id,
@@ -350,7 +374,8 @@ fn upsert_room_in(
                 input.lead_id,
                 input.seated,
                 created,
-                now
+                now,
+                input.responder
             ],
         )
         .map_err(|e| e.to_string())?
@@ -360,7 +385,8 @@ fn upsert_room_in(
     }
     if !inserted {
         conn.execute(
-            "UPDATE rooms SET project_id = ?2, name = ?3, is_default = ?4, lead_id = ?5, seated = ?6, updated_at = ?7
+            "UPDATE rooms SET project_id = ?2, name = ?3, is_default = ?4, lead_id = ?5, seated = ?6, updated_at = ?7,
+               responder = ?8
              WHERE id = ?1",
             params![
                 input.id,
@@ -369,7 +395,8 @@ fn upsert_room_in(
                 input.is_default,
                 input.lead_id,
                 input.seated,
-                now
+                now,
+                input.responder
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -564,7 +591,7 @@ fn message(conn: &Connection, room: &str, id: &str) -> Result<Option<Message>, S
 pub fn load(conn: &Connection, per_conversation: i64) -> Result<Snapshot, String> {
     let mut rooms = conn
         .prepare(
-            "SELECT id, project_id, name, is_default, lead_id, seated, created_at, updated_at
+            "SELECT id, project_id, name, is_default, lead_id, seated, created_at, updated_at, responder
              FROM rooms ORDER BY created_at, id",
         )
         .map_err(|e| e.to_string())?
@@ -578,6 +605,7 @@ pub fn load(conn: &Connection, per_conversation: i64) -> Result<Snapshot, String
                 seated: row.get(5)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
+                responder: row.get(8)?,
                 member_ids: Vec::new(),
                 conversations: Vec::new(),
             })
@@ -1019,6 +1047,36 @@ mod tests {
             member_ids: members.iter().map(|m| m.to_string()).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_rooms_responder_mode_is_kept_cleared_and_checked_and_an_older_store_gets_the_column() {
+        // A store from before WP-22: the rooms table has no responder column until ensure_tables adds it.
+        let old = Connection::open_in_memory().unwrap();
+        old.execute_batch(
+            "CREATE TABLE rooms (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
+               is_default INTEGER NOT NULL DEFAULT 0, lead_id TEXT, seated INTEGER NOT NULL DEFAULT 0,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+             INSERT INTO rooms VALUES ('old', 'hub', 'Old room', 0, NULL, 0, 1, 1);",
+        )
+        .unwrap();
+        ensure_tables(&old).unwrap();
+        ensure_tables(&old).unwrap();
+        assert_eq!(load(&old, 10).unwrap().rooms[0].responder, None);
+
+        let mut c = conn();
+        let mut r = room("r", &["frank"]);
+        r.responder = Some("auto".into());
+        upsert_room(&mut c, &r, 5).unwrap();
+        assert_eq!(
+            load(&c, 10).unwrap().rooms[0].responder.as_deref(),
+            Some("auto")
+        );
+        r.responder = None;
+        upsert_room(&mut c, &r, 6).unwrap();
+        assert_eq!(load(&c, 10).unwrap().rooms[0].responder, None);
+        r.responder = Some("loudest".into());
+        assert!(upsert_room(&mut c, &r, 7).is_err());
     }
 
     fn thread(room: &str, id: &str, at: i64) -> ConversationInput {

@@ -142,7 +142,8 @@ function statusProtocol(isolation: BriefIsolation): string {
 
 const STEERING = [
   "## Steering",
-  "Your first mate may send you messages while you work; they arrive in this chat as new turns. They outrank this brief where they differ, and the person's own words outrank both.",
+  "Your first mate may send you messages while you work; they arrive in this chat, inside your running turn or as your next one. They outrank this brief where they differ, and the person's own words outrank both.",
+  "A question you can't answer from this brief goes to your first mate (task_cannot, or your report), never to the person.",
 ].join("\n");
 
 /**

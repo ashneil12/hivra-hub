@@ -1,0 +1,633 @@
+{
+  "about": "Made by src-tauri/src/plugins/defaults_tests.rs (the_pstack_snapshot_for_the_session_test_is_current). Don't edit by hand.",
+  "off": {
+    "files": [
+      {
+        "dir": true,
+        "path": "app-data"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data/pstack"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/installed"
+      },
+      {
+        "carried": "pstack",
+        "path": "app-data/plugins/installed/pstack"
+      },
+      {
+        "dir": true,
+        "path": "home"
+      }
+    ],
+    "wiring": {
+      "claudeMcpServers": {},
+      "claudePluginDirs": [],
+      "codexMcpServers": {},
+      "reports": []
+    }
+  },
+  "on": {
+    "files": [
+      {
+        "dir": true,
+        "path": "app-data"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/pstack"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/pstack/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/pstack/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"if you want to go fast, go deep first. pstack helps you write less, but higher quality code. rigorous agent workflows you can parallelize with confidence.\",\"name\":\"pstack\",\"version\":\"0.15.36\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/pstack/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/architect",
+        "path": "app-data/plugins/claude/pstack/skills/architect"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/arena",
+        "path": "app-data/plugins/claude/pstack/skills/arena"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/automate-me",
+        "path": "app-data/plugins/claude/pstack/skills/automate-me"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/benchmark-checklist",
+        "path": "app-data/plugins/claude/pstack/skills/benchmark-checklist"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/blast-radius",
+        "path": "app-data/plugins/claude/pstack/skills/blast-radius"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/bro",
+        "path": "app-data/plugins/claude/pstack/skills/bro"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/correct",
+        "path": "app-data/plugins/claude/pstack/skills/correct"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/create-formal-verification-skill",
+        "path": "app-data/plugins/claude/pstack/skills/create-formal-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/create-verification-skill",
+        "path": "app-data/plugins/claude/pstack/skills/create-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/figure-it-out",
+        "path": "app-data/plugins/claude/pstack/skills/figure-it-out"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/how",
+        "path": "app-data/plugins/claude/pstack/skills/how"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/in-your-own-words",
+        "path": "app-data/plugins/claude/pstack/skills/in-your-own-words"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/interrogate",
+        "path": "app-data/plugins/claude/pstack/skills/interrogate"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/ketchup",
+        "path": "app-data/plugins/claude/pstack/skills/ketchup"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/ketchup-video",
+        "path": "app-data/plugins/claude/pstack/skills/ketchup-video"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/maintain-formal-verification-skill",
+        "path": "app-data/plugins/claude/pstack/skills/maintain-formal-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/maintain-verification-skill",
+        "path": "app-data/plugins/claude/pstack/skills/maintain-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/make-bot-ui",
+        "path": "app-data/plugins/claude/pstack/skills/make-bot-ui"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/no-comments",
+        "path": "app-data/plugins/claude/pstack/skills/no-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/poteto-help",
+        "path": "app-data/plugins/claude/pstack/skills/poteto-help"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/poteto-mode",
+        "path": "app-data/plugins/claude/pstack/skills/poteto-mode"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-attack-the-premise",
+        "path": "app-data/plugins/claude/pstack/skills/principle-attack-the-premise"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-boundary-discipline",
+        "path": "app-data/plugins/claude/pstack/skills/principle-boundary-discipline"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-build-the-lever",
+        "path": "app-data/plugins/claude/pstack/skills/principle-build-the-lever"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-encode-lessons-in-structure",
+        "path": "app-data/plugins/claude/pstack/skills/principle-encode-lessons-in-structure"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-exhaust-the-design-space",
+        "path": "app-data/plugins/claude/pstack/skills/principle-exhaust-the-design-space"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-experience-first",
+        "path": "app-data/plugins/claude/pstack/skills/principle-experience-first"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-explain-the-number",
+        "path": "app-data/plugins/claude/pstack/skills/principle-explain-the-number"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-fix-root-causes",
+        "path": "app-data/plugins/claude/pstack/skills/principle-fix-root-causes"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-foundational-thinking",
+        "path": "app-data/plugins/claude/pstack/skills/principle-foundational-thinking"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-guard-the-context-window",
+        "path": "app-data/plugins/claude/pstack/skills/principle-guard-the-context-window"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-laziness-protocol",
+        "path": "app-data/plugins/claude/pstack/skills/principle-laziness-protocol"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-make-operations-idempotent",
+        "path": "app-data/plugins/claude/pstack/skills/principle-make-operations-idempotent"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-migrate-callers-then-delete-legacy-apis",
+        "path": "app-data/plugins/claude/pstack/skills/principle-migrate-callers-then-delete-legacy-apis"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-minimize-reader-load",
+        "path": "app-data/plugins/claude/pstack/skills/principle-minimize-reader-load"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-model-the-domain",
+        "path": "app-data/plugins/claude/pstack/skills/principle-model-the-domain"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-never-block-on-the-human",
+        "path": "app-data/plugins/claude/pstack/skills/principle-never-block-on-the-human"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-outcome-oriented-execution",
+        "path": "app-data/plugins/claude/pstack/skills/principle-outcome-oriented-execution"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-prove-it-works",
+        "path": "app-data/plugins/claude/pstack/skills/principle-prove-it-works"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-redesign-from-first-principles",
+        "path": "app-data/plugins/claude/pstack/skills/principle-redesign-from-first-principles"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-separate-before-serializing-shared-state",
+        "path": "app-data/plugins/claude/pstack/skills/principle-separate-before-serializing-shared-state"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-sequence-verifiable-units",
+        "path": "app-data/plugins/claude/pstack/skills/principle-sequence-verifiable-units"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-subtract-before-you-add",
+        "path": "app-data/plugins/claude/pstack/skills/principle-subtract-before-you-add"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-test-behavior-not-implementation",
+        "path": "app-data/plugins/claude/pstack/skills/principle-test-behavior-not-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-type-system-discipline",
+        "path": "app-data/plugins/claude/pstack/skills/principle-type-system-discipline"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/recall",
+        "path": "app-data/plugins/claude/pstack/skills/recall"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/reflect",
+        "path": "app-data/plugins/claude/pstack/skills/reflect"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/setup-pstack",
+        "path": "app-data/plugins/claude/pstack/skills/setup-pstack"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/sharpen",
+        "path": "app-data/plugins/claude/pstack/skills/sharpen"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/show-me-your-work",
+        "path": "app-data/plugins/claude/pstack/skills/show-me-your-work"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/statechart",
+        "path": "app-data/plugins/claude/pstack/skills/statechart"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/swarm",
+        "path": "app-data/plugins/claude/pstack/skills/swarm"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/tdd",
+        "path": "app-data/plugins/claude/pstack/skills/tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/teach",
+        "path": "app-data/plugins/claude/pstack/skills/teach"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/technical-writing",
+        "path": "app-data/plugins/claude/pstack/skills/technical-writing"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/typescript-best-practices",
+        "path": "app-data/plugins/claude/pstack/skills/typescript-best-practices"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/unslop",
+        "path": "app-data/plugins/claude/pstack/skills/unslop"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/why",
+        "path": "app-data/plugins/claude/pstack/skills/why"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data/pstack"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/installed"
+      },
+      {
+        "carried": "pstack",
+        "path": "app-data/plugins/installed/pstack"
+      },
+      {
+        "dir": true,
+        "path": "home"
+      },
+      {
+        "dir": true,
+        "path": "home/.agents"
+      },
+      {
+        "dir": true,
+        "path": "home/.agents/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/architect",
+        "path": "home/.agents/skills/architect"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/arena",
+        "path": "home/.agents/skills/arena"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/automate-me",
+        "path": "home/.agents/skills/automate-me"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/benchmark-checklist",
+        "path": "home/.agents/skills/benchmark-checklist"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/blast-radius",
+        "path": "home/.agents/skills/blast-radius"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/bro",
+        "path": "home/.agents/skills/bro"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/correct",
+        "path": "home/.agents/skills/correct"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/create-formal-verification-skill",
+        "path": "home/.agents/skills/create-formal-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/create-verification-skill",
+        "path": "home/.agents/skills/create-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/figure-it-out",
+        "path": "home/.agents/skills/figure-it-out"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/how",
+        "path": "home/.agents/skills/how"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/in-your-own-words",
+        "path": "home/.agents/skills/in-your-own-words"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/interrogate",
+        "path": "home/.agents/skills/interrogate"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/ketchup",
+        "path": "home/.agents/skills/ketchup"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/ketchup-video",
+        "path": "home/.agents/skills/ketchup-video"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/maintain-formal-verification-skill",
+        "path": "home/.agents/skills/maintain-formal-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/maintain-verification-skill",
+        "path": "home/.agents/skills/maintain-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/make-bot-ui",
+        "path": "home/.agents/skills/make-bot-ui"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/no-comments",
+        "path": "home/.agents/skills/no-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/poteto-help",
+        "path": "home/.agents/skills/poteto-help"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/poteto-mode",
+        "path": "home/.agents/skills/poteto-mode"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-attack-the-premise",
+        "path": "home/.agents/skills/principle-attack-the-premise"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-boundary-discipline",
+        "path": "home/.agents/skills/principle-boundary-discipline"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-build-the-lever",
+        "path": "home/.agents/skills/principle-build-the-lever"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-encode-lessons-in-structure",
+        "path": "home/.agents/skills/principle-encode-lessons-in-structure"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-exhaust-the-design-space",
+        "path": "home/.agents/skills/principle-exhaust-the-design-space"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-experience-first",
+        "path": "home/.agents/skills/principle-experience-first"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-explain-the-number",
+        "path": "home/.agents/skills/principle-explain-the-number"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-fix-root-causes",
+        "path": "home/.agents/skills/principle-fix-root-causes"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-foundational-thinking",
+        "path": "home/.agents/skills/principle-foundational-thinking"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-guard-the-context-window",
+        "path": "home/.agents/skills/principle-guard-the-context-window"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-laziness-protocol",
+        "path": "home/.agents/skills/principle-laziness-protocol"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-make-operations-idempotent",
+        "path": "home/.agents/skills/principle-make-operations-idempotent"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-migrate-callers-then-delete-legacy-apis",
+        "path": "home/.agents/skills/principle-migrate-callers-then-delete-legacy-apis"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-minimize-reader-load",
+        "path": "home/.agents/skills/principle-minimize-reader-load"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-model-the-domain",
+        "path": "home/.agents/skills/principle-model-the-domain"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-never-block-on-the-human",
+        "path": "home/.agents/skills/principle-never-block-on-the-human"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-outcome-oriented-execution",
+        "path": "home/.agents/skills/principle-outcome-oriented-execution"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-prove-it-works",
+        "path": "home/.agents/skills/principle-prove-it-works"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-redesign-from-first-principles",
+        "path": "home/.agents/skills/principle-redesign-from-first-principles"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-separate-before-serializing-shared-state",
+        "path": "home/.agents/skills/principle-separate-before-serializing-shared-state"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-sequence-verifiable-units",
+        "path": "home/.agents/skills/principle-sequence-verifiable-units"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-subtract-before-you-add",
+        "path": "home/.agents/skills/principle-subtract-before-you-add"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-test-behavior-not-implementation",
+        "path": "home/.agents/skills/principle-test-behavior-not-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/principle-type-system-discipline",
+        "path": "home/.agents/skills/principle-type-system-discipline"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/recall",
+        "path": "home/.agents/skills/recall"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/reflect",
+        "path": "home/.agents/skills/reflect"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/setup-pstack",
+        "path": "home/.agents/skills/setup-pstack"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/sharpen",
+        "path": "home/.agents/skills/sharpen"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/show-me-your-work",
+        "path": "home/.agents/skills/show-me-your-work"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/statechart",
+        "path": "home/.agents/skills/statechart"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/swarm",
+        "path": "home/.agents/skills/swarm"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/tdd",
+        "path": "home/.agents/skills/tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/teach",
+        "path": "home/.agents/skills/teach"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/technical-writing",
+        "path": "home/.agents/skills/technical-writing"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/typescript-best-practices",
+        "path": "home/.agents/skills/typescript-best-practices"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/unslop",
+        "path": "home/.agents/skills/unslop"
+      },
+      {
+        "link": "app-data/plugins/installed/pstack/skills/why",
+        "path": "home/.agents/skills/why"
+      }
+    ],
+    "wiring": {
+      "claudeMcpServers": {},
+      "claudePluginDirs": [
+        "<TMP>/app-data/plugins/claude/pstack"
+      ],
+      "codexMcpServers": {},
+      "reports": []
+    }
+  },
+  "skills": [
+    "architect",
+    "arena",
+    "automate-me",
+    "benchmark-checklist",
+    "blast-radius",
+    "bro",
+    "correct",
+    "create-formal-verification-skill",
+    "create-verification-skill",
+    "figure-it-out",
+    "how",
+    "in-your-own-words",
+    "interrogate",
+    "ketchup",
+    "ketchup-video",
+    "maintain-formal-verification-skill",
+    "maintain-verification-skill",
+    "make-bot-ui",
+    "no-comments",
+    "poteto-help",
+    "poteto-mode",
+    "principle-attack-the-premise",
+    "principle-boundary-discipline",
+    "principle-build-the-lever",
+    "principle-encode-lessons-in-structure",
+    "principle-exhaust-the-design-space",
+    "principle-experience-first",
+    "principle-explain-the-number",
+    "principle-fix-root-causes",
+    "principle-foundational-thinking",
+    "principle-guard-the-context-window",
+    "principle-laziness-protocol",
+    "principle-make-operations-idempotent",
+    "principle-migrate-callers-then-delete-legacy-apis",
+    "principle-minimize-reader-load",
+    "principle-model-the-domain",
+    "principle-never-block-on-the-human",
+    "principle-outcome-oriented-execution",
+    "principle-prove-it-works",
+    "principle-redesign-from-first-principles",
+    "principle-separate-before-serializing-shared-state",
+    "principle-sequence-verifiable-units",
+    "principle-subtract-before-you-add",
+    "principle-test-behavior-not-implementation",
+    "principle-type-system-discipline",
+    "recall",
+    "reflect",
+    "setup-pstack",
+    "sharpen",
+    "show-me-your-work",
+    "statechart",
+    "swarm",
+    "tdd",
+    "teach",
+    "technical-writing",
+    "typescript-best-practices",
+    "unslop",
+    "why"
+  ]
+}

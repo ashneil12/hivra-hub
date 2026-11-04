@@ -1,0 +1,453 @@
+//! WP-41's proofs: the carried pstack is exactly the pinned copy, a fresh (or existing) data folder gets it switched on
+//! everywhere once, Claude Code and Codex sessions see its skills, and a person's off or remove sticks.
+
+use std::path::{Path, PathBuf};
+
+use serde_json::json;
+
+use super::defaults::{self, Outcome, Pin, SOURCE_KIND, STATE_FILE};
+use super::fsutil;
+use super::registry::{self, Host, Scope, Source};
+use super::wiring;
+
+struct Tmp(PathBuf);
+
+impl Tmp {
+    fn new(label: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("hivra-defaults-{label}-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Tmp(fsutil::canonical(&dir).unwrap())
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn host(tmp: &Tmp) -> Host {
+    let host = Host {
+        root: tmp.path().join("app-data/plugins"),
+        agents_skills: tmp.path().join("home/.agents/skills"),
+    };
+    std::fs::create_dir_all(tmp.path().join("home")).unwrap();
+    host
+}
+
+fn pstack_pin() -> Pin {
+    defaults::pins()
+        .into_iter()
+        .find(|p| p.name == "pstack")
+        .expect("pstack is a default plugin")
+}
+
+fn carried(folder: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("plugins")
+        .join(folder)
+}
+
+/// Every file under `dir`, relative with `/`, sorted.
+fn files_under(dir: &Path) -> Vec<String> {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(base, &path, out);
+            } else {
+                let rel: Vec<_> = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                out.push(rel.join("/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(dir, dir, &mut out);
+    out.sort();
+    out
+}
+
+/// Skill folders (immediate children holding a SKILL.md) in `dir`, sorted.
+fn skills_in(dir: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = entries
+        .flatten()
+        .filter(|e| e.path().join("SKILL.md").is_file())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    out.sort();
+    out
+}
+
+fn pstack_skills() -> Vec<String> {
+    skills_in(&carried("pstack").join("skills"))
+}
+
+fn installed(name: &str) -> Outcome {
+    Outcome::Installed { name: name.into() }
+}
+
+#[test]
+fn the_pins_match_the_copies_the_app_carries() {
+    let pins = defaults::pins();
+    assert!(!pins.is_empty());
+    let mut folders: Vec<String> =
+        std::fs::read_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins"))
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+    folders.sort();
+    let mut pinned: Vec<String> = pins.iter().map(|p| p.folder.clone()).collect();
+    pinned.sort();
+    assert_eq!(
+        folders, pinned,
+        "every carried folder has a pin, and every pin a folder"
+    );
+    for pin in &pins {
+        let dir = carried(&pin.folder);
+        assert_eq!(
+            pin.commit.len(),
+            40,
+            "{}: pinned to a full commit",
+            pin.name
+        );
+        assert!(pin.commit.chars().all(|c| c.is_ascii_hexdigit()));
+        // The embedded table is the folder, byte for byte.
+        let mut embedded: Vec<(&str, &[u8])> = defaults::files(&pin.folder)
+            .map(|(p, b, _)| (p, b))
+            .collect();
+        embedded.sort();
+        let on_disk = files_under(&dir);
+        assert_eq!(
+            embedded
+                .iter()
+                .map(|(p, _)| p.to_string())
+                .collect::<Vec<_>>(),
+            on_disk
+        );
+        for (rel, bytes) in embedded {
+            assert_eq!(std::fs::read(dir.join(rel)).unwrap(), bytes, "{rel}");
+        }
+        // The copy is the plugin it says it is, with its licence.
+        let loaded = super::load_plugin(&dir).unwrap();
+        assert_eq!(loaded.manifest.name, pin.name);
+        assert_eq!(
+            loaded.manifest.version.as_deref(),
+            Some(pin.version.as_str())
+        );
+        let licence = std::fs::read_to_string(dir.join("LICENSE")).unwrap();
+        assert!(
+            licence.contains(&pin.copyright),
+            "{}: LICENSE names {}",
+            pin.name,
+            pin.copyright
+        );
+        for left_out in &pin.left_out {
+            assert!(
+                !dir.join(left_out).exists(),
+                "{}: {left_out} is left out",
+                pin.name
+            );
+        }
+    }
+    let pstack = pstack_pin();
+    assert_eq!(pstack.repository, "https://github.com/cursor/plugins");
+    assert_eq!(pstack.license, "MIT");
+    // Cursor-only parts aren't carried (WP-41 build step 2).
+    for cursor_only in ["agents", "automations", ".cursor-plugin"] {
+        assert!(pstack.left_out.iter().any(|l| l == cursor_only));
+    }
+}
+
+#[test]
+fn a_fresh_install_has_pstack_on_everywhere() {
+    let tmp = Tmp::new("fresh");
+    let host = host(&tmp);
+    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+
+    let registry = registry::read(&host).unwrap();
+    let entry = &registry.plugins["pstack"];
+    let pin = pstack_pin();
+    assert!(entry.enabled.global);
+    assert_eq!(entry.version.as_deref(), Some(pin.version.as_str()));
+    assert_eq!(entry.source, pin.source());
+    assert_eq!(entry.source.kind, SOURCE_KIND);
+    assert_eq!(
+        entry.source.location,
+        "https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack"
+    );
+    let skills = pstack_skills();
+    assert_eq!(skills.len(), 58);
+    let mut registered: Vec<String> = entry.skills().map(str::to_string).collect();
+    registered.sort();
+    assert_eq!(registered, skills, "every pstack skill loads");
+
+    // Installed exactly as carried; the staging folder is gone.
+    assert_eq!(
+        files_under(&host.installed("pstack")),
+        files_under(&carried("pstack"))
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&host.root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".default-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{leftovers:?}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let script = host
+            .installed("pstack")
+            .join("skills/show-me-your-work/scripts/log.sh");
+        assert_ne!(
+            std::fs::metadata(script).unwrap().permissions().mode() & 0o111,
+            0
+        );
+    }
+
+    // Claude Code: one --plugin-dir carrying every skill. Codex and the other `.agents/skills` readers: a link each.
+    let wired = wiring::session_wiring(&host, None, Some("<CLI>"), &Default::default()).unwrap();
+    assert_eq!(wired.claude_plugin_dirs.len(), 1);
+    assert_eq!(
+        skills_in(&Path::new(&wired.claude_plugin_dirs[0]).join("skills")),
+        skills
+    );
+    assert_eq!(skills_in(&host.agents_skills), skills);
+    // pstack has no MCP servers.
+    assert!(wired.claude_mcp_servers.is_empty() && wired.codex_mcp_servers.is_empty());
+}
+
+#[test]
+fn every_later_start_changes_nothing() {
+    let tmp = Tmp::new("again");
+    let host = host(&tmp);
+    defaults::ensure(&host);
+    let before = fsutil::tree(&[tmp.path()]);
+    let registry_before = std::fs::read_to_string(host.root.join("registry.json")).unwrap();
+    assert_eq!(
+        defaults::ensure(&host),
+        vec![Outcome::AlreadyGiven {
+            name: "pstack".into()
+        }]
+    );
+    assert_eq!(fsutil::tree(&[tmp.path()]), before);
+    assert_eq!(
+        std::fs::read_to_string(host.root.join("registry.json")).unwrap(),
+        registry_before
+    );
+}
+
+#[test]
+fn switched_off_stays_off_and_removed_stays_removed() {
+    let tmp = Tmp::new("off");
+    let host = host(&tmp);
+    defaults::ensure(&host);
+
+    registry::disable(&host, "pstack", &Scope::Global).unwrap();
+    let wired = wiring::session_wiring(&host, None, None, &Default::default()).unwrap();
+    assert!(
+        wired.claude_plugin_dirs.is_empty(),
+        "Claude Code gets no pstack"
+    );
+    assert!(
+        skills_in(&host.agents_skills).is_empty(),
+        "Codex gets no pstack"
+    );
+    defaults::ensure(&host);
+    assert!(!registry::read(&host).unwrap().plugins["pstack"]
+        .enabled
+        .any());
+
+    registry::uninstall(&host, "pstack").unwrap();
+    defaults::ensure(&host);
+    assert!(registry::read(&host).unwrap().plugins.is_empty());
+    assert!(!host.installed("pstack").exists());
+    // Only the memory that it was given stays.
+    let left: Vec<String> = std::fs::read_dir(&host.root)
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        left,
+        vec![STATE_FILE.to_string()],
+        "nothing else is left behind"
+    );
+    assert!(skills_in(&host.agents_skills).is_empty());
+}
+
+#[test]
+fn an_existing_install_gets_it_once() {
+    let tmp = Tmp::new("existing");
+    let host = host(&tmp);
+    // An install from before WP-41: another plugin, no record of defaults.
+    let other = tmp.path().join("src/other");
+    std::fs::create_dir_all(&other).unwrap();
+    std::fs::write(
+        other.join("plugin.json"),
+        json!({ "$schema": super::manifest::PLUGIN_SCHEMA_1_0_0, "name": "other" }).to_string(),
+    )
+    .unwrap();
+    registry::install_local(&host, &other, Source::local(&other)).unwrap();
+    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    let registry = registry::read(&host).unwrap();
+    assert!(registry.plugins["pstack"].enabled.global);
+    assert!(
+        !registry.plugins["other"].enabled.any(),
+        "other plugins are left as they were"
+    );
+    assert_eq!(
+        defaults::ensure(&host),
+        vec![Outcome::AlreadyGiven {
+            name: "pstack".into()
+        }]
+    );
+}
+
+#[test]
+fn a_pstack_the_person_installed_themselves_is_left_alone() {
+    let tmp = Tmp::new("theirs");
+    let host = host(&tmp);
+    let theirs = carried("pstack");
+    registry::install_local(&host, &theirs, Source::local(&theirs)).unwrap();
+    assert_eq!(
+        defaults::ensure(&host),
+        vec![Outcome::TheirOwn {
+            name: "pstack".into()
+        }]
+    );
+    let entry = &registry::read(&host).unwrap().plugins["pstack"];
+    assert_eq!(entry.source.kind, "local");
+    assert!(!entry.enabled.any(), "not switched on behind their back");
+    registry::uninstall(&host, "pstack").unwrap();
+}
+
+#[test]
+fn a_start_cut_after_the_install_finishes_the_job() {
+    let tmp = Tmp::new("cut");
+    let host = host(&tmp);
+    let pin = pstack_pin();
+    let staging = tmp.path().join("staging");
+    let dir = defaults::unpack(&pin, &staging).unwrap();
+    registry::install_local(&host, &dir, pin.source()).unwrap();
+    // No switch-on, no record: the app stopped here.
+    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert!(
+        registry::read(&host).unwrap().plugins["pstack"]
+            .enabled
+            .global
+    );
+}
+
+#[test]
+fn a_failed_start_tries_again_next_time() {
+    let tmp = Tmp::new("retry");
+    let host = host(&tmp);
+    // The plugin folder can't be made: a file is in the way.
+    std::fs::create_dir_all(tmp.path().join("app-data")).unwrap();
+    std::fs::write(&host.root, "not a folder").unwrap();
+    assert!(matches!(
+        defaults::ensure(&host).as_slice(),
+        [Outcome::Failed { .. }]
+    ));
+    std::fs::remove_file(&host.root).unwrap();
+    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+}
+
+/// The session test (`src/features/plugins/model/pstackSessions.test.ts`) replays what the real Claude Code and Codex
+/// adapters hand a fake CLI when pstack is on, and when it is off. This records the Rust side of both: the wiring, the
+/// Claude shim's files and every link, with the installed copy itself named rather than listed (the TS test copies
+/// `src-tauri/plugins/pstack` there, which the tests above prove is what gets installed). Rerun with
+/// `UPDATE_PLUGIN_WIRING_SNAPSHOT=1` after changing the wiring on purpose.
+#[cfg(unix)]
+#[test]
+fn the_pstack_snapshot_for_the_session_test_is_current() {
+    let tmp = Tmp::new("pstack-snapshot");
+    let host = host(&tmp);
+    let base = tmp.path().display().to_string();
+    let rel = |text: &str| text.replace(&base, "<TMP>");
+    let installed = host.installed("pstack");
+    let record = |tmp: &Tmp| -> Vec<serde_json::Value> {
+        fn walk(
+            base: &Path,
+            dir: &Path,
+            installed: &Path,
+            rel: &dyn Fn(&str) -> String,
+            out: &mut Vec<serde_json::Value>,
+        ) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            let mut entries: Vec<_> = entries.flatten().collect();
+            entries.sort_by_key(|e| e.file_name());
+            for entry in entries {
+                let path = entry.path();
+                let name = path
+                    .strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                if name.ends_with("registry.json") || name.ends_with(STATE_FILE) {
+                    continue; // install times and the given-once record; the session test reads neither
+                }
+                let meta = std::fs::symlink_metadata(&path).unwrap();
+                if path == installed {
+                    out.push(json!({ "path": name, "carried": "pstack" }));
+                } else if meta.file_type().is_symlink() {
+                    let target = std::fs::read_link(&path).unwrap();
+                    let target = target
+                        .strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    out.push(json!({ "path": name, "link": target }));
+                } else if meta.is_dir() {
+                    out.push(json!({ "path": name, "dir": true }));
+                    walk(base, &path, installed, rel, out);
+                } else {
+                    out.push(json!({ "path": name, "text": rel(&std::fs::read_to_string(&path).unwrap()) }));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(tmp.path(), tmp.path(), &installed, &rel, &mut out);
+        out
+    };
+    defaults::ensure(&host);
+    let on = wiring::session_wiring(&host, None, Some("<CLI>"), &Default::default()).unwrap();
+    let on = json!({ "wiring": serde_json::from_str::<serde_json::Value>(&rel(&serde_json::to_string(&on).unwrap())).unwrap(), "files": record(&tmp) });
+    registry::disable(&host, "pstack", &Scope::Global).unwrap();
+    let off = wiring::session_wiring(&host, None, Some("<CLI>"), &Default::default()).unwrap();
+    let off = json!({ "wiring": serde_json::from_str::<serde_json::Value>(&rel(&serde_json::to_string(&off).unwrap())).unwrap(), "files": record(&tmp) });
+    let snapshot = json!({
+        "about": "Made by src-tauri/src/plugins/defaults_tests.rs (the_pstack_snapshot_for_the_session_test_is_current). Don't edit by hand.",
+        "skills": pstack_skills(),
+        "on": on,
+        "off": off,
+    });
+    let text = format!("{}\n", serde_json::to_string_pretty(&snapshot).unwrap());
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/plugins/model/__fixtures__/rust-pstack.json");
+    if std::env::var_os("UPDATE_PLUGIN_WIRING_SNAPSHOT").is_some() {
+        std::fs::write(&path, &text).unwrap();
+    }
+    let committed = std::fs::read_to_string(&path).unwrap_or_default();
+    assert_eq!(
+        committed, text,
+        "the pstack wiring changed: rerun with UPDATE_PLUGIN_WIRING_SNAPSHOT=1 and check the TS session test"
+    );
+}
