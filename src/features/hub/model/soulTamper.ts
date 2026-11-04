@@ -36,7 +36,7 @@ export function changedSoulNote(at: number): AgentFilePath {
 /** What was running when the soul changed, by the run records' own kind (chat, worker or habit run). */
 export type RunningKinds = { chats?: number; otherChats?: number; workers?: number; habits?: number; others?: string[] };
 
-/** "frank's chat", "a worker", "Hivra lead's chat and 2 workers": what was running, in plain words. */
+/** "ed's chat", "a worker", "Hivra lead's chat and 2 workers": what was running, in plain words. */
 function runningPhrase(name: string, k: RunningKinds): { phrase: string; many: boolean } {
   const parts: string[] = [];
   const n = (x?: number) => x ?? 0;

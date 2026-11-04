@@ -32,7 +32,7 @@ const job = (id: string, projectId: string, state: HubJob["state"], extra: Parti
   projectId,
   title: `Job ${id}`,
   lead: null,
-  leadName: "frank",
+  leadName: "ed",
   state,
   reason: "",
   startedAt: "2026-10-20T10:00:00.000Z",
@@ -72,7 +72,7 @@ const projects = [
 
 const jobs: Record<string, HubJobGroup[]> = {
   exo: [
-    { leadId: "frank", leadName: "frank", projectId: "exo", jobs: [job("j1", "exo", "working")] },
+    { leadId: "ed", leadName: "ed", projectId: "exo", jobs: [job("j1", "exo", "working")] },
     {
       leadId: null,
       leadName: "EXO lead",
@@ -97,7 +97,7 @@ const data: PageCapabilityData = {
   needs: (projectId) => (projectId ? (needs[projectId] ?? []) : []),
   jobs: (projectId) => jobs[projectId] ?? [],
   waiting: () => [chat("s1", "hivra", Date.UTC(2026, 9, 22, 12))],
-  monos: (projectId) => [mono("frank", "frank", [projectId]), mono("alfred", "Alfred", ["exo", "hivra"])].filter((m) => m.projectIds.includes(projectId)),
+  monos: (projectId) => [mono("ed", "ed", [projectId]), mono("cam", "Alfred", ["exo", "hivra"])].filter((m) => m.projectIds.includes(projectId)),
   userName: () => "Ash",
   appearance: () => "dark",
   scheme: () => "glass",
@@ -163,7 +163,7 @@ describe("pageCapabilityHandlers", () => {
       folder: "~/Projects/exo",
       parked: false,
       counts: { waiting: 1, later: 1, building: 1, stuck: 1 },
-      monos: ["frank", "Alfred"],
+      monos: ["ed", "Alfred"],
     });
   });
 

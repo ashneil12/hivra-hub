@@ -39,80 +39,34 @@ export type Pick = { id: string; why: string; by: PickSource };
  */
 export type TurnKind = "answer" | "chime" | "reply" | "back" | "goal";
 
-type Lane = {
-  /** Names that count anywhere in a sentence (long enough not to be an ordinary word). */
-  names: string[];
-  /** Short names that count only when Ash opens with them or @-mentions them ("cos" is also "because"). */
-  short?: string[];
-  card: string;
-  /** Speaking order after the answer (the room's observed order: PM, frank, design review, Alfred). */
-  order: number;
-};
-
-/** The leadership team's lanes (docs/leadership/ROOM.md). Any other Mono is matched by its own name and card. */
-export const LANES: Readonly<Record<string, Lane>> = {
-  "chief-of-staff": {
-    names: ["chief of staff", "chief"],
-    short: ["cos"],
-    card: "Chief of Staff: Ash's partner and the room's host. Owns his asks, priority and timing, who takes what and RED calls. Answers Ash first. Not: specialist work.",
-    order: 0,
-  },
-  "projects-manager": {
-    names: ["projects manager", "project manager"],
-    short: ["pm"],
-    card: "Projects Manager: the board and tickets, owners and states, capacity, what's left, written-down plans; posts rounds of built work for review. Not: specialist work, setting strategy.",
-    order: 1,
-  },
-  frank: {
-    names: ["frank", "memory and checks"],
-    card: "frank (memory and checks): keeps decisions true in memory; checks plans, screens and summaries against Ash's own words and posts only what was missed. Not: strategy, code, Monos.",
-    order: 2,
-  },
-  critiquito: {
-    names: ["critiquito", "kritiko", "critico", "design review"],
-    card: "Critiquito (design review): ranked critique of how a screen looks and reads (hierarchy, type, colour, copy, accessibility). Never edits files.",
-    order: 3,
-  },
-  alfred: {
-    names: ["alfred", "team setup"],
-    card: "Alfred (team setup): which Monos exist and who owns what, the gate on new or changed Monos, permissions, build order. Speaks rarely, one point. Not: building.",
-    order: 4,
-  },
-};
-
 const lower = (s: string) => s.trim().toLowerCase();
 const compact = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-function laneOf(seat: Seat): Lane | undefined {
-  return LANES[seat.id];
-}
-/** Names that count anywhere, longest first. */
+/** Names that count anywhere, longest first. A seat is matched by its own name and aliases. */
 function longNames(seat: Seat): string[] {
-  const lane = laneOf(seat);
-  const all = [seat.name, ...(lane?.names ?? []), ...(seat.aliases ?? [])].map(lower).filter((n) => n.length >= 4);
+  const all = [seat.name, ...(seat.aliases ?? [])].map(lower).filter((n) => n.length >= 4);
   return [...new Set(all)].sort((a, b) => b.length - a.length);
 }
-/** Every name, including the short ones that only count when addressed. */
+/** Every name that counts when the seat is addressed. */
 function allNames(seat: Seat): string[] {
-  const lane = laneOf(seat);
-  const all = [seat.name, ...(lane?.names ?? []), ...(lane?.short ?? []), ...(seat.aliases ?? [])].map(lower).filter(Boolean);
+  const all = [seat.name, ...(seat.aliases ?? [])].map(lower).filter(Boolean);
   return [...new Set(all)].sort((a, b) => b.length - a.length);
 }
 export function cardOf(seat: Seat): string {
-  const lane = laneOf(seat)?.card;
-  return seat.card ?? (lane ? forUser(lane) : `${seat.name}: a Mono in this chat.`);
+  return seat.card ? forUser(seat.card) : `${seat.name}: a Mono in this chat.`;
 }
-function orderOf(seat: Seat): number {
-  return laneOf(seat)?.order ?? 10;
+/** Seats speak in the order they sit. No seat is placed ahead of another by who it is. */
+function orderOf(_seat: Seat): number {
+  return 0;
 }
 
-/** The room's host: its lead when seated, else Chief of Staff when seated, else the first member. */
+/** The room's host: its lead when seated, else the first member. */
 export function hostOf(seats: readonly Seat[], leadId?: string): Seat | undefined {
-  return seats.find((s) => s.id === leadId) ?? seats.find((s) => s.id === "chief-of-staff") ?? seats[0];
+  return seats.find((s) => s.id === leadId) ?? seats[0];
 }
 
-/** The first @mention of a member, by position ("@frank", "@chief-of-staff", "@Chief of Staff", "@cos"). */
+/** The first @mention of a member, by position. */
 export function mentionPick(text: string, seats: readonly Seat[]): Seat | undefined {
   const at = /@([\p{L}\p{N}_-]+(?:\s+[\p{L}\p{N}_-]+){0,3})/gu;
   for (const match of text.matchAll(at)) {
@@ -129,7 +83,7 @@ export function mentionPick(text: string, seats: readonly Seat[]): Seat | undefi
 const GREETING = String.raw`(?:(?:hey|hi|hello|ok|okay|yo|so|and|right)[,!]?\s+)?`;
 const FOLLOWS = String.raw`(?:\s*[,:!?]|\s+(?:can|could|would|will|please|pls|plz|what|whats|what's|do|did|does|how|why|when|where|is|are|u|you|take|check|look|have|go|make|help|tell|give|show|grab|pick|thoughts)\b)`;
 
-/** A member Ash opens his message with ("frank, can you…", "hey alfred what…", "cos: …"). */
+/** A member Ash opens his message with ("ed, can you…", "hey cam what…", "cos: …"). */
 export function openingPick(text: string, seats: readonly Seat[]): Seat | undefined {
   const head = text.trim();
   for (const seat of seats)
@@ -173,10 +127,10 @@ export function everyoneElse(seats: readonly Seat[], answerer: string): Seat[] {
 }
 
 /**
- * Members a Mono's reply addresses: an @mention anywhere ("@frank", "@Projects Manager"), or a name or a list of names
- * opening a line, a sentence or what follows a colon, closed by a comma or colon or followed by a please ("frank,
- * please check…", "PM: put that in the contract", "frank, Critiquito, please pass or flag", "Projects Manager, frank,
- * and Alfred, check in", "frank and Critiquito please re-check 07", "**PM:** the board"). Any case; bold or italic
+ * Members a Mono's reply addresses: an @mention anywhere ("@ed", "@Projects Manager"), or a name or a list of names
+ * opening a line, a sentence or what follows a colon, closed by a comma or colon or followed by a please ("ed,
+ * please check…", "PM: put that in the contract", "ed, Critiquito, please pass or flag", "Projects Manager, ed,
+ * and Alfred, check in", "ed and Critiquito please re-check 07", "**PM:** the board"). Any case; bold or italic
  * around a name is fine. In order, without the speaker.
  */
 export function addressedIn(reply: string, seats: readonly Seat[], speaker: string): string[] {
@@ -238,7 +192,7 @@ export function isSilent(reply: string): boolean {
   const text = reply.trim();
   if (!text) return true;
   if (/^\W*NO_REPLY\W*$/i.test(text) || text.toUpperCase().startsWith(NO_REPLY)) return true;
-  // Thinking aloud, then NO_REPLY on its own last line: the seat decided to stay quiet (live run 22 Oct 08:31, frank).
+  // Thinking aloud, then NO_REPLY on its own last line: the seat decided to stay quiet (live run 22 Oct 08:31, ed).
   if (/\n\W*NO_REPLY\W*$/i.test(text)) return true;
   if (/^<reaction>[^<]*<\/reaction>$/.test(text)) return true;
   return BARE_ACK.test(text) || (text.length <= 90 && FILLER.test(text));

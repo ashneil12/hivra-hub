@@ -28,7 +28,7 @@ export function askedAshAndHeardBack(session: Pick<Session, "blocks"> | undefine
         let roomAsked = false;
         for (const m of c.messages) {
           // In a room the caller's own post, or another seat's question, is what Ash answers (AD13, run 24bf: CoS
-          // described the Mono, Alfred and frank raised who it answers to, Ash replied "ye drafts only, it answers to
+          // described the Mono, Alfred and ed raised who it answers to, Ash replied "ye drafts only, it answers to
           // cos" and "ye go", and the draft was still refused for want of CoS's own "?").
           if (m.from === monoId || (m.from !== "ash" && /\?\s*$/m.test(m.text))) roomAsked = true;
           else if (roomAsked && m.from === "ash") return true;

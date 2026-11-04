@@ -120,8 +120,6 @@ export const SELF_BUILD_GOAL = "The change is made in the preview copy, the chec
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { recordSelfWrite } from "../../hub/model/botChanges";
-import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
-import { leadFor } from "../../hub/model/hubLeads";
 import { mergeSoul, readForMerge, type SoulMergeCaller } from "../../hub/model/soulMerge";
 import type { SoulTemplate } from "../../hub/model/soulRefresh";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
@@ -415,21 +413,17 @@ function checkerLane(source: Session, action: string, host: AgentAppHost): void 
 }
 
 /**
- * Who may ship the daily app (`app.ship`): a Mono's own chat, when that Mono is a project's Lead or on the leadership
- * team. Never a delegated worker's chat, a habit run or the checker (dev copies are refused by their identity).
+ * Who may ship the daily app (`app.ship`): any Mono's own chat. Never a delegated worker's chat, a habit run or the
+ * checker (dev copies are refused by their identity).
  */
 function shipCaller(source: Session, host: AgentAppHost): void {
   const mono =
     host.isMono(source.id) && !host.isHabitRun?.(source.id)
       ? host.monoOf?.(source.id)
       : undefined;
-  if (
-    !mono ||
-    mono.id === CHECKER_MONO_ID ||
-    !(DEFAULT_TEAM_IDS.includes(mono.id) || leadFor(mono.id))
-  )
+  if (!mono || mono.id === CHECKER_MONO_ID)
     throw new Error(
-      "Only a project's Lead or the leadership team ships, from its own chat. Report that it's ready to ship instead.",
+      "Only a Mono ships, from its own chat. The checker does not. Report that it's ready to ship instead.",
     );
 }
 

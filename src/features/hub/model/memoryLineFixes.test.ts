@@ -1,19 +1,17 @@
 // @vitest-environment happy-dom
-// Chief of Staff's memory line about Grok Bot (decided 20 Oct): the 19 Oct "Grok Bot is no longer used" becomes "The hub
-// runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required." Only that line
-// changes, and Undo puts it back. The Mono files are a stand-in for the Rust mono_read / mono_save commands.
+// Nothing is shipped as a memory rewrite. A caller can still pass a fix, and it touches only the matching line.
 import { beforeEach, describe, expect, it } from "vitest";
-import { setBotFiles, undoBotChange, findBotChange } from "./botChanges";
-import { applyMemoryLineFixes } from "./memoryLineFixes";
-import { GROK_BOT_LINE, teamMemorySeed } from "./teamSouls";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
+import { findBotChange, setBotFiles, undoBotChange } from "./botChanges";
+import { applyMemoryLineFixes, LINE_FIXES, type LineFix } from "./memoryLineFixes";
+import { teamMemorySeed } from "./teamSouls";
 
-const LIVE_COS_MEMORY = [
-  "- 2026-10-19 · The default team is Chief of Staff, Projects Manager, frank and Alfred.",
-  "- 2026-10-19 · The team runs on Claude Code in MonoCode Hub; Grok Bot is no longer used (Ash, 19 Oct 2026).",
-  "- 2026-10-20 · Ash wants to click the real thing.",
-  "",
-].join("\n");
+const FIX: LineFix = {
+  id: "note",
+  matches: /old fact/,
+  line: "- 2026-10-20 · the new fact",
+  remembers: "the new fact",
+};
 
 function fakeFiles(initial: Record<string, string>) {
   const files = new Map(Object.entries(initial));
@@ -33,36 +31,47 @@ function fakeFiles(initial: Record<string, string>) {
 
 beforeEach(() => localStorage.clear());
 
-describe("the Grok Bot memory line", () => {
-  it("is the new wording in a fresh Chief of Staff's starting memory", () => {
-    const seed = teamMemorySeed("chief-of-staff");
-    expect(seed).toContain("The hub runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required.");
-    expect(seed).not.toContain("no longer used");
-    expect(GROK_BOT_LINE).toBe("The hub runs on its own without Grok Bot. Grok Bot leadership can oversee it and set tasks, but isn't required.");
+describe("memory line fixes", () => {
+  it("ships none, and a starting memory is empty", async () => {
+    expect(LINE_FIXES).toEqual([]);
+    expect(teamMemorySeed("ada")).toBe("");
+    const f = fakeFiles({ "ada/MEMORY.md": "- 2026-10-19 · old fact\n" });
+    expect(await applyMemoryLineFixes(f, [{ id: "ada", name: "Ada" }])).toEqual([]);
+    expect(f.files.get("ada/MEMORY.md")).toBe("- 2026-10-19 · old fact\n");
   });
 
-  it("replaces only that line in a live memory, once, with Undo", async () => {
-    const f = fakeFiles({ "chief-of-staff/MEMORY.md": LIVE_COS_MEMORY, "frank/MEMORY.md": "- 2026-10-19 · something else\n" });
-    const monos = [{ id: "chief-of-staff", name: "Chief of Staff" }, { id: "frank", name: "frank" }, { id: "hivra-lead" }];
-    expect(await applyMemoryLineFixes(f, monos)).toEqual(["chief-of-staff:grok-bot-not-required"]);
-    const after = f.files.get("chief-of-staff/MEMORY.md")!;
-    expect(after.split("\n")).toEqual([
-      "- 2026-10-19 · The default team is Chief of Staff, Projects Manager, frank and Alfred.",
-      `- 2026-10-20 · ${GROK_BOT_LINE}`,
-      "- 2026-10-20 · Ash wants to click the real thing.",
-      "",
-    ]);
-    expect(f.files.get("frank/MEMORY.md")).toBe("- 2026-10-19 · something else\n");
-    // The row reads as one sentence about what the Mono will now know (Critiquito), and Undo's as one too.
-    const row = findBotChange("memory-fix:chief-of-staff:grok-bot-not-required")!;
-    expect(row.line).toBe("Chief of Staff will now remember that Grok Bot isn't required, but may oversee and set tasks.");
-    expect(row.undoneText).toBe("Undone: Chief of Staff's memory is back to how it was.");
-    // Again: nothing left to fix.
-    expect(await applyMemoryLineFixes(f, monos)).toEqual([]);
-    await undoBotChange(["memory-fix:chief-of-staff:grok-bot-not-required"]);
-    expect(f.files.get("chief-of-staff/MEMORY.md")).toBe(LIVE_COS_MEMORY);
-    // Undone stays undone: the next launch doesn't make it again.
-    expect(await applyMemoryLineFixes(f, monos)).toEqual([]);
-    expect(f.files.get("chief-of-staff/MEMORY.md")).toBe(LIVE_COS_MEMORY);
+  it("rewrites only the matching line, once, and undo puts it back", async () => {
+    const before = "- 2026-10-19 · old fact\n- kept\n";
+    const f = fakeFiles({ "ada/MEMORY.md": before, "bo/MEMORY.md": "- something else\n" });
+    const monos = [{ id: "ada", name: "Ada" }, { id: "bo", name: "Bo" }, { id: "empty" }];
+    expect(await applyMemoryLineFixes(f, monos, [FIX])).toEqual(["ada:note"]);
+    expect(f.files.get("ada/MEMORY.md")).toBe("- 2026-10-20 · the new fact\n- kept\n");
+    expect(f.files.get("bo/MEMORY.md")).toBe("- something else\n");
+    const row = findBotChange("memory-fix:ada:note")!;
+    expect(row.line).toBe("Ada will now remember that the new fact.");
+    expect(row.now).toBe("old fact");
+    expect(row.undoneText).toBe("Undone: Ada's memory is back to how it was.");
+    expect(await applyMemoryLineFixes(f, monos, [FIX])).toEqual([]);
+    await undoBotChange(["memory-fix:ada:note"]);
+    expect(f.files.get("ada/MEMORY.md")).toBe(before);
+    expect(await applyMemoryLineFixes(f, monos, [FIX])).toEqual([]);
+    expect(f.files.get("ada/MEMORY.md")).toBe(before);
+  });
+
+  it("a mono whose memory can't be read does not stop the next one", async () => {
+    const f = fakeFiles({ "bo/MEMORY.md": "- old fact\n" });
+    const read = f.read;
+    f.read = async (id, path) => {
+      if (id === "ada") throw new Error("busy");
+      return read(id, path);
+    };
+    expect(await applyMemoryLineFixes(f, [{ id: "ada", name: "Ada" }, { id: "bo" }], [FIX])).toEqual(["bo:note"]);
+    expect(f.files.get("bo/MEMORY.md")).toBe("- 2026-10-20 · the new fact\n");
+  });
+
+  it("an empty memory and a fix that matches nothing are left alone", async () => {
+    const f = fakeFiles({ "ada/MEMORY.md": "", "bo/MEMORY.md": "- other\n" });
+    expect(await applyMemoryLineFixes(f, [{ id: "ada" }, { id: "bo" }, { id: "missing" }], [FIX])).toEqual([]);
+    expect(f.files.get("bo/MEMORY.md")).toBe("- other\n");
   });
 });

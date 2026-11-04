@@ -36,7 +36,7 @@ export const RESPONDER_LABELS: Readonly<Record<ResponderMode, { label: string; h
 };
 
 /**
- * Every seat Ash's messages address, in order: @mentions anywhere, or a name opening a line or sentence ("frank, ...").
+ * Every seat Ash's messages address, in order: @mentions anywhere, or a name opening a line or sentence ("ed, ...").
  * The latest message counts first, as answerPick does.
  */
 export function mentionedSeats(messages: readonly string[], seats: readonly Seat[]): Seat[] {

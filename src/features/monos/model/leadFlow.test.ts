@@ -91,7 +91,7 @@ function leadBrief(over: Partial<Delegation> = {}): Delegation {
   return {
     id: "t-1",
     ownerSession: "cos-chat",
-    ownerMono: "chief-of-staff",
+    ownerMono: "ada",
     batchId: null,
     parentId: null,
     rootId: "t-1",

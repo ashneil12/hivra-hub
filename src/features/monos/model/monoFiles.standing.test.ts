@@ -20,21 +20,21 @@ beforeEach(() => {
   invoke.mockReset();
   invoke.mockImplementation(async (cmd: string, args: { path?: string }) => {
     if (cmd === "mono_load")
-      return { id: "frank", dir: "/m/frank", soul: "# Soul\n\nCheck work.", soulHash: "s1", memory: "- note", memoryHash: "m1", memoryPath: "/m/frank/MEMORY.md", topics };
+      return { id: "ed", dir: "/m/ed", soul: "# Soul\n\nCheck work.", soulHash: "s1", memory: "- note", memoryHash: "m1", memoryPath: "/m/ed/MEMORY.md", topics };
     if (cmd === "mono_read" && args.path === "memory/ash-asks.md") return { text: asks, hash: "h" };
     return null;
   });
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const look = { name: "frank", projects: [] } as never;
+const look = { name: "ed", projects: [] } as never;
 
-// r62 (A4): Ash's rules live in memory/ash-asks.md; a listed-only topic note never reached frank's answer.
+// r62 (A4): Ash's rules live in memory/ash-asks.md; a listed-only topic note never reached ed's answer.
 describe("memory/ash-asks.md reaches the Mono", () => {
   it("loads whole into the memory block, not only by name", async () => {
     asks = `# What Ash asked for\n\n${DEEPSEEK_RULE}\n`;
     topics = ["ash-asks", "people"];
-    const files = await loadMonoFiles("frank");
+    const files = await loadMonoFiles("ed");
     const note = monoContext(look, files, { soul: false, memory: true });
     expect(note).toContain(DEEPSEEK_RULE);
     expect(note).toContain("memory/ash-asks.md");
@@ -43,25 +43,25 @@ describe("memory/ash-asks.md reaches the Mono", () => {
   it("is handed over again in an existing chat when the note appears or changes", async () => {
     asks = null;
     topics = [];
-    const before = await loadMonoFiles("frank");
+    const before = await loadMonoFiles("ed");
     recordAgentContext("chat", "native-1", before);
     expect(planAgentContext("chat", "native-1", before)).toEqual({ soul: false, memory: false });
 
     asks = `${DEEPSEEK_RULE}\n`;
     topics = ["ash-asks"];
-    const seeded = await loadMonoFiles("frank");
+    const seeded = await loadMonoFiles("ed");
     expect(planAgentContext("chat", "native-1", seeded)).toEqual({ soul: false, memory: true });
     recordAgentContext("chat", "native-1", seeded);
     expect(planAgentContext("chat", "native-1", seeded)).toEqual({ soul: false, memory: false });
 
     asks = `${DEEPSEEK_RULE}\n- 2026-10-28 · "one more" · test\n`;
-    expect(planAgentContext("chat", "native-1", await loadMonoFiles("frank"))).toEqual({ soul: false, memory: true });
+    expect(planAgentContext("chat", "native-1", await loadMonoFiles("ed"))).toEqual({ soul: false, memory: true });
   });
 
   it("is in every fresh conversation's note too", async () => {
     asks = DEEPSEEK_RULE;
     topics = ["ash-asks"];
-    const files = await loadMonoFiles("frank");
+    const files = await loadMonoFiles("ed");
     expect(planAgentContext("new-chat", undefined, files)).toEqual({ soul: true, memory: true });
     expect(monoContext(look, files, { soul: true, memory: true })).toContain(DEEPSEEK_RULE);
   });

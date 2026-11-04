@@ -1,16 +1,12 @@
-// r67 (Alfred's r66 rechecks): the Hub lead recorded Alfred's 1:1 question "did the inbox tidy land" as an Ash OS ask
-// (a_10292eae8d, kind question, status answered). A Lead logs only real asks; a question it answers there and then is not one.
+// A lead used to be told which questions become asks. The soul no longer carries that script.
 import { expect, it } from "vitest";
-import { leadFor, leadSoul } from "./hubLeads";
-import { SECTION_SENTENCES } from "./soulRefresh";
+import { leadSoul, type LeadSpec } from "./hubLeads";
 
-it("every Lead's soul says only real asks become asks, and a question answered in the reply is not recorded", () => {
-  const leads = ["hub-lead", "hivra-lead"].map((id) => leadFor(id));
-  expect(leads.every(Boolean)).toBe(true);
-  for (const lead of leads.filter((l) => !!l)) {
-    const soul = leadSoul(lead, "/code/x");
-    expect(soul).toContain("Only real asks become asks: something to do, decide or provide.");
-    expect(soul).toMatch(/is not one: answer it, and don't start a job for it/);
-  }
-  expect(SECTION_SENTENCES["Before you act"]).toContain("log only real asks");
+const LEAD: LeadSpec = { id: "hivra-lead", name: "Hivra lead", projectId: "hivra", projectName: "Hivra" };
+
+it("a lead's soul does not tell it which questions to record as asks", () => {
+  const soul = leadSoul(LEAD, "/code/x");
+  expect(soul).not.toContain("Only real asks become asks");
+  expect(soul).not.toContain("log only real asks");
+  expect(soul).toContain("You are Hivra lead, the lead for Hivra");
 });

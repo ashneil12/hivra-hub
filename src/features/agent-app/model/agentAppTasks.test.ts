@@ -814,8 +814,8 @@ describe("tasks.delegate", () => {
   // Ash, 20 Oct: "monos shouldn't really have sub chats, if its stuff to fix it should either do it itself or pick it up
   // with the coding team. IF they do need to do work ... something like coding team should be created for that mono".
   describe("a Mono's work goes to a team (monoTeams.ts)", () => {
-    const TEAM = "/data/mono-teams/alfred";
-    function alfred(rows: Delegation[] = []) {
+    const TEAM = "/data/mono-teams/cam";
+    function cam(rows: Delegation[] = []) {
       const fx = fixture(rows);
       const ownTeam = vi.fn(async () => ({ folder: TEAM, name: "Alfred's team" }));
       fx.api.monoWork = {
@@ -827,12 +827,12 @@ describe("tasks.delegate", () => {
         ownTeam,
       };
       // Alfred works on EXO too; its team's folder is its own once it has one.
-      (fx.host as { monoOf: unknown }).monoOf = () => ({ id: "alfred", name: "Alfred", projects: [PROJECT], team: TEAM });
+      (fx.host as { monoOf: unknown }).monoOf = () => ({ id: "cam", name: "Alfred", projects: [PROJECT], team: TEAM });
       return { ...fx, ownTeam };
     }
 
     it("sends a project's work to that project's coding team, never to a worker of its own", async () => {
-      const { source, host, started, ownTeam } = alfred();
+      const { source, host, started, ownTeam } = cam();
       for (const project of ["vg-game", PROJECT, "EXO"])
         await expect(
           handleAgentApp(source, `r-${project.length}`, "tasks.delegate", { brief: "Fix the save bug.", project }, host),
@@ -843,9 +843,9 @@ describe("tasks.delegate", () => {
 
     it("starts its own work in its own team, made the first time, nested under its chat", async () => {
       const rows: Delegation[] = [];
-      const { source, host, started, ownTeam } = alfred(rows);
+      const { source, host, started, ownTeam } = cam(rows);
       const result = await handleAgentApp(source, "r-own", "tasks.delegate", { brief: "Research the launch copy.", title: "Launch copy" }, host);
-      expect(ownTeam).toHaveBeenCalledWith(expect.objectContaining({ id: "alfred" }));
+      expect(ownTeam).toHaveBeenCalledWith(expect.objectContaining({ id: "cam" }));
       const [launch, id, , notify, meta] = started[0] as [Record<string, unknown>, string, unknown, string, Record<string, unknown>];
       // Its chat is `app-<Alfred's chat>-<request>` in the team's folder: the team's list nests it under Alfred's chat.
       expect(id).toBe("app-mono-exo-r-own");
@@ -879,8 +879,8 @@ describe("tasks.delegate", () => {
       expect((lead.started[0] as [Record<string, unknown>])[0]).toMatchObject({ cwd: PROJECT });
       expect(lead.api.monoWork.ownTeam).not.toHaveBeenCalled();
       // A folder of its own that is no hub project has no coding team: a worker may start there.
-      const { source, host, started } = alfred();
-      (host as { monoOf: unknown }).monoOf = () => ({ id: "alfred", name: "Alfred", projects: [PROJECT, "/tmp/scratch"] });
+      const { source, host, started } = cam();
+      (host as { monoOf: unknown }).monoOf = () => ({ id: "cam", name: "Alfred", projects: [PROJECT, "/tmp/scratch"] });
       await handleAgentApp(source, "r-scratch", "tasks.delegate", { brief: "Tidy it.", project: "/tmp/scratch" }, host);
       expect((started[0] as [Record<string, unknown>])[0]).toMatchObject({ cwd: "/tmp/scratch" });
     });
@@ -1018,9 +1018,9 @@ describe("tasks.status", () => {
 
   it("with no ids, also lists the team's other open jobs read only (AD3: PM saw none while CoS's brief to EXO lead ran)", async () => {
     const rows = [
-      row({ id: "t-cos", ownerSession: "mono-cos", ownerMono: "chief-of-staff", title: "Fix EXO footer and mobile nav" }),
+      row({ id: "t-cos", ownerSession: "mono-cos", ownerMono: "ada", title: "Fix EXO footer and mobile nav" }),
       row({ id: "t-cos-child", ownerSession: "lead-chat", ownerMono: "vg-game-lead", parentId: "t-cos", rootId: "t-cos" }),
-      row({ id: "t-old", ownerSession: "mono-cos", ownerMono: "chief-of-staff", state: "completed", delivery: "pending" }),
+      row({ id: "t-old", ownerSession: "mono-cos", ownerMono: "ada", state: "completed", delivery: "pending" }),
     ];
     const { source, host, api, acknowledged } = fixture(rows);
     api.teamOpen = vi.fn(async () => rows);
@@ -1031,7 +1031,7 @@ describe("tasks.status", () => {
     };
     expect(out.tasks).toEqual([]);
     expect(out.othersRunning).toEqual([
-      expect.objectContaining({ taskId: "t-cos", title: "Fix EXO footer and mobile nav", from: "chief-of-staff", project: "vg-game", status: "running" }),
+      expect.objectContaining({ taskId: "t-cos", title: "Fix EXO footer and mobile nav", from: "ada", project: "vg-game", status: "running" }),
     ]);
     expect(out.note).toContain("no tasks of your own");
     expect(acknowledged).toEqual([]); // reading the team's jobs never marks someone else's result read

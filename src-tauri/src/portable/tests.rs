@@ -1111,11 +1111,11 @@ fn a_memory_restore_that_writes_a_monos_soul_names_it() {
     // The Monos home, exported as a memory folder (it has a MEMORY.md of its own).
     let monos = source.memory_root.join("monos");
     fs::create_dir_all(monos.join("hivra-lead")).unwrap();
-    fs::create_dir_all(monos.join("frank")).unwrap();
+    fs::create_dir_all(monos.join("ed")).unwrap();
     fs::write(monos.join("MEMORY.md"), "# monos\n").unwrap();
     fs::write(monos.join("hivra-lead/SOUL.md"), "# Soul\n\n- restored\n").unwrap();
-    fs::write(monos.join("frank/SOUL.md"), "# Soul\n\n- frank's\n").unwrap();
-    fs::write(monos.join("frank/MEMORY.md"), "- a note\n").unwrap();
+    fs::write(monos.join("ed/SOUL.md"), "# Soul\n\n- ed's\n").unwrap();
+    fs::write(monos.join("ed/MEMORY.md"), "- a note\n").unwrap();
     let dest = out.0.join("export");
     let mut request = export_request(&dest, Form::Folder);
     request.files.clear();
@@ -1125,13 +1125,9 @@ fn a_memory_restore_that_writes_a_monos_soul_names_it() {
         history: false,
     });
     export(&source, &request).unwrap();
-    // frank's soul is here already with his own text: kept (no write), so not named.
-    fs::create_dir_all(target.monos_root.join("frank")).unwrap();
-    fs::write(
-        target.monos_root.join("frank/SOUL.md"),
-        "# Soul\n\n- mine\n",
-    )
-    .unwrap();
+    // ed's soul is here already with his own text: kept (no write), so not named.
+    fs::create_dir_all(target.monos_root.join("ed")).unwrap();
+    fs::write(target.monos_root.join("ed/SOUL.md"), "# Soul\n\n- mine\n").unwrap();
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();

@@ -298,7 +298,7 @@ export function sinceLabel(iso: string, now = new Date(), timeZone?: string): st
 }
 
 /**
- * The hub's Monos list is one flat list: the default team first (Chief of Staff, Projects Manager, frank, Alfred),
+ * The hub's Monos list is one flat list: the default team first (Chief of Staff, Projects Manager, ed, Alfred),
  * then the project Leads, then anything else Ash added. Temporary workers are not Monos and never appear here; they
  * show only in a project's Being built.
  */

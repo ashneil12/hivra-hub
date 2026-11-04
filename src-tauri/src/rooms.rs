@@ -1065,7 +1065,7 @@ mod tests {
         assert_eq!(load(&old, 10).unwrap().rooms[0].responder, None);
 
         let mut c = conn();
-        let mut r = room("r", &["frank"]);
+        let mut r = room("r", &["ed"]);
         r.responder = Some("auto".into());
         upsert_room(&mut c, &r, 5).unwrap();
         assert_eq!(
@@ -1104,7 +1104,7 @@ mod tests {
     #[test]
     fn deleting_a_conversation_takes_only_its_thread_messages_and_origins() {
         let mut c = conn();
-        upsert_room(&mut c, &room("hub:leadership", &["chief-of-staff"]), 1).unwrap();
+        upsert_room(&mut c, &room("hub:leadership", &["ada"]), 1).unwrap();
         upsert_conversation(&c, &thread("hub:leadership", "old", 10), 10).unwrap();
         upsert_conversation(&c, &thread("hub:leadership", "new", 20), 20).unwrap();
         add_message(
@@ -1131,7 +1131,7 @@ mod tests {
                 child_session: "w1".into(),
                 room_id: "hub:leadership".into(),
                 conversation_id: "old".into(),
-                mono_id: "chief-of-staff".into(),
+                mono_id: "ada".into(),
                 owner_session: "mono-cos".into(),
                 title: "t".into(),
                 created_at: 0,
@@ -1160,8 +1160,8 @@ mod tests {
     #[test]
     fn deleting_a_room_takes_only_its_own_rows_and_never_the_leadership_team() {
         let mut c = conn();
-        upsert_room(&mut c, &room("hub:leadership", &["frank"]), 10).unwrap();
-        let mut made = room("hub:chat-x", &["frank", "alfred"]);
+        upsert_room(&mut c, &room("hub:leadership", &["ed"]), 10).unwrap();
+        let mut made = room("hub:chat-x", &["ed", "cam"]);
         made.is_default = false;
         made.name = "Example: launch room".into();
         upsert_room(&mut c, &made, 10).unwrap();
@@ -1200,10 +1200,7 @@ mod tests {
         let mut c = conn();
         upsert_room(
             &mut c,
-            &room(
-                "hub:leadership",
-                &["chief-of-staff", "frank", "frank", "projects-manager"],
-            ),
+            &room("hub:leadership", &["ada", "ed", "ed", "bo"]),
             10,
         )
         .unwrap();
@@ -1219,7 +1216,7 @@ mod tests {
             "hub:leadership",
             "c1",
             "m2",
-            "chief-of-staff",
+            "ada",
             "Waiting on Critiquito.",
         );
         reply.reply_to = Some("m1".into());
@@ -1237,10 +1234,7 @@ mod tests {
         let snap = load(&c, 500).unwrap();
         assert_eq!(snap.rooms.len(), 1);
         let r = &snap.rooms[0];
-        assert_eq!(
-            r.member_ids,
-            ["chief-of-staff", "frank", "projects-manager"]
-        );
+        assert_eq!(r.member_ids, ["ada", "ed", "bo"]);
         assert_eq!(
             r.conversations
                 .iter()
@@ -1258,36 +1252,28 @@ mod tests {
         assert_eq!(msgs[1].kind, "mono");
         assert!(!r.conversations[1].more);
         // seats are replaced as a whole on the next write
-        upsert_room(
-            &mut c,
-            &room("hub:leadership", &["frank", "chief-of-staff"]),
-            20,
-        )
-        .unwrap();
-        assert_eq!(
-            load(&c, 500).unwrap().rooms[0].member_ids,
-            ["frank", "chief-of-staff"]
-        );
+        upsert_room(&mut c, &room("hub:leadership", &["ed", "ada"]), 20).unwrap();
+        assert_eq!(load(&c, 500).unwrap().rooms[0].member_ids, ["ed", "ada"]);
     }
 
     #[test]
     fn reactions_and_meta_change_but_author_and_text_never_do() {
         let mut c = conn();
-        upsert_room(&mut c, &room("r", &["frank"]), 1).unwrap();
+        upsert_room(&mut c, &room("r", &["ed"]), 1).unwrap();
         upsert_conversation(&c, &thread("r", "c", 1), 1).unwrap();
-        add_message(&c, &say("r", "c", "m", "frank", "06 passes from me."), 2).unwrap();
+        add_message(&c, &say("r", "c", "m", "ed", "06 passes from me."), 2).unwrap();
         let patched = update_message(
             &c,
             &MessagePatch {
                 room_id: "r".into(),
                 id: "m".into(),
-                reactions: Some(json!({ "👍": ["projects-manager"] })),
+                reactions: Some(json!({ "👍": ["bo"] })),
                 ..Default::default()
             },
         )
         .unwrap()
         .unwrap();
-        assert_eq!(patched.reactions, json!({ "👍": ["projects-manager"] }));
+        assert_eq!(patched.reactions, json!({ "👍": ["bo"] }));
         assert_eq!(patched.text, "06 passes from me.");
         assert!(update_message(
             &c,
@@ -1311,7 +1297,7 @@ mod tests {
             let conv = if i % 2 == 0 { "a" } else { "b" };
             add_message(
                 &c,
-                &say("r", conv, &format!("m{i}"), "frank", &format!("post {i}")),
+                &say("r", conv, &format!("m{i}"), "ed", &format!("post {i}")),
                 10 + i,
             )
             .unwrap();
@@ -1359,17 +1345,12 @@ mod tests {
         upsert_room(&mut c, &room("r", &[]), 1).unwrap();
         assert!(upsert_conversation(&c, &thread("nope", "c", 1), 1).is_err());
         upsert_conversation(&c, &thread("r", "c", 1), 1).unwrap();
-        let mut odd = say("r", "c", "m", "frank", "hi");
+        let mut odd = say("r", "c", "m", "ed", "hi");
         odd.kind = "shout".into();
         assert!(add_message(&c, &odd, 1).is_err());
-        assert!(add_message(&c, &say("r", "missing", "m", "frank", "hi"), 1).is_err());
-        assert!(add_message(
-            &c,
-            &say("r", "c", "m", "frank", &"x".repeat(TEXT_MAX + 1)),
-            1
-        )
-        .is_err());
-        assert!(add_message(&c, &say("r", "c", "", "frank", "hi"), 1).is_err());
+        assert!(add_message(&c, &say("r", "missing", "m", "ed", "hi"), 1).is_err());
+        assert!(add_message(&c, &say("r", "c", "m", "ed", &"x".repeat(TEXT_MAX + 1)), 1).is_err());
+        assert!(add_message(&c, &say("r", "c", "", "ed", "hi"), 1).is_err());
         assert!(load(&c, 10).unwrap().rooms[0].conversations[0]
             .messages
             .is_empty());
@@ -1382,14 +1363,14 @@ mod tests {
             &mut c,
             &RoomInput {
                 name: "Renamed here".into(),
-                ..room("r", &["frank"])
+                ..room("r", &["ed"])
             },
             1,
         )
         .unwrap();
         upsert_conversation(&c, &thread("r", "kept", 1), 1).unwrap();
         let bundle = ImportBundle {
-            rooms: vec![room("r", &["alfred"]), room("s", &["chief-of-staff"])],
+            rooms: vec![room("r", &["cam"]), room("s", &["ada"])],
             conversations: vec![
                 thread("r", "kept", 5),
                 thread("r", "new", 6),
@@ -1398,7 +1379,7 @@ mod tests {
             messages: vec![
                 say("r", "new", "1", "ash", "hello"),
                 say("s", "c", "1", "ash", "hello again"),
-                say("s", "c", "2", "chief-of-staff", "Heard."),
+                say("s", "c", "2", "ada", "Heard."),
             ],
             mark: Some("legacy_import".into()),
         };
@@ -1419,7 +1400,7 @@ mod tests {
             r.name, "Renamed here",
             "an import never changes a room that is here"
         );
-        assert_eq!(r.member_ids, ["frank"]);
+        assert_eq!(r.member_ids, ["ed"]);
         let receipt = snap.legacy_import.unwrap();
         assert_eq!(receipt["at"], 60);
         assert_eq!(receipt["messages"], 3);
@@ -1443,8 +1424,8 @@ mod tests {
             child_session: "app-mono-cos-1".into(),
             room_id: "hub:leadership".into(),
             conversation_id: "c1".into(),
-            mono_id: "chief-of-staff".into(),
-            owner_session: "mono-chief-of-staff".into(),
+            mono_id: "ada".into(),
+            owner_session: "mono-ada".into(),
             title: "Launch platform shortlist".into(),
             created_at: 0,
         };

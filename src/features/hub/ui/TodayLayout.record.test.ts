@@ -48,7 +48,7 @@ function Hub({ start }: { start: string }) {
 beforeEach(async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   localStorage.clear();
-  localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "projects-manager", name: "Projects Manager" }, { id: "hivra-lead", name: "Hivra lead" }]));
+  localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "bo", name: "Projects Manager" }, { id: "hivra-lead", name: "Hivra lead" }]));
   store = new HubStore({ transport: (await localTestHub()).transport, ...FAST });
   setHubDataSource(createLiveHubData(store), store);
   container = document.createElement("div");

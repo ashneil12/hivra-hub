@@ -77,7 +77,7 @@ describe("connector logins live in the Keychain", () => {
 
 describe("Undo in Bot changes really reverts the bot's rules", () => {
   function fakeFiles(initial: string) {
-    const disk = new Map<string, string>([["frank|SOUL.md", initial]]);
+    const disk = new Map<string, string>([["ed|SOUL.md", initial]]);
     const hash = (t: string) => `h${t.length}:${t}`;
     return {
       disk,
@@ -96,9 +96,9 @@ describe("Undo in Bot changes really reverts the bot's rules", () => {
     const b = await import("./botChanges");
     const f = fakeFiles(after);
     b.setBotFiles(f);
-    b.recordBotChange({ id: "rc1", bot: "frank", day: "Today", line: "frank shortened the release-notes skill", now: "12 steps", after: "8 steps", monoId: "frank", file: "SOUL.md", beforeText: before, afterText: after });
+    b.recordBotChange({ id: "rc1", bot: "ed", day: "Today", line: "ed shortened the release-notes skill", now: "12 steps", after: "8 steps", monoId: "ed", file: "SOUL.md", beforeText: before, afterText: after });
     await b.undoBotChange(["rc1"]);
-    expect(f.disk.get("frank|SOUL.md")).toBe(before);
+    expect(f.disk.get("ed|SOUL.md")).toBe(before);
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc1");
     expect(row && row.kind === "one" && row.change.undone).toBe(true);
     expect(b.undoneLine({ now: "12 steps", after: "8 steps" })).toBe("Undone: back to “12 steps”.");
@@ -112,9 +112,9 @@ describe("Undo in Bot changes really reverts the bot's rules", () => {
     const b = await import("./botChanges");
     const f = fakeFiles("# Soul\n\n- Something newer.\n");
     b.setBotFiles(f);
-    b.recordBotChange({ id: "rc2", bot: "frank", day: "Today", line: "x", now: "a", after: "b", monoId: "frank", file: "SOUL.md", beforeText: before, afterText: after });
+    b.recordBotChange({ id: "rc2", bot: "ed", day: "Today", line: "x", now: "a", after: "b", monoId: "ed", file: "SOUL.md", beforeText: before, afterText: after });
     await b.undoBotChange(["rc2"]);
-    expect(f.disk.get("frank|SOUL.md")).toBe("# Soul\n\n- Something newer.\n");
+    expect(f.disk.get("ed|SOUL.md")).toBe("# Soul\n\n- Something newer.\n");
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rc2")!;
     expect(row.kind === "one" && row.change.undone).toBeFalsy();
     expect(row.kind === "one" && row.change.problem).toMatch(/changed this again/);
@@ -126,22 +126,22 @@ describe("Redo really reapplies an undone change", () => {
     const b = await import("./botChanges");
     const before = "# Soul\n\n- 12 steps\n";
     const after = "# Soul\n\n- 8 steps\n";
-    const disk = new Map([["frank|SOUL.md", after]]);
+    const disk = new Map([["ed|SOUL.md", after]]);
     b.setBotFiles({
       read: async (m, f) => ({ text: disk.get(`${m}|${f}`) ?? null, hash: String(disk.get(`${m}|${f}`)) }),
       write: async (m, f, t, h) => { if (String(disk.get(`${m}|${f}`)) !== h) throw new Error("conflict"); disk.set(`${m}|${f}`, t); return t; },
     });
-    b.recordBotChange({ id: "rd1", bot: "frank", day: "Today", line: "x", now: "12 steps", after: "8 steps", monoId: "frank", file: "SOUL.md", beforeText: before, afterText: after });
+    b.recordBotChange({ id: "rd1", bot: "ed", day: "Today", line: "x", now: "12 steps", after: "8 steps", monoId: "ed", file: "SOUL.md", beforeText: before, afterText: after });
     await b.undoBotChange(["rd1"]);
-    expect(disk.get("frank|SOUL.md")).toBe(before);
+    expect(disk.get("ed|SOUL.md")).toBe(before);
     await b.redoBotChange(["rd1"]);
-    expect(disk.get("frank|SOUL.md")).toBe(after);
+    expect(disk.get("ed|SOUL.md")).toBe(after);
     const row = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rd1")!;
     expect(row.kind === "one" && row.change.undone).toBe(false);
     await b.undoBotChange(["rd1"]);
-    disk.set("frank|SOUL.md", "# Soul\n\n- something else\n");
+    disk.set("ed|SOUL.md", "# Soul\n\n- something else\n");
     await b.redoBotChange(["rd1"]);
-    expect(disk.get("frank|SOUL.md")).toBe("# Soul\n\n- something else\n");
+    expect(disk.get("ed|SOUL.md")).toBe("# Soul\n\n- something else\n");
     const kept = b.botChangeRows().find((r) => r.kind === "one" && r.change.id === "rd1")!;
     expect(kept.kind === "one" && kept.change.undone).toBe(true);
     expect(kept.kind === "one" && kept.change.problem).toMatch(/changed since the Undo/);

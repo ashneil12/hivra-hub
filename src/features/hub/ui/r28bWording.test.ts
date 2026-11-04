@@ -26,7 +26,7 @@ afterEach(() => {
 
 const side = {} as HubChangeRecord["now"];
 const change = (state: HubChangeRecord["state"]): HubChangeRecord => ({
-  previewId: "p1", title: "Example: Pages above Notes", by: "Alfred", monoId: "alfred", flow: "hub", projectId: "today", state, prompt: "",
+  previewId: "p1", title: "Example: Pages above Notes", by: "Alfred", monoId: "cam", flow: "hub", projectId: "today", state, prompt: "",
   createdAt: "2026-10-22T13:00:00Z", appliedAt: "2026-10-22T13:01:00Z", ...(state === "undone" ? { undoneAt: "2026-10-22T13:05:00Z" } : {}),
   now: side, preview: side, log: [],
 });

@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
-// r66 (Alfred's 0.16.5 A-rows): a retired Mono's connectors entry leaves with it and stays gone (A10), Chief of Staff
-// reads the live Mono list every turn (A6), retires a Mono from the chat only on Ash's yes, with Undo (A10), and keeps
-// the top slot by id, not name (A3).
+// A retired Mono's connectors entry leaves with it. Any Mono's turn reads the live roster (retired Monos omitted).
+// Retiring is any Mono's own chat, never itself, and only after the user has answered. No id stays first.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.setConfig({ testTimeout: 30_000 });
@@ -40,9 +39,10 @@ function roster(monos: { id: string; name: string; role?: string }[]) {
 
 async function setUp() {
   roster([
-    { id: "chief-of-staff", name: "Chief of Staff", role: "Runs the team" },
-    { id: "pm", name: "PM", role: "Plans" },
+    { id: "mina", name: "Mina", role: "Writes" },
+    { id: "jo", name: "Jo", role: "Reads" },
     { id: "postie", name: "Postie", role: "X posts" },
+    { id: "checker", name: "Checker", role: "Reads the chats" },
   ]);
   const rust = fakeRust();
   rust.view.settings.monos.postie = { mode: "only", ids: ["github"] };
@@ -62,7 +62,6 @@ describe("a retired Mono's connectors entry", () => {
     expect(rust.view.settings.monos.postie).toBeUndefined();
     expect(c.retiredMonoIds()).toContain("postie");
 
-    // Something else writes it back (an older Undo, a restart reading a stale file): the next read removes it again.
     rust.view.settings.monos.postie = { mode: "only", ids: ["github"] };
     await c.loadConnectors();
     await vi.waitFor(() => expect(rust.view.settings.monos.postie).toBeUndefined());
@@ -75,42 +74,51 @@ describe("a retired Mono's connectors entry", () => {
   });
 });
 
-describe("Chief of Staff's live Mono list", () => {
-  it("is read fresh each turn, leaves retired Monos out, and is only for Chief of Staff", async () => {
+describe("the live Mono list", () => {
+  it("is read for any Mono, leaves retired Monos out, and is absent when there is no Mono", async () => {
     const { archive } = await setUp();
     const { liveMonosNote } = await import("./liveMonos");
-    expect(liveMonosNote("chief-of-staff")).toContain("- Postie: X posts");
-    expect(liveMonosNote("chief-of-staff")).toContain("- Chief of Staff (you)");
+    expect(liveMonosNote("mina")).toContain("- Postie: X posts");
+    expect(liveMonosNote("mina")).toContain("- Mina (you)");
+    expect(liveMonosNote("mina")).not.toContain("Checker");
+    expect(liveMonosNote("jo")).toContain("- Jo (you)");
+    expect(liveMonosNote("jo")).toContain("- Mina");
     await archive.retireMono("postie");
-    const now = liveMonosNote("chief-of-staff")!;
+    const now = liveMonosNote("mina")!;
     expect(now).not.toContain("Postie");
     expect(now).toMatch(/isn't listed was retired/);
-    expect(liveMonosNote("pm")).toBeUndefined();
+    expect(liveMonosNote("jo")).not.toContain("Postie");
+    expect(liveMonosNote("jo")).toContain("- Jo (you)");
     expect(liveMonosNote(undefined)).toBeUndefined();
+    expect(liveMonosNote("")).toBeUndefined();
   });
 
   it("goes into a room turn's prompt only when set", async () => {
     const { turnPrompt } = await import("./roomTurns");
-    const cos = { id: "chief-of-staff", name: "Chief of Staff", role: "Runs the team" };
-    const base = { chatName: "Team", chatId: "c1", projectId: "hub", seats: [cos], host: cos, transcript: [], me: cos, kind: "answer" } as unknown as Parameters<typeof turnPrompt>[0];
+    const mina = { id: "mina", name: "Mina", role: "Writes" };
+    const base = { chatName: "Team", chatId: "c1", projectId: "hub", seats: [mina], host: mina, transcript: [], me: mina, kind: "answer" } as unknown as Parameters<typeof turnPrompt>[0];
     expect(turnPrompt(base)).not.toContain("<monos_now>");
-    expect(turnPrompt({ ...base, monosNow: "<monos_now>\n- PM\n</monos_now>" })).toContain("<monos_now>");
+    expect(turnPrompt({ ...base, monosNow: "<monos_now>\n- Jo\n</monos_now>" })).toContain("<monos_now>");
   });
 });
 
-describe("the Monos list's top slot", () => {
-  it("keys on the id, so a renamed Chief of Staff stays first", async () => {
+describe("the Monos list's order", () => {
+  it("does not keep a special id first: a lead ranks as a lead, and a renamed Mono does not", async () => {
+    const { ensureProjectLeads } = await import("./hubLeads");
     const { hubMonoRank } = await import("./hubData");
-    expect(hubMonoRank({ id: "chief-of-staff", name: "Boss" })).toBe(0);
-    expect(hubMonoRank({ id: "someone", name: "Chief of Staff" })).toBe(0);
-    expect(hubMonoRank({ id: "postie", name: "Postie" })).toBeGreaterThan(hubMonoRank({ id: "chief-of-staff", name: "Boss" }));
+    ensureProjectLeads([{ id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/p/hub" }]);
+    expect(hubMonoRank({ id: "hub-lead", name: "Boss" })).toBe(10);
+    expect(hubMonoRank({ id: "mina", name: "Boss" })).toBe(20);
+    expect(hubMonoRank({ id: "mina", name: "Hub lead" })).toBe(20);
+    expect(hubMonoRank({ id: "postie", name: "Postie" })).toBe(hubMonoRank({ id: "mina", name: "Boss" }));
+    expect(hubMonoRank({ id: "postie", name: "Postie" })).toBeGreaterThan(hubMonoRank({ id: "hub-lead", name: "Boss" }));
   });
 });
 
 describe("retiring a Mono from the chat", () => {
-  const cos = { monoId: "chief-of-staff", name: "Chief of Staff" };
+  const jo = { monoId: "jo", name: "Jo" };
 
-  it("names it first, retires it only after Ash speaks, with a Bot changes row whose Undo brings it back", async () => {
+  it("names it first, retires it only after the user speaks, with a Bot changes row whose Undo brings it back", async () => {
     const { rust } = await setUp();
     const { handleMonoRetire } = await import("../../selfBuild/model/monoRetire");
     const mono = await import("../../monos/model/mono");
@@ -118,34 +126,36 @@ describe("retiring a Mono from the chat", () => {
     let spoke = false;
     const host = { ashSpokeSince: () => spoke };
 
-    const ask = (await handleMonoRetire({ mono: "postie" }, cos, host)) as { retireId: string; note: string };
+    const ask = (await handleMonoRetire({ mono: "postie" }, jo, host)) as { retireId: string; note: string };
     expect(ask.note).toMatch(/Nothing is retired yet/);
     expect(mono.findMono("postie")).toBeTruthy();
-    await expect(handleMonoRetire({ retireId: ask.retireId }, cos, host)).rejects.toThrow(/hasn't answered/);
+    await expect(handleMonoRetire({ retireId: ask.retireId }, jo, host)).rejects.toThrow(/hasn't answered/);
     expect(mono.findMono("postie")).toBeTruthy();
 
     spoke = true;
-    const done = (await handleMonoRetire({ retireId: ask.retireId }, cos, host)) as { retired: string };
+    const done = (await handleMonoRetire({ retireId: ask.retireId }, jo, host)) as { retired: string };
     expect(done.retired).toBe("Postie");
     expect(mono.findMono("postie")).toBeUndefined();
     expect(rust.view.settings.monos.postie).toBeUndefined();
-    const row = changes.botChangesSince(0).find((c) => c.line === "Chief of Staff retired Postie");
+    const row = changes.botChangesSince(0).find((c) => c.line === "Jo retired Postie");
     expect(row?.retired?.mono.id).toBe("postie");
-    // Asking again is a no-op, not a second retire.
-    expect(await handleMonoRetire({ retireId: ask.retireId }, cos, host)).toMatchObject({ alreadyRetired: true });
+    expect(await handleMonoRetire({ retireId: ask.retireId }, jo, host)).toMatchObject({ alreadyRetired: true });
 
     await changes.undoBotChange([row!.id]);
     expect(mono.findMono("postie")).toBeTruthy();
     expect(rust.view.settings.monos.postie).toEqual({ mode: "only", ids: ["github"] });
   });
 
-  it("is Chief of Staff's alone, never itself, and only Monos on the team now", async () => {
+  it("is any Mono's own chat, never itself, and only Monos on the team now", async () => {
     await setUp();
     const { handleMonoRetire } = await import("../../selfBuild/model/monoRetire");
     const host = { ashSpokeSince: () => true };
-    await expect(handleMonoRetire({ mono: "postie" }, { monoId: "pm", name: "PM" }, host)).rejects.toThrow(/Only Chief of Staff/);
-    await expect(handleMonoRetire({ mono: "Chief of Staff" }, cos, host)).rejects.toThrow(/yourself/);
-    await expect(handleMonoRetire({ mono: "Ghost" }, cos, host)).rejects.toThrow(/No Mono called "Ghost"/);
-    await expect(handleMonoRetire({ retireId: "nope", mono: "x" }, cos, host)).rejects.toThrow(/send nothing else/);
+    const mina = { monoId: "mina", name: "Mina" };
+    const ask = await handleMonoRetire({ mono: "postie" }, mina, host);
+    expect(ask).toMatchObject({ mono: "Postie" });
+    await expect(handleMonoRetire({ mono: "postie" }, { monoId: "", name: "Nope" }, host)).rejects.toThrow(/Only a Mono's own chat/);
+    await expect(handleMonoRetire({ mono: "Jo" }, jo, host)).rejects.toThrow(/yourself/);
+    await expect(handleMonoRetire({ mono: "Ghost" }, jo, host)).rejects.toThrow(/No Mono called "Ghost"/);
+    await expect(handleMonoRetire({ retireId: "nope", mono: "x" }, jo, host)).rejects.toThrow(/send nothing else/);
   });
 });

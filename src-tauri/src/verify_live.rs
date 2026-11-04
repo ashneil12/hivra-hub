@@ -34,7 +34,7 @@ pub struct Kickoff {
     pub project: String,
     pub mono_name: String,
     pub prompt: String,
-    /// Open this existing Mono (a built-in team Mono, e.g. `chief-of-staff`) instead of making one: the window waits
+    /// Open this existing Mono (a built-in team Mono, e.g. `ada`) instead of making one: the window waits
     /// until it works on `project`, then sends `prompt` in its chat. `monoName` is then only a label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mono_id: Option<String>,
@@ -453,14 +453,14 @@ mod tests {
         // An existing Mono (the built-in Chief of Staff) instead of a new one.
         let team = parse(&format!(
             r#"{{"version":1,"runId":"20261019-a1-tree","kickoff":{{"project":"{project}","monoName":"Chief of Staff",
-               "monoId":"chief-of-staff","prompt":"VERIFY-TREE-KICKOFF"}}}}"#
+               "monoId":"ada","prompt":"VERIFY-TREE-KICKOFF"}}}}"#
         ))
         .unwrap();
         assert_eq!(
             team.kickoff.as_ref().unwrap().mono_id.as_deref(),
-            Some("chief-of-staff")
+            Some("ada")
         );
-        assert_eq!(window_info(&team)["kickoff"]["monoId"], "chief-of-staff");
+        assert_eq!(window_info(&team)["kickoff"]["monoId"], "ada");
 
         let cases = [
             (r#"{"version":2,"runId":"a"}"#.to_string(), "version"),
@@ -565,7 +565,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("messages.json");
         assert!(messages_from(&file).unwrap().is_empty());
-        std::fs::write(&file, r#"[{"id":"m1","monoId":"frank","prompt":"hi"}, 3]"#).unwrap();
+        std::fs::write(&file, r#"[{"id":"m1","monoId":"ed","prompt":"hi"}, 3]"#).unwrap();
         let list = messages_from(&file).unwrap();
         assert_eq!(list.len(), 1);
         assert_eq!(list[0]["id"], "m1");

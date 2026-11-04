@@ -158,7 +158,7 @@ export function whenLabel(at: number, now = Date.now()): string {
 
 /** The time an id made by `Date.now().toString(36)` carries (conv-<t>, a reply's id), when it plausibly does. */
 export function timeInId(id: string): number | undefined {
-  // Eight base-36 digits until 2059; an old reply's id runs straight on into the Mono's id ("mgx1k2abfrank3").
+  // Eight base-36 digits until 2059; an old reply's id runs straight on into the Mono's id ("mgx1k2abmono3").
   const match = /^(?:conv-)?([0-9a-z]{8})/.exec(id);
   if (!match) return undefined;
   const at = parseInt(match[1], 36);

@@ -24,11 +24,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listMonos, type Mono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
-import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
-import { leadFor, leadSoul } from "./hubLeads";
 import { KNOWN_LEAD_SHAPES, KNOWN_SOUL_HASHES } from "./knownSouls.generated";
-import { teamSouls } from "./teamPack";
 import { forUser, forYou } from "./userName";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
@@ -59,20 +56,13 @@ export type SoulTemplate = {
   render?(folder: string | null): string;
 };
 
-/** The template each Mono on the roster follows today: the team's souls, each Lead's and the checker's. */
+/**
+ * Templates a refresh may apply. A team or lead soul is not one of them: a template only changes how a new Mono is
+ * made, and a soul already on disk stays, edited or not. The checker is still the app's own.
+ */
 export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplate[] {
   return monos.flatMap((mono): SoulTemplate[] => {
     const name = mono.name?.trim() || mono.id;
-    const spec = teamSpecOf(mono);
-    const souls = teamSouls();
-    if (spec && souls[spec.id]) return [{ monoId: mono.id, name, template: defaultSoul(souls[spec.id]) }];
-    const lead = leadFor(mono.id);
-    if (lead) {
-      const folder = mono.projects[0] ?? null;
-      const values = { id: mono.id, name: lead.name, projectName: lead.projectName, projectId: lead.projectId, folder };
-      const render = (f: string | null) => defaultSoul(leadSoul({ ...lead, id: mono.id }, f));
-      return [{ monoId: mono.id, name, template: render(folder), values, render }];
-    }
     if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(forUser(CHECKER_SOUL)) }];
     return [];
   });
@@ -259,11 +249,7 @@ export function templateFingerprint(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name and pointing to Alfred, who looks after souls. */
-/** The skipped row's button: Alfred's chat, with the ask typed in for Ash to send. */
-export function askAlfred(name: string): { monoId: string; label: string; text: string } {
-  return { monoId: "alfred", label: "Ask Alfred", text: `merge ${name}'s update` };
-}
+/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name. */
 
 /** A soul row once undone. */
 export function undoneSoulLine(name: string): string {
@@ -271,7 +257,7 @@ export function undoneSoulLine(name: string): string {
 }
 
 export function skippedLine(name: string): string {
-  return `${name}'s soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.`;
+  return `${name}'s soul has your own changes, so the app's update was skipped.`;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -419,7 +405,7 @@ export async function refreshSouls(
         if (!match) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
-            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is", ask: askAlfred(name) });
+            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
             skipped.push(monoId);
           }
           continue;

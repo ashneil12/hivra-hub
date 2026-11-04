@@ -33,14 +33,14 @@ afterEach(() => {
 const SECRET = "PELICAN-7";
 
 async function setup() {
-  const team = await import("../../features/hub/model/builtInMonos");
-  team.ensureBuiltInMonos();
   const mono = await import("../../features/monos/model/mono");
+  for (const [id, name] of [["ada", "Ada"], ["ed", "Ed"]] as const)
+    mono.addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
   const workspace = await import("../../features/monos/model/monoWorkspace");
   const chat = await import("../../features/hub/model/hubChats");
   const { useRoomRunner } = await import("./useRoomRunner");
   const sessionsRef = { current: [] as Session[] };
-  const SEATS = ["chief-of-staff", "frank"];
+  const SEATS = ["ada", "ed"];
   // Each Mono's long 1:1 chat from before r52, with what Ash said there.
   for (const id of SEATS) {
     const own: Session = { ...newSession("claude", "/code/hub"), id: `own-${id}` };
@@ -100,43 +100,43 @@ async function setup() {
 
 it("room turns run in a session of their own per conversation per Mono, never in its 1:1 chat", async () => {
   const { chat, mono, room, sessionsRef, submitted } = await setup();
-  const a = chat.startConversation(room.id, `cos, the word for today is ${SECRET}`);
+  const a = chat.startConversation(room.id, `the word for today is ${SECRET}`);
   await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
-  const cosA = mono.monoRoomSession("chief-of-staff", room.id, a)!;
+  const cosA = mono.monoRoomSession("ada", room.id, a)!;
   expect(cosA).toBeTruthy();
-  expect(cosA).not.toBe("own-chief-of-staff");
-  expect(mono.findMono("chief-of-staff")!.sessionId).toBe("own-chief-of-staff");
-  expect(mono.monoForSession(cosA)?.id).toBe("chief-of-staff");
+  expect(cosA).not.toBe("own-ada");
+  expect(mono.findMono("ada")!.sessionId).toBe("own-ada");
+  expect(mono.monoForSession(cosA)?.id).toBe("ada");
   expect(mono.isMonoSession(cosA)).toBe(true);
   expect(submitted.some((s) => s.sessionId.startsWith("own-"))).toBe(false);
   // The 1:1 chats got nothing from the room.
-  for (const id of ["own-chief-of-staff", "own-frank"])
+  for (const id of ["own-ada", "own-ed"])
     expect(sessionsRef.current.find((s) => s.id === id)!.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
   // A second turn in the same conversation goes back to its session.
-  chat.sendMessage(room.id, "cos, and after that?", a);
+  chat.sendMessage(room.id, "and after that?", a);
   await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
   expect(new Set(submitted.filter((s) => s.text.includes("after that")).map((s) => s.sessionId)).has(cosA)).toBe(true);
-  expect(mono.monoRoomSession("chief-of-staff", room.id, a)).toBe(cosA);
+  expect(mono.monoRoomSession("ada", room.id, a)).toBe(cosA);
 });
 
 it("a deleted room conversation's text doesn't reach the next room prompt", async () => {
   const { chat, mono, room, sessionsRef, submitted, dropped } = await setup();
-  const a = chat.startConversation(room.id, `cos, the word for today is ${SECRET}`);
+  const a = chat.startConversation(room.id, `the word for today is ${SECRET}`);
   await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
   const gone = mono.monoRoomSessionsOf(room.id, a).map((x) => x.sessionId);
-  expect(gone).toContain(mono.monoRoomSession("chief-of-staff", room.id, a));
+  expect(gone).toContain(mono.monoRoomSession("ada", room.id, a));
   expect(sessionsRef.current.filter((s) => gone.includes(s.id)).some((s) => s.blocks.some((b) => b.text.includes(SECRET)))).toBe(true);
 
   chat.deleteConversation(room.id, a);
   await vi.waitFor(() => expect([...dropped].sort()).toEqual([...gone].sort()));
-  await vi.waitFor(() => expect(mono.monoRoomSession("chief-of-staff", room.id, a)).toBeUndefined());
+  await vi.waitFor(() => expect(mono.monoRoomSession("ada", room.id, a)).toBeUndefined());
   expect(mono.monoForSession(gone[0])).toBeUndefined();
 
   const before = submitted.length;
-  const b = chat.startConversation(room.id, "cos, what's next?");
+  const b = chat.startConversation(room.id, "what's next?");
   await chat.requestReply(room.id, b);
   await chat.roomIdle(room.id);
   const next = submitted.slice(before);
@@ -150,32 +150,32 @@ it("a deleted room conversation's text doesn't reach the next room prompt", asyn
   expect(sessionsRef.current.some((s) => s.blocks.some((x) => x.text.includes(SECRET)))).toBe(false);
 });
 
-// r62 (Alfred's 0.16.3 A2 run): steering the room's wake into a Mono's busy 1:1 put the room prompt into the 1:1, and the
+// r62: steering the room's wake into a Mono's busy 1:1 put the room prompt into the 1:1, and the
 // answer never reached the room. The room's own session takes the turn, even while the 1:1 is mid-reply, and it posts.
 it("a Mono mid-reply in its 1:1 still answers in the room, from the room's session; the 1:1 gets nothing", async () => {
   const { chat, mono, room, sessionsRef, submitted } = await setup();
-  sessionsRef.current = sessionsRef.current.map((s) => (s.id === "own-frank" ? { ...s, busy: true } : s));
-  const a = chat.startConversation(room.id, "frank, is the label in?");
+  sessionsRef.current = sessionsRef.current.map((s) => (s.id === "own-ed" ? { ...s, busy: true } : s));
+  const a = chat.startConversation(room.id, "ed, is the label in?");
   await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
-  const own = sessionsRef.current.find((s) => s.id === "own-frank")!;
+  const own = sessionsRef.current.find((s) => s.id === "own-ed")!;
   expect(own.queuedMessages ?? []).toEqual([]);
   expect(own.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
   expect(submitted.some((s) => s.sessionId.startsWith("own-"))).toBe(false);
-  const frankRoom = mono.monoRoomSession("frank", room.id, a)!;
-  expect(frankRoom).toBeTruthy();
-  expect(submitted.some((s) => s.sessionId === frankRoom)).toBe(true);
+  const edRoom = mono.monoRoomSession("ed", room.id, a)!;
+  expect(edRoom).toBeTruthy();
+  expect(submitted.some((s) => s.sessionId === edRoom)).toBe(true);
   const said = chat.getChat(room.id)!.conversations.find((x) => x.id === a)!.messages;
-  expect(said.some((m) => m.from === "frank" && m.text === "The label is in: commit def5678.")).toBe(true);
+  expect(said.some((m) => m.from === "ed" && m.text === "The label is in: commit def5678.")).toBe(true);
 });
 
 it("deleting a whole room lets go of every conversation's sessions", async () => {
   const { chat, mono, sessionsRef, dropped } = await setup();
-  const other = chat.createChat("hub", "Pricing", ["chief-of-staff"]);
-  const c = chat.startConversation(other.id, "cos, price?");
+  const other = chat.createChat("hub", "Pricing", ["ada"]);
+  const c = chat.startConversation(other.id, "what is the price?");
   await chat.requestReply(other.id, c);
   await chat.roomIdle(other.id);
-  const sid = mono.monoRoomSession("chief-of-staff", other.id, c)!;
+  const sid = mono.monoRoomSession("ada", other.id, c)!;
   expect(sid).toBeTruthy();
   chat.deleteChat(other.id);
   await vi.waitFor(() => expect(dropped).toContain(sid));
@@ -186,30 +186,30 @@ it("deleting a whole room lets go of every conversation's sessions", async () =>
 // r62 (A5): replies to a new room landed in the older Leadership room. Each room's turn answers in the room that asked.
 it("a reply goes to the room that asked, even when another room is newer and has the same Monos", async () => {
   const { chat, sessionsRef } = await setup();
-  const marketing = chat.createChat("hub", "Marketing", ["chief-of-staff", "frank"]);
-  const m = chat.startConversation(marketing.id, "frank, is the label in?");
+  const marketing = chat.createChat("hub", "Marketing", ["ada", "ed"]);
+  const m = chat.startConversation(marketing.id, "ed, is the label in?");
   await chat.requestReply(marketing.id, m);
   await chat.roomIdle(marketing.id);
   const inMarketing = chat.getChat(marketing.id)!.conversations.flatMap((c) => c.messages);
-  expect(inMarketing.some((x) => x.from === "frank" && x.text === "The label is in: commit def5678.")).toBe(true);
+  expect(inMarketing.some((x) => x.from === "ed" && x.text === "The label is in: commit def5678.")).toBe(true);
   const leadership = chat.allChats().filter((c) => c.id !== marketing.id);
-  for (const other of leadership) expect(other.conversations.flatMap((c) => c.messages).some((x) => x.from === "frank")).toBe(false);
-  expect(sessionsRef.current.find((s) => s.id === "own-frank")!.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
+  for (const other of leadership) expect(other.conversations.flatMap((c) => c.messages).some((x) => x.from === "ed")).toBe(false);
+  expect(sessionsRef.current.find((s) => s.id === "own-ed")!.blocks.map((b) => b.text)).toEqual(["Ash's 1:1 message"]);
 });
 
-// r62: while frank's room session is still busy with an earlier room turn, the next one waits in that session's queue
+// r62: while ed's room session is still busy with an earlier room turn, the next one waits in that session's queue
 // (never the 1:1's) and is not dropped.
 it("a room turn for a Mono whose room session is busy waits in that session's queue, never the 1:1's", async () => {
   const { chat, mono, room, sessionsRef } = await setup();
-  const a = chat.startConversation(room.id, "frank, is the label in?");
+  const a = chat.startConversation(room.id, "ed, is the label in?");
   await chat.requestReply(room.id, a);
   await chat.roomIdle(room.id);
-  const frankRoom = mono.monoRoomSession("frank", room.id, a)!;
-  sessionsRef.current = sessionsRef.current.map((s) => (s.id === frankRoom || s.id === "own-frank" ? { ...s, busy: true } : s));
-  chat.sendMessage(room.id, "frank, and the colour?", a);
+  const edRoom = mono.monoRoomSession("ed", room.id, a)!;
+  sessionsRef.current = sessionsRef.current.map((s) => (s.id === edRoom || s.id === "own-ed" ? { ...s, busy: true } : s));
+  chat.sendMessage(room.id, "ed, and the colour?", a);
   void chat.requestReply(room.id, a);
-  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === frankRoom)!.queuedMessages?.length).toBe(1));
-  expect(sessionsRef.current.find((s) => s.id === "own-frank")!.queuedMessages ?? []).toEqual([]);
+  await vi.waitFor(() => expect(sessionsRef.current.find((s) => s.id === edRoom)!.queuedMessages?.length).toBe(1));
+  expect(sessionsRef.current.find((s) => s.id === "own-ed")!.queuedMessages ?? []).toEqual([]);
 });
 
 // r62 (event 3): a wake queued in a busy session says so, its last event following the work it waits behind; once in,

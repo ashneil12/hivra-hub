@@ -7,11 +7,11 @@ import { setHubDataSource } from "./hubData";
 import type { HubProject } from "./types";
 import { noteChats, resetWaitingChats, setWorkerQuestionRouter, waitingChats } from "./waitingChats";
 
-const COS = { id: "chief-of-staff", name: "Chief of Staff", projects: ["/p/tally", "/p/hivra"], sessionId: "cos1" };
+const COS = { id: "ada", name: "Chief of Staff", projects: ["/p/tally", "/p/hivra"], sessionId: "cos1" };
 vi.mock("../../monos/model/mono", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../monos/model/mono")>()),
   monoForSession: (id: string) => (id === "cos1" ? COS : undefined),
-  findMono: (id: string) => (id === "chief-of-staff" ? COS : undefined),
+  findMono: (id: string) => (id === "ada" ? COS : undefined),
 }));
 
 const PROJECTS: HubProject[] = [

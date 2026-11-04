@@ -2426,7 +2426,7 @@ mod tests {
         .unwrap();
         let lead_b = record(&mut conn, followed("pm", "lead-b", "lead-chat", "lead"), 13).unwrap();
         // A later plain request takes over the plain row only.
-        record(&mut conn, launch("frank", "r3", "lead-chat"), 14).unwrap();
+        record(&mut conn, launch("ed", "r3", "lead-chat"), 14).unwrap();
         assert_eq!(get(&conn, &earlier.id).unwrap().unwrap().state, CANCELLED);
         for id in [&queued.id, &lead_a.id, &lead_b.id] {
             assert_eq!(get(&conn, id).unwrap().unwrap().state, RUNNING, "{id}");
@@ -2460,7 +2460,7 @@ mod tests {
         )
         .unwrap();
         // A plain launch's row into the same chat is not a brief that waits in its queue.
-        record(&mut conn, launch("frank", "r1", "lead-chat"), 12).unwrap();
+        record(&mut conn, launch("ed", "r1", "lead-chat"), 12).unwrap();
         cancel(
             &mut conn,
             std::slice::from_ref(&dropped.id),
@@ -2964,7 +2964,7 @@ mod tests {
         };
         assert!(bind_chat(&mut conn, bind(Some("vg-game-lead")), 1).unwrap());
         assert!(!bind_chat(&mut conn, bind(Some("vg-game-lead")), 2).unwrap());
-        assert!(bind_chat(&mut conn, bind(Some("frank")), 3).unwrap());
+        assert!(bind_chat(&mut conn, bind(Some("ed")), 3).unwrap());
         assert!(bind_chat(
             &mut conn,
             ChatBindInput {
