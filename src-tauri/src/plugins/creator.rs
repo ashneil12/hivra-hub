@@ -1208,18 +1208,12 @@ fn is_probe_interpreter(command: &str) -> bool {
     matches!(command, "node" | "python3" | "uv" | "deno" | "bun")
 }
 
-/// WP-42's `absolute_plugin_args` is not in this repo. An interpreter may run only a `./` script that stays inside
-/// the plugin. A flag is allowed. Any other argument is not.
-fn script_args_stay_inside(root: &Path, args: &[String]) -> bool {
+/// An interpreter may run only a `./` script inside the plugin, checked by WP-42's `absolute_plugin_args`.
+/// A flag is allowed. Any other argument is not, including a path that function would otherwise leave unchanged.
+fn interpreter_launch_args(root: &Path, args: &[String]) -> Result<Vec<String>, ()> {
     let mut saw_script = false;
     for arg in args {
-        if let Some(rel) = arg.strip_prefix("./") {
-            if rel.is_empty() || arg.contains("..") || arg.contains('\\') {
-                return false;
-            }
-            if !strictly_inside(root, &root.join(rel)) {
-                return false;
-            }
+        if arg.starts_with("./") {
             saw_script = true;
         } else if arg.starts_with('-')
             && !arg.contains('/')
@@ -1228,10 +1222,13 @@ fn script_args_stay_inside(root: &Path, args: &[String]) -> bool {
         {
             // A flag, not a path.
         } else {
-            return false;
+            return Err(());
         }
     }
-    saw_script
+    if !saw_script {
+        return Err(());
+    }
+    super::verify::absolute_plugin_args(args, root).map_err(|_| ())
 }
 
 fn talk(root: &Path, session_dir: &Path, server: &mcp::McpServer, timeout: Duration) -> Talk {
@@ -1244,10 +1241,10 @@ fn talk(root: &Path, session_dir: &Path, server: &mcp::McpServer, timeout: Durat
         Ok(plan) => plan,
         Err(_) => return Talk::Note("It didn't start.".into()),
     };
-    let Transport::Stdio { command, args, .. } = &server.transport else {
+    let Transport::Stdio { command, .. } = &server.transport else {
         return Talk::Note("A web server isn't started from here.".into());
     };
-    let program = if command.starts_with("./") {
+    let (program, launch_args) = if command.starts_with("./") {
         let Ok(program) = fsutil::canonical(&plan.program) else {
             return Talk::Note("It didn't start.".into());
         };
@@ -1256,15 +1253,15 @@ fn talk(root: &Path, session_dir: &Path, server: &mcp::McpServer, timeout: Durat
                 "It isn't a program inside the plugin, so it wasn't started.".into(),
             );
         }
-        program
+        (program, plan.args.clone())
     } else if is_probe_interpreter(command) {
-        if !script_args_stay_inside(root, args) {
+        let Ok(launch_args) = interpreter_launch_args(root, &plan.args) else {
             return Talk::Note(
                 "It isn't a program inside the plugin, so it wasn't started.".into(),
             );
-        }
+        };
         match crate::connectors::launch::find_on_path(command) {
-            Some(found) => found,
+            Some(found) => (found, launch_args),
             None => return Talk::Note("It didn't start.".into()),
         }
     } else {
@@ -1272,7 +1269,7 @@ fn talk(root: &Path, session_dir: &Path, server: &mcp::McpServer, timeout: Durat
     };
     let mut command = std::process::Command::new(&program);
     command
-        .args(&plan.args)
+        .args(&launch_args)
         .current_dir(&plan.cwd)
         .env_clear()
         .envs(passed_env(std::env::vars_os()))

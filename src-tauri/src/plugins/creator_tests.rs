@@ -806,6 +806,7 @@ import json, os, sys
 from pathlib import Path
 here = Path(__file__).resolve().parent
 (here / "started.txt").write_text("yes")
+(here / "argv.txt").write_text(sys.argv[0])
 (here / "env.txt").write_text(
     "PLUGIN_ROOT=" + os.environ.get("PLUGIN_ROOT", "") + "\n"
     + "HAS_CARGO=" + ("1" if "CARGO_MANIFEST_DIR" in os.environ else "0") + "\n"
@@ -1317,6 +1318,17 @@ fn an_interpreter_on_path_can_run_a_script_inside_the_plugin() {
         .join(&probed.id)
         .join("probe-data")
         .is_dir());
+    // WP-42's absolute_plugin_args turns the ./ script into a path inside the plugin before it starts.
+    let argv = std::fs::read_to_string(scratch(&host, &probed.id).join("argv.txt")).unwrap();
+    let script_arg = argv.trim();
+    assert!(
+        std::path::Path::new(script_arg).is_absolute(),
+        "the script is an absolute path: {script_arg}"
+    );
+    assert!(
+        script_arg.starts_with(scratch(&host, &probed.id).to_string_lossy().as_ref()),
+        "{script_arg}"
+    );
 
     let outside = creator::start(&host, "this-view", "skill").unwrap();
     let drafted = creator::draft(
@@ -1333,6 +1345,32 @@ fn an_interpreter_on_path_can_run_a_script_inside_the_plugin() {
                 "mcp.json",
                 &mcp_with_args("python3", &["/tmp/not-in-the-plugin.py"]),
             ),
+        ]),
+    )
+    .unwrap();
+    let allowed = creator::approve_mcp(&host, &drafted.id, drafted.revision).unwrap();
+    let probed = creator::probe_mcp(
+        &host,
+        &allowed.id,
+        allowed.revision,
+        Duration::from_millis(1500),
+    )
+    .unwrap();
+    let note = probed.mcp_note.unwrap();
+    assert!(note.contains("wasn't started"), "{note}");
+
+    let escaped = creator::start(&host, "this-view", "skill").unwrap();
+    let drafted = creator::draft(
+        &host,
+        &escaped.id,
+        escaped.revision,
+        &files(&[
+            ("plugin.json", &manifest("made-escape")),
+            (
+                "skills/greet/SKILL.md",
+                "---\nname: greet\ndescription: Says hello.\n---\n\n# greet\n",
+            ),
+            ("mcp.json", &mcp_with_args("python3", &["./../outside.py"])),
         ]),
     )
     .unwrap();
