@@ -7,6 +7,9 @@ use crate::delivery::deliver::{self, DeliverInput};
 use crate::delivery::events::{self, Kind, News};
 use crate::delivery::github::Github;
 use crate::delivery::settings::{self, Mode};
+use crate::firstmate::gates::{
+    self, CommandEvidence, GateKind, GatePlan, Outcome, RoundInput, Runners,
+};
 use crate::pr_watch::eval::{Change, Remark, RemarkKind};
 use crate::session_store::SessionStore;
 
@@ -248,6 +251,124 @@ fn a_finished_crew_runs_axi_with_its_intent_and_nothing_is_pushed() {
     let cards = cards(&store.lock_conn().unwrap(), project).unwrap();
     assert_eq!(cards[0].line, "checking: tests");
     assert!(cards[0].decision_key.is_none());
+    let checks: i64 = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM gate_activity WHERE kind = 'gate.checks'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(checks, 0);
+}
+
+struct OnceChecks {
+    calls: std::cell::Cell<usize>,
+}
+
+impl Runners for OnceChecks {
+    fn checks(
+        &self,
+        _checkout: &Path,
+        _named: &[String],
+        _changed: &[String],
+    ) -> Result<Vec<CommandEvidence>, String> {
+        self.calls.set(self.calls.get() + 1);
+        Ok(vec![CommandEvidence {
+            command: "npm run check".into(),
+            outcome: Outcome::Passed,
+            exit_code: Some(0),
+            output: String::new(),
+            seconds: 0.0,
+        }])
+    }
+
+    fn routes(&self, _checkout: &Path) -> Option<CommandEvidence> {
+        None
+    }
+
+    fn verdict(&self, _prompt: &str) -> Result<String, String> {
+        Ok(r#"{"verdict":"met","why":"the diff does what the brief asks"}"#.into())
+    }
+}
+
+#[test]
+fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
+    let _guard = guard();
+    let dir = Temp::new();
+    let (main, work) = pair(dir.path(), &file_url(&dir.path().join("origin.git")));
+    let log = dir.path().join("tool.log");
+    use_script(
+        dir.path(),
+        &log,
+        r#"{"outcome":"running","runId":"r1","step":"tests"}"#,
+    );
+    let store = store();
+    let project = main.to_str().unwrap();
+    let id = crew(&store, project, "The name reads clearly.");
+    let plan = GatePlan {
+        gates: vec![GateKind::Diff, GateKind::Checks],
+        checks: Vec::new(),
+    };
+    gates::save_plan(&store.lock_conn().unwrap(), &id, &plan, 1).unwrap();
+    pr_mode(&store, project);
+    turn_on(&store, project);
+    let owns = owns_project_checks(&store.lock_conn().unwrap(), project, &id);
+    assert!(owns);
+    let counter = OnceChecks {
+        calls: std::cell::Cell::new(0),
+    };
+    gates::run_round(
+        &RoundInput {
+            delegation_id: &id,
+            round: 1,
+            checkout: &work,
+            plan: &plan,
+            brief: "Say what it is.",
+            done_when: "The name reads clearly.",
+            report: "Named it.",
+            now: 4,
+            gate_owns_checks: owns,
+        },
+        &counter,
+    );
+    assert_eq!(counter.calls.get(), 0);
+    deliver::deliver(
+        &store,
+        &NoGh,
+        DeliverInput {
+            project: project.to_string(),
+            checkout: work.to_string_lossy().into_owned(),
+            delegation_id: Some(id.clone()),
+            ..DeliverInput::default()
+        },
+        5,
+    )
+    .unwrap();
+    let text = log_of(&log);
+    assert_eq!(text.matches("\"axi\",\"run\"").count(), 1, "{text}");
+    let summary: String = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT summary FROM gate_activity WHERE kind = 'gate.checks' AND target = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(summary.contains("no-mistakes"), "{summary}");
+    assert!(summary.contains("npm run check"), "{summary}");
+    let count: i64 = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM gate_activity WHERE kind = 'gate.checks' AND target = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1);
 }
 
 #[test]
@@ -500,11 +621,7 @@ fn a_dev_copy_never_names_a_real_remote_and_a_daily_copy_ignores_the_stand_in() 
     assert!(!log.exists());
 
     force_dev(Some(false));
-    let local = dir.path().join("daily");
-    std::fs::create_dir_all(&local).unwrap();
-    git(&local, &["init", "-b", "main"]);
-    let err = set_enabled(&store, local.to_str().unwrap(), true, 0, 3).unwrap_err();
-    assert!(err.contains("isn't set"), "{err}");
+    assert!(stand_in_program().is_none());
     assert!(!log.exists());
 }
 

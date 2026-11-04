@@ -180,6 +180,21 @@ fn read_setting(conn: &Connection, project: &str) -> Result<Option<SettingRow>, 
     .map_err(|e| e.to_string())
 }
 
+/// A code brief on a project whose delivery gate is on. WP-40 does not run that brief's checks.
+/// no-mistakes runs them once, at delivery, and the task records that layer.
+pub fn owns_project_checks(conn: &Connection, project: &str, delegation_id: &str) -> bool {
+    if !enabled(conn, project).unwrap_or(false) {
+        return false;
+    }
+    crate::firstmate::gates::plan_of(conn, delegation_id)
+        .ok()
+        .flatten()
+        .is_some_and(|plan| {
+            plan.gates
+                .contains(&crate::firstmate::gates::GateKind::Checks)
+        })
+}
+
 pub fn enabled(conn: &Connection, project: &str) -> Result<bool, String> {
     let key = project_key(project)?;
     Ok(read_setting(conn, &key)?.is_some_and(|row| row.enabled))
@@ -528,12 +543,19 @@ fn nm_home_at(data: &Path) -> Result<PathBuf, String> {
     Ok(home)
 }
 
+/// The stand-in, and only on a dev copy. A daily copy ignores `MONOCODE_NO_MISTAKES`.
+fn stand_in_program() -> Option<PathBuf> {
+    if !dev_copy() {
+        return None;
+    }
+    std::env::var_os("MONOCODE_NO_MISTAKES")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
 fn tool_program(data: &Path) -> Result<PathBuf, String> {
-    if dev_copy() {
-        if let Some(path) = std::env::var_os("MONOCODE_NO_MISTAKES").filter(|path| !path.is_empty())
-        {
-            return Ok(PathBuf::from(path));
-        }
+    if let Some(path) = stand_in_program() {
+        return Ok(path);
     }
     crate::pinned_tool::install(
         &crate::pinned_tool::NO_MISTAKES,
@@ -898,6 +920,42 @@ struct Activity<'a> {
     now: i64,
 }
 
+/// The project's check command is the gate's Test step (`.no-mistakes.yaml`). Named check ids, when
+/// the brief has them, are kept in the record so the handoff is not a silent skip.
+fn record_check_layer(conn: &Connection, input: &FillInput, project: &str) -> Result<(), String> {
+    let Some(id) = input.delegation_id.as_deref() else {
+        return Ok(());
+    };
+    if !owns_project_checks(conn, project, id) {
+        return Ok(());
+    }
+    let named = crate::firstmate::gates::plan_of(conn, id)
+        .ok()
+        .flatten()
+        .map(|plan| plan.checks)
+        .unwrap_or_default();
+    let summary = if named.is_empty() {
+        "The no-mistakes layer ran the project's checks (npm run check).".to_string()
+    } else {
+        format!(
+            "The no-mistakes layer ran the project's checks (npm run check): {}.",
+            named.join(", ")
+        )
+    };
+    record_activity(
+        conn,
+        Activity {
+            kind: "gate.checks",
+            initiator: input.owner_session.as_deref(),
+            project,
+            target: Some(id),
+            summary: &summary,
+            link: None,
+            now: input.now,
+        },
+    )
+}
+
 fn record_activity(conn: &Connection, activity: Activity<'_>) -> Result<(), String> {
     conn.execute(
         "INSERT INTO gate_activity (kind, actor, initiator, project, target, summary, link, created_at)
@@ -1245,6 +1303,10 @@ pub fn fill(store: &SessionStore, input: FillInput) -> Result<FillResult, String
         insert_run(&conn, &input, &project, &row_id)?;
     }
     let done = invoke(&program, &home, &args, Some(&input.checkout))?;
+    {
+        let conn = store.lock_conn()?;
+        record_check_layer(&conn, &input, &project)?;
+    }
     let Some(scripted) = done.run else {
         return Ok(FillResult {
             state: "checking".into(),

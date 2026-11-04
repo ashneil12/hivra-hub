@@ -1,9 +1,13 @@
-//! One download-and-verify helper for a tool pinned to an exact version (Hivra WP-81, also WP-82).
+//! One download-and-verify helper for any tool pinned to an exact version (Hivra WP-81 and WP-82).
 //!
-//! The archive's SHA-256 is checked before anything is written. Install scripts in the archive are
-//! never run. The tool is kept in `<data>/tools/<name>/<version>/`. A version bump is a reviewed
-//! commit that changes both the version and the checksums. An empty checksum is not a pin: install
-//! refuses and does not download.
+//! A [`Pin`] is the whole contract: the tool's name, its exact version, one asset per platform
+//! (archive file name and sha256), and which binary to take out of that archive. [`install`] checks
+//! the archive before it writes anything, keeps only that one binary in
+//! `<data>/tools/<name>/<version>/`, and never runs an install script. WP-82 calls [`install`] with
+//! its own `Pin`; nothing here is special to no-mistakes except the `NO_MISTAKES` constant.
+//!
+//! A version bump is a reviewed commit that changes both the version and the checksums. An empty or
+//! non-64-hex checksum is not a pin: install refuses and does not download.
 
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -23,7 +27,9 @@ pub struct Asset {
     pub sha256: &'static str,
 }
 
-/// A tool Hivra may download. `url_base` ends with `/`; the asset's file name is appended.
+/// Any tool Hivra may download. `url_base` ends with `/` and the asset's file name is appended.
+/// `binary` is the one file kept from the archive; [`binary_file_name`] adds `.exe` on Windows.
+/// Other files in the archive, including install scripts, are not written.
 #[derive(Clone, Copy, Debug)]
 pub struct Pin {
     pub name: &'static str,
@@ -33,50 +39,51 @@ pub struct Pin {
     pub assets: &'static [Asset],
 }
 
-/// no-mistakes 1.110.0. The checksums stay empty until a reviewed commit fills them: install
-/// refuses rather than trust an archive we have not pinned. Asset names follow no-mistakes
-/// `releaseArchiveName` (`internal/update/version.go`): `{app}-{tag}-{GOOS}-{GOARCH}`.
+/// no-mistakes 1.106.1. The sha256 values are that release's `checksums.txt`. The darwin-arm64
+/// value was checked against the downloaded tarball. Asset names follow no-mistakes
+/// `releaseArchiveName`: `{app}-{tag}-{GOOS}-{GOARCH}`, `.tar.gz` except Windows `.zip`.
+/// The archive holds one file, `no-mistakes` (`no-mistakes.exe` on Windows).
 pub const NO_MISTAKES: Pin = Pin {
     name: "no-mistakes",
-    version: "1.110.0",
-    url_base: "https://github.com/kunchenguid/no-mistakes/releases/download/v1.110.0/",
+    version: "1.106.1",
+    url_base: "https://github.com/kunchenguid/no-mistakes/releases/download/v1.106.1/",
     binary: "no-mistakes",
     assets: &[
         Asset {
             os: "darwin",
             arch: "arm64",
-            file_name: "no-mistakes-v1.110.0-darwin-arm64.tar.gz",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-darwin-arm64.tar.gz",
+            sha256: "3105ae3ffd9f5f6dc27674302dcd126a89ba9c23d43ecb8be5e266ac52f1472c",
         },
         Asset {
             os: "darwin",
             arch: "amd64",
-            file_name: "no-mistakes-v1.110.0-darwin-amd64.tar.gz",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-darwin-amd64.tar.gz",
+            sha256: "a1df9a1e456e265c989ddb17968317f3d21bf80b23b9828cbd426777f279bfb1",
         },
         Asset {
             os: "linux",
             arch: "arm64",
-            file_name: "no-mistakes-v1.110.0-linux-arm64.tar.gz",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-linux-arm64.tar.gz",
+            sha256: "8529f37d3b11a213abe9162851e84208e9c12e9d8ebf830e037f05e00558a656",
         },
         Asset {
             os: "linux",
             arch: "amd64",
-            file_name: "no-mistakes-v1.110.0-linux-amd64.tar.gz",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-linux-amd64.tar.gz",
+            sha256: "fbf131356a278623a509b6b50ecb39c5375b1a82e7dcfc48e42d10e761416d1e",
         },
         Asset {
             os: "windows",
             arch: "arm64",
-            file_name: "no-mistakes-v1.110.0-windows-arm64.zip",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-windows-arm64.zip",
+            sha256: "69a95132ae0140e8d15878657e9bc3ba9c555d9aa49b37c640f5115fb67af5a8",
         },
         Asset {
             os: "windows",
             arch: "amd64",
-            file_name: "no-mistakes-v1.110.0-windows-amd64.zip",
-            sha256: "",
+            file_name: "no-mistakes-v1.106.1-windows-amd64.zip",
+            sha256: "78e17f98e9d9448368ce126f34101f01ca43f55d5797e3f55f5e11aadd175bef",
         },
     ],
 };
@@ -630,7 +637,8 @@ mod tests {
             hits: AtomicUsize::new(0),
             body: Vec::new(),
         };
-        let err = install(&NO_MISTAKES, &dir.0, "darwin", "arm64", &fetcher).unwrap_err();
+        let pin = pin_for("sample-v1.0.0-darwin-arm64.tar.gz", "", "darwin");
+        let err = install(&pin, &dir.0, "darwin", "arm64", &fetcher).unwrap_err();
         assert!(err.contains("isn't set"), "{err}");
         assert_eq!(fetcher.hits.load(Ordering::SeqCst), 0);
         assert!(!dir.0.join("tools").exists());
@@ -639,27 +647,54 @@ mod tests {
     #[test]
     fn every_platform_has_a_pinned_asset() {
         let want = [
-            ("darwin", "arm64", ".tar.gz"),
-            ("darwin", "amd64", ".tar.gz"),
-            ("linux", "arm64", ".tar.gz"),
-            ("linux", "amd64", ".tar.gz"),
-            ("windows", "arm64", ".zip"),
-            ("windows", "amd64", ".zip"),
+            (
+                "darwin",
+                "arm64",
+                "no-mistakes-v1.106.1-darwin-arm64.tar.gz",
+                "3105ae3ffd9f5f6dc27674302dcd126a89ba9c23d43ecb8be5e266ac52f1472c",
+            ),
+            (
+                "darwin",
+                "amd64",
+                "no-mistakes-v1.106.1-darwin-amd64.tar.gz",
+                "a1df9a1e456e265c989ddb17968317f3d21bf80b23b9828cbd426777f279bfb1",
+            ),
+            (
+                "linux",
+                "arm64",
+                "no-mistakes-v1.106.1-linux-arm64.tar.gz",
+                "8529f37d3b11a213abe9162851e84208e9c12e9d8ebf830e037f05e00558a656",
+            ),
+            (
+                "linux",
+                "amd64",
+                "no-mistakes-v1.106.1-linux-amd64.tar.gz",
+                "fbf131356a278623a509b6b50ecb39c5375b1a82e7dcfc48e42d10e761416d1e",
+            ),
+            (
+                "windows",
+                "arm64",
+                "no-mistakes-v1.106.1-windows-arm64.zip",
+                "69a95132ae0140e8d15878657e9bc3ba9c555d9aa49b37c640f5115fb67af5a8",
+            ),
+            (
+                "windows",
+                "amd64",
+                "no-mistakes-v1.106.1-windows-amd64.zip",
+                "78e17f98e9d9448368ce126f34101f01ca43f55d5797e3f55f5e11aadd175bef",
+            ),
         ];
+        assert_eq!(NO_MISTAKES.version, "1.106.1");
+        assert_eq!(NO_MISTAKES.binary, "no-mistakes");
+        assert!(NO_MISTAKES.url_base.ends_with("/v1.106.1/"));
         assert_eq!(NO_MISTAKES.assets.len(), want.len());
-        for (os, arch, ext) in want {
+        for (os, arch, file, sha) in want {
             let asset = NO_MISTAKES
                 .asset(os, arch)
                 .unwrap_or_else(|| panic!("missing {os}-{arch}"));
-            assert!(asset.file_name.ends_with(ext), "{}", asset.file_name);
-            assert!(asset
-                .file_name
-                .contains(&format!("v{}", NO_MISTAKES.version)));
-            assert!(asset.file_name.contains(os) && asset.file_name.contains(arch));
-            assert!(
-                asset.sha256.is_empty() || hex64(asset.sha256),
-                "checksum must be empty or a SHA-256"
-            );
+            assert_eq!(asset.file_name, file);
+            assert_eq!(asset.sha256, sha);
+            assert!(hex64(asset.sha256));
             let binary = binary_file_name(NO_MISTAKES.binary, os);
             if os == "windows" {
                 assert!(binary.ends_with(".exe"));
