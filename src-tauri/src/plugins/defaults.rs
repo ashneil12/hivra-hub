@@ -56,6 +56,9 @@ impl Pin {
                 self.path
             ),
             pin: Some(self.commit.clone()),
+            tag: None,
+            path: Some(self.path.clone()),
+            registry: None,
         }
     }
 }
