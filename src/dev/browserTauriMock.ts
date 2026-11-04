@@ -215,6 +215,19 @@ mockIPC(
     // The CLI paths set in Settings, as the Rust side hands them back when they exist (a proof sets the Grok bridge).
     if (cmd === "harness_runtime_binary_paths") return (args as { paths?: Record<string, string> } | undefined)?.paths ?? {};
     if (cmd.startsWith("plugin:event|")) return 1;
+    // WP-06: the real shell's crew and inbox read these. A browser spec seeds them; a missing or bad value is an empty list.
+    const seededList = (key: string): unknown[] => {
+      try {
+        const value = JSON.parse(localStorage.getItem(key) ?? "[]");
+        return Array.isArray(value) ? value : [];
+      } catch {
+        return [];
+      }
+    };
+    if (cmd === "delegations_list_open") return seededList("monocode:dev-delegations");
+    if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
+    if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
+    if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
     if (cmd.includes("list") || cmd.includes("read_dir")) return [];
     return null;
   },

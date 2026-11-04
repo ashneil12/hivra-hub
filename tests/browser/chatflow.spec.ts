@@ -64,6 +64,9 @@ test("a typed answer reaches the question; a failed turn shows on the rail and a
   await next(page, "ask");
   await send(page, "have a worker add sharing to tallies now. go");
   await expect(page.locator("[data-question-form]").first()).toBeVisible({ timeout: 20_000 });
+  // The strip badge counts the ask. It does not depend on Today.
+  const badge = await page.locator('[data-hub-strip] button[aria-label^="EXO"] span.hub-count-badge').first().textContent();
+  expect(Number(badge)).toBeGreaterThan(0);
   await shot(page, "1-lead-asks");
 
   // 2. Ash types his answer in the Lead's chat, as he would: it answers the question, never queues behind it.

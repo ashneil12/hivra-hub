@@ -39,12 +39,13 @@ for (const size of SIZES) {
     fs.mkdirSync(SHOTS, { recursive: true });
     await page.setViewportSize({ width: size.width, height: size.height });
     await open(page);
-    // WP-06: a fresh load opens the first project's coding team. Its chat fills the main column.
-    const chat = page.locator("[data-session-drop]").first();
+    // WP-06: a fresh load opens the first project's coding team. The workspace pane behind it is an
+    // empty hidden drop, so the width is the Lead chat that is actually on screen.
+    const chat = page.locator('[data-mono-view][aria-hidden="false"] [data-session-drop]');
     await expect(chat).toBeVisible({ timeout: 30_000 });
-    const t = await fill(page, "[data-session-drop]");
+    const t = await fill(page, '[data-mono-view][aria-hidden="false"] [data-session-drop]');
     expect(t.share).toBeGreaterThan(0.99);
-    const pad = await page.locator("[data-session-composer]").first().evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
+    const pad = await chat.locator("[data-session-composer]").evaluate((el) => parseFloat(getComputedStyle(el).paddingLeft));
     expect(pad).toBeGreaterThanOrEqual(24);
     expect(pad).toBeLessThanOrEqual(32);
     await page.waitForTimeout(600);
