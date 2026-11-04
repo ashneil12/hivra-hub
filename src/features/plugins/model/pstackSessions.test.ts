@@ -1,0 +1,181 @@
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import type { PluginWiring } from "./pluginWiring";
+
+/**
+ * WP-41 "done when": with pstack on (as every fresh install has it), a Claude Code and a Codex worker session see its
+ * skills; switched off, neither does. The real adapters build each CLI's command line and thread config; only the
+ * child process is swapped, and scripts/fake-plugin-agent.mjs reads what each CLI would load from its own skill
+ * folders. The wiring and the files are the Rust side's own: __fixtures__/rust-pstack.json is written and checked by
+ * src-tauri/src/plugins/defaults_tests.rs from a real first-start install, then a real switch-off. The installed copy
+ * is src-tauri/plugins/pstack, which the Rust tests prove is byte for byte what gets installed.
+ */
+
+const spawned = new Map<string, string[]>();
+const codexSent: Array<{ method: string; params: Record<string, unknown> }> = [];
+const lines = new Map<string, (line: string) => void>();
+
+vi.mock("../../../integrations/harness/core/child", () => ({
+  resolveClaudeBinary: async () => ({ path: "/fake/claude" }),
+  resolveCodexBinary: async () => ({ path: "/fake/codex" }),
+  spawnChild: async (id: string, _path: string, args: string[]) => {
+    spawned.set(id, args);
+  },
+  killChild: async () => undefined,
+  unwatchChild: () => undefined,
+  watchChild: (id: string, line: (l: string) => void) => {
+    lines.set(id, line);
+  },
+  writeChild: async (id: string, line: string) => {
+    if (id.startsWith("claude")) return;
+    const message = JSON.parse(line);
+    codexSent.push(message);
+    if (message.id == null) return;
+    const result =
+      message.method === "thread/start"
+        ? { thread: { id: `thr_${id}` } }
+        : message.method === "turn/start"
+          ? { turn: { id: `turn_${id}`, status: "inProgress" } }
+          : {};
+    lines.get(id)!(JSON.stringify({ id: message.id, result }));
+    if (message.method === "turn/start")
+      lines.get(id)!(
+        JSON.stringify({ method: "turn/completed", params: { turn: { id: `turn_${id}`, status: "completed" } } }),
+      );
+  },
+}));
+
+vi.mock("@tauri-apps/api/core", () => ({
+  isTauri: () => false,
+  invoke: async (command: string) => {
+    throw new Error(`Unexpected command: ${command}`);
+  },
+}));
+
+const { registerPluginSessions } = await import("./pluginSessions");
+const { sendClaudeTurn, stopClaudeSession, __claudeTestReset } = await import(
+  "../../../integrations/harness/providers/claude/claude"
+);
+const { sendCodexTurn, stopCodexSession, __codexTestReset } = await import(
+  "../../../integrations/harness/providers/codex/codex"
+);
+const { setClaudePluginArgs } = await import("../../../integrations/harness/providers/claude/claudeExtraArgs");
+const { setCodexExtraConfig } = await import("../../../integrations/harness/providers/codex/codexExtraConfig");
+// @ts-expect-error: a plain .mjs script with no types.
+const { probeClaude, probeCodex } = (await import("../../../../scripts/fake-plugin-agent.mjs")) as {
+  probeClaude(args: string[]): Promise<{ skills: string[] }>;
+  probeCodex(config: unknown, home: string): Promise<{ skills: string[] }>;
+};
+
+const CARRIED = fileURLToPath(new URL("../../../../src-tauri/plugins/", import.meta.url));
+
+type State = {
+  wiring: PluginWiring;
+  files: Array<{ path: string; dir?: true; link?: string; text?: string; carried?: string }>;
+};
+const snapshot = JSON.parse(
+  readFileSync(fileURLToPath(new URL("./__fixtures__/rust-pstack.json", import.meta.url)), "utf8"),
+) as { skills: string[]; on: State; off: State };
+
+const tmps: string[] = [];
+let current: PluginWiring;
+
+/** Lay out what the registry left in one state, in a fresh folder, and hand sessions that state's wiring. */
+function layOut(state: State): { home: string } {
+  const tmp = mkdtempSync(join(tmpdir(), "hivra-pstack-sessions-"));
+  tmps.push(tmp);
+  const at = (text: string) => text.replaceAll("<TMP>", tmp);
+  const atJson = (text: string) => text.replaceAll("<TMP>", JSON.stringify(tmp).slice(1, -1));
+  for (const file of state.files) {
+    const path = join(tmp, file.path);
+    if (file.dir) mkdirSync(path, { recursive: true });
+    else if (file.carried) cpSync(join(CARRIED, file.carried), path, { recursive: true });
+    else if (file.link) symlinkSync(join(tmp, file.link), path, "junction");
+    else writeFileSync(path, file.path.endsWith(".json") ? atJson(file.text ?? "") : at(file.text ?? ""));
+  }
+  current = JSON.parse(atJson(JSON.stringify(state.wiring))) as PluginWiring;
+  return { home: join(tmp, "home") };
+}
+
+async function waitFor(check: () => boolean, what: string) {
+  for (let i = 0; i < 200; i++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
+async function claudeSees(sessionId: string) {
+  const turn = sendClaudeTurn({
+    sessionId,
+    cwd: "/repo",
+    model: "claude:claude-sonnet-5",
+    modelSettings: {},
+    runtimeMode: "supervised",
+    text: "use pstack",
+    attachments: [],
+    onEvent: () => {},
+  });
+  await waitFor(() => spawned.has(sessionId), "Claude Code to start");
+  const args = spawned.get(sessionId)!;
+  const seen = await probeClaude(args);
+  lines.get(sessionId)!(JSON.stringify({ type: "result", subtype: "success", session_id: `sess_${sessionId}` }));
+  await Promise.race([turn.catch(() => undefined), new Promise((r) => setTimeout(r, 50))]);
+  return { args, skills: seen.skills };
+}
+
+async function codexSees(sessionId: string, home: string) {
+  const before = codexSent.length;
+  await sendCodexTurn({
+    sessionId,
+    cwd: "/repo",
+    model: "codex:gpt-5.4",
+    runtimeMode: "supervised",
+    text: "use pstack",
+    attachments: [],
+    onEvent: () => {},
+  });
+  const start = codexSent.slice(before).find((m) => m.method === "thread/start")!;
+  return (await probeCodex(start.params.config, home)).skills;
+}
+
+beforeAll(() => {
+  registerPluginSessions(async () => current);
+});
+
+afterAll(async () => {
+  for (const id of ["claude-pstack-on", "claude-pstack-off"]) await stopClaudeSession(id).catch(() => undefined);
+  for (const id of ["codex-pstack-on", "codex-pstack-off"]) await stopCodexSession(id).catch(() => undefined);
+  __claudeTestReset();
+  __codexTestReset();
+  setClaudePluginArgs(undefined);
+  setCodexExtraConfig(undefined);
+  for (const tmp of tmps) rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+});
+
+describe("pstack reaches every chat", () => {
+  it("is all 58 skills", () => {
+    expect(snapshot.skills).toHaveLength(58);
+    expect(snapshot.skills).toContain("tdd");
+    expect(snapshot.skills).toContain("create-verification-skill");
+  });
+
+  it("on (a fresh install): Claude Code and Codex sessions see every pstack skill", async () => {
+    const { home } = layOut(snapshot.on);
+    const claude = await claudeSees("claude-pstack-on");
+    expect(claude.args).toContain("--plugin-dir");
+    expect(claude.skills).toEqual(snapshot.skills);
+    expect(await codexSees("codex-pstack-on", home)).toEqual(snapshot.skills);
+  });
+
+  it("switched off: neither sees any of them", async () => {
+    const { home } = layOut(snapshot.off);
+    const claude = await claudeSees("claude-pstack-off");
+    expect(claude.args).not.toContain("--plugin-dir");
+    expect(claude.skills).toEqual([]);
+    expect(await codexSees("codex-pstack-off", home)).toEqual([]);
+  });
+});

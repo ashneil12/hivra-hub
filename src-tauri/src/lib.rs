@@ -389,6 +389,8 @@ pub fn run() {
             }
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
+            // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
+            plugins::defaults::start(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app

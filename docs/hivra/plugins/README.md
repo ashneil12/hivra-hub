@@ -100,7 +100,42 @@ dev copy's plugins; its Codex sessions then don't get plugin skills. A dev copy'
 server (CLAUDE.md, `isolated_dev_claude_args`), so plugin MCP servers are stripped there too; plugin skills still load.
 Loosening that rule for the copy's own `plugin-mcp` entries is a separate decision.
 
+## Default plugins (WP-41)
+
+Hivra gives every data folder its default plugins once, on the first start that knows about them (a fresh install and
+an existing one alike). Today that is **pstack** (Lauren Tan's skills for rigour and verification, MIT), so its 58
+skills reach every first mate and worker.
+
+- **Carried, not downloaded.** `src-tauri/plugins/<folder>` is a copy of the plugin at a pinned commit
+  (`src-tauri/plugins/defaults.json`), embedded in the binary by `build.rs`. Nothing is fetched at start, and Linux
+  and Windows builds (which carry no bundle resources) get it too. See
+  [src-tauri/plugins/README.md](../../../src-tauri/plugins/README.md) for the pin and how to move it.
+- **Installed like any plugin** (`plugins/defaults.rs`): unpacked into a staging folder under `<app data>/plugins`,
+  installed through the registry (`install_local`, so it is validated and every contribution has a disposer) with
+  source `bundled` at `https://github.com/cursor/plugins/tree/<commit>/pstack`, then switched on everywhere. It runs in
+  the background at start (`lib.rs`), never blocking the window.
+- **Given once.** `<app data>/plugins/defaults.json` records which defaults this data folder was given. Switched off
+  stays off, removed stays removed, and a plugin by the same name the person installed themselves is never replaced
+  or switched on. A start that fails (or stops between install and switch-on) records nothing and the next start
+  finishes the job.
+- **Turning it off:** like any plugin, `plugins_disable` (everywhere or one project) or `plugins_uninstall`. The
+  Installed list in Settings is WP-31's.
+- **What each CLI gets:** what the table above says for any plugin on everywhere. Claude Code loads the skills through
+  `--plugin-dir` (as `/pstack:<skill>`); Codex, Cursor, OpenCode, Pi and the other `.agents/skills` readers get a link
+  per skill in `~/.agents/skills` (the daily app links into Ash's real home, so his own CLIs outside Hivra see pstack
+  too; a skill name he already has there is left alone and reported). pstack has no MCP servers.
+- **Left out of the copy:** pstack's `agents/` (two Cursor subagent definitions; Claude Code could read plugin agents,
+  but WP-30's shim carries skills only, and pstack's own `docs/harness/claude-code.md` maps them to `general-purpose`),
+  `automations/` (Cursor Automations, no CLI here runs them), `.cursor-plugin/`, the guide's images, the logo and the
+  `statechart` skill's 3.8 MB test corpus (`scripts/test`; the skill's scripts don't read it).
+
+Proofs: `plugins::defaults_tests` (the pin equals the carried folder byte for byte; a fresh install has pstack on with
+all 58 skills for Claude Code and `.agents/skills`; later starts change nothing; off and removed stick; an existing
+install gets it once; the person's own pstack is left alone; an interrupted or failed start finishes next time) and
+`src/features/plugins/model/pstackSessions.test.ts` (the real Claude Code and Codex adapters, fed the wiring Rust
+recorded in `__fixtures__/rust-pstack.json`, hand fake CLIs all 58 skills when on and none when off).
+
 ## Not in this package
 
 Pinned git/npm installs, update and rollback, install-script approval (WP-31); Discover (WP-32); panels on screen
-(WP-33); pstack shipped by default (WP-41); a Settings screen for plugins.
+(WP-33); a Settings screen for plugins.
