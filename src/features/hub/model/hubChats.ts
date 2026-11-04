@@ -26,6 +26,7 @@ import {
   whenLabel,
   type RoomBackend,
 } from "./roomStore";
+import { councilFromUnknown, councilToJson, type CouncilRecord } from "../../council/model/record";
 import type { ChatConversation, ChatMessage, GroupChat, ResponderMode, RoomAttachment } from "./types";
 
 const m = (id: string, from: string, text: string, status?: ChatMessage["status"], refId?: string): ChatMessage => ({
@@ -101,7 +102,16 @@ export function validGroupChats(value: unknown): GroupChat[] {
       return typeof x.id === "string" && typeof x.title === "string" && typeof x.when === "string" &&
         Array.isArray(x.messages) && x.messages.every((m: unknown) => !!m && typeof m === "object" &&
           typeof (m as ChatMessage).id === "string" && typeof (m as ChatMessage).from === "string" && typeof (m as ChatMessage).text === "string");
-    }));
+    })).map((c) => {
+      const council = councilKept((c as { council?: unknown }).council);
+      const { council: _drop, ...rest } = c;
+      return council ? { ...rest, council } : rest;
+    });
+}
+
+/** A council kept beside a room in the window's storage. The wrong shape is dropped and the room stays. */
+function councilKept(value: unknown): CouncilRecord | undefined {
+  return councilFromUnknown(value) ?? undefined;
 }
 
 export { STORED_MESSAGES };
@@ -508,6 +518,58 @@ export function setRoomResponder(chatId: string, mode: ResponderMode): void {
     }));
     changed();
   });
+}
+
+/**
+ * WP-23: keep a council on its room. The write lands only when `expectedRevision` is still the revision in memory
+ * (0 when the room has no council). A second window that saved first makes this return false and, once the store
+ * answers, the row that won replaces the one this window had guessed.
+ */
+export function saveCouncil(chatId: string, next: CouncilRecord, expectedRevision: number): boolean {
+  const chat = getChat(chatId);
+  if (!chat || (chat.council?.revision ?? 0) !== expectedRevision) return false;
+  const json = councilToJson({ ...next, revision: expectedRevision + 1 });
+  if (!json) return false;
+  const stored = councilFromUnknown(JSON.parse(json));
+  if (!stored) return false;
+  update(chatId, (c) => ({ ...c, council: stored }));
+  if (backend?.setCouncil) {
+    const written = stored.revision;
+    write(async (b) => {
+      const result = await b.setCouncil!(chatId, expectedRevision, json);
+      if (result.applied !== false) return;
+      if (getChat(chatId)?.council?.revision !== written) return;
+      let adopted: CouncilRecord | null = null;
+      try {
+        adopted = councilFromUnknown(JSON.parse(result.json));
+      } catch {
+        adopted = null;
+      }
+      if (adopted) {
+        update(chatId, (c) => ({ ...c, council: adopted }));
+        changed();
+        return;
+      }
+      // The row is gone (revision 0 and no council to read). Put this one back, once, and keep whatever landed.
+      if (result.revision !== 0) return;
+      const retryJson = councilToJson({ ...stored, revision: 1 });
+      if (!retryJson) return;
+      const again = await b.setCouncil!(chatId, 0, retryJson);
+      if (getChat(chatId)?.council?.revision !== written) return;
+      if (again.applied === false) return;
+      let landed: CouncilRecord | null = null;
+      try {
+        landed = councilFromUnknown(JSON.parse(again.json));
+      } catch {
+        landed = null;
+      }
+      if (!landed) return;
+      update(chatId, (c) => ({ ...c, council: landed }));
+      changed();
+    });
+  }
+  changed();
+  return true;
 }
 
 // ---- Conversations and messages -----------------------------------------------------------------------------------

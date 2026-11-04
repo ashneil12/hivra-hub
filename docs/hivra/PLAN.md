@@ -70,6 +70,7 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 | [31](work/WP-31-plugin-install.md) | Plugin install, update, rollback | L | 30 | no |
 | [32](work/WP-32-discover.md) | Discover | M | 30 | yes |
 | [41](work/WP-41-pstack.md) | pstack in every chat | S | 30 | yes |
+| [45](work/WP-45-pstack-autopilot.md) | pstack autopilot and plain-English endings | S | 10, 41 | yes |
 
 ### Wave C: what people see
 

@@ -100,7 +100,7 @@ export type Delegation = {
   statusNotice?: string | null;
   /** Who an open question waits on: "person" once the first mate passed it on; none means its first mate. */
   questionOwner?: "person" | null;
-  /** The completion gates' verdict (WP-40): "pending", "passed" or "failed"; none when no gates apply. */
+  /** The completion gates' verdict (WP-40): "pending", "passed", "failed" or "unsure"; none when no gates apply. */
   gateVerdict?: string | null;
   /** The worker's typed final report, as JSON (firstmate/model/report.ts storedReport). */
   report?: string | null;

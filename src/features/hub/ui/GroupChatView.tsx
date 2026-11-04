@@ -52,6 +52,9 @@ import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { useWaitingDrafts } from "../../selfBuild/model/monoMake";
 import { useWaitingTeamDrafts } from "../../selfBuild/model/teamMake";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
+import { CouncilRoom } from "../../council/ui/CouncilRoom";
+import { consumeCouncilCommand } from "../../council/model/command";
+import { requestCouncil } from "../../council/model/host";
 
 function useMonos(): Mono[] {
   const snap = useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
@@ -99,6 +102,11 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   };
   /** WP-22: the next message is a goal the room's lead works toward. */
   const [goalNext, setGoalNext] = useState(false);
+  // WP-23: a council on this room. A room that already has one opens on it; closing it stays closed until the room changes.
+  const [councilOpen, setCouncilOpen] = useState(() => !!getChat(chatId)?.council);
+  useEffect(() => {
+    setCouncilOpen(!!getChat(chatId)?.council);
+  }, [chatId]);
   const begin = (text: string, attachments?: RoomAttachment[]) => {
     const id = startConversation(chat.id, text, { title: draftTitle, attachments });
     setDrafting(false);
@@ -255,6 +263,15 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           </button>
         </div>
         {members.length ? <RoomResponder chat={chat} members={members} /> : null}
+        {/* WP-23: the group's way in to a council. */}
+        <button
+          type="button"
+          data-hub-council
+          onClick={() => setCouncilOpen(true)}
+          className="mx-3 mb-2 flex h-7 items-center rounded-md px-1 text-left text-[13px] text-content/80 hover:bg-content/8"
+        >
+          Council
+        </button>
         {picker ? <MonoPicker chat={chat} monos={monos} anchor={picker} onClose={() => setPicker(null)} /> : null}
         {members.length || chat.conversations.length ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-2">
@@ -395,7 +412,9 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           )}
           {IS_MAC ? null : <div className="w-[120px]" />}
         </div>
-        {members.length === 0 && !conv ? (
+        {councilOpen ? (
+          <CouncilRoom chatId={chat.id} onClose={() => setCouncilOpen(false)} />
+        ) : members.length === 0 && !conv ? (
           <EmptyChat chat={chat} onAdd={openPicker} />
         ) : drafting ? (
           <NewConversationScreen
@@ -463,20 +482,23 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             </div>
           </div>
         )}
-        {drafting ? <div className="h-6 w-full shrink-0 px-6 xl:px-8" /> : <RoomStatusLine chatId={chat.id} convId={conv?.id} nameOf={nameOf} />}
-        {chatSaveProblem() ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-amber-400 xl:px-8" data-hub-chat-save-error>
+        {councilOpen ? null : drafting ? <div className="h-6 w-full shrink-0 px-6 xl:px-8" /> : <RoomStatusLine chatId={chat.id} convId={conv?.id} nameOf={nameOf} />}
+        {!councilOpen && chatSaveProblem() ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-amber-400 xl:px-8" data-hub-chat-save-error>
           {chatSaveProblem()}
         </div> : null}
-        {!drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-content/70 xl:px-8" data-hub-chat-error>
+        {!councilOpen && !drafting && replyProblem(chat.id, conv?.id) ? <div role="alert" className="w-full px-6 pb-2 text-[12px] text-content/70 xl:px-8" data-hub-chat-error>
           {roomPick(chat.id) ? <span data-hub-chat-error-pick={roomPick(chat.id)!.id}>{nameOf(roomPick(chat.id)!.id)} was picked to answer ({roomPick(chat.id)!.why}). </span> : null}
           {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>
         </div> : null}
-        <GoalBar chat={chat} members={members} convId={conv?.id} on={goalNext} onChange={setGoalNext} />
-        <div className="w-full shrink-0 px-6 pb-3 xl:px-8">
+        {councilOpen ? null : <GoalBar chat={chat} members={members} convId={conv?.id} on={goalNext} onChange={setGoalNext} />}
+        {councilOpen ? null : <div className="w-full shrink-0 px-6 pb-3 xl:px-8">
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
             name={chatPhrase(chat)}
             onSubmit={async (text: string, files: Attachment[]) => {
+              // WP-23: /council convenes a council instead of sending the line to the room.
+              const council = consumeCouncilCommand(text);
+              if (council.matched) return requestCouncil(council.question, chat.memberIds);
               // Sending while the team is answering is fine: the room takes it up as soon as the current turn ends.
               if (!text.trim() && !files.length) return false;
               // Every file is kept by its path first (a pasted picture is saved to one); one that can't be kept stops
@@ -490,7 +512,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
               answer(conv?.id);
             }}
           />
-        </div>
+        </div>}
       </div>
     </div>
   );
