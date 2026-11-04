@@ -4,6 +4,7 @@ import {
   pinField,
   readPending,
   readRegistry,
+  readReports,
   sourceLine,
   updatePayload,
   type InstalledPlugin,
@@ -102,6 +103,32 @@ describe("updatePayload", () => {
     expect(pinField("npm").empty).toBe("Give an exact version.");
     expect(pinField("git").label).toBe("Commit or tag");
     expect(pinField("local").empty).toBe("Give the folder's full path.");
+  });
+});
+
+describe("readReports", () => {
+  it("shows each report, and drops a report that has no words", () => {
+    expect(readReports(undefined)).toEqual([]);
+    expect(readReports({ entry: { name: "solo" } })).toEqual([]);
+    expect(readReports({ reports: "nope" })).toEqual([]);
+    expect(
+      readReports({
+        reports: [
+          { path: "skills/one", message: "Not linked: a skill called \"one\" is already there." },
+          { path: "", message: "  Kept as words.  " },
+          { path: "skip", message: "   " },
+          { message: "No path." },
+          { path: "bad\0path", message: "Still shown." },
+          null,
+          { path: "x", message: 1 },
+        ],
+      }),
+    ).toEqual([
+      "skills/one: Not linked: a skill called \"one\" is already there.",
+      "Kept as words.",
+      "No path.",
+      "Still shown.",
+    ]);
   });
 });
 

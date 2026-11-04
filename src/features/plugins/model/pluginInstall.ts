@@ -81,6 +81,16 @@ export function removePlugin(name: string): Promise<unknown> {
   return invoke("plugins_uninstall", { name });
 }
 
+/** On, everywhere. No project: Rust reads a missing project as the global scope. */
+export function enablePlugin(name: string): Promise<unknown> {
+  return invoke("plugins_enable", { name });
+}
+
+/** Off, everywhere. */
+export function disablePlugin(name: string): Promise<unknown> {
+  return invoke("plugins_disable", { name });
+}
+
 export function approvePlugin(id: string): Promise<unknown> {
   return invoke("plugins_approve", { id });
 }
@@ -91,6 +101,39 @@ export function declinePlugin(id: string): Promise<unknown> {
 
 export function isWaiting(value: unknown): boolean {
   return !!value && typeof value === "object" && (value as { status?: unknown }).status === "waiting";
+}
+
+/** The plain-words reports an enable or disable returned. A missing list is nothing to show, not a failure. */
+export function readReports(value: unknown): string[] {
+  if (!value || typeof value !== "object") return [];
+  const reports = (value as { reports?: unknown }).reports;
+  if (!Array.isArray(reports)) return [];
+  const lines: string[] = [];
+  for (const item of reports) {
+    if (!item || typeof item !== "object") continue;
+    const message = (item as { message?: unknown }).message;
+    if (typeof message !== "string") continue;
+    const text = message.replace(/\r/g, "").trim();
+    if (!text || text.includes("\0")) continue;
+    const path = (item as { path?: unknown }).path;
+    const where = typeof path === "string" ? path.replace(/\r/g, "").trim() : "";
+    lines.push(where && !where.includes("\0") ? `${where}: ${text}` : text);
+  }
+  return lines;
+}
+
+/** The on/off switch the command just wrote, when the result carries the plugin. */
+export function enabledFrom(value: unknown): { global: boolean; projects: string[] } | undefined {
+  if (!value || typeof value !== "object") return;
+  const entry = (value as { entry?: unknown }).entry;
+  if (!entry || typeof entry !== "object") return;
+  const enabled = (entry as { enabled?: unknown }).enabled;
+  if (!enabled || typeof enabled !== "object") return;
+  const global = (enabled as { global?: unknown }).global;
+  const projects = (enabled as { projects?: unknown }).projects;
+  if (typeof global !== "boolean") return;
+  if (!Array.isArray(projects) || projects.some((item) => typeof item !== "string")) return;
+  return { global, projects };
 }
 
 /** Refuse a list that isn't a registry. An empty object is a real empty install, not a broken read. */

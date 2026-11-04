@@ -5,9 +5,13 @@ import {
   installedRows,
   isWaiting,
   listPlugins,
+  disablePlugin,
+  enablePlugin,
+  enabledFrom,
   pinField,
   plainError,
   readRegistry,
+  readReports,
   removePlugin,
   rollbackPlugin,
   sourceLine,
@@ -25,6 +29,7 @@ export function InstalledPlugins() {
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [reports, setReports] = useState<Record<string, string[]>>({});
   const generation = useRef(0);
   const mounted = useRef(true);
 
@@ -51,12 +56,19 @@ export function InstalledPlugins() {
   }, [reload]);
 
   async function run(name: string, action: () => Promise<unknown>) {
+    // Drop a list that was already in flight. A late read must not paint the switch back to where it was.
+    const ticket = ++generation.current;
     setBusy(name);
     setError(null);
     setNotice(null);
     try {
       const result = await action();
-      if (!mounted.current) return;
+      if (!mounted.current || ticket !== generation.current) return;
+      setReports((current) => ({ ...current, [name]: readReports(result) }));
+      const enabled = enabledFrom(result);
+      if (enabled) {
+        setRows((current) => current.map((row) => (row.name === name ? { ...row, enabled } : row)));
+      }
       if (isWaiting(result)) {
         setNotice("Waiting for your OK.");
         setRefresh((current) => current + 1);
@@ -65,7 +77,7 @@ export function InstalledPlugins() {
       setPin("");
       await reload();
     } catch (caught) {
-      if (mounted.current) setError(plainError(caught));
+      if (mounted.current && ticket === generation.current) setError(plainError(caught));
     } finally {
       if (mounted.current) setBusy(null);
     }
@@ -95,6 +107,8 @@ export function InstalledPlugins() {
         {rows.map((row) => {
           const field = pinField(row.source?.kind);
           const open = editing === row.name;
+          const on = row.enabled?.global === true;
+          const lines = reports[row.name] ?? [];
           return (
             <li
               key={row.name}
@@ -104,7 +118,27 @@ export function InstalledPlugins() {
             >
               <div className="flex items-baseline justify-between gap-3">
                 <span className="text-[13px] text-content">{row.name}</span>
-                <span className="text-[12px] text-content/60">{row.version || "Unknown version"}</span>
+                <span className="flex items-center gap-3">
+                  <span className="text-[12px] text-content/60">{row.version || "Unknown version"}</span>
+                  <span className="text-[12px] text-content/70">{on ? "On" : "Off"}</span>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    aria-label={on ? `Turn ${row.name} off` : `Turn ${row.name} on`}
+                    disabled={busy !== null}
+                    onClick={() => void run(row.name, () => (on ? disablePlugin(row.name) : enablePlugin(row.name)))}
+                    className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
+                      on ? "bg-accent" : "bg-content/20"
+                    }`}
+                  >
+                    <span
+                      className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${
+                        on ? "left-4.5" : "left-0.5"
+                      }`}
+                    />
+                  </button>
+                </span>
               </div>
               <p className="mt-0.5 text-[12px] text-content/50">{sourceLine(row.source)}</p>
               <div className="mt-2 flex flex-wrap gap-2">
@@ -160,6 +194,15 @@ export function InstalledPlugins() {
                     </SecondaryButton>
                   </div>
                 </form>
+              ) : null}
+              {lines.length > 0 ? (
+                <ul aria-label={`Reports for ${row.name}`} className="mt-2 flex flex-col gap-1">
+                  {lines.map((line, index) => (
+                    <li key={`${index}:${line}`} className="text-[12px] text-content/70">
+                      {line}
+                    </li>
+                  ))}
+                </ul>
               ) : null}
             </li>
           );

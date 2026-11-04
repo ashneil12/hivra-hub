@@ -48,6 +48,20 @@ installFakeTauri("main", (command, args) => {
     delete plugins[String(args.name)];
     return { entry: null, reports: [] };
   }
+  if (command === "plugins_enable" || command === "plugins_disable") {
+    if ("project" in (args as object)) throw "This switch is for everywhere.";
+    const row = plugins[String(args.name)];
+    if (!row) throw "It isn't installed.";
+    row.enabled = { ...row.enabled, global: command === "plugins_enable" };
+    document.body.dataset.lastSwitch = JSON.stringify({ command, name: args.name });
+    return {
+      entry: row,
+      reports:
+        command === "plugins_enable"
+          ? [{ path: "skills/one", message: 'Not linked: a skill called "one" is already there.' }]
+          : [],
+    };
+  }
   if (command === "plugins_update") {
     const source = args.source as { kind?: string; version?: string; package?: string };
     document.body.dataset.lastUpdate = JSON.stringify(source);
