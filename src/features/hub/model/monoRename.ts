@@ -1,6 +1,8 @@
-// An existing Mono keeps its id. `ash-lead` is not renamed to `hub-lead`: a project's lead is
-// `<project id>-lead`, made by ensureProjectLeads, and a Mono already called ash-lead stays.
-// `rewriteStoredIds` is the stored-text helper; nothing calls it to rename a lead.
+// ash-lead becomes hub-lead, once, when its folder can move. The same Mono keeps its chat, look and projects.
+// If the folder cannot move, it keeps the old id and ensureProjectLeads reads that id as the hub lead, so a second
+// hub-lead is never made beside it. If both ids are already on the roster, neither is renamed.
+import { invoke } from "@tauri-apps/api/core";
+import { findMono, renameMonoId, type Mono } from "../../monos/model/mono";
 
 /** The id as a whole word in stored JSON or keys: "ash-lead", "ash-lead|/path", "retire:ash-lead:…". */
 function idPattern(id: string): RegExp {
@@ -35,14 +37,16 @@ export function rewriteStoredIds(from: string, to: string, storage: Storage = lo
   return changed;
 }
 
+export const LEGACY_HUB_LEAD = "ash-lead";
+export const HUB_LEAD = "hub-lead";
+const DONE_KEY = "monocode:mono-renamed-ash-lead";
+
 export type RenameBackend = (from: string, to: string) => Promise<unknown>;
+const tauriRename: RenameBackend = (from, to) => invoke("mono_rename", { from, to });
 
 export type RenameResult = "renamed" | "not-needed" | "both-exist" | "failed";
 
-/**
- * Does not rename. An existing ash-lead is left as it is, whether or not hub-lead is already on the roster, and
- * whether or not a folder move would fail. hub-lead is created as a normal project lead by ensureProjectLeads.
- */
+/** The rename, once. Safe to call on every launch. A failed folder move leaves the old id in place. */
 export async function renameAshLeadToHubLead(
   deps: {
     rename?: RenameBackend;
@@ -50,6 +54,28 @@ export async function renameAshLeadToHubLead(
     storage?: Storage;
   } = {},
 ): Promise<RenameResult> {
-  void deps;
-  return "not-needed";
+  const { rename = tauriRename, unregister, storage = localStorage } = deps;
+  if (!findMono(LEGACY_HUB_LEAD)) return "not-needed";
+  if (findMono(HUB_LEAD)) {
+    console.error("Both ash-lead and hub-lead are on the roster, so neither was renamed.");
+    return "both-exist";
+  }
+  try {
+    await rename(LEGACY_HUB_LEAD, HUB_LEAD);
+  } catch (error) {
+    console.error("Couldn't rename ash-lead's folder, so it keeps its id for now", error);
+    return "failed";
+  }
+  renameMonoId(LEGACY_HUB_LEAD, HUB_LEAD, (mono: Mono) => {
+    const { legacyProject: _, ...rest } = mono;
+    return { ...rest, name: !mono.name || mono.name === "Harness lead" ? "MonoCode Hub lead" : mono.name };
+  });
+  rewriteStoredIds(LEGACY_HUB_LEAD, HUB_LEAD, storage);
+  void unregister?.(LEGACY_HUB_LEAD, "hub")?.catch(() => undefined);
+  try {
+    storage.setItem(DONE_KEY, new Date().toISOString());
+  } catch {
+    /* storage unavailable: running again finds nothing to rename */
+  }
+  return "renamed";
 }

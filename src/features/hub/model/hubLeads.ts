@@ -1,10 +1,9 @@
 import { defaultClaudeModelId } from "../../sessions/model/defaultClaudeModel";
 import { isMonoRemovedByUser } from "./builtInMonos";
 import { isGlobalProject } from "./hubProjects";
-// Each project's Lead is its own Mono, "<Project> lead" (design unit 0; Ash 15 Oct). The Hub bundle makes them on
-// its first run and again whenever one is missing, never twice and never over Ash's edits: EXO lead, Hivra lead,
-// Nibbii lead, MonoCode Hub lead. Each is tied to its project's folder (from the hub's local store), starts its chats
-// there and has a soul that makes it the orchestrator Ash asked for. `ash` is Ash's global memory, not a project, so it never gets a Lead (hubProjects.ts).
+// Each project's lead is its own Mono, made on the first run and again when one is missing, never twice and never
+// over an edited soul. It is tied to the project's folder, starts its chats there, and its soul is the first mate
+// contract plus who it is. The global memory project never gets a lead (hubProjects.ts).
 import { projectKey } from "../../../shared/lib/paths";
 import {
   addMono,
@@ -65,19 +64,22 @@ function rememberLead(spec: LeadSpec): void {
  * a Lead's Mono id).
  */
 export function leadSpecFor(project: Pick<HubProject, "id" | "name" | "shortName">): LeadSpec {
-  return (
-    LEADS.find((l) => l.projectId === project.id) ??
-    moreLeads().find((l) => l.projectId === project.id) ?? {
-      projectId: project.id,
-      id: `${project.id}-lead`,
-      name: `${(project.shortName || project.name).trim()} lead`,
-      projectName: project.name,
-    }
-  );
+  const saved = LEADS.find((l) => l.projectId === project.id) ?? moreLeads().find((l) => l.projectId === project.id);
+  if (saved) return saved;
+  const spec: LeadSpec = {
+    projectId: project.id,
+    id: `${project.id}-lead`,
+    name: `${(project.shortName || project.name).trim()} lead`,
+    projectName: project.name,
+  };
+  // The hub's previous lead id. While it is still on the roster, it is this lead: no second hub-lead is made.
+  if (project.id === "hub") spec.legacy = { id: "ash-lead", name: "Harness lead", projectId: "ash" };
+  return spec;
 }
 
 export function leadFor(monoId: string): LeadSpec | undefined {
-  return LEADS.find((lead) => lead.id === monoId || lead.legacy?.id === monoId) ?? moreLeads().find((lead) => lead.id === monoId);
+  const match = (lead: LeadSpec) => lead.id === monoId || lead.legacy?.id === monoId;
+  return LEADS.find(match) ?? moreLeads().find(match);
 }
 
 /** The Mono that is this Lead today: its own id, or the legacy seat it adopted. */

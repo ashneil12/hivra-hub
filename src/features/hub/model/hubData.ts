@@ -103,8 +103,9 @@ function choose(): { source: HubDataSource; store?: HubStore } {
 
 /**
  * The Hub bundle's project Leads and leadership team: once the local store has said which projects there are (and their
- * folders), make the Leads that are missing and write their souls (the old Harness lead becomes the MonoCode Hub lead
- * in place), give the team its souls, make it a member of every project and seat it in each Leadership team.
+ * folders), make the Leads that are missing and write their souls. An existing ash-lead is renamed to hub-lead first;
+ * if that move cannot happen it stays the hub lead, and a second hub-lead is not made. Give the team its souls, make
+ * it a member of every project and seat it in each Leadership team.
  */
 function startHubBundleLeads(store: HubStore): void {
   noteTeamEngines();

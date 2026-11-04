@@ -169,22 +169,26 @@ describe("no project has a private lead", () => {
     expect(listMonos().map((m) => m.id)).toEqual(["vg-game-lead", "hivra-lead", "nibbii-lead", "hub-lead"]);
   });
 
-  it("an existing mono is left as it is, and the project still gets its own lead", () => {
+  it("an existing ash-lead stays the hub lead, and hub-lead is not created beside it", () => {
     addMono(HARNESS_LEAD);
     const register = vi.fn(async () => undefined);
     const unregister = vi.fn(async () => undefined);
     const result = ensureProjectLeads(PROJECTS, register, unregister);
-    expect(result.adopted).toEqual([]);
-    expect(result.created).toContain("hub-lead");
-    expect(listMonos().find((m) => m.id === "ash-lead")).toMatchObject({ name: "Harness lead", sessionId: "s-harness-chat", projects: ["/Users/ash/Projects/exo-cc-studio"] });
-    expect(listMonos().find((m) => m.id === "hub-lead")?.name).toBe("Hub lead");
-    expect(unregister).not.toHaveBeenCalled();
-    expect(leadFor("ash-lead")).toBeUndefined();
-    expect(leadWorkingFolder("ash-lead")).toBeUndefined();
-    expect(register).toHaveBeenCalledWith("hub-lead", "hub");
-    // A second pass adds nothing and does not rename the mono that was already there.
-    expect(ensureProjectLeads(PROJECTS, register, unregister)).toEqual({ created: [], tied: [], adopted: [] });
-    expect(listMonos().find((m) => m.id === "ash-lead")?.name).toBe("Harness lead");
+    expect(result.created).not.toContain("hub-lead");
+    expect(result.adopted).toEqual(["ash-lead"]);
+    expect(listMonos().some((m) => m.id === "hub-lead")).toBe(false);
+    expect(listMonos().find((m) => m.id === "ash-lead")).toMatchObject({
+      name: "Hub lead",
+      sessionId: "s-harness-chat",
+      projects: ["/Users/ash/Projects/monocode-hub", "/Users/ash/Projects/exo-cc-studio"],
+    });
+    expect(leadFor("ash-lead")?.projectId).toBe("hub");
+    expect(leadWorkingFolder("ash-lead")).toBe("/Users/ash/Projects/monocode-hub");
+    expect(register).toHaveBeenCalledWith("ash-lead", "hub");
+    expect(unregister).toHaveBeenCalledWith("ash-lead", "ash");
+    // A second pass does not make hub-lead either. The adoption is recorded once the soul reseed finishes.
+    expect(ensureProjectLeads(PROJECTS, register, unregister).created).not.toContain("hub-lead");
+    expect(listMonos().some((m) => m.id === "hub-lead")).toBe(false);
   });
 
   it("records a reseed only once it is written, and a failing one is tried again", async () => {
