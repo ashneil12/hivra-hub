@@ -2,11 +2,11 @@
 //! an npm package at an exact version, or a local folder. No floating versions: a branch, `latest` or a range is
 //! refused with a plain reason.
 //!
-//! Fetching never runs plugin code. Git: `ls-remote` (a tag), `fetch` of the one commit into a scratch repository,
-//! `plugin.json` read from the object store and checked against this platform and version, then `git archive`
-//! unpacked: no checkout, so no hooks, smudge filters or LFS run. npm: `npm view` reads the registry entry (no download)
-//! and is checked first, then `npm pack --ignore-scripts` downloads the tarball, whose sha512 must match the
-//! registry's, and it is unpacked here. Nothing from either is trusted until WP-30's loader validates it.
+//! Fetching never runs plugin code. A git folder on this machine has its `plugin.json` read and checked before any
+//! clone. A remote commit is fetched into a scratch repository (no checkout, so no hooks, smudge filters or LFS), its
+//! `plugin.json` is read from the object store and checked, and only then does `git archive` unpack it. npm: `npm view`
+//! reads the registry entry (no download) and is checked first, then `npm pack --ignore-scripts` downloads the tarball,
+//! whose sha512 must match the registry's, and it is unpacked here. Nothing is trusted until WP-30's loader validates it.
 
 use std::ffi::OsString;
 use std::io::Read;
@@ -166,9 +166,11 @@ fn npm_name_problem(name: &str) -> Option<&'static str> {
     let ok_part = |part: &str| {
         !part.is_empty()
             && !part.starts_with(['.', '_'])
-            && part
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+            && part.bytes().all(|b| {
+                b.is_ascii_lowercase()
+                    || b.is_ascii_digit()
+                    || matches!(b, b'-' | b'.' | b'_' | b'~')
+            })
     };
     let valid = name.len() <= 214
         && match name.strip_prefix('@') {
@@ -208,7 +210,9 @@ impl InstallSource {
                 match (commit, tag) {
                     (Some(commit), None) if is_hex_id(commit) => {}
                     (Some(_), None) => {
-                        return refuse("a commit must be its full id (40 hex characters), never a branch")
+                        return refuse(
+                            "a commit must be its full id (40 hex characters), never a branch",
+                        )
                     }
                     (None, Some(tag)) => {
                         if let Some(why) = tag_problem(tag) {
@@ -234,7 +238,9 @@ impl InstallSource {
                     return refuse(why);
                 }
                 if semver::Version::parse(version).is_err() {
-                    return refuse("it needs an exact version such as 1.2.3, never a range or \"latest\"");
+                    return refuse(
+                        "it needs an exact version such as 1.2.3, never a range or \"latest\"",
+                    );
                 }
                 if let Some(why) = registry.as_deref().and_then(registry_problem) {
                     return refuse(why);
@@ -280,6 +286,7 @@ impl InstallSource {
 }
 
 /// A fetched plugin: `root` is its folder inside `work` (which the caller removes).
+#[derive(Debug)]
 pub struct Fetched {
     pub root: PathBuf,
     pub source: Source,
@@ -296,7 +303,15 @@ pub fn fetch(source: &InstallSource, tools: &Tools, work: &Path) -> Result<Fetch
             commit,
             tag,
             path,
-        } => fetch_git(source, tools, work, url, commit.as_deref(), tag.as_deref(), path.as_deref()),
+        } => fetch_git(
+            source,
+            tools,
+            work,
+            url,
+            commit.as_deref(),
+            tag.as_deref(),
+            path.as_deref(),
+        ),
         InstallSource::Npm {
             package,
             version,
@@ -329,10 +344,17 @@ fn fetch_git(
         (None, Some(tag)) => resolve_tag(tools, url, tag)?,
         (None, None) => unreachable!("checked"),
     };
+    // A folder on this machine can be refused before any clone. A remote commit has to be fetched before its
+    // plugin.json can be read; the tree is still not unpacked until the check below passes.
+    if let Some(dir) = local_git_dir(url) {
+        let manifest = show_plugin_json(tools, &dir, &commit, path)?;
+        check_manifest_bytes(&manifest, &tools.target)?;
+    }
     let repo = work.join("repo");
     let mut init = tools.git();
     // No template: the scratch repository starts with no hooks at all.
-    init.args(["init", "-q", "--bare", "--template="]).arg(&repo);
+    init.args(["init", "-q", "--bare", "--template="])
+        .arg(&repo);
     run(init, "git init")?;
     let mut fetch = tools.git();
     fetch
@@ -348,7 +370,10 @@ fn fetch_git(
             .arg(&repo)
             .args(["fetch", "-q", "--no-tags", "--"])
             .arg(url)
-            .args(["+refs/heads/*:refs/remotes/src/*", "+refs/tags/*:refs/tags/*"]);
+            .args([
+                "+refs/heads/*:refs/remotes/src/*",
+                "+refs/tags/*:refs/tags/*",
+            ]);
         run(all, "git fetch")?;
     }
     let mut verify = tools.git();
@@ -368,20 +393,7 @@ fn fetch_git(
         None => commit.clone(),
     };
     // Read plugin.json from the object store and check it before a single file is written out.
-    let mut show = tools.git();
-    show.arg("-C")
-        .arg(&repo)
-        .args(["show", "--no-textconv"])
-        .arg(match path {
-            Some(path) => format!("{commit}:{path}/plugin.json"),
-            None => format!("{commit}:plugin.json"),
-        });
-    let manifest = run(show, "git show").map_err(|_| {
-        format!(
-            "There's no plugin.json at {} in that commit.",
-            path.unwrap_or("the top of the repository")
-        )
-    })?;
+    let manifest = show_plugin_json(tools, &repo, &commit, path)?;
     check_manifest_bytes(&manifest, &tools.target)?;
     let out = work.join("plugin");
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
@@ -397,6 +409,41 @@ fn fetch_git(
     Ok(Fetched {
         root: out,
         source: source.recorded(Some(commit)),
+    })
+}
+
+/// A git address that is a folder on this machine (`/path`, `C:\path`, `file://…`), when that folder exists.
+fn local_git_dir(url: &str) -> Option<PathBuf> {
+    let path = if url.to_ascii_lowercase().starts_with("file://") {
+        url::Url::parse(url).ok()?.to_file_path().ok()?
+    } else if url.contains("://") {
+        return None;
+    } else {
+        PathBuf::from(url)
+    };
+    (path.is_absolute() && path.is_dir()).then_some(path)
+}
+
+/// `plugin.json` from a commit's object store. No checkout, so nothing of the plugin runs.
+fn show_plugin_json(
+    tools: &Tools,
+    repo: &Path,
+    commit: &str,
+    path: Option<&str>,
+) -> Result<Vec<u8>, String> {
+    let mut show = tools.git();
+    show.arg("-C")
+        .arg(repo)
+        .args(["show", "--no-textconv"])
+        .arg(match path {
+            Some(path) => format!("{commit}:{path}/plugin.json"),
+            None => format!("{commit}:plugin.json"),
+        });
+    run(show, "git show").map_err(|_| {
+        format!(
+            "There's no plugin.json at {} in that commit.",
+            path.unwrap_or("the top of the repository")
+        )
     })
 }
 
@@ -454,8 +501,8 @@ fn fetch_npm(
     view.args(["view", "--json"]).arg(&spec);
     with_registry(&mut view);
     let entry = run(view, "npm view")?;
-    let entry: Value = serde_json::from_slice(&entry)
-        .map_err(|_| format!("npm couldn't describe {spec}."))?;
+    let entry: Value =
+        serde_json::from_slice(&entry).map_err(|_| format!("npm couldn't describe {spec}."))?;
     let entry = match entry {
         Value::Array(mut items) => items.pop().unwrap_or(Value::Null),
         other => other,
@@ -539,7 +586,9 @@ fn unpack_tar(reader: impl Read, out: &Path, strip_top: bool) -> Result<(), Stri
             .path()
             .map_err(|e| format!("The download can't be unpacked: {e}"))?
             .into_owned();
-        let mut parts = path.components().filter(|c| !matches!(c, Component::CurDir));
+        let mut parts = path
+            .components()
+            .filter(|c| !matches!(c, Component::CurDir));
         if strip_top {
             parts.next();
         }
@@ -568,7 +617,10 @@ fn unpack_tar(reader: impl Read, out: &Path, strip_top: bool) -> Result<(), Stri
         #[cfg(unix)]
         if let Ok(mode) = entry.header().mode() {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(mode & 0o755 | 0o600));
+            let _ = std::fs::set_permissions(
+                &dest,
+                std::fs::Permissions::from_mode(mode & 0o755 | 0o600),
+            );
         }
     }
     Ok(())

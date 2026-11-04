@@ -2862,6 +2862,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2 0.10.9",

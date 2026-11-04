@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::fsutil::canonical;
@@ -32,7 +32,7 @@ const MANIFEST_FIELDS: [&str; 10] = [
 ];
 
 /// Something the loader skipped or ignored, said plainly (the standard's "SHOULD report").
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     /// The file or folder it is about, relative to the plugin root.

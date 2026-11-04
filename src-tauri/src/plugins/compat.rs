@@ -85,7 +85,11 @@ fn platform_problem(platforms: &[String], platform: &str) -> Option<String> {
     let list = if allowed.is_empty() {
         "no platform Hivra runs on".to_string()
     } else {
-        allowed.iter().map(|p| pretty(p)).collect::<Vec<_>>().join(" and ")
+        allowed
+            .iter()
+            .map(|p| pretty(p))
+            .collect::<Vec<_>>()
+            .join(" and ")
     };
     Some(format!("it only runs on {list}, not {}", pretty(platform)))
 }
@@ -122,7 +126,10 @@ fn cargo_style(alternative: &str) -> String {
     let mut parts: Vec<String> = Vec::new();
     let mut pending_op = String::new();
     for token in alternative.split([',', ' ']).filter(|t| !t.is_empty()) {
-        if token.chars().all(|c| matches!(c, '<' | '>' | '=' | '^' | '~')) {
+        if token
+            .chars()
+            .all(|c| matches!(c, '<' | '>' | '=' | '^' | '~'))
+        {
             pending_op.push_str(token);
             continue;
         }
@@ -198,9 +205,9 @@ impl Declared {
                 Ok(true) => {}
                 Ok(false) => {
                     return Err(format!(
-                        "This plugin can't be installed here: it needs Hivra {range}, and this is {}.",
-                        target.version
-                    ))
+                    "This plugin can't be installed here: it needs Hivra {range}, and this is {}.",
+                    target.version
+                ))
                 }
                 Err(why) => return Err(format!("This plugin can't be installed here: {why}.")),
             }
@@ -232,10 +239,19 @@ mod tests {
         assert!(d(&[]).check(&mac).is_ok());
         assert!(d(&["darwin", "linux"]).check(&mac).is_ok());
         let refused = d(&["darwin", "linux"]).check(&win).unwrap_err();
-        assert!(refused.contains("only runs on Linux and macOS, not Windows"), "{refused}");
+        assert!(
+            refused.contains("only runs on Linux and macOS, not Windows"),
+            "{refused}"
+        );
         assert!(d(&["!win32"]).check(&mac).is_ok());
-        assert!(d(&["!win32"]).check(&win).unwrap_err().contains("doesn't run on Windows"));
-        assert!(d(&["freebsd"]).check(&mac).unwrap_err().contains("no platform Hivra runs on"));
+        assert!(d(&["!win32"])
+            .check(&win)
+            .unwrap_err()
+            .contains("doesn't run on Windows"));
+        assert!(d(&["freebsd"])
+            .check(&mac)
+            .unwrap_err()
+            .contains("no platform Hivra runs on"));
     }
 
     #[test]
@@ -245,19 +261,34 @@ mod tests {
             hivra_version: Some(range.into()),
         };
         let v = target("linux", "0.16.9");
-        for ok in [">=0.16.0", ">=0.16, <1", ">= 0.16.0 < 1.0.0", "^0.16", "~0.16.2", "*", "<0.10 || >=0.16"] {
+        for ok in [
+            ">=0.16.0",
+            ">=0.16, <1",
+            ">= 0.16.0 < 1.0.0",
+            "^0.16",
+            "~0.16.2",
+            "*",
+            "<0.10 || >=0.16",
+        ] {
             assert!(here(ok).check(&v).is_ok(), "{ok}");
         }
         for no in [">=0.17", "<0.16.9", "^1", "0.15.0"] {
             let why = here(no).check(&v).unwrap_err();
-            assert!(why.contains("needs Hivra") && why.contains("this is 0.16.9"), "{no}: {why}");
+            assert!(
+                why.contains("needs Hivra") && why.contains("this is 0.16.9"),
+                "{no}: {why}"
+            );
         }
-        assert!(here("soon").check(&v).unwrap_err().contains("can't be read"));
+        assert!(here("soon")
+            .check(&v)
+            .unwrap_err()
+            .contains("can't be read"));
     }
 
     #[test]
     fn declarations_come_from_the_manifest_extension_and_npm_fields() {
-        let manifest = json!({ "extensions": { "hivra": { "platforms": ["linux"], "hivraVersion": ">=1" } } });
+        let manifest =
+            json!({ "extensions": { "hivra": { "platforms": ["linux"], "hivraVersion": ">=1" } } });
         assert_eq!(
             Declared::from_manifest(&manifest).unwrap(),
             Declared {
@@ -265,8 +296,14 @@ mod tests {
                 hivra_version: Some(">=1".into())
             }
         );
-        assert_eq!(Declared::from_manifest(&json!({})).unwrap(), Declared::default());
-        assert!(Declared::from_manifest(&json!({ "extensions": { "hivra": { "platforms": 3 } } })).is_err());
+        assert_eq!(
+            Declared::from_manifest(&json!({})).unwrap(),
+            Declared::default()
+        );
+        assert!(
+            Declared::from_manifest(&json!({ "extensions": { "hivra": { "platforms": 3 } } }))
+                .is_err()
+        );
         let npm = json!({ "os": ["!win32"], "engines": { "hivra": "^0.16", "node": ">=18" } });
         assert_eq!(
             Declared::from_npm(&npm).unwrap(),

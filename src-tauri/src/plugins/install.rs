@@ -23,7 +23,9 @@ use serde_json::Value;
 use super::compat::Declared;
 use super::fsutil;
 use super::manifest::{load_plugin, LoadedPlugin, Report};
-use super::registry::{self, Contribution, Enablement, Entry, Host, Outcome, Registry, Snapshot, Source};
+use super::registry::{
+    self, Contribution, Enablement, Entry, Host, Outcome, Registry, Snapshot, Source,
+};
 use super::source::{self, InstallSource, Tools};
 use super::wiring::passed_env;
 
@@ -98,11 +100,11 @@ pub struct PendingRequest {
 #[serde(tag = "status", rename_all = "camelCase")]
 pub enum InstallResult {
     Installed {
-        entry: Option<Entry>,
+        entry: Option<Box<Entry>>,
         reports: Vec<Report>,
     },
     Waiting {
-        request: PendingRequest,
+        request: Box<PendingRequest>,
     },
 }
 
@@ -151,7 +153,9 @@ fn settle(
             drop_pending(host, &dir);
             return Err(format!("The request couldn't be saved: {why}"));
         }
-        return Ok(InstallResult::Waiting { request });
+        return Ok(InstallResult::Waiting {
+            request: Box::new(request),
+        });
     }
     commit(host, tools, &dir, &request, false)
 }
@@ -246,7 +250,12 @@ fn prepare(
         let steps = script_steps(&loaded)?;
         Ok(PendingRequest {
             id: id.clone(),
-            op: if updating.is_some() { "update" } else { "install" }.into(),
+            op: if updating.is_some() {
+                "update"
+            } else {
+                "install"
+            }
+            .into(),
             name,
             version: loaded.manifest.version.clone(),
             description: loaded.manifest.description.clone(),
@@ -303,7 +312,7 @@ fn commit(
     drop_pending(host, dir);
     let outcome = result?;
     Ok(InstallResult::Installed {
-        entry: outcome.entry,
+        entry: outcome.entry.map(Box::new),
         reports: outcome.reports,
     })
 }
@@ -382,7 +391,9 @@ fn declared_steps(root: &Path, setup: &Value) -> Result<Vec<ScriptStep>, String>
                 .iter()
                 .map(|a| a.as_str().map(str::to_string))
                 .collect::<Option<_>>()
-                .ok_or_else(|| "plugin.json: a setup step's run must be a list of text".to_string())?,
+                .ok_or_else(|| {
+                    "plugin.json: a setup step's run must be a list of text".to_string()
+                })?,
             _ => return refuse("needs \"run\": [program, args…] in every step"),
         };
         let program = &run[0];

@@ -352,7 +352,9 @@ pub struct Locked {
 
 pub fn read_lock(host: &Host) -> Result<LockFile, String> {
     match std::fs::read_to_string(host.root.join(LOCK_FILE)) {
-        Ok(text) => serde_json::from_str(&text).map_err(|e| format!("lock.json can't be read: {e}")),
+        Ok(text) => {
+            serde_json::from_str(&text).map_err(|e| format!("lock.json can't be read: {e}"))
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(LockFile {
             version: REGISTRY_VERSION,
             ..LockFile::default()
@@ -468,7 +470,11 @@ pub fn install_local(host: &Host, source_dir: &Path, source: Source) -> Result<O
 
 /// Move a staged copy (already validated, inside the plugin folder) into place and register it, switched off. The
 /// caller holds `lock()`. On failure nothing is left: the staged copy is removed too.
-pub(super) fn install_staged(host: &Host, staging: &Path, source: Source) -> Result<Outcome, String> {
+pub(super) fn install_staged(
+    host: &Host,
+    staging: &Path,
+    source: Source,
+) -> Result<Outcome, String> {
     let undo = |paths: &[&Path]| {
         for path in paths {
             let _ = fsutil::remove_tree(path);
@@ -825,7 +831,11 @@ pub fn uninstall(host: &Host, name: &str) -> Result<Outcome, String> {
 /// Codex and the other `.agents/skills` readers load a linked skill straight from the plugin's folder, so a skill that
 /// stopped passing the check since the plugin was switched on is unlinked when the next session's wiring is built
 /// (WP-31, the #10 review): those agents stop seeing it, as Claude's session does. Returns the skills unlinked.
-pub(super) fn unlink_skills(host: &Host, name: &str, skills: &[&str]) -> Result<Vec<String>, String> {
+pub(super) fn unlink_skills(
+    host: &Host,
+    name: &str,
+    skills: &[&str],
+) -> Result<Vec<String>, String> {
     let _guard = lock();
     let mut registry = read(host)?;
     let Some(entry) = registry.plugins.get_mut(name) else {
