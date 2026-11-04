@@ -641,7 +641,8 @@ fn real_remotes_are_network_urls_and_the_pool_is_not_the_persons() {
     let text = std::fs::read_to_string(home.join("config.yaml")).unwrap();
     assert!(text.contains("grok"));
     assert!(text.contains("claude"));
-    assert!(text.contains(&home.join("pool").to_string_lossy().to_string()));
+    // The path is written YAML-quoted, so a Windows path has its backslashes doubled.
+    assert!(text.contains(&yaml_quote(&home.join("pool").to_string_lossy())));
     assert!(!text.contains("Worktrees/pool"), "{text}");
     let _ = std::fs::remove_dir_all(&home);
     assert_eq!(
