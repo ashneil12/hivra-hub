@@ -42,10 +42,13 @@ test("Discover lists plugins, and Install is only offered for one that can be in
 
   await page.locator('[data-plugin="pstack"]').click();
   await page.locator("[data-install]").click();
-  await expect(page.locator("[data-installed]")).toHaveText("Installed pstack.");
-  const after = await page.evaluate(() => (window as unknown as { discoverCalls: () => { command: string; args: { source?: { commit?: string } } }[] }).discoverCalls());
+  await expect(page.locator("[data-installed]")).toHaveText(
+    "Installed pstack. It's off until you switch it on in Settings > Plugins.",
+  );
+  const after = await page.evaluate(() => (window as unknown as { discoverCalls: () => { command: string; args: { source?: { commit?: string }; requestedBy?: { kind?: string } } }[] }).discoverCalls());
   expect(after.map((call) => call.command)).toEqual(["plugins_discover", "plugins_install"]);
   expect(after[1]?.args.source?.commit).toBe("6ea74587e384e1a8035c09ae33a46fe3f881eb9b");
+  expect(after[1]?.args.requestedBy).toEqual({ kind: "person" });
 
   const detailShot = testInfo.outputPath(`discover-${testInfo.project.name}-detail.png`);
   await page.screenshot({ path: detailShot, fullPage: true });

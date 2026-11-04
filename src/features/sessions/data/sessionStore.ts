@@ -53,7 +53,8 @@ import type {
   TurnMetrics,
 } from "../model/session";
 import { restoredQueue } from "../model/messageQueue";
-import { bridgeSafeModel } from "../model/bridgeModels";
+import { defaultModelId } from "../model/models";
+import { readRetiredGrokModel } from "../model/grokRetirement";
 
 import { HARNESSES, RUNTIME_MODES } from "../model/session";
 import type { InFlightRef } from "../model/inFlight";
@@ -1619,7 +1620,9 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
   return {
     ...summary,
     harness: asHarness(summary.harness),
-    ...(typeof summary.model === "string" ? { model: bridgeSafeModel(asHarness(summary.harness), summary.model) } : {}),
+    ...(typeof summary.model === "string"
+      ? { model: readRetiredGrokModel(summary.model, defaultModelId("claude")) }
+      : {}),
     runtimeMode: asRuntimeMode(summary.runtimeMode),
     ...(summary.providerSessionId
       ? { providerSessionId: summary.providerSessionId }
@@ -1654,9 +1657,8 @@ function recordToSession(record: SessionRecord): Session {
     sidebarHidden: record.sidebarHidden === true || undefined,
     cwd: record.cwd,
     harness: asHarness(record.harness),
-    // r62 (Alfred, 0.16.3): chats saved before the bridges still hold claude:sonnet-5; read as the bridge's Grok 4.7, so
-    // no model line or relaunch names an Anthropic model.
-    model: bridgeSafeModel(asHarness(record.harness), record.model),
+    // WP-16: the retired Grok model id reads as the default Claude model. Nothing is written back.
+    model: readRetiredGrokModel(record.model, defaultModelId("claude")),
     modelSettings:
       record.modelSettings && typeof record.modelSettings === "object"
         ? record.modelSettings

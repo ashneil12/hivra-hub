@@ -9,8 +9,8 @@
 //
 // Every existing default holds when the job is not routed: a route that changes nothing returns undefined.
 //
-// On a subscription bridge (Ash, 27 Oct: no Claude subscription anywhere) the Claude ladder is only labels, so every
-// worker runs on DeepSeek, high effort, named explicitly (bridgeModels.ts), unless the project saved its own model.
+// On the DeepSeek launcher the Claude ladder is only labels, so every worker runs on DeepSeek, high effort, named
+// explicitly (deepseekBridge.ts), unless the project saved its own model.
 import type { AgentModel } from "../../sessions/model/models";
 import {
   modelEffortSetting,
@@ -18,7 +18,7 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
-import { bridgeFamily, DEEPSEEK_BRIDGE_NAME, WORKER_BRIDGE_MODEL_ID } from "../../sessions/model/bridgeModels";
+import { bridgeFamily, DEEPSEEK_BRIDGE_NAME, WORKER_BRIDGE_MODEL_ID } from "../../sessions/model/deepseekBridge";
 import type { HarnessId, Session } from "../../sessions/model/session";
 
 /** What the app can see about a job, all of it declared on delegate_task. */

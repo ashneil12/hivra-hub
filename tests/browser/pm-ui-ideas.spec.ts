@@ -67,7 +67,7 @@ test("the five ideas on the real components", async ({ page }) => {
   const busyBox = await send.boundingBox();
   expect(busyBox).toEqual(idleBox);
   const line = chat.locator("[data-mono-model-line]");
-  await expect(line).toContainText("Grok 4.7");
+  await expect(line).toContainText("Sonnet");
   await expect(chat.locator("[data-model-menu]")).toBeVisible();
   await area(page, "pm-ui-2-stop-and-model", "[data-proof-chat] [data-mono-pick]", '[data-proof-chat] form button[type="submit"]', 60);
   await send.click();

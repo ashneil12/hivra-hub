@@ -59,10 +59,9 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
       Object.defineProperty(internals, "invoke", {
         configurable: true,
         get: () => (cmd: string, args?: unknown, opts?: unknown) =>
-          // r102 (Critiquito): set up like the bench's dev copy on the Grok bridge, so the Claude usage chip is hidden
-          // (UsageChips' wantClaude) and no sample numbers reach a rendered shot.
+          // The DeepSeek launcher hides the Claude usage chip, so no sample numbers reach a rendered shot.
           cmd === "harness_runtime_binary_paths"
-            ? Promise.resolve({ ...((args as { paths?: object } | undefined)?.paths ?? {}), claude: "/Users/ash/.local/bin/claude-grok" })
+            ? Promise.resolve({ ...((args as { paths?: object } | undefined)?.paths ?? {}), claude: "/Users/ash/.local/bin/claude-deepseek" })
             : real!(cmd === "mono_session_get" ? "session_get" : cmd, args, opts),
         set: (fn) => (real = fn),
       });
@@ -102,7 +101,7 @@ test("Inbox, Lead chat and rail rendered from a B5 run's end state", async ({ pa
   await page.waitForTimeout(2500);
   await label("Inbox");
   await settle();
-  // No sample usage in a rendered shot: on the bridge the Claude chip is hidden.
+  // No sample usage in a rendered shot: on the DeepSeek launcher the Claude chip is hidden.
   await expect(page.locator("[data-usage-window]")).toHaveCount(0);
   await page.screenshot({ path: name("inbox") });
   const rail = page.getByRole("complementary").first();

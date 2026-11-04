@@ -1,5 +1,4 @@
 import { useEffect, type ReactNode } from "react";
-import { chatOnGrokBridge, ranModel, ranModelText, shownModelName } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { formatInteger } from "../../../shared/lib/numbers";
 import { prettyCwd } from "../../../shared/lib/paths";
 import { Popover } from "../../../shared/ui/Popover";
@@ -82,7 +81,7 @@ export function SessionCardPreview({
             className="size-3.5 shrink-0"
           />
           <span className="min-w-0 truncate">
-            {ranModelText(ranModel(session.harness, shownModelName(session.harness, resolveModel(session.harness, session.model).name, chatOnGrokBridge({ model: session.model }))))}
+            {resolveModel(session.harness, session.model).name}
           </span>
         </span>
         {status}
