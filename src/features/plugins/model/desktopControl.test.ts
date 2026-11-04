@@ -26,7 +26,7 @@ import {
   setVisible,
   type ConsentState,
 } from "../../../../plugins/desktop-control/bin/consent.mjs";
-import { readConsent, runGate, saveConsent } from "../../../../plugins/desktop-control/bin/gate.mjs";
+import { handleMcpMessage, launchFromAppEnv, readConsent, runGate, saveConsent } from "../../../../plugins/desktop-control/bin/gate.mjs";
 
 type Call = { binary: string; args: string[]; options: { shell?: boolean; env?: Record<string, string> } };
 
@@ -44,8 +44,10 @@ function setup() {
   const registry = path.join(root, "registry.json");
   const consent = path.join(root, "consent.json");
   const binary = path.join(root, "agent-desktop-stub");
+  const pin = path.join(root, "pin.json");
   const calls: Call[] = [];
-  return { root, project, registry, consent, binary, calls };
+  const seen = { apps: {} as Record<string, string> };
+  return { root, project, registry, consent, binary, pin, calls, seen };
 }
 
 function on(ctx: ReturnType<typeof setup>, projects?: string[]) {
@@ -76,25 +78,37 @@ function touch(ctx: ReturnType<typeof setup>) {
   writeFileSync(ctx.binary, "");
 }
 
+function writePin(file: string, bytes: Buffer | string) {
+  writeFileSync(
+    file,
+    JSON.stringify({
+      package: "agent-desktop",
+      version: "1.1.0",
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    }),
+  );
+}
+
+function launchFor(ctx: ReturnType<typeof setup>, binary = ctx.binary) {
+  if (existsSync(binary)) writePin(ctx.pin, readFileSync(binary));
+  else writePin(ctx.pin, "");
+  return { registry: ctx.registry, consent: ctx.consent, binary, pin: ctx.pin };
+}
+
 function gate(
   ctx: ReturnType<typeof setup>,
   argv: string[],
   opts?: { binary?: boolean; env?: NodeJS.ProcessEnv; project?: string },
 ) {
   const env: NodeJS.ProcessEnv = { ...(opts?.env ?? {}) };
-  env.HIVRA_DESKTOP_REGISTRY ??= ctx.registry;
-  env.HIVRA_DESKTOP_CONSENT ??= ctx.consent;
-  if (opts?.binary !== false) {
-    env.HIVRA_DESKTOP_BINARY ??= ctx.binary;
-    if (env.HIVRA_DESKTOP_SHA256 === undefined && existsSync(ctx.binary)) {
-      env.HIVRA_DESKTOP_SHA256 = createHash("sha256").update(readFileSync(ctx.binary)).digest("hex");
-    }
-  }
+  const binary = opts?.binary === false ? path.join(ctx.root, "missing-desktop-program") : ctx.binary;
   return runGate({
     argv: ["--project", opts?.project ?? ctx.project, ...argv],
     env,
-    spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
-      ctx.calls.push({ binary, args, options });
+    launch: launchFor(ctx, opts?.binary === false ? binary : ctx.binary),
+    seen: ctx.seen,
+    spawnImpl: (spawned: string, args: string[], options: Call["options"]) => {
+      ctx.calls.push({ binary: spawned, args, options });
       return { status: 0, stdout: "child\n", stderr: "" };
     },
   });
@@ -219,12 +233,35 @@ describe("desktop gate", () => {
 
     const allowed = allowApp(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, "Notes");
     expect(saveConsent(ctx.consent, 1, allowed).state?.projects[ctx.project].apps).toEqual(["Notes"]);
-    const ran = gate(ctx, ["--hivra-app", "Notes", "click", "@s:e1"]);
+    const unscoped = gate(ctx, ["--hivra-app", "Notes", "click", "@s:e1"]);
+    refusal(unscoped, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+
+    const launch = launchFor(ctx);
+    const snap = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen: ctx.seen,
+      spawnImpl: () => ({ status: 0, stdout: '{"ok":true,"data":{"snapshot_id":"s","refs":["@s:e1"]}}\n', stderr: "" }),
+    });
+    expect(snap.code).toBe(0);
+    const ran = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click", "@s:e1"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen: ctx.seen,
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
     expect(ran.code).toBe(0);
     expect(ctx.calls).toHaveLength(1);
     expect(ctx.calls[0].binary).toBe(ctx.binary);
-    expect(ctx.calls[0].args).toEqual(["click", "@s:e1", "--app", "Notes"]);
+    expect(ctx.calls[0].args).toEqual(["click", "@s:e1"]);
     expect(ctx.calls[0].args.join(" ")).not.toContain("hivra-app");
+    expect(ctx.calls[0].args).not.toContain("--app");
     expect(ctx.calls[0].args).not.toContain("--headed");
     expect(ctx.calls[0].options.shell).toBe(false);
   });
@@ -243,7 +280,7 @@ describe("desktop gate", () => {
     on(ctx);
     touch(ctx);
     allow(ctx, "Notes");
-    gate(ctx, ["click", "--app", "Notes"], {
+    gate(ctx, ["snapshot", "--app", "Notes"], {
       env: {
         PATH: "/usr/bin",
         LC_ALL: "en_US.UTF-8",
@@ -251,8 +288,12 @@ describe("desktop gate", () => {
         ANTHROPIC_AUTH_TOKEN: "sek",
         MONOCODE_SECRET: "sek",
         SECRET_TOKEN: "sek",
+        HIVRA_DESKTOP_SHA256: "ab".repeat(32),
+        HIVRA_DESKTOP_BINARY: "/tmp/not-the-binary",
+        DESKTOP_LAUNCH_PIN: "/tmp/not-the-pin",
       },
     });
+    expect(ctx.calls[0].binary).toBe(ctx.binary);
     expect(ctx.calls[0].options.env).toMatchObject({ PATH: "/usr/bin", LC_ALL: "en_US.UTF-8" });
     expect(ctx.calls[0].options.env).not.toHaveProperty("ANTHROPIC_AUTH_TOKEN");
     expect(ctx.calls[0].options.env).not.toHaveProperty("MONOCODE_SECRET");
@@ -260,6 +301,7 @@ describe("desktop gate", () => {
     expect(ctx.calls[0].options.env).not.toHaveProperty("LC_PAPER");
     expect(ctx.calls[0].options.env).not.toHaveProperty("HIVRA_DESKTOP_SHA256");
     expect(ctx.calls[0].options.env).not.toHaveProperty("HIVRA_DESKTOP_BINARY");
+    expect(ctx.calls[0].options.env).not.toHaveProperty("DESKTOP_LAUNCH_PIN");
   });
 
   it("refuses visible control unless this project allows it, and does not strip the flag", () => {
@@ -273,9 +315,10 @@ describe("desktop gate", () => {
 
     const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
     expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
-    const ran = gate(ctx, ["--headed", "click", "--app", "Notes"]);
+    const ran = gate(ctx, ["--headed", "press", "cmd+q", "--app", "Notes"]);
     expect(ran.code).toBe(0);
     expect(ctx.calls[0].args).toContain("--headed");
+    expect(ctx.calls[0].args).toContain("--app");
   });
 
   it("treats --headed=false as headless and asks before it considers headed", () => {
@@ -283,7 +326,7 @@ describe("desktop gate", () => {
     on(ctx);
     touch(ctx);
     allow(ctx, "Notes");
-    const ran = gate(ctx, ["--headed=false", "click", "--app", "Notes"]);
+    const ran = gate(ctx, ["--headed=false", "snapshot", "--app", "Notes"]);
     expect(ran.code).toBe(0);
     expect(ctx.calls).toHaveLength(1);
 
@@ -352,7 +395,7 @@ describe("desktop gate", () => {
     on(ctx, [ctx.project]);
     touch(ctx);
     allow(ctx, "Notes");
-    const viaParent = gate(ctx, ["click", "--app", "Notes"], {
+    const viaParent = gate(ctx, ["snapshot", "--app", "Notes"], {
       project: path.join(ctx.project, "..", path.basename(ctx.project)),
     });
     expect(viaParent.code).toBe(0);
@@ -365,9 +408,9 @@ describe("desktop gate", () => {
     on(folder, [named]);
     const next = allowApp(emptyConsent(), named, "Notes");
     saveConsent(folder.consent, 0, next);
-    const ran = gate(folder, ["click", "--app", "Notes"], { project: named });
+    const ran = gate(folder, ["snapshot", "--app", "Notes"], { project: named });
     expect(ran.code).toBe(0);
-    expect(folder.calls[0].args).toEqual(["click", "--app", "Notes"]);
+    expect(folder.calls[0].args).toEqual(["snapshot", "--app", "Notes"]);
   });
 
   it("rejects an empty app, a NUL app, and a project given twice", () => {
@@ -387,7 +430,7 @@ describe("desktop gate", () => {
     touch(ctx);
     const doc = { ...allowApp(emptyConsent(), ctx.project, "Notes"), revision: 1 };
     writeFileSync(ctx.consent, JSON.stringify(doc, null, 2).replace(/\n/g, "\r\n"));
-    expect(gate(ctx, ["click", "--app", "Notes"]).code).toBe(0);
+    expect(gate(ctx, ["snapshot", "--app", "Notes"]).code).toBe(0);
 
     const broken = setup();
     on(broken);
@@ -464,7 +507,7 @@ describe("desktop gate", () => {
     const ctx = setup();
     on(ctx);
     allow(ctx, "Notes");
-    const missing = gate(ctx, ["click", "--app", "Notes"], { binary: false });
+    const missing = gate(ctx, ["snapshot", "--app", "Notes"], { binary: false });
     refusal(missing, "BINARY_MISSING", "safe");
     expect(missing.code).toBe(1);
     expect(JSON.parse(missing.stdout).error.message).toContain("agent-desktop 1.1.0");
@@ -520,7 +563,7 @@ describe("desktop gate", () => {
     writeFileSync(
       stub,
       `#!/usr/bin/env node
-const names = ["ANTHROPIC_AUTH_TOKEN", "MONOCODE_SECRET", "SECRET_TOKEN", "HIVRA_DESKTOP_SHA256", "HIVRA_DESKTOP_BINARY"];
+const names = ["ANTHROPIC_AUTH_TOKEN", "MONOCODE_SECRET", "SECRET_TOKEN", "HIVRA_DESKTOP_SHA256", "HIVRA_DESKTOP_BINARY", "DESKTOP_LAUNCH_PIN"];
 process.stdout.write(JSON.stringify({
   argv: process.argv.slice(2),
   leaked: names.filter((name) => process.env[name] !== undefined),
@@ -531,9 +574,8 @@ process.stdout.write(JSON.stringify({
     );
     chmodSync(stub, 0o755);
     allow(ctx, "Notes");
-    const pin = createHash("sha256").update(readFileSync(stub)).digest("hex");
     const result = runGate({
-      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click"],
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
       env: {
         PATH: process.env.PATH,
         LC_ALL: "en_US.UTF-8",
@@ -542,13 +584,15 @@ process.stdout.write(JSON.stringify({
         SECRET_TOKEN: "sek",
         HIVRA_DESKTOP_REGISTRY: ctx.registry,
         HIVRA_DESKTOP_CONSENT: ctx.consent,
-        HIVRA_DESKTOP_BINARY: stub,
-        HIVRA_DESKTOP_SHA256: pin,
+        HIVRA_DESKTOP_BINARY: path.join(ctx.root, "not-the-stub"),
+        HIVRA_DESKTOP_SHA256: "ab".repeat(32),
+        DESKTOP_LAUNCH_PIN: ctx.pin,
       },
+      launch: launchFor(ctx, stub),
     });
     expect(result.code).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual({
-      argv: ["click", "--app", "Notes"],
+      argv: ["snapshot", "--app", "Notes"],
       leaked: [],
       lc: "en_US.UTF-8",
       path: true,
@@ -628,14 +672,17 @@ process.stdout.write(JSON.stringify({
     on(ctx);
     touch(ctx);
     allow(ctx, "Notes");
+    const launch = launchFor(ctx);
+    writeFileSync(launch.pin, JSON.stringify({ package: "agent-desktop", version: "1.1.0", sha256: "0".repeat(64) }));
     const wrong = runGate({
-      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click"],
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
       env: {
         HIVRA_DESKTOP_REGISTRY: ctx.registry,
         HIVRA_DESKTOP_CONSENT: ctx.consent,
         HIVRA_DESKTOP_BINARY: ctx.binary,
-        HIVRA_DESKTOP_SHA256: "0".repeat(64),
+        HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(ctx.binary)).digest("hex"),
       },
+      launch,
       spawnImpl: () => {
         ctx.calls.push({ binary: "", args: [], options: {} });
         return { status: 0, stdout: "", stderr: "" };
@@ -671,14 +718,10 @@ process.stdout.write(JSON.stringify({
     refusal(gate(ctx, ["list-displays"]), "INVALID_ARGS", "unsafe");
     refusal(gate(ctx, ["batch", "[]"]), "INVALID_ARGS", "unsafe");
 
-    const clip = gate(ctx, ["clipboard-get", "--hivra-app", "Notes"]);
-    expect(clip.code).toBe(0);
-    expect(ctx.calls.at(-1)?.args).toEqual(["clipboard-get", "--app", "Notes"]);
-
-    const typed = gate(ctx, ["type", "hello", "--hivra-app", "Notes"]);
-    expect(typed.code).toBe(0);
-    expect(ctx.calls.at(-1)?.args).toContain("--app");
-    expect(ctx.calls.at(-1)?.args).toContain("Notes");
+    refusal(gate(ctx, ["clipboard-get", "--hivra-app", "Notes"]), "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+    refusal(gate(ctx, ["type", "hello", "--hivra-app", "Notes"]), "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
 
     const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
     expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
@@ -690,9 +733,8 @@ process.stdout.write(JSON.stringify({
     expect(ctx.calls.at(-1)?.args).toContain("--app");
     expect(ctx.calls.at(-1)?.args).not.toContain("--screen");
     const session = gate(ctx, ["session", "start", "--screenshots", "--hivra-app", "Notes"]);
-    expect(session.code).toBe(0);
-    expect(ctx.calls.at(-1)?.args).toContain("--screenshots");
-    expect(ctx.calls.at(-1)?.args).toContain("--app");
+    refusal(session, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(2);
   });
 
   it("refuses a direct call to bin/agent-desktop", () => {
@@ -716,6 +758,372 @@ process.stdout.write(JSON.stringify({
     const ran = gate(ctx, ["snapshot", "--app", "Notes"], { project: dot });
     expect(ran.code).toBe(0);
     expect(ctx.calls[0].args).toEqual(["snapshot", "--app", "Notes"]);
+  });
+});
+
+describe("desktop gate, app launch", () => {
+  it("ignores a worker's HIVRA_DESKTOP paths when the app's registry is off", () => {
+    const real = setup();
+    off(real);
+    touch(real);
+    const fake = setup();
+    on(fake);
+    touch(fake);
+    allow(fake, "Notes");
+    const shown = setVisible(JSON.parse(readFileSync(fake.consent, "utf8")) as ConsentState, fake.project, true);
+    saveConsent(fake.consent, 1, shown);
+    const attacked = runGate({
+      argv: ["--project", real.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: fake.registry,
+        HIVRA_DESKTOP_CONSENT: fake.consent,
+        HIVRA_DESKTOP_BINARY: fake.binary,
+        HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(fake.binary)).digest("hex"),
+        PATH: "/usr/bin",
+      },
+      launch: launchFor(real),
+      spawnImpl: () => {
+        real.calls.push({ binary: real.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(attacked, "DESKTOP_CONTROL_OFF", "unsafe");
+    expect(real.calls).toEqual([]);
+    expect(existsSync(real.consent)).toBe(false);
+  });
+
+  it("does not use HIVRA_DESKTOP variables or paths next to the script when the app did not launch it", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const result = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: ctx.registry,
+        HIVRA_DESKTOP_CONSENT: ctx.consent,
+        HIVRA_DESKTOP_BINARY: ctx.binary,
+        HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(ctx.binary)).digest("hex"),
+      },
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(result.code).not.toBe(0);
+    expect(ctx.calls).toEqual([]);
+    expect(launchFromAppEnv({
+      HIVRA_DESKTOP_REGISTRY: ctx.registry,
+      HIVRA_DESKTOP_CONSENT: ctx.consent,
+      HIVRA_DESKTOP_BINARY: ctx.binary,
+      HIVRA_DESKTOP_SHA256: "ab".repeat(32),
+    })).toBeNull();
+  });
+
+  it("pins the binary from pin.json and ignores HIVRA_DESKTOP_SHA256", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const launch = launchFor(ctx);
+    writeFileSync(
+      launch.pin,
+      JSON.stringify({ package: "agent-desktop", version: "1.1.0", sha256: "ab".repeat(32) }),
+    );
+    const wrongEnv = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: {
+        HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(ctx.binary)).digest("hex"),
+        PATH: "/usr/bin",
+      },
+      launch,
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(wrongEnv, "BINARY_UNTRUSTED", "unsafe");
+    expect(ctx.calls).toEqual([]);
+
+    writePin(launch.pin, readFileSync(ctx.binary));
+    const matched = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: { HIVRA_DESKTOP_SHA256: "0".repeat(64), PATH: "/usr/bin" },
+      launch,
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: '{"ok":true,"data":{"snapshot_id":"s1"}}\n', stderr: "" };
+      },
+    });
+    expect(matched.code).toBe(0);
+    expect(ctx.calls).toHaveLength(1);
+    expect(ctx.calls[0].binary).toBe(ctx.binary);
+  });
+
+  it("refuses snapshot --app Notes --surface dock", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const dock = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes", "--surface", "dock"],
+      env: { PATH: "/usr/bin" },
+      launch: launchFor(ctx),
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(dock, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+    expect(dock.stdout).not.toContain("dock");
+
+    const extras = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes", "--surface", "menu-bar-extras"],
+      env: { PATH: "/usr/bin" },
+      launch: launchFor(ctx),
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(extras.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["snapshot", "--app", "Notes", "--surface", "menu-bar-extras"]);
+
+    const unknown = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes", "--surface", "not-a-surface"],
+      env: { PATH: "/usr/bin" },
+      launch: launchFor(ctx),
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(unknown, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toHaveLength(1);
+  });
+
+  it("scopes click, type, get and is by a ref from a snapshot of the allowed app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const seen = { apps: {} as Record<string, string> };
+    const launch = launchFor(ctx);
+    const spawn = () => {
+      ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+      return { status: 0, stdout: '{"ok":true,"data":{"snapshot_id":"s1","refs":["@s1:e2"]}}\n', stderr: "" };
+    };
+    const bare = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click", "@s1:e2"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(bare, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+
+    const snap = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: spawn,
+    });
+    expect(snap.code).toBe(0);
+
+    const click = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click", "@s1:e2"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(click.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["click", "@s1:e2"]);
+
+    const typed = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "type", "@s1:e2", "hello"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(typed.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["type", "@s1:e2", "hello"]);
+
+    const got = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "get", "@s1:e2", "--property", "text"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(got.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["get", "@s1:e2", "--property", "text"]);
+
+    const state = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "is", "@s1:e2"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+        ctx.calls.push({ binary, args, options });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(state.code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["is", "@s1:e2"]);
+
+    const mail = allowApp(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, "Mail");
+    expect(saveConsent(ctx.consent, 1, mail).conflict).toBeUndefined();
+    const other = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Mail", "click", "@s1:e2"],
+      env: { PATH: "/usr/bin" },
+      launch,
+      seen,
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    expect(other.code).not.toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["is", "@s1:e2"]);
+  });
+
+  it("scopes launch and close-app by their app name and does not add --app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const launch = launchFor(ctx);
+    const run = (argv: string[]) =>
+      runGate({
+        argv: ["--project", ctx.project, "--hivra-app", "Notes", ...argv],
+        env: { PATH: "/usr/bin" },
+        launch,
+        spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+          ctx.calls.push({ binary, args, options });
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      });
+    expect(run(["launch", "Notes"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["launch", "Notes"]);
+    expect(run(["close-app", "Notes"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["close-app", "Notes"]);
+    const other = run(["launch", "Mail"]);
+    expect(other.code).not.toBe(0);
+    expect(ctx.calls).toHaveLength(2);
+  });
+
+  it("refuses clipboard-get because it cannot be scoped to an app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const result = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "clipboard-get"],
+      env: { PATH: "/usr/bin" },
+      launch: launchFor(ctx),
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(result, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+  });
+
+  it("refuses to run as a command the worker starts", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const before = readFileSync(ctx.consent);
+    const gatePath = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../plugins/desktop-control/bin/gate.mjs",
+    );
+    const result = spawnSync(
+      process.execPath,
+      [gatePath, "--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes"],
+      {
+        encoding: "utf8",
+        env: {
+          PATH: process.env.PATH,
+          HIVRA_DESKTOP_REGISTRY: ctx.registry,
+          HIVRA_DESKTOP_CONSENT: ctx.consent,
+          HIVRA_DESKTOP_BINARY: ctx.binary,
+          HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(ctx.binary)).digest("hex"),
+        },
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr ?? "").toContain("The app starts the desktop server.");
+    expect(readFileSync(ctx.consent)).toEqual(before);
+  });
+
+  it("answers a desktop tool call from the app launch, not from a worker variable", () => {
+    const real = setup();
+    off(real);
+    touch(real);
+    const fake = setup();
+    on(fake);
+    touch(fake);
+    allow(fake, "Notes");
+    const raw = handleMcpMessage(
+      {
+        jsonrpc: "2.0",
+        id: 7,
+        method: "tools/call",
+        params: {
+          name: "desktop",
+          arguments: { project: real.project, app: "Notes", command: "snapshot", args: ["--app", "Notes"] },
+        },
+      },
+      {
+        launch: launchFor(real),
+        seen: { apps: {} },
+        env: {
+          PATH: "/usr/bin",
+          HIVRA_DESKTOP_REGISTRY: fake.registry,
+          HIVRA_DESKTOP_CONSENT: fake.consent,
+          HIVRA_DESKTOP_BINARY: fake.binary,
+          HIVRA_DESKTOP_SHA256: createHash("sha256").update(readFileSync(fake.binary)).digest("hex"),
+        },
+        spawnImpl: () => {
+          real.calls.push({ binary: real.binary, args: [], options: {} });
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+    const body = JSON.parse(raw ?? "{}") as { result: { isError: boolean; content: { text: string }[] } };
+    expect(body.result.isError).toBe(true);
+    expect(body.result.content[0].text).toContain("DESKTOP_CONTROL_OFF");
+    expect(real.calls).toEqual([]);
+  });
+
+  it("does not tell the worker to run the gate or the binary", () => {
+    const skill = readFileSync(
+      path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../plugins/desktop-control/skills/agent-desktop/SKILL.md"),
+      "utf8",
+    );
+    expect(skill).not.toContain("bin/gate.mjs");
+    expect(skill).not.toContain("bin/agent-desktop");
+    expect(skill).not.toMatch(/run it with `node`/i);
   });
 });
 

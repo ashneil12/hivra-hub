@@ -12,19 +12,18 @@ Changed by adding Hivra's gate, consent and visible-control rules. The observe, 
 
 # agent-desktop
 
-Workers use desktop apps through Hivra's gate, never by calling the `agent-desktop` binary. The binary is not on `PATH` and it is not in this folder. `bin/agent-desktop` refuses a direct call. The app points the gate at the pinned agent-desktop 1.1.0.
+The app starts the desktop server. Use that server's desktop tool. Do not start a program yourself, and do not pass a path, a pin, or a registry. The desktop program is the pinned agent-desktop 1.1.0.
 
 ## How to call it
 
-1. Resolve this file with `realpath`. The plugin root is two directories above `skills/agent-desktop`.
-2. The gate is `<root>/bin/gate.mjs`. Run it with `node`. Do not run `agent-desktop` yourself.
-3. Always pass `--project` as a full path to the project folder.
-4. On every call, pass `--hivra-app "<App>"` for an app this project allows. Also pass `--app "<App>"`. The gate adds `--app` if you only passed `--hivra-app`. `launch` and `close-app` take the app as their first argument; still pass `--hivra-app` with the same name.
-5. Do not pass `--headed` unless the person has allowed visible control for this project. Never add `--headed` to get past a headless failure.
-6. Every `agent-desktop` example below is the argument list the gate forwards. Put those arguments after the gate's own flags. Do not call the binary.
+The tool takes the project folder, the app name, the command, and that command's arguments.
+
+- `project` is a full path to the project folder.
+- `app` is an app this project allows.
+- `command` and `args` are one agent-desktop command. Do not add a path or a pin. Do not pass `--headed` unless the person has allowed visible control for this project. Never add `--headed` to get past a headless failure.
 
 ```
-node "<root>/bin/gate.mjs" --project "/full/path/to/the/project" --hivra-app "Notes" snapshot --skeleton --app "Notes" -i --compact
+snapshot --skeleton --app "Notes" -i --compact
 ```
 
 ## When it refuses
@@ -45,13 +44,13 @@ agent-desktop reads and operates desktop apps through the OS accessibility tree.
 Use `find` when you know the role or exact name. Otherwise map the app first and drill into one region.
 
 ```
-agent-desktop snapshot --skeleton --app "Notes" -i --compact   # shallow map, children_count on cut branches
-agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # drill into one region
-agent-desktop click @s8f3k2p9:e12                              # act on a qualified ref
-agent-desktop snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read the same region
+snapshot --skeleton --app "Notes" -i --compact   # shallow map, children_count on cut branches
+snapshot --root @s8f3k2p9:e3 -i --compact        # drill into one region
+click @s8f3k2p9:e12                              # act on a qualified ref
+snapshot --root @s8f3k2p9:e3 -i --compact        # verify: re-read the same region
 ```
 
-Those four lines are arguments. The click has no `--app` because the ref carries the window, so the gate still needs `--hivra-app "Notes"`.
+Those four lines are arguments the desktop tool forwards for the app you named. `click`, `type`, `get` and `is` take a ref from a snapshot of that same app, and they have no `--app`. `launch` and `close-app` take the app name as their argument, and it has to be the app you named. `clipboard-get` and `session` are refused.
 
 - A small app needs no skeleton. Take a full `snapshot -i`.
 - `-i` keeps interactive nodes only, so a row's static-text label is dropped. To tell which row a repeated button belongs to, drill that row's container with `--root` and leave out `-i`. On Windows and Linux that reads the row but does not make its button actionable: a button repeated in other rows is a twin in the window and its ref is refused (see Refs).
@@ -84,7 +83,7 @@ Action results carry `data.disposition` and errors carry `error.disposition`, ea
 
 Ref actions are headless by default. They use semantic accessibility calls and do not take focus or move the cursor. If no semantic path exists, the action fails closed. `--headed` is forwarded only when this project's visible control is allowed. Never switch to headed mode to recover from a headless failure.
 
-`press`, `screenshot`, `hover`, `drag`, the mouse commands, and `session --screenshots` are visible control even without `--headed`. They need that project's visible flag. `screenshot --screen` is refused. `press`, `type`, `clipboard-get`, `screenshot` and every other command need `--app` of an app this project already allowed. Anything not on the gate's allow list, including `batch`, `status`, `list-windows` and `list-displays`, is refused.
+`press` and `screenshot` are visible control even without `--headed`. They need that project's visible flag, and `--app` of an app this project already allowed. `screenshot --screen` is refused. A `--surface` that is not part of that app, including `dock`, is refused. `click`, `type`, `get` and `is` need a ref from a snapshot of the allowed app. `launch` and `close-app` take that app's name. `clipboard-get`, `session`, `batch`, `status`, `list-windows` and `list-displays` are refused. Mouse commands and `drag` are refused too: they cannot be kept on one app.
 
 On Windows, headless `type` has no insert path; `set-value` is the headless way to set text.
 
@@ -92,7 +91,7 @@ Password and other secure fields are redacted. You cannot read a password back. 
 
 ## First run
 
-Every command needs `--hivra-app` for an app this project allows. There is no command that runs with no app.
+Every call names the app. There is no command that runs with no app.
 
 1. Ask for the app. The gate records the ask and does not start the program.
 2. After the person allows it, `snapshot` reads that app.

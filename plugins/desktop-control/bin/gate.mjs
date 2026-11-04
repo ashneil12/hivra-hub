@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Hivra's desktop gate (WP-44). Workers run this, never the agent-desktop binary.
+// Hivra's desktop gate (WP-44). The app starts this server. A worker does not.
 // The binary is pinned as agent-desktop 1.1.0 (Apache-2.0, https://github.com/vercel-labs/agent-desktop).
 // Those upstream files do not carry a separate copyright line. This file is Hivra's: the off switch,
 // per-app consent, and the visible-control check. It does not search PATH and it does not keep secrets.
@@ -20,13 +20,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
+import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { askApp, parseConsent } from "./consent.mjs";
 
-const binDir = path.dirname(fileURLToPath(import.meta.url));
-
-// A worker can pass --project and --hivra-app. Paths and the pin come from the environment the app set,
-// never from flags. --registry, --consent, --binary and a hash flag are refused, including after --.
+// A worker can pass --project and --hivra-app. Paths and the pin come from the launch the app set,
+// never from flags or from HIVRA_DESKTOP_* variables. --registry, --consent, --binary and a hash flag
+// are refused, including after --.
 const GATE_FLAGS = new Set(["--project", "--hivra-app"]);
 const OVERRIDE_FLAGS = new Set(["--registry", "--consent", "--binary", "--sha256", "--sha-256"]);
 const FORWARDED_FLAGS = new Set([
@@ -51,6 +51,33 @@ const FORWARDED_FLAGS = new Set([
   "--skeleton",
   "--compact",
   "--surface",
+  "--property",
+  "--interval-ms",
+  "--direction",
+  "--amount",
+  "--force",
+  "--no-attach",
+  "--activate",
+  "--max-depth",
+  "--include-bounds",
+  "--interactive-only",
+  "--force-electron-a11y",
+  "--description",
+  "--value",
+  "--native-id",
+  "--exact",
+  "--count",
+  "--first",
+  "--last",
+  "--nth",
+  "--limit",
+  "--state",
+  "--xy",
+  "--duration",
+  "--element",
+  "--window",
+  "--menu",
+  "--menu-closed",
 ]);
 const VALUE_FLAGS = new Set([
   "--timeout",
@@ -68,6 +95,21 @@ const VALUE_FLAGS = new Set([
   "--root",
   "--session",
   "--surface",
+  "--property",
+  "--interval-ms",
+  "--direction",
+  "--amount",
+  "--max-depth",
+  "--description",
+  "--value",
+  "--native-id",
+  "--nth",
+  "--limit",
+  "--state",
+  "--xy",
+  "--duration",
+  "--element",
+  "--window",
 ]);
 // Read-only and app-scoped. Anything not listed here is refused.
 const READ_ONLY = new Set(["snapshot", "find", "get", "is", "list-surfaces"]);
@@ -92,7 +134,6 @@ const ACT = new Set([
   "launch",
   "close-app",
   "wait",
-  "clipboard-get",
 ]);
 // Physical input or a pixel capture. These need the project's visible flag even with no --headed.
 const PHYSICAL = new Set([
@@ -141,18 +182,58 @@ const PASSED = new Set([
 
 const MAX_TEXT = 256 * 1024;
 const LOCK_TRIES = 8;
-
-function defaultRegistry() {
-  return path.resolve(binDir, "../../../registry.json");
-}
-
-function defaultConsent() {
-  return path.resolve(binDir, "../../../data/desktop-control/consent.json");
-}
-
-function defaultBinary() {
-  return path.resolve(binDir, "../../../data/desktop-control/agent-desktop");
-}
+const REF_RE = /^@([A-Za-z0-9_-]+):e\d+$/;
+const REF_COMMANDS = new Set([
+  "click",
+  "double-click",
+  "triple-click",
+  "right-click",
+  "clear",
+  "focus",
+  "toggle",
+  "check",
+  "uncheck",
+  "expand",
+  "collapse",
+  "scroll-to",
+  "get",
+  "is",
+  "type",
+  "set-value",
+  "select",
+  "scroll",
+  "hover",
+]);
+const APP_FLAG_COMMANDS = new Set(["snapshot", "find", "screenshot", "press", "list-surfaces", "wait"]);
+const SHELL_SURFACES = new Set([
+  "dock",
+  "taskbar",
+  "system-tray",
+  "system_tray",
+  "system-tray-overflow",
+  "system_tray_overflow",
+  "action-center",
+  "action_center",
+  "quick-settings",
+  "quick_settings",
+  "start-menu",
+  "start_menu",
+]);
+const APP_SURFACES = new Set([
+  "window",
+  "focused",
+  "menu",
+  "menubar",
+  "sheet",
+  "popover",
+  "alert",
+  "desktop",
+  "notification-center",
+  "notification_center",
+  "toolbar",
+  "spotlight",
+]);
+const STATUS_SURFACES = new Set(["menu-bar-extras", "menu_bar_extras"]);
 
 function exitCode(code) {
   if (code === "CONSENT_REQUIRED") return 3;
@@ -587,19 +668,10 @@ function allowEnv(source) {
     if (typeof value !== "string" || value.includes("\0")) continue;
     const upper = key.toUpperCase();
     // The pin and the paths stay with the gate. The desktop program does not see them.
-    if (upper.startsWith("HIVRA_")) continue;
+    if (upper.startsWith("HIVRA_") || upper.startsWith("DESKTOP_LAUNCH_")) continue;
     if (PASSED.has(upper) || upper.startsWith("LC_")) out[key] = value;
   }
   return out;
-}
-
-function envPath(env, key, fallback) {
-  const value = env && env[key];
-  if (value == null || value === "") return { path: fallback() };
-  if (typeof value !== "string" || value.includes("\0") || !path.isAbsolute(value)) {
-    return { error: "INVALID_ARGS", message: "The desktop paths need full paths.", retry: "unsafe" };
-  }
-  return { path: value };
 }
 
 function hasFlag(args, name) {
@@ -611,9 +683,16 @@ function policyFor(command, rest) {
     return { error: "screenshot --screen is refused. Capture one allowed app, not the display." };
   }
   if (command === "batch") return { error: "batch is refused." };
+  if (
+    command === "session" ||
+    command === "clipboard-get" ||
+    command === "clipboard-set" ||
+    command === "clipboard-clear"
+  ) {
+    return { error: "That command can't be kept on the allowed app." };
+  }
   if (READ_ONLY.has(command) || ACT.has(command)) return { visible: false };
   if (PHYSICAL.has(command)) return { visible: true };
-  if (command === "session" && hasFlag(rest, "--screenshots")) return { visible: true };
   return { error: "That command isn't allowed." };
 }
 
@@ -624,6 +703,137 @@ function ensureApp(rest, app) {
 
 function defaultSpawn(binary, args, options) {
   return spawnSync(binary, args, { ...options, encoding: "utf8", shell: false, windowsHide: true });
+}
+
+function absolutePath(value) {
+  return typeof value === "string" && path.isAbsolute(value) && !value.includes("\0");
+}
+
+/** Paths the app chose. `HIVRA_DESKTOP_*` is never read. */
+function takeLaunch(launch) {
+  const message = "The app starts the desktop server. This file does not.";
+  if (!launch || typeof launch !== "object") return { error: "INVALID_ARGS", message, retry: "unsafe" };
+  if (![launch.registry, launch.consent, launch.binary, launch.pin].every(absolutePath)) {
+    return { error: "INVALID_ARGS", message, retry: "unsafe" };
+  }
+  return { registry: launch.registry, consent: launch.consent, binary: launch.binary, pin: launch.pin };
+}
+
+/** The four paths a desktop server process was given by the app. A worker variable is not one of them. */
+export function launchFromAppEnv(env) {
+  if (!env) return null;
+  const launch = {
+    registry: env.DESKTOP_LAUNCH_REGISTRY,
+    consent: env.DESKTOP_LAUNCH_CONSENT,
+    binary: env.DESKTOP_LAUNCH_BINARY,
+    pin: env.DESKTOP_LAUNCH_PIN,
+  };
+  const taken = takeLaunch(launch);
+  if (taken.error) return null;
+  return { registry: taken.registry, consent: taken.consent, binary: taken.binary, pin: taken.pin };
+}
+
+function readPin(pinPath) {
+  const missing = {
+    code: "BINARY_MISSING",
+    message: "The desktop program's pin isn't set (agent-desktop 1.1.0). Try again once it is.",
+    retry: "safe",
+  };
+  if (!absolutePath(pinPath)) return missing;
+  let doc;
+  try {
+    const text = readFileSync(pinPath, "utf8");
+    if (text.length > MAX_TEXT) return missing;
+    doc = JSON.parse(text.replace(/^﻿/, ""));
+  } catch {
+    return missing;
+  }
+  const sha = doc && doc.sha256;
+  if (typeof sha !== "string" || !/^[0-9a-fA-F]{64}$/.test(sha)) return missing;
+  return { sha256: sha };
+}
+
+function flagValue(args, name) {
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === name) return args[i + 1] ?? "";
+    if (token.startsWith(`${name}=`)) return token.slice(name.length + 1);
+  }
+  return null;
+}
+
+function surfaceProblem(command, rest) {
+  const value = flagValue(rest, "--surface");
+  if (value == null) return null;
+  if (command !== "snapshot" && command !== "find") return "That surface isn't on the allowed app.";
+  const key = value.trim().toLowerCase();
+  if (APP_SURFACES.has(key)) return null;
+  // menu-bar-extras with an app name is that app's own status item. The gate always sets that app.
+  if (STATUS_SURFACES.has(key)) return null;
+  if (SHELL_SURFACES.has(key) || key.length === 0) return "That surface isn't on the allowed app.";
+  return "That surface isn't on the allowed app.";
+}
+
+function seenApp(seen, id, app) {
+  const apps = seen && seen.apps;
+  if (!apps || typeof apps !== "object") return false;
+  const bound = apps[id];
+  return typeof bound === "string" && bound.trim().toLowerCase() === app.trim().toLowerCase();
+}
+
+function rootProblem(command, rest, app, seen) {
+  if (command !== "snapshot" && command !== "find") return null;
+  const value = flagValue(rest, "--root");
+  if (value == null) return null;
+  const match = REF_RE.exec(value);
+  if (!match || !seenApp(seen, match[1], app)) return "That ref isn't from this app's snapshot.";
+  return null;
+}
+
+function rememberRefs(seen, app, stdout) {
+  if (!seen || typeof seen !== "object") return;
+  if (!seen.apps || typeof seen.apps !== "object") seen.apps = {};
+  const text = asText(stdout);
+  for (const match of text.matchAll(/"snapshot_id"\s*:\s*"([A-Za-z0-9_-]+)"/g)) {
+    if (seen.apps[match[1]] === undefined) seen.apps[match[1]] = app;
+  }
+  for (const match of text.matchAll(/@([A-Za-z0-9_-]+):e\d+/g)) {
+    if (seen.apps[match[1]] === undefined) seen.apps[match[1]] = app;
+  }
+}
+
+function stripAppFlag(args) {
+  const out = [];
+  for (let i = 0; i < args.length; i += 1) {
+    const token = args[i];
+    if (token === "--app") {
+      i += 1;
+      continue;
+    }
+    if (token.startsWith("--app=")) continue;
+    out.push(token);
+  }
+  return out;
+}
+
+function scopeForward(command, rest, app, seen) {
+  if (APP_COMMANDS.has(command)) return { args: stripAppFlag(rest) };
+  if (REF_COMMANDS.has(command)) {
+    if (command === "hover" && hasFlag(rest, "--xy")) {
+      return { error: "That command can't be kept on the allowed app." };
+    }
+    const ref = firstPositional(rest, command);
+    const match = ref && REF_RE.exec(ref);
+    if (!match || !seenApp(seen, match[1], app)) return { error: "That ref isn't from this app's snapshot." };
+    return { args: stripAppFlag(rest) };
+  }
+  if (APP_FLAG_COMMANDS.has(command)) {
+    if (command === "wait" && hasFlag(rest, "--event")) {
+      return { error: "That command can't be kept on the allowed app." };
+    }
+    return { args: ensureApp(rest, app) };
+  }
+  return { error: "That command can't be kept on the allowed app." };
 }
 
 function pinProblem(binary, expected) {
@@ -745,11 +955,12 @@ function collectApp(rest, hivraApp, command) {
 }
 
 /**
- * @param {{ argv?: string[], spawnImpl?: Function, env?: NodeJS.ProcessEnv }} options
+ * @param {{ argv?: string[], spawnImpl?: Function, env?: NodeJS.ProcessEnv, launch?: { registry: string, consent: string, binary: string, pin: string }, seen?: { apps: Record<string, string> } }} options
  */
 export function runGate(options) {
   const argv = options.argv ?? [];
-  const env = options.env ?? process.env;
+  // Paths are `options.launch` only. A worker's environment, including HIVRA_DESKTOP_*, is not a path source.
+  const env = options.env ?? {};
   const split = splitArgs(argv);
   if (split.error) return refuse("", "INVALID_ARGS", split.error, "unsafe");
   const command = commandOf(split.rest);
@@ -757,13 +968,9 @@ export function runGate(options) {
   const projectResult = resolveProject(split.gate["--project"]);
   if (projectResult.error) return refuse(command, projectResult.error, projectResult.message, projectResult.retry);
   const project = projectResult.path;
-  const registryPath = envPath(env, "HIVRA_DESKTOP_REGISTRY", defaultRegistry);
-  if (registryPath.error) return refuse(command, registryPath.error, registryPath.message, registryPath.retry);
-  const consentPath = envPath(env, "HIVRA_DESKTOP_CONSENT", defaultConsent);
-  if (consentPath.error) return refuse(command, consentPath.error, consentPath.message, consentPath.retry);
-  const binaryPath = envPath(env, "HIVRA_DESKTOP_BINARY", defaultBinary);
-  if (binaryPath.error) return refuse(command, binaryPath.error, binaryPath.message, binaryPath.retry);
-  const on = pluginOn(registryPath.path, project);
+  const launch = takeLaunch(options.launch);
+  if (launch.error) return refuse(command, launch.error, launch.message, launch.retry);
+  const on = pluginOn(launch.registry, project);
   if (on.error) return refuse(command, on.error, on.message, on.retry);
   // Off wins over an allow list, over --headed, and over a command that would otherwise be allowed.
   if (!on.on) {
@@ -775,7 +982,7 @@ export function runGate(options) {
   const appResult = collectApp(split.rest, split.gate["--hivra-app"], command);
   if (appResult.error) return refuse(command, "INVALID_ARGS", appResult.error, "unsafe");
   if (!appResult.app) return refuse(command, "INVALID_ARGS", "Say which app.", "unsafe");
-  const decision = decide(consentPath.path, project, appResult.app);
+  const decision = decide(launch.consent, project, appResult.app);
   if (decision.busy) return refuse(command, "CONSENT_BUSY", "Desktop consent is busy. Try again.", "safe");
   if (decision.error) return refuse(command, decision.error, decision.message, decision.retry ?? "safe");
   if (decision.refused) {
@@ -798,14 +1005,98 @@ export function runGate(options) {
   if ((policy.visible || isHeaded(split.rest)) && !decision.visible) {
     return refuse(command, "VISIBLE_NOT_ALLOWED", "Visible control is off for this project. Don't add --headed.", "unsafe");
   }
-  return spawnDesktop(
-    command,
-    binaryPath.path,
-    env.HIVRA_DESKTOP_SHA256,
-    ensureApp(split.rest, appResult.app),
-    options.spawnImpl,
-    env,
-  );
+  const surface = surfaceProblem(command, split.rest);
+  if (surface) return refuse(command, "INVALID_ARGS", surface, "unsafe");
+  const rooted = rootProblem(command, split.rest, appResult.app, options.seen);
+  if (rooted) return refuse(command, "INVALID_ARGS", rooted, "unsafe");
+  const forwarded = scopeForward(command, split.rest, appResult.app, options.seen);
+  if (forwarded.error) return refuse(command, "INVALID_ARGS", forwarded.error, "unsafe");
+  const pinned = readPin(launch.pin);
+  if (pinned.code) return refuse(command, pinned.code, pinned.message, pinned.retry);
+  const result = spawnDesktop(command, launch.binary, pinned.sha256, forwarded.args, options.spawnImpl, env);
+  if (result.code === 0 && (command === "snapshot" || command === "find")) {
+    rememberRefs(options.seen, appResult.app, result.stdout);
+  }
+  return result;
+}
+
+const DESKTOP_TOOL = {
+  name: "desktop",
+  description: "Run one desktop command on an allowed app. The app sets the paths.",
+  inputSchema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["project", "app", "command"],
+    properties: {
+      project: { type: "string" },
+      app: { type: "string" },
+      command: { type: "string" },
+      args: { type: "array", items: { type: "string" } },
+    },
+  },
+};
+
+/** One MCP message. `state.launch` is the app's paths. `state.env` is not a path source. */
+export function handleMcpMessage(message, state) {
+  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
+  const id = Object.prototype.hasOwnProperty.call(message, "id") ? message.id : null;
+  if (message.method === "initialize") {
+    return `${JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: "2024-11-05",
+        capabilities: { tools: {} },
+        serverInfo: { name: "hivra-desktop", version: "1.1.0" },
+      },
+    })}\n`;
+  }
+  if (message.method === "notifications/initialized" || message.method === "initialized") return null;
+  if (message.method === "tools/list") {
+    return `${JSON.stringify({ jsonrpc: "2.0", id, result: { tools: [DESKTOP_TOOL] } })}\n`;
+  }
+  if (message.method === "tools/call") {
+    const args = message.params && message.params.arguments;
+    const project = args && args.project;
+    const app = args && args.app;
+    const command = args && args.command;
+    const rest = args && Array.isArray(args.args) ? args.args.filter((item) => typeof item === "string") : [];
+    if (typeof project !== "string" || typeof app !== "string" || typeof command !== "string") {
+      return `${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32602, message: "project, app and command are text." } })}\n`;
+    }
+    const result = runGate({
+      argv: ["--project", project, "--hivra-app", app, command, ...rest],
+      env: (state && state.env) ?? {},
+      launch: state && state.launch,
+      seen: state && state.seen,
+      spawnImpl: state && state.spawnImpl,
+    });
+    const text = result.stdout || result.stderr || "";
+    return `${JSON.stringify({
+      jsonrpc: "2.0",
+      id,
+      result: { content: [{ type: "text", text }], isError: result.code !== 0 },
+    })}\n`;
+  }
+  if (id == null) return null;
+  return `${JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: "Unknown method." } })}\n`;
+}
+
+function serveMcp(launch) {
+  const state = { launch, seen: { apps: {} }, env: process.env };
+  const lines = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
+  lines.on("line", (line) => {
+    const text = line.trim();
+    if (!text) return;
+    let message;
+    try {
+      message = JSON.parse(text);
+    } catch {
+      return;
+    }
+    const out = handleMcpMessage(message, state);
+    if (out) process.stdout.write(out);
+  });
 }
 
 function isDirectRun() {
@@ -819,8 +1110,15 @@ function isDirectRun() {
 }
 
 if (isDirectRun()) {
-  const result = runGate({ argv: process.argv.slice(2) });
-  if (result.stdout) process.stdout.write(result.stdout);
-  if (result.stderr) process.stderr.write(result.stderr);
-  process.exit(result.code);
+  const argv = process.argv.slice(2);
+  if (argv[0] !== "--mcp") {
+    process.stderr.write("The app starts the desktop server. This file does not.\n");
+    process.exit(2);
+  }
+  const launch = launchFromAppEnv(process.env);
+  if (!launch) {
+    process.stderr.write("The desktop server has no launch paths from the app.\n");
+    process.exit(2);
+  }
+  serveMcp(launch);
 }
