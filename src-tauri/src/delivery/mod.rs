@@ -14,7 +14,9 @@
 //!   second red: failed).
 //!
 //! The modes, `yolo` and "red is never merged" are firstmate's (kunchenguid/firstmate, MIT: `AGENTS.md` section 7,
-//! `bin/fm-pr-merge.sh`, `bin/fm-teardown.sh`); the ideas are ported, no text is vendored.
+//! `bin/fm-pr-merge.sh`, `bin/fm-teardown.sh`). The behaviour is ported; the contract sentences are vendored in
+//! `src/features/firstmate/vendor/firstmate-contract.md`. Rewrite: the shell is GitHub `gh` plus `land.rs`, not
+//! fm-pr-merge.sh.
 
 pub mod deliver;
 pub mod events;

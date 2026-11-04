@@ -14,7 +14,7 @@ test("the switch is on, and turning it off removes the ending from the contract 
   await expect(toggle).toHaveAttribute("aria-checked", "false");
   await expect(page.locator("[data-session]")).not.toContainText(RULE);
   await expect(page.locator("[data-contract]")).not.toContainText(RULE);
-  await expect(page.locator("[data-contract]")).toContainText("Never edit the project");
+  await expect(page.locator("[data-contract]")).toContainText("Never write to a project");
 
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", "true");

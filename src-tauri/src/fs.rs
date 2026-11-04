@@ -1513,7 +1513,6 @@ pub async fn git_github_pr_action(
         // Hivra WP-12: a merge goes through the one merge path (never red or pending; logged with who allowed it).
         if let Some(method) = crate::delivery::merge::Method::from_action(&action) {
             github_pr_action_args(&repo, number, &action)?;
-            use tauri::Manager;
             crate::delivery::merge::by_person(
                 &app.state::<crate::session_store::SessionStore>(),
                 &crate::delivery::github::CliGithub,

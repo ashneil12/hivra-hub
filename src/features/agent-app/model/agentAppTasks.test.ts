@@ -380,7 +380,7 @@ describe("a first mate's workers (Hivra WP-10)", () => {
     const mate = { ...source, firstMate: true };
     const result = await handleAgentApp(mate, "r-mate", "tasks.delegate", { brief: "Fix the save bug." }, host);
     expect(started[0][0]).toMatchObject({ workspaceMode: "worktree" });
-    expect((started[0][0] as { prompt: string }).prompt).toContain("never in the project's main checkout");
+    expect((started[0][0] as { prompt: string }).prompt).toContain("STOP - do not branch or commit here");
     expect(result).toMatchObject({ isolation: "worktree", isolationWhy: expect.stringContaining("first mate") });
     await expect(
       handleAgentApp(mate, "r-mate-shared", "tasks.delegate", { brief: "Fix it here.", isolation: "shared" }, host),
