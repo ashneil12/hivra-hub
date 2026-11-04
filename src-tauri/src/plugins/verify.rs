@@ -3,7 +3,7 @@
 //! A project that looks like a web or mobile app is offered the plugin. Installing still waits for the person's OK.
 //! Proof left under the worker's `.e2e/` is attached to that worker's report.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -27,6 +27,9 @@ const LOCK_FILE: &str = "verify-offers.lock";
 const READ_CAP: u64 = 1_000_000;
 const EVIDENCE_CAP: usize = 50;
 const WALK_CAP: usize = 400;
+/// How many `.e2e` entries a report will look through. Notable files are kept past `WALK_CAP`; this only stops a
+/// huge tree from being read forever.
+const SCAN_CAP: usize = 10_000;
 const LOCK_TRIES: u32 = 20;
 const LOCK_WAIT: Duration = Duration::from_millis(10);
 const LOCK_STALE: Duration = Duration::from_secs(30);
@@ -215,6 +218,62 @@ fn mcp_manifest() -> String {
     .to_string()
 }
 
+/// e2e finds the project by starting in it (`npx e2e mcp` from that folder). No other server does.
+pub(crate) fn runs_in_session_folder(plugin: &str, server: &str) -> bool {
+    plugin == PLUGIN_NAME && server == SERVER_NAME
+}
+
+/// The checkout e2e must start in. `Ok(None)` for every other server. A missing folder is an error, not the plugin
+/// directory: e2e would then report that the project has no config.
+pub(crate) fn project_workdir(
+    plugin: &str,
+    server: &str,
+    project: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    if !runs_in_session_folder(plugin, server) {
+        return Ok(None);
+    }
+    let Some(project) = project.map(str::trim).filter(|text| !text.is_empty()) else {
+        return Err("Verify needs the worker's project folder.".into());
+    };
+    let folder = crate::fs::canonical(Path::new(project))
+        .map_err(|_| "Verify's project folder isn't on this computer.".to_string())?;
+    if !folder.is_dir() {
+        return Err("Verify's project folder isn't on this computer.".into());
+    }
+    Ok(Some(folder))
+}
+
+/// `./` arguments become absolute paths inside the plugin. e2e's `node ./dist/cli/bin.js` would otherwise look in the
+/// project after the working directory moves. Anything else is left as the plugin wrote it.
+pub(crate) fn absolute_plugin_args(
+    args: &[String],
+    plugin_root: &Path,
+) -> Result<Vec<String>, String> {
+    let root = crate::fs::canonical(plugin_root).map_err(|e| e.to_string())?;
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        let Some(rel) = arg.strip_prefix("./") else {
+            out.push(arg.clone());
+            continue;
+        };
+        if rel.is_empty()
+            || rel
+                .split(['/', '\\'])
+                .any(|part| part.is_empty() || part == "." || part == "..")
+        {
+            return Err("the server's program leaves the plugin.".into());
+        }
+        let path = crate::fs::canonical(root.join(rel))
+            .map_err(|_| "the server's program isn't in the plugin.".to_string())?;
+        if !path.starts_with(&root) {
+            return Err("the server's program leaves the plugin.".into());
+        }
+        out.push(path.to_string_lossy().into_owned());
+    }
+    Ok(out)
+}
+
 fn has_regular_file(root: &Path, rel: &str) -> bool {
     let path = root.join(rel);
     match std::fs::symlink_metadata(&path) {
@@ -334,42 +393,69 @@ pub(crate) fn merge_evidence(report: &mut crate::firstmate::report::WorkerReport
     report.evidence.extend(add);
 }
 
+fn is_notable(rel: &str) -> bool {
+    let name = rel.rsplit('/').next().unwrap_or(rel);
+    name == "report.json" || name == "trace.md"
+}
+
+/// Breadth-first, so a top-level `report.json` is seen before a `cache/` that sorts first. `report.json` and
+/// `trace.md` are kept even after ordinary files have filled `WALK_CAP`. `SCAN_CAP` is the only hard stop.
 fn walk_e2e(dir: &Path, worktree: &Path, out: &mut Vec<String>) {
-    if out.len() >= WALK_CAP {
-        return;
+    let mut notables = Vec::new();
+    let mut rest = Vec::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(dir.to_path_buf());
+    let mut seen = 0usize;
+    while let Some(current) = queue.pop_front() {
+        if seen >= SCAN_CAP {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&current) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .collect();
+        paths.sort();
+        let mut dirs = Vec::new();
+        for path in paths {
+            if seen >= SCAN_CAP {
+                break;
+            }
+            seen += 1;
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.file_type().is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if !meta.is_file() {
+                continue;
+            }
+            let Ok(canon) = crate::fs::canonical(&path) else {
+                continue;
+            };
+            let Some(rel) = relative_proof(&canon, worktree) else {
+                continue;
+            };
+            if is_notable(&rel) {
+                if !notables.contains(&rel) {
+                    notables.push(rel);
+                }
+            } else if rest.len() < WALK_CAP && !rest.contains(&rel) {
+                rest.push(rel);
+            }
+        }
+        for child in dirs {
+            queue.push_back(child);
+        }
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
-        .collect();
-    paths.sort();
-    for path in paths {
-        if out.len() >= WALK_CAP {
-            return;
-        }
-        let Ok(meta) = std::fs::symlink_metadata(&path) else {
-            continue;
-        };
-        if meta.file_type().is_symlink() {
-            continue;
-        }
-        if meta.is_dir() {
-            walk_e2e(&path, worktree, out);
-            continue;
-        }
-        if !meta.is_file() {
-            continue;
-        }
-        let Ok(canon) = crate::fs::canonical(&path) else {
-            continue;
-        };
-        let Some(rel) = relative_proof(&canon, worktree) else {
-            continue;
-        };
-        out.push(rel);
-    }
+    out.extend(notables);
+    out.extend(rest);
 }
 
 fn relative_proof(file: &Path, worktree: &Path) -> Option<String> {

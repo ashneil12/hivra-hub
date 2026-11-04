@@ -299,6 +299,128 @@ fn the_bundled_entry_installs_from_the_index_and_a_worker_session_gets_the_serve
 }
 
 #[test]
+fn every_skill_named_in_the_index_is_installed() {
+    let index = discover::read_index(
+        discover::BUNDLED_INDEX,
+        &discover::Origin::Elsewhere,
+        discover::platform(),
+    )
+    .unwrap();
+    let entry = index
+        .entries
+        .iter()
+        .find(|entry| entry.name == "e2e-verify")
+        .unwrap();
+    let named = entry.adds.iter().find(|add| add.kind == "skills").unwrap();
+    let (package, version) = pinned_npm();
+    let tmp = Tmp::new("skills");
+    let host = plugin_host(&tmp);
+    install_npm(
+        &host,
+        &tmp.path().join("stub"),
+        &package,
+        &version,
+        &as_pairs(&e2e_files(&version)),
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let root = host.installed("e2e-verify");
+    for name in &named.names {
+        let skill = root.join("skills").join(name).join("SKILL.md");
+        assert!(
+            skill.is_file(),
+            "{name} is in the index but {skill:?} was not installed"
+        );
+    }
+}
+
+#[test]
+fn the_e2e_server_runs_in_the_workers_project() {
+    let (package, version) = pinned_npm();
+    let tmp = Tmp::new("cwd");
+    let host = plugin_host(&tmp);
+    install_npm(
+        &host,
+        &tmp.path().join("stub"),
+        &package,
+        &version,
+        &as_pairs(&e2e_files(&version)),
+        RequestedBy::person(),
+    )
+    .unwrap();
+    registry::enable(&host, "e2e-verify", &Scope::Global).unwrap();
+    let project = tmp.path().join("plüg app");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("e2e.config.ts"), "export default {}\n").unwrap();
+    let via_parent = project.join("src").join("..");
+    let wiring = wiring::session_wiring(
+        &host,
+        Some(&via_parent),
+        Some("monocode"),
+        &Default::default(),
+    )
+    .unwrap();
+    let key = "plugin-e2e-verify-e2e";
+    let args: Vec<String> = wiring.claude_mcp_servers[key]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .skip(1)
+        .map(|arg| arg.as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        args.windows(2)
+            .any(|pair| pair[0] == "--project" && Path::new(&pair[1]) == via_parent),
+        "the session must name the worker checkout, got {args:?}"
+    );
+    let command = wiring::prepare_launch(&args).unwrap();
+    assert_eq!(
+        command.get_current_dir(),
+        Some(fsutil::canonical(&project).unwrap().as_path())
+    );
+    let launched: Vec<String> = command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect();
+    let script = launched
+        .iter()
+        .find(|arg| arg.ends_with("dist/cli/bin.js"))
+        .unwrap_or_else(|| panic!("script arg missing in {launched:?}"));
+    let plugin_root = fsutil::canonical(&host.installed("e2e-verify")).unwrap();
+    assert!(
+        Path::new(script).starts_with(&plugin_root),
+        "{script} is not inside {plugin_root:?}"
+    );
+    assert!(script.starts_with('/') || script.chars().nth(1) == Some(':'));
+    assert_eq!(launched.last().map(String::as_str), Some("mcp"));
+    assert_eq!(command.get_program().to_string_lossy(), "node");
+    let mcp = std::fs::read_to_string(host.installed("e2e-verify").join("mcp.json")).unwrap();
+    assert!(
+        mcp.contains("./dist/cli/bin.js"),
+        "the installed mcp.json stays as shipped: {mcp}"
+    );
+
+    let elsewhere = tmp.path().join("other project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let mut other = args.clone();
+    let at = other.iter().position(|arg| arg == "--project").unwrap();
+    other[at + 1] = elsewhere.display().to_string();
+    let second = wiring::prepare_launch(&other).unwrap();
+    assert_eq!(
+        second.get_current_dir(),
+        Some(fsutil::canonical(&elsewhere).unwrap().as_path())
+    );
+
+    let missing = tmp.path().join("gone");
+    other[at + 1] = missing.display().to_string();
+    let err = wiring::prepare_launch(&other).unwrap_err();
+    assert!(
+        err.contains("project folder"),
+        "a missing checkout must not start in the plugin folder: {err}"
+    );
+}
+
+#[test]
 fn an_agents_install_and_a_package_with_dependencies_wait_for_a_yes() {
     let (_package, version) = pinned_npm();
     let tmp = Tmp::new("wait");
@@ -850,6 +972,34 @@ fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
     verify::merge_evidence(&mut many, &crowded);
     assert_eq!(many.evidence.len(), 50);
     assert!(many.evidence.iter().any(|item| item == ".e2e/report.json"));
+
+    // `cache/` sorts first. A depth-first walk that stops at 400 files never sees the report beside it.
+    let buried = tmp.path().join("buried");
+    let buried_e2e = buried.join(".e2e");
+    proof(&buried_e2e, "report.json", "{}\n");
+    proof(&buried_e2e, "results/home/trace.md", "trace\n");
+    for index in 0..400 {
+        proof(&buried_e2e, &format!("cache/f{index:04}.txt"), "x\n");
+    }
+    let mut buried_report = WorkerReport::default();
+    verify::merge_evidence(&mut buried_report, &buried);
+    assert!(
+        buried_report
+            .evidence
+            .iter()
+            .any(|item| item == ".e2e/report.json"),
+        "{:?}",
+        buried_report.evidence
+    );
+    assert!(
+        buried_report
+            .evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "{:?}",
+        buried_report.evidence
+    );
+    assert_eq!(buried_report.evidence.len(), 50);
 
     let absent = tmp.path().join("absent");
     std::fs::create_dir_all(&absent).unwrap();
