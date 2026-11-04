@@ -744,13 +744,23 @@ fn the_claude_verdict_call_sends_the_prompt_on_stdin_with_no_tools() {
     )
     .unwrap();
     std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let said = claude_verdict(
-        bin.to_str().unwrap(),
-        "haiku",
-        "the prompt",
-        Duration::from_secs(10),
-    )
-    .unwrap();
+    // Another test thread can fork while this script is still open for writing. Until that child execs, starting the
+    // script fails with "Text file busy" (ETXTBSY), so try again for a moment instead of failing on that race.
+    let mut tries = 0;
+    let said = loop {
+        match claude_verdict(
+            bin.to_str().unwrap(),
+            "haiku",
+            "the prompt",
+            Duration::from_secs(10),
+        ) {
+            Err(why) if why.contains("Text file busy") && tries < 50 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => break other.unwrap(),
+        }
+    };
     assert_eq!(parse_verdict(&said).answer, Answer::Met);
     let args = std::fs::read_to_string(dir.join("seen.args")).unwrap();
     assert!(args.contains("-p --model haiku"), "{args}");
