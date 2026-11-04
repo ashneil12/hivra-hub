@@ -31,6 +31,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   mcp: Globe,
   skills: Sparkles,
   plugins: Code,
+  crew: Bot, // WP-13
   monos: Bot,
   inbox: Inbox,
   worktrees: FolderTree,
