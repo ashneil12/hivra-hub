@@ -901,6 +901,8 @@ import {
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
+// WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
+import { CREATOR_MONO_ID, landCreatorBrief, setCreatorSessionHost } from "../features/creator/model/creatorChat";
 import {
   warmNativeSkills,
   isNativeCommandPrompt,
@@ -5489,7 +5491,7 @@ function Workspace({
       workspaceNavigation.cancel();
       const request = ++monoViewRequest.current;
       lastMonoIdRef.current = monoId;
-      const session = await ensureMonoSession(monoId, {
+      const opened = await ensureMonoSession(monoId, {
         home: homeDir,
         load: ensureOpenSession,
         create: (path) => newDefaultSession(path),
@@ -5498,6 +5500,12 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       });
+      // WP-34: a build that started before this window's sessions existed lands its brief here.
+      const session = opened && monoId === CREATOR_MONO_ID ? landCreatorBrief(opened) : opened;
+      if (session && session !== opened) {
+        sessionsRef.current = sessionsRef.current.map((item) => (item.id === session.id ? session : item));
+        setSessions(sessionsRef.current);
+      }
       if (!session || request !== monoViewRequest.current) return;
       // What the last Mono had open over its overview is its own; another
       // Mono opens on its list.
@@ -7100,6 +7108,20 @@ function Workspace({
   useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
   // A Mono's chat opened from anywhere, Settings included (hubNav.ts openMonoChat): in its team when it has one.
   useEffect(() => setMonoChatOpener((monoId) => void onOpenMono(monoId, { inTeam: true, leaveSettings: true })), [onOpenMono]);
+  // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
+  useEffect(() => setCreatorSessionHost({
+    home: homeDir,
+    load: ensureOpenSession,
+    create: (path) => newDefaultSession(path),
+    add: (created) => {
+      sessionsRef.current = [...sessionsRef.current, created];
+      setSessions(sessionsRef.current);
+    },
+    update: (next) => {
+      sessionsRef.current = sessionsRef.current.map((item) => (item.id === next.id ? next : item));
+      setSessions(sessionsRef.current);
+    },
+  }), [ensureOpenSession]);
   /**
    * A new chat in a project's coding team, as Ash's New session there makes one: the coding team opens and the chat
    * starts in the project's folder. Its id, or null for a project with no code folder. The benches' way in

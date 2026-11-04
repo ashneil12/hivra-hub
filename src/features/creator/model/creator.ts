@@ -167,3 +167,7 @@ export function creatorDiscard(id: string, revision: number): Promise<CreatorSta
 export function creatorApproveMcp(id: string, revision: number): Promise<CreatorState> {
   return call("creator_approve_mcp", { id, revision });
 }
+
+export function creatorProbe(id: string, revision: number): Promise<CreatorState> {
+  return call("creator_probe_mcp", { id, revision });
+}

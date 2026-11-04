@@ -1,24 +1,26 @@
 // WP-34. Settings → Plugins → Creator. Build writes a scratch plugin, Preview shows it in this view only,
 // Keep switches it on, Undo rolls that back, Discard removes the scratch folder.
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { openMonoChat } from "../../hub/model/hubNav";
 import { bespokeSrcdoc, SANDBOX } from "../../pages/model/sandbox";
+import { beginCreatorBuild, CREATOR_BRIEF_EVENT, CREATOR_DRAFT_EVENT, CREATOR_MONO_ID } from "../model/creatorChat";
 import {
   creatorApproveMcp,
   creatorDiscard,
-  creatorDraft,
   creatorKeep,
   creatorPreview,
-  creatorStart,
+  creatorProbe,
   creatorState,
   creatorUndo,
   errorText,
   isLatest,
+  readState,
   statusLine,
   takeLatest,
   type CreatorState,
 } from "../model/creator";
-import { draftFor, type ContributionKind } from "../model/draftFor";
+import type { ContributionKind } from "../model/draftFor";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -38,11 +40,34 @@ export function CreatorScreen() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const held = useRef<CreatorState | null>(null);
+  const building = useRef<string | null>(null);
 
   function apply(next: CreatorState) {
+    const current = held.current;
+    if (current && current.id === next.id && next.revision < current.revision) return;
     held.current = next;
     setState(next);
   }
+
+  useEffect(() => {
+    const onBrief = (event: Event) => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id;
+      if (typeof id === "string") building.current = id;
+    };
+    const onDraft = (event: Event) => {
+      const next = readState((event as CustomEvent).detail);
+      if (!next) return;
+      const current = held.current;
+      if (current && current.id !== next.id && building.current !== next.id) return;
+      apply(next);
+    };
+    window.addEventListener(CREATOR_BRIEF_EVENT, onBrief);
+    window.addEventListener(CREATOR_DRAFT_EVENT, onDraft);
+    return () => {
+      window.removeEventListener(CREATOR_BRIEF_EVENT, onBrief);
+      window.removeEventListener(CREATOR_DRAFT_EVENT, onDraft);
+    };
+  }, []);
 
   function run(work: (current: () => boolean) => Promise<CreatorState>) {
     const token = takeLatest();
@@ -108,10 +133,11 @@ export function CreatorScreen() {
             const chosen = kind;
             const text = ask;
             run(async (current) => {
-              const started = await creatorStart(chosen);
-              if (!current()) return started;
-              apply(started);
-              return creatorDraft(started.id, started.revision, draftFor(chosen, text, started.id));
+              const started = await beginCreatorBuild({ kind: chosen, ask: text });
+              if (!current()) return started.state;
+              const heldNow = held.current;
+              if (heldNow && heldNow.id === started.state.id && heldNow.revision > started.state.revision) return heldNow;
+              return started.state;
             });
           }}
         >
@@ -140,6 +166,16 @@ export function CreatorScreen() {
         {state?.mcpWaiting ? (
           <button type="button" className={BTN} disabled={busy} onClick={() => run(() => creatorApproveMcp(state.id, state.revision))}>
             Allow this server
+          </button>
+        ) : null}
+        {state && state.mcpApproved && state.mcpServers.length > 0 && phase !== "discarded" ? (
+          <button type="button" className={BTN} disabled={busy} onClick={() => run(() => creatorProbe(state.id, state.revision))}>
+            Test the server
+          </button>
+        ) : null}
+        {state ? (
+          <button type="button" className={BTN} onClick={() => openMonoChat(CREATOR_MONO_ID)}>
+            Open the Creator chat
           </button>
         ) : null}
       </div>

@@ -1,7 +1,10 @@
 // WP-34. Settings → Plugins mounts PluginsPage. This page mounts that same component and opens Creator.
 // The draft comes from draftFor (no model). The panel document is the real sandbox srcdoc.
 import { createRoot } from "react-dom/client";
+import { invoke } from "@tauri-apps/api/core";
 import { PluginsPage } from "../../src/features/plugins/ui/DiscoverPage";
+import { CREATOR_BRIEF_EVENT, CREATOR_DRAFT_EVENT } from "../../src/features/creator/model/creatorEvents";
+import { draftFor } from "../../src/features/creator/model/draftFor";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
@@ -112,6 +115,16 @@ installFakeTauri("this-view", (command, args) => {
   if (command === "creator_approve_mcp") return bump({ mcpApproved: true, mcpWaiting: false });
   if (command === "creator_state") return copy();
   throw new Error(`unexpected ${command}`);
+});
+
+// The production Build button starts a chat. This page is the fake model: it drafts when that brief arrives.
+window.addEventListener(CREATOR_BRIEF_EVENT, (event) => {
+  const detail = (event as CustomEvent<{ ask?: string; kind?: string; id?: string; revision?: number }>).detail;
+  if (!detail?.id || typeof detail.revision !== "number" || typeof detail.kind !== "string") return;
+  const files = draftFor(detail.kind as "panel", detail.ask ?? "", detail.id);
+  void invoke("creator_draft", { id: detail.id, revision: detail.revision, files }).then((next) => {
+    window.dispatchEvent(new CustomEvent(CREATOR_DRAFT_EVENT, { detail: next }));
+  });
 });
 
 createRoot(document.getElementById("root")!).render(<PluginsPage />);
