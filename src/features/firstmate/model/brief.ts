@@ -8,6 +8,7 @@
 // Adapted from firstmate's bin/fm-brief.sh and bin/fm-spawn.sh (https://github.com/kunchenguid/firstmate, Copyright (c)
 // 2026 Kun Chen, MIT License): the scaffold with "Captain's intent" and "Firstmate spec" filled in by the first mate, the
 // worktree-isolation assertion, the status protocol and the steering inbox, and the refusal of leftover placeholders.
+import { briefSkillsSection, type BriefTask } from "./briefSkills";
 
 export type BriefParts = {
   /** The person's own ask, in their words, with the context needed to read it. */
@@ -150,13 +151,20 @@ const STEERING = [
  * The brief's body from the template: the fixed sections around the model's intent and spec. The definition of done
  * goes last in the whole prompt (briefPrompt), so it is not repeated here.
  */
-export function renderBrief(parts: Pick<BriefParts, "intent" | "spec">, isolation: BriefIsolation): string {
+export function renderBrief(
+  parts: Pick<BriefParts, "intent" | "spec">,
+  isolation: BriefIsolation,
+  task?: BriefTask,
+): string {
+  // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
+  const skills = task ? briefSkillsSection(task) : undefined;
   return [
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
     `## Spec\n${parts.spec.trim()}`,
     statusProtocol(isolation),
     STEERING,
+    ...(skills ? [skills] : []),
   ].join("\n\n");
 }
 
@@ -175,7 +183,7 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering"] as const;
+export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering", "Skills"] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(

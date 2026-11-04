@@ -59,6 +59,7 @@ import { appIdentity } from "../../../app/model/appIdentity";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { claudePillName, claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeGrokBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
@@ -633,7 +634,8 @@ async function delegate(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
-    const leadBrief = renderBrief({ intent, spec: brief }, { kind: "first-mate" });
+    // WP-41: the brief names the pstack skills for this kind of work.
+    const leadBrief = renderBrief({ intent, spec: brief }, { kind: "first-mate" }, classifyBriefTask(`${intent}\n${brief}`));
     return briefLead(source, owner.mono, tasks, { requestId, brief: leadBrief, title, asks, goal, input });
   }
   if (input.whenBusy !== undefined)
@@ -752,7 +754,12 @@ async function delegate(
         ...(worktreeCwd ? { worktreeCwd } : {}),
         prompt: briefPrompt(
           owner.name,
-          renderBrief({ intent, spec: brief }, isolationOf(workspaceMode, worktreeCwd)),
+          renderBrief(
+            { intent, spec: brief },
+            isolationOf(workspaceMode, worktreeCwd),
+            // WP-41: the brief names the pstack skills for this kind of work.
+            classifyBriefTask(`${intent}\n${brief}`),
+          ),
           goal,
           memory,
           workerRules(port),
