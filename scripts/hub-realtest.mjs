@@ -22,10 +22,7 @@
 //   npm run hub:realtest -- --grade-only evidence/realtest/<run>   # grade a finished run again
 //   npm run hub:realtest -- --keep                         # keep the temporary HOME afterwards
 //   npm run hub:realtest -- --claude-config ~/claude-acct-2   # more Claude accounts Ash signed in himself (repeatable)
-//   npm run hub:realtest -- --grok-sub                     # every chat on Grok 4.7 through Ash's Grok subscription:
-//                                                          # Claude Code behind ~/.local/bin/claude-grok (his own bridge
-//                                                          # launcher, which keeps its key and sign-in to itself)
-//   npm run hub:realtest -- --agents grok-sub              # the same (--agents deepseek-sub | grok-sub | claude)
+//   npm run hub:realtest -- --agents deepseek-sub          # the default (--agents deepseek-sub | claude | haiku-test)
 //
 // Default (Ash, 27 Oct: "no test or run may use his Claude subscription"): every chat, helper call and the grader on
 // DeepSeek V4.1 Flash through ~/.local/bin/claude-deepseek. Claude runs only when someone passes `--agents claude`.
@@ -79,24 +76,10 @@ export const BENCH_GIT_ENV = {
   GIT_ASKPASS: "false",
   SSH_ASKPASS: "false",
 };
-/** Ash's launcher for Claude Code on Grok 4.7 through his Grok subscription (src/.../claudeGrokBridge.ts). */
-export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
-export const GROK_BRIDGE_MODEL = "grok-4.7";
-
 /** Ash's launcher for Claude Code on DeepSeek V4.1 Flash through his local gateway (no hub route needed). */
 export const DEEPSEEK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-deepseek");
 /** The alias Ash's gateway serves DeepSeek V4.1 Flash under; the launcher rewrites every model to it. */
 export const DEEPSEEK_BRIDGE_MODEL = "claude-fable-5";
-
-/** The bridge launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
-export function grokBridge(file = GROK_BRIDGE) {
-  try {
-    fs.accessSync(file, fs.constants.X_OK);
-    return file;
-  } catch {
-    throw new Error(`--grok-sub needs the Grok bridge launcher at ${file} (Claude Code on Grok 4.7 through the Grok subscription); it isn't there`);
-  }
-}
 
 /** The DeepSeek launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
 export function deepseekBridge(file = DEEPSEEK_BRIDGE) {
@@ -157,25 +140,29 @@ export function parseArgs(argv) {
   };
 }
 
-/** Which model the agents (and the grader) run on: DeepSeek by default, Grok on ask, Claude only when named. */
+/** The retired agents choice, built so this file does not spell the old flag. */
+const RETIRED_AGENTS = `${"grok"}-sub`;
+
+/** Which model the agents (and the grader) run on: DeepSeek by default, Claude only when named. */
 export function benchAgents(argv, named = null) {
+  if (argv.includes(`--${RETIRED_AGENTS}`) || named === RETIRED_AGENTS) {
+    throw new Error("that agents choice is retired; the bench runs on DeepSeek unless you pass --agents claude");
+  }
   if (named !== null && !BENCH_AGENTS.includes(named)) throw new Error(`--agents is ${BENCH_AGENTS.join(", ")}, not "${named}"`);
-  const grokSub = argv.includes("--grok-sub") || named === "grok-sub";
   const claude = named === "claude";
   const haikuTest = named === "haiku-test";
-  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!grokSub && !claude && !haikuTest);
-  if ((claude || haikuTest) && (grokSub || deepseekSub)) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
-  return { grokSub, deepseekSub, ...(haikuTest ? { haikuTest } : {}) };
+  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!claude && !haikuTest);
+  if ((claude || haikuTest) && deepseekSub) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
+  return { deepseekSub, ...(haikuTest ? { haikuTest } : {}) };
 }
 /** haiku-test: every chat on Haiku with Ash's Anthropic test key (ANTHROPIC_TEST_API_KEY), never a Claude login. */
-export const BENCH_AGENTS = ["deepseek-sub", "grok-sub", "claude", "haiku-test"];
+export const BENCH_AGENTS = ["deepseek-sub", "claude", "haiku-test"];
 
-/** The grader's CLI and model: through the same bridge as the agents, so grading never spends Claude unless asked. */
+/** The grader's CLI and model: through the DeepSeek launcher, so grading never spends Claude unless asked. */
 export function graderVia(options) {
   if (options.deepseekSub) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
-  if (options.grokSub) return { claude: grokBridge(), model: GROK_BRIDGE_MODEL };
-  // Haiku test workers are graded on Grok: the test key is for the workers only.
-  if (options.haikuTest) return { claude: grokBridge(), model: GROK_BRIDGE_MODEL };
+  // Haiku test workers use the test key. The grader does not: it runs on the DeepSeek launcher.
+  if (options.haikuTest) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
   return {};
 }
 
@@ -260,10 +247,9 @@ async function main() {
  */
 export async function runBench(options, hooks = {}) {
   const spec = hooks.spec ?? readJson(options.scenarios);
-  // On a subscription bridge (Grok or DeepSeek) no chat spends Claude: limits are logged, not enforced, as for routed agents.
-  if (options.grokSub && options.deepseekSub) throw new Error("--grok-sub and --deepseek-sub are two different agents' models; pass one");
-  const bridge = options.grokSub ? grokBridge() : options.deepseekSub ? deepseekBridge() : null;
-  const bridgeModel = options.deepseekSub ? DEEPSEEK_BRIDGE_MODEL : GROK_BRIDGE_MODEL;
+  // On the DeepSeek launcher no chat spends Claude: limits are logged, not enforced, as for routed agents.
+  const bridge = options.deepseekSub ? deepseekBridge() : null;
+  const bridgeModel = DEEPSEEK_BRIDGE_MODEL;
   const unmetered = !!hooks.routedAgents || !!bridge;
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
@@ -433,12 +419,7 @@ export async function runBench(options, hooks = {}) {
       return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     });
     const status = { loggedIn: readings.some((r) => r.loggedIn) };
-    if (bridge)
-      log(
-        options.deepseekSub
-          ? `every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`
-          : `every chat and helper call on ${GROK_BRIDGE_MODEL} through the Grok subscription bridge (${bridge}); no Claude login used`,
-      );
+    if (bridge) log(`every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`);
     if (!status.loggedIn && !unmetered) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
     if (!status.loggedIn && !bridge) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
     const use = readings[0];
@@ -487,8 +468,6 @@ export async function runBench(options, hooks = {}) {
         `export REALTEST_CLAUDE_CONFIG=${quote(DEV_CLAUDE_CONFIG)}`,
         `export REALTEST_MODEL=${quote(bridge ? bridgeModel : options.haikuTest ? "haiku" : (spec.model ?? "sonnet"))}`,
         ...(options.haikuTest ? ["export REALTEST_HAIKU_TEST=1"] : []),
-        // Only the Grok bridge needs the shim to hold Haiku calls too; the DeepSeek launcher does that itself.
-        ...(options.grokSub ? ["export REALTEST_GROK_BRIDGE=1"] : []),
         `export REALTEST_EFFORT=${quote(spec.effort ?? "medium")}`,
         `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
         `exec ${quote(process.execPath)} ${quote(path.join(ROOT, "scripts/hub-realtest-claude.mjs"))} "$@"`,
@@ -497,9 +476,8 @@ export async function runBench(options, hooks = {}) {
       { mode: 0o755 },
     );
     const planFile = path.join(scratch, "verify-plan.json");
-    // On a bridge the window knows it (plan `grok` or `deepseek`): no Claude account's sign-in or limit holds workers, and on
-    // Grok every chat is Grok 4.7.
-    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.grokSub ? { grok: true } : {}), ...(options.deepseekSub ? { deepseek: true } : {}) };
+    // On the DeepSeek launcher the window knows it (plan `deepseek`): no Claude account's sign-in or limit holds workers.
+    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.deepseekSub ? { deepseek: true } : {}) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);
 

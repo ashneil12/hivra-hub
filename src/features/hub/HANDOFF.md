@@ -587,10 +587,10 @@ Bash, Write and some MCP tool calls in sessions started with `--permission-mode 
 Lead's report turn. Its model is hardcoded to claude-opus-4-8, which is the bridge's Grok alias, and it always sends
 thinking off. Titles, branch-name and plan helpers, room drafts, main turns and bypass-mode workers were all clean.
 
-There's no safe fix in the app, so r66 changes nothing here:
-- `CLAUDE_CODE_AUTO_MODE_MODEL=grok-4.7` is refused by the org model policy.
+The launcher this was measured on is retired (WP-16). Claude Code chats use Ash's Claude login. There's no safe fix in the app for the classifier itself, and r66 changed nothing here:
+- The env var that would pin the classifier to that retired model is refused by the org model policy.
 - `CLAUDE_CODE_MODEL_CAPABILITIES` doesn't override the hardcoded classifier list.
-- An unknown claude-* name must never go to the gateway, because it could route to Anthropic on the subscription.
+- An unknown claude-* name must never go to a gateway, because it could route to Anthropic on the subscription.
 Ash has two options:
 1. Add a second Grok alias in the claude-gpt gateway config for the classifier. That config is off-limits to agents, so Ash makes this change himself.
 2. Run Monos in a permission mode without the classifier. This trades a safety check for thinking on that one yes/no

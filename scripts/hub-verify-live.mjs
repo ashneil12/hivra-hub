@@ -35,7 +35,7 @@
 //   Then coding with a Lead (Ash, 20 Oct: "a good chat and delegate if needed ... and still chat"), on a fourth plan:
 //   Chief of Staff briefs the Verify lead, which hands the API and the UI to two workers and says it is done, and Ash
 //   writes to the Lead through his own path (the plan's messages file, sent by the window as he types):
-//   13. the Lead's "done" while both workers run gets one "Still running: 2" note and the brief stays open;
+//   13. the Lead's "done" while both workers run gets one "Still working on" note and the brief stays open;
 //   14. Ash's message to the Lead while both workers run is answered within one turn;
 //   15. the API worker's report reaches the Lead while the UI still runs, saying "1 of 2 back";
 //   16. Ash's message, sent while the UI's report waits in the busy Lead's queue, goes in first: it steers into the
@@ -476,7 +476,7 @@ export function scenario({ runId, failGate = false }) {
         { app: "tasks.delegate", input: { title: "Flow API", brief: `${FLOW_API} run ${runId}: build the API.` }, save: "flow-api-task" },
         { app: "tasks.delegate", input: { title: "Flow UI", brief: `${FLOW_UI} run ${runId}: build the UI.` }, save: "flow-ui-task" },
         { mark: "flow-lead-delegated" },
-        // Says it's done while both still run: the app notes "Still running: 2" and the brief stays open.
+        // Says it's done while both still run: the app notes "Still working on" both names and the brief stays open.
         { say: "Done: the API and the UI are handed off." },
       ],
     },
@@ -2184,7 +2184,7 @@ async function main() {
       };
     };
 
-    // 13. The Lead hands both jobs out and says it's done: one "Still running: 2" note, and the brief stays open.
+    // 13. The Lead hands both jobs out and says it's done: one "Still working on" note, and the brief stays open.
     const flowBriefed = await waitMark("flow-cos-briefed", 180_000);
     const flowBrief = savedCall("flow-brief")?.response?.result;
     const flowTaskId = flowBrief?.taskId;
@@ -2214,7 +2214,7 @@ async function main() {
       uiStarted &&
       noteFound &&
       notes.length === 1 &&
-      notes[0].text.startsWith("Still running: 2 (Flow API, Flow UI).") &&
+      notes[0].text.startsWith("Still working on Flow API, Flow UI.") &&
       notes[0].stillRunning?.briefId === flowTaskId &&
       [apiTask?.taskId, uiTask?.taskId].every((taskId) => notes[0].stillRunning?.taskIds?.includes(taskId)) &&
       briefWhileOut?.state === "running"

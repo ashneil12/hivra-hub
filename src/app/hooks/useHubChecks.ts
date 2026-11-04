@@ -3,7 +3,6 @@
 // Two sources: Ash OS's undelivered checks (at boot and on feed topic `checks`), and the light look after each dump
 // (hub/model/dumpCheck.ts; Ash, 21 Oct: no hourly audit), run here once the chat that sent one is idle. Every dump in
 // any hub chat is written down the moment it arrives (B5: a chat quit before answering is still checkable).
-import { migrateMonoModels } from "../../features/monos/model/monoModels";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { SubmissionAcceptance } from "../model/submissionAcceptance";
@@ -90,8 +89,6 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
     let live = true;
     void ensureChecker()
       .then(async () => {
-        // A checker made before Monos named Grok 4.7 (claude:haiku) moves over too (monoModels.ts).
-        migrateMonoModels();
         if (live && findMono(CHECKER_MONO_ID) && !findMono(CHECKER_MONO_ID)?.sessionId)
           await latest.current.openMono(CHECKER_MONO_ID);
       })

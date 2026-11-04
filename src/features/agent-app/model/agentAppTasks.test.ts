@@ -38,10 +38,10 @@ import { isOpenDelegation } from "../../monos/model/delegations";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
-// Ash's Mac: Claude Code runs through the claude-grok bridge, and the Grok CLI is installed too.
+// The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
 const bridge = vi.hoisted(() => ({ on: false }));
-vi.mock("../../../integrations/harness/providers/claude/claudeGrokBridge", async (actual) => {
-  const real = await actual<typeof import("../../../integrations/harness/providers/claude/claudeGrokBridge")>();
+vi.mock("../../../integrations/harness/providers/claude/claudeDeepseekBridge", async (actual) => {
+  const real = await actual<typeof import("../../../integrations/harness/providers/claude/claudeDeepseekBridge")>();
   return { ...real, claudeRunsOnSubscriptionBridge: () => bridge.on };
 });
 // Hivra WP-10 review: hub.change goes through tasks.delegate; its preview copy is stood in for here.
@@ -275,9 +275,8 @@ describe("tasks.delegate redoes: the Lead retries or splits its stuck task", () 
   });
 });
 
-// 28 Oct blind run in Ash's app: a Lead on claude:grok-4.7 delegated, the app routed the worker to DeepSeek and then
-// refused its own choice ("Unknown model"), so the Lead named grok:grok-4.6 and every worker ran on the Grok CLI.
-describe("tasks.delegate on the subscription bridge: workers run Claude Code on DeepSeek or Grok 4.7", () => {
+// A Lead on the DeepSeek launcher delegates. Workers run as DeepSeek, including when the Lead names another engine.
+describe("tasks.delegate on the DeepSeek launcher: workers run Claude Code on DeepSeek", () => {
   beforeEach(() => {
     bridge.on = true;
     setHarnessModels("grok", [{ id: "grok:grok-4.6", harness: "grok", name: "Grok 4.6", settings: [] }]);
@@ -288,7 +287,7 @@ describe("tasks.delegate on the subscription bridge: workers run Claude Code on 
 
   function onBridge() {
     const f = fixture();
-    f.source.model = "claude:grok-4.7";
+    f.source.model = "claude:sonnet-5";
     return f;
   }
 
@@ -307,12 +306,12 @@ describe("tasks.delegate on the subscription bridge: workers run Claude Code on 
     expect(String((result as { note?: string }).note)).toContain("never the raw model id");
   });
 
-  it("keeps DeepSeek or Grok 4.7 the Lead names, by any engine's id, on the bridge", async () => {
+  it("runs DeepSeek or a Grok name the Lead names as DeepSeek, on Claude Code", async () => {
     for (const [asked, model] of [
       ["deepseek-v4.1-flash", "claude:deepseek-v4.1-flash"],
       ["omp:deepseek/deepseek-v4-pro", "claude:deepseek-v4.1-flash"],
-      ["grok-4.7", "claude:grok-4.7"],
-      ["grok:grok-4.6", "claude:grok-4.7"],
+      ["grok-4", "claude:deepseek-v4.1-flash"],
+      ["grok:grok-4.6", "claude:deepseek-v4.1-flash"],
     ] as const) {
       const { source, host, started } = onBridge();
       await handleAgentApp(source, `r-${asked.replace(/[^a-z0-9]/gi, "")}`, "tasks.delegate", { brief: "Do it.", model: asked }, host);

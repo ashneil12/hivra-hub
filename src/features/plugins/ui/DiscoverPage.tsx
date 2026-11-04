@@ -33,6 +33,7 @@ import {
   type Listing,
   type SourceList,
 } from "../model/discover";
+import { InstalledPlugins } from "./InstalledPlugins";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
@@ -69,6 +70,7 @@ export function PluginsPage() {
   const [installing, setInstalling] = useState<string | null>(null);
   const [installed, setInstalled] = useState<Record<string, string>>({});
   const [installNote, setInstallNote] = useState<{ key: string; message: string } | null>(null);
+  const [tab, setTab] = useState<"discover" | "installed">("discover");
   const [kind, setKind] = useState<"url" | "github" | "file">("url");
   const [draft, setDraft] = useState("");
   const [draftError, setDraftError] = useState<string | null>(null);
@@ -171,7 +173,7 @@ export function PluginsPage() {
     setInstalling(key);
     setInstallNote(null);
     try {
-      const outcome = installOutcome(await invoke("plugins_install", { source }));
+      const outcome = installOutcome(await invoke("plugins_install", { source, requestedBy: { kind: "person" } }));
       if (!mounted.current) return;
       if (outcome.ok) setInstalled((prev) => ({ ...prev, [key]: outcome.message }));
       else setInstallNote({ key, message: outcome.message });
@@ -193,6 +195,28 @@ export function PluginsPage() {
 
   return (
     <div data-discover className="flex flex-col gap-8">
+      <div role="tablist" aria-label="Plugins" className="flex flex-wrap gap-1">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "discover"}
+          onClick={() => setTab("discover")}
+          className={tab === "discover" ? PRIMARY : BTN}
+        >
+          Discover
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "installed"}
+          onClick={() => setTab("installed")}
+          className={tab === "installed" ? PRIMARY : BTN}
+        >
+          Installed
+        </button>
+      </div>
+      {tab === "installed" ? <InstalledPlugins /> : (
+      <>
       <div data-setting-id="plugin-discover" className="flex flex-col gap-4">
         {notice ? (
           <p data-discover-notice className="text-[13px] text-content/70">{notice}</p>
@@ -312,6 +336,8 @@ export function PluginsPage() {
           <button type="submit" className={`${PRIMARY} self-start`}>Add</button>
         </form>
       </section>
+      </>
+      )}
     </div>
   );
 }

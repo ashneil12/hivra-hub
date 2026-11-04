@@ -89,7 +89,7 @@ Still not carried:
 - Keys and logins (by design): Claude/Grok sign-ins, custom-model keys (DeepSeek, xAI), connector logins.
 - Which chats are a project's coding team (`monocode:coding-team-chats`): not exported, but re-noted on a chat's next
   turn in the project's folder, so it heals itself.
-- Machine paths (provider binaries, the Grok bridge launcher, project folders: mapped by project id on import).
+- Machine paths (provider binaries, project folders: mapped by project id on import).
 
 ## Tests
 

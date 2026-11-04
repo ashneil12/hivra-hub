@@ -1,6 +1,5 @@
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
 import { formatGitLabel } from "./gitLabel";
-import { chatOnGrokBridge, ranModel, ranModelText, shownModelName } from "../../integrations/harness/providers/claude/claudeGrokBridge";
 import {
   type WorktreeFocus,
   inWorktreeFocus,
@@ -5235,7 +5234,7 @@ export const SessionCard = memo(function SessionCard({
   const model =
     compact && !orchestrationExpanded
       ? null
-      : ranModel(session.harness, shownModelName(session.harness, resolveModel(session.harness, session.model).name, chatOnGrokBridge({ model: session.model })));
+      : resolveModel(session.harness, session.model).name;
   // The footer line holds the branch, the work item and the hover archive button. With no branch or work item to show
   // it would be an empty band between this row and its sub-chats' fold, so the archive button moves up to take the
   // time's place on hover, as in the dense list.
@@ -5754,9 +5753,8 @@ export const SessionCard = memo(function SessionCard({
                       className="size-3.5 shrink-0"
                     />
                   )}
-                  <span title={model ? ranModelText(model) : undefined} className="min-w-0 truncate text-[11px] text-content/50">
-                    {model?.name}
-                    {model?.note ? <span className="text-content/35">{` · ${model.note}`}</span> : null}
+                  <span title={model ?? undefined} className="min-w-0 truncate text-[11px] text-content/50">
+                    {model}
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5">
@@ -5832,11 +5830,11 @@ export const SessionCard = memo(function SessionCard({
                 it while the card is hovered or focused. */}
                 {modelInFooter && model ? (
                   <span
-                    title={ranModelText(model)}
+                    title={model}
                     className="flex min-w-0 items-center text-[11px] text-content/50"
                   >
                     <span className="max-w-0 truncate pr-0 opacity-0 transition-[max-width,opacity,padding] duration-200 ease-out group-focus-within:max-w-32 group-focus-within:pr-1.5 group-focus-within:opacity-100 group-hover:max-w-32 group-hover:pr-1.5 group-hover:opacity-100 motion-reduce:transition-none">
-                      {model.name}
+                      {model}
                     </span>
                     <ModelInUseIcon
                       harness={session.harness}

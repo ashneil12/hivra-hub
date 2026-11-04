@@ -29,7 +29,7 @@ it("one saved before the filter is left out when the chat loads", async () => {
     id: "s1",
     cwd: "/tmp/a",
     harness: "claude",
-    model: "claude:grok-4.7",
+    model: "claude:sonnet-5",
     modelSettings: {},
     runtimeMode: "default",
     title: "frank",

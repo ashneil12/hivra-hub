@@ -158,8 +158,8 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { chatOnGrokBridge, claudeBridgeKind, claudeRunsOnGrok, grokBridgeEffort, routedOffBridge } from "./claudeGrokBridge";
-import { bridgeLaunchModel } from "../../../../features/sessions/model/bridgeModels";
+import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /**
  * A PermissionRequest hook can decide before the user touches the prompt; Claude
@@ -374,13 +374,6 @@ const goalKey = (goal: Pick<GoalTrack, "objective" | "setAt">) => `${goal.setAt}
 
 let resolveClaudeBinaryImpl: () => Promise<{ path: string }> =
   resolveClaudeBinary;
-/** This Mac's own `claude` (never the configured bridge launcher), for a chat routed off the Grok bridge. */
-let resolvePlainClaudeImpl: () => Promise<{ path: string }> = () => resolveClaudeBinary(null);
-
-/** Test seam. */
-export function setPlainClaudeResolver(fn: () => Promise<{ path: string }>): void {
-  resolvePlainClaudeImpl = fn;
-}
 
 /** Test seam. */
 export function setClaudeBinaryResolver(
@@ -930,10 +923,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   ) {
     resumeByThread.delete(input.sessionId);
   }
-  // A non-Grok Other model leaves the Grok bridge (routedOffBridge): the plain Claude Code (this Mac's own `claude`,
-  // not the bridge launcher) with the hub's router and that model's key. Everything else uses the configured CLI.
-  const offBridge = claudeRunsOnGrok() && routedOffBridge({ model: input.model, modelSettings: input.modelSettings });
-  const { path } = offBridge ? await resolvePlainClaudeImpl() : await resolveClaudeBinaryImpl();
+  const { path } = await resolveClaudeBinaryImpl();
   const liveRef: { current: Live | null } = { current: null };
   const claudeSessionId =
     canResume && resume ? resume.sessionId : crypto.randomUUID();
@@ -1037,7 +1027,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     [
       // Only a chat in Full access starts able to skip permissions; Full
       // access chosen later on any other process restarts it (claudeLaunchDelta).
-      ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass, offBridge }),
+      ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
       ...workerCheckoutsArgs(input.cwd),
       // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
       ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
@@ -1050,12 +1040,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     undefined,
     undefined,
     // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
-    // On the Grok bridge nothing is routed (the launcher brings its own gateway), except a chat routed off it.
-    chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings })
-      ? undefined
-      : customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
-    // Off the bridge: Rust checks the plain `claude` it resolves itself, not the configured launcher.
-    offBridge,
+    customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
 
   liveByThread.set(input.sessionId, live);
@@ -1416,9 +1401,7 @@ function seedRoutedWindow(
   live: Live,
   input: Pick<HarnessSessionInput, "model" | "modelSettings">,
 ): void {
-  const route = chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings })
-    ? null
-    : customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
+  const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
   const window = modelKeyStore().contextWindow;
   if (!route || !window) return;
   void Promise.resolve(
@@ -2648,12 +2631,10 @@ function writeJson(
 /** What a process for this input would be started with. */
 function claudeLaunchFor(input: HarnessSessionInput, append = mergeClaudeAppend(claudeAppend(input.sessionId), notedSessionAppend(input.sessionId))): ClaudeLaunch {
   const options = launchOptions(input);
-  const route = chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings })
-    ? null
-    : customModelRoute({
-        model: input.model,
-        modelSettings: input.modelSettings ?? {},
-      });
+  const route = customModelRoute({
+    model: input.model,
+    modelSettings: input.modelSettings ?? {},
+  });
   return {
     model: options.model,
     ...(route
@@ -2828,21 +2809,13 @@ function launchOptions(
   // Long-running chats compact at their ceiling instead of near the window.
   const ceiling = contextCeilingFor({ harness: "claude", model: input.model });
   if (ceiling) settings.autoCompactWindow = ceiling;
-  // Claude Code on a subscription bridge (claudeGrokBridge.ts): the model asked for runs as the bridge's Grok 4.7 or
-  // DeepSeek, by the launcher's own name, so a live model change only ever sends one of those (claudeLaunch.ts), and a
-  // model the bridge can't place throws here, before anything starts (bridgeModels.ts). Grok gets its own levels. A
-  // chat on a non-Grok Other model leaves the bridge and keeps its own model (routedOffBridge; E7's DeepSeek default).
-  const onGrok = chatOnGrokBridge({ model: input.model, modelSettings: input.modelSettings });
+  // WP-16: on the DeepSeek launcher the model asked for runs as DeepSeek, by the
+  // launcher's own name. A model it can't place throws here, before anything starts.
   const asked = route ? route.modelId : resolveClaudeApiModelId(native, context);
-  const offBridge = claudeRunsOnGrok() && routedOffBridge({ model: input.model, modelSettings: input.modelSettings });
-  const bridge = offBridge ? undefined : claudeBridgeKind();
+  const bridge = claudeBridgeKind();
   return {
     model: bridge ? bridgeLaunchModel(asked, bridge) : asked,
-    effort: onGrok
-      ? grokBridgeEffort(normalizeClaudeCliEffort(effortRaw, native))
-      : route
-        ? undefined
-        : normalizeClaudeCliEffort(effortRaw, native),
+    effort: route ? undefined : normalizeClaudeCliEffort(effortRaw, native),
     permissionMode:
       input.intent === "plan"
         ? "plan"

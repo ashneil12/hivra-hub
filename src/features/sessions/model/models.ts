@@ -1,4 +1,6 @@
-import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE, GROK_BRIDGE_MODEL_ID, bridgeSafeModel } from "./bridgeModels";
+import { DEFAULT_CLAUDE_MODEL_ID, useDefaultClaudeModelId } from "./defaultClaudeModel";
+import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE } from "./deepseekBridge";
+import { readRetiredGrokModel } from "./grokRetirement";
 import type { HarnessId } from "./session";
 import { HARNESSES } from "./session";
 import { loadProjectProviderSettings } from "./projectProviders";
@@ -213,8 +215,7 @@ export const MODELS: AgentModel[] = [
 ];
 
 export const DEFAULT_MODEL_ID: Record<HarnessId, string> = {
-  // r61 (Alfred): never an Anthropic default. Claude Code runs only on the bridges, so its default is Grok 4.7.
-  claude: GROK_BRIDGE_MODEL_ID,
+  claude: DEFAULT_CLAUDE_MODEL_ID,
   codex: "",
   cursor: "cursor:composer-2.5",
   grok: "grok:grok-4.6",
@@ -309,6 +310,8 @@ export function defaultModelId(harness: HarnessId): string {
   return overlayDefaults[harness] ?? DEFAULT_MODEL_ID[harness];
 }
 
+useDefaultClaudeModelId(() => defaultModelId("claude"));
+
 // `modelsFor`/`findModel` sit in render bodies (every session card, every
 // provider row, the picker itself), so they must not rebuild the catalog on
 // each call. These caches are dropped in `emit()` whenever an overlay lands.
@@ -336,6 +339,8 @@ export function allModels(): AgentModel[] {
 }
 
 export function findModel(id: string): AgentModel | undefined {
+  // WP-16: the retired Grok model id reads as the default Claude model. No write-back.
+  id = readRetiredGrokModel(id, defaultModelId("claude"));
   if (!indexById) {
     const index = new Map<string, AgentModel>();
     // First writer wins, matching the previous `allModels().find(...)` order.
@@ -360,12 +365,13 @@ const bundledById = new Map(MODELS.map((model) => [model.id, model]));
  * and hands the CLI an id it rejects.
  */
 function lookupModel(id: string): AgentModel | undefined {
+  id = readRetiredGrokModel(id, defaultModelId("claude"));
   return findModel(id) ?? bundledById.get(id) ?? bridgeModel(id);
 }
 
 /**
- * DeepSeek's effort levels on the bridge: workers run it at high effort (r58), so the setting has to exist for a
- * worker start to carry it. Grok 4.7 (the Monos' and Leads' model) keeps no setting, so their chats start as before.
+ * DeepSeek's effort levels on the launcher: workers run it at high effort, so the setting has to exist for a
+ * worker start to carry it.
  */
 const DEEPSEEK_BRIDGE_EFFORT: ModelSetting = {
   id: "effort",
@@ -380,7 +386,7 @@ const DEEPSEEK_BRIDGE_EFFORT: ModelSetting = {
   ],
 };
 
-/** Grok 4.7 and DeepSeek as a Claude Code chat on a subscription bridge names them (bridgeModels.ts). */
+/** DeepSeek as a Claude Code chat on the DeepSeek launcher names it (deepseekBridge.ts). */
 function bridgeModel(id: string | undefined): AgentModel | undefined {
   const entry = id ? BRIDGE_MODEL_NAMES[id.trim()] : undefined;
   if (!entry) return undefined;
@@ -393,12 +399,13 @@ function bridgeModel(id: string | undefined): AgentModel | undefined {
   };
 }
 
-/** True for the app's own id of a bridge model (claude:grok-4.7, claude:deepseek-v4.1-flash), which no catalog lists. */
+/** True for the app's own id of the DeepSeek launcher model, which no catalog lists. */
 export function isBridgeModelId(id: string | undefined): boolean {
   return !!id && Object.prototype.hasOwnProperty.call(BRIDGE_MODEL_NAMES, id.trim());
 }
 
 export function resolveModel(harness: HarnessId, id?: string): AgentModel {
+  if (typeof id === "string") id = readRetiredGrokModel(id, defaultModelId("claude"));
   // A custom model ("Other models" in the picker) keeps its own id; CoS's router reads its route.
   if (id && isCustomModelId(id)) {
     const custom = findCustomModel(id);
@@ -850,15 +857,30 @@ export function loadDefaultModels(): Partial<Record<HarnessId, string>> {
       return {};
     }
     const out: Partial<Record<HarnessId, string>> = {};
-    let migrated = false;
     for (const [key, value] of Object.entries(parsed)) {
       if (isHarnessId(key) && typeof value === "string" && value) {
-        out[key] = bridgeSafeModel(key, value);
-        migrated ||= out[key] !== value;
+        // WP-16: read the retired Grok id as the default Claude model. Don't write it back.
+        const model = readRetiredGrokModel(value, defaultModelId("claude"));
+        out[key] = model;
       }
     }
-    // r61: an Anthropic default kept from before the bridges is rewritten once, so the stored value is Grok 4.7 too.
-    if (migrated) localStorage.setItem(DEFAULT_MODELS_KEY, JSON.stringify(out));
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** The stored map, unmapped. A save must not rewrite a retired id just by reading it. */
+function readStoredDefaultModels(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(DEFAULT_MODELS_KEY);
+    if (!raw) return {};
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed)) {
+      if (typeof value === "string" && value) out[key] = value;
+    }
     return out;
   } catch {
     return {};
@@ -866,7 +888,8 @@ export function loadDefaultModels(): Partial<Record<HarnessId, string>> {
 }
 
 export function saveDefaultModel(harness: HarnessId, model: string) {
-  const next = { ...loadDefaultModels(), [harness]: model };
+  const next = readStoredDefaultModels();
+  next[harness] = model;
   try {
     localStorage.setItem(DEFAULT_MODELS_KEY, JSON.stringify(next));
   } catch {
@@ -955,9 +978,8 @@ export function loadLastModelChoice(): LastModelChoice | null {
       isHarnessId((parsed as LastModelChoice).harness)
     ) {
       const last = parsed as LastModelChoice;
-      const model = bridgeSafeModel(last.harness, last.model);
-      if (model === last.model) return last;
-      localStorage.setItem(LAST_MODEL_KEY, JSON.stringify({ harness: last.harness, model }));
+      // WP-16: read the retired Grok id as the default Claude model. Don't write it back.
+      const model = readRetiredGrokModel(last.model, defaultModelId("claude"));
       return { harness: last.harness, model };
     }
     return null;
@@ -996,10 +1018,11 @@ export function loadRecentModelChoices(): LastModelChoice[] {
         continue;
       }
       const choice = item as LastModelChoice;
-      const key = `${choice.harness}\0${choice.model}`;
+      const model = readRetiredGrokModel(choice.model, defaultModelId("claude"));
+      const key = `${choice.harness}\0${model}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      choices.push(choice);
+      choices.push({ harness: choice.harness, model });
       if (choices.length === RECENT_MODEL_LIMIT) break;
     }
     return choices;
@@ -1069,10 +1092,8 @@ function comparableNativeId(harness: HarnessId, id: string): string {
 
 function pickDefaultId(harness: HarnessId, models: AgentModel[]): string {
   if (harness === "claude") {
-    return (
-      // r61: a live Claude catalog lists Anthropic's models; the default stays the bridge's Grok 4.7 whatever it lists.
-      DEFAULT_MODEL_ID.claude
-    );
+    // The built-in Claude default stands. A live catalog does not pick a different one.
+    return DEFAULT_MODEL_ID.claude;
   }
   if (harness === "cursor") {
     return (

@@ -83,6 +83,55 @@ describe("provider binary paths", () => {
     expect(restartedWindow.providerBinaryPathChangePending("cursor")).toBe(false);
   });
 
+  it("clears a retired claude-grok path even when the runtime invoke fails", async () => {
+    let stored = JSON.stringify({
+      claude: "/Users/ash/.local/bin/claude-grok",
+      codex: "/opt/codex",
+    });
+    vi.mocked(localStorage.getItem).mockImplementation(() => stored);
+    vi.mocked(localStorage.setItem).mockImplementation((storageKey, value) => {
+      if (storageKey === key) stored = value;
+    });
+    mocks.invoke.mockRejectedValue(new Error("timeout"));
+
+    vi.resetModules();
+    const providerPaths = await import("./providerBinaryPaths");
+    await expect(providerPaths.initializeProviderBinaryPaths()).rejects.toThrow(
+      "timeout",
+    );
+
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_runtime_binary_paths", {
+      paths: { codex: "/opt/codex" },
+    });
+    expect(providerPaths.runtimeProviderBinaryPath("claude")).toBeNull();
+    expect(providerPaths.runtimeProviderBinaryPath("codex")).toBe("/opt/codex");
+    expect(JSON.parse(stored)).toEqual({ codex: "/opt/codex" });
+  });
+
+  it("leaves a claude-deepseek path untouched", async () => {
+    const stored = JSON.stringify({
+      claude: "/Users/ash/.local/bin/claude-deepseek",
+    });
+    vi.mocked(localStorage.getItem).mockImplementation(() => stored);
+    mocks.invoke.mockResolvedValue({
+      claude: "/Users/ash/.local/bin/claude-deepseek",
+    });
+
+    vi.resetModules();
+    const providerPaths = await import("./providerBinaryPaths");
+    await providerPaths.initializeProviderBinaryPaths();
+
+    expect(mocks.invoke).toHaveBeenCalledWith("harness_runtime_binary_paths", {
+      paths: { claude: "/Users/ash/.local/bin/claude-deepseek" },
+    });
+    expect(providerPaths.runtimeProviderBinaryPath("claude")).toBe(
+      "/Users/ash/.local/bin/claude-deepseek",
+    );
+    expect(stored).toBe(
+      JSON.stringify({ claude: "/Users/ash/.local/bin/claude-deepseek" }),
+    );
+  });
+
   it("reports storage failures without claiming the path was saved", () => {
     vi.mocked(localStorage.setItem).mockImplementation(() => {
       throw new Error("storage full");

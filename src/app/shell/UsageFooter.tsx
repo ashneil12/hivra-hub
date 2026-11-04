@@ -7,7 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { HarnessIcon, notClaudeRun } from "../../features/sessions/ui/HarnessIcon";
-import { onGrokBridge } from "../../integrations/harness/providers/claude/claudeGrokBridge";
+import { claudeRunsOnSubscriptionBridge } from "../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { Popover, type PopoverDismissReason } from "../../shared/ui/Popover";
 import { consumeCodexRateLimitResetCredit } from "../../features/providers/model/rateLimitsFetch";
 import {
@@ -68,10 +68,10 @@ export type UsageFooterSession = {
 };
 
 /**
- * r102: the Claude usage chip shows only when Claude Code really runs on Ash's Claude plan. On the Grok bridge (the
- * bench's dev copy) Claude's plan isn't what a chat spends, so the chip is hidden, as are its numbers.
+ * The Claude usage chip shows only when Claude Code really runs on a Claude plan.
+ * On the DeepSeek launcher Claude's plan isn't what a chat spends, so the chip stays hidden.
  */
-export function wantsClaudeChip(providers: readonly string[], bridge: boolean = onGrokBridge("claude")): boolean {
+export function wantsClaudeChip(providers: readonly string[], bridge: boolean = claudeRunsOnSubscriptionBridge()): boolean {
   return providers.includes("claude") && !bridge;
 }
 
@@ -609,8 +609,8 @@ function SessionChip({
     }
   };
 
-  // Its sign-in and its name are Claude's: on the Grok bridge the footer shows no chip for a Claude Code chat.
-  if (onGrokBridge(session.harness)) return null;
+  // On the DeepSeek launcher Claude's plan isn't what this chat spends.
+  if (session.harness === "claude" && claudeRunsOnSubscriptionBridge()) return null;
   if (!canLogin) {
     return (
       <span

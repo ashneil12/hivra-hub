@@ -117,6 +117,18 @@ describe("Ash's messages the bench sends mid-run", () => {
     expect(unsentVerifyMessages("run-9", { messages: "x" }, storage)).toEqual([]);
   });
 
+  it("reads the verify command's own list, not only a { messages } wrapper", () => {
+    const storage = memory();
+    const listed = [
+      { id: "flow-ash-1", monoId: "verify-lead", prompt: "VERIFY-FLOW-ASH-1 how is it going?" },
+      { id: "room-ash-1", room: "verify", prompt: "VERIFY-ROOM-ASH-1: plan round 1" },
+      { id: "bad id!", monoId: "verify-lead", prompt: "ignored" },
+    ];
+    expect(unsentVerifyMessages("run-9", listed, storage).map((m) => m.id)).toEqual(["flow-ash-1", "room-ash-1"]);
+    claimVerifyMessage("run-9", "flow-ash-1", storage);
+    expect(unsentVerifyMessages("run-9", listed, storage).map((m) => m.id)).toEqual(["room-ash-1"]);
+  });
+
   it("can be for a group room instead of a Mono's chat (a room id or a project id), never both missing", () => {
     const storage = new Map<string, string>();
     const store = { getItem: (k: string) => storage.get(k) ?? null, setItem: (k: string, v: string) => void storage.set(k, v) };
@@ -177,6 +189,27 @@ describe("Ash's messages the bench sends mid-run", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       await vi.advanceTimersByTimeAsync(1_000);
       expect(sent).toEqual(["flow-ash-1", "flow-ash-3"]);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("sends a bare list from the verify command, one pass at a time", async () => {
+    vi.useFakeTimers();
+    try {
+      const sent: string[] = [];
+      const stop = watchVerifyMessages("run-15", {
+        list: async () => [
+          { id: "flow-ash-1", monoId: "verify-lead", prompt: "VERIFY-FLOW-ASH-1 how is it going?" },
+          { id: "room-ash-1", room: "verify", prompt: "VERIFY-ROOM-ASH-1: plan round 1" },
+        ],
+        send: async (message) => void sent.push(message.id),
+        everyMs: 1_000,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sent).toEqual(["flow-ash-1", "room-ash-1"]);
       stop();
     } finally {
       vi.useRealTimers();

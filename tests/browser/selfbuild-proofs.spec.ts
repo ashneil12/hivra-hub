@@ -30,7 +30,6 @@ const dev = <T>(page: Page, code: string, arg?: unknown) =>
 const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: [] };
 
 async function open(page: Page) {
-  // Ash's Claude Code runs on Grok 4.7 through his Grok subscription (claudeGrokBridge.ts): the bridge launcher is its CLI.
   await page.addInitScript(() => {
     localStorage.setItem(
       "monocode.lastModel",
@@ -39,10 +38,6 @@ async function open(page: Page) {
     localStorage.setItem(
       "monocode.defaultModels",
       JSON.stringify({ claude: "claude:sonnet-5" }),
-    );
-    localStorage.setItem(
-      "monocode.providerBinaryPaths.v1",
-      JSON.stringify({ claude: "/Users/ash/.local/bin/claude-grok" }),
     );
   });
   await openLocalHub(page, "&fakeClaude");
@@ -121,7 +116,8 @@ test("13: Dr Eggbot style: the Mono asks first, Ash answers, then it shows the o
     card.locator("svg, canvas, img, [data-mono-letter]").first(),
   ).toBeVisible();
   await expect(rail.locator('button[aria-label^="Postie"]')).toHaveCount(0);
-  await expect(page.locator("text=/Grok 4\\.7/ >> visible=true").first()).toBeVisible();
+  // claude:sonnet-5 is named "Claude Sonnet 5" in the model catalog (models.ts). The model line shows that name with the "Claude " prefix removed.
+  await expect(page.locator("text=/Sonnet 5/ >> visible=true").first()).toBeVisible();
   await card.screenshot({ path: `${SHOTS}/13-draft-mono-card.png` });
   await shot(page, "13-draft-mono-before-yes");
 });
