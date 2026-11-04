@@ -90,8 +90,9 @@ export function planDigest(
     if (!nextSent.includes(notice.id)) nextSent.push(notice.id);
   }
   const live = new Set(list.map((notice) => notice.id));
+  // Dead ids go first, so the cap drops those and keeps a notice that is still on screen.
   const capped = nextSent.length > SENT_MAX
-    ? nextSent.filter((id) => live.has(id)).concat(nextSent.filter((id) => !live.has(id))).slice(-SENT_MAX)
+    ? nextSent.filter((id) => !live.has(id)).concat(nextSent.filter((id) => live.has(id))).slice(-SENT_MAX)
     : nextSent;
   return {
     immediate,
@@ -117,7 +118,7 @@ export function compareAndSwap(
 export type DigestStore = {
   read(): DigestState;
   /** Writes only when the stored version is still `base`. */
-  write(base: number, next: DigestState): boolean;
+  write(base: number, next: DigestState): boolean | Promise<boolean>;
 };
 
 /**
@@ -125,20 +126,37 @@ export type DigestStore = {
  * and the store is left as it was. The caller commits only after a send that succeeded;
  * this helper is that commit.
  */
-export function publish(
+export async function publish(
   store: DigestStore,
   notices: readonly Notice[],
   now: number,
   hour = HOUR,
   attempts = 3,
-): DigestPlan | null {
+): Promise<DigestPlan | null> {
   for (let i = 0; i < attempts; i++) {
     const current = digestStateFrom(store.read());
     const plan = planDigest(current, notices, now, hour);
     if (plan.state.version === current.version) return plan;
-    if (store.write(current.version, plan.state)) return plan;
+    if (await store.write(current.version, plan.state)) return plan;
   }
   return null;
+}
+
+const LOCK = "hivra.crewDigest";
+let tail: Promise<unknown> = Promise.resolve();
+
+/** One digest commit at a time. The browser lock covers two windows; the chain covers one. */
+export function withDigestLock<T>(run: () => Promise<T> | T): Promise<T> {
+  const locks = globalThis.navigator?.locks;
+  if (locks) {
+    return locks.request(LOCK, () => Promise.resolve(run()));
+  }
+  const turn = tail.then(() => run());
+  tail = turn.then(
+    () => undefined,
+    () => undefined,
+  );
+  return turn;
 }
 
 const KEY = "hivra.crewDigest";
@@ -153,14 +171,22 @@ export function readDigestStore(): DigestState {
   }
 }
 
-export function writeDigestStore(base: number, next: DigestState): boolean {
-  const current = readDigestStore();
-  if (current.version !== base) return false;
-  const saved: DigestState = { ...next, version: base + 1 };
-  try {
-    localStorage.setItem(KEY, JSON.stringify(saved));
-  } catch {
-    return false;
-  }
-  return readDigestStore().version === saved.version;
+export function writeDigestStore(base: number, next: DigestState): Promise<boolean> {
+  return withDigestLock(() => {
+    const current = readDigestStore();
+    if (current.version !== base) return false;
+    const parsed = digestStateFrom(next);
+    const saved: DigestState = {
+      version: base + 1,
+      lastDigestAt: parsed.lastDigestAt,
+      sent: parsed.sent,
+    };
+    const body = JSON.stringify(saved);
+    try {
+      localStorage.setItem(KEY, body);
+    } catch {
+      return false;
+    }
+    return localStorage.getItem(KEY) === body;
+  });
 }

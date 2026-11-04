@@ -6,6 +6,7 @@ import {
   planDigest,
   publish,
   readDigestStore,
+  withDigestLock,
   writeDigestStore,
   type DigestState,
   type Notice,
@@ -79,6 +80,16 @@ describe("quiet digest", () => {
     expect(plan.state.lastDigestAt).toBe(10_000);
   });
 
+  it("drops a dead id before a live one once 500 notices are stored", () => {
+    const dead = Array.from({ length: 500 }, (_, index) => `dead-${index}`);
+    const state = { version: 1, lastDigestAt: 0, sent: dead };
+    const plan = planDigest(state, [notice("live-1", false, 1, "Later")], HOUR);
+    expect(plan.state.sent).toContain("live-1");
+    expect(plan.state.sent).toHaveLength(500);
+    expect(plan.state.sent).not.toContain("dead-0");
+    expect(plan.digest?.map((item) => item.id)).toEqual(["live-1"]);
+  });
+
   it("drops a notice that was removed, and collapses a duplicate", () => {
     const started = planDigest(EMPTY_DIGEST, [failed], 0);
     const plan = planDigest(
@@ -99,7 +110,7 @@ describe("quiet digest", () => {
     expect(plan.digest?.map((item) => item.title)).toEqual(["Timed out"]);
   });
 
-  it("a lost compare-and-swap does not send, and a retry sends once", () => {
+  it("a lost compare-and-swap does not send, and a retry sends once", async () => {
     const current = EMPTY_DIGEST;
     expect(compareAndSwap({ ...current, version: 1 }, 0, planDigest(current, [failed], HOUR).state)).toBeNull();
     let fails = 1;
@@ -118,21 +129,21 @@ describe("quiet digest", () => {
         return true;
       },
     };
-    const sent = publish(store, [needs], 1_000);
+    const sent = await publish(store, [needs], 1_000);
     expect(sent?.immediate).toHaveLength(1);
     expect(store.state.version).toBe(1);
-    const again = publish(store, [needs], 2_000);
+    const again = await publish(store, [needs], 2_000);
     expect(again?.immediate).toEqual([]);
     expect(store.state.version).toBe(1);
   });
 
-  it("gives up without writing when every try loses", () => {
+  it("gives up without writing when every try loses", async () => {
     const store = memory();
     const blocked: typeof store = {
       ...store,
       write: () => false,
     };
-    expect(publish(blocked, [failed], HOUR)).toBeNull();
+    expect(await publish(blocked, [failed], HOUR)).toBeNull();
     expect(store.current()).toEqual(EMPTY_DIGEST);
   });
 });
@@ -148,7 +159,7 @@ describe("stored digest", () => {
     });
   });
 
-  it("rejects a write when the stored version moved, and ignores bad json", () => {
+  it("rejects a write when the stored version moved, and ignores bad json", async () => {
     const data = new Map<string, string>();
     const storage = {
       getItem: (key: string) => data.get(key) ?? null,
@@ -167,9 +178,46 @@ describe("stored digest", () => {
     Object.defineProperty(globalThis, "localStorage", { value: storage, configurable: true });
     data.set("hivra.crewDigest", "not json");
     expect(readDigestStore()).toEqual(EMPTY_DIGEST);
-    expect(writeDigestStore(0, { version: 1, lastDigestAt: 10, sent: ["a"] })).toBe(true);
+    expect(await writeDigestStore(0, { version: 1, lastDigestAt: 10, sent: ["a"] })).toBe(true);
     expect(readDigestStore().version).toBe(1);
-    expect(writeDigestStore(0, { version: 1, lastDigestAt: 99, sent: ["b"] })).toBe(false);
+    expect(await writeDigestStore(0, { version: 1, lastDigestAt: 99, sent: ["b"] })).toBe(false);
     expect(readDigestStore().lastDigestAt).toBe(10);
+    expect(readDigestStore().sent).toEqual(["a"]);
+  });
+
+  it("does not claim a write whose stored body is not the one it committed", async () => {
+    const data = new Map<string, string>();
+    Object.defineProperty(globalThis, "localStorage", {
+      value: {
+        getItem: (key: string) => data.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          data.set(key, value.replace('"a"', '"other"'));
+        },
+        removeItem: (key: string) => data.delete(key),
+        clear: () => data.clear(),
+        key: (index: number) => [...data.keys()][index] ?? null,
+        get length() {
+          return data.size;
+        },
+      },
+      configurable: true,
+    });
+    expect(await writeDigestStore(0, { version: 1, lastDigestAt: 10, sent: ["a"] })).toBe(false);
+  });
+
+  it("runs one digest commit at a time, even across an await", async () => {
+    let inside = 0;
+    let peak = 0;
+    await Promise.all(
+      [0, 1].map(() =>
+        withDigestLock(async () => {
+          inside += 1;
+          peak = Math.max(peak, inside);
+          await Promise.resolve();
+          inside -= 1;
+        }),
+      ),
+    );
+    expect(peak).toBe(1);
   });
 });
