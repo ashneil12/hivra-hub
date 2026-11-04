@@ -27,6 +27,7 @@ export type SettingsSectionId =
   | "providers"
   | "mcp"
   | "skills"
+  | "plugins"
   | "monos"
   | "teams"
   | "inbox"
@@ -161,6 +162,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Discover and manage file skills from project, personal, and harness folders.",
     keywords: "skill instructions prompt",
+  },
+  {
+    id: "plugins",
+    group: "agents",
+    label: "Plugins",
+    description:
+      "Plugins you can add, what each one does and its licence, and the indexes they come from.",
+    keywords: "discover plugin install marketplace index licence license",
   },
   {
     id: "monos",
@@ -631,6 +640,18 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "archive",
     label: "Show archived in the sidebar",
     keywords: "hidden conversations list",
+  },
+  {
+    id: "plugin-discover",
+    section: "plugins",
+    label: "Discover plugins",
+    keywords: "search filter licence license install marketplace",
+  },
+  {
+    id: "plugin-indexes",
+    section: "plugins",
+    label: "Plugin indexes",
+    keywords: "index source bundled github marketplace url file",
   },
 ];
 

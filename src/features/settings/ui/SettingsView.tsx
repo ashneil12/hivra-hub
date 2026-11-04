@@ -9,6 +9,7 @@ import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
+import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -691,6 +692,10 @@ export function SettingsView({
               {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
+              {section === "plugins" ? (
+                // WP-32: Discover. Listing reads indexes; it never runs plugin code.
+                <PluginsPage />
+              ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}

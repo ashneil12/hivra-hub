@@ -633,6 +633,7 @@ describe("settings navigation", () => {
       "providers",
       "mcp",
       "skills",
+      "plugins",
       "monos",
       "teams",
       "inbox",
