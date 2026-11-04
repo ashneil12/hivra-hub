@@ -93,14 +93,10 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          CREATE TABLE IF NOT EXISTS room_meta (
            key TEXT PRIMARY KEY,
            value TEXT NOT NULL
-         );
-         CREATE TABLE IF NOT EXISTS room_council (
-           room_id TEXT PRIMARY KEY,
-           revision INTEGER NOT NULL,
-           json TEXT NOT NULL,
-           updated_at INTEGER NOT NULL
          );",
     )?;
+    // WP-23: the council row lives in its own module. Creating it here keeps an older store able to load one.
+    crate::room_council::ensure_table(conn)?;
     // WP-22: who answers in the room. Added after the first rooms were written: older stores get the column here, and an
     // older build (a ship rollback) never reads it, so its rooms answer as they always did.
     let has_responder = conn
@@ -624,17 +620,7 @@ pub fn load(conn: &Connection, per_conversation: i64) -> Result<Snapshot, String
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     // WP-23: the council is its own row, so loading it here is the only way a room save can avoid wiping it.
-    let mut council = conn
-        .prepare("SELECT room_id, json FROM room_council")
-        .map_err(|e| e.to_string())?;
-    let council_rows = council
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(|e| e.to_string())?
-        .collect::<rusqlite::Result<Vec<_>>>()
-        .map_err(|e| e.to_string())?;
-    drop(council);
+    let council_rows = crate::room_council::rows(conn)?;
     for room in &mut rooms {
         room.council_json = council_rows
             .iter()
@@ -926,7 +912,6 @@ pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
         "room_conversations",
         "room_members",
         "room_origins",
-        "room_council",
     ] {
         tx.execute(
             &format!("DELETE FROM {table} WHERE room_id = ?1"),
@@ -934,6 +919,8 @@ pub fn delete_room(conn: &mut Connection, id: &str) -> Result<bool, String> {
         )
         .map_err(|e| e.to_string())?;
     }
+    // WP-23: the council row goes with the room.
+    crate::room_council::delete(&tx, id)?;
     tx.execute("DELETE FROM rooms WHERE id = ?1", params![id])
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
@@ -988,136 +975,6 @@ pub fn rooms_load(store: State<'_, SessionStore>) -> Result<Snapshot, String> {
 #[tauri::command(async)]
 pub fn rooms_upsert(store: State<'_, SessionStore>, room: RoomInput) -> Result<(), String> {
     upsert_room(&mut *store.lock_conn()?, &room, now_millis())
-}
-
-/// WP-23: the council row. `expected_revision` is the revision this write replaces (0 when the room has no council yet).
-/// The record's own `revision` must be one past that. A write that lost the race returns the row that won and changes nothing.
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct CouncilWrite {
-    pub applied: bool,
-    pub revision: i64,
-    pub json: String,
-}
-
-pub fn set_council(
-    conn: &mut Connection,
-    room_id: &str,
-    expected: i64,
-    json: &str,
-    now: i64,
-) -> Result<CouncilWrite, String> {
-    id_ok(room_id, "room id")?;
-    if expected < 0 {
-        return Err("the revision is not a whole number".into());
-    }
-    if json.len() > TEXT_MAX {
-        return Err("the council record is too long".into());
-    }
-    let value: Value =
-        serde_json::from_str(json).map_err(|_| "the council record is not json".to_string())?;
-    let rev = value
-        .as_object()
-        .ok_or("the council record is not an object")?
-        .get("revision")
-        .and_then(Value::as_i64)
-        .ok_or("the council record has no revision")?;
-    if rev != expected + 1 {
-        return Err("the council record's revision does not follow the one it replaces".into());
-    }
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    let room_exists: Option<i64> = tx
-        .query_row(
-            "SELECT 1 FROM rooms WHERE id = ?1",
-            params![room_id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    if room_exists.is_none() {
-        return Err("that room does not exist".into());
-    }
-    let current: Option<(i64, String)> = tx
-        .query_row(
-            "SELECT revision, json FROM room_council WHERE room_id = ?1",
-            params![room_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()
-        .map_err(|e| e.to_string())?;
-    let outcome = if let Some((have, body)) = current {
-        if have != expected {
-            CouncilWrite {
-                applied: false,
-                revision: have,
-                json: body,
-            }
-        } else {
-            let n = tx
-                .execute(
-                    "UPDATE room_council SET revision = ?2, json = ?3, updated_at = ?4 WHERE room_id = ?1 AND revision = ?5",
-                    params![room_id, rev, json, now, expected],
-                )
-                .map_err(|e| e.to_string())?;
-            if n == 1 {
-                CouncilWrite {
-                    applied: true,
-                    revision: rev,
-                    json: json.to_string(),
-                }
-            } else {
-                let (have, body) = tx
-                    .query_row(
-                        "SELECT revision, json FROM room_council WHERE room_id = ?1",
-                        params![room_id],
-                        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-                    )
-                    .map_err(|e| e.to_string())?;
-                CouncilWrite {
-                    applied: false,
-                    revision: have,
-                    json: body,
-                }
-            }
-        }
-    } else if expected != 0 {
-        CouncilWrite {
-            applied: false,
-            revision: 0,
-            json: "{}".into(),
-        }
-    } else {
-        tx.execute(
-            "INSERT INTO room_council (room_id, revision, json, updated_at) VALUES (?1, ?2, ?3, ?4)",
-            params![room_id, rev, json, now],
-        )
-        .map_err(|e| e.to_string())?;
-        CouncilWrite {
-            applied: true,
-            revision: rev,
-            json: json.to_string(),
-        }
-    };
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(outcome)
-}
-
-#[tauri::command(async)]
-pub fn rooms_set_council(
-    store: State<'_, SessionStore>,
-    room_id: String,
-    expected_revision: i64,
-    json: String,
-) -> Result<CouncilWrite, String> {
-    set_council(
-        &mut *store.lock_conn()?,
-        &room_id,
-        expected_revision,
-        &json,
-        now_millis(),
-    )
 }
 
 #[tauri::command(async)]
@@ -1190,6 +1047,7 @@ pub fn rooms_origin_done(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::room_council::set_council;
 
     fn conn() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
@@ -1300,6 +1158,29 @@ mod tests {
         assert!(load(&old, 10).unwrap().rooms.is_empty());
         let mut check = old.prepare("SELECT COUNT(*) FROM room_council").unwrap();
         assert_eq!(check.query_row([], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_council_whose_row_is_gone_is_written_again() {
+        let mut c = conn();
+        let mut made = room("old", &[]);
+        made.is_default = false;
+        upsert_room(&mut c, &made, 1).unwrap();
+        set_council(&mut c, "old", 0, r#"{"revision":1,"question":"Ship?"}"#, 2).unwrap();
+        c.execute("DELETE FROM room_council", []).unwrap();
+        let again =
+            set_council(&mut c, "old", 1, r#"{"revision":2,"question":"kept"}"#, 3).unwrap();
+        assert!(again.applied, "a missing row must take this write");
+        assert_eq!(again.revision, 2);
+        assert!(again.json.contains("kept"));
+        assert_eq!(
+            load(&c, 10).unwrap().rooms[0].council_json.as_deref(),
+            Some(r#"{"revision":2,"question":"kept"}"#)
+        );
+        let late = set_council(&mut c, "old", 1, r#"{"revision":2,"question":"late"}"#, 4).unwrap();
+        assert!(!late.applied);
+        assert!(late.json.contains("kept"));
+        assert!(!late.json.contains("late"));
     }
 
     fn thread(room: &str, id: &str, at: i64) -> ConversationInput {

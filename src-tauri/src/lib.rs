@@ -81,6 +81,7 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+mod room_council;
 mod rooms;
 mod search;
 mod self_build;
@@ -570,7 +571,7 @@ pub fn run() {
             self_build::hub_change_revert,
             rooms::rooms_load,
             rooms::rooms_upsert,
-            rooms::rooms_set_council, // WP-23: a council's row, written on its own so a room save cannot wipe it
+            room_council::rooms_set_council, // WP-23: a council's row, written on its own so a room save cannot wipe it
             rooms::rooms_delete,
             rooms::rooms_conversation_delete,
             rooms::rooms_conversation_upsert,
