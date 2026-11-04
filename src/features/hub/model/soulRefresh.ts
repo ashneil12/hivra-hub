@@ -22,6 +22,7 @@
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
 import { invoke } from "@tauri-apps/api/core";
 import { listMonos, type Mono } from "../../monos/model/mono";
+import { keepsEditedSoul } from "../../monos/model/soulKeep";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
@@ -402,7 +403,8 @@ export async function refreshSouls(
         const match = await matchSeededSoul(soul.text, values);
         if (match && !keptOld && values?.folder?.trim() && match.folder !== values.folder.trim())
           notes.push(`${name}'s old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.`);
-        if (!match) {
+        // WP-21: not a known template (Mercury). An edited soul is left as it is.
+        if (!match && keepsEditedSoul(soul.text, [])) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
             recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });

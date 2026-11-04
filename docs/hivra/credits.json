@@ -209,6 +209,14 @@
       "copyright": "Copyright (c) 2026 nyk",
       "where": "src/features/council/personas, src/features/council/model/prompts.ts",
       "how": "The 18 council personas and the blind, cross-exam, stance and chairman prompts, copied with the MIT notice (WP-23)"
+    },
+    {
+      "name": "Mercury's soul migration check",
+      "url": "https://github.com/cosmicstack-labs/mercury-agent",
+      "licence": "MIT",
+      "copyright": "Copyright © 2026 Cosmic Stack",
+      "where": "src/features/monos/model/vendor/mercurySoul.ts",
+      "how": "needsMigration and normalizeSoulText copied from src/soul/identity.ts (WP-21). The legacy template list is passed in, because Mercury's stored souls are Cosmic Stack text and are not included"
     }
   ]
 }
