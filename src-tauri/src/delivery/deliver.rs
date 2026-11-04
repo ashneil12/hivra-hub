@@ -349,6 +349,24 @@ fn default_base(checkout: &Path, remote: &str) -> String {
     .unwrap_or_else(|| "main".into())
 }
 
+/// Who pushed. The person asked, from Deliver. A worker's chat did the push when
+/// the work was delegated; otherwise the Mono, the first mate, or the app.
+fn deliver_actor(row: Option<&delegations::Delegation>) -> crate::activity::Who {
+    let Some(row) = row else {
+        return crate::activity::Who::app();
+    };
+    if !row.child_session.is_empty() {
+        return crate::activity::Who::worker(row.child_session.clone(), "");
+    }
+    if let Some(mono) = row.owner_mono.as_deref().filter(|mono| !mono.is_empty()) {
+        return crate::activity::Who::mono(mono, "");
+    }
+    if !row.owner_session.is_empty() {
+        return crate::activity::Who::first_mate(row.owner_session.clone(), "");
+    }
+    crate::activity::Who::app()
+}
+
 /// Delivers by the project's mode (module docs). Nothing is recorded when it refuses.
 pub fn deliver(
     store: &SessionStore,
@@ -489,6 +507,20 @@ pub fn deliver(
                 ],
             )
             .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
+            // WP-78: the push landed. A pull request that fails afterwards does not undo this line.
+            if let Ok(conn) = store.lock_conn() {
+                crate::activity::note(
+                    &conn,
+                    crate::activity::PUSH,
+                    &deliver_actor(row.as_ref()),
+                    &crate::activity::Who::person(),
+                    &project_key,
+                    &branch,
+                    &format!("Pushed {branch}."),
+                    "",
+                    now,
+                );
+            }
             let body = pr_body(
                 effective.mode,
                 input.brief.as_deref(),
@@ -535,6 +567,20 @@ pub fn deliver(
                 format!("The pull request was opened, but its address couldn't be read: {printed}")
             })?;
             delivery.url = Some(format!("https://github.com/{pr_repo}/pull/{number}"));
+            // WP-78: the pull request has an address, including one that was already open.
+            if let Ok(conn) = store.lock_conn() {
+                crate::activity::note(
+                    &conn,
+                    crate::activity::PULL_REQUEST,
+                    &deliver_actor(row.as_ref()),
+                    &crate::activity::Who::person(),
+                    &project_key,
+                    &format!("{pr_repo}#{number}"),
+                    &format!("Opened a pull request into {base}."),
+                    delivery.url.as_deref().unwrap_or(""),
+                    now,
+                );
+            }
             delivery.repo = Some(pr_repo);
             delivery.number = Some(number);
             delivery.branch = Some(branch.clone());

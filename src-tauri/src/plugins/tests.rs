@@ -561,6 +561,42 @@ fn full_plugin(root: &Path, name: &str) {
 }
 
 #[test]
+fn install_local_records_one_install_and_a_failed_second_install_records_nothing() {
+    let tmp = Tmp::new("activity");
+    let host = host(&tmp);
+    let db = tmp.path().join("app-data/monocode.db");
+    drop(crate::session_store::SessionStore::open(db.clone()).unwrap());
+    let source = tmp.path().join("src/demo");
+    full_plugin(&source, "demo");
+    registry::install_local(&host, &source, Source::local(&source)).unwrap();
+    assert!(registry::install_local(&host, &source, Source::local(&source)).is_err());
+    registry::uninstall(&host, "demo").unwrap();
+    let store = crate::session_store::SessionStore::open(db).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let rows = crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        },
+        crate::session_store::now_millis(),
+    )
+    .unwrap()
+    .entries;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::PLUGIN_REMOVE);
+    assert_eq!(rows[1].kind, crate::activity::PLUGIN_INSTALL);
+    assert!(rows
+        .iter()
+        .all(|row| row.actor == crate::activity::Who::app()));
+    assert!(rows
+        .iter()
+        .all(|row| row.initiator == crate::activity::Who::person()));
+    assert_eq!(rows[1].summary, "Installed demo.");
+    assert_eq!(rows[0].summary, "Removed demo.");
+}
+
+#[test]
 fn install_enable_disable_uninstall_leave_no_trace() {
     let tmp = Tmp::new("registry");
     let host = host(&tmp);

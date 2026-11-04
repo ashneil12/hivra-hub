@@ -877,6 +877,38 @@ fn an_mcp_server_does_not_run_until_the_person_allows_it() {
 }
 
 #[test]
+fn allowing_an_mcp_server_records_one_grant() {
+    let world = World::new("activity-mcp");
+    let host = world.host();
+    let db = world.tmp.path().join("monocode.db");
+    drop(crate::session_store::SessionStore::open(db.clone()).unwrap());
+    let drafted = draft_mcp(&host, "made-skill", "python3", None);
+    let allowed = creator::approve_mcp(&host, &drafted.id, drafted.revision).unwrap();
+    creator::approve_mcp(&host, &allowed.id, allowed.revision).unwrap();
+    let store = crate::session_store::SessionStore::open(db).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let rows = crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        },
+        crate::session_store::now_millis(),
+    )
+    .unwrap()
+    .entries;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::PERMISSION_GRANT);
+    assert_eq!(rows[0].actor, crate::activity::Who::person());
+    assert_eq!(
+        rows[0].initiator,
+        crate::activity::Who::first_mate(drafted.id.as_str(), "")
+    );
+    assert_eq!(rows[0].target, "made-skill");
+    assert_eq!(rows[0].summary, "Allowed the plugin's MCP server.");
+}
+
+#[test]
 fn a_bare_command_and_a_web_server_are_not_started() {
     let world = World::new("mcp-skip");
     let host = world.host();

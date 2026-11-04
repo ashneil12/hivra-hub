@@ -1100,9 +1100,28 @@ pub fn approve_mcp(host: &Host, id: &str, revision: u64) -> Result<CreatorState,
     if session.claim.is_some() {
         return Err(busy());
     }
+    let fresh = !session.mcp_approved;
     session.mcp_approved = true;
     session.revision += 1;
     save(host, &session)?;
+    if fresh {
+        // WP-78: the person allowed this creator session's MCP server. A second yes is not a new grant.
+        let target = session
+            .plugin
+            .clone()
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| session.id.clone());
+        crate::activity::note_db(
+            &super::registry::activity_db(host),
+            crate::activity::PERMISSION_GRANT,
+            &crate::activity::Who::person(),
+            &crate::activity::Who::first_mate(session.id.clone(), ""),
+            "",
+            &target,
+            "Allowed the plugin's MCP server.",
+            "",
+        );
+    }
     Ok(finish(host, &session))
 }
 

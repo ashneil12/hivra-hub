@@ -58,6 +58,38 @@ impl RequestedBy {
     }
 }
 
+/// The app put the files in place. A person with no chat asked, a Mono when one
+/// is named, otherwise the first mate's chat. The reason they typed is not kept.
+fn install_initiator(by: &RequestedBy) -> crate::activity::Who {
+    let session = by.session.as_deref().unwrap_or("").trim();
+    let mono = by.mono.as_deref().unwrap_or("").trim();
+    if by.kind == "person" || (session.is_empty() && mono.is_empty()) {
+        return crate::activity::Who::person();
+    }
+    if !mono.is_empty() {
+        return crate::activity::Who::mono(mono, "");
+    }
+    crate::activity::Who::first_mate(session, "")
+}
+
+fn note_install(host: &Host, request: &PendingRequest) {
+    let (kind, verb) = if request.op == "update" {
+        (crate::activity::PLUGIN_UPDATE, "Updated")
+    } else {
+        (crate::activity::PLUGIN_INSTALL, "Installed")
+    };
+    crate::activity::note_db(
+        &registry::activity_db(host),
+        kind,
+        &crate::activity::Who::app(),
+        &install_initiator(&request.requested_by),
+        request.project.as_deref().unwrap_or(""),
+        &request.name,
+        &format!("{verb} {}.", request.name),
+        "",
+    );
+}
+
 /// One command an install wants to run, shown exactly before it does.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -380,6 +412,7 @@ fn commit(
             return Err(format!("{why} Nothing was installed."));
         }
     }
+    let mut placed = false;
     let result = {
         let _guard = registry::lock();
         if let Some(entry) = already {
@@ -388,6 +421,7 @@ fn commit(
                 reports: Vec::new(),
             })
         } else {
+            placed = true;
             match request.op.as_str() {
                 "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
                 _ => registry::install_staged(host, &staged, request.resolved.clone()),
@@ -395,7 +429,14 @@ fn commit(
         }
     };
     let outcome = match result {
-        Ok(outcome) => outcome,
+        Ok(outcome) => {
+            if placed {
+                // WP-78: the files are in place, before enable (a failed enable can be retried
+                // without a second row). The reason they gave is not stored.
+                note_install(host, request);
+            }
+            outcome
+        }
         Err(why) => {
             drop_pending(host, dir);
             return Err(why);
@@ -872,6 +913,17 @@ pub fn rollback(host: &Host, name: &str) -> Result<Outcome, String> {
         Ok((entry, reports)) => {
             let _ = fsutil::remove_tree(&aside);
             fsutil::remove_dir_if_empty(&host.trash());
+            // WP-78: the earlier version is back. The person asked; the app moved the files.
+            crate::activity::note_db(
+                &registry::activity_db(host),
+                crate::activity::PLUGIN_ROLLBACK,
+                &crate::activity::Who::app(),
+                &crate::activity::Who::person(),
+                "",
+                name,
+                &format!("Rolled {name} back."),
+                "",
+            );
             Ok(Outcome {
                 entry: Some(entry),
                 reports,

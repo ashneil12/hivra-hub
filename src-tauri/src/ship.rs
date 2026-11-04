@@ -489,8 +489,16 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
                         Phase::RolledBack,
                         "The old build and its database are back.",
                     );
-                    let _ = ship.save();
+                    let saved = ship.save();
                     write_receipt(&ship, "app");
+                    // WP-78: the rollback is on the record. restore() itself writes nothing.
+                    if saved.is_ok() {
+                        note_ship(
+                            &ship,
+                            crate::activity::SHIP_ROLLBACK,
+                            "Rolled back to the previous build.",
+                        );
+                    }
                     if me == Me::New {
                         // This process is the build that was just put aside: open the old one and go.
                         drop(lock);
@@ -700,6 +708,30 @@ fn finish_commit(ship: &mut Ship, by: &str) {
     ship.set_phase(Phase::Committed, "The new build committed.");
     let _ = ship.save();
     write_receipt(ship, by);
+}
+
+/// Who asked for this ship. No session on the record means the person.
+fn ship_initiator(ship: &Ship) -> crate::activity::Who {
+    ship.doc
+        .pointer("/requestedBy/sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| crate::activity::Who::first_mate(id, ""))
+        .unwrap_or_else(crate::activity::Who::person)
+}
+
+fn note_ship(ship: &Ship, kind: &str, summary: &str) {
+    crate::activity::note_db(
+        &ship.data_dir().join("monocode.db"),
+        kind,
+        &crate::activity::Who::app(),
+        &ship_initiator(ship),
+        "",
+        ship.id(),
+        summary,
+        "",
+    );
 }
 
 /// What `receipt.json` says. The runner writes the same shape.
@@ -970,6 +1002,14 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
         return;
     }
     log(dir, "committed");
+    // WP-78: the trial committed. Finishing the receipt is not a second trial.
+    if let Ok(ship) = Ship::load(dir) {
+        note_ship(
+            &ship,
+            crate::activity::SHIP_TRIAL,
+            "The new build's trial committed.",
+        );
+    }
     // The runner writes it down; if it is gone, this app does.
     if let Ok(lock) = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO) {
         if let Ok(mut ship) = Ship::load(dir) {
@@ -1671,6 +1711,28 @@ pub fn ship_start(
             )
         })?;
     if output.status.success() && answer.get("ok").and_then(Value::as_bool) == Some(true) {
+        // WP-78: hub-ship accepted it. The build is not in place yet, and a refusal writes nothing.
+        if let Some(data) = instance::data_dir(instance::DAILY_IDENTIFIER) {
+            let initiator = match requested_by
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+            {
+                Some(id) => crate::activity::Who::first_mate(id, ""),
+                None => crate::activity::Who::person(),
+            };
+            let target = answer.get("id").and_then(Value::as_str).unwrap_or("");
+            crate::activity::note_db(
+                &data.join("monocode.db"),
+                crate::activity::SHIP,
+                &crate::activity::Who::app(),
+                &initiator,
+                "",
+                target,
+                "Started a ship.",
+                "",
+            );
+        }
         Ok(answer)
     } else {
         let refusals = answer
@@ -2167,6 +2229,94 @@ mod tests {
             saved.doc.pointer("/db/backup/monocode.db"),
             "byte for byte"
         );
+    }
+
+    #[test]
+    fn a_finished_rollback_records_one_line_and_a_dev_copy_records_nothing() {
+        let root = TempDir::new("activity");
+        let (mut ship, _) = swapped_fixture(&root.0);
+        let own = instance::stamp().sha.clone();
+        let to = "b".repeat(40);
+        assert!(!own.is_empty());
+        assert_ne!(own, to);
+        assert_eq!(
+            me_for(&own, &to, &own),
+            Me::Old,
+            "Me::New would exit the test process"
+        );
+        let seed = root.0.join("seed.db");
+        {
+            let store = crate::session_store::SessionStore::open(seed.clone()).unwrap();
+            let conn = store.lock_conn().unwrap();
+            let _: (i64, i64, i64) = conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .unwrap();
+        }
+        let backup = ship.dir.join(BACKUP_DIR).join("monocode.db");
+        std::fs::copy(&seed, &backup).unwrap();
+        // The fixture's wal is not this database. Leaving it out makes the restore drop any live wal.
+        std::fs::remove_file(ship.dir.join(BACKUP_DIR).join("monocode.db-wal")).unwrap();
+        let sum = sha256_file(&backup).unwrap();
+        *ship.doc.pointer_mut("/from/sha").unwrap() = json!(own);
+        *ship.doc.pointer_mut("/db/backup/monocode.db").unwrap() = json!(sum);
+        ship.doc
+            .pointer_mut("/db/backup")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("monocode.db-wal");
+        ship.doc
+            .as_object_mut()
+            .unwrap()
+            .insert("requestedBy".into(), json!({ "sessionId": "lead-1" }));
+        ship.save().unwrap();
+        let data = ship.data_dir();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": ship.id() }),
+        )
+        .unwrap();
+        let dev = Identity {
+            kind: Kind::Dev,
+            identifier: "com.ash.monocode-hub.dev.wp78".into(),
+            slot: Some("wp78".into()),
+        };
+        assert!(matches!(startup(&dev, &data), Boot::Normal));
+        assert_eq!(
+            std::fs::read(data.join("monocode.db")).unwrap(),
+            b"migrated by the new build",
+            "a dev copy does not roll a ship back"
+        );
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        assert!(matches!(startup(&daily, &data), Boot::Normal));
+        assert!(matches!(startup(&daily, &data), Boot::Normal));
+        let store = crate::session_store::SessionStore::open(data.join("monocode.db")).unwrap();
+        let conn = store.lock_conn().unwrap();
+        let rows = crate::activity::list(
+            &conn,
+            &crate::activity::ListQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+            crate::session_store::now_millis(),
+        )
+        .unwrap()
+        .entries;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, crate::activity::SHIP_ROLLBACK);
+        assert_eq!(rows[0].actor, crate::activity::Who::app());
+        assert_eq!(
+            rows[0].initiator,
+            crate::activity::Who::first_mate("lead-1", "")
+        );
+        assert_eq!(rows[0].target, "20261019-210405-bbbbbbb");
+        assert_eq!(rows[0].summary, "Rolled back to the previous build.");
     }
 
     #[test]
