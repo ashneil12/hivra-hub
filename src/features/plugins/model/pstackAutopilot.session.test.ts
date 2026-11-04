@@ -49,7 +49,7 @@ const { sendClaudeTurn, stopClaudeSession, __claudeTestReset } = await import(
 const { sendCodexTurn, stopCodexSession, __codexTestReset } = await import(
   "../../../integrations/harness/providers/codex/codex"
 );
-const { setClaudePluginAppend, setClaudePluginArgs } = await import(
+const { setClaudePluginAppend, setClaudePluginArgs, setClaudePluginLaunch } = await import(
   "../../../integrations/harness/providers/claude/claudeExtraArgs"
 );
 const { setCodexDeveloperInstructions, setCodexExtraConfig } = await import(
@@ -57,7 +57,7 @@ const { setCodexDeveloperInstructions, setCodexExtraConfig } = await import(
 );
 
 const SHIM = "/tmp/Ash Neil/app-data/plugins/claude/pstack";
-const INSTALLED = "/tmp/Ash Neil/app-data/plugins/installed/pstack/skills/tdd/SKILL.md";
+const INSTALLED_ROOT = "/tmp/Ash Neil/app-data/plugins/installed/pstack";
 
 function wiring(dirs: string[]): PluginWiring {
   return { claudePluginDirs: dirs, claudeMcpServers: {}, codexMcpServers: {}, reports: [] };
@@ -118,12 +118,13 @@ beforeAll(() => {
 });
 
 afterAll(async () => {
-  for (const id of ["claude-on", "claude-off", "claude-switch", "claude-restart"]) await stopClaudeSession(id).catch(() => undefined);
-  for (const id of ["codex-on", "codex-off", "codex-switch", "codex-resume"]) await stopCodexSession(id).catch(() => undefined);
+  for (const id of ["claude-on", "claude-off", "claude-switch", "claude-restart", "claude-once", "claude-plain-off"]) await stopClaudeSession(id).catch(() => undefined);
+  for (const id of ["codex-on", "codex-off", "codex-switch", "codex-resume", "codex-live"]) await stopCodexSession(id).catch(() => undefined);
   __claudeTestReset();
   __codexTestReset();
   setClaudePluginArgs(undefined);
   setClaudePluginAppend(undefined);
+  setClaudePluginLaunch(undefined);
   setCodexExtraConfig(undefined);
   setCodexDeveloperInstructions(undefined);
   __resetPlainEnglishForTests();
@@ -134,7 +135,9 @@ describe("pstack and plain English reach a session", () => {
     current = wiring([SHIM]);
     const claude = await claudeText("claude-on");
     expect(claude).toContain(PSTACK_AUTOPILOT);
-    expect(claude).toContain(INSTALLED);
+    expect(claude).toContain(INSTALLED_ROOT);
+    expect(claude).toContain("skills/tdd/SKILL.md");
+    expect(claude!.split(INSTALLED_ROOT).length - 1).toBe(1);
     expect(claude).toContain(PLAIN_ENGLISH_RULE);
     expect(await codexText("codex-on", "thread/start")).toBe(claude);
   });
@@ -147,7 +150,7 @@ describe("pstack and plain English reach a session", () => {
     expect(await codexText("codex-off", "thread/start")).toBe(PLAIN_ENGLISH_RULE);
 
     current = wiring([SHIM]);
-    expect(await claudeText("claude-restart")).toContain(INSTALLED);
+    expect(await claudeText("claude-restart")).toContain(`${INSTALLED_ROOT}\n`);
     current = wiring([]);
     expect(await claudeText("claude-restart")).toBe(PLAIN_ENGLISH_RULE);
   });
@@ -164,11 +167,41 @@ describe("pstack and plain English reach a session", () => {
     savePlainEnglishEndings(true);
     const resumed = await codexText("codex-switch", "thread/resume");
     expect(resumed).toContain(PLAIN_ENGLISH_RULE);
-    expect(resumed).toContain(INSTALLED);
+    expect(resumed).toContain(INSTALLED_ROOT);
+
+    // A process that is still running takes the new text on the next turn, the way Claude's append key does.
+    savePlainEnglishEndings(true);
+    expect(await codexText("codex-live", "thread/start")).toContain(PLAIN_ENGLISH_RULE);
+    savePlainEnglishEndings(false);
+    const live = await codexText("codex-live", "thread/resume");
+    expect(live).not.toContain(PLAIN_ENGLISH_RULE);
+    expect(live).toContain(PSTACK_AUTOPILOT);
+    current = wiring([]);
+    const sent = codexSent.length;
+    const unplugged = await codexText("codex-live", "thread/resume");
+    expect(codexSent.slice(sent).some((entry) => entry.method === "thread/resume")).toBe(true);
+    expect(unplugged ?? "").not.toContain("skills/tdd/SKILL.md");
+    expect(unplugged ?? "").not.toContain(PSTACK_AUTOPILOT);
 
     current = wiring([]);
     savePlainEnglishEndings(false);
     expect(await claudeText("claude-plain-off")).toBeUndefined();
     expect(await codexText("codex-resume", "thread/start")).toBeUndefined();
+  });
+
+  it("reads the plugin wiring once per Claude launch, and that snapshot feeds the text and the dirs", async () => {
+    let reads = 0;
+    registerPluginSessions(async () => {
+      reads += 1;
+      return reads === 1 ? wiring([SHIM]) : wiring([]);
+    });
+    const before = spawned.length;
+    const text = await claudeText("claude-once");
+    expect(reads).toBe(1);
+    expect(text).toContain("skills/tdd/SKILL.md");
+    const args = spawned.at(-1)!.args;
+    expect(spawned.length).toBe(before + 1);
+    expect(args.filter((_, index) => args[index - 1] === "--plugin-dir")).toEqual([SHIM]);
+    registerPluginSessions(async () => current);
   });
 });

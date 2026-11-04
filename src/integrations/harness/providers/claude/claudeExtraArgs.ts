@@ -44,6 +44,41 @@ export function setClaudePluginArgs(next: PluginProvider | undefined): void {
 }
 
 /**
+ * WP-41: one read of the plugin wiring for a launch. The append text and the plugin dirs both come from it, so a
+ * switch that flips between the two awaits cannot split them.
+ */
+export type ClaudePluginLaunch = { additions: ClaudePluginAdditions; append?: string };
+type LaunchReader = (cwd: string) => Promise<ClaudePluginLaunch>;
+
+let launchReader: LaunchReader | undefined;
+
+export function setClaudePluginLaunch(next: LaunchReader | undefined): void {
+  launchReader = next;
+}
+
+const EMPTY_PLUGINS: ClaudePluginAdditions = { pluginDirs: [], mcpServers: {} };
+
+/** This launch's plugins and added prompt. One snapshot when a reader is registered. */
+export async function claudePluginLaunch(cwd: string | undefined): Promise<ClaudePluginLaunch> {
+  if (!cwd) return { additions: EMPTY_PLUGINS };
+  if (launchReader) {
+    try {
+      const launch = await launchReader(cwd);
+      return { additions: launch?.additions ?? EMPTY_PLUGINS, append: launch?.append };
+    } catch {
+      return { additions: EMPTY_PLUGINS };
+    }
+  }
+  const append = await claudePluginAppend(cwd);
+  if (!pluginProvider) return { additions: EMPTY_PLUGINS, append };
+  try {
+    return { additions: await pluginProvider(cwd), append };
+  } catch {
+    return { additions: EMPTY_PLUGINS, append };
+  }
+}
+
+/**
  * Add the plugins' servers to the `--mcp-config` already in `args` (the app's own entries keep their names), or add
  * one when there is none, then the `--plugin-dir`s.
  */
@@ -68,13 +103,14 @@ export function withPluginArgs(args: string[], plugins: ClaudePluginAdditions): 
 }
 
 /** Extra arguments for this session; never throws. A provider still reading what it needs is waited for. */
-export async function claudeExtraArgs(sessionId: string, cwd?: string): Promise<string[]> {
+export async function claudeExtraArgs(sessionId: string, cwd?: string, plugins?: ClaudePluginAdditions): Promise<string[]> {
   let args: string[] = [];
   try {
     args = (await provider?.(sessionId)) ?? [];
   } catch {
     args = [];
   }
+  if (plugins) return withPluginArgs(args, plugins);
   if (!cwd || !pluginProvider) return args;
   try {
     return withPluginArgs(args, await pluginProvider(cwd));

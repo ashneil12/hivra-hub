@@ -30,6 +30,38 @@ function field(value: string): string {
   return value.replace(/\|/g, "/").replace(/\s+/g, " ").trim();
 }
 
+function firstSentence(text: string): string {
+  const flat = field(text);
+  const at = flat.search(/(?<=[.!?])\s/);
+  return (at === -1 ? flat : flat.slice(0, at + 1)).trim();
+}
+
+/** Slash names and quoted aliases, so a when-clause that is only those can be dropped. */
+function withoutAliases(when: string): string {
+  return when
+    .replace(/\/[A-Za-z0-9][\w-]*/g, " ")
+    .replace(/["“”][^"“”]*["“”]/g, " ")
+    .replace(/['‘’][^'‘’]*['‘’]/g, " ")
+    .replace(/\b(?:Apply|Use)(?:\s+only)?\s+(?:when|for|before|after|to)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,;:]+|[\s,;:]+$/g, "")
+    .replace(/^(?:or|and)\s+/i, "")
+    .trim();
+}
+
+function wordCount(text: string): number {
+  return text.replace(/[^A-Za-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean).length;
+}
+
+/** The when-clause to keep. Dropped when it only repeats slash aliases, or repeats what the skill is for. */
+function keptWhen(purpose: string, when: string): string | undefined {
+  const clean = field(when);
+  if (!clean || clean === purpose) return undefined;
+  const rest = firstSentence(withoutAliases(clean));
+  if (!rest || rest === purpose || wordCount(rest) < 3) return undefined;
+  return field(rest);
+}
+
 function safeRel(rel: string): boolean {
   if (!rel || rel.startsWith("/") || /^[A-Za-z]:/.test(rel) || rel.includes("\\")) return false;
   return rel.split("/").every((part) => part && part !== "." && part !== "..");
@@ -54,16 +86,19 @@ export function indexLines(entries: unknown, root: string): string | undefined {
       continue;
     const name = field(record.name);
     if (!name || seen.has(name)) continue;
-    const path = skillPath(root, record.rel);
-    if (!path) continue;
+    if (!skillPath(root, record.rel)) continue;
     seen.add(name);
-    lines.push([name, field(record.for), field(record.when), path].join(" | "));
+    const purpose = firstSentence(record.for);
+    const when = keptWhen(purpose, record.when);
+    lines.push([name, purpose, ...(when ? [when] : []), record.rel].join(" | "));
   }
   return lines.length ? lines.join("\n") : undefined;
 }
 
+/** The install folder once, then one relative SKILL.md path per skill. Joining the two is still absolute. */
 export function pstackIndexText(root: string): string | undefined {
-  return indexLines(index, root);
+  const lines = indexLines(index, root);
+  return lines ? `${root}\n${lines}` : undefined;
 }
 
 /** The text a session is given. Pstack only when it is on; the plain-English ending only when that switch is on. */

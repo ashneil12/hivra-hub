@@ -41,18 +41,25 @@ describe("the pstack index", () => {
   it("writes one line per skill, with the absolute path, and skips bad entries", () => {
     const root = "C:/Users/Ash Neil/plugins/installed/pstack";
     const text = pstackIndexText(root)!;
-    const lines = text.split("\n");
+    const lines = text.split("\n").slice(1);
+    expect(text.startsWith(`${root}\n`)).toBe(true);
+    expect(text.split(root).length - 1).toBe(1);
     expect(lines).toHaveLength(generated.length);
-    expect(lines.every((line) => !line.includes("\n"))).toBe(true);
-    expect(text).toContain(`tdd | `);
-    expect(text).toContain(`${root}/skills/tdd/SKILL.md`);
+    expect(lines.every((line) => !line.includes(root))).toBe(true);
+    expect(text).toContain("tdd | ");
+    expect(text).toContain("skills/tdd/SKILL.md");
+    expect(text).not.toContain(`${root}/skills/tdd/SKILL.md`);
     const uni = pstackIndexText("C:/Users/阿什/plugins/installed/pstack")!;
-    expect(uni).toContain("C:/Users/阿什/plugins/installed/pstack/skills/unslop/SKILL.md");
+    expect(uni.startsWith("C:/Users/阿什/plugins/installed/pstack\n")).toBe(true);
+    expect(uni).toContain("skills/unslop/SKILL.md");
+    expect(uni.split("C:/Users/阿什/plugins/installed/pstack").length - 1).toBe(1);
     expect(pstackIndexText("/tmp/../plugins/installed/pstack")).toBeUndefined();
     expect(
       indexLines(
         [
-          { name: "a", for: "one | two", when: "now", rel: "skills/a/SKILL.md" },
+          { name: "a", for: "one | two. More.", when: "Reach for it before the change ships.", rel: "skills/a/SKILL.md" },
+          { name: "b", for: "Same words.", when: "Same words.", rel: "skills/b/SKILL.md" },
+          { name: "c", for: "Draw it.", when: "Use for /c, 'c this'.", rel: "skills/c/SKILL.md" },
           { name: "a", for: "dup", when: "dup", rel: "skills/a/SKILL.md" },
           { name: "", for: "x", when: "x", rel: "skills/x/SKILL.md" },
           null,
@@ -60,7 +67,11 @@ describe("the pstack index", () => {
         ],
         "/plugins/installed/pstack",
       ),
-    ).toBe("a | one / two | now | /plugins/installed/pstack/skills/a/SKILL.md");
+    ).toBe(
+      ["a | one / two. | Reach for it before the change ships. | skills/a/SKILL.md", "b | Same words. | skills/b/SKILL.md", "c | Draw it. | skills/c/SKILL.md"].join(
+        "\n",
+      ),
+    );
     expect(indexLines("nope", "/plugins/installed/pstack")).toBeUndefined();
     expect(indexLines([], "/plugins/installed/pstack")).toBeUndefined();
     const bytes = new TextEncoder().encode(text).length;
@@ -73,12 +84,14 @@ describe("the session instruction", () => {
 
   it("is on by default: the autopilot, every skill, and the plain-English ending", () => {
     const text = sessionInstruction({ pstackRoot: root, plainEnglish: true });
-    expect(text.startsWith(PSTACK_AUTOPILOT)).toBe(true);
     expect(text).toContain("without waiting for a slash command");
     expect(text).toContain("Say in one plain sentence which one you used");
     expect(text).toContain("Suggest one when it would clearly help");
     for (const entry of generated) expect(text).toContain(entry.name);
-    expect(text).toContain(`${root}/skills/tdd/SKILL.md`);
+    expect(text.startsWith(PSTACK_AUTOPILOT)).toBe(true);
+    expect(text).toContain(root);
+    expect(text).toContain("skills/tdd/SKILL.md");
+    expect(text.split(root).length - 1).toBe(1);
     expect(text).toContain(PLAIN_ENGLISH_RULE);
   });
 

@@ -4,7 +4,7 @@ import {
   claudeAppend,
   claudeAppendArgs,
   claudeExtraArgs,
-  claudePluginAppend,
+  claudePluginLaunch,
   clearNotedAppends,
   mergeClaudeAppend,
   notedSessionAppend,
@@ -871,8 +871,9 @@ export function restoreClaudeTaskLists(
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const planning = input.intent === "plan";
-  // WP-41: note the pstack index and plain-English ending before the launch key is compared, so turning either off restarts.
-  const sessionAppend = await claudePluginAppend(input.cwd);
+  // WP-41: one wiring snapshot feeds the append text and the plugin dirs, before the launch key is compared.
+  const plugins = await claudePluginLaunch(input.cwd);
+  const sessionAppend = plugins.append;
   noteSessionAppend(input.sessionId, sessionAppend);
   const append = mergeClaudeAppend(claudeAppend(input.sessionId), sessionAppend);
   const launchNext = claudeLaunchFor(input, append);
@@ -1038,8 +1039,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       // access chosen later on any other process restarts it (claudeLaunchDelta).
       ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass, offBridge }),
       ...workerCheckoutsArgs(input.cwd),
-      // WP-30: the cwd lets installed plugins add their skills and MCP servers (claudeExtraArgs.ts).
-      ...(await claudeExtraArgs(input.sessionId, input.cwd)),
+      // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
+      ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
       // WP-41: the same text the launch key was compared against, not a second read.
       ...claudeAppendArgs(append),
     ],

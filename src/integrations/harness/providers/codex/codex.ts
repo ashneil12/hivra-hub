@@ -95,6 +95,8 @@ type Live = {
   controlsAgents: boolean;
   ephemeral: boolean;
   codexStore?: "mono";
+  /** WP-41: the developer instructions this process started or resumed with. */
+  instructionKey: string;
   runtimeMode: RuntimeMode;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
@@ -509,6 +511,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     input.codexStore ??
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
+  // WP-41: a running thread is resumed when the pstack index or the plain-English ending changed.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd);
+  const instructionKey = developerInstructions?.trim() ?? "";
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -518,7 +523,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     ) &&
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
-    existing.codexStore === codexStore
+    existing.codexStore === codexStore &&
+    existing.instructionKey === instructionKey
   ) {
     existing.onEvent = input.onEvent;
     return existing;
@@ -567,8 +573,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   const storeConfig = store?.config;
   // WP-30: installed plugins' MCP servers for this folder (codexExtraConfig.ts).
   const extraConfig = await codexExtraConfig(input.cwd);
-  // WP-41: the pstack index and the plain-English ending, on the thread instruction Codex already takes.
-  const developerInstructions = await codexDeveloperInstructions(input.cwd);
   const liveRef: { current: Live | null } = { current: null };
 
   const rpc = new JsonRpcClient(
@@ -758,6 +762,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       controlsAgents,
       ephemeral,
       codexStore,
+      instructionKey,
       runtimeMode: input.runtimeMode,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
