@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-34 work packages in four waves. A wave's packages run in parallel; a package starts when everything it depends on
+45 work packages in five waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -97,6 +97,27 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 | [51](work/WP-51-memory.md) | Memory curator, review screen, long chats everywhere | L | 50 | no |
 | [60](work/WP-60-host-side-first-mate.md) | First mate on the remote host | L | 20 | no |
 | [61](work/WP-61-hivra-cloud.md) | Hivra Cloud machine | L | 60 | no |
+
+### Wave E: tasks, docs and safety nets (from Orbit, Ash 4 Nov)
+
+Ash looked at [Orbit](https://github.com/coollabsio/orbit) and wants its tasks and boards, docs, home, finder and
+team collaboration, plus checked backups, trash, GitHub issues as briefs, an activity log and a door for outside AI
+tools. The point he liked most: seeing what the agents are doing, as tasks. Orbit is Apache-2.0 and the same Rust and
+React stack, so copy its code with credit and make it sleeker. 70, 72, 75, 76 and 78 start at once.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [70](work/WP-70-tasks.md) | Tasks, shared by the person and their agents | L | none | yes |
+| [71](work/WP-71-boards.md) | Boards: kanban, list and timeline | L | 70 | yes |
+| [72](work/WP-72-docs.md) | Docs | L | none | yes |
+| [73](work/WP-73-home.md) | Home | M | 70, 72 | yes |
+| [74](work/WP-74-finder.md) | Finder (one search box for everything) | M | 70, 72 | yes |
+| [75](work/WP-75-backups.md) | Checked backups, and restoring one thing | M | none | yes |
+| [76](work/WP-76-trash.md) | Trash | M | none | yes |
+| [77](work/WP-77-github-issues.md) | GitHub issues become briefs | M | 70 | yes |
+| [78](work/WP-78-activity-log.md) | Activity log | M | none | yes |
+| [79](work/WP-79-outside-tools.md) | A safe door for outside AI tools | L | 70, 72 | yes |
+| [80](work/WP-80-team-workspaces.md) | Team workspaces (start when Ash says, after 61) | L | 61, 70, 72 | yes |
 
 ## Running it
 

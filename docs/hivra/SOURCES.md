@@ -52,6 +52,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [agent-desktop](https://github.com/vercel-labs/agent-desktop) | Apache-2.0 | Desktop control for workers, headless-first safety model | Optional plugin | 44 |
 | [Crest](https://github.com/pauljoda/Crest) | MPL-2.0 (name not licensed) | Per-agent browser profiles, driving indicator and Stop, browsing safety defaults | Ideas; engine is Playwright or Chrome DevTools MCP | 43 |
 | [CARL and PAUL](https://github.com/ChristopherKahler) | MIT | Rule staging behind approval; a four-state worker status | Ideas | 10 |
+| [Orbit](https://github.com/coollabsio/orbit) | Apache-2.0 | Tasks with per-project workflows and sub-tasks, board, list and timeline views with saved views, block-editor docs with versions, home, a ⌘K palette, verified backups with one-item restore, 30-day trash, GitHub label sync, audit log, an MCP endpoint with its own OAuth, team workspaces and live co-editing | Vendor its TypeScript logic and editor with credit; translate its Rust to rusqlite; restyle its components | 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80 |
 
 ## Vision to packages
 
@@ -71,3 +72,6 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Opinionated, minimal, not robotic, UI that flows | 03, 04, 05, 06, 15 |
 | Mergeable with upstream, Windows working | 01, 02, 09, PLAN.md upstream rules |
 | Named Hivra, sources credited | 07, 08 |
+| Tasks the person and agents share, boards, docs, a home and one search box (Orbit, 4 Nov) | 70, 71, 72, 73, 74 |
+| Safety nets: checked backups, trash, an activity log | 75, 76, 78 |
+| GitHub issues as briefs, outside AI tools, team workspaces | 77, 79, 80 |

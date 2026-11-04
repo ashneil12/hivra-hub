@@ -54,6 +54,7 @@ in Settings, under About.
 - [agent-desktop](https://github.com/vercel-labs/agent-desktop): desktop control for workers, headless first.
 - [Crest](https://github.com/pauljoda/Crest): per-agent browser profiles and browsing safety defaults (ideas only).
 - [CARL and PAUL](https://github.com/ChristopherKahler): rule staging behind approval and a four-state worker status.
+- [Orbit](https://github.com/coollabsio/orbit): tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
