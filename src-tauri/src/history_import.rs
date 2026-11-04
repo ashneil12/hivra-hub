@@ -634,7 +634,7 @@ fn clean_error(value: &Value) -> Value {
     let Some(text) = value.as_str() else {
         return Value::Null;
     };
-    if text.is_empty() || has_secret(text) {
+    if text.is_empty() || mentions_secret(text) {
         return Value::Null;
     }
     Value::String(text.chars().take(ERROR_LIMIT).collect())
@@ -672,6 +672,9 @@ fn sanitize_state(value: Value) -> Value {
     let mut entries = Map::new();
     for (key, entry) in source {
         if skip_wrappers && wrapper_key(&key) {
+            continue;
+        }
+        if mentions_secret(&key) {
             continue;
         }
         if let Some(clean) = clean_entry(&entry) {
@@ -825,6 +828,19 @@ fn has_secret(text: &str) -> bool {
     scrubber().has_secret(text)
 }
 
+/// The shared patterns, including a `token=…` that sits after `/`, `\`, or the
+/// `platform:` prefix. Those are not boundaries in the shared list, but a path
+/// still must not be stored.
+fn mentions_secret(text: &str) -> bool {
+    if has_secret(text) {
+        return true;
+    }
+    if !(text.contains('/') || text.contains('\\') || text.contains(':')) {
+        return false;
+    }
+    has_secret(&text.replace(['/', '\\', ':'], " "))
+}
+
 fn inside(parent: &Path, child: &Path) -> bool {
     let Ok(parent) = crate::fs::canonical(parent) else {
         return false;
@@ -851,10 +867,11 @@ pub fn write_proposal(dir: &Path, proposal: &ProposalIn) -> Result<(), String> {
     if !sourced(&proposal.markdown) {
         return Err("A line without a source was left in.".into());
     }
-    if has_secret(&proposal.markdown)
-        || has_secret(&proposal.source)
-        || has_secret(&proposal.project)
-        || has_secret(&proposal.conversation_id)
+    if mentions_secret(&proposal.markdown)
+        || mentions_secret(&proposal.source)
+        || mentions_secret(&proposal.project)
+        || mentions_secret(&proposal.conversation_id)
+        || mentions_secret(&proposal.source_key)
     {
         return Err("That draft looks like it contains a secret, so it was not saved.".into());
     }
@@ -1809,6 +1826,80 @@ mod tests {
         let err = write_proposal(&dir, &named).unwrap_err();
         assert!(err.to_lowercase().contains("secret"), "{err}");
         assert!(!dir.join("proposals").exists());
+    }
+
+    #[test]
+    fn a_secret_in_the_path_is_not_stored() {
+        let tmp = Tmp::new();
+        let dir = tmp.path.join("store");
+        let planted = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+        let mut named = proposal("- Decides on Tuesday [src: sess-1 #m1]\n");
+        named.source_key = "notes/token=abcdefgh/chat.jsonl".into();
+        let err = write_proposal(&dir, &named).unwrap_err();
+        assert!(err.to_lowercase().contains("secret"), "{err}");
+        assert!(!err.contains("abcdefgh"), "{err}");
+        let mut shaped = proposal("- Decides on Tuesday [src: sess-1 #m1]\n");
+        shaped.source_key = format!("notes/{planted}/chat.jsonl");
+        let err = write_proposal(&dir, &shaped).unwrap_err();
+        assert!(err.to_lowercase().contains("secret"), "{err}");
+        assert!(!err.contains("PLANTED"), "{err}");
+        let mut other = proposal("- Decides on Tuesday [src: sess-1 #m1]\n");
+        other.project = "notes/token=abcdefgh".into();
+        let err = write_proposal(&dir, &other).unwrap_err();
+        assert!(err.to_lowercase().contains("secret"), "{err}");
+        assert!(!dir.join("proposals").exists());
+
+        let mut fine = proposal("- Decides on Tuesday [src: sess-1 #m1]\n");
+        fine.source_key = "notes/token=short/chat.jsonl".into();
+        write_proposal(&dir, &fine).unwrap();
+        let saved = fs::read_to_string(
+            dir.join("proposals")
+                .join("hi-abcdef01")
+                .join("proposal.json"),
+        )
+        .unwrap();
+        assert!(saved.contains("token=short"));
+        assert!(!saved.contains("abcdefgh"));
+        assert!(!saved.contains("PLANTED"));
+
+        let progress = tmp.path.join("progress");
+        let state = json!({
+            "entries": {
+                "claude_code:notes/token=abcdefgh/chat.jsonl": {
+                    "status": "failed",
+                    "timestamp": 1,
+                    "error": "Could not read notes/token=abcdefgh/chat.jsonl"
+                },
+                "claude_code:token=abcdefgh": {
+                    "status": "failed",
+                    "timestamp": 1,
+                    "error": null
+                },
+                "claude_code:notes/chat.jsonl": {
+                    "status": "failed",
+                    "timestamp": 2,
+                    "error": "Could not read notes/token=abcdefgh/chat.jsonl"
+                },
+                "claude_code:notes/token=short/chat.jsonl": {
+                    "status": "submitted",
+                    "timestamp": 3,
+                    "error": null
+                }
+            }
+        });
+        let shaped_key = format!("claude_code:notes/{planted}/chat.jsonl");
+        let mut with_shape = state;
+        with_shape["entries"][&shaped_key] = json!({
+            "status": "submitted",
+            "timestamp": 4,
+            "error": null
+        });
+        assert!(cas_state(&progress, 0, with_shape).unwrap());
+        let text = fs::read_to_string(progress.join("state.json")).unwrap();
+        assert!(!text.contains("abcdefgh"), "{text}");
+        assert!(!text.contains("PLANTED"), "{text}");
+        assert!(text.contains("notes/chat.jsonl"), "{text}");
+        assert!(text.contains("token=short"), "{text}");
     }
 
     #[test]

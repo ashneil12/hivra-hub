@@ -103,6 +103,13 @@ function isStop(value: unknown): value is Stop {
   return !!value && typeof value === "object" && "status" in value && "reason" in value;
 }
 
+/** Tauri's invoke rejects with the command's string. A thrown Error is the other shape. */
+function thrownMessage(error: unknown): string {
+  if (typeof error === "string") return error;
+  if (error instanceof Error) return error.message;
+  return "";
+}
+
 export async function runImport(input: RunInput): Promise<RunSummary> {
   const pause = input.pause ?? ((ms, cancelled) => slicePause(ms, cancelled, (n) => new Promise((resolve) => setTimeout(resolve, n))));
   const now = input.now ?? (() => Date.now());
@@ -172,6 +179,10 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
     if (isSubmitted(state, platform, sourceKey)) {
       summary.skipped += 1;
       progress("skipped");
+      // Every session can already be done while the file itself was never
+      // recorded. Until it is, the next list keeps the file and it still
+      // takes a slot in the cap.
+      await rememberFile(platform, sourceKey);
       continue;
     }
 
@@ -251,7 +262,7 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
       assertProposal(id, dropped.text);
       await input.writeProposal(id, dropped.text, meta);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "";
+      const message = thrownMessage(error);
       // Only this chat's own draft counts. A folder that belongs to a
       // different chat, or any other "already", is not a success.
       if (message !== "This chat was already drafted.") {

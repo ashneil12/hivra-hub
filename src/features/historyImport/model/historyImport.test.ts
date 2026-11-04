@@ -579,6 +579,50 @@ describe("a cancel, a shared id, and a key-name secret", () => {
     expect(isSubmitted(store.get(), "claude_code", "one.jsonl")).toBe(true);
   });
 
+  it("treats the command's string rejection as already drafted, so the next run skips it", async () => {
+    const store = disk();
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello") }], {
+        writeProposal: async () => {
+          throw "This chat was already drafted.";
+        },
+      }),
+    );
+    expect(summary.failed).toBe(0);
+    expect(summary.submitted).toBe(1);
+    expect(isSubmitted(store.get(), "claude_code", "one.jsonl")).toBe(true);
+
+    let asks = 0;
+    const loaded = await store.load();
+    const again = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello") }], {
+        state: loaded.state,
+        revision: loaded.revision,
+        ask: async (prompt) => {
+          asks += 1;
+          return citingAsk([])(prompt);
+        },
+      }),
+    );
+    expect(again.skipped).toBe(1);
+    expect(again.submitted).toBe(0);
+    expect(asks).toBe(0);
+  });
+
+  it("still fails when the command rejects with a different string", async () => {
+    const store = disk();
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello") }], {
+        writeProposal: async () => {
+          throw "That draft belongs to a different chat.";
+        },
+      }),
+    );
+    expect(summary.submitted).toBe(0);
+    expect(summary.failed).toBe(1);
+    expect(isSubmitted(store.get(), "claude_code", "one.jsonl")).toBe(false);
+  });
+
   it("drops a key-name secret before it is sent or kept, and keeps a short value", async () => {
     const named = "token=abcdefgh";
     const conversation: Conversation = {
@@ -644,6 +688,37 @@ describe("a cancel, a shared id, and a key-name secret", () => {
     expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl#one")).toBe(true);
     expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl#two")).toBe(false);
     expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl")).toBe(false);
+  });
+
+  it("records a hermes file when every session in it was already submitted", async () => {
+    const store = disk();
+    store.sneak("hermes", "sessions/h.jsonl#one");
+    store.sneak("hermes", "sessions/h.jsonl#two");
+    const session = (id: string): Conversation => ({
+      id,
+      sourceKey: `sessions/h.jsonl#${id}`,
+      source: "hermes",
+      project: "notes",
+      title: "",
+      messages: [message({ conversationId: id, content: id })],
+      skippedLines: 0,
+      secrets: 0,
+    });
+    const loaded = await store.load();
+    const summary = await runImport(
+      harness(store, [
+        { kind: "chat", conversation: session("one") },
+        { kind: "chat", conversation: session("two") },
+      ], {
+        state: loaded.state,
+        revision: loaded.revision,
+      }),
+    );
+    expect(summary.skipped).toBe(2);
+    expect(summary.submitted).toBe(0);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl#one")).toBe(true);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl#two")).toBe(true);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl")).toBe(true);
   });
 });
 
