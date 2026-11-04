@@ -77,9 +77,11 @@ pub struct MergeRequest {
     pub number: u64,
     pub caller: Caller,
     /// The project folder, for its "merge without asking" switch. Found from the delivery when left out.
+    /// An agent can't set it: its project comes only from the delivery, so it can't borrow another project's switch.
     #[serde(default)]
     pub project: Option<String>,
     /// The delegation the work came from, for its open decisions. Found from the delivery when left out.
+    /// An agent can't set it either: the delivery names the delegation, so a request can't point at one with no question.
     #[serde(default)]
     pub delegation_id: Option<String>,
     #[serde(default)]
@@ -350,14 +352,24 @@ pub fn merge(
     };
     let head = read.detail.head_sha.clone().unwrap_or_default();
     let delivery = super::deliver::by_pr(&conn, &repo, number)?;
-    let delegation = request
-        .delegation_id
-        .clone()
-        .or_else(|| delivery.as_ref().and_then(|d| d.delegation_id.clone()));
-    let project = request
-        .project
-        .clone()
-        .or_else(|| delivery.as_ref().map(|d| d.project.clone()));
+    // An agent doesn't get to name these. The delivery row is the only source, and with no row
+    // there is no project switch and no delegation: the agent is asked unless this head was approved.
+    let (delegation, project) = match &request.caller {
+        Caller::Agent { .. } => (
+            delivery.as_ref().and_then(|row| row.delegation_id.clone()),
+            delivery.as_ref().map(|row| row.project.clone()),
+        ),
+        Caller::Person { .. } => (
+            request
+                .delegation_id
+                .clone()
+                .or_else(|| delivery.as_ref().and_then(|row| row.delegation_id.clone())),
+            request
+                .project
+                .clone()
+                .or_else(|| delivery.as_ref().map(|row| row.project.clone())),
+        ),
+    };
     let open = match &delegation {
         Some(id) => open_decision(&conn, id)?,
         None => None,

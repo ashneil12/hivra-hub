@@ -990,13 +990,125 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     assert_eq!(log[2].caller, "agent lead-1");
 }
 
+fn remember_delivery(
+    store: &SessionStore,
+    project: &Path,
+    delegation_id: Option<&str>,
+    number: u64,
+) {
+    store
+        .lock_conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO work_deliveries (id, delegation_id, project, checkout, mode, state, repo, number, url, branch, fix_rounds, detail, created_at, updated_at)
+             VALUES (?1, ?2, ?3, NULL, 'pr', 'ready', 'acme/web', ?4, NULL, 'work', 0, NULL, ?5, ?5)",
+            rusqlite::params![
+                format!("dlv-{number}"),
+                delegation_id,
+                settings::key(project.to_str().unwrap()),
+                number as i64,
+                number as i64,
+            ],
+        )
+        .unwrap();
+}
+
+fn task(conn: &mut rusqlite::Connection, owner: &str, request: &str, child: &str) -> String {
+    delegations::record(
+        conn,
+        RecordInput {
+            owner_session: owner.into(),
+            request_id: request.into(),
+            child_session: child.into(),
+            title: Some("Fix the save bug".into()),
+            ..Default::default()
+        },
+        1,
+    )
+    .unwrap()
+    .id
+}
+
+/// An agent doesn't get to name the project or the delegation. The delivery row is the only source: another project's
+/// switch can't be borrowed, and a delegation with no open question can't hide the one this pull request belongs to.
+/// With no delivery row, the agent is asked unless the person approved this head.
+#[test]
+fn an_agent_merge_uses_only_the_delivery_record() {
+    let quiet = fixture("quiet");
+    let loud = fixture("loud");
+    let s = store();
+    set_mode(&s, &quiet.project, Some(Mode::Pr), false);
+    set_mode(&s, &loud.project, Some(Mode::Pr), true);
+    let mut conn = s.lock_conn().unwrap();
+    let blocked = task(&mut conn, "lead-1", "r-blocked", "worker-1");
+    delegations::set_question(
+        &mut conn,
+        &blocked,
+        Some("Keep the old file format?".into()),
+        None,
+        2,
+    )
+    .unwrap();
+    let clean = task(&mut conn, "lead-2", "r-clean", "worker-2");
+    drop(conn);
+    // The pull request belongs to the project whose switch is off, and to the delegation that is waiting.
+    remember_delivery(&s, &quiet.project, Some(&blocked), 7);
+
+    let mut borrow = agent_merge("acme/web");
+    borrow.project = Some(loud.project.to_string_lossy().into());
+    borrow.delegation_id = Some(clean);
+    let gh = FakeGithub::new(vec![green("h1")]);
+    let refused = merge::merge(&s, &gh, borrow, 10).unwrap();
+    assert!(
+        matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Keep the old file format?")),
+        "naming a clean delegation hid the open question: {refused:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+
+    // No open question on the delivery's own delegation: the other project's switch still doesn't apply.
+    let s = store();
+    set_mode(&s, &quiet.project, Some(Mode::Pr), false);
+    set_mode(&s, &loud.project, Some(Mode::Pr), true);
+    remember_delivery(&s, &quiet.project, None, 7);
+    let mut borrow = agent_merge("acme/web");
+    borrow.project = Some(loud.project.to_string_lossy().into());
+    let gh = FakeGithub::new(vec![green("h1")]);
+    let asked = merge::merge(&s, &gh, borrow, 10).unwrap();
+    assert!(
+        matches!(&asked, MergeOutcome::NeedsYou { .. }),
+        "the agent borrowed the other project's switch: {asked:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+
+    // No delivery row at all: asked, even with the switch named on the request, until this head is approved.
+    let s = store();
+    set_mode(&s, &loud.project, Some(Mode::Pr), true);
+    let mut named = agent_merge("acme/web");
+    named.project = Some(loud.project.to_string_lossy().into());
+    let gh = FakeGithub::new(vec![green("h1"), green("h1")]);
+    let asked = merge::merge(&s, &gh, named.clone(), 20).unwrap();
+    assert!(
+        matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "h1"),
+        "{asked:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+    merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 21).unwrap();
+    let merged = merge::merge(&s, &gh, named, 22).unwrap();
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { head_sha, allowed_by } if head_sha == "h1" && allowed_by.contains("person"))
+    );
+    assert_eq!(gh.ran("pr", "merge").len(), 1);
+}
+
 #[test]
 fn the_switch_merges_green_without_asking_and_never_red() {
     let f = fixture("yolo");
     let s = store();
     set_mode(&s, &f.project, Some(Mode::Pr), true);
+    // The switch is read from the delivery's project. The project on the request is a decoy.
+    remember_delivery(&s, &f.project, None, 7);
     let mut request = agent_merge("acme/web");
-    request.project = Some(f.project.to_string_lossy().into());
+    request.project = Some("/not/the/delivery/project".into());
 
     let red = FakeGithub::new(vec![pr(
         PrState::Open,
@@ -1019,7 +1131,7 @@ fn the_switch_merges_green_without_asking_and_never_red() {
     // Switched off again (the default), the same green pull request asks.
     set_mode(&s, &f.project, Some(Mode::Pr), false);
     let mut again = agent_merge("acme/web");
-    again.project = Some(f.project.to_string_lossy().into());
+    again.project = Some("/not/the/delivery/project".into());
     assert!(matches!(
         merge::merge(&s, &gh, again, 30).unwrap(),
         MergeOutcome::NeedsYou { .. }
