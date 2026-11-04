@@ -32,6 +32,7 @@ import {
   enqueueMonoSessionCompletion,
   monoSessionCompletionResult,
   MonoSessionCompletionBatches,
+  type MonoSessionCompletionResult,
 } from "./monoSessionCompletion";
 import { delegationTasksHost } from "./delegationTasks";
 
@@ -917,5 +918,69 @@ describe("the rows a window keeps", () => {
     expect(app.tracker.row(lead.id)).toMatchObject({ delivery: "delivered" });
     app.tracker.forget(lead.id);
     expect(app.tracker.row(lead.id)).toBeUndefined();
+  });
+});
+
+describe("WP-13: a failed task is recorded for the crew", () => {
+  function report(
+    patch: Partial<MonoSessionCompletionResult> & Pick<MonoSessionCompletionResult, "status">,
+  ): MonoSessionCompletionResult {
+    return {
+      sessionId: "child-1",
+      project: PROJECT,
+      title: "Build it",
+      originalPrompt: "Build it",
+      result: "",
+      truncated: false,
+      ...patch,
+    };
+  }
+
+  function tracker(crewFailure: DelegationTracker extends never ? never : NonNullable<ConstructorParameters<typeof DelegationTracker>[1]["crewFailure"]>) {
+    return new DelegationTracker(new MemoryStore(), {
+      session: () => undefined,
+      load: async () => null,
+      openOwner: async () => null,
+      isMono: () => false,
+      queueReport: async () => undefined,
+      quitting: () => false,
+      crewFailure,
+    });
+  }
+
+  it("records an account failure so the note can name the next CLI, and not a task that finished", async () => {
+    const seen: { state: string; errorClass?: string }[] = [];
+    const watched = tracker(async (row, result) => {
+      seen.push({ state: row.state, errorClass: result.errorClass });
+      return { action: "reroute", to: "codex" };
+    });
+    const launch = watched.launch({
+      ownerSession: MONO,
+      requestId: "r-auth",
+      childSession: "child-1",
+      project: PROJECT,
+      title: "Build it",
+    });
+    await launch.row;
+    const note = await launch.settle(
+      report({ status: "failed", errorClass: "auth", error: "auth refused", reason: "failed: auth refused" }),
+    );
+    expect(note).toEqual({ action: "reroute", to: "codex" });
+    expect(seen).toEqual([{ state: "failed", errorClass: "auth" }]);
+    // A second settle of a row that is already failed does not record it again.
+    await launch.settle(report({ status: "failed", errorClass: "auth", error: "auth refused" }));
+    expect(seen).toHaveLength(1);
+
+    const done = watched.launch({
+      ownerSession: MONO,
+      requestId: "r-done",
+      childSession: "child-2",
+      project: PROJECT,
+      title: "Done",
+    });
+    await done.row;
+    const finished = await done.settle(report({ status: "completed", result: "Shipped.", sessionId: "child-2" }));
+    expect(finished).toBeUndefined();
+    expect(seen).toHaveLength(1);
   });
 });
