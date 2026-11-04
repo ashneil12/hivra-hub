@@ -7,65 +7,67 @@ A row is **covered** when Hivra already did that rule. **Missing, now ported** w
 
 ## Counts
 
-Rules in the tables: 28 covered, 30 missing and now ported, 28 not applicable (86 rows).
+Rules in the tables: 47 covered, 11 missing and now ported, 28 not applicable (86 rows). A ported row is a change still in the diff against `origin/main`. A covered row cites a file and line, or a test, that is in the tree after the merge.
 
 `rg --files` on the checkout, excluding `.git`, lists 833 files. The index at the bottom names each one. Files judged in the tables are marked there. Every other file is not applicable, and the line says which family it belongs to.
 
 ## What this branch ports
 
-1. The delivery engine was not on this branch. It is `src-tauri/src/delivery/` (from the WP-12 commits, behaviour ported, shell not copied) and the hooks in `lib.rs`, `fs.rs`, `land.rs`, `pr_watch/mod.rs`, `session_store.rs` and `worktrees.rs`. Tests: `src-tauri/src/delivery/tests.rs` (23 tests, `cargo test --lib delivery::`).
-2. Contract and brief sentences that Hivra had paraphrased are now the original sentences, in `src/features/firstmate/vendor/firstmate-contract.md` (MIT header, `vendor/LICENSE`). `contract.md` and `renderBrief` contain each fenced block. A one-line Hivra binding follows a block where the original names a status file, an inbox directory, `bin/fm-*`, or "captain". Rewrite: Hivra has none of those; the checkout guard, `task_cannot`, the steering table and the delivery merge path do those jobs. Test: `keeps firstmate's vendored sentences verbatim in the prompt they belong to`.
+Main already has the WP-12 delivery engine (`src-tauri/src/delivery/`, its hooks, and `delivery/tests.rs`). This branch does not add a second copy. Against `origin/main` the diff is two things:
+
+1. Contract and brief sentences that Hivra had paraphrased are now the original sentences, in `src/features/firstmate/vendor/firstmate-contract.md` (MIT header, `vendor/LICENSE`). `contract.md` and `renderBrief` contain each fenced block. A one-line Hivra binding follows a block where the original names a status file, an inbox directory, `bin/fm-*`, or "captain". Rewrite: Hivra has none of those; the checkout guard, `task_cannot`, the steering table and the delivery merge path do those jobs. Test: `keeps firstmate's vendored sentences verbatim in the prompt they belong to` (`brief.test.ts:71`).
+2. A failed delivery record is not final. `pr_watch/mod.rs:752` (`note_current`) and `pr_watch/mod.rs:1164` (`record`) return the error, so the transaction rolls back instead of printing it and committing. The watch stays open and the next sweep tries the same read. Test: `a_failed_delivery_record_does_not_end_the_watch` (`pr_watch/mod.rs:1638`). firstmate publishes the outcome before it commits the marker (`fm-merge-outcome-lib.sh`).
 
 ## WP-10 contract and brief
 
 | Rule or edge | Verdict | Where |
 | --- | --- | --- |
-| Hard rule 1, never write to a project | Missing, now ported (the original sentences). Enforcement was already there | `vendor/firstmate-contract.md`; `readOnly.ts`; `checkout_guard.rs`; `useFirstMateCheckoutGuard.ts` |
-| The only direct edit is one concrete in-the-moment approval, never broadened | Covered, as the binding under rule 1 | `contract.md` |
-| Fleet sync, secondmate sync, self-update and script-owned local-only merge exceptions | Not applicable | No such scripts. The binding says so |
-| Hard rule 2, never merge without an explicit word; yolo is the only standing relaxation | Missing, now ported (the original sentences). The merge path enforces it | `delivery/merge.rs` `an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed`, `the_switch_merges_green_without_asking_and_never_red` |
-| Hard rule 3, never tear down unlanded work; no `--force` bypass | Covered | `delivery/teardown.rs` `teardown_keeps_a_copy_whose_work_has_not_landed_or_merged` |
+| Hard rule 1, never write to a project | Missing, now ported (the original sentences). Enforcement was already there | `vendor/firstmate-contract.md:19`; `contract.md:20`; test `brief.test.ts:71`. Enforcement: `readOnly.ts:22`, `checkout_guard.rs:213` |
+| The only direct edit is one concrete in-the-moment approval, never broadened | Covered, as the binding under rule 1 | `contract.md:37` |
+| Fleet sync, secondmate sync, self-update and script-owned local-only merge exceptions | Not applicable | No such scripts. The binding says so (`contract.md:37`) |
+| Hard rule 2, never merge without an explicit word; yolo is the only standing relaxation | Missing, now ported (the original sentences). The merge path on main enforces it | `vendor/firstmate-contract.md:24`; `contract.md:25`. Enforcement, already on main: `delivery/tests.rs:940`, `delivery/tests.rs:1105` |
+| Hard rule 3, never tear down unlanded work; no `--force` bypass | Covered | `delivery/tests.rs:1278` `teardown_keeps_a_copy_whose_work_has_not_landed_or_merged` |
 | A scout worktree may be discarded once its report exists | Not applicable | Hivra has no scout worktree type |
-| Hard rule 4, workers never address the person | Covered | `decisions.rs` `check_may_ask`; brief status line "never address the person yourself" (`brief.test.ts`) |
+| Hard rule 4, workers never address the person | Covered | `decisions.rs:255` `check_may_ask`; `brief.test.ts:62` |
 | Direct intervention in a worker window is reconciled at the next review | Not applicable | Hivra has no crew panes to intervene in |
-| Hard rule 5, report failure plainly; a worker's opinion is not evidence | Covered | `firstmate/report.rs`; `derive_status` in `status.rs` |
-| Captain address, once per chat message, never in a commit or PR | Not applicable | Hivra says "the person". The binding forbids the word captain |
-| Depth cap 2 | Covered | `firstmate/mod.rs` `MAX_DEPTH`, `check_depth` |
-| Small ask goes to one worker; a larger ask is 3 to 8 independent tasks plus one synthesis, each with a check | Covered | `contract.md` Intake. The numbers are Hivra's (WP-10), from ROMA's idea, and no ROMA text is copied |
-| Brief scaffold: isolation, intent, spec, definition of done, status, steering. The model fills only three | Covered | `brief.ts` `renderBrief`; `brief.test.ts` "writes the fixed sections" |
-| Empty or placeholder sections are refused, including `{TASK}`, `{FIRSTMATE_SPEC}`, `{{intent}}`, `<your intent here>`, `[fill in]`, and not `${PORT}` or `{{ user.name }}` | Covered | `sectionProblem`; `brief.test.ts` |
-| Intent is the person's ask, not widened; spec names what stays out | Missing, now ported (AGENTS.md section 11, verbatim) | `contract.md` Briefs |
-| Isolation: `pwd -P` and `git rev-parse --show-toplevel`; `git-dir` does not prove it; STOP and do not branch or commit | Missing, now ported | `renderBrief` own-checkout; `brief.test.ts` |
-| Isolation failure appends `blocked` to a status file | Not applicable as a file. The binding reports that line with `task_cannot` | `brief.ts` |
-| A shared folder and a first-mate brief (read, don't edit) | Covered. firstmate has no such scaffold; Hivra does, because a Lead can brief itself | `brief.ts` `shared`, `first-mate` |
-| Status lines are sparse; `working:` does not end the turn; the same obstacle twice is `blocked`; a decision is `needs-decision` and stops | Missing, now ported (fm-brief.sh lines 803-822) | `renderBrief` for a worker |
-| `done:` and `working:` never close an open decision key; only `resolved` with that key does | Missing, now ported as the sentence. The parser is not applicable (no status file). Hivra keys come from `ask_person`, and answering releases every waiter | `brief.ts`; `decisions.rs` |
-| A PR is named by its full https URL, never a bare number | Missing, now ported (inside the status block) | `brief.ts` |
-| Steering inbox: list `*.msg`, read a record through a final line that has no newline, ack by `mv` to `handled/` | Missing, now ported as the sentence. The files are not applicable | `brief.ts`. Binding: a steering row arrives in the chat (`steering.rs`) |
-| `body-terminator=1` means one synthetic trailing newline is not part of the body | Missing, now ported as the sentence. No file reader | `brief.ts` |
-| Project `AGENTS.md` / `CLAUDE.md` is edited only to correct a fact, never to add knowledge, and `fm-ensure-agents-md.sh` is not run | Missing, now ported | `brief.ts` `# Project memory` |
-| Refusing to overwrite an existing brief file, and no `--yolo` on the brief | Not applicable | Hivra does not write a brief file. `yolo` is the project switch (`settings.rs`), off by default |
-| Mode-specific definition-of-done blocks, the no-mistakes `--yes` ban, and latching `local_done_head` | Not applicable | `fm-dod-lib.sh` renders a no-mistakes pipeline Hivra does not run. The goal is the model's check, refused when empty |
+| Hard rule 5, report failure plainly; a worker's opinion is not evidence | Covered | `firstmate/report.rs:49`; `status.rs:105` `derive_status` |
+| Captain address, once per chat message, never in a commit or PR | Not applicable | Hivra says "the person". The binding forbids the word captain (`contract.md:37`) |
+| Depth cap 2 | Covered | `firstmate/mod.rs:25` `MAX_DEPTH`, `firstmate/mod.rs:28` `check_depth` |
+| Small ask goes to one worker; a larger ask is 3 to 8 independent tasks plus one synthesis, each with a check | Covered | `contract.md:42`. The numbers are Hivra's (WP-10), from ROMA's idea, and no ROMA text is copied |
+| Brief scaffold: isolation, intent, spec, definition of done, status, steering. The model fills only three | Covered | `brief.ts:194` `renderBrief`; `brief.test.ts:45` "writes the fixed sections" |
+| Empty or placeholder sections are refused, including `{TASK}`, `{FIRSTMATE_SPEC}`, `{{intent}}`, `<your intent here>`, `[fill in]`, and not `${PORT}` or `{{ user.name }}` | Covered | `brief.ts:83` `sectionProblem`; `brief.test.ts:17` |
+| Intent is the person's ask, not widened; spec names what stays out | Missing, now ported (AGENTS.md section 11, verbatim) | `vendor/firstmate-contract.md:65`; `contract.md:53` |
+| Isolation: `pwd -P` and `git rev-parse --show-toplevel`; `git-dir` does not prove it; STOP and do not branch or commit | Missing, now ported | `vendor/firstmate-contract.md:71`; `brief.ts:111`; `brief.test.ts:55` |
+| Isolation failure appends `blocked` to a status file | Not applicable as a file. The binding reports that line with `task_cannot` | `brief.ts:164` |
+| A shared folder and a first-mate brief (read, don't edit) | Covered. firstmate has no such scaffold; Hivra does, because a Lead can brief itself | `brief.ts:24`; `brief.test.ts:59` |
+| Status lines are sparse; `working:` does not end the turn; the same obstacle twice is `blocked`; a decision is `needs-decision` and stops | Missing, now ported (fm-brief.sh lines 803-822) | `vendor/firstmate-contract.md:80`; `brief.ts:148` |
+| `done:` and `working:` never close an open decision key; only `resolved` with that key does | Missing, now ported as the sentence. The parser is not applicable (no status file). Hivra keys come from `ask_person`, and answering releases every waiter | `vendor/firstmate-contract.md:94`; `brief.ts:162`. Answering: `decisions.rs:470` |
+| A PR is named by its full https URL, never a bare number | Missing, now ported (inside the status block) | `brief.ts:155` |
+| Steering inbox: list `*.msg`, read a record through a final line that has no newline, ack by `mv` to `handled/` | Missing, now ported as the sentence. The files are not applicable | `vendor/firstmate-contract.md:100`; `brief.ts:179`. Binding: `brief.ts:184`. The row is `steering.rs:416` |
+| `body-terminator=1` means one synthetic trailing newline is not part of the body | Missing, now ported as the sentence. No file reader | `vendor/firstmate-contract.md:103`; `brief.ts:182` |
+| Project `AGENTS.md` / `CLAUDE.md` is edited only to correct a fact, never to add knowledge, and `fm-ensure-agents-md.sh` is not run | Missing, now ported | `vendor/firstmate-contract.md:109`; `brief.ts:186` |
+| Refusing to overwrite an existing brief file, and no `--yolo` on the brief | Not applicable | Hivra does not write a brief file. `yolo` is the project switch (`delivery/settings.rs`), off by default |
+| Mode-specific definition-of-done blocks, the no-mistakes `--yes` ban, and latching `local_done_head` | Not applicable | `fm-dod-lib.sh` renders a no-mistakes pipeline Hivra does not run. The goal is the model's check, refused when empty (`brief.ts:83`) |
 | Herdr lab scaffold (`--herdr-lab`) | Not applicable | No Herdr backend |
-| Read-only launch per CLI, and an after-turn checkout flag with revert of a clean path only | Covered | `model/readOnly.ts`; `firstmate/README.md`; `checkout_guard.rs` |
-| Five statuses from one function | Covered | `status.rs` `derive_status`. A stall is a notice, not a state. A question is "needs you" only when it is for the person. A usage-limit wait is paused |
-| Typed worker report | Covered | `firstmate/report.rs` |
+| Read-only launch per CLI, and an after-turn checkout flag with revert of a clean path only | Covered | `readOnly.ts:22`; `checkout_guard.rs:213` `check`, `checkout_guard.rs:284` `revert` |
+| Five statuses from one function | Covered | `status.rs:105` `derive_status`. A stall is a notice, not a state. A question is "needs you" only when it is for the person. A usage-limit wait is paused |
+| Typed worker report | Covered | `firstmate/report.rs:49` |
 
 ## WP-11 watcher
 
 | Rule or edge | Verdict | Where |
 | --- | --- | --- |
-| One headless classifier; no model, CLI or tokens | Covered | `watcher/classifier.ts`; `watcher.headless.test.ts` |
-| Wake only for judgment: done, failed, blocked, asking, stall, silence, PR, timer | Covered | `classifyRow`; `classifier.test.ts` |
-| Stall notice once per silent stretch, re-armed only after activity | Covered | `watcher/stall.ts`; `stall.test.ts` |
-| 20 minutes with no events, and no pending approval or question, stops the worker and wakes once | Covered | `SILENCE_MS`; `classifier.test.ts` |
+| One headless classifier; no model, CLI or tokens | Covered | `watcher/classifier.ts:280` `classify`; `watcher.headless.test.ts` |
+| Wake only for judgment: done, failed, blocked, asking, stall, silence, PR, timer | Covered | `classifier.ts:123` `classifyRow`; `classifier.test.ts` |
+| Stall notice once per silent stretch, re-armed only after activity | Covered | `watcher/stall.ts:111` `judgeStall`; `stall.test.ts` |
+| 20 minutes with no events, and no pending approval or question, stops the worker and wakes once | Covered | `classifier.ts:25` `SILENCE_MS`; `classifier.test.ts:136` |
 | Approvals and questions are not silence | Covered | `classifier.test.ts` |
-| Durable queue: pending, queued, delivered, acknowledged. Survives a restart | Covered | `watcher/queue.rs`; `wakeQueue.test.ts` |
-| Drain, then ack through the generation that was seen; a newer seq is not acked | Covered | `queue.rs` `drain`, `ack` |
-| Draining again before delivery returns the same turn | Covered | `queue.rs` `drain` |
-| A stall whose worker has since moved on is disposed, not delivered late | Covered | `queue.rs` `drain` |
-| CI red, CI green, merged and closed feed the classifier | Missing, now ported (the delivery event path was not on this branch) | `pr_watch/mod.rs` calls `delivery::events::classify` and `record`; `pr_watch_reads_classify_as_ci_red_green_merged_and_closed` |
-| A restart is a non-event: rebuild from records and drain | Covered | WP-11 build item 6; the queue is in the database, so a new process sees it |
+| Durable queue: pending, queued, delivered, acknowledged. Survives a restart | Covered | `watcher/queue.rs:60` `firstmate_wakes`; `wakeQueue.test.ts` |
+| Drain, then ack through the generation that was seen; a newer seq is not acked | Covered | `queue.rs:319` `drain`, `queue.rs:376` `ack`; `watcher/tests.rs:105` |
+| Draining again before delivery returns the same turn | Covered | `queue.rs:318` |
+| A stall whose worker has since moved on is disposed, not delivered late | Covered | `queue.rs:323`; `watcher/tests.rs:327` |
+| CI red, CI green, merged and closed feed the classifier | Covered. Main's `pr_watch` already records these. This branch only changes what a failed record does (the row in WP-12) | `delivery/events.rs:158` `classify`; `delivery/tests.rs:752` `pr_watch_reads_classify_as_ci_red_green_merged_and_closed` |
+| A restart is a non-event: rebuild from records and drain | Covered | `queue.rs:60`. The queue is in the database, so a new process sees it |
 | Drain prints OPEN DECISIONS even when the queue is empty | Not applicable | An open decision is already a Needs row (`decisions.rs`). Waking the model again would spend a turn. WP-11 wakes only for something new |
 | UNREAD STATUS and RECORD DIVERGENCE sections | Not applicable | Those compare a status-file ledger Hivra does not keep |
 | Wake grant, pty doorbell, herdr/agy/kiro confirm dialogs | Not applicable | `fm-wake-grant.sh`, `fm-send-agy-confirm.test.sh`, `fm-send-kiro-confirm.test.sh`. Delivery is the database ladder |
@@ -77,26 +79,26 @@ Rules in the tables: 28 covered, 30 missing and now ported, 28 not applicable (8
 
 | Rule or edge | Verdict | Where |
 | --- | --- | --- |
-| Per-project mode: local, PR, checked PR. firstmate's registry words are `no-mistakes`, `direct-PR` and `local-only` (`fm-project-mode.sh`); `direct-PR` is PR and `local-only` is local. Checked PR is this package's "ready only when green". `no-mistakes` is the row below | Missing, now ported | `delivery/settings.rs`; `the_default_is_checked_pr_with_a_github_remote_and_gh_signed_in_otherwise_local` |
-| Default: checked PR when GitHub remote and `gh` is signed in, otherwise local | Missing, now ported | same test |
-| A stale settings write does not overwrite a newer choice | Missing, now ported | `a_stale_settings_write_does_not_overwrite_a_newer_choice` |
-| `yolo` ("merge without asking") off by default, orthogonal to the mode | Missing, now ported | `settings.rs`; `the_switch_merges_green_without_asking_and_never_red` |
-| Local lands with `land.rs` and pushes nothing | Missing, now ported | `local_lands_the_change_in_the_project_and_pushes_nothing` |
-| PR pushes the branch and opens a pull request whose body carries the brief and the worker's evidence, not its opinion | Missing, now ported | `pr_pushes_the_branch_and_opens_a_pull_request_with_the_brief_and_evidence` |
-| Checked PR is ready only when green; the first red sends one fix round with the log; a second red fails it | Missing, now ported | `checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red`; `the_fix_round_carries_the_failing_log` |
-| A checked PR already green or red on the first read settles, because that read is stored as already told | Missing, now ported | `a_checked_pr_already_green_or_red_on_the_first_read_settles_once`; `events::note_current` |
-| Refuse to deliver the base or default branch, and refuse a PR with uncommitted work | Missing, now ported | `pr_and_checked_pr_refuse_a_worker_on_the_base_or_the_default_branch`; `a_pr_mode_refuses_uncommitted_work_and_records_nothing` |
-| One merge path. Refuses red or pending checks, a draft, a conflict, and a closed pull request | Missing, now ported | `decide_refuses_red_pending_drafts_conflicts_and_open_decisions` |
-| Refuses while a decision on that work is open, including the person's own merge | Missing, now ported | `an_open_question_on_the_work_blocks_even_the_persons_merge`; `an_open_wp14_decision_on_the_trees_task_blocks_the_merge` |
-| An agent merges only its own delivery, and only the head the person allowed (`--match-head-commit`) | Missing, now ported | `an_agent_merge_uses_only_the_delivery_record`; `an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed` |
-| No checks at all is not green: the switch does not merge it | Missing, now ported | `merge.rs` (a pull request with no checks still needs the person's word) |
-| Every attempt is logged with who allowed it | Missing, now ported | `delivery_merges`; `merge.rs` `record` |
-| The Inbox merge button uses the same path | Missing, now ported | `fs.rs` `git_github_pr_action`; `the_inbox_merge_button_goes_through_the_same_path` |
-| A git or `gh` child does not inherit the process environment | Missing, now ported | `a_git_child_does_not_inherit_the_process_environment`; `delivery/mod.rs` `CHILD_ENV` |
-| Teardown never removes a worktree whose work has not landed or merged. A later edit in the project makes it unlanded again | Missing, now ported | `teardown_keeps_a_copy_whose_work_has_not_landed_or_merged`; `land.rs` `landed_in` |
-| The janitor still will not remove a landed but unmerged copy | Missing, now ported | `the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy` |
-| A failed forge lookup stays a failure and is never read as a merge | Covered | `pr_watch` `ReadError::Failed`; `eight_failed_reads_in_a_row_end_the_watch_and_say_so`. `classify` only sees a successful read |
-| A failed record of that read is not final: the watch stays open and the next sweep tries the same read again | Missing, now ported | `a_failed_delivery_record_does_not_end_the_watch`. firstmate publishes the outcome before it commits the marker (`fm-merge-outcome-lib.sh`); Hivra keeps the record in the same transaction as ending the watch |
+| Per-project mode: local, PR, checked PR. firstmate's registry words are `no-mistakes`, `direct-PR` and `local-only` (`fm-project-mode.sh`); `direct-PR` is PR and `local-only` is local. Checked PR is this package's "ready only when green". `no-mistakes` is the row below | Covered. Main's WP-12 | `delivery/tests.rs:224` `the_default_is_checked_pr_with_a_github_remote_and_gh_signed_in_otherwise_local` |
+| Default: checked PR when GitHub remote and `gh` is signed in, otherwise local | Covered. Main's WP-12 | `delivery/tests.rs:224` |
+| A stale settings write does not overwrite a newer choice | Covered. Main's WP-12 | `delivery/tests.rs:301` `a_stale_settings_write_does_not_overwrite_a_newer_choice` |
+| `yolo` ("merge without asking") off by default, orthogonal to the mode | Covered. Main's WP-12 | `delivery/settings.rs:51` `merge_without_asking`; `delivery/tests.rs:1105` `the_switch_merges_green_without_asking_and_never_red` |
+| Local lands with `land.rs` and pushes nothing | Covered. Main's WP-12 | `delivery/tests.rs:356` `local_lands_the_change_in_the_project_and_pushes_nothing` |
+| PR pushes the branch and opens a pull request whose body carries the brief and the worker's evidence, not its opinion | Covered. Main's WP-12 | `delivery/tests.rs:395` `pr_pushes_the_branch_and_opens_a_pull_request_with_the_brief_and_evidence` |
+| Checked PR is ready only when green; the first red sends one fix round with the log; a second red fails it | Covered. Main's WP-12 | `delivery/tests.rs:617` `checked_pr_is_ready_only_when_green_and_gets_one_fix_round_for_red`; `delivery/tests.rs:822` `the_fix_round_carries_the_failing_log` |
+| A checked PR already green or red on the first read settles, because that read is stored as already told | Covered. Main's WP-12 | `delivery/tests.rs:692` `a_checked_pr_already_green_or_red_on_the_first_read_settles_once`; `delivery/events.rs:131` `note_current` |
+| Refuse to deliver the base or default branch, and refuse a PR with uncommitted work | Covered. Main's WP-12 | `delivery/tests.rs:515` `pr_and_checked_pr_refuse_a_worker_on_the_base_or_the_default_branch`; `delivery/tests.rs:460` `a_pr_mode_refuses_uncommitted_work_and_records_nothing` |
+| One merge path. Refuses red or pending checks, a draft, a conflict, and a closed pull request | Covered. Main's WP-12 | `delivery/tests.rs:850` `decide_refuses_red_pending_drafts_conflicts_and_open_decisions` |
+| Refuses while a decision on that work is open, including the person's own merge | Covered. Main's WP-12 | `delivery/tests.rs:1143` `an_open_question_on_the_work_blocks_even_the_persons_merge`; `delivery/tests.rs:1185` `an_open_wp14_decision_on_the_trees_task_blocks_the_merge` |
+| An agent merges only its own delivery, and only the head the person allowed (`--match-head-commit`) | Covered. Main's WP-12 | `delivery/tests.rs:1037` `an_agent_merge_uses_only_the_delivery_record`; `delivery/tests.rs:940` `an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed` |
+| No checks at all is not green: the switch does not merge it | Covered. Main's WP-12 | `delivery/merge.rs:13`; the refusal text is `delivery/merge.rs:177` |
+| Every attempt is logged with who allowed it | Covered. Main's WP-12 | `delivery/merge.rs:299` `record` |
+| The Inbox merge button uses the same path | Covered. Main's WP-12 | `fs.rs:1505` `git_github_pr_action`; `delivery/tests.rs:1257` `the_inbox_merge_button_goes_through_the_same_path` |
+| A git or `gh` child does not inherit the process environment | Covered. Main's WP-12 | `delivery/tests.rs:336` `a_git_child_does_not_inherit_the_process_environment`; `delivery/mod.rs:34` `CHILD_ENV` |
+| Teardown never removes a worktree whose work has not landed or merged. A later edit in the project makes it unlanded again | Covered. Main's WP-12 | `delivery/tests.rs:1278` `teardown_keeps_a_copy_whose_work_has_not_landed_or_merged`; `land.rs:138` `landed_in` |
+| The janitor still will not remove a landed but unmerged copy | Covered. Main's WP-12 | `delivery/tests.rs:1309` `the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy` |
+| A failed forge lookup stays a failure and is never read as a merge | Covered | `pr_watch/github.rs:109` `ReadError::Failed`; `pr_watch/mod.rs:1771` `eight_failed_reads_in_a_row_end_the_watch_and_say_so`. `classify` (`delivery/events.rs:158`) only sees a successful read |
+| A failed record of that read is not final: the watch stays open and the next sweep tries the same read again | Missing, now ported | `pr_watch/mod.rs:752` and `pr_watch/mod.rs:1164` return the error, so the commit does not land. Test `pr_watch/mod.rs:1638` `a_failed_delivery_record_does_not_end_the_watch`. firstmate publishes the outcome before it commits the marker (`fm-merge-outcome-lib.sh`) |
 | An opt-in PR health monitor that wakes once per new condition, and keeps watching after the worker is gone | Not applicable | `fm-pr-health.sh`. CI red, green, merged and closed already feed the classifier. This extra monitor is a firstmate home |
 | Suggesting reviewers from recent authorship | Not applicable | `fm-pr-reviewers.sh`. Read-only advice, not a merge rule |
 | A pre-push guard for an external review forge | Not applicable | `fm-git-push-guard.sh`. Hivra has no such forge. Local mode pushes nothing (`local_lands_the_change_in_the_project_and_pushes_nothing`) |
@@ -113,11 +115,11 @@ Rules in the tables: 28 covered, 30 missing and now ported, 28 not applicable (8
 
 | Rule or edge | Verdict | Where |
 | --- | --- | --- |
-| A message is stored first, then steered or held; pending, delivered or failed; survives a restart | Covered | `steering.rs`; `steering.test.ts`; `useSteering.test.ts` |
-| A worker's question goes to its first mate, never the person | Covered | `decisions.rs` `check_may_ask` |
-| One decision per stable `(project, decision_key)`; asking again changes nothing | Covered | `decisions.rs` `ask` |
-| Answering releases every waiter | Covered | `decisions.rs` |
-| Caps refuse with a reason: fan-out 8, question length, option count, waiting messages | Covered | `MAX_FANOUT` in `firstmate/mod.rs`; `decisions.rs`; `steering.rs` |
+| A message is stored first, then steered or held; pending, delivered or failed; survives a restart | Covered | `steering.rs:416` `steering_record`; `steering.rs:603` `steering_survives_a_restart`; `steering.test.ts`; `useSteering.test.ts` |
+| A worker's question goes to its first mate, never the person | Covered | `decisions.rs:255` `check_may_ask` |
+| One decision per stable `(project, decision_key)`; asking again changes nothing | Covered | `decisions.rs:348` `ask` |
+| Answering releases every waiter | Covered | `decisions.rs:470` `answer` |
+| Caps refuse with a reason: fan-out 8, question length, option count, waiting messages | Covered | `firstmate/mod.rs:41` `MAX_FANOUT`; `decisions.rs`; `steering.rs` |
 | Re-ring an unacknowledged inbox file until it is moved, then treat the worker as stuck | Not applicable as files | The steering row stays pending until the CLI takes it, and the silence watchdog stops a worker that goes quiet. The ack sentence is vendored so the worker knows a message was received |
 | `fm-send` resend token `FM_PENDING_REPLY_EXISTING_CORR` for a remote secondmate | Not applicable | No remote secondmate transport |
 | `--resolve-key` closing a status-file decision at answer time | Not applicable as a flag | Answering the decision row releases the waiters, which is the same outcome |
