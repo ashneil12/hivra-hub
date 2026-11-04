@@ -473,3 +473,14 @@ pub fn install_bundled(host: &Host) -> Result<Outcome, String> {
 pub fn desktop_control_install(app: tauri::AppHandle) -> Result<Outcome, String> {
     install_bundled(&super::host(&app)?)
 }
+
+/// WP-44: download the pinned program into the plugin data folder. The package's scripts are not run.
+#[tauri::command(async)]
+pub fn desktop_control_fetch(app: tauri::AppHandle) -> Result<(), String> {
+    let host = super::host(&app)?;
+    super::desktop_program::fetch_for_host(
+        &host,
+        &super::desktop_program::platform_key(),
+        super::desktop_program::download_tarball,
+    )
+}

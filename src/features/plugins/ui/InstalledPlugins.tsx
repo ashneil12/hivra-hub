@@ -12,6 +12,7 @@ import {
   plainError,
   readRegistry,
   readReports,
+  fetchDesktopProgram,
   installDesktopControl,
   removePlugin,
   rollbackPlugin,
@@ -157,6 +158,15 @@ export function InstalledPlugins() {
                 >
                   Update
                 </SecondaryButton>
+                {/* WP-44: the program is not in the plugin folder. This puts it where the gate looks. */}
+                {row.name === "desktop-control" ? (
+                  <SecondaryButton
+                    disabled={busy !== null}
+                    onClick={() => void run("desktop-control", fetchDesktopProgram)}
+                  >
+                    Get the desktop program
+                  </SecondaryButton>
+                ) : null}
                 {row.previous ? (
                   <SecondaryButton
                     disabled={busy !== null}
@@ -218,9 +228,15 @@ export function InstalledPlugins() {
         })}
       </ul>
       {loaded && !error && !rows.some((row) => row.name === "desktop-control") ? (
-        <SecondaryButton disabled={busy !== null} onClick={() => void run("desktop-control", installDesktopControl)}>
-          Install desktop control
-        </SecondaryButton>
+        <div className="flex flex-wrap gap-2">
+          <SecondaryButton disabled={busy !== null} onClick={() => void run("desktop-control", installDesktopControl)}>
+            Install desktop control
+          </SecondaryButton>
+          {/* WP-44: beside install, and on the row once that button hides. */}
+          <SecondaryButton disabled={busy !== null} onClick={() => void run("desktop-control", fetchDesktopProgram)}>
+            Get the desktop program
+          </SecondaryButton>
+        </div>
       ) : null}
     </div>
   );

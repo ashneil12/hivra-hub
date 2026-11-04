@@ -44,3 +44,9 @@ test("installs the carried desktop plugin", async ({ page }) => {
   await page.getByRole("button", { name: "Install desktop control" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-last-command", "desktop_control_install");
 });
+
+test("gets the desktop program", async ({ page }) => {
+  await page.goto(pageUrl);
+  await page.getByRole("button", { name: "Get the desktop program" }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-last-command", "desktop_control_fetch");
+});

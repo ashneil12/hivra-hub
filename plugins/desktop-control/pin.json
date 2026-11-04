@@ -3,5 +3,40 @@
   "version": "1.1.0",
   "source": "https://www.npmjs.com/package/agent-desktop",
   "repository": "https://github.com/vercel-labs/agent-desktop",
-  "sha256": null
+  "url": "https://registry.npmjs.org/agent-desktop/-/agent-desktop-1.1.0.tgz",
+  "integrity": "sha512-4aITRplPcbV6xBFNKeehMbxSN0/L+IOhnn6LBuPXezoyr08Xl73Y6rwZiR4sM4rM/eBO6iJMoKL+IvFQvHwLEw==",
+  "platforms": {
+    "darwin-arm64": {
+      "binary": "agent-desktop-darwin-arm64",
+      "sha256": "a89c781a3b2cf29bc0467c30a4e1063b6f564858540f2dc58a75c79ce2c9d9f3",
+      "helper": "agent-desktop-macos-helper-darwin-arm64",
+      "helperSha256": "d81e5aa7ad8edb0e3eda72f010b1947ce7d6ad6d6d4ae95a69f4cce39bbbfe63"
+    },
+    "darwin-x64": {
+      "binary": "agent-desktop-darwin-x64",
+      "sha256": "bfbb387446e615687dfe345158f7ac1e37197f5de203fa36bb621e474e016d77",
+      "helper": "agent-desktop-macos-helper-darwin-x64",
+      "helperSha256": "e32196af41669f531cb1d7779a84e53e865c6c05d224b9dc30239b749906e865"
+    },
+    "linux-x64": {
+      "binary": "agent-desktop-linux-x64",
+      "sha256": "e03d67b7e61d358eb62c411376fc7bbd3dc5923cb01131c968f3113c56687bbf",
+      "helper": "agent-desktop-linux-clipboard-owner-linux-x64",
+      "helperSha256": "0ce10ee444a570f1485234ba4111ff07e4cafd420a2f2d0f35de8fb2ce8f8d84"
+    },
+    "linux-arm64": {
+      "binary": "agent-desktop-linux-arm64",
+      "sha256": "7fb3d9a08ca5c8c7019d85520dca174d0e066c65f069513d6d2e8d4cee423bbc",
+      "helper": "agent-desktop-linux-clipboard-owner-linux-arm64",
+      "helperSha256": "278976a31a84d764fede58cfb923639a688f44d91f7f7a8d17ece6e56d9ea0f4"
+    },
+    "win32-x64": {
+      "binary": "agent-desktop-win32-x64.exe",
+      "sha256": "2c8e9a627d87649a4562bfe5678450d045b793ab6f3fdec8af05c9571f32d5ef"
+    },
+    "win32-arm64": {
+      "binary": "agent-desktop-win32-arm64.exe",
+      "sha256": "bb8eb196e8ee8292617b15995561a85d51a0207b6c150eddb4ee3004310e3378"
+    }
+  }
 }

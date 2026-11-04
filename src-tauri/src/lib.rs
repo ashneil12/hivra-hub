@@ -787,6 +787,7 @@ pub fn run() {
             plugins::desktop::desktop_consent_read,
             plugins::desktop::desktop_consent_write,
             plugins::desktop::desktop_control_install,
+            plugins::desktop::desktop_control_fetch,
             // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
             plugins::verify::plugins_verify_offer,
             plugins::verify::plugins_verify_decline,

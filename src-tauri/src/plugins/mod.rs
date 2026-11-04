@@ -6,6 +6,7 @@
 mod compat;
 pub mod defaults;
 pub mod desktop;
+mod desktop_program;
 pub mod discover;
 mod fsutil;
 pub mod hivra;

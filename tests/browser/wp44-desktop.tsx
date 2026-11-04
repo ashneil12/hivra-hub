@@ -18,9 +18,9 @@ const project = "/tmp/hivra wp44/café";
 installFakeTauri("wp44", (command) => {
   if (command === "plugins_list") return { version: 1, plugins: {} };
   if (command === "plugins_pending") return [];
-  if (command === "desktop_control_install") {
+  if (command === "desktop_control_install" || command === "desktop_control_fetch") {
     document.body.dataset.lastCommand = command;
-    return { entry: null, reports: [] };
+    return command === "desktop_control_install" ? { entry: null, reports: [] } : null;
   }
   return null;
 });

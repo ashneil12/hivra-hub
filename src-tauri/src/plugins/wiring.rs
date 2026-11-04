@@ -268,7 +268,21 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
         .plugins
         .get(&plugin)
         .ok_or_else(|| format!("the plugin \"{plugin}\" isn't installed."))?;
-    if !entry.active_for(project.as_deref().map(Path::new)) {
+    // WP-44: a worktree of an allowed project uses the main checkout for consent. Other plugins keep the
+    // session folder, and e2e still starts in that folder (`project_workdir` below).
+    let desktop_project = (plugin == "desktop-control")
+        .then(|| {
+            project
+                .as_deref()
+                .map(|folder| main_checkout(Path::new(folder)))
+        })
+        .flatten();
+    let active = if desktop_project.is_some() {
+        desktop_project.as_deref()
+    } else {
+        project.as_deref().map(Path::new)
+    };
+    if !entry.active_for(active) {
         return Err(format!("the plugin \"{plugin}\" is switched off here."));
     }
     if !entry.mcp_servers().any(|s| s == server) {
@@ -305,7 +319,7 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
     // WP-44: the desktop gate's paths come from this app, after the environment was cleared, so a
     // worker's HIVRA_DESKTOP_* variables are not there. The pin is the installed plugin's pin.json.
     if plugin == "desktop-control" {
-        for (key, value) in desktop_launch_env(&host, &plugin) {
+        for (key, value) in desktop_launch_env(&host, &plugin, desktop_project.as_deref()) {
             command.env(key, value);
         }
     }
@@ -313,9 +327,19 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
 }
 
 /// Registry, consent and the pinned binary live in the app's plugin data, outside the installed
-/// plugin folder. The pin file is the copy installed with the plugin.
-pub(crate) fn desktop_launch_env(host: &Host, plugin: &str) -> Vec<(String, PathBuf)> {
-    vec![
+/// plugin folder. The pin file is the copy installed with the plugin. `project` is the main checkout
+/// when the session folder is a worktree.
+pub(crate) fn desktop_launch_env(
+    host: &Host,
+    plugin: &str,
+    project: Option<&Path>,
+) -> Vec<(String, PathBuf)> {
+    let binary = if cfg!(windows) {
+        "agent-desktop.exe"
+    } else {
+        "agent-desktop"
+    };
+    let mut env = vec![
         (
             "DESKTOP_LAUNCH_REGISTRY".into(),
             host.root.join("registry.json"),
@@ -326,13 +350,25 @@ pub(crate) fn desktop_launch_env(host: &Host, plugin: &str) -> Vec<(String, Path
         ),
         (
             "DESKTOP_LAUNCH_BINARY".into(),
-            host.data(plugin).join("agent-desktop"),
+            host.data(plugin).join(binary),
         ),
         (
             "DESKTOP_LAUNCH_PIN".into(),
             host.installed(plugin).join("pin.json"),
         ),
-    ]
+    ];
+    if let Some(project) = project {
+        env.push(("DESKTOP_LAUNCH_PROJECT".into(), project.to_path_buf()));
+    }
+    env
+}
+
+/// A worktree uses its repository's main checkout. Anything else stays the folder it already is.
+pub(crate) fn main_checkout(folder: &Path) -> PathBuf {
+    if let Ok(main) = crate::project_file::main_checkout(folder) {
+        return main;
+    }
+    crate::fs::canonical(folder).unwrap_or_else(|_| folder.to_path_buf())
 }
 
 /// Variables a plugin server inherits: the path, home, user, locale, time zone, terminal and temp folders, and on
