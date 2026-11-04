@@ -43,6 +43,9 @@ it("renders a panel in the sandbox and removes the tab when the plugin is turned
   await act(async () => {
     open.click();
   });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   const tab = host.querySelector("[data-panel-tab]");
   expect(tab?.getAttribute("data-panel-grants")).toBe("tasks.read");
   expect(tab?.getAttribute("data-panel-plugin")).toBe("my-panels");

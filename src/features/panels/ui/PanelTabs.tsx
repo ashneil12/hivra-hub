@@ -2,21 +2,41 @@
 // Reads come from the app's local projects and delegations, not from Ash OS.
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { frameKey, pageFrameUrl } from "../../pages/model/pageFrame";
 import { appPageSources } from "../../pages/model/pageSources";
 import { pageCapabilityHandlers } from "../../pages/model/pageCapabilities";
 import { allKeptPages } from "../../pages/model/pages";
+import { specKey } from "../../pages/model/sandbox";
+import { loadActiveSchemeId } from "../../settings/model/themeSchemes";
 import { MY_PANELS_ID, MY_PANELS_TITLE } from "../model/myPanels";
+import { turnOffPlugin } from "../model/panelOff";
 import { panelDocument, panelGrants, panelHost, SANDBOX } from "../model/panelSandbox";
 import { applyCatalog, openTab, readCatalog, type CatalogPanel, type PanelBoard } from "../model/panelTabs";
 
 export type { CatalogPanel };
 
-function PanelFrame({ spec }: { spec: CatalogPanel["spec"] }) {
+function PanelFrame({ plugin, panelId, spec }: { plugin: string; panelId: string; spec: CatalogPanel["spec"] }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  const doc = panelDocument(spec);
+  const scheme = loadActiveSchemeId();
+  const code = spec.kind === "bespoke" ? specKey(spec) : specKey({ html: doc, css: "", js: "" });
+  // Same path as a Page: the app serves the document from its frame scheme, so the panel's script is not blocked by
+  // the app's own script-src. Outside the app the frame keeps its srcdoc.
+  const [src, setSrc] = useState<string | "srcdoc" | undefined>(undefined);
+  useEffect(() => {
+    let gone = false;
+    setSrc(undefined);
+    void pageFrameUrl(frameKey(`${plugin}:${panelId}`, code, 0, scheme), doc).then((url) => {
+      if (!gone) setSrc(url ?? "srcdoc");
+    });
+    return () => {
+      gone = true;
+    };
+  }, [plugin, panelId, code, doc, scheme]);
   useEffect(() => {
     const frame = ref.current;
     const win = frame?.contentWindow;
-    if (!frame || !win) return;
+    if (!src || !frame || !win) return;
     let handlers;
     let sources;
     try {
@@ -36,8 +56,13 @@ function PanelFrame({ spec }: { spec: CatalogPanel["spec"] }) {
       window.removeEventListener("message", onMessage);
       host.dispose();
     };
-  }, [spec]);
-  return <iframe ref={ref} title={spec.title} sandbox={SANDBOX} srcDoc={panelDocument(spec)} className="h-40 w-full border-0" />;
+  }, [spec, src]);
+  if (!src) return <div className="h-40 w-full" data-panel-frame-loading />;
+  return src === "srcdoc" ? (
+    <iframe ref={ref} title={spec.title} sandbox={SANDBOX} srcDoc={doc} className="h-40 w-full border-0" />
+  ) : (
+    <iframe ref={ref} title={spec.title} sandbox={SANDBOX} src={src} className="h-40 w-full border-0" />
+  );
 }
 
 export function PanelTabs({
@@ -90,7 +115,7 @@ export function PanelTabs({
         if (!panel) return null;
         return (
           <article key={tab.tabId} data-panel-tab={tab.tabId} data-panel-plugin={tab.plugin} data-panel-grants={panelGrants(panel.spec).join(" ")}>
-            <PanelFrame spec={panel.spec} />
+            <PanelFrame plugin={tab.plugin} panelId={tab.panelId} spec={panel.spec} />
           </article>
         );
       })}
@@ -137,7 +162,10 @@ export function PanelTabsScreen() {
       rev={rev}
       onTurnOff={(plugin) => {
         const mine = ++gen.current;
-        void invoke("plugins_disable", { name: plugin }).finally(() => {
+        void turnOffPlugin(plugin, {
+          list: () => invoke("plugins_list"),
+          disable: (args) => invoke("plugins_disable", args),
+        }).finally(() => {
           if (!alive.current || mine !== gen.current) return;
           void load();
         });
