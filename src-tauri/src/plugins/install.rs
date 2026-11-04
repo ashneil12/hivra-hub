@@ -221,6 +221,8 @@ fn prepare(
     let result = (|| {
         let work = dir.join("fetch");
         let fetched = source::fetch(source, tools, &work)?;
+        // WP-42: the e2e package has no plugin.json. Add Hivra's entry before the loader reads it.
+        super::verify::prepare_package(&fetched.root)?;
         let checked = load_plugin(&fetched.root).map_err(|e| e.0)?;
         manifest_declared(&checked)?.check(&tools.target)?;
         let name = checked.manifest.name.clone();

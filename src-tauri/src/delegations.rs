@@ -806,10 +806,14 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.unstall();
     row.settled_at = Some(now);
     // WP-10: the worker's final report in its typed shape (firstmate/report.rs), kept beside its words.
-    row.report = row
-        .result
-        .as_deref()
-        .map(|result| crate::firstmate::report::parse(result).to_json());
+    row.report = row.result.as_deref().map(|result| {
+        let mut report = crate::firstmate::report::parse(result);
+        // WP-42: proof under the worker's .e2e/ is part of the report. A missing folder changes nothing.
+        if let Some(folder) = child_folder(&tx, &row.child_session) {
+            crate::plugins::verify::merge_evidence(&mut report, &folder);
+        }
+        report.to_json()
+    });
     let mut detail = json!({ "state": row.state, "generation": row.generation });
     if let Some(class) = &row.error_class {
         detail["error_class"] = json!(class);
@@ -822,6 +826,23 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         applied: true,
         row: Some(row),
     })
+}
+
+/// The folder a worker's proof lives in: its worktree when it has one, otherwise the session folder. A missing row,
+/// a missing column, or a path that isn't there adds nothing. It never fails the settle.
+fn child_folder(conn: &Connection, session_id: &str) -> Option<std::path::PathBuf> {
+    let (cwd, worktree): (String, Option<String>) = conn
+        .query_row(
+            "SELECT cwd, worktree_cwd FROM sessions WHERE id = ?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()?;
+    let chosen = worktree
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or(cwd);
+    let path = crate::fs::canonical(crate::fs::expand_home(chosen.trim())).ok()?;
+    path.is_dir().then_some(path)
 }
 
 /// A new turn in a delegated child picks its row back up. An open row (its turn was cut off by a quit or crash) always

@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod mcp;
 pub mod registry;
 mod source;
+pub mod verify;
 pub mod wiring;
 
 #[cfg(test)]
@@ -21,6 +22,8 @@ mod defaults_tests;
 mod install_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verify_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

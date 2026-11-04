@@ -1,0 +1,1051 @@
+//! WP-42: Verify installs from the pinned index (the package is stubbed, never downloaded), a worker session gets its
+//! MCP server, a web or mobile project is offered it, and `.e2e/` proof is attached to that worker's report.
+
+use std::ffi::OsString;
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+use serde_json::{json, Value};
+
+use super::compat::Target;
+use super::discover::{self, Status};
+use super::fsutil;
+use super::install::{self, InstallResult, RequestedBy};
+use super::manifest::PLUGIN_SCHEMA_1_0_0;
+use super::registry::{self, Host, Scope};
+use super::source::{InstallSource, Tools};
+use super::verify::{self, WHEN_TO_VERIFY};
+use super::wiring;
+use crate::delegations::{self, RecordInput, SettleInput};
+use crate::firstmate::report::WorkerReport;
+use crate::session_store::SessionStore;
+
+const MARKER: &str = "MARKER-KEEP";
+const STUB: &str = r#"#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+const crypto = require("crypto");
+const args = process.argv.slice(2);
+const cmd = args[0];
+const dir = __dirname;
+function fail(message) {
+  process.stderr.write(message + "\n");
+  process.exit(1);
+}
+if (cmd === "view") {
+  const bytes = fs.readFileSync(path.join(dir, "e2e.tgz"));
+  const hash = crypto.createHash("sha512").update(bytes).digest("base64");
+  const version = fs.readFileSync(path.join(dir, "version.txt"), "utf8").trim();
+  process.stdout.write(JSON.stringify({ version, dist: { integrity: "sha512-" + hash } }));
+  process.exit(0);
+}
+if (cmd === "pack") {
+  const at = args.indexOf("--pack-destination");
+  if (at < 0 || !args[at + 1]) fail("no destination");
+  const filename = "e2e.tgz";
+  fs.copyFileSync(path.join(dir, filename), path.join(args[at + 1], filename));
+  process.stdout.write(JSON.stringify([{ filename }]));
+  process.exit(0);
+}
+if (cmd === "install") process.exit(0);
+fail("unexpected " + args.join(" "));
+"#;
+
+struct Tmp(PathBuf);
+
+impl Tmp {
+    fn new(label: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("hivra wp42 {label} plüg {}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Tmp(fsutil::canonical(&dir).unwrap())
+    }
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for Tmp {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn plugin_host(tmp: &Tmp) -> Host {
+    let host = Host {
+        root: tmp.path().join("app data/plugins"),
+        agents_skills: tmp.path().join("home/.agents/skills"),
+    };
+    std::fs::create_dir_all(&host.root).unwrap();
+    host
+}
+
+fn quiet_tools() -> Tools {
+    Tools {
+        git: OsString::from("git-must-not-run"),
+        npm: OsString::from("npm-must-not-run"),
+        path: None,
+        target: Target::here(),
+    }
+}
+
+fn npm_tools(dir: &Path) -> Tools {
+    let js = dir.join("npm-stub.js");
+    std::fs::write(&js, STUB).unwrap();
+    #[cfg(unix)]
+    let program = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&js, std::fs::Permissions::from_mode(0o755)).unwrap();
+        js
+    };
+    #[cfg(windows)]
+    let program = {
+        let cmd = dir.join("npm-stub.cmd");
+        std::fs::write(&cmd, "@echo off\r\nnode \"%~dp0npm-stub.js\" %*\r\n").unwrap();
+        cmd
+    };
+    Tools {
+        git: OsString::from("git-must-not-run"),
+        npm: program.into_os_string(),
+        path: std::env::var_os("PATH"),
+        target: Target::here(),
+    }
+}
+
+fn tarball(files: &[(&str, &str)]) -> Vec<u8> {
+    let mut raw = tar::Builder::new(Vec::new());
+    for (rel, text) in files {
+        let bytes = text.as_bytes();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        raw.append_data(&mut header, format!("package/{rel}"), bytes)
+            .unwrap();
+    }
+    let raw = raw.into_inner().unwrap();
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(&raw).unwrap();
+    gz.finish().unwrap()
+}
+
+fn pinned_npm() -> (String, String) {
+    let index = discover::read_index(
+        discover::BUNDLED_INDEX,
+        &discover::Origin::Elsewhere,
+        discover::platform(),
+    )
+    .unwrap();
+    let entry = index
+        .entries
+        .iter()
+        .find(|entry| entry.name == "e2e-verify")
+        .unwrap();
+    assert_eq!(entry.status, Status::Available);
+    match entry.source.as_ref().unwrap() {
+        discover::InstallSource::Npm {
+            package,
+            version,
+            registry,
+        } => {
+            assert_eq!(package, "e2e");
+            assert_eq!(version, "0.22.0");
+            assert!(registry.is_none());
+            (package.clone(), version.clone())
+        }
+        other => panic!("pinned source is {other:?}"),
+    }
+}
+
+fn skill(name: &str, body: &str) -> String {
+    format!("---\nname: {name}\ndescription: A skill kept with the package.\n---\n\n{body}\n")
+}
+
+fn package_json(name: &str, version: &str, extra: &str) -> String {
+    if extra.is_empty() {
+        format!("{{\"name\":\"{name}\",\"version\":\"{version}\",\"license\":\"Apache-2.0\"}}\n")
+    } else {
+        format!("{{\"name\":\"{name}\",\"version\":\"{version}\",\"license\":\"Apache-2.0\",{extra}}}\n")
+    }
+}
+
+fn install_npm(
+    host: &Host,
+    stub: &Path,
+    package: &str,
+    version: &str,
+    files: &[(&str, &str)],
+    by: RequestedBy,
+) -> Result<InstallResult, String> {
+    std::fs::create_dir_all(stub).unwrap();
+    std::fs::write(stub.join("e2e.tgz"), tarball(files)).unwrap();
+    std::fs::write(stub.join("version.txt"), version).unwrap();
+    let tools = npm_tools(stub);
+    install::install(
+        host,
+        &tools,
+        &InstallSource::Npm {
+            package: package.into(),
+            version: version.into(),
+            registry: None,
+        },
+        by,
+    )
+}
+
+fn e2e_files(version: &str) -> Vec<(String, String)> {
+    vec![
+        ("package.json".into(), package_json("e2e", version, "")),
+        ("skills/e2e/SKILL.md".into(), skill("e2e", MARKER)),
+        ("dist/cli/bin.js".into(), "process.exit(0)\n".into()),
+    ]
+}
+
+fn as_pairs(files: &[(String, String)]) -> Vec<(&str, &str)> {
+    files
+        .iter()
+        .map(|(name, text)| (name.as_str(), text.as_str()))
+        .collect()
+}
+
+fn names(host: &Host) -> Vec<String> {
+    registry::read(host)
+        .unwrap()
+        .plugins
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn the_bundled_entry_installs_from_the_index_and_a_worker_session_gets_the_server() {
+    let defaults = include_str!("../../plugins/defaults.json");
+    assert!(
+        !defaults.contains("e2e-verify"),
+        "Verify is offered, not installed with the app"
+    );
+    let (package, version) = pinned_npm();
+    let tmp = Tmp::new("install");
+    let host = plugin_host(&tmp);
+    let files = e2e_files(&version);
+    let installed = install_npm(
+        &host,
+        &tmp.path().join("stub"),
+        &package,
+        &version,
+        &as_pairs(&files),
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let InstallResult::Installed { entry, .. } = installed else {
+        panic!("a package with nothing to run is installed when the person asks");
+    };
+    assert_eq!(entry.unwrap().name, "e2e-verify");
+    let root = host.installed("e2e-verify");
+    assert_eq!(
+        std::fs::read_to_string(root.join("skills/when-to-verify/SKILL.md")).unwrap(),
+        WHEN_TO_VERIFY
+    );
+    let kept = std::fs::read_to_string(root.join("skills/e2e/SKILL.md")).unwrap();
+    assert!(kept.contains(MARKER));
+    assert!(
+        !kept.contains("no engine"),
+        "the package's own skill is not rewritten"
+    );
+    let mcp: Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("mcp.json")).unwrap()).unwrap();
+    assert_eq!(mcp["mcpServers"]["e2e"]["command"], "node");
+    assert_eq!(
+        mcp["mcpServers"]["e2e"]["args"],
+        json!(["./dist/cli/bin.js", "mcp"])
+    );
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(!entry.enabled.any(), "install does not switch it on");
+    assert!(
+        entry.skills().next().is_none(),
+        "skills are recorded when it is switched on"
+    );
+
+    registry::enable(&host, "e2e-verify", &Scope::Global).unwrap();
+    let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
+    assert!(entry.skills().any(|name| name == "when-to-verify"));
+    assert!(entry.skills().any(|name| name == "e2e"));
+    assert!(entry.mcp_servers().any(|name| name == "e2e"));
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+    let wiring =
+        wiring::session_wiring(&host, Some(&cwd), Some("monocode"), &Default::default()).unwrap();
+    let key = "plugin-e2e-verify-e2e";
+    let claude = wiring
+        .claude_mcp_servers
+        .get(key)
+        .unwrap_or_else(|| panic!("missing {key} in {:?}", wiring.claude_mcp_servers));
+    let codex = wiring.codex_mcp_servers.get(key).unwrap();
+    for entry in [claude, codex] {
+        assert_eq!(entry["command"], "monocode");
+        let args: Vec<&str> = entry["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|arg| arg.as_str().unwrap())
+            .collect();
+        assert!(
+            args.windows(2).any(|pair| pair == ["--server", "e2e"]),
+            "{args:?}"
+        );
+    }
+}
+
+#[test]
+fn an_agents_install_and_a_package_with_dependencies_wait_for_a_yes() {
+    let (_package, version) = pinned_npm();
+    let tmp = Tmp::new("wait");
+    let host = plugin_host(&tmp);
+    let files = e2e_files(&version);
+    let waiting = install_npm(
+        &host,
+        &tmp.path().join("stub-agent"),
+        "e2e",
+        &version,
+        &as_pairs(&files),
+        RequestedBy {
+            kind: "agent".into(),
+            session: Some("chat-1".into()),
+            reason: Some("the worker asked".into()),
+            ..RequestedBy::default()
+        },
+    )
+    .unwrap();
+    let InstallResult::Waiting { .. } = waiting else {
+        panic!("an agent's install waits");
+    };
+    assert!(names(&host).is_empty());
+    assert_eq!(install::pending(&host).len(), 1);
+
+    let deps = vec![
+        (
+            "package.json".into(),
+            package_json("e2e", &version, "\"dependencies\":{\"left-pad\":\"1.0.0\"}"),
+        ),
+        ("dist/cli/bin.js".into(), "process.exit(0)\n".into()),
+    ];
+    let person = install_npm(
+        &host,
+        &tmp.path().join("stub-deps"),
+        "e2e",
+        &version,
+        &as_pairs(&deps),
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let InstallResult::Waiting { request } = person else {
+        panic!("npm install waits for a yes");
+    };
+    assert!(!names(&host).contains(&"e2e-verify".to_string()));
+    let tools = npm_tools(&tmp.path().join("stub-deps"));
+    let approved = install::approve(&host, &tools, &request.id).unwrap();
+    assert!(matches!(approved, InstallResult::Installed { .. }));
+    assert!(names(&host).contains(&"e2e-verify".to_string()));
+}
+
+#[test]
+fn only_the_e2e_package_is_wrapped_and_its_own_files_are_left_alone() {
+    let tmp = Tmp::new("wrap");
+    for name in ["left-pad", "E2E"] {
+        let root = tmp.path().join(name);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("package.json"), package_json(name, "1.0.0", "")).unwrap();
+        verify::prepare_package(&root).unwrap();
+        assert!(!root.join("plugin.json").exists(), "{name}");
+    }
+
+    let host = plugin_host(&tmp);
+    let err = install_npm(
+        &host,
+        &tmp.path().join("stub-left"),
+        "left-pad",
+        "1.0.0",
+        &[(
+            "package.json",
+            "{\"name\":\"left-pad\",\"version\":\"1.0.0\"}\n",
+        )],
+        RequestedBy::person(),
+    )
+    .unwrap_err();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(names(&host).is_empty());
+    let err = install_npm(
+        &host,
+        &tmp.path().join("stub-case"),
+        "e2e",
+        "1.0.0",
+        &[("package.json", "{\"name\":\"E2E\",\"version\":\"1.0.0\"}\n")],
+        RequestedBy::person(),
+    )
+    .unwrap_err();
+    assert!(err.contains("plugin.json"), "{err}");
+    assert!(names(&host).is_empty());
+
+    let kept = json!({
+        "$schema": PLUGIN_SCHEMA_1_0_0,
+        "name": "kept-name",
+        "version": "1.2.3",
+    })
+    .to_string();
+    let own_skill = skill("e2e", MARKER);
+    let own_when = "KEEP-MINE\n";
+    let version = "9.9.9";
+    let files = [
+        ("package.json", package_json("e2e", version, "")),
+        ("plugin.json", kept.clone()),
+        ("skills/e2e/SKILL.md", own_skill.clone()),
+        ("skills/when-to-verify/SKILL.md", own_when.into()),
+    ];
+    let pairs: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, text)| (*name, text.as_str()))
+        .collect();
+    install_npm(
+        &host,
+        &tmp.path().join("stub-kept"),
+        "e2e",
+        version,
+        &pairs,
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let root = host.installed("kept-name");
+    assert_eq!(
+        std::fs::read_to_string(root.join("plugin.json")).unwrap(),
+        kept
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("skills/e2e/SKILL.md")).unwrap(),
+        own_skill
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("skills/when-to-verify/SKILL.md")).unwrap(),
+        own_when
+    );
+    assert!(!root.join("mcp.json").exists());
+
+    let crlf = tmp.path().join("crlf");
+    std::fs::create_dir_all(&crlf).unwrap();
+    std::fs::write(
+        crlf.join("package.json"),
+        "{\r\n  \"name\": \"e2e\",\r\n  \"version\": \"0.22.0\",\r\n  \"license\": \"Apache-2.0\"\r\n}\r\n",
+    )
+    .unwrap();
+    verify::prepare_package(&crlf).unwrap();
+    let written = std::fs::read_to_string(crlf.join("plugin.json")).unwrap();
+    assert!(written.contains("e2e-verify"));
+    assert!(written.contains("Apache-2.0"));
+
+    let mit = tmp.path().join("mit");
+    std::fs::create_dir_all(&mit).unwrap();
+    std::fs::write(
+        mit.join("package.json"),
+        "{\"name\":\"e2e\",\"version\":\"0.22.0\",\"license\":\"MIT\"}\n",
+    )
+    .unwrap();
+    verify::prepare_package(&mit).unwrap();
+    let written = std::fs::read_to_string(mit.join("plugin.json")).unwrap();
+    assert!(!written.contains("Apache-2.0"), "{written}");
+
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside.json");
+        let body = "{\"name\":\"e2e\",\"version\":\"1.0.0\",\"license\":\"Apache-2.0\"}\n";
+        std::fs::write(&outside, body).unwrap();
+        let linked = tmp.path().join("linked-manifest");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&outside, linked.join("package.json")).unwrap();
+        verify::prepare_package(&linked).unwrap();
+        assert!(!linked.join("plugin.json").exists());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), body);
+
+        let outside_dir = tmp.path().join("outside-skills");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let linked_skills = tmp.path().join("linked-skills");
+        std::fs::create_dir_all(&linked_skills).unwrap();
+        std::fs::write(
+            linked_skills.join("package.json"),
+            "{\"name\":\"e2e\",\"version\":\"0.22.0\",\"license\":\"Apache-2.0\"}\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&outside_dir, linked_skills.join("skills")).unwrap();
+        let err = verify::prepare_package(&linked_skills).unwrap_err();
+        assert!(err.contains("outside"), "{err}");
+        assert!(!linked_skills.join("plugin.json").exists());
+        assert!(!outside_dir.join("when-to-verify").exists());
+    }
+}
+
+fn write_json(dir: &Path, name: &str, text: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(dir.join(name), text).unwrap();
+}
+
+fn surfaces(host: &Host, dir: &Path) -> Vec<String> {
+    verify::offer_for(host, &dir.display().to_string())
+        .unwrap()
+        .surfaces
+}
+
+#[test]
+fn a_web_or_mobile_project_is_offered_and_a_desktop_shell_is_not() {
+    let tmp = Tmp::new("offer");
+    let host = plugin_host(&tmp);
+    let case = |name: &str| tmp.path().join(name);
+
+    let web = case("vite");
+    write_json(
+        &web,
+        "package.json",
+        "{\"devDependencies\":{\"vite\":\"5.0.0\"}}\n",
+    );
+    assert_eq!(surfaces(&host, &web), ["web"]);
+
+    let both = case("both");
+    write_json(
+        &both,
+        "package.json",
+        "{\"dependencies\":{\"vite\":\"5.0.0\",\"expo\":\"51.0.0\",\"react\":\"18.0.0\"}}\n",
+    );
+    assert_eq!(surfaces(&host, &both), ["web", "mobile"]);
+
+    let desktop = case("desktop");
+    write_json(
+        &desktop,
+        "package.json",
+        "{\"dependencies\":{\"react\":\"18.0.0\",\"electron\":\"30.0.0\"}}\n",
+    );
+    assert!(surfaces(&host, &desktop).is_empty());
+
+    let tauri_web = case("tauri-web");
+    write_json(
+        &tauri_web,
+        "package.json",
+        "{\"dependencies\":{\"next\":\"14.0.0\",\"@tauri-apps/cli\":\"2.0.0\"}}\n",
+    );
+    assert!(surfaces(&host, &tauri_web).is_empty());
+
+    let tauri_expo = case("tauri-expo");
+    write_json(
+        &tauri_expo,
+        "package.json",
+        "{\"dependencies\":{\"expo\":\"51.0.0\"}}\n",
+    );
+    write_json(&tauri_expo.join("src-tauri"), "tauri.conf.json", "{}\n");
+    assert_eq!(surfaces(&host, &tauri_expo), ["mobile"]);
+
+    let react_expo = case("react-expo");
+    write_json(
+        &react_expo,
+        "package.json",
+        "{\"dependencies\":{\"react\":\"18.0.0\",\"react-native\":\"0.74.0\"}}\n",
+    );
+    assert_eq!(surfaces(&host, &react_expo), ["mobile"]);
+
+    let react_vite = case("react-vite");
+    write_json(
+        &react_vite,
+        "package.json",
+        "{\"dependencies\":{\"react\":\"18.0.0\",\"vite\":\"5.0.0\"}}\n",
+    );
+    assert_eq!(surfaces(&host, &react_vite), ["web"]);
+
+    let react_only = case("react-only");
+    write_json(
+        &react_only,
+        "package.json",
+        "{\"dependencies\":{\"react-dom\":\"18.0.0\"}}\n",
+    );
+    assert_eq!(surfaces(&host, &react_only), ["web"]);
+
+    let config = case("config");
+    write_json(&config, "package.json", "{}\n");
+    write_json(&config, "next.config.ts", "export default {}\n");
+    assert_eq!(surfaces(&host, &config), ["web"]);
+
+    let vite_file = case("vite-file");
+    write_json(&vite_file, "vite.config.ts", "export default {}\n");
+    assert_eq!(surfaces(&host, &vite_file), ["web"]);
+
+    let flutter = case("flutter");
+    write_json(
+        &flutter,
+        "pubspec.yaml",
+        "name: app\nflutter:\n  sdk: flutter\n",
+    );
+    assert_eq!(surfaces(&host, &flutter), ["mobile"]);
+
+    let comment = case("comment");
+    write_json(&comment, "pubspec.yaml", "name: app\n# flutter:\n");
+    assert!(surfaces(&host, &comment).is_empty());
+
+    let expo_app = case("expo-app");
+    write_json(&expo_app, "app.json", "{\"expo\":{}}\n");
+    assert_eq!(surfaces(&host, &expo_app), ["mobile"]);
+
+    let plain_app = case("plain-app");
+    write_json(&plain_app, "app.json", "{\"name\":\"x\"}\n");
+    assert!(surfaces(&host, &plain_app).is_empty());
+
+    let capacitor = case("capacitor");
+    write_json(&capacitor, "capacitor.config.ts", "export default {}\n");
+    assert_eq!(surfaces(&host, &capacitor), ["mobile"]);
+
+    let lodash = case("lodash");
+    write_json(
+        &lodash,
+        "package.json",
+        "{\"dependencies\":{\"lodash\":\"4.17.21\"}}\n",
+    );
+    assert!(surfaces(&host, &lodash).is_empty());
+
+    let peers = case("peers");
+    write_json(
+        &peers,
+        "package.json",
+        "{\"peerDependencies\":{\"next\":\"14.0.0\"}}\n",
+    );
+    assert!(surfaces(&host, &peers).is_empty());
+
+    assert!(
+        surfaces(&host, &case("empty")).is_empty() || {
+            std::fs::create_dir_all(case("empty")).unwrap();
+            surfaces(&host, &case("empty")).is_empty()
+        }
+    );
+    std::fs::create_dir_all(case("empty")).unwrap();
+    assert!(surfaces(&host, &case("empty")).is_empty());
+
+    let broken = case("broken");
+    write_json(&broken, "package.json", "{");
+    assert!(surfaces(&host, &broken).is_empty());
+    let array = case("array");
+    write_json(&array, "package.json", "[]");
+    assert!(surfaces(&host, &array).is_empty());
+
+    let bom = case("bom plüg");
+    std::fs::create_dir_all(&bom).unwrap();
+    std::fs::write(
+        bom.join("package.json"),
+        "\u{feff}{\"dependencies\":{\"next\":\"14.0.0\"}}\n",
+    )
+    .unwrap();
+    assert_eq!(surfaces(&host, &bom), ["web"]);
+
+    let crlf = case("crlf app");
+    write_json(
+        &crlf,
+        "package.json",
+        "{\"dependencies\":{\"vue\":\"3.0.0\"}}\r\n",
+    );
+    assert_eq!(surfaces(&host, &crlf), ["web"]);
+
+    let via = format!("{}/../crlf app", crlf.display());
+    assert_eq!(verify::offer_for(&host, &via).unwrap().surfaces, ["web"]);
+
+    let missing = tmp.path().join("missing");
+    let offer = verify::offer_for(&host, &missing.display().to_string()).unwrap();
+    assert!(offer.surfaces.is_empty());
+    assert!(!offer.installed);
+    assert!(!host.root.join("verify-offers.json").exists());
+    match offer.source.unwrap() {
+        InstallSource::Npm {
+            package,
+            version,
+            registry,
+        } => {
+            assert_eq!(package, "e2e");
+            assert_eq!(version, "0.22.0");
+            assert!(registry.is_none());
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(verify::offer_for(&host, "").unwrap_err().contains("folder"));
+    assert!(verify::offer_for(&host, "   ").is_err());
+
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("outside-package.json");
+        std::fs::write(&outside, "{\"dependencies\":{\"next\":\"14.0.0\"}}\n").unwrap();
+        let linked = case("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink(&outside, linked.join("package.json")).unwrap();
+        assert!(surfaces(&host, &linked).is_empty());
+    }
+
+    let plugin = tmp.path().join("tiny plugin");
+    std::fs::create_dir_all(&plugin).unwrap();
+    std::fs::write(
+        plugin.join("plugin.json"),
+        json!({
+            "$schema": PLUGIN_SCHEMA_1_0_0,
+            "name": "e2e-verify",
+            "version": "0.0.1",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    install::install(
+        &host,
+        &quiet_tools(),
+        &InstallSource::Local {
+            path: plugin.display().to_string(),
+        },
+        RequestedBy::person(),
+    )
+    .unwrap();
+    let offer = verify::offer_for(&host, &web.display().to_string()).unwrap();
+    assert!(offer.installed);
+    assert_eq!(offer.surfaces, ["web"]);
+}
+
+#[test]
+fn declining_an_offer_is_one_decision_per_folder() {
+    let tmp = Tmp::new("decline");
+    let host = plugin_host(&tmp);
+    let a = tmp.path().join("folder a");
+    let b = tmp.path().join("folder b");
+    std::fs::create_dir_all(&a).unwrap();
+    std::fs::create_dir_all(&b).unwrap();
+    let first = verify::decline(&host, &a.display().to_string(), 0).unwrap();
+    assert!(first.applied);
+    assert!(first.offer.declined);
+    assert_eq!(first.offer.revision, 1);
+    let lost = verify::decline(&host, &b.display().to_string(), 0).unwrap();
+    assert!(!lost.applied);
+    assert!(!lost.offer.declined);
+    assert!(
+        verify::offer_for(&host, &a.display().to_string())
+            .unwrap()
+            .declined
+    );
+    let second = verify::decline(&host, &b.display().to_string(), lost.offer.revision).unwrap();
+    assert!(second.applied);
+    assert!(second.offer.declined);
+
+    let parent = tmp.path().join("parent");
+    let proj = parent.join("proj");
+    std::fs::create_dir_all(&proj).unwrap();
+    let via = verify::decline(&host, &proj.display().to_string(), second.offer.revision).unwrap();
+    assert!(via.applied);
+    let spelled = format!("{}/../proj", proj.display());
+    let again = verify::decline(&host, &spelled, via.offer.revision).unwrap();
+    assert!(again.applied);
+    let saved: Value = serde_json::from_str(
+        &std::fs::read_to_string(host.root.join("verify-offers.json")).unwrap(),
+    )
+    .unwrap();
+    let declined = saved["declined"].as_array().unwrap();
+    let key = fsutil::display(&fsutil::canonical(&proj).unwrap());
+    assert_eq!(
+        declined
+            .iter()
+            .filter(|item| item.as_str() == Some(key.as_str()))
+            .count(),
+        1
+    );
+    assert_eq!(declined.len(), 3);
+
+    for body in ["{", "[]"] {
+        let broken = Tmp::new("corrupt");
+        let host = plugin_host(&broken);
+        let dir = broken.path().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = host.root.join("verify-offers.json");
+        std::fs::write(&path, body).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert!(verify::offer_for(&host, &dir.display().to_string()).is_err());
+        assert!(verify::decline(&host, &dir.display().to_string(), 0).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    let locked = Tmp::new("lock");
+    let host = plugin_host(&locked);
+    let dir = locked.path().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(host.root.join("verify-offers.lock"), b"held").unwrap();
+    let err = verify::decline(&host, &dir.display().to_string(), 0).unwrap_err();
+    assert!(err.contains("Try again"), "{err}");
+    assert!(!host.root.join("verify-offers.json").exists());
+
+    let stale = Tmp::new("stale");
+    let host = plugin_host(&stale);
+    let dir = stale.path().join("proj");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = host.root.join("verify-offers.lock");
+    std::fs::write(&lock, b"old").unwrap();
+    OpenOptions::new()
+        .write(true)
+        .open(&lock)
+        .unwrap()
+        .set_modified(SystemTime::now() - Duration::from_secs(31))
+        .unwrap();
+    assert!(
+        verify::decline(&host, &dir.display().to_string(), 0)
+            .unwrap()
+            .applied
+    );
+    assert!(!lock.exists());
+}
+
+fn proof(dir: &Path, rel: &str, text: &str) {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn e2e_proof_is_attached_and_a_link_that_leaves_the_folder_is_not() {
+    let tmp = Tmp::new("proof");
+    let work = tmp.path().join("plüg work");
+    let e2e = work.join(".e2e");
+    proof(&e2e, "report.json", "{}\n");
+    proof(&e2e, "results/x/trace.md", "trace\n");
+    proof(&e2e, "shot.png", "png\n");
+    proof(&e2e, "plüg.png", "png\n");
+    let mut report = WorkerReport::default();
+    verify::merge_evidence(&mut report, &work);
+    verify::merge_evidence(&mut report, &work);
+    assert_eq!(
+        report.evidence,
+        vec![
+            ".e2e/report.json".to_string(),
+            ".e2e/results/x/trace.md".to_string(),
+            ".e2e/plüg.png".to_string(),
+            ".e2e/shot.png".to_string(),
+        ]
+    );
+    assert!(report
+        .evidence
+        .iter()
+        .all(|item| !item.contains("..") && !item.contains('\\')));
+
+    let mut capped = WorkerReport {
+        evidence: (0..50)
+            .map(|i| format!("https://example.com/{i}"))
+            .collect(),
+        ..WorkerReport::default()
+    };
+    verify::merge_evidence(&mut capped, &work);
+    assert_eq!(capped.evidence.len(), 50);
+    assert!(capped
+        .evidence
+        .iter()
+        .all(|item| item.starts_with("https://")));
+
+    let crowded = tmp.path().join("crowded");
+    let folder = crowded.join(".e2e");
+    proof(&folder, "report.json", "{}\n");
+    for index in 0..59 {
+        proof(&folder, &format!("n{index}.txt"), "x\n");
+    }
+    let mut many = WorkerReport::default();
+    verify::merge_evidence(&mut many, &crowded);
+    assert_eq!(many.evidence.len(), 50);
+    assert!(many.evidence.iter().any(|item| item == ".e2e/report.json"));
+
+    let absent = tmp.path().join("absent");
+    std::fs::create_dir_all(&absent).unwrap();
+    let mut empty = WorkerReport::default();
+    verify::merge_evidence(&mut empty, &absent);
+    assert!(empty.evidence.is_empty());
+    proof(&absent, ".e2e", "not a folder\n");
+    verify::merge_evidence(&mut empty, &absent);
+    assert!(empty.evidence.is_empty());
+
+    #[cfg(unix)]
+    {
+        let outside = tmp.path().join("secret-marker.png");
+        std::fs::write(&outside, b"secret").unwrap();
+        let linked = tmp.path().join("linked-file");
+        let linked_e2e = linked.join(".e2e");
+        std::fs::create_dir_all(&linked_e2e).unwrap();
+        proof(&linked_e2e, "report.json", "{}\n");
+        std::os::unix::fs::symlink(&outside, linked_e2e.join("secret-marker.png")).unwrap();
+        let mut report = WorkerReport::default();
+        verify::merge_evidence(&mut report, &linked);
+        assert!(report
+            .evidence
+            .iter()
+            .all(|item| !item.contains("secret-marker")));
+        assert_eq!(report.evidence, vec![".e2e/report.json".to_string()]);
+
+        let outside_dir = tmp.path().join("outside-e2e");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        std::fs::write(outside_dir.join("report.json"), b"{}").unwrap();
+        let linked_dir = tmp.path().join("linked-dir");
+        std::fs::create_dir_all(&linked_dir).unwrap();
+        std::os::unix::fs::symlink(&outside_dir, linked_dir.join(".e2e")).unwrap();
+        let mut report = WorkerReport::default();
+        verify::merge_evidence(&mut report, &linked_dir);
+        assert!(report.evidence.is_empty());
+    }
+}
+
+const REPORT: &str = "\
+## Report
+Summary: proved the button
+Files changed:
+- src/a.ts
+Checks:
+- npm test: passed (1 passed)
+Evidence:
+- .e2e/report.json
+- https://example.com/run
+Open questions:
+- none
+";
+
+const PLAIN: &str = "\
+## Report
+Summary: no files yet
+Files changed:
+- src/a.ts
+Checks:
+- npm test: passed (1 passed)
+Evidence:
+- https://example.com/run
+Open questions:
+- none
+";
+
+fn evidence_of(report: &Option<String>) -> Vec<String> {
+    let value: Value = serde_json::from_str(report.as_deref().unwrap()).unwrap();
+    serde_json::from_value(value["evidence"].clone()).unwrap()
+}
+
+fn insert_session(conn: &rusqlite::Connection, id: &str, cwd: &str, worktree: Option<&str>) {
+    conn.execute(
+        "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at, worktree_cwd)
+         VALUES (?1, ?2, 'claude', 'test', 'code', 'worker', 1, 1, ?3)",
+        rusqlite::params![id, cwd, worktree],
+    )
+    .unwrap();
+}
+
+fn launch(owner: &str, request: &str, child: &str) -> RecordInput {
+    RecordInput {
+        owner_session: owner.into(),
+        request_id: request.into(),
+        child_session: child.into(),
+        ..RecordInput::default()
+    }
+}
+
+fn finish(id: &str, result: Option<&str>) -> SettleInput {
+    SettleInput {
+        id: id.into(),
+        generation: 1,
+        state: "completed".into(),
+        result: result.map(str::to_string),
+        ..SettleInput::default()
+    }
+}
+
+#[test]
+fn settling_a_worker_attaches_its_e2e_folder_and_a_miss_changes_nothing() {
+    let tmp = Tmp::new("settle");
+    let work = tmp.path().join("plüg work");
+    let e2e = work.join(".e2e");
+    proof(&e2e, "report.json", "{}\n");
+    proof(&e2e, "results/home/trace.md", "trace\n");
+    let cwd_only = tmp.path().join("cwd only");
+    proof(&cwd_only.join(".e2e"), "only-cwd.txt", "x\n");
+    let empty_tree = tmp.path().join("empty tree");
+    std::fs::create_dir_all(&empty_tree).unwrap();
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(
+        &conn,
+        "worker-1",
+        &cwd_only.display().to_string(),
+        Some(&work.display().to_string()),
+    );
+    insert_session(
+        &conn,
+        "worker-2",
+        &cwd_only.display().to_string(),
+        Some(&empty_tree.display().to_string()),
+    );
+    insert_session(&conn, "worker-3", &work.display().to_string(), Some(""));
+    insert_session(&conn, "worker-4", &work.display().to_string(), None);
+
+    let row = delegations::record(&mut conn, launch("owner-1", "req-1", "worker-1"), 10).unwrap();
+    let first = delegations::settle(&mut conn, finish(&row.id, Some(REPORT)), 11).unwrap();
+    assert!(first.applied);
+    let evidence = evidence_of(&first.row.as_ref().unwrap().report);
+    assert_eq!(
+        evidence
+            .iter()
+            .filter(|item| item.as_str() == "https://example.com/run")
+            .count(),
+        1
+    );
+    assert_eq!(
+        evidence
+            .iter()
+            .filter(|item| item.as_str() == ".e2e/report.json")
+            .count(),
+        1
+    );
+    assert!(evidence
+        .iter()
+        .any(|item| item == ".e2e/results/home/trace.md"));
+    assert!(evidence.iter().all(|item| !item.contains("..")));
+
+    proof(&e2e, "later.txt", "x\n");
+    let second = delegations::settle(&mut conn, finish(&row.id, Some(REPORT)), 12).unwrap();
+    assert!(!second.applied);
+    assert_eq!(evidence_of(&second.row.as_ref().unwrap().report), evidence);
+    assert!(!evidence_of(&second.row.unwrap().report)
+        .iter()
+        .any(|item| item.contains("later")));
+
+    let preferred =
+        delegations::record(&mut conn, launch("owner-1", "req-2", "worker-2"), 13).unwrap();
+    let settled = delegations::settle(&mut conn, finish(&preferred.id, Some(PLAIN)), 14).unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(evidence.iter().all(|item| !item.contains(".e2e")));
+
+    for (child, request) in [("worker-3", "req-3"), ("worker-4", "req-4")] {
+        let row = delegations::record(&mut conn, launch("owner-1", request, child), 15).unwrap();
+        let settled = delegations::settle(&mut conn, finish(&row.id, Some(PLAIN)), 16).unwrap();
+        let evidence = evidence_of(&settled.row.unwrap().report);
+        assert!(
+            evidence.iter().any(|item| item == ".e2e/report.json"),
+            "{child}"
+        );
+    }
+
+    let ghost =
+        delegations::record(&mut conn, launch("owner-1", "req-5", "ghost-worker"), 17).unwrap();
+    let settled = delegations::settle(&mut conn, finish(&ghost.id, Some(PLAIN)), 18).unwrap();
+    assert!(settled.applied);
+    assert!(evidence_of(&settled.row.unwrap().report)
+        .iter()
+        .all(|item| !item.contains(".e2e")));
+
+    let quiet = delegations::record(&mut conn, launch("owner-1", "req-6", "worker-1"), 19).unwrap();
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: quiet.id,
+            generation: 1,
+            state: "cancelled".into(),
+            result: None,
+            ..SettleInput::default()
+        },
+        20,
+    )
+    .unwrap();
+    assert!(settled.applied);
+    assert!(settled.row.unwrap().report.is_none());
+}

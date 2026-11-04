@@ -773,6 +773,9 @@ pub fn run() {
             plugins::plugins_rollback,
             // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
+            // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
+            plugins::verify::plugins_verify_offer,
+            plugins::verify::plugins_verify_decline,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
