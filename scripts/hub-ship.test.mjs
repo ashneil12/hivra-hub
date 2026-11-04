@@ -19,7 +19,7 @@ import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
-import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
+import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -213,7 +213,7 @@ function fakeAppSource() {
   if (process.platform !== "win32") return source;
   source = source.replace(
     'const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();',
-    'const lstart = spawnSync(path.join(process.env.SystemRoot || "C:\\\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "(Get-Process -Id " + process.pid + ").StartTime.ToString(\'yyyy-MM-dd HH:mm:ss\')"], { encoding: "utf8" }).stdout.trim();',
+    'const lstart = spawnSync(path.join(process.env.SystemRoot || "C:\\\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[System.Diagnostics.Process]::GetProcessById(" + process.pid + ").StartTime.ToString(\'yyyy-MM-dd HH:mm:ss\')"], { encoding: "utf8" }).stdout.trim();',
   );
   source = source.replace(
     "const m = /^\\w{3}\\s+(\\w{3})\\s+(\\d{1,2})\\s+(\\d{2}):(\\d{2}):(\\d{2})\\s+(\\d{4})$/.exec(lstart);",
@@ -540,14 +540,37 @@ test(
   },
 );
 
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
+
 test("a ship commits: the new build is in place, the old one kept, the database backed up byte for byte", async () => {
   const w = world();
-  startApp(w);
+  const oldPid = startApp(w);
   await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  // WP-09: the ship reads "running" from the old app's lock. Prove the lock is held and the app alive first.
+  const lockFile = path.join(w.data, "instance-owner.sqlite");
+  const stolen = tryLock(lockFile);
+  if (stolen) releaseLock(stolen);
+  assert.equal(stolen, null, "the old app holds its instance lock before the ship");
+  assert.equal(pidAlive(oldPid), true, "the old app is alive before the ship");
   const { code, answer } = ship(w);
   assert.equal(code, 0, JSON.stringify(answer));
   assert.equal(answer.scheduled, true);
-  assert.equal(answer.appRunning, true, `the old app holds its lock\n${JSON.stringify(readJson(path.join(w.data, "running.json")))}\n${evidence(answer.shipDir)}`);
+  const facts = {
+    running: readJson(path.join(w.data, "running.json")),
+    oldPidAlive: pidAlive(oldPid),
+    lockFileExists: fs.existsSync(lockFile),
+    acceptedExists: answer.shipDir ? fs.existsSync(path.join(answer.shipDir, "accepted.json")) : null,
+    testData: w.data,
+    shipData: answer.data,
+  };
+  assert.equal(answer.appRunning, true, `the old app holds its lock\n${JSON.stringify(facts)}\n${evidence(answer.shipDir)}`);
   const dir = answer.shipDir;
   const state = await until("the commit", settled(dir, "committed"));
   remember(dir);
@@ -1316,6 +1339,23 @@ test("a Windows start time is asked once per pid for a while, and a slow ask is 
     windowsStart(9999, () => (missing += 1, null), now);
     windowsStart(9999, () => (missing += 1, null), now);
     assert.equal(missing, 2, "a missing process is not cached");
+  } finally {
+    setStartTimeLog(null);
+    clearStartCache();
+  }
+});
+
+test("a start-time check that doesn't answer is never read as a gone process", () => {
+  clearStartCache();
+  const lines = [];
+  setStartTimeLog((line) => lines.push(line));
+  try {
+    assert.equal(windowsStart(5151, () => undefined, () => 0), undefined);
+    assert.match(lines.join("\n"), /pid 5151 didn't answer/);
+    assert.equal(sameStart(undefined, 1_700_000_000_000), true, "unknown counts as the same, still running");
+    assert.equal(sameStart(null, 1_700_000_000_000), false, "no such process is gone");
+    assert.equal(sameStart(1_700_000_000_400, 1_700_000_000_000), true);
+    assert.equal(sameStart(1_700_000_009_000, 1_700_000_000_000), false, "another process on a reused pid");
   } finally {
     setStartTimeLog(null);
     clearStartCache();

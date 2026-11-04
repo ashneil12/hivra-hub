@@ -161,10 +161,20 @@ export function windowsStart(pid, read = processStartWindows, now = Date.now) {
   const began = now();
   const value = read(pid);
   const took = now() - began;
-  if (took > SLOW_START_MS) startTimeLog?.(`a PowerShell start-time check for pid ${pid} took ${took} ms`);
-  // A missing process is not cached: it may be one that is still starting.
-  if (value !== null) startCache.set(pid, { value, at: now() });
+  if (value === undefined) startTimeLog?.(`a PowerShell start-time check for pid ${pid} didn't answer (${took} ms); taken as still running`);
+  else if (took > SLOW_START_MS) startTimeLog?.(`a PowerShell start-time check for pid ${pid} took ${took} ms`);
+  // A missing process is not cached (it may be one that is still starting), nor is an unknown answer.
+  if (value !== null && value !== undefined) startCache.set(pid, { value, at: now() });
   return value;
+}
+
+/**
+ * Whether a live pid (kill(pid, 0) found it) is the process that started at `startTime`. `started` is its start
+ * time in ms, null when it's gone, or undefined when the check didn't answer: an unknown answer is never "gone".
+ */
+export function sameStart(started, startTime) {
+  if (started === undefined) return true;
+  return started != null && Math.abs(Math.floor(started / 1000) - Math.floor(startTime / 1000)) <= 1;
 }
 
 /** When `pid` started, in ms (from ps, to the second), or null when there is no such process. */
@@ -193,8 +203,7 @@ export function isRunning(pid, startTime) {
     if (error.code === "ESRCH") return false;
   }
   if (startTime == null) return true;
-  const started = processStart(pid);
-  return started != null && Math.abs(Math.floor(started / 1000) - Math.floor(startTime / 1000)) <= 1;
+  return sameStart(processStart(pid), startTime);
 }
 
 export function dirSize(target) {

@@ -798,6 +798,7 @@ export async function main(argv = process.argv.slice(2)) {
     from: label(from),
     drill: options.drill ?? null,
     appRunning: owner != null,
+    data: paths.data,
     warnings,
     runner: staged.ship.runner,
     note: owner

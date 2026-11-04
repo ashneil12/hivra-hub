@@ -377,14 +377,25 @@ export function runPowerShell(script) {
     input: script,
     encoding: "utf8",
     env,
+    // WP-09: a PowerShell that hangs (module cache rebuilds on a fresh profile) must not hold a ship forever.
+    timeout: POWERSHELL_TIMEOUT_MS,
   });
 }
 
-/** When a Windows process started, in ms to the second, or null. Same clock as `ps -o lstart` on macOS. */
-export function processStartWindows(pid) {
+export const POWERSHELL_TIMEOUT_MS = 20_000;
+
+/**
+ * When a Windows process started, in ms to the second; null when there is no such process; undefined when the
+ * answer is unknown (PowerShell timed out or never started). Same clock as `ps -o lstart` on macOS.
+ * WP-09: pure .NET, no cmdlet lookup. Get-Process makes Windows PowerShell 5.1 load its module analysis cache,
+ * which a fresh profile (a temporary home's LOCALAPPDATA) rebuilds for tens of seconds. A missing pid throws,
+ * and the wrapper turns that into a non-zero exit with no timestamp, so it still reads as null.
+ */
+export function processStartWindows(pid, run = runPowerShell) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
-  const script = `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToString('yyyy-MM-dd HH:mm:ss')`;
-  const result = runPowerShell(script);
+  const script = `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToString('yyyy-MM-dd HH:mm:ss')`;
+  const result = run(script);
+  if (result.error || (result.status == null && result.signal)) return undefined;
   const text = `${result.stdout ?? ""}`.trim().split(/\r?\n/).pop() ?? "";
   return parseLocalTimestamp(text);
 }

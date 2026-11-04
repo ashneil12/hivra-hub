@@ -21,6 +21,7 @@ import {
   parseLocalTimestamp,
   portableIsolatedEnv,
   powershellChildEnv,
+  processStartWindows,
   psQuote,
   runnerSystemdUnit,
   runnerTaskRemoveScript,
@@ -401,4 +402,18 @@ test("a spawn.json is ignored under a non-temporary HOME", () => {
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a Windows start time reads .NET's answer, and a PowerShell that didn't answer is unknown, not gone", () => {
+  const scripts = [];
+  const answer = (out) => (script) => {
+    scripts.push(script);
+    return out;
+  };
+  const started = processStartWindows(4242, answer({ status: 0, stdout: "2026-11-04 19:30:05\r\n" }));
+  assert.equal(new Date(started).getSeconds(), 5);
+  assert.match(scripts[0], /\[System\.Diagnostics\.Process\]::GetProcessById\(4242\)/);
+  assert.doesNotMatch(scripts[0], /Get-Process/);
+  assert.equal(processStartWindows(4242, answer({ status: 1, stdout: "", stderr: "no process" })), null, "a missing pid is gone");
+  assert.equal(processStartWindows(4242, answer({ status: null, signal: "SIGTERM", error: Object.assign(new Error("timed out"), { code: "ETIMEDOUT" }) })), undefined, "a timeout is unknown");
 });
