@@ -1,0 +1,37 @@
+{
+  "format": 1,
+  "title": { "en": "Example Market", "zh": "示例市场" },
+  "description": "Community bundles",
+  "metadata": {
+    "categories": { "productivity": { "title": "Productivity" } },
+    "labels": { "official": { "title": "Official" } },
+    "sortKeys": { "downloads": { "title": "Downloads", "order": "desc" } }
+  },
+  "plugins": [
+    {
+      "name": "@scope/dsh-foo",
+      "title": { "en": "Foo", "zh-cn": "甲" },
+      "description": "Does foo",
+      "author": "Jane Doe",
+      "homepage": "https://github.com/jane/dsh-foo#readme",
+      "repository": { "url": "https://github.com/jane/dsh-plugins", "directory": "packages/foo" },
+      "metadata": { "category": "productivity", "keywords": ["review"], "labels": ["official"], "sortKeys": { "downloads": 12 } },
+      "versions": [
+        { "version": "1.2.3-rc.1", "publishTimestamp": 1, "source": { "type": "npm" } },
+        { "version": "1.2.3", "publishTimestamp": 1790476800, "source": { "type": "npm", "registry": "https://registry.example/" }, "engines": { "dsh": ">=0.2.0" } },
+        { "version": "1.10.0", "publishTimestamp": 2, "source": { "type": "npm" } }
+      ]
+    },
+    {
+      "name": "dsh-bar",
+      "versions": [
+        {
+          "version": "1.0.0-rc.1+build.5",
+          "publishTimestamp": 0,
+          "source": { "type": "git", "url": "https://gitlab.example/group/sub/repo", "commit": "3f9c2e1d8a4b6c0e7f1a2b3c4d5e6f708192a3b4", "path": "packages/bar" }
+        }
+      ]
+    },
+    { "name": "dsh-floating", "versions": [{ "version": "^1.0.0", "publishTimestamp": 0, "source": { "type": "npm" } }] }
+  ]
+}

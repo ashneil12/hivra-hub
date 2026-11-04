@@ -728,6 +728,7 @@ pub fn run() {
             plugins::plugins_disable,
             plugins::plugins_uninstall,
             plugins::plugins_session_wiring,
+            plugins::discover::plugins_discover,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,
