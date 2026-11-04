@@ -990,10 +990,11 @@ export function saveSessionSidebarOpen(value: boolean) {
 }
 
 /** The inset layout's project tools beside the card. */
-export type RightPanelTab = "files" | "changes" | "graph";
+export type RightPanelTab = "files" | "changes" | "graph" | "crew";
 
 function isRightPanelTab(value: unknown): value is RightPanelTab {
-  return value === "files" || value === "changes" || value === "graph";
+  // WP-15: Crew sits beside Explorer, Changes and History.
+  return value === "files" || value === "changes" || value === "graph" || value === "crew";
 }
 
 export function loadRightPanelOpen(): boolean {
@@ -1028,6 +1029,8 @@ export function loadRightPanelTabOrder(): RightPanelTab[] {
       (tab) => tab === "files" || tab === "changes",
     ),
     "graph",
+    // WP-15: Crew is last, so a saved Explorer/Changes/History order keeps its place.
+    "crew",
   ];
   try {
     const raw = localStorage.getItem(RIGHT_PANEL_TAB_ORDER_KEY);

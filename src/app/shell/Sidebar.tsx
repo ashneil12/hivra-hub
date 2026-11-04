@@ -14,6 +14,8 @@ import {
   useProjectLabel,
 } from "../../features/projects/ui/CurrentProjectIcon";
 import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
+import { CrewPanel } from "../../features/crew/ui/CrewPanel";
+import { clearCrewFocus } from "../../features/crew/model/focus";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
 import type { ChildChat } from "../../features/monos/model/delegationView";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
@@ -280,6 +282,8 @@ const TAB_LABELS: Record<SidebarTab | RightPanelTab, string> = {
   files: "Explorer",
   changes: "Changes",
   graph: "History",
+  // WP-15: the crew, beside History.
+  crew: "Crew",
 };
 
 const COMPACT_TAB_ICONS: Record<SidebarTab, typeof PanelLeft> = {
@@ -2697,6 +2701,13 @@ function SidebarComponent({
     </>
   );
 
+  // WP-15: the crew for this project. Mounted only while its tab is open.
+  const crewPane = paneHost && paneTab === "crew" ? (
+    <div role="tabpanel" aria-label="Crew" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      <CrewPanel project={cwd} sessions={sessions} onOpenSession={onSelectLocalSession} />
+    </div>
+  ) : null;
+
   const graphPane = paneHost && paneTab === "graph" ? (
     <div
       role="tabpanel"
@@ -3496,11 +3507,16 @@ function SidebarComponent({
               hasChangeStats={hasChangeStats}
               changeAdditions={changeAdditions}
               changeDeletions={changeDeletions}
-              onTabChange={paneHost.onTabChange}
+              onTabChange={(tab) => {
+                // WP-15: the Crew tab itself shows every worker. A brief line sets the filter on its own.
+                if (tab === "crew") clearCrewFocus();
+                paneHost.onTabChange(tab);
+              }}
             >
               {filesPane}
               {changesPane}
               {graphPane}
+              {crewPane}
             </RightPanel>,
             paneHost.host,
           )

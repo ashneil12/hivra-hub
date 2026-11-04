@@ -115,6 +115,7 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import { OPEN_CREW } from "../features/crew/model/focus";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
@@ -1689,6 +1690,12 @@ function Workspace({
     setRightPanelClosing(false);
     saveRightPanelOpen(true);
   }, []);
+  // WP-15: a brief line opens the Crew tab.
+  useEffect(() => {
+    const onCrew = () => showRightPanel("crew");
+    window.addEventListener(OPEN_CREW, onCrew);
+    return () => window.removeEventListener(OPEN_CREW, onCrew);
+  }, [showRightPanel]);
   const onToggleRightPanel = useCallback(() => {
     const next = !rightPanelOpenRef.current;
     rightPanelOpenRef.current = next;

@@ -38,6 +38,8 @@ import {
 import { hubData } from "../../hub/model/hubData";
 import { leadFor } from "../../hub/model/hubLeads";
 import { openCodingTeam } from "../../hub/model/hubNav";
+import { briefLine } from "../../crew/model/briefLine";
+import { workersUnder } from "../../crew/model/rows";
 import { briefedTeams, type BriefTeam, type BriefedTeam } from "../model/briefedTeams";
 
 /** A hub project by id, for its name. */
@@ -94,6 +96,8 @@ export type DelegationPane =
       /** Its briefs out to coding teams: one live line each, which opens that coding team on its Lead. */
       briefs: BriefedTeam[];
       onOpenBrief?: (brief: BriefedTeam) => void;
+      /** WP-15: one compact line per brief, counted from derive_status. Opens the Crew tab. */
+      crewLines: { id: string; text: string }[];
     };
 
 /**
@@ -139,6 +143,10 @@ export function useDelegationPane(
         rows.filter((row) => !(row.state === "running" && row.stallKind) && row.follow !== "lead"),
       ),
       briefs,
+      crewLines: briefs.map((brief) => ({
+        id: brief.row.id,
+        text: briefLine(brief.title, workersUnder(brief.row.id, rows)),
+      })),
       onOpenBrief: (brief) => {
         if (brief.to) openCodingTeam(brief.to.projectId, { lead: true });
       },
