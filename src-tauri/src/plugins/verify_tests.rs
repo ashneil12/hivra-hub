@@ -1628,3 +1628,60 @@ fn an_old_row_resumed_before_the_column_existed_keeps_that_start() {
         "a save must not write the created time back over a real resume"
     );
 }
+
+#[test]
+fn reviving_a_refused_row_does_not_attach_proof_from_before_the_retry() {
+    let start = 1_700_000_000_000_i64;
+    let revive_at = start + 90_000;
+    let tmp = Tmp::new("revived proof");
+    let dir = tmp.path().join("retry project");
+    proof(&dir.join(".e2e"), "report.json", "{}\n");
+    proof(&dir.join(".e2e"), "results/home/trace.md", "trace\n");
+    set_mtime(&dir.join(".e2e/report.json"), start as u64);
+    set_mtime(&dir.join(".e2e/results/home/trace.md"), revive_at as u64);
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "revived-worker", &dir.display().to_string(), None);
+    let row = delegations::record(
+        &mut conn,
+        launch("owner", "same-receipt", "revived-worker"),
+        start,
+    )
+    .unwrap();
+    assert!(
+        delegations::refuse(&mut conn, &row.id, None, start + 1)
+            .unwrap()
+            .applied
+    );
+    let revived = delegations::record(
+        &mut conn,
+        launch("owner", "same-receipt", "revived-worker"),
+        revive_at,
+    )
+    .unwrap();
+    assert_eq!(revived.id, row.id);
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: revived.id,
+            generation: 1,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        revive_at + 1,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "proof from before the retry is an earlier run: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the retry is kept: {evidence:?}"
+    );
+}

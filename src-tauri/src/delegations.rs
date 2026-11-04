@@ -198,9 +198,9 @@ pub struct Delegation {
     pub delivery: String,
     pub delivery_message: Option<String>,
     pub created_at: i64,
-    /// When this run started, epoch ms. Set when the row is recorded and again when it resumes. A row from before
-    /// this column (NULL) uses the latest "resumed" line, else `created_at`, and that is what a later save writes.
-    /// Evidence uses this, not the log: `note` only keeps the newest 50 lines.
+    /// When this run started, epoch ms. Set when the row is recorded, when it resumes, and when a refused launch is
+    /// retried. A row from before this column (NULL) uses the latest "resumed" line, else `created_at`, and that is
+    /// what a later save writes. Evidence uses this, not the log: `note` only keeps the newest 50 lines.
     pub run_started_at: i64,
     pub updated_at: i64,
     pub settled_at: Option<i64>,
@@ -667,6 +667,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             existing.delivery_message = None;
             existing.error = None;
             existing.settled_at = None;
+            existing.run_started_at = now;
             existing.note(now, &by, "retried", json!({}));
             existing.touch(now);
             save(&tx, &existing)?;
