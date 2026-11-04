@@ -1178,6 +1178,80 @@ fn an_open_question_on_the_work_blocks_even_the_persons_merge() {
     assert!(gh.ran("pr", "merge").is_empty());
 }
 
+/// A WP-14 decision (its own table, state open) waiting on any task in the tree blocks the merge, even when no
+/// delegation row is in the question state.
+#[test]
+fn an_open_wp14_decision_on_the_trees_task_blocks_the_merge() {
+    let s = store();
+    let mut conn = s.lock_conn().unwrap();
+    let parent = task(&mut conn, "lead-1", "r-parent", "worker-1");
+    let child = task(&mut conn, "worker-1", "r-child", "worker-2");
+    let other = task(&mut conn, "lead-2", "r-other", "worker-9");
+    assert_eq!(
+        delegations::get(&conn, &parent).unwrap().unwrap().state,
+        delegations::RUNNING,
+        "the block has to come from the decisions table, not a question on the row"
+    );
+    // A broken waiting list is ignored, not a failure. The real decision waits on the child only.
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, state, answer, answered_by, answered_at, created_at, updated_at, version)
+         VALUES ('web', 'broken', 'Ignore this row', '[]', NULL, 'lead-1', NULL, 'not-json', 'open', NULL, NULL, NULL, 1, 1, 1)",
+        [],
+    )
+    .unwrap();
+    let waiting = serde_json::json!(["not-in-this-tree", child]).to_string();
+    conn.execute(
+        "INSERT INTO decisions (project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, state, answer, answered_by, answered_at, created_at, updated_at, version)
+         VALUES ('web', 'ship', 'Ship the migration?', '[\"Ship it\",\"Hold it\"]', NULL, 'lead-1', NULL, ?1, 'open', NULL, NULL, NULL, 2, 2, 1)",
+        [&waiting],
+    )
+    .unwrap();
+    drop(conn);
+
+    let question = merge::open_decision(&s.lock_conn().unwrap(), &parent).unwrap();
+    assert_eq!(question.as_deref(), Some("Ship the migration?"));
+    assert_eq!(
+        merge::open_decision(&s.lock_conn().unwrap(), &child)
+            .unwrap()
+            .as_deref(),
+        Some("Ship the migration?")
+    );
+    assert_eq!(
+        merge::open_decision(&s.lock_conn().unwrap(), &other).unwrap(),
+        None
+    );
+
+    let gh = FakeGithub::new(vec![green("h1"), green("h1")]);
+    let request = MergeRequest {
+        caller: Caller::Person {
+            via: "Inbox".into(),
+        },
+        delegation_id: Some(parent.clone()),
+        ..agent_merge("acme/web")
+    };
+    let refused = merge::merge(&s, &gh, request.clone(), 10).unwrap();
+    assert!(
+        matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Ship the migration?")),
+        "{refused:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+
+    // Answered (or any state other than open) no longer blocks, and the switch can merge.
+    s.lock_conn()
+        .unwrap()
+        .execute(
+            "UPDATE decisions SET state = 'answered', answer = 'Hold it' WHERE decision_key = 'ship'",
+            [],
+        )
+        .unwrap();
+    assert_eq!(
+        merge::open_decision(&s.lock_conn().unwrap(), &parent).unwrap(),
+        None
+    );
+    let merged = merge::merge(&s, &gh, request, 20).unwrap();
+    assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+}
+
 #[test]
 fn the_inbox_merge_button_goes_through_the_same_path() {
     let s = store();

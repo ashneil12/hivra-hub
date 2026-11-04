@@ -4,7 +4,8 @@
 //! 1. reads the pull request (its head, checks and mergeability) fresh from GitHub;
 //! 2. refuses red or pending checks (the required ones, or every check when none is required, as the PR watch counts
 //!    them), a draft, a conflict, and a closed or merged pull request;
-//! 3. refuses while a decision on that work is open (a question on its delegation, or on any task under it);
+//! 3. refuses while a decision on that work is open (a question on any task in its tree, or a WP-14
+//!    decision in state open waiting on any of those tasks);
 //! 4. merges with the person's word (their own tap, or an approval they gave for this exact head) or, when the project's
 //!    "merge without asking" switch is on, without it; otherwise it asks and merges nothing;
 //! 5. merges only the head it judged (`gh pr merge --match-head-commit`), and logs every attempt with who allowed it.
@@ -185,16 +186,39 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
     }
 }
 
-/// An open question on the work: on its delegation, or on any task in the same tree.
+/// An open question on the work: a question on any task in its tree, or a WP-14 decision (state open)
+/// waiting on any of those tasks. A waiting list that isn't a list of ids is skipped, not an error.
 pub fn open_decision(conn: &Connection, delegation_id: &str) -> Result<Option<String>, String> {
-    // WP-14's decision store adds its open decisions for this work here.
-    Ok(delegations::tree(conn, delegation_id)?
-        .into_iter()
-        .find(|row| row.state == delegations::QUESTION)
-        .map(|row| {
+    let tree = delegations::tree(conn, delegation_id)?;
+    if let Some(row) = tree.iter().find(|row| row.state == delegations::QUESTION) {
+        return Ok(Some(
             row.pending_question
-                .unwrap_or_else(|| "a task is waiting on an answer".into())
-        }))
+                .clone()
+                .unwrap_or_else(|| "a task is waiting on an answer".into()),
+        ));
+    }
+    if tree.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<&str> = tree.iter().map(|row| row.id.as_str()).collect();
+    let mut statement = conn
+        .prepare(
+            "SELECT question, waiting FROM decisions WHERE state = ?1 ORDER BY created_at, rowid",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(params![crate::decisions::OPEN], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let (question, waiting) = row.map_err(|e| e.to_string())?;
+        let listed: Vec<String> = serde_json::from_str(&waiting).unwrap_or_default();
+        if listed.iter().any(|id| ids.contains(&id.as_str())) {
+            return Ok(Some(question));
+        }
+    }
+    Ok(None)
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
