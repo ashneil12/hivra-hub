@@ -3,6 +3,7 @@
 //! CLI's session. Plugins never run code in the app's process: their code runs only as MCP servers (separate
 //! processes, through `plugin-mcp`) or, for panels, inside the Pages sandbox.
 
+pub mod defaults;
 mod fsutil;
 pub mod hivra;
 pub mod manifest;
@@ -10,6 +11,8 @@ pub mod mcp;
 pub mod registry;
 pub mod wiring;
 
+#[cfg(test)]
+mod defaults_tests;
 #[cfg(test)]
 mod tests;
 

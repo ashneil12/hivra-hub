@@ -7,6 +7,7 @@ fn main() {
     println!("cargo:rerun-if-changed=icons");
     println!("cargo:rerun-if-changed=macos/Assets.car");
     build_stamp();
+    default_plugins();
     // GNU ld exports every symbol from the Tauri cdylib and blows past the
     // 65535 PE ordinal limit. Hide them; the desktop exe links the rlib.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
@@ -139,4 +140,65 @@ fn rfc3339_utc(time: SystemTime) -> String {
         rest % 3_600 / 60,
         rest % 60
     )
+}
+
+/// WP-41: every folder in `plugins/` (the default plugins, pinned in `plugins/defaults.json`) is embedded in the binary,
+/// so the first start installs them with no download and no bundle resources (Linux and Windows builds carry none).
+/// Writes `$OUT_DIR/default_plugins.rs`: `(folder, path inside it with `/`, bytes, executable)`, sorted. A file is
+/// executable when it starts with `#!`, so the answer doesn't depend on the platform the app was built on.
+fn default_plugins() {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("plugins folder")
+            .flatten()
+            .collect();
+        entries.sort_by_key(|e| e.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path).expect("plugin file");
+            if meta.file_type().is_symlink() {
+                panic!(
+                    "{} is a link: default plugins are plain files",
+                    path.display()
+                );
+            }
+            if meta.is_dir() {
+                walk(base, &path, out);
+            } else {
+                let rel = path.strip_prefix(base).unwrap();
+                let rel: Vec<_> = rel
+                    .iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                out.push((rel.join("/"), path));
+            }
+        }
+    }
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let root = Path::new(&manifest_dir).join("plugins");
+    println!("cargo:rerun-if-changed=plugins");
+    let mut code = String::from("pub static FILES: &[(&str, &str, &[u8], bool)] = &[\n");
+    let mut folders: Vec<_> = std::fs::read_dir(&root)
+        .expect("plugins folder")
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .collect();
+    folders.sort_by_key(|e| e.file_name());
+    for folder in folders {
+        let name = folder.file_name().to_string_lossy().into_owned();
+        let mut files = Vec::new();
+        walk(&folder.path(), &folder.path(), &mut files);
+        for (rel, path) in files {
+            let executable = std::fs::read(&path)
+                .map(|bytes| bytes.starts_with(b"#!"))
+                .unwrap_or(false);
+            code.push_str(&format!(
+                "    ({name:?}, {rel:?}, include_bytes!({:?}), {executable}),\n",
+                path.to_string_lossy()
+            ));
+        }
+    }
+    code.push_str("];\n");
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("default_plugins.rs");
+    std::fs::write(out, code).expect("default_plugins.rs");
 }

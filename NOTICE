@@ -6,6 +6,12 @@ Provider marks that appear in the UI (including Claude, Codex, Cursor, GitHub, G
 src/features/monos/model/monoTree.ts and monoTreePrompt.txt are adapted from UniiChat
 (https://github.com/VictorTaelin/UniiChat), Copyright 2026 Higher Order Company, licensed under the
 Apache License, Version 2.0. See src/features/monos/model/monoTree.NOTICE.md.
+
+src-tauri/plugins/pstack is pstack 0.15.36 by Lauren Tan (https://github.com/cursor/plugins/tree/main/pstack),
+Copyright (c) 2026 Lauren Tan, licensed under the MIT License (LICENSE included in that folder). Copied unchanged
+from cursor/plugins at commit 6ea74587e384e1a8035c09ae33a46fe3f881eb9b, less its Cursor-only parts (agents,
+automations, .cursor-plugin), images and a test corpus; embedded in the app and installed as Hivra's default plugin
+(WP-41). src-tauri/src/plugins/fixtures/pstack is a smaller copy of the same commit used as a test fixture (WP-30).
 The native UI uses Zed Industries' GPUI framework through gpui-pre and
 gpui-pre-platform 0.3.9 (Zed snapshot
 93d745668805029476e6d7fbb19652116fed51de), licensed under Apache-2.0.
