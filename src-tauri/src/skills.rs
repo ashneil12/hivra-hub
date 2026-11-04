@@ -169,6 +169,10 @@ pub(crate) fn list_skills_from(
             "devin",
         );
         add_root(project.join(".devin/skills"), "project", "devin");
+        // WP-30: where plugins link their skills when that isn't ~/.agents/skills (a dev copy keeps its own).
+        if let Some(root) = crate::plugins::managed_skills_root() {
+            add_root(root.to_path_buf(), "user", "plugins");
+        }
         for (root, scope, namespace) in claude_plugin_skill_roots(home, project) {
             add_namespaced_root(
                 &mut by_name,
@@ -454,7 +458,7 @@ fn utf8_prefix(bytes: Vec<u8>) -> Option<String> {
     }
 }
 
-fn parse_frontmatter(text: &str, fallback: &str) -> (String, String) {
+pub(crate) fn parse_frontmatter(text: &str, fallback: &str) -> (String, String) {
     let trimmed = text.trim_start_matches('\u{feff}');
     let Some(rest) = trimmed.strip_prefix("---") else {
         return (fallback.to_string(), String::new());

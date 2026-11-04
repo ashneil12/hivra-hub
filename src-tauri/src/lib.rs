@@ -15,6 +15,7 @@ pub mod connectors;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod decisions;
 mod delegations;
 mod dev_fault;
 mod devin_config;
@@ -63,6 +64,8 @@ mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
+pub mod plugins;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -85,6 +88,8 @@ mod session_store;
 pub mod ship;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-14: steering messages to running workers.
+mod steering;
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -384,6 +389,10 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
+            let _ = plugins::host(app.handle());
+            // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
+            plugins::defaults::start(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app
@@ -524,6 +533,13 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            steering::steering_record,
+            steering::steering_pending,
+            steering::steering_list,
+            steering::steering_settle,
+            decisions::decisions_ask,
+            decisions::decisions_answer,
+            decisions::decisions_list,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
@@ -719,6 +735,14 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            // WP-30: plugins.
+            plugins::plugins_list,
+            plugins::plugins_inspect,
+            plugins::plugins_install_local,
+            plugins::plugins_enable,
+            plugins::plugins_disable,
+            plugins::plugins_uninstall,
+            plugins::plugins_session_wiring,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

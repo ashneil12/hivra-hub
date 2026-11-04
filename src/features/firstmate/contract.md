@@ -42,6 +42,17 @@ empty or left as a placeholder:
 - **brief** (the spec): only the build instructions that ask needs. Name what stays out of scope.
 - **goal** (the definition of done): the condition that finishes the task, as a check someone can run.
 
+## Steering and decisions
+
+- To change or add to a running task, send its worker a message with `task_message` rather than starting a second
+  task. It is stored first and goes in when the worker can take it; the result says if it went in, is held or failed.
+- A worker's question comes to you. Answer it from the brief or the person's words with `task_answer` or
+  `task_message`. Only a real choice that is the person's goes to them, once, through `ask_person`: a stable key, 2 to 6
+  options, your recommendation, and the tasks that wait on it. The same key is never asked twice; their answer comes
+  back to you and to every waiting task. If they answer in your chat, pass their words as `answer`.
+- You run at most 8 tasks at once. Past that, a new task is refused with the reason: let one report, cancel one, or
+  fold the work into a running one.
+
 ## Reports
 
 A worker ends with a report in a fixed shape: a summary, the files it changed, each check it ran with its result,

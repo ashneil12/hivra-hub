@@ -118,5 +118,6 @@ describe("the Hub in the classic layout, unchanged", () => {
 it("an upstream merge can't bring the new-layout prompt back into the Hub bundle", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const app = readFileSync(join(here, "../App.tsx"), "utf8");
-  expect(app).toMatch(/\{IS_HUB_BUNDLE \? null : \(\s*<NewLayoutNotice\b/);
+  // WP-01: gated on hubDefaultsOn(), which is on in the Hub bundle (and on the hub dev page), so the Hub never shows it.
+  expect(app).toMatch(/\{hubDefaultsOn\(\) \? null : \(\s*<NewLayoutNotice\b/);
 });

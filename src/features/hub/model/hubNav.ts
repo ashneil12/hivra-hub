@@ -1,5 +1,6 @@
 // Which project and which project item is shown. Persisted locally.
 import { useSyncExternalStore } from "react";
+import { hubDefaultsOn } from "./hubDefaults";
 
 /** No project chosen yet: the hub is the create-a-project empty state (HubSurface). A project is the unit of the hub. */
 export const NO_PROJECT = "";
@@ -89,6 +90,8 @@ export function appItemInView(sel: HubSelection): boolean {
 
 /** True when a hub view (not Monocode's own workspace) fills the main area: a coding team or a Mono's team is a workspace. */
 export function hubSurfaceOpen(sel: HubSelection): boolean {
+  // Before anything was picked, upstream MonoCode's own build opens on its workspace, as upstream does (hubDefaultsOn).
+  if (sel === DEFAULT && !hubDefaultsOn()) return false;
   if (monoTeamInView(sel)) return false;
   return sel.project === NO_PROJECT || sel.item !== "coding-team";
 }

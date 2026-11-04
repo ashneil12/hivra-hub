@@ -33,6 +33,9 @@ fn main() {
         // A connector for a Claude Code session: checks it is allowed, reads its login from the Keychain and serves it
         // over stdio (src/connectors/launch.rs). No window, no database.
         Some("connector-run") => std::process::exit(monocode_lib::connectors::run_main(&rest())),
+        // WP-30: a plugin's stdio MCP server, started for an agent CLI's session once the plugin is checked to be on
+        // (src/plugins/wiring.rs). No window, no database.
+        Some("plugin-mcp") => std::process::exit(monocode_lib::plugins::run_main(&rest())),
         // Ash's answer about the build he is using: Today's card, from a terminal (src/ship.rs).
         Some("accept") => std::process::exit(monocode_lib::ship::accept_main(&rest())),
         // The worktree clean-up report: reads only, no window, no app data (src/worktree_janitor.rs).

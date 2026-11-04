@@ -1,10 +1,28 @@
 import { defineConfig } from "@playwright/test";
 
+// Hub fork: every page starts as an app that has finished first launch. The Hub's onboarding card and its setup card
+// would otherwise cover the fixture page on a fresh profile. Specs that test onboarding open it with `?onboarding`
+// (see src/features/hub/model/onboarding.ts) or clear these keys themselves. The app's own gate is unchanged.
+const BASE_URL = "http://127.0.0.1:1435";
+const FINISHED_FIRST_LAUNCH = {
+  cookies: [],
+  origins: [
+    {
+      origin: BASE_URL,
+      localStorage: [
+        { name: "monocode:hub-onboarded", value: "1" },
+        { name: "monocode:hub-setup-not-now", value: "1" },
+      ],
+    },
+  ],
+};
+
 export default defineConfig({
   testDir: "./tests/browser",
   workers: 1,
   use: {
-    baseURL: "http://127.0.0.1:1435",
+    baseURL: BASE_URL,
+    storageState: FINISHED_FIRST_LAUNCH,
     viewport: { width: 1000, height: 800 },
     trace: "retain-on-failure",
   },
