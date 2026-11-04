@@ -135,6 +135,10 @@ export function scrub(db) {
     // copies of his Mono chats, and its outbox would replay them (to the stub, never the live studio).
     wipe("delegations", "delegations");
     wipe("delegationChatBinds", "delegation_chat_binds");
+    // Hivra WP-14 (src-tauri/src/steering.rs, decisions.rs): pending messages would be delivered into the copy's chats,
+    // and decisions answered there would release them. Both belong to the daily app's work.
+    wipe("steerMessages", "steer_messages");
+    wipe("decisions", "decisions");
     // Autopilot (src-tauri/src/autopilot.rs): a copy of Ash's switch would keep the Mac awake and auto-decide in the
     // dev copy, and his armed resumes would resume its copies of his chats. The log is history and stays.
     wipe("autopilotSwitches", "autopilot_switches");

@@ -16,6 +16,7 @@ import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
@@ -112,6 +113,9 @@ import {
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
+// Hivra WP-11: the first mate's wake queue.
+import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
   waitingActivity,
@@ -647,6 +651,7 @@ import {
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
@@ -2076,6 +2081,8 @@ function Workspace({
   const delegationsRef = useRef<DelegationTracker | null>(null);
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
+  // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
+  const firstMateWakesRef = useRef<WakeQueue | null>(null);
   const lastPersistedUserBlock = useRef(new Map<string, string>());
   const inFlightSyncKey = useRef<string | null>(null);
   const sawInFlight = useRef(false);
@@ -3363,12 +3370,11 @@ function Workspace({
     const cwd = sidebarCwd;
     const session = newWorkspaceSession(cwd, sessionDefaults?.runtimeMode);
     // An untouched New session tab for this project is already open: go to
-    // it rather than stacking another empty one beside it.
-    const blank = reusableBlankSessionTab(
-      tabsRef.current,
-      sessionsRef.current,
-      session,
-    );
+    // it rather than stacking another empty one beside it. A Hub default
+    // (hubDefaultsOn): upstream's own build appends a new tab every time.
+    const blank = hubDefaultsOn()
+      ? reusableBlankSessionTab(tabsRef.current, sessionsRef.current, session)
+      : undefined;
     if (blank) {
       setActiveTabId(blank.tabId);
       setComposerFocused(true);
@@ -10025,6 +10031,11 @@ function Workspace({
       queueMonoSessionCompletionRef.current(monoId, message),
   });
   prWatchesRef.current = prWatches;
+  firstMateWakesRef.current = useFirstMateWakes({
+    sessionsRef,
+    queueWake: (ownerId, message) =>
+      queueMonoSessionCompletionRef.current(ownerId, message),
+  });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
@@ -10149,6 +10160,13 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
+  const steering = useSteering(sessions, {
+    chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
+    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    submit: async (id, text, { appRequestId, steer }) =>
+      await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
+  });
 
   useMobileWorkspace({
     sessions,
@@ -10589,6 +10607,7 @@ function Workspace({
             if (accepted && head.monoSessionCompletion) {
               delegationsRef.current?.delivered(head.id);
               prWatchesRef.current?.delivered(head.id);
+              void firstMateWakesRef.current?.delivered(head.id);
             }
             // A preflight rejection must not repeatedly retry or hide the message.
             if (!accepted && monoForSession(session.id)) {
@@ -10672,6 +10691,7 @@ function Workspace({
     (sessionId: string, messageId: string) => {
       delegationsRef.current?.discarded(messageId);
       prWatchesRef.current?.discarded(messageId);
+      firstMateWakesRef.current?.discarded(messageId);
       setSessions((prev) =>
         prev.map((session) =>
           session.id === sessionId
@@ -13680,6 +13700,7 @@ function Workspace({
             habits: { load: loadHabits, update: updateHabits },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
+              firstMate: steering,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),
@@ -16463,7 +16484,7 @@ function Workspace({
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}
-      onOpenInbox={onHubOpenInbox}
+      onOpenInbox={hubDefaultsOn() ? onHubOpenInbox : onOpenInbox}
       onOpenInboxItem={onOpenLinkedWorkItem}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onOpenAutomations={onOpenAutomations}
@@ -17139,8 +17160,9 @@ function Workspace({
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
-              not prompt for the new one; it stays in Settings → Appearance. */}
-          {IS_HUB_BUNDLE ? null : (
+              not prompt for the new one; it stays in Settings → Appearance.
+              The hub's dev page doesn't either (hubDefaultsOn). */}
+          {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}

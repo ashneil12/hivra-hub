@@ -14,7 +14,9 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
-import { isOpenDelegation, type DelegationTracker } from "../model/delegations";
+import { isOpenDelegation, storedResult, type DelegationTracker } from "../model/delegations";
+import { currentWakeQueue } from "../../firstmate/watcher/wakeQueue";
+import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
 import { providerStallChatLine, providerStallNote, StallWatch } from "../model/workerStall";
 import { careFaults, type DatabaseHealth } from "../model/careFaults";
 import { HarnessCare, resumeStoppedNote, SAFE_FIXES } from "../model/harnessCare";
@@ -281,6 +283,26 @@ export function useStallWatch(options: {
     tracker: () => latest.current.tracker(),
     session,
     openOwned,
+    // Hivra WP-11: a stall notice goes to the worker's first mate's wake queue, once per silent stretch.
+    wake: (wake) => void currentWakeQueue()?.add(wake).catch((error: unknown) => console.error("Could not queue a first mate's wake", error)),
+    // Hivra WP-11: twenty silent minutes, nothing pending: settle it failed (retryable; its report wakes its first mate),
+    // then stop its turn, in that order, so the stop's own settle finds the row already closed.
+    silent: (row, stop) => {
+      const tracker = latest.current.tracker();
+      if (!tracker) return;
+      const result = {
+        ...storedResult(row, session(row.childSession) as Session | undefined),
+        status: "failed" as const,
+        error: stop.error,
+        // Not a provider class: self-repair never retries it, so its first mate decides (classifier.ts).
+        errorClass: stop.errorClass as MonoSessionCompletionResult["errorClass"],
+        retryable: true,
+      };
+      void tracker
+        .settleFollowed(row, result, "watcher")
+        .then((applied) => (applied ? latest.current.stopSession?.(row.childSession) : undefined))
+        .catch((error: unknown) => console.error("Could not stop a silent worker", error));
+    },
   });
   const main = useRef<boolean | null>(null);
   main.current ??= isMainWindow();

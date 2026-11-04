@@ -49,6 +49,15 @@ when the turn started; the person's own uncommitted edits and commits are never 
 | failed on a usage limit | paused |
 | failed, cancelled, taken over | failed, with what happened |
 
+## Steering and decisions (WP-14)
+
+| What | Where |
+| --- | --- |
+| A message to a running worker is stored first, then steered in or held for the next turn; pending, delivered or failed, across restarts | `src-tauri/src/steering.rs`, `model/steering.ts` (`planDelivery`, `drainPending`), `hooks/useSteering.ts`, tool `task_message` |
+| One decision per stable key; answering releases every waiting task | `src-tauri/src/decisions.rs`, tool `ask_person`, the Needs rows in `hub/model/localHub/decisions.ts` |
+| A worker (or a first mate under a first mate) never asks the person | `decisions.rs` `check_may_ask` |
+| Caps refuse with a reason, never cut: 8 open tasks per first mate, 20 waiting messages per worker, message and question lengths | `firstmate/mod.rs` `check_fanout`, `steering.rs`, `decisions.rs` |
+
 Credits: the role rules, the brief scaffold, the isolation check, the status protocol and the steering section are
 adapted from [firstmate](https://github.com/kunchenguid/firstmate) (MIT, Copyright (c) 2026 Kun Chen). The planner
 rules follow ROMA's ideas (no text taken). See `NOTICE`.

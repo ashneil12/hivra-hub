@@ -510,7 +510,14 @@ fn tools() -> Value {
         "description": "True when the job changes code: it always gets the diff and checks gates."
     });
     if let Value::Array(list) = &mut tools {
-        list.insert(6, task_accept_tool());
+        let after_answer = list
+            .iter()
+            .position(|tool| tool["name"] == "task_answer")
+            .map_or(list.len(), |at| at + 1);
+        // WP-40's task_accept, then WP-14's task_message and ask_person. One splice, so neither index shifts the other.
+        let mut added = vec![task_accept_tool()];
+        added.extend(steering_tools());
+        list.splice(after_answer..after_answer, added);
         list.extend(crate::pr_watch::mcp::tools());
     }
     tools
@@ -534,6 +541,48 @@ fn task_accept_tool() -> Value {
         },
         "annotations": { "title": "Accept or refuse a finished task", "destructiveHint": false }
     })
+}
+
+/// Hivra WP-14's tools, listed after task_answer (built apart: one literal with them passes json!'s recursion limit).
+fn steering_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "task_message",
+            "title": "Message a running task",
+            "description": "Send one of your running tasks' workers a message: a correction, a missing detail, a change of plan. It is stored before it is sent, so it is never lost to a restart, and goes in the way the worker's CLI allows: into its running turn when it can (whenBusy auto, the default, or steer), otherwise held and sent as its next turn (whenBusy queue always waits for the next turn). The result says whether it went in, is held, or failed. Use it instead of a second delegate_task for work that belongs with the running task. Keep the same clientRequestId when retrying so it is never sent twice.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "taskId": { "type": "string", "description": "The task (t-...) from delegate_task." },
+                    "text": { "type": "string", "maxLength": 8000, "description": "The message, as you would brief it: what changes and why." },
+                    "whenBusy": { "type": "string", "enum": ["auto", "steer", "queue"], "default": "auto" },
+                    "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never sends twice." }
+                },
+                "required": ["taskId", "text"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Message a running task", "destructiveHint": false }
+        }),
+        json!({
+            "name": "ask_person",
+            "title": "Ask the person a decision",
+            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. A worker can't use this: its question goes to its own first mate.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "key": { "type": "string", "maxLength": 120, "description": "A stable name for the question: letters, digits, - _ . : /." },
+                    "question": { "type": "string", "maxLength": 2000, "description": "The question, plainly, with what it decides." },
+                    "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "minItems": 2, "maxItems": 6 },
+                    "recommended": { "type": "string", "description": "The option you recommend, exactly as written in options." },
+                    "taskIds": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Your tasks (t-...) that wait on the answer." },
+                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." }
+                },
+                "required": ["key", "question", "options", "recommended"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Ask the person a decision", "destructiveHint": false }
+        }),
+    ]
 }
 
 const DELEGATE_APP_FIELDS: [&str; 19] = [
@@ -651,6 +700,28 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             call.app
                 .call("tasks.accept", &pick(object, &fields), &new_request_id())
         }
+        "task_message" => {
+            let fields = ["taskId", "text", "whenBusy"];
+            let object = arguments(args, &["taskId", "text", "whenBusy", "clientRequestId"])?;
+            let request_id = match object.get("clientRequestId") {
+                None => new_request_id(),
+                Some(Value::String(id)) if valid_request_id(id) => id.clone(),
+                _ => {
+                    return Err(
+                        "clientRequestId must be letters, digits, - and _ (up to 100 characters)"
+                            .into(),
+                    )
+                }
+            };
+            call.app
+                .call("tasks.message", &pick(object, &fields), &request_id)
+        }
+        "ask_person" => {
+            let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
+            let object = arguments(args, &fields)?;
+            call.app
+                .call("tasks.ask", &pick(object, &fields), &new_request_id())
+        }
         "room_post" => {
             let fields = ["room", "text", "replyTo", "conversation", "reaction"];
             let object = arguments(args, &fields)?;
@@ -673,7 +744,8 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
             crate::pr_watch::mcp::call(call.app, name, args)
         }
         _ => Err(format!(
-            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, room_post, \
+            "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
+             ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
              skills_learn, pr_watch, pr_unwatch or pr_watches."
         )),
@@ -1234,6 +1306,8 @@ mod tests {
                 "task_cannot",
                 "task_answer",
                 "task_accept",
+                "task_message",
+                "ask_person",
                 "room_post",
                 "room_read",
                 "mono_message",
@@ -1259,6 +1333,26 @@ mod tests {
         assert_eq!(lines[4]["result"]["protocolVersion"], PROTOCOLS[0]);
         assert_eq!(lines[5]["error"]["code"], -32700);
         assert!(app.actions().is_empty(), "listing tools calls nothing");
+    }
+
+    /// A merge that keeps two packages' tools must not register the same name twice.
+    #[test]
+    fn the_tool_list_has_no_duplicate_names() {
+        let names: Vec<&str> = tools()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        let unique: HashSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "duplicate tool names in tools/list: {names:?}"
+        );
+        assert!(names.contains(&"task_accept"));
+        assert!(names.contains(&"task_message"));
+        assert!(names.contains(&"ask_person"));
     }
 
     #[test]

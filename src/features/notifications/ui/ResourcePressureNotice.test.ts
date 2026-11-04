@@ -58,7 +58,7 @@ it("monitors silently without a footer and closes its dialog when the footer dis
     expect(processPolls()).toBe(0);
 
     await render(footer);
-    expect(footer.textContent).toMatch(/Your Mac is busy \((CPU|memory|slow to respond)[^)]*\)… click to see what's running/);
+    expect(footer.textContent).toMatch(/^Mac busy: (CPU|memory|slow to respond)/);
     // r81 (Critiquito): the hover says what's busy and what to do.
     expect(footer.querySelector("button")?.getAttribute("title")).toMatch(/^Your Mac is busy \(.+\), so things may feel slower\. Click to see what's running and stop what you don't need\.$/);
     // r28: its mark is grey, never amber (no third status colour), in the bar and in its dialog.
@@ -76,7 +76,7 @@ it("monitors silently without a footer and closes its dialog when the footer dis
     expect(document.querySelector(".approval-toast")).toBeNull();
 
     await render(footer);
-    expect(footer.textContent).toContain("Your Mac is busy");
+    expect(footer.textContent).toContain("Mac busy: ");
     expect(document.querySelector('[role="dialog"]')).toBeNull();
   } finally {
     await act(async () => root.unmount());
@@ -138,7 +138,7 @@ it("only lists processes when opened and stops a tool only after its button is c
       ),
     );
     await act(async () => vi.advanceTimersByTimeAsync(10_000));
-    expect(chipHost.textContent).toContain("Your Mac is busy");
+    expect(chipHost.textContent).toContain("Mac busy: ");
     expect(
       invoke.mock.calls.some(([command]) => command !== "resource_usage"),
     ).toBe(false);

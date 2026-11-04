@@ -46,6 +46,8 @@ export type DelegationTasksDeps = {
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
   pool?: AgentAppTasksHost["pool"];
+  /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
+  firstMate?: AgentAppTasksHost["firstMate"];
 };
 
 export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHost {
@@ -131,6 +133,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
         .filter((row) => row.childSession === session && row.state === "running")
         .sort((a, b) => b.createdAt - a.createdAt)[0];
     },
+    ...(deps.firstMate ? { firstMate: deps.firstMate } : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
       ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }

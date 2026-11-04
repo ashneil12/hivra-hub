@@ -344,7 +344,7 @@ fn query(
     Ok(rows)
 }
 
-fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
+pub(crate) fn get(conn: &Connection, id: &str) -> Result<Option<Delegation>, String> {
     Ok(query(conn, "WHERE id = ?1", &[&id])?.into_iter().next())
 }
 
@@ -1073,19 +1073,31 @@ fn delivery_rank(delivery: &str) -> Option<u8> {
 /// Whether `row` may move to `wanted` (with `message` for queued): forward only, never out of disposed, and a report
 /// only moves once the work has finished. Re-queuing under a new message id (boot recovery) is the one same-state move.
 fn delivery_move(row: &Delegation, wanted: &str, message: Option<&str>) -> bool {
-    if row.delivery == DISPOSED {
+    delivery_step(
+        &row.delivery,
+        wanted,
+        !row.is_open(),
+        message.is_some() && row.delivery_message.as_deref() != message,
+    )
+}
+
+/// The delivery ladder on its own (Hivra WP-11: the watcher's wake queue, watcher/queue.rs, moves the same way). A
+/// move goes forward only, never out of disposed, and only once there is something to deliver (`ready`); re-queuing
+/// under a new message id (`requeue`, boot recovery) is the one same-state move.
+pub(crate) fn delivery_step(current: &str, wanted: &str, ready: bool, requeue: bool) -> bool {
+    if current == DISPOSED {
         return false;
     }
     if wanted == DISPOSED {
         return true;
     }
-    if row.is_open() {
+    if !ready {
         return false;
     }
-    if wanted == QUEUED && row.delivery == QUEUED {
-        return message.is_some() && row.delivery_message.as_deref() != message;
+    if wanted == QUEUED && current == QUEUED {
+        return requeue;
     }
-    match (delivery_rank(&row.delivery), delivery_rank(wanted)) {
+    match (delivery_rank(current), delivery_rank(wanted)) {
         (Some(now), Some(next)) => next > now,
         _ => false,
     }

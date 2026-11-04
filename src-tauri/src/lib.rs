@@ -15,8 +15,11 @@ pub mod connectors;
 mod control;
 pub mod control_cli;
 mod cursor_store;
+mod decisions;
 mod delegations;
 mod dev_fault;
+// Hivra WP-12: delivery modes and the one merge path.
+mod delivery;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
@@ -63,6 +66,8 @@ mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
+pub mod plugins;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -85,6 +90,8 @@ mod session_store;
 pub mod ship;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-14: steering messages to running workers.
+mod steering;
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -92,6 +99,8 @@ mod trackpad_zoom;
 mod tray;
 mod verify_live;
 mod verify_stage;
+// Hivra WP-11: the watcher's wake queue and timers.
+mod watcher;
 mod window;
 mod window_frame;
 mod window_transfer;
@@ -382,6 +391,10 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
+            let _ = plugins::host(app.handle());
+            // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
+            plugins::defaults::start(app.handle());
             // Never served to a page: reading the lock file in this process would release the lock.
             for name in [instance::LOCK_FILE, "instance-owner.sqlite-journal"] {
                 let _ = app
@@ -515,6 +528,37 @@ pub fn run() {
             firstmate::gates::firstmate_run_gates,
             firstmate::gates::firstmate_gate_evidence,
             firstmate::gates::firstmate_gates_decide,
+            // Hivra WP-12: delivery modes and the one merge path.
+            delivery::delivery_settings_get,
+            delivery::delivery_settings_set,
+            delivery::delivery_list,
+            delivery::delivery_deliver,
+            delivery::delivery_fix_ask,
+            delivery::delivery_merge,
+            delivery::delivery_merge_approve,
+            delivery::delivery_merges,
+            delivery::delivery_events_open,
+            delivery::delivery_events_consume,
+            // Hivra WP-11: the watcher's wake queue and timers.
+            watcher::watcher_wake_add,
+            watcher::watcher_wakes_open,
+            watcher::watcher_wakes_of,
+            watcher::watcher_wake_drain,
+            watcher::watcher_wake_ack,
+            watcher::watcher_wake_delivered,
+            watcher::watcher_wake_delivery,
+            watcher::watcher_dispose_owner,
+            watcher::watcher_timer_set,
+            watcher::watcher_timer_cancel,
+            watcher::watcher_timers,
+            watcher::watcher_tick,
+            steering::steering_record,
+            steering::steering_pending,
+            steering::steering_list,
+            steering::steering_settle,
+            decisions::decisions_ask,
+            decisions::decisions_answer,
+            decisions::decisions_list,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
@@ -710,6 +754,15 @@ pub fn run() {
             fs::claude_shell_commands,
             fs::write_text_file,
             skills::list_skills,
+            // WP-30: plugins.
+            plugins::plugins_list,
+            plugins::plugins_inspect,
+            plugins::plugins_install_local,
+            plugins::plugins_enable,
+            plugins::plugins_disable,
+            plugins::plugins_uninstall,
+            plugins::plugins_session_wiring,
+            plugins::discover::plugins_discover,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

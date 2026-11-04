@@ -1,0 +1,35 @@
+{
+  "name": "team-tools",
+  "owner": { "name": "Example Team", "email": "team@example.com" },
+  "metadata": { "description": "Plugins our team uses", "version": "1.0.0", "pluginRoot": "./plugins" },
+  "plugins": [
+    {
+      "name": "reviewer",
+      "source": "./reviewer",
+      "description": "Code review skills and a GitHub MCP server",
+      "version": "2.1.0",
+      "author": { "name": "Ada" },
+      "license": "MIT",
+      "keywords": ["review"],
+      "category": "productivity",
+      "skills": ["./skills/review", "./skills/summarise"],
+      "mcpServers": { "github": { "command": "npx", "args": ["-y", "@example/github-mcp"] } },
+      "hooks": { "PreToolUse": [] },
+      "commands": ["./commands/review.md"]
+    },
+    { "name": "formatter", "source": "formatter", "description": "Formatting hooks only", "hooks": "./hooks/hooks.json" },
+    {
+      "name": "from-github",
+      "source": { "source": "github", "repo": "acme/claude-skills", "sha": "0123456789abcdef0123456789abcdef01234567" },
+      "description": "Pinned GitHub source",
+      "skills": "./skills"
+    },
+    { "name": "floating", "source": { "source": "github", "repo": "acme/floating", "ref": "main" }, "description": "Not pinned" },
+    {
+      "name": "from-npm",
+      "source": { "source": "npm", "package": "@acme/claude-plugin", "version": "1.4.2" },
+      "description": "npm source"
+    },
+    { "name": "bad name!", "source": "./x" }
+  ]
+}
