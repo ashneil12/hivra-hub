@@ -98,6 +98,22 @@ fn installed(name: &str) -> Outcome {
     Outcome::Installed { name: name.into() }
 }
 
+/// Pins run in defaults.json order: pstack, then the starter Monos (no skills, so no extra plugin dir).
+fn both_installed() -> Vec<Outcome> {
+    vec![installed("pstack"), installed("starter-monos")]
+}
+
+fn both_given() -> Vec<Outcome> {
+    vec![
+        Outcome::AlreadyGiven {
+            name: "pstack".into(),
+        },
+        Outcome::AlreadyGiven {
+            name: "starter-monos".into(),
+        },
+    ]
+}
+
 #[test]
 fn the_pins_match_the_copies_the_app_carries() {
     let pins = defaults::pins();
@@ -176,7 +192,7 @@ fn the_pins_match_the_copies_the_app_carries() {
 fn a_fresh_install_has_pstack_on_everywhere() {
     let tmp = Tmp::new("fresh");
     let host = host(&tmp);
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
 
     let registry = registry::read(&host).unwrap();
     let entry = &registry.plugins["pstack"];
@@ -194,6 +210,13 @@ fn a_fresh_install_has_pstack_on_everywhere() {
     let mut registered: Vec<String> = entry.skills().map(str::to_string).collect();
     registered.sort();
     assert_eq!(registered, skills, "every pstack skill loads");
+    let starter = &registry.plugins["starter-monos"];
+    assert!(starter.enabled.global);
+    assert_eq!(
+        starter.skills().count(),
+        0,
+        "starter monos add no plugin dir"
+    );
 
     // Installed exactly as carried; the staging folder is gone.
     assert_eq!(
@@ -238,12 +261,7 @@ fn every_later_start_changes_nothing() {
     defaults::ensure(&host);
     let before = fsutil::tree(&[tmp.path()]);
     let registry_before = std::fs::read_to_string(host.root.join("registry.json")).unwrap();
-    assert_eq!(
-        defaults::ensure(&host),
-        vec![Outcome::AlreadyGiven {
-            name: "pstack".into()
-        }]
-    );
+    assert_eq!(defaults::ensure(&host), both_given());
     assert_eq!(fsutil::tree(&[tmp.path()]), before);
     assert_eq!(
         std::fs::read_to_string(host.root.join("registry.json")).unwrap(),
@@ -274,19 +292,24 @@ fn switched_off_stays_off_and_removed_stays_removed() {
 
     registry::uninstall(&host, "pstack").unwrap();
     defaults::ensure(&host);
-    assert!(registry::read(&host).unwrap().plugins.is_empty());
+    let registry = registry::read(&host).unwrap();
+    assert!(
+        !registry.plugins.contains_key("pstack"),
+        "a removed pstack is not put back"
+    );
+    assert!(registry.plugins["starter-monos"].enabled.global);
     assert!(!host.installed("pstack").exists());
-    // Only the memory that it was given stays.
-    let left: Vec<String> = std::fs::read_dir(&host.root)
+    assert!(host.installed("starter-monos").exists());
+    // starter-monos stays under installed/, not as a loose folder next to the given-once record.
+    let mut left: Vec<String> = std::fs::read_dir(&host.root)
         .unwrap()
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .collect();
-    assert_eq!(
-        left,
-        vec![STATE_FILE.to_string()],
-        "nothing else is left behind"
-    );
+    left.sort();
+    assert!(left.iter().any(|n| n == "installed"));
+    assert!(left.iter().any(|n| n == STATE_FILE));
+    assert!(!left.iter().any(|n| n == "pstack"));
     assert!(skills_in(&host.agents_skills).is_empty());
 }
 
@@ -303,19 +326,14 @@ fn an_existing_install_gets_it_once() {
     )
     .unwrap();
     registry::install_local(&host, &other, Source::local(&other)).unwrap();
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
     let registry = registry::read(&host).unwrap();
     assert!(registry.plugins["pstack"].enabled.global);
     assert!(
         !registry.plugins["other"].enabled.any(),
         "other plugins are left as they were"
     );
-    assert_eq!(
-        defaults::ensure(&host),
-        vec![Outcome::AlreadyGiven {
-            name: "pstack".into()
-        }]
-    );
+    assert_eq!(defaults::ensure(&host), both_given());
 }
 
 #[test]
@@ -326,9 +344,12 @@ fn a_pstack_the_person_installed_themselves_is_left_alone() {
     registry::install_local(&host, &theirs, Source::local(&theirs)).unwrap();
     assert_eq!(
         defaults::ensure(&host),
-        vec![Outcome::TheirOwn {
-            name: "pstack".into()
-        }]
+        vec![
+            Outcome::TheirOwn {
+                name: "pstack".into()
+            },
+            installed("starter-monos"),
+        ]
     );
     let entry = &registry::read(&host).unwrap().plugins["pstack"];
     assert_eq!(entry.source.kind, "local");
@@ -345,7 +366,7 @@ fn a_start_cut_after_the_install_finishes_the_job() {
     let dir = defaults::unpack(&pin, &staging).unwrap();
     registry::install_local(&host, &dir, pin.source()).unwrap();
     // No switch-on, no record: the app stopped here.
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
     assert!(
         registry::read(&host).unwrap().plugins["pstack"]
             .enabled
@@ -360,12 +381,19 @@ fn a_failed_start_tries_again_next_time() {
     // The plugin folder can't be made: a file is in the way.
     std::fs::create_dir_all(tmp.path().join("app-data")).unwrap();
     std::fs::write(&host.root, "not a folder").unwrap();
-    assert!(matches!(
-        defaults::ensure(&host).as_slice(),
-        [Outcome::Failed { .. }]
-    ));
+    let failed = defaults::ensure(&host);
+    assert_eq!(failed.len(), 2, "{failed:?}");
+    assert!(failed.iter().all(|o| matches!(o, Outcome::Failed { .. })));
     std::fs::remove_file(&host.root).unwrap();
-    assert_eq!(defaults::ensure(&host), vec![installed("pstack")]);
+    assert_eq!(defaults::ensure(&host), both_installed());
+}
+
+/// lock.json is every bundled plugin. The session snapshot is the pstack wiring, so starter-monos is removed and the
+/// file is written again the way registry.rs writes it (pretty, then a newline).
+fn pstack_only_lock(raw: &str) -> String {
+    let mut lock: registry::LockFile = serde_json::from_str(raw.trim()).unwrap();
+    lock.plugins.remove("starter-monos");
+    format!("{}\n", serde_json::to_string_pretty(&lock).unwrap())
 }
 
 /// The session test (`src/features/plugins/model/pstackSessions.test.ts`) replays what the real Claude Code and Codex
@@ -404,6 +432,10 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                 if name.ends_with("registry.json") || name.ends_with(STATE_FILE) {
                     continue; // install times and the given-once record; the session test reads neither
                 }
+                // The snapshot is the pstack wiring. starter-monos has no skills and no MCP, so it is not part of it.
+                if name.contains("starter-monos") {
+                    continue;
+                }
                 let meta = std::fs::symlink_metadata(&path).unwrap();
                 if path == installed {
                     out.push(json!({ "path": name, "carried": "pstack" }));
@@ -419,7 +451,15 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
                     out.push(json!({ "path": name, "dir": true }));
                     walk(base, &path, installed, rel, out);
                 } else {
-                    out.push(json!({ "path": name, "text": rel(&std::fs::read_to_string(&path).unwrap()) }));
+                    let raw = std::fs::read_to_string(&path).unwrap();
+                    // lock.json lists every bundled plugin. The snapshot is the pstack wiring, so the
+                    // starter-monos pin is taken out before the text is compared. Same writer as registry.rs.
+                    let body = if name.ends_with("plugins/lock.json") {
+                        pstack_only_lock(&raw)
+                    } else {
+                        raw
+                    };
+                    out.push(json!({ "path": name, "text": rel(&body) }));
                 }
             }
         }
