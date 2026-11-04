@@ -66,6 +66,39 @@ fn depth_three_is_refused_with_a_plain_reason() {
 }
 
 #[test]
+fn a_mono_brief_to_a_coding_team_runs_at_depth_two_and_a_third_level_is_refused() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    // The person talks to the Mono. Its followed brief to the coding team is the nested case.
+    let brief = record(
+        &mut conn,
+        RecordInput {
+            follow: Some("lead".into()),
+            ..launch("mono", "brief", "coding-team")
+        },
+        1,
+    )
+    .unwrap();
+    assert_eq!(brief.follow.as_deref(), Some("lead"));
+    // The coding team sits under the Mono, so the workers it starts are depth 2.
+    assert_eq!(check_depth(&conn, "coding-team").unwrap(), 2);
+    record(
+        &mut conn,
+        RecordInput {
+            parent_id: Some(brief.id.clone()),
+            ..launch("coding-team", "work", "worker")
+        },
+        2,
+    )
+    .unwrap();
+    let refused = check_depth(&conn, "worker").unwrap_err();
+    assert!(refused.contains("3 levels deep"), "{refused}");
+    assert!(refused.contains("at 2"), "{refused}");
+    // The Mono's own next brief is still depth 1: the coding team's workers are not above it.
+    assert_eq!(check_depth(&conn, "mono").unwrap(), 1);
+}
+
+#[test]
 fn depth_counts_only_open_work_above_the_chat() {
     let store = store();
     let mut conn = store.lock_conn().unwrap();
