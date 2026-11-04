@@ -111,7 +111,7 @@ export function CreatorScreen() {
               const started = await creatorStart(chosen);
               if (!current()) return started;
               apply(started);
-              return creatorDraft(started.id, started.revision, draftFor(chosen, text));
+              return creatorDraft(started.id, started.revision, draftFor(chosen, text, started.id));
             });
           }}
         >
@@ -132,7 +132,7 @@ export function CreatorScreen() {
             Undo
           </button>
         ) : null}
-        {state && phase !== "discarded" ? (
+        {state && phase !== "discarded" && phase !== "kept" ? (
           <button type="button" className={BTN} disabled={busy} onClick={() => run(() => creatorDiscard(state.id, state.revision))}>
             Discard
           </button>

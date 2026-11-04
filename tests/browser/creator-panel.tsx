@@ -1,8 +1,8 @@
-// WP-34. The Creator screen against a fake bridge. The panel document is the real sandbox srcdoc.
-// A path that leaves the scratch folder is refused. The paragraph outside #root stands in for Hivra's own code.
-
+// WP-34. Settings → Plugins mounts PluginsPage. This page mounts that same component and opens Creator.
+// The draft comes from draftFor (no model). The panel document is the real sandbox srcdoc.
 import { createRoot } from "react-dom/client";
-import { CreatorScreen } from "../../src/features/creator/ui/CreatorScreen";
+import { PluginsPage } from "../../src/features/plugins/ui/DiscoverPage";
+import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
 type File = { path: string; content: string };
@@ -49,8 +49,16 @@ function panelFrom(files: File[]): Panel {
   return { id: "hello", title: "Hello", html, css: "", js: "", permissions: [] };
 }
 
-installFakeTauri("creator", (command, args) => {
+function pluginName(files: File[]): string {
+  const manifest = files.find((file) => file.path === "plugin.json");
+  const name = manifest ? (JSON.parse(manifest.content) as { name?: string }).name : "";
+  return typeof name === "string" ? name : "";
+}
+
+installFakeTauri("this-view", (command, args) => {
+  if (command === "plugins_discover") return [];
   if (command === "creator_start") {
+    document.body.dataset.creatorView = String(args.view ?? "");
     state = {
       id: "11111111-1111-4111-8111-111111111111",
       view: String(args.view ?? ""),
@@ -78,9 +86,11 @@ installFakeTauri("creator", (command, args) => {
     if (files.some((file) => file.path.includes("..") || file.path.includes("\\"))) {
       throw new Error("That path isn't inside the scratch folder.");
     }
+    const name = pluginName(files);
+    document.body.dataset.pluginName = name;
     return bump({
       phase: "drafted",
-      plugin: "made-panel",
+      plugin: name,
       panel: panelFrom(files),
       mcpWaiting: withServer,
       scriptWaiting: withScript,
@@ -95,10 +105,13 @@ installFakeTauri("creator", (command, args) => {
     return bump({ phase: "kept", enabledGlobally: true });
   }
   if (command === "creator_undo") return bump({ phase: "undone", enabledGlobally: false });
-  if (command === "creator_discard") return bump({ phase: "discarded", panel: null });
+  if (command === "creator_discard") {
+    if (state.phase === "kept") throw new Error("Undo it first.");
+    return bump({ phase: "discarded", panel: null });
+  }
   if (command === "creator_approve_mcp") return bump({ mcpApproved: true, mcpWaiting: false });
   if (command === "creator_state") return copy();
   throw new Error(`unexpected ${command}`);
 });
 
-createRoot(document.getElementById("root")!).render(<CreatorScreen />);
+createRoot(document.getElementById("root")!).render(<PluginsPage />);

@@ -2,6 +2,8 @@
 // Reads come from the app's local projects and delegations, not from Ash OS.
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+// WP-34: the catalog is asked for this window, so a preview in another window is not in this list.
+import { currentViewId } from "../../creator/model/view";
 import { frameKey, pageFrameUrl } from "../../pages/model/pageFrame";
 import { appPageSources } from "../../pages/model/pageSources";
 import { pageCapabilityHandlers } from "../../pages/model/pageCapabilities";
@@ -139,7 +141,7 @@ export function PanelTabsScreen() {
     }
     if (!alive.current || mine !== gen.current) return;
     try {
-      const next = await invoke("panels_catalog");
+      const next = await invoke("panels_catalog", { view: currentViewId() });
       if (!alive.current || mine !== gen.current) return;
       setCatalog(readCatalog(next));
       setRev(mine);

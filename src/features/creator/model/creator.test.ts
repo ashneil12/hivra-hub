@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -15,6 +15,10 @@ import {
 } from "./creator";
 
 const invokeMock = vi.mocked(invoke);
+
+type WindowInternals = {
+  __TAURI_INTERNALS__?: { metadata?: { currentWindow?: { label?: string } } };
+};
 
 function session(patch: Record<string, unknown> = {}) {
   return {
@@ -88,12 +92,19 @@ describe("statusLine and a late click", () => {
 });
 
 describe("creator commands", () => {
-  beforeEach(() => invokeMock.mockReset());
+  beforeEach(() => {
+    invokeMock.mockReset();
+    (globalThis as WindowInternals).__TAURI_INTERNALS__ = { metadata: { currentWindow: { label: "this-view" } } };
+  });
+
+  afterEach(() => {
+    delete (globalThis as WindowInternals).__TAURI_INTERNALS__;
+  });
 
   it("sends the revision it was given and refuses a reply that isn't a session", async () => {
     invokeMock.mockResolvedValueOnce(session());
     await creatorStart("panel");
-    expect(invokeMock).toHaveBeenCalledWith("creator_start", { view: "creator", expect: "panel" });
+    expect(invokeMock).toHaveBeenCalledWith("creator_start", { view: "this-view", expect: "panel" });
 
     invokeMock.mockResolvedValueOnce(session({ revision: 2 }));
     const drafted = await creatorDraft("11111111-1111-4111-8111-111111111111", 1, [{ path: "plugin.json", content: "{}" }]);

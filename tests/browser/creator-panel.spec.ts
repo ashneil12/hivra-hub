@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 test("a panel is built, previewed, kept, undone and discarded", async ({ page }) => {
   await page.goto("/tests/browser/creator-panel.html");
   await expect(page.locator("[data-app-source]")).toHaveText("app source");
+  await page.getByRole("tab", { name: "Creator" }).click();
   await page.getByLabel("What should it do?").fill("Ship the panel");
   await page.getByRole("button", { name: "Build" }).click();
 
@@ -10,11 +11,14 @@ test("a panel is built, previewed, kept, undone and discarded", async ({ page })
   await expect(frame.locator("p")).toHaveText("Ship the panel");
   await expect(page.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
   await expect(page.locator("[data-creator-status]")).toHaveText("Drafted. Nothing is installed yet.");
+  await expect(page.locator("body")).toHaveAttribute("data-creator-view", "this-view");
+  await expect(page.locator("body")).toHaveAttribute("data-plugin-name", /^made-panel-[a-z0-9]+$/);
 
   await page.getByRole("button", { name: "Preview" }).click();
   await expect(page.locator("[data-creator-status]")).toHaveText("Only this view can see it.");
   await page.getByRole("button", { name: "Keep" }).click();
   await expect(page.locator("[data-creator-status]")).toHaveText("Kept.");
+  await expect(page.getByRole("button", { name: "Discard" })).toHaveCount(0);
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.locator("[data-creator-status]")).toHaveText("Rolled back.");
   await page.getByRole("button", { name: "Discard" }).click();
@@ -25,6 +29,7 @@ test("a panel is built, previewed, kept, undone and discarded", async ({ page })
 
 test("an MCP server does not run until it is allowed", async ({ page }) => {
   await page.goto("/tests/browser/creator-panel.html?server=1");
+  await page.getByRole("tab", { name: "Creator" }).click();
   await page.getByLabel("What should it do?").fill("Ship the panel");
   await page.getByRole("button", { name: "Build" }).click();
   await expect(page.getByText("This server doesn't run until you allow it.")).toBeVisible();
@@ -39,6 +44,7 @@ test("an MCP server does not run until it is allowed", async ({ page }) => {
 
 test("a setup step waits for an OK", async ({ page }) => {
   await page.goto("/tests/browser/creator-panel.html?script=1");
+  await page.getByRole("tab", { name: "Creator" }).click();
   await page.getByLabel("What should it do?").fill("Ship the panel");
   await page.getByRole("button", { name: "Build" }).click();
   await page.getByRole("button", { name: "Preview" }).click();

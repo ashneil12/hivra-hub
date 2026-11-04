@@ -28,9 +28,16 @@ function manifest(name: string): string {
   return `${JSON.stringify({ $schema: SCHEMA, name, version: "1.0.0" }, null, 2)}\n`;
 }
 
-export function draftFor(kind: ContributionKind, ask: string): DraftFile[] {
+/** One name per build. The id is untrusted, so only its letters and digits are kept, and it never becomes a path. */
+export function pluginName(kind: ContributionKind, buildId: string): string {
+  const token = [...buildId.toLowerCase()].filter((ch) => /[a-z0-9]/.test(ch)).join("").slice(0, 32);
+  const suffix = token.length >= 8 ? token : "draft0000";
+  return `made-${kind}-${suffix}`;
+}
+
+export function draftFor(kind: ContributionKind, ask: string, buildId: string): DraftFile[] {
   const shown = shownAsk(ask);
-  const plugin: DraftFile = { path: "plugin.json", content: manifest(`made-${kind}`) };
+  const plugin: DraftFile = { path: "plugin.json", content: manifest(pluginName(kind, buildId)) };
   if (kind === "panel") {
     return [
       plugin,

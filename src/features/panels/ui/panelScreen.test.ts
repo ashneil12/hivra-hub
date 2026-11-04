@@ -25,6 +25,29 @@ beforeEach(() => {
   vi.mocked(invoke).mockReset();
 });
 
+it("asks the catalog for this view, so a preview in another view is not this list", async () => {
+  vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+    if (cmd === "panels_migrate") return { added: [], skipped: [] };
+    if (cmd === "panels_catalog") return [];
+    return undefined;
+  });
+  const host = document.createElement("div");
+  document.body.appendChild(host);
+  const root = createRoot(host);
+  await act(async () => {
+    root.render(createElement(PanelTabsScreen));
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  const catalog = calls().filter((call) => call.cmd === "panels_catalog");
+  expect(catalog).toEqual([{ cmd: "panels_catalog", args: { view: "main" } }]);
+  await act(async () => {
+    root.unmount();
+  });
+  host.remove();
+});
+
 it("turns the plugin off in every scope it is on, not only the global one", async () => {
   vi.mocked(invoke).mockImplementation(async (cmd: string) => {
     if (cmd === "panels_migrate") return { added: [], skipped: [] };

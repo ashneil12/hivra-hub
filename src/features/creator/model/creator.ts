@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import type { ContributionKind, DraftFile } from "./draftFor";
+import { currentViewId } from "./view";
 
 export type PanelPreview = {
   id: string;
@@ -135,10 +136,8 @@ async function call(command: string, args: Record<string, unknown>): Promise<Cre
   return state;
 }
 
-const VIEW = "creator";
-
 export function creatorStart(expect: ContributionKind): Promise<CreatorState> {
-  return call("creator_start", { view: VIEW, expect });
+  return call("creator_start", { view: currentViewId(), expect });
 }
 
 export function creatorDraft(id: string, revision: number, files: DraftFile[]): Promise<CreatorState> {
