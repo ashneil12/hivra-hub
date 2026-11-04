@@ -19,6 +19,25 @@ export async function codexExtraConfig(cwd: string): Promise<Record<string, unkn
   }
 }
 
+// WP-41: the same always-on text Claude appends (the pstack index and the plain-English ending), carried on the
+// thread's developerInstructions. Empty means the thread gets none.
+type Instructions = (cwd: string) => string | Promise<string>;
+let instructions: Instructions | undefined;
+
+export function setCodexDeveloperInstructions(next: Instructions | undefined): void {
+  instructions = next;
+}
+
+export async function codexDeveloperInstructions(cwd: string): Promise<string | undefined> {
+  if (!instructions) return undefined;
+  try {
+    const text = (await instructions(cwd))?.trim();
+    return text || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isTable(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
