@@ -19,6 +19,8 @@ const TRY_PROFILE: &str = "The browser profile couldn't be made. Try again.";
 const NOT_OURS: &str = "That process isn't this browser session. It was not stopped.";
 const NOT_CHECKED: &str = "Couldn't check that process. It was not stopped. Try again.";
 const NOT_YET: &str = "It hasn't stopped yet.";
+/// The process has exited and has not been reaped. It is not another session.
+const DEPARTED: &str = "departed";
 
 /// A profile the Settings list can show. `path` is the folder Playwright uses.
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -66,6 +68,10 @@ struct StoredDrive {
     /// A later process that reused the pid will not match, so Stop does not signal it.
     #[serde(default)]
     process_start: String,
+    /// Written by the wrapper only after its browser tree is confirmed gone. Empty when this
+    /// drive is the browser itself, and the process leaving is enough.
+    #[serde(default)]
+    done_path: String,
 }
 
 pub(crate) struct LaunchEnv {
@@ -75,6 +81,8 @@ pub(crate) struct LaunchEnv {
     pub visible: bool,
     pub token: String,
     pub name: String,
+    /// The wrapper writes this file only once its browser tree is confirmed gone.
+    pub done: PathBuf,
 }
 
 #[cfg(test)]
@@ -613,13 +621,16 @@ pub(crate) fn launch_env(data: &Path, id: &str, name: &str) -> Result<LaunchEnv,
         Some(folder) => (folder, true),
         None => (ensure_profile_dir(data, id)?, false),
     };
+    let token = format!("hivra-{}", uuid::Uuid::new_v4());
+    let done = drives_dir(data).join(format!("{token}.gone"));
     Ok(LaunchEnv {
         profile,
         headless: !watch,
         own: using_own,
         visible: watch,
-        token: format!("hivra-{}", uuid::Uuid::new_v4()),
+        token,
         name: stored,
+        done,
     })
 }
 
@@ -780,6 +791,11 @@ fn alive(pid: u32) -> bool {
         return false;
     };
     reap(pid as u32);
+    // A zombie still answers kill(0). The app is not its parent, so waitpid cannot reap it.
+    // It has already exited. It is not a live session.
+    if is_zombie(pid as u32) {
+        return false;
+    }
     unsafe {
         if libc::kill(pid, 0) == 0 {
             return true;
@@ -962,11 +978,52 @@ fn targets_for(pid: u32, token: &str) -> Vec<u32> {
     }
 }
 
+#[cfg(unix)]
+fn process_state(pid: u32) -> Result<String, String> {
+    let Some(pid) = pid_i32(pid) else {
+        return Err(NOT_OURS.into());
+    };
+    let mut command = Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", "state="]);
+    allow_path(&mut command);
+    let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
+    if !out.status.success() {
+        return Err(NOT_CHECKED.into());
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+#[cfg(unix)]
+fn is_zombie(pid: u32) -> bool {
+    process_state(pid)
+        .ok()
+        .is_some_and(|state| state.starts_with('Z'))
+}
+
+#[cfg(not(unix))]
+fn is_zombie(_pid: u32) -> bool {
+    false
+}
+
+fn defunct_line(line: &str) -> bool {
+    let text = line.trim();
+    text.contains("<defunct>") || text.contains("(defunct)")
+}
+
 fn confirm_session(pid: u32, token: &str, started: &str) -> Result<(), String> {
     if !minted_token(token) {
         return Err(NOT_OURS.into());
     }
+    if is_zombie(pid) {
+        return Err(DEPARTED.into());
+    }
     let line = command_line(pid)?;
+    if defunct_line(&line) {
+        return Err(DEPARTED.into());
+    }
+    if line.trim().is_empty() {
+        return Err(NOT_CHECKED.into());
+    }
     if !token_in(&line, token) {
         return Err(NOT_OURS.into());
     }
@@ -1044,7 +1101,35 @@ fn wait_gone(pid: u32, ms: u64) -> bool {
     }
 }
 
+fn done_file(data: &Path, token: &str) -> Option<PathBuf> {
+    if !minted_token(token) {
+        return None;
+    }
+    Some(drives_dir(data).join(format!("{token}.gone")))
+}
+
+/// A wrapper records a done file and Stop trusts it only at that exact path.
+fn tree_confirmed(data: &Path, drive: &StoredDrive) -> bool {
+    if drive.done_path.is_empty() {
+        return true;
+    }
+    let Some(expected) = done_file(data, &drive.token) else {
+        return false;
+    };
+    Path::new(&drive.done_path) == expected.as_path() && expected.is_file()
+}
+
+fn finish_gone(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), String> {
+    if !tree_confirmed(data, drive) {
+        return Err(NOT_YET.into());
+    }
+    remove_if_same(path, &drive.token);
+    Ok(())
+}
+
 /// Stop one drive. Missing is fine. A process that isn't this session is not signalled.
+/// Success means the recorded process is gone and, when a wrapper owns the tree, that it
+/// confirmed the browser itself has gone.
 pub fn stop(data: &Path, id: &str) -> Result<(), String> {
     let Some(path) = drive_path(data, id) else {
         return Err("That browser session isn't one this app started.".into());
@@ -1060,18 +1145,21 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
         return Err(NOT_OURS.into());
     }
     if !alive(drive.pid) {
-        remove_if_same(&path, &drive.token);
-        return Ok(());
+        return finish_gone(data, &path, &drive);
     }
     match confirm_session(drive.pid, &drive.token, &drive.process_start) {
         Ok(()) => {}
         Err(error) if error == NOT_CHECKED => return Err(error),
+        Err(error) if error == DEPARTED => return finish_gone(data, &path, &drive),
         Err(error) => {
             remove_if_same(&path, &drive.token);
             return Err(error);
         }
     }
     if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, false) {
+        if error == DEPARTED {
+            return finish_gone(data, &path, &drive);
+        }
         if error != NOT_CHECKED && error != NOT_OURS {
             return Err(error);
         }
@@ -1081,13 +1169,16 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
         return Err(error);
     }
     if wait_gone(drive.pid, 1500) {
-        remove_if_same(&path, &drive.token);
-        return Ok(());
+        return finish_gone(data, &path, &drive);
     }
-    signal(drive.pid, &drive.token, &drive.process_start, true)?;
+    if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, true) {
+        if error == DEPARTED || !alive(drive.pid) {
+            return finish_gone(data, &path, &drive);
+        }
+        return Err(error);
+    }
     if wait_gone(drive.pid, 1500) {
-        remove_if_same(&path, &drive.token);
-        return Ok(());
+        return finish_gone(data, &path, &drive);
     }
     Err(NOT_YET.into())
 }
@@ -1127,6 +1218,7 @@ fn apply_env(command: &mut Command, plan: &LaunchEnv) {
         if plan.own { "1" } else { "0" },
     );
     command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_DONE", &plan.done);
 }
 
 fn app_data(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -1215,14 +1307,20 @@ fn end_child(mut child: std::process::Child) {
 fn wait_for_token(pid: u32, token: &str) -> Result<(), String> {
     let start = std::time::Instant::now();
     loop {
+        if is_zombie(pid) {
+            return Err("The browser exited before it could be checked.".into());
+        }
         match command_line(pid) {
             Ok(line) if token_in(&line, token) => return Ok(()),
+            Ok(line) if defunct_line(&line) => {
+                return Err("The browser exited before it could be checked.".into());
+            }
             Ok(_) if start.elapsed() >= Duration::from_millis(500) => return Err(NOT_OURS.into()),
             Err(error) if start.elapsed() >= Duration::from_millis(500) => return Err(error),
             _ => {}
         }
         if !alive(pid) {
-            return Err(NOT_OURS.into());
+            return Err("The browser exited before it could be checked.".into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -1261,6 +1359,11 @@ pub(crate) fn spawn_recorded(
     // carries the token, and Stop must not be left pointing at it.
     match command_line(pid) {
         Ok(line) if token_in(&line, &plan.token) => {}
+        Ok(line) if defunct_line(&line) || is_zombie(pid) => {
+            end_child(child);
+            eprintln!("hivra browser: The browser exited before it could be checked.");
+            return Err(78);
+        }
         Ok(_) => {
             end_child(child);
             eprintln!("hivra browser: The browser didn't start. Try again. {NOT_OURS}");
@@ -1281,6 +1384,7 @@ pub(crate) fn spawn_recorded(
         visible: plan.visible,
         started_at_ms: now_ms(),
         process_start: started,
+        done_path: path_text(&plan.done),
     };
     match record_drive(data, &drive) {
         Ok(path) => Ok((child, path)),
@@ -1373,6 +1477,7 @@ pub(crate) fn start_session(
             visible: plan.visible,
             started_at_ms: now_ms(),
             process_start: started,
+            done_path: String::new(),
         },
     ) {
         end_child(child);

@@ -287,6 +287,7 @@ fn stopping_a_missing_drive_is_fine_and_a_low_pid_is_not_signalled() {
             visible: true,
             started_at_ms: 1,
             process_start: String::new(),
+            done_path: String::new(),
         },
     )
     .unwrap();
@@ -311,6 +312,7 @@ fn a_dead_pid_is_dropped_from_the_list() {
             visible: true,
             started_at_ms: 1,
             process_start: String::new(),
+            done_path: String::new(),
         },
     )
     .unwrap();
@@ -336,6 +338,7 @@ fn stop_does_not_kill_a_process_whose_command_line_lacks_the_token() {
             visible: true,
             started_at_ms: 1,
             process_start: String::new(),
+            done_path: String::new(),
         },
     )
     .unwrap();
@@ -388,6 +391,23 @@ fn a_process_that_ignores_the_first_signal_is_not_a_final_failure() {
 }
 
 #[cfg(unix)]
+struct EndPid(u32);
+
+#[cfg(unix)]
+impl Drop for EndPid {
+    fn drop(&mut self) {
+        let Ok(pid) = i32::try_from(self.0) else {
+            return;
+        };
+        if pid >= 2 {
+            unsafe {
+                libc::kill(pid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
 struct Reap(std::process::Child);
 
 #[cfg(unix)]
@@ -432,6 +452,7 @@ fn a_drive_file_whose_token_is_not_the_one_launch_mints_is_refused() {
             visible: true,
             started_at_ms: 1,
             process_start: String::new(),
+            done_path: String::new(),
         },
     )
     .unwrap_err();
@@ -509,9 +530,20 @@ fn stop_ends_the_fake_server_and_leaves_the_other_process() {
     server.stdout(std::process::Stdio::null());
     server.stderr(std::process::Stdio::null());
     allow_path(&mut server);
-    let server = server.spawn().unwrap();
-    let _server = Reap(server);
-    let server_pid = _server.0.id();
+    // The fake engine exits when stdin closes. Hold the pipe so it stays this process.
+    server.stdin(std::process::Stdio::piped());
+    let mut server = server.spawn().unwrap();
+    let held = server.stdin.take();
+    let server_pid = server.id();
+    let server = Reap(server);
+    wait_until(
+        || {
+            command_line(server_pid)
+                .ok()
+                .is_some_and(|line| token_in(&line, &plan.token) && !defunct_line(&line))
+        },
+        "the fake server never showed its token",
+    );
     let id = uuid::Uuid::new_v4().to_string();
     record_drive(
         tmp.data(),
@@ -524,6 +556,7 @@ fn stop_ends_the_fake_server_and_leaves_the_other_process() {
             visible: true,
             started_at_ms: 1,
             process_start: process_start(server_pid).unwrap(),
+            done_path: String::new(),
         },
     )
     .unwrap();
@@ -538,6 +571,8 @@ fn stop_ends_the_fake_server_and_leaves_the_other_process() {
     stop(tmp.data(), &id).unwrap();
     assert!(!alive(server_pid), "Stop ends the fake server");
     assert!(alive(other_pid), "Stop leaves the other process");
+    drop(held);
+    drop(server);
 }
 
 #[cfg(unix)]
@@ -553,16 +588,41 @@ fn the_recorded_pid_is_the_child_that_carries_the_token() {
     command.stdout(std::process::Stdio::null());
     command.stderr(std::process::Stdio::null());
     allow_path(&mut command);
+    command.stdin(std::process::Stdio::piped());
     let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let _held = child.stdin.take();
+    wait_until(
+        || {
+            command_line(child.id())
+                .ok()
+                .is_some_and(|line| token_in(&line, &plan.token) && !defunct_line(&line))
+        },
+        "the recorded child never showed its token",
+    );
     let drive = load_drive(&path).unwrap();
     assert_ne!(drive.pid, std::process::id());
     assert_eq!(drive.pid, child.id());
     let line = command_line(drive.pid).unwrap();
     assert!(token_in(&line, &plan.token), "{line}");
+    assert!(!defunct_line(&line), "{line}");
     assert!(!drive.process_start.is_empty());
     assert_eq!(drive.process_start, process_start(drive.pid).unwrap());
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(unix)]
+fn wait_until(mut ready: impl FnMut() -> bool, why: &str) {
+    let start = std::time::Instant::now();
+    loop {
+        if ready() {
+            return;
+        }
+        if start.elapsed() > std::time::Duration::from_secs(3) {
+            panic!("{why}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }
 
 #[cfg(unix)]
@@ -602,6 +662,7 @@ fn stop_waits_for_a_child_that_exits_late() {
     command.env("HIVRA_BROWSER_HEADLESS", "1");
     command.env("HIVRA_BROWSER_OWN_PROFILE", "0");
     command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_DONE", &plan.done);
     command.env("HIVRA_BROWSER_COMMAND", "node");
     command.env(
         "HIVRA_BROWSER_COMMAND_ARGS",
@@ -623,6 +684,86 @@ fn stop_waits_for_a_child_that_exits_late() {
         "Stop waited for the child instead of returning as soon as the wrapper exited"
     );
     assert!(!alive(child.id()));
+    assert!(
+        plan.done.is_file(),
+        "the wrapper confirmed the tree was gone"
+    );
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_defunct_process_is_already_gone() {
+    let tmp = Tmp::new();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let mut command = std::process::Command::new("true");
+    allow_path(&mut command);
+    let mut child = command.spawn().unwrap();
+    let pid = child.id();
+    wait_until(|| is_zombie(pid), "true never became a zombie");
+    let error = confirm_session(pid, &plan.token, "not-this-start").unwrap_err();
+    assert_eq!(error, DEPARTED);
+    let id = uuid::Uuid::new_v4().to_string();
+    record_drive(
+        tmp.data(),
+        &StoredDrive {
+            id: id.clone(),
+            agent_id: "ada".into(),
+            name: plan.name,
+            pid,
+            token: plan.token,
+            visible: true,
+            started_at_ms: 1,
+            process_start: "not-this-start".into(),
+            done_path: String::new(),
+        },
+    )
+    .unwrap();
+    stop(tmp.data(), &id).unwrap();
+    assert!(!drives_dir(tmp.data()).join(format!("{id}.json")).exists());
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_does_not_succeed_when_the_browser_tree_was_not_confirmed() {
+    let tmp = Tmp::new();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/browser/server.mjs");
+    let late = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/lateChild.mjs");
+    let pid_file = tmp.data().join("hold.pid");
+    let mut command = std::process::Command::new("node");
+    command.arg(&server).arg(&plan.token);
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    allow_path(&mut command);
+    command.stdin(std::process::Stdio::piped());
+    command.env("HIVRA_BROWSER_PROFILE", &plan.profile);
+    command.env("HIVRA_BROWSER_HEADLESS", "1");
+    command.env("HIVRA_BROWSER_OWN_PROFILE", "0");
+    command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_DONE", &plan.done);
+    command.env("HIVRA_BROWSER_COMMAND", "node");
+    command.env(
+        "HIVRA_BROWSER_COMMAND_ARGS",
+        serde_json::json!([late.to_string_lossy(), "hold"]).to_string(),
+    );
+    command.env("HIVRA_LATE_PID", &pid_file);
+    let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let drive = load_drive(&path).unwrap();
+    let hold_pid = wait_pid_file(&pid_file);
+    let _end_hold = EndPid(hold_pid);
+    // SIGKILL skips the wrapper's shutdown, so it never confirms the tree.
+    child.kill().unwrap();
+    wait_until(
+        || !alive(child.id()),
+        "the wrapper was still running after it was killed",
+    );
+    let error = stop(tmp.data(), &drive.id).unwrap_err();
+    assert!(error.contains("hasn't stopped"), "{error}");
+    assert!(alive(hold_pid), "the browser was not confirmed gone");
+    assert!(!plan.done.is_file());
     let _ = child.wait();
 }
 
