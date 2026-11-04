@@ -13,6 +13,7 @@ pub(crate) const CHANGED: &str = "tasks://changed";
 const TITLE_MAX: usize = 300;
 const TEXT_MAX: usize = 12_000;
 const PROJECT_MAX: usize = 1_000;
+/// Caps the ancestor walk only. The cycle check has no bound: a walk SQLite cannot finish is an error.
 const DEPTH_MAX: i64 = 1_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -501,18 +502,18 @@ fn validate_parent(
     let Some(task_id) = task_id else {
         return Ok(());
     };
-    // UNION, not UNION ALL, so a corrupt cycle stops. The depth bound is only for a chain that never repeats.
+    // UNION, not UNION ALL, so a repeated id stops the walk. A walk SQLite cannot finish is an error, not a free pass.
     let cycle: i64 = conn
         .query_row(
-            "WITH RECURSIVE chain(id, depth) AS (
-               SELECT ?1, 0
+            "WITH RECURSIVE chain(id) AS (
+               SELECT ?1
                UNION
-               SELECT tasks.parent_id, chain.depth + 1 FROM tasks
+               SELECT tasks.parent_id FROM tasks
                JOIN chain ON tasks.id = chain.id
-               WHERE tasks.parent_id IS NOT NULL AND chain.depth < ?3
+               WHERE tasks.parent_id IS NOT NULL
              )
              SELECT EXISTS (SELECT 1 FROM chain WHERE id = ?2)",
-            params![parent_id, task_id, DEPTH_MAX],
+            params![parent_id, task_id],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
@@ -771,11 +772,11 @@ fn wake(conn: &Connection, owner: &str, key: &str, text: &str, now: i64) -> Resu
     if owner == "person" || !crate::watcher::queue::session_ok(owner) {
         return Ok(());
     }
-    // The key is per task, so a second assignee does not get another wake.
+    // One wake per assignee. A later assignee still hears it; the same one does not hear it twice.
     let already: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM firstmate_wakes WHERE key = ?1",
-            [key],
+            "SELECT COUNT(*) FROM firstmate_wakes WHERE owner_session = ?1 AND key = ?2",
+            params![owner, key],
             |row| row.get(0),
         )
         .map_err(|e| e.to_string())?;
@@ -913,7 +914,6 @@ fn check_agent_edit(
     next_assignee: &Option<String>,
     next_due: Option<i64>,
     next_sort: &str,
-    next_status: &str,
     status_changed: bool,
     trash: bool,
     source: &Option<String>,
@@ -941,13 +941,8 @@ fn check_agent_edit(
     {
         return Err("You can comment, or change the status. The wording is the author's.".into());
     }
-    if status_changed {
-        if row.delegation_id.is_some() {
-            return Err("This task follows its work.".into());
-        }
-        if mapping::mapped(next_status) {
-            return Err("This status follows the work. Agents don't set it.".into());
-        }
+    if status_changed && row.delegation_id.is_some() {
+        return Err("This task follows its work.".into());
     }
     Ok(())
 }
@@ -1194,12 +1189,9 @@ fn update_in(
         }
         None => source_read(&row.source),
     };
-    let (next_status_id, next_status_name) = match &input.status {
-        Some(name) => {
-            let (id, _) = status_named(conn, &row.project_id, name)?;
-            (id, name.clone())
-        }
-        None => (row.status_id.clone(), status_name(conn, &row.status_id)?),
+    let next_status_id = match &input.status {
+        Some(name) => status_named(conn, &row.project_id, name)?.0,
+        None => row.status_id.clone(),
     };
     let status_changed = next_status_id != row.status_id;
     check_agent_edit(
@@ -1213,7 +1205,6 @@ fn update_in(
         &next_assignee,
         next_due,
         &next_sort,
-        &next_status_name,
         status_changed,
         input.trash,
         &input.source,
@@ -1432,6 +1423,9 @@ fn link_existing(
     };
     if row.trashed_at.is_some() {
         return Err("That task isn't available anymore.".into());
+    }
+    if sync_project(req.project.as_deref()) != row.project_id {
+        return Err("That task is in another project.".into());
     }
     let holder: Option<String> = conn
         .query_row(

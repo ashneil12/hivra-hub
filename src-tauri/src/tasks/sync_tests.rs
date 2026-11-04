@@ -255,6 +255,105 @@ fn a_persons_task_assigned_to_a_first_mate_starts_a_linked_delegation() {
 }
 
 #[test]
+fn a_delegation_cannot_take_a_task_from_another_project() {
+    let store = mem();
+    let mut conn = store.lock_conn().unwrap();
+    let filed = store::create(
+        &mut conn,
+        &person("other"),
+        &CreateInput {
+            title: "Theirs".into(),
+            ..Default::default()
+        },
+        10,
+    )
+    .unwrap()
+    .task;
+    let taken = delegations::record(
+        &mut conn,
+        RecordInput {
+            task_id: Some(filed.id.clone()),
+            ..launch("mate-1", "req-cross", "worker-cross")
+        },
+        11,
+    );
+    assert_eq!(taken.unwrap_err(), "That task is in another project.");
+    let left: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM delegations WHERE request_id = 'req-cross'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+    let still = store::get(&conn, &person("other"), &filed.id).unwrap();
+    assert!(still.delegation_id.is_none());
+}
+
+#[test]
+fn reviving_a_refused_delegation_links_the_persons_task() {
+    let store = mem();
+    let mut conn = store.lock_conn().unwrap();
+    let row = delegations::record(
+        &mut conn,
+        launch("mate-1", "req-revive", "worker-revive"),
+        10,
+    )
+    .unwrap();
+    delegations::refuse(&mut conn, &row.id, None, 11).unwrap();
+    conn.execute("DELETE FROM tasks WHERE delegation_id = ?1", [&row.id])
+        .unwrap();
+    let missing = delegations::record(
+        &mut conn,
+        RecordInput {
+            task_id: Some("task-gone".into()),
+            ..launch("mate-1", "req-revive", "worker-revive")
+        },
+        12,
+    );
+    assert_eq!(missing.unwrap_err(), "No task with that id.");
+    let state: String = conn
+        .query_row(
+            "SELECT state FROM delegations WHERE id = ?1",
+            [&row.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(state, "cancelled");
+    let gone: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(gone, 0);
+    let filed = store::create(
+        &mut conn,
+        &person("crew"),
+        &CreateInput {
+            title: "Pick me".into(),
+            ..Default::default()
+        },
+        13,
+    )
+    .unwrap()
+    .task;
+    let revived = delegations::record(
+        &mut conn,
+        RecordInput {
+            task_id: Some(filed.id.clone()),
+            ..launch("mate-1", "req-revive", "worker-revive")
+        },
+        14,
+    )
+    .unwrap();
+    assert_eq!(revived.state, "running");
+    let linked = store::get(&conn, &person("crew"), &filed.id).unwrap();
+    assert_eq!(linked.delegation_id.as_deref(), Some(revived.id.as_str()));
+    let tasks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tasks, 1);
+}
+
+#[test]
 fn a_comment_on_an_agent_task_reaches_its_first_mate() {
     let store = mem();
     let mut conn = store.lock_conn().unwrap();
@@ -393,6 +492,20 @@ fn the_task_and_its_link_survive_opening_the_same_file_again() {
     let filed = task(&conn, &delegation);
     assert_eq!(filed.delegation_id.as_deref(), Some(delegation.as_str()));
     assert_eq!(filed.status, "In progress");
+    let again = delegations::record(
+        &mut conn,
+        launch("mate-1", "req-restart", "worker-restart"),
+        15,
+    )
+    .unwrap();
+    assert_eq!(again.id, delegation);
+    let tasks: i64 = conn
+        .query_row("SELECT COUNT(*) FROM tasks", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(tasks, 1);
+    let resumed = task(&conn, &delegation);
+    assert_eq!(resumed.id, filed.id);
+    assert_eq!(resumed.delegation_id.as_deref(), Some(delegation.as_str()));
     settle(&mut conn, &delegation, generation, "completed", 20);
     assert_eq!(task(&conn, &delegation).status, "Done");
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep");

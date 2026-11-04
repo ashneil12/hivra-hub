@@ -432,7 +432,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
 }
 
 /// Writes back everything a move can change. The outbox's own columns are left alone.
-fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
+fn save_row(conn: &Connection, d: &Delegation) -> Result<(), String> {
     // WP-10: every move refreshes the shown status (touch); a move that forgot would show a stale one.
     debug_assert_eq!(
         (d.status, d.status_notice.clone()),
@@ -477,6 +477,12 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
         ],
     )
     .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// The row, then the task that follows it. A retry that names a person's task must not file one first.
+fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
+    save_row(conn, d)?;
     // WP-70: the task follows this work. Agents never set that status themselves.
     crate::tasks::sync::on_delegation(conn, d, None)?;
     Ok(())
@@ -675,7 +681,8 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             existing.run_started_at = now;
             existing.note(now, &by, "retried", json!({}));
             existing.touch(now);
-            save(&tx, &existing)?;
+            // The link below is the only task write. save() would file a task first, and the person's task would be refused.
+            save_row(&tx, &existing)?;
         }
         // WP-70: a retried record still has a task.
         crate::tasks::sync::on_delegation(&tx, &existing, input.task_id.as_deref())?;

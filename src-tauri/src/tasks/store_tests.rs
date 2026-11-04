@@ -237,6 +237,67 @@ fn a_deep_chain_is_allowed() {
 }
 
 #[test]
+fn a_cycle_past_the_old_depth_bound_is_refused() {
+    let store = mem();
+    let who = person("proj");
+    let root = make(&store, &who, "root", None);
+    let mut conn = store.lock_conn().unwrap();
+    let status_id: String = conn
+        .query_row(
+            "SELECT status_id FROM tasks WHERE id = ?1",
+            [&root.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let mut parent = root.id.clone();
+    let mut leaf = String::new();
+    // 1002 tasks in a line. The old bound kept a node 1000 steps away and missed the root one step further.
+    for n in 1..=1001 {
+        let id = format!("task-deep-{n}");
+        conn.execute(
+            "INSERT INTO tasks (
+               id, project_id, number, title, description, status_id, priority, labels, parent_id,
+               sort_key, version, source, created_by, needs_you, failed, created_at, updated_at
+             ) VALUES (?1, 'proj', ?2, ?3, '', ?4, 'none', '[]', ?5, ?6, 1, 'person', 'person', 0, 0, 1, 1)",
+            rusqlite::params![
+                id,
+                n + 1,
+                n.to_string(),
+                status_id,
+                parent,
+                format!("{n:08}")
+            ],
+        )
+        .unwrap();
+        parent = id.clone();
+        leaf = id;
+    }
+    let refused = update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: root.id.clone(),
+            version: Some(1),
+            parent: Set::Value(leaf),
+            ..Default::default()
+        },
+        2,
+    );
+    assert!(
+        refused.is_err(),
+        "a cycle past the depth bound must be refused, got {refused:?}"
+    );
+    let parent_now: Option<String> = conn
+        .query_row(
+            "SELECT parent_id FROM tasks WHERE id = ?1",
+            [&root.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(parent_now.is_none());
+}
+
+#[test]
 fn a_parent_closes_when_every_child_is_closed_and_one_is_done() {
     let store = mem();
     let who = person("proj");
@@ -390,15 +451,14 @@ fn an_agent_can_file_a_follow_up_but_not_rewrite_someone_elses_task() {
         &UpdateInput {
             id: theirs.id.clone(),
             version: Some(1),
-            status: Some("In progress".into()),
+            status: Some("Done".into()),
             ..Default::default()
         },
         2,
-    );
-    assert_eq!(
-        status.unwrap_err(),
-        "This status follows the work. Agents don't set it."
-    );
+    )
+    .unwrap();
+    assert_eq!(status.task.status, "Done");
+    assert!(!status.stale);
     let follow = create(
         &mut conn,
         &worker,
@@ -424,6 +484,19 @@ fn an_agent_can_file_a_follow_up_but_not_rewrite_someone_elses_task() {
     .unwrap();
     assert_eq!(edited.task.title, "Follow up, revised");
     assert_eq!(edited.task.created_by, "worker");
+    let marked = update(
+        &mut conn,
+        &worker,
+        &UpdateInput {
+            id: follow.task.id.clone(),
+            version: Some(2),
+            status: Some("Done".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap();
+    assert_eq!(marked.task.status, "Done");
     let mapped = create(
         &mut conn,
         &worker,
@@ -486,7 +559,7 @@ fn an_agent_can_file_a_follow_up_but_not_rewrite_someone_elses_task() {
         &owner,
         &UpdateInput {
             id: follow.task.id,
-            version: Some(2),
+            version: Some(3),
             status: Some("In progress".into()),
             ..Default::default()
         },
@@ -537,14 +610,43 @@ fn assigning_wakes_the_first_mate_once_and_not_the_person() {
         2,
     )
     .unwrap();
-    let wakes: i64 = conn
+    let key = format!("task-pickup:{id}", id = task.id);
+    let mate_two: String = conn
         .query_row(
-            "SELECT COUNT(*) FROM firstmate_wakes WHERE key = ?1",
-            [format!("task-pickup:{id}", id = task.id)],
+            "SELECT text FROM firstmate_wakes WHERE owner_session = 'mate-2' AND key = ?1",
+            [&key],
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(wakes, 1);
+    assert_eq!(mate_two, "pick up task #1");
+    let wakes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM firstmate_wakes WHERE key = ?1",
+            [&key],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(wakes, 2);
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: task.id.clone(),
+            version: Some(2),
+            assignee: Set::Value("mate-2".into()),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap();
+    let still_two: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM firstmate_wakes WHERE key = ?1",
+            [&key],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(still_two, 2);
     let quiet = create(
         &mut conn,
         &who,
@@ -558,7 +660,7 @@ fn assigning_wakes_the_first_mate_once_and_not_the_person() {
     let nobody: i64 = conn
         .query_row("SELECT COUNT(*) FROM firstmate_wakes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(nobody, 1);
+    assert_eq!(nobody, 2);
     create(
         &mut conn,
         &who,
@@ -573,7 +675,7 @@ fn assigning_wakes_the_first_mate_once_and_not_the_person() {
     let still: i64 = conn
         .query_row("SELECT COUNT(*) FROM firstmate_wakes", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(still, 1);
+    assert_eq!(still, 2);
     assert!(quiet.task.assignee.is_none());
 }
 
