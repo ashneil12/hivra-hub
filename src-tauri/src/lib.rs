@@ -70,6 +70,8 @@ mod mono_chat;
 mod mono_home;
 mod mono_transcript;
 mod notes;
+// WP-72: docs are notes, with blocks, versions and a tree.
+mod docs;
 mod notifications;
 mod page_frames;
 mod page_http;
@@ -940,6 +942,20 @@ pub fn run() {
             trash::trash_mono,
             notes::notes_save_image,
             notes::notes_image_path,
+            // WP-72: docs commands. The pages are notes.
+            docs::docs_list,
+            docs::docs_get,
+            docs::docs_create,
+            docs::docs_update,
+            docs::docs_adopt,
+            docs::docs_move,
+            docs::docs_versions,
+            docs::docs_restore,
+            docs::docs_favourite,
+            docs::docs_touch,
+            docs::docs_trash,
+            docs::docs_export,
+            docs::docs_resolve,
             mono::mono_load,
             mono::mono_read,
             mono::mono_save,

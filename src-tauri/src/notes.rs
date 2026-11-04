@@ -122,6 +122,8 @@ pub fn ensure_notes_table(conn: &Connection) -> rusqlite::Result<()> {
     if artifact_kind_present == 0 {
         conn.execute("ALTER TABLE notes ADD COLUMN artifact_kind TEXT", [])?;
     }
+    // WP-72: docs columns and history live on notes, not in a second store.
+    crate::docs::ensure_docs_schema(conn)?;
     Ok(())
 }
 
@@ -429,6 +431,10 @@ fn upsert_note(conn: &Connection, note: &NoteUpsert) -> rusqlite::Result<Note> {
     upsert_content(conn, note, "note", None)
 }
 
+fn note_failed(message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(message.into())
+}
+
 pub(crate) fn upsert_content(
     conn: &Connection,
     note: &NoteUpsert,
@@ -485,22 +491,61 @@ pub(crate) fn upsert_content(
             } else {
                 (existing.slug, existing.slug_pending)
             };
-        conn.execute(
-            "UPDATE notes
-             SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
-                 source_cwd = ?6, slug = ?7, slug_pending = ?8
-             WHERE id = ?5",
-            params![
-                title,
-                body,
-                tags_json,
-                updated_at,
-                note.id,
-                project_cwd,
-                slug,
-                slug_pending
-            ],
-        )?;
+        // WP-72: a Notes edit that changes the Markdown drops the derived blocks.
+        // The next Docs open converts again. The same body keeps them. `body` on
+        // the right is the row's current value, not the new one.
+        // A text change also keeps the row as a version and bumps doc_version, so
+        // a Docs client still holding the old version cannot put that text back.
+        if kind == "note" && (title != existing.title || body != existing.body) {
+            let tx = conn.unchecked_transaction()?;
+            let doc_version: i64 = tx.query_row(
+                "SELECT COALESCE(doc_version, 0) FROM notes WHERE id = ?1",
+                params![note.id],
+                |row| row.get(0),
+            )?;
+            crate::docs::keep_note_text(&tx, &note.id).map_err(note_failed)?;
+            let changed = tx.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END,
+                     doc_version = doc_version + 1
+                 WHERE id = ?5 AND doc_version = ?9",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending,
+                    doc_version
+                ],
+            )?;
+            if changed != 1 {
+                return Err(note_failed("The page changed somewhere else"));
+            }
+            tx.commit()?;
+        } else {
+            conn.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END
+                 WHERE id = ?5",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending
+                ],
+            )?;
+        }
         Ok(Note {
             id: note.id.clone(),
             slug,
@@ -554,6 +599,9 @@ pub(crate) fn upsert_content(
 }
 
 fn delete_note(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    // WP-72: a deleted note takes its versions and mentions with it.
+    conn.execute("DELETE FROM note_versions WHERE note_id = ?1", params![id])?;
+    conn.execute("DELETE FROM note_mentions WHERE note_id = ?1", params![id])?;
     conn.execute(
         "DELETE FROM notes WHERE id = ?1 AND content_kind = 'note'",
         params![id],
@@ -659,7 +707,7 @@ fn is_placeholder_title(title: &str) -> bool {
     }
 }
 
-fn unique_slug(conn: &Connection, title: &str) -> rusqlite::Result<String> {
+pub(crate) fn unique_slug(conn: &Connection, title: &str) -> rusqlite::Result<String> {
     let base = slugify(title);
     for index in 0..1000 {
         let candidate = if index == 0 {
@@ -1173,6 +1221,48 @@ mod tests {
         delete_note(&conn, "n1").unwrap();
         assert!(get_note(&conn, "n1").unwrap().is_none());
         assert!(list_notes(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_notes_edit_keeps_blocks_only_when_the_body_stays() {
+        let store = SessionStore::open_in_memory().unwrap();
+        upsert(&store, "n1", "Plan", "hello");
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "UPDATE notes SET blocks_json = '[{\"id\":\"b\"}]' WHERE id = 'n1'",
+            [],
+        )
+        .unwrap();
+        let same = NoteUpsert {
+            id: "n1".into(),
+            title: "Plan".into(),
+            body: "hello".into(),
+            tags: Vec::new(),
+            source_session_id: None,
+            source_cwd: None,
+            finalize_slug: false,
+        };
+        upsert_note(&conn, &same).unwrap();
+        let kept: Option<String> = conn
+            .query_row("SELECT blocks_json FROM notes WHERE id = 'n1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("[{\"id\":\"b\"}]"));
+        upsert_note(
+            &conn,
+            &NoteUpsert {
+                body: "changed".into(),
+                ..same
+            },
+        )
+        .unwrap();
+        let cleared: Option<String> = conn
+            .query_row("SELECT blocks_json FROM notes WHERE id = 'n1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(cleared.is_none());
     }
 
     #[test]

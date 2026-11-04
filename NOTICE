@@ -97,6 +97,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/trash.rs, src/features/trash
   Page and task trash rules from apps/server/src/repositories/pages.rs, tasks.rs, sub_issues.rs and workspaces.rs (a batch shares one deleted_at and one trashed_with, a 30-day purge, a restored child of a still-trashed parent comes back at the top level), translated onto one trash_items ledger because Orbit's SQL is sqlx against tasks and pages tables Hivra does not have (WP-76).
 
+- Orbit docs editor
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src/features/docs/model
+  The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72).
+
 - Raven's chat importer
   Source: https://github.com/EverMind-AI/Raven
   License: Apache-2.0

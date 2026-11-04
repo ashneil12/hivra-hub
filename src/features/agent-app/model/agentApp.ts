@@ -113,6 +113,8 @@ import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
+import { DOC_FIELDS, handleDocs } from "./agentDocs";
+import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
 /** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
@@ -313,6 +315,13 @@ export type AgentAppHost = {
    * started from a room comes back to it.
    */
   rooms?: AgentAppRoomsHost & { delegated?(source: Session, result: unknown): void };
+  /** WP-72: docs are notes. Page text comes back as data, never as instructions. */
+  docs?: {
+    list: () => Promise<DocRecord[]>;
+    get: (id: string) => Promise<DocRecord | null>;
+    create: (page: DocCreateInput) => Promise<DocWriteResult>;
+    update: (page: DocUpdateInput) => Promise<DocWriteResult>;
+  };
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -386,6 +395,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TIMER_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
+  ...DOC_FIELDS,
 ]);
 
 /**
@@ -1423,6 +1433,9 @@ export async function handleAgentApp(
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
+  if (action.startsWith("docs.")) {
+    return handleDocs(source, requestId, action, input, host, (session, fields) => requireProject(session, fields, host));
+  }
   if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change" || action === "creator.draft" || action === "creator.state")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {
       // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.
