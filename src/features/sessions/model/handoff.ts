@@ -1,4 +1,5 @@
 import { isEditTool } from "../../../integrations/harness/core/preview";
+import { specOf } from "../../firstmate/model/brief";
 import { compactCiRepairContext } from "../../inbox/model/ciRepair";
 import { limitSection } from "../../../shared/lib/jsonText";
 import { displayPath } from "../../../shared/lib/paths";
@@ -356,9 +357,7 @@ function handoffParts(
   if (omitted > 0 || prior.length > 0 || lastAssistant) {
     const lines = [
       omitted > 0 ? `(${omitted} earlier messages omitted)` : "",
-      ...prior.map((text) =>
-        `User: ${oneLine(limitSection(text, USER_LINE_LIMIT))}`,
-      ),
+      ...prior.map((text) => `User: ${userRecap(text)}`),
       lastAssistant
         ? `Assistant: ${oneLine(limitSection(lastAssistant, ASSISTANT_LIMIT))}`
         : "",
@@ -496,6 +495,19 @@ function toolHandoffLine(block: Block, cwd?: string): string | undefined {
 
 function oneLine(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * One user line for the recap. A worker's brief (WP-10) opens with the isolation check, and the job itself is the
+ * spec, past the line cap, so a recovered chat would otherwise continue from the boilerplate and never see its task.
+ */
+function userRecap(text: string): string {
+  const head = oneLine(limitSection(text, USER_LINE_LIMIT));
+  const spec = specOf(text);
+  if (!spec) return head;
+  const job = oneLine(limitSection(spec, USER_LINE_LIMIT));
+  if (!job || head.includes(job)) return head;
+  return `${head} Spec: ${job}`;
 }
 
 /** Drop a Goal heading so the new message is not duplicated in the recap. */
