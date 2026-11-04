@@ -4,12 +4,13 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { DELEGATIONS_CHANGED, tauriDelegations, type Delegation } from "../../monos/model/delegations";
+import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegations";
 import { tauriFirstMate } from "../../firstmate/model/steering";
 import { tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import { clearCrewFocus, crewFocus, holdCrewOpen, subscribeCrewFocus } from "../model/focus";
 import { loadCrewDelegations } from "../model/load";
+import { CREW_STOP_REASON, crewCancel, stopRequestId } from "../model/cancel";
 import { crewDelegate, retrySameBrief } from "../model/retry";
 import { steerRequestId } from "../model/steerId";
 import {
@@ -162,7 +163,7 @@ export function CrewPanel({
       });
       setNote("Sent.");
     } catch (error) {
-      setNote("Couldn't send that. Trying again.");
+      setNote("Couldn't send that. Try again.");
       throw error instanceof Error ? error : new Error("Couldn't send that.");
     }
   }
@@ -178,18 +179,24 @@ export function CrewPanel({
       setNote(null);
       void load();
     } catch {
-      setNote("Couldn't retry that. Trying again.");
+      setNote("Couldn't retry that. Try again.");
     }
   }
 
   async function onStop(row: CrewRow) {
     // The list is already this project. A row that is not on it is not stopped.
     if (!rows.some((item) => item.id === row.id)) return;
+    if (!row.ownerSession) return;
     try {
-      await tauriDelegations.cancel([row.id], "Stopped from the crew tab");
+      // WP-15: the owner's tasks.cancel, which stops a busy child, unqueues a waiter, and cancels what it delegated.
+      await crewCancel(row.ownerSession, stopRequestId(row.id), {
+        taskId: row.id,
+        reason: CREW_STOP_REASON,
+      });
       setNote(null);
+      void load();
     } catch {
-      setNote("Couldn't stop that. Trying again.");
+      setNote("Couldn't stop that. Try again.");
     }
   }
 

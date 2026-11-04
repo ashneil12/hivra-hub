@@ -118,6 +118,7 @@ import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
 import { OPEN_CREW } from "../features/crew/model/focus";
+import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
@@ -12974,6 +12975,16 @@ function Workspace({
         input,
       }),
     );
+    // WP-15: Stop uses tasks.cancel as the row's owner, so a busy child stops and a queued worker never starts.
+    registerCrewCancel((ownerSession, requestId, input) =>
+      runControlRequest({
+        namespace: "app",
+        sessionId: ownerSession,
+        requestId,
+        action: "tasks.cancel",
+        input: { taskId: input.taskId, reason: input.reason },
+      }),
+    );
     async function runControlRequest(payload: {
       namespace: string;
       sessionId: string;
@@ -13901,6 +13912,7 @@ function Workspace({
     return () => {
       controlRequestRef.current = undefined;
       registerCrewDelegate(null);
+      registerCrewCancel(null);
       void listening.then((unlisten) => unlisten());
     };
   }, []);
