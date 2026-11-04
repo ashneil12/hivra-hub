@@ -286,6 +286,7 @@ fn stopping_a_missing_drive_is_fine_and_a_low_pid_is_not_signalled() {
             token: format!("hivra-{}", uuid::Uuid::new_v4()),
             visible: true,
             started_at_ms: 1,
+            process_start: String::new(),
         },
     )
     .unwrap();
@@ -306,9 +307,10 @@ fn a_dead_pid_is_dropped_from_the_list() {
             agent_id: "ada".into(),
             name: "Ada".into(),
             pid: u32::MAX,
-            token: "hivra-dead".into(),
+            token: format!("hivra-{}", uuid::Uuid::new_v4()),
             visible: true,
             started_at_ms: 1,
+            process_start: String::new(),
         },
     )
     .unwrap();
@@ -333,6 +335,7 @@ fn stop_does_not_kill_a_process_whose_command_line_lacks_the_token() {
             token,
             visible: true,
             started_at_ms: 1,
+            process_start: String::new(),
         },
     )
     .unwrap();
@@ -365,7 +368,10 @@ fn stop_ends_the_session_and_leaves_the_other_one() {
     assert!(alive(second.child.id()));
     assert!(alive(shown.child.id()));
     stop_all(tmp.data()).unwrap();
-    assert!(!alive(second.child.id()));
+    assert!(
+        alive(second.child.id()),
+        "Stop all leaves a session that is not on the bar"
+    );
     assert!(!alive(shown.child.id()));
     assert!(visible_drives(tmp.data()).unwrap().is_empty());
 }
@@ -379,6 +385,258 @@ fn a_process_that_ignores_the_first_signal_is_not_a_final_failure() {
     let pid = running.child.id();
     assert!(stop(tmp.data(), &running.id).is_ok());
     assert!(!alive(pid));
+}
+
+#[cfg(unix)]
+struct Reap(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for Reap {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[cfg(unix)]
+fn write_drive(data: &Path, id: &str, pid: u32, token: &str) {
+    let dir = drives_dir(data);
+    fs::create_dir_all(&dir).unwrap();
+    let body = serde_json::json!({
+        "id": id,
+        "agent_id": "ada",
+        "name": "Ada",
+        "pid": pid,
+        "token": token,
+        "visible": true,
+        "started_at_ms": 1
+    });
+    fs::write(
+        dir.join(format!("{id}.json")),
+        serde_json::to_vec_pretty(&body).unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_drive_file_whose_token_is_not_the_one_launch_mints_is_refused() {
+    let tmp = Tmp::new();
+    let error = record_drive(
+        tmp.data(),
+        &StoredDrive {
+            id: uuid::Uuid::new_v4().to_string(),
+            agent_id: "ada".into(),
+            name: "Ada".into(),
+            pid: 1,
+            token: "node".into(),
+            visible: true,
+            started_at_ms: 1,
+            process_start: String::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.contains("couldn't be recorded"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_does_not_signal_a_process_for_a_token_that_was_not_minted() {
+    let tmp = Tmp::new();
+    let mut command = std::process::Command::new("sleep");
+    command.arg("30");
+    allow_path(&mut command);
+    let child = command.spawn().unwrap();
+    let _reap = Reap(child);
+    let pid = _reap.0.id();
+    let id = uuid::Uuid::new_v4().to_string();
+    write_drive(tmp.data(), &id, pid, "sleep");
+    let _ = stop(tmp.data(), &id);
+    assert!(alive(pid), "the word sleep is not a session token");
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_does_not_signal_a_process_group_member_that_is_not_this_browser() {
+    let tmp = Tmp::new();
+    set_watch(tmp.data(), "ada", true).unwrap();
+    let running = start_session(tmp.data(), "ada", "Ada", false).unwrap();
+    let mut extra = std::process::Command::new("sleep");
+    extra.arg("30");
+    allow_path(&mut extra);
+    {
+        use std::os::unix::process::CommandExt;
+        extra.process_group(running.child.id() as i32);
+    }
+    let extra = extra.spawn().unwrap();
+    let _reap = Reap(extra);
+    let extra_pid = _reap.0.id();
+    stop(tmp.data(), &running.id).unwrap();
+    assert!(!alive(running.child.id()));
+    assert!(
+        alive(extra_pid),
+        "a process in the group without this session's token stays"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_does_not_signal_a_pid_whose_start_no_longer_matches() {
+    let tmp = Tmp::new();
+    set_watch(tmp.data(), "ada", true).unwrap();
+    let running = start_session(tmp.data(), "ada", "Ada", false).unwrap();
+    let path = drives_dir(tmp.data()).join(format!("{}.json", running.id));
+    let mut value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    value["process_start"] = serde_json::json!("not-this-process");
+    fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let error = stop(tmp.data(), &running.id).unwrap_err();
+    assert!(
+        alive(running.child.id()),
+        "a reused pid is not this session: {error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_ends_the_fake_server_and_leaves_the_other_process() {
+    let tmp = Tmp::new();
+    set_watch(tmp.data(), "ada", true).unwrap();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/fakeEngine.mjs");
+    let mut server = std::process::Command::new("node");
+    server.arg(&fake).arg(&plan.token);
+    server.stdout(std::process::Stdio::null());
+    server.stderr(std::process::Stdio::null());
+    allow_path(&mut server);
+    let server = server.spawn().unwrap();
+    let _server = Reap(server);
+    let server_pid = _server.0.id();
+    let id = uuid::Uuid::new_v4().to_string();
+    record_drive(
+        tmp.data(),
+        &StoredDrive {
+            id: id.clone(),
+            agent_id: "ada".into(),
+            name: plan.name.clone(),
+            pid: server_pid,
+            token: plan.token.clone(),
+            visible: true,
+            started_at_ms: 1,
+            process_start: process_start(server_pid).unwrap(),
+        },
+    )
+    .unwrap();
+
+    let mut other = std::process::Command::new("sleep");
+    other.arg("30");
+    allow_path(&mut other);
+    let other = other.spawn().unwrap();
+    let _other = Reap(other);
+    let other_pid = _other.0.id();
+
+    stop(tmp.data(), &id).unwrap();
+    assert!(!alive(server_pid), "Stop ends the fake server");
+    assert!(alive(other_pid), "Stop leaves the other process");
+}
+
+#[cfg(unix)]
+#[test]
+fn the_recorded_pid_is_the_child_that_carries_the_token() {
+    let tmp = Tmp::new();
+    set_watch(tmp.data(), "ada", true).unwrap();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/fakeEngine.mjs");
+    let mut command = std::process::Command::new("node");
+    command.arg(&fake).arg(&plan.token);
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    allow_path(&mut command);
+    let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let drive = load_drive(&path).unwrap();
+    assert_ne!(drive.pid, std::process::id());
+    assert_eq!(drive.pid, child.id());
+    let line = command_line(drive.pid).unwrap();
+    assert!(token_in(&line, &plan.token), "{line}");
+    assert!(!drive.process_start.is_empty());
+    assert_eq!(drive.process_start, process_start(drive.pid).unwrap());
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_all_stops_only_the_sessions_the_bar_shows() {
+    let tmp = Tmp::new();
+    let hidden = start_session(tmp.data(), "milo", "Milo", false).unwrap();
+    set_watch(tmp.data(), "ada", true).unwrap();
+    let shown = start_session(tmp.data(), "ada", "Ada", false).unwrap();
+    assert_eq!(visible_drives(tmp.data()).unwrap().len(), 1);
+    stop_all(tmp.data()).unwrap();
+    assert!(!alive(shown.child.id()), "the session on the bar stops");
+    assert!(
+        alive(hidden.child.id()),
+        "a hidden session is not on the bar, so Stop all leaves it"
+    );
+}
+
+#[test]
+fn a_holder_does_not_delete_a_lock_it_no_longer_owns() {
+    let tmp = Tmp::new();
+    let dir = browser_dir(tmp.data());
+    let lock = lock_settings(&dir).unwrap();
+    let path = dir.join("settings.lock");
+    fs::write(&path, "kept-by-the-new-holder").unwrap();
+    drop(lock);
+    assert!(path.is_file(), "the new holder's lock is still there");
+    assert_eq!(fs::read_to_string(&path).unwrap(), "kept-by-the-new-holder");
+}
+
+#[test]
+fn a_live_holders_lock_is_not_taken_because_it_is_old() {
+    let tmp = Tmp::new();
+    let dir = browser_dir(tmp.data());
+    let lock = lock_settings(&dir).unwrap();
+    let path = dir.join("settings.lock");
+    let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(90))
+        .unwrap();
+    drop(file);
+    let taken = lock_settings(&dir);
+    assert!(
+        taken.is_err(),
+        "a live holder keeps the lock past 30 seconds"
+    );
+    assert!(path.is_file());
+    drop(lock);
+}
+
+#[test]
+fn a_stale_revision_is_not_written_over_a_newer_one() {
+    let tmp = Tmp::new();
+    set_watch(tmp.data(), "ada", false).unwrap();
+    let path = browser_dir(tmp.data()).join("settings.json");
+    BEFORE_SETTINGS_WRITE.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |file: &Path| {
+            let mut settings = read_settings(file);
+            settings.revision = 9;
+            settings.names.insert("ada".into(), "kept".into());
+            write_settings(file, &settings).unwrap();
+        }));
+    });
+    let saved = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        set_watch(tmp.data(), "ada", true).unwrap();
+    }));
+    BEFORE_SETTINGS_WRITE.with(|hook| *hook.borrow_mut() = None);
+    saved.unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("kept"), "{text}");
+    assert!(text.contains("\"watch\""), "{text}");
+    let settings = read_settings(&path);
+    assert!(settings.watch.get("ada").copied().unwrap_or(false));
+    assert_eq!(settings.names.get("ada").map(String::as_str), Some("kept"));
+    assert!(settings.revision > 9, "{}", settings.revision);
 }
 
 #[test]

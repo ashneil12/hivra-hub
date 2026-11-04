@@ -62,6 +62,10 @@ struct StoredDrive {
     token: String,
     visible: bool,
     started_at_ms: u64,
+    /// `ps` start time (or the Windows creation time) captured when this session was recorded.
+    /// A later process that reused the pid will not match, so Stop does not signal it.
+    #[serde(default)]
+    process_start: String,
 }
 
 pub(crate) struct LaunchEnv {
@@ -73,11 +77,33 @@ pub(crate) struct LaunchEnv {
     pub name: String,
 }
 
-struct SettingsLock(PathBuf);
+#[cfg(test)]
+type SettingsWriteHook = Box<dyn FnMut(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_SETTINGS_WRITE: std::cell::RefCell<Option<SettingsWriteHook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Serialize, Deserialize)]
+struct LockOwner {
+    nonce: String,
+    pid: u32,
+    started: String,
+}
+
+struct SettingsLock {
+    path: PathBuf,
+    nonce: String,
+}
 
 impl Drop for SettingsLock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+        // A holder that lost the file (another window replaced it) must not delete the new one.
+        if read_lock(&self.path).is_some_and(|owner| owner.nonce == self.nonce) {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -203,30 +229,132 @@ fn validate_own(data: &Path, text: &str) -> Result<PathBuf, String> {
     Ok(canon)
 }
 
-fn lock_is_stale(path: &Path) -> bool {
-    std::fs::metadata(path)
-        .and_then(|meta| meta.modified())
-        .ok()
-        .and_then(|time| time.elapsed().ok())
-        .is_some_and(|age| age > Duration::from_secs(30))
+fn read_lock(path: &Path) -> Option<LockOwner> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let owner: LockOwner = serde_json::from_str(&text).ok()?;
+    if owner.nonce.is_empty() || pid_i32(owner.pid).is_none() {
+        return None;
+    }
+    Some(owner)
+}
+
+/// Alive, and still the process that took the lock. A reused pid, or a start time we can't
+/// match, is not the holder. If the start time can't be read, the holder is treated as alive.
+fn owner_alive(owner: &LockOwner) -> bool {
+    if !alive(owner.pid) {
+        return false;
+    }
+    match process_start(owner.pid) {
+        Ok(started) => owner.started.is_empty() || started == owner.started,
+        Err(_) => true,
+    }
+}
+
+fn lock_aside(path: &Path) -> PathBuf {
+    path.with_file_name(format!("settings.lock.dead-{}", uuid::Uuid::new_v4()))
+}
+
+fn put_lock_back(path: &Path, aside: &Path) {
+    if path.exists() {
+        let _ = std::fs::remove_file(aside);
+        return;
+    }
+    if std::fs::rename(aside, path).is_err() {
+        let _ = std::fs::remove_file(aside);
+    }
+}
+
+/// Move a dead holder's lock aside, confirm it is still that lock, then delete the copy.
+fn release_dead_lock(path: &Path, nonce: &str) -> bool {
+    let aside = lock_aside(path);
+    if std::fs::rename(path, &aside).is_err() {
+        return false;
+    }
+    match read_lock(&aside) {
+        Some(owner) if owner.nonce == nonce && !owner_alive(&owner) => {
+            let _ = std::fs::remove_file(&aside);
+            true
+        }
+        _ => {
+            put_lock_back(path, &aside);
+            false
+        }
+    }
+}
+
+/// A lock that isn't ours (a crash, or a hand edit). Never delete one that turns out to be live.
+fn release_unreadable_lock(path: &Path) -> bool {
+    let aside = lock_aside(path);
+    if std::fs::rename(path, &aside).is_err() {
+        return false;
+    }
+    if read_lock(&aside).is_some_and(|owner| owner_alive(&owner)) {
+        put_lock_back(path, &aside);
+        return false;
+    }
+    let _ = std::fs::remove_file(&aside);
+    true
+}
+
+fn claim_lock(dir: &Path, path: &Path, body: &[u8], nonce: &str) -> std::io::Result<bool> {
+    let claim = dir.join(format!("settings.lock.claim-{nonce}"));
+    let written = std::fs::File::create(&claim).and_then(|mut file| {
+        file.write_all(body)?;
+        file.sync_all()
+    });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&claim);
+        return Err(error);
+    }
+    match std::fs::hard_link(&claim, path) {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&claim);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&claim);
+            Ok(false)
+        }
+        Err(_) => {
+            let _ = std::fs::remove_file(&claim);
+            match OpenOptions::new().write(true).create_new(true).open(path) {
+                Ok(mut file) => {
+                    file.write_all(body)?;
+                    file.sync_all()?;
+                    Ok(true)
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+                Err(error) => Err(error),
+            }
+        }
+    }
 }
 
 fn lock_settings(dir: &Path) -> Result<SettingsLock, String> {
     std::fs::create_dir_all(dir).map_err(|_| TRY_SETTINGS.to_string())?;
     let path = dir.join("settings.lock");
     for _ in 0..100 {
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                drop(file);
-                return Ok(SettingsLock(path));
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                if lock_is_stale(&path) {
-                    let _ = std::fs::remove_file(&path);
-                } else {
+        let nonce = uuid::Uuid::new_v4().to_string();
+        let started = process_start(std::process::id()).unwrap_or_default();
+        let body = serde_json::to_vec(&LockOwner {
+            nonce: nonce.clone(),
+            pid: std::process::id(),
+            started,
+        })
+        .map_err(|error| error.to_string())?;
+        match claim_lock(dir, &path, &body, &nonce) {
+            Ok(true) => return Ok(SettingsLock { path, nonce }),
+            Ok(false) => match read_lock(&path) {
+                Some(owner) if owner_alive(&owner) => {
                     std::thread::sleep(Duration::from_millis(20));
                 }
-            }
+                Some(owner) => {
+                    let _ = release_dead_lock(&path, &owner.nonce);
+                }
+                None => {
+                    let _ = release_unreadable_lock(&path);
+                }
+            },
             Err(_) => return Err(TRY_SETTINGS.into()),
         }
     }
@@ -260,17 +388,36 @@ fn write_settings(path: &Path, settings: &Settings) -> Result<(), String> {
 
 fn with_settings<T>(
     data: &Path,
-    change: impl FnOnce(&mut Settings) -> Result<T, String>,
+    mut change: impl FnMut(&mut Settings) -> Result<T, String>,
 ) -> Result<T, String> {
     let dir = browser_dir(data);
     let lock = lock_settings(&dir)?;
     let path = dir.join("settings.json");
-    let mut settings = read_settings(&path);
-    let result = change(&mut settings)?;
-    settings.revision = settings.revision.saturating_add(1);
-    write_settings(&path, &settings)?;
-    drop(lock);
-    Ok(result)
+    for _ in 0..5 {
+        if read_lock(&lock.path).is_none_or(|owner| owner.nonce != lock.nonce) {
+            return Err("The browser settings are busy. Try again.".into());
+        }
+        let mut settings = read_settings(&path);
+        let seen = settings.revision;
+        let result = change(&mut settings)?;
+        settings.revision = seen.saturating_add(1);
+        #[cfg(test)]
+        BEFORE_SETTINGS_WRITE.with(|hook| {
+            if let Some(run) = hook.borrow_mut().as_mut() {
+                run(&path);
+            }
+        });
+        if read_lock(&lock.path).is_none_or(|owner| owner.nonce != lock.nonce) {
+            return Err("The browser settings are busy. Try again.".into());
+        }
+        if read_settings(&path).revision != seen {
+            continue;
+        }
+        write_settings(&path, &settings)?;
+        drop(lock);
+        return Ok(result);
+    }
+    Err("The browser settings are busy. Try again.".into())
 }
 
 fn display_name(settings: &Settings, id: &str) -> String {
@@ -471,8 +618,19 @@ pub(crate) fn launch_env(data: &Path, id: &str, name: &str) -> Result<LaunchEnv,
     })
 }
 
+/// The token `launch_env` mints: `hivra-` plus one lowercase version-4 uuid. Anything else is not a session.
+fn minted_token(token: &str) -> bool {
+    let Some(rest) = token.strip_prefix("hivra-") else {
+        return false;
+    };
+    let Ok(id) = uuid::Uuid::parse_str(rest) else {
+        return false;
+    };
+    id.get_version_num() == 4 && id.hyphenated().to_string() == rest
+}
+
 fn record_drive(data: &Path, drive: &StoredDrive) -> Result<PathBuf, String> {
-    if uuid::Uuid::parse_str(&drive.id).is_err() || drive.token.is_empty() {
+    if uuid::Uuid::parse_str(&drive.id).is_err() || !minted_token(&drive.token) {
         return Err("The browser session couldn't be recorded. Try again.".into());
     }
     let dir = drives_dir(data);
@@ -524,7 +682,7 @@ fn load_drive(path: &Path) -> Option<StoredDrive> {
         return None;
     }
     let drive: StoredDrive = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
-    if drive.id != id || drive.token.is_empty() {
+    if drive.id != id || !minted_token(&drive.token) {
         return None;
     }
     Some(drive)
@@ -677,16 +835,150 @@ fn command_line(pid: u32) -> Result<String, String> {
 }
 
 #[cfg(unix)]
-fn signal(pid: u32, kill: bool) -> Result<(), String> {
+fn process_start(pid: u32) -> Result<String, String> {
+    let Some(pid) = pid_i32(pid) else {
+        return Err(NOT_OURS.into());
+    };
+    let mut command = Command::new("ps");
+    command.args(["-p", &pid.to_string(), "-o", "lstart="]);
+    allow_path(&mut command);
+    let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
+    if !out.status.success() {
+        return Err(NOT_CHECKED.into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        return Err(NOT_CHECKED.into());
+    }
+    Ok(text)
+}
+
+#[cfg(not(unix))]
+fn process_start(pid: u32) -> Result<String, String> {
+    let Some(pid) = pid_i32(pid) else {
+        return Err(NOT_OURS.into());
+    };
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!("(Get-CimInstance Win32_Process -Filter \"ProcessId={pid}\").CreationDate"),
+    ]);
+    allow_path(&mut command);
+    let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
+    if !out.status.success() {
+        return Err(NOT_CHECKED.into());
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if text.is_empty() {
+        return Err(NOT_CHECKED.into());
+    }
+    Ok(text)
+}
+
+#[cfg(unix)]
+fn list_group(pid: u32) -> Result<Vec<u32>, String> {
+    let Some(raw) = pid_i32(pid) else {
+        return Err(NOT_OURS.into());
+    };
+    let group = unsafe { libc::getpgid(raw) };
+    if group < 2 || group != raw {
+        return Ok(vec![pid]);
+    }
+    let mut command = Command::new("ps");
+    command.args(["-g", &group.to_string(), "-o", "pid="]);
+    allow_path(&mut command);
+    let out = command.output().map_err(|_| NOT_CHECKED.to_string())?;
+    if !out.status.success() {
+        return Err(NOT_CHECKED.into());
+    }
+    let mut pids = Vec::new();
+    for word in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if let Ok(id) = word.parse::<u32>() {
+            if pid_i32(id).is_some() {
+                pids.push(id);
+            }
+        }
+    }
+    if pids.is_empty() {
+        pids.push(pid);
+    }
+    Ok(pids)
+}
+
+#[cfg(not(unix))]
+fn list_group(pid: u32) -> Result<Vec<u32>, String> {
+    let Some(raw) = pid_i32(pid) else {
+        return Err(NOT_OURS.into());
+    };
+    let mut command = Command::new("powershell");
+    command.args([
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        &format!("(Get-CimInstance Win32_Process -Filter \"ParentProcessId={raw}\").ProcessId"),
+    ]);
+    allow_path(&mut command);
+    let Ok(out) = command.output() else {
+        return Ok(vec![pid]);
+    };
+    if !out.status.success() {
+        return Ok(vec![pid]);
+    }
+    let mut pids = vec![pid];
+    for word in String::from_utf8_lossy(&out.stdout).split_whitespace() {
+        if let Ok(id) = word.parse::<u32>() {
+            if pid_i32(id).is_some() && id != pid {
+                pids.push(id);
+            }
+        }
+    }
+    Ok(pids)
+}
+
+/// The session, plus its group only when every member's command line carries this token.
+fn targets_for(pid: u32, token: &str) -> Vec<u32> {
+    let Ok(group) = list_group(pid) else {
+        return vec![pid];
+    };
+    if group.len() <= 1 {
+        return vec![pid];
+    }
+    let ours = group.iter().copied().all(|member| {
+        command_line(member)
+            .ok()
+            .is_some_and(|line| token_in(&line, token))
+    });
+    if ours {
+        group
+    } else {
+        vec![pid]
+    }
+}
+
+fn confirm_session(pid: u32, token: &str, started: &str) -> Result<(), String> {
+    if !minted_token(token) {
+        return Err(NOT_OURS.into());
+    }
+    let line = command_line(pid)?;
+    if !token_in(&line, token) {
+        return Err(NOT_OURS.into());
+    }
+    let now = process_start(pid)?;
+    if started.is_empty() || now != started {
+        return Err(NOT_OURS.into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn kill_one(pid: u32, kill: bool) -> Result<(), String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
     };
     let sig = if kill { libc::SIGKILL } else { libc::SIGTERM };
     unsafe {
-        let group = libc::getpgid(pid);
-        if group >= 2 && group == pid {
-            libc::kill(-group, sig);
-        }
         if libc::kill(pid, sig) != 0 && alive(pid as u32) {
             return Err("Couldn't stop that browser. Try again.".into());
         }
@@ -695,12 +987,12 @@ fn signal(pid: u32, kill: bool) -> Result<(), String> {
 }
 
 #[cfg(not(unix))]
-fn signal(pid: u32, kill: bool) -> Result<(), String> {
+fn kill_one(pid: u32, kill: bool) -> Result<(), String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
     };
     let mut command = Command::new("taskkill");
-    command.arg("/PID").arg(pid.to_string()).arg("/T");
+    command.arg("/PID").arg(pid.to_string());
     if kill {
         command.arg("/F");
     }
@@ -713,6 +1005,25 @@ fn signal(pid: u32, kill: bool) -> Result<(), String> {
     } else {
         Err("Couldn't stop that browser. Try again.".into())
     }
+}
+
+/// Re-check the session, then signal only pids that still carry the token. Never a whole group
+/// unless every member is this browser.
+fn signal(pid: u32, token: &str, started: &str, kill: bool) -> Result<(), String> {
+    confirm_session(pid, token, started)?;
+    let targets = targets_for(pid, token);
+    for target in &targets {
+        if *target == pid {
+            confirm_session(*target, token, started)?;
+        } else {
+            let line = command_line(*target)?;
+            if !token_in(&line, token) {
+                return Err(NOT_OURS.into());
+            }
+        }
+        kill_one(*target, kill)?;
+    }
+    Ok(())
 }
 
 fn wait_gone(pid: u32, ms: u64) -> bool {
@@ -747,17 +1058,28 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
         remove_if_same(&path, &drive.token);
         return Ok(());
     }
-    let line = command_line(drive.pid)?;
-    if !token_in(&line, &drive.token) {
-        remove_if_same(&path, &drive.token);
-        return Err(NOT_OURS.into());
+    match confirm_session(drive.pid, &drive.token, &drive.process_start) {
+        Ok(()) => {}
+        Err(error) if error == NOT_CHECKED => return Err(error),
+        Err(error) => {
+            remove_if_same(&path, &drive.token);
+            return Err(error);
+        }
     }
-    signal(drive.pid, false)?;
+    if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, false) {
+        if error != NOT_CHECKED && error != NOT_OURS {
+            return Err(error);
+        }
+        if error == NOT_OURS {
+            remove_if_same(&path, &drive.token);
+        }
+        return Err(error);
+    }
     if wait_gone(drive.pid, 1500) {
         remove_if_same(&path, &drive.token);
         return Ok(());
     }
-    signal(drive.pid, true)?;
+    signal(drive.pid, &drive.token, &drive.process_start, true)?;
     if wait_gone(drive.pid, 1500) {
         remove_if_same(&path, &drive.token);
         return Ok(());
@@ -767,7 +1089,7 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
 
 pub fn stop_all(data: &Path) -> Result<(), String> {
     let mut pending = None;
-    for drive in read_drives(data)? {
+    for drive in read_drives(data)?.into_iter().filter(|drive| drive.visible) {
         if let Err(error) = stop(data, &drive.id) {
             pending.get_or_insert(error);
         }
@@ -844,58 +1166,109 @@ pub fn run(args: &[String]) -> i32 {
     finish_run(&mut command, &data, &agent, &plan)
 }
 
-fn finish_run(command: &mut Command, data: &Path, agent: &str, plan: &LaunchEnv) -> i32 {
+fn end_child(mut child: std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The token has to be on the child's command line before we record it. A short wait is not a
+/// final failure: `ps` can lag the spawn. If it never appears, the child is stopped and not recorded.
+fn wait_for_token(pid: u32, token: &str) -> Result<(), String> {
+    let start = std::time::Instant::now();
+    loop {
+        match command_line(pid) {
+            Ok(line) if token_in(&line, token) => return Ok(()),
+            Ok(_) if start.elapsed() >= Duration::from_millis(500) => return Err(NOT_OURS.into()),
+            Err(error) if start.elapsed() >= Duration::from_millis(500) => return Err(error),
+            _ => {}
+        }
+        if !alive(pid) {
+            return Err(NOT_OURS.into());
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Spawn the browser and record that child's pid, not this process. `exec` would record us, then
+/// Stop could miss the token and delete the drive before the browser existed.
+pub(crate) fn spawn_recorded(
+    command: &mut Command,
+    data: &Path,
+    agent: &str,
+    plan: &LaunchEnv,
+) -> Result<(std::process::Child, PathBuf), i32> {
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("hivra browser: The browser didn't start. Try again. {error}");
+            return Err(127);
+        }
+    };
+    let pid = child.id();
+    if let Err(error) = wait_for_token(pid, &plan.token) {
+        end_child(child);
+        eprintln!("hivra browser: The browser didn't start. Try again. {error}");
+        return Err(78);
+    }
+    let started = match process_start(pid) {
+        Ok(started) => started,
+        Err(error) => {
+            end_child(child);
+            eprintln!("hivra browser: The browser didn't start. Try again. {error}");
+            return Err(78);
+        }
+    };
+    // Check again immediately before the record. A process that replaced itself no longer
+    // carries the token, and Stop must not be left pointing at it.
+    match command_line(pid) {
+        Ok(line) if token_in(&line, &plan.token) => {}
+        Ok(_) => {
+            end_child(child);
+            eprintln!("hivra browser: The browser didn't start. Try again. {NOT_OURS}");
+            return Err(78);
+        }
+        Err(error) => {
+            end_child(child);
+            eprintln!("hivra browser: The browser didn't start. Try again. {error}");
+            return Err(78);
+        }
+    }
     let drive = StoredDrive {
         id: uuid::Uuid::new_v4().to_string(),
         agent_id: agent.to_string(),
         name: plan.name.clone(),
-        pid: std::process::id(),
+        pid,
         token: plan.token.clone(),
         visible: plan.visible,
         started_at_ms: now_ms(),
+        process_start: started,
     };
-    #[cfg(unix)]
-    {
-        let path = match record_drive(data, &drive) {
-            Ok(path) => path,
-            Err(why) => {
-                eprintln!("hivra browser: {why}");
-                return 78;
-            }
-        };
-        use std::os::unix::process::CommandExt;
-        let error = command.exec();
-        remove_if_same(&path, &plan.token);
-        eprintln!("hivra browser: The browser didn't start. Try again. {error}");
-        127
-    }
-    #[cfg(not(unix))]
-    {
-        match command.spawn() {
-            Ok(mut child) => {
-                let mut recorded = drive;
-                recorded.pid = child.id();
-                let path = match record_drive(data, &recorded) {
-                    Ok(path) => path,
-                    Err(why) => {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        eprintln!("hivra browser: {why}");
-                        return 78;
-                    }
-                };
-                let code = child
-                    .wait()
-                    .map(|status| status.code().unwrap_or(1))
-                    .unwrap_or(1);
-                remove_if_same(&path, &plan.token);
-                code
-            }
-            Err(error) => {
-                eprintln!("hivra browser: The browser didn't start. Try again. {error}");
-                127
-            }
+    match record_drive(data, &drive) {
+        Ok(path) => Ok((child, path)),
+        Err(why) => {
+            end_child(child);
+            eprintln!("hivra browser: {why}");
+            Err(78)
         }
+    }
+}
+
+fn finish_run(command: &mut Command, data: &Path, agent: &str, plan: &LaunchEnv) -> i32 {
+    match spawn_recorded(command, data, agent, plan) {
+        Ok((mut child, path)) => {
+            // The child inherited stdin. Drop ours so we don't keep the pipe open after it exits.
+            #[cfg(unix)]
+            {
+                let _ = unsafe { libc::close(0) };
+            }
+            let code = child
+                .wait()
+                .map(|status| status.code().unwrap_or(1))
+                .unwrap_or(1);
+            remove_if_same(&path, &plan.token);
+            code
+        }
+        Err(code) => code,
     }
 }
 
@@ -910,6 +1283,7 @@ pub(crate) struct Running {
 impl Drop for Running {
     fn drop(&mut self) {
         let _ = stop(&self.data, &self.id);
+        let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
@@ -938,8 +1312,15 @@ pub(crate) fn start_session(
     let child = command
         .spawn()
         .map_err(|error| format!("The test browser didn't start. Try again. {error}"))?;
+    let started = match process_start(child.id()) {
+        Ok(started) => started,
+        Err(error) => {
+            end_child(child);
+            return Err(error);
+        }
+    };
     let drive_id = uuid::Uuid::new_v4().to_string();
-    record_drive(
+    if let Err(error) = record_drive(
         data,
         &StoredDrive {
             id: drive_id.clone(),
@@ -949,8 +1330,12 @@ pub(crate) fn start_session(
             token: plan.token,
             visible: plan.visible,
             started_at_ms: now_ms(),
+            process_start: started,
         },
-    )?;
+    ) {
+        end_child(child);
+        return Err(error);
+    }
     Ok(Running {
         id: drive_id,
         data: data.to_path_buf(),
