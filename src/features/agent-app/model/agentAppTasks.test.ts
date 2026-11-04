@@ -1604,3 +1604,59 @@ describe("worker rules (r82, c02: a worker built Monday in while it was still As
     expect(rules).toMatch(/doesn't match .* say so plainly at the top of your report/);
   });
 });
+
+describe("Hivra WP-14: tasks.message and tasks.ask", () => {
+  const firstMate = () => {
+    const recorded: unknown[] = [];
+    const asked: unknown[] = [];
+    const backend = {
+      record: vi.fn(async (input: Record<string, unknown>) => {
+        recorded.push(input);
+        return { id: "s-1", state: "pending", heldAt: null, ...input };
+      }),
+      ask: vi.fn(async (input: Record<string, unknown>) => {
+        asked.push(input);
+        return {
+          decision: { project: input.project, decisionKey: input.key, state: "open", waiting: input.taskIds },
+          created: true,
+          added: input.taskIds,
+          released: [],
+        };
+      }),
+    };
+    return { host: { backend } as unknown as NonNullable<AgentAppTasksHost["firstMate"]>, recorded, asked };
+  };
+
+  it("sends a message to the caller's own running task, stored with its worker and request id", async () => {
+    const { source, host, api } = fixture([row({ id: "t-1" })]);
+    const fm = firstMate();
+    api.firstMate = fm.host;
+    const out = await handleAgentApp(source, "r-msg", "tasks.message", { taskId: "t-1", text: "Use the v2 API.", whenBusy: "queue" }, host);
+    expect(fm.recorded).toEqual([
+      { ownerSession: "mono-exo", childSession: "app-mono-exo-t-1", delegationId: "t-1", requestId: "r-msg", text: "Use the v2 API.", mode: "queue" },
+    ]);
+    expect(out).toMatchObject({ taskId: "t-1", messageId: "s-1", state: "pending" });
+    await expect(handleAgentApp(source, "r-2", "tasks.message", { taskId: "t-nope", text: "x" }, host)).rejects.toThrow("No task t-nope");
+  });
+
+  it("asks the person under the waiting tasks' project, and a worker can't ask at all", async () => {
+    const { source, host, api } = fixture([row({ id: "t-1" })]);
+    const fm = firstMate();
+    api.firstMate = fm.host;
+    await handleAgentApp(
+      source,
+      "r-ask",
+      "tasks.ask",
+      { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+      host,
+    );
+    expect(fm.asked).toEqual([
+      expect.objectContaining({ askedBy: "mono-exo", askedByMono: "vg-game-lead", project: "vg-game", key: "retention", taskIds: ["t-1"] }),
+    ]);
+    const worker = fixture([], "worker");
+    worker.api.firstMate = fm.host;
+    await expect(
+      handleAgentApp(worker.source, "r-w", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a" }, worker.host),
+    ).rejects.toThrow("A worker reports to the chat that delegated it");
+  });
+});
