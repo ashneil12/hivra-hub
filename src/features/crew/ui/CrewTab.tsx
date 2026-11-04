@@ -7,7 +7,6 @@ const ACTION_LABEL: Record<CrewAction, string> = {
   open: "Open as a tab",
   message: "Message",
   stop: "Stop",
-  retry: "Retry",
   land: "Land",
   "open-pr": "Open the pull request",
 };
@@ -24,14 +23,12 @@ function CrewRowView({
   onOpen,
   onMessage,
   onStop,
-  onRetry,
   onDeliver,
 }: {
   row: CrewRow;
   onOpen?: (row: CrewRow) => void;
   onMessage?: (row: CrewRow, text: string) => void;
   onStop?: (row: CrewRow) => void;
-  onRetry?: (row: CrewRow) => void;
   onDeliver?: (row: CrewRow) => void;
 }) {
   const [messaging, setMessaging] = useState(false);
@@ -62,9 +59,14 @@ function CrewRowView({
       {meta ? <p className="mt-0.5 truncate text-[12px] text-content/50">{meta}</p> : null}
       {row.notice ? <p className="mt-0.5 text-[12px] text-content/60">{row.notice}</p> : null}
       {row.prUrl && row.prNumber != null ? (
-        <a href={row.prUrl} className="mt-0.5 block text-[12px] text-content/70" data-pr={row.id}>
+        <button
+          type="button"
+          className="mt-0.5 block text-[12px] text-content/70"
+          data-pr={row.id}
+          onClick={() => onDeliver?.(row)}
+        >
           Pull request #{row.prNumber}
-        </a>
+        </button>
       ) : null}
       <div className="mt-1.5 flex flex-wrap gap-1.5">
         {row.actions.map((action) =>
@@ -83,7 +85,6 @@ function CrewRowView({
               className="text-[12px] text-content/70"
               onClick={() => {
                 if (action === "open") onOpen?.(row);
-                else if (action === "retry") onRetry?.(row);
                 else onDeliver?.(row);
               }}
             >
@@ -140,7 +141,6 @@ export function CrewTab({
   onOpen,
   onMessage,
   onStop,
-  onRetry,
   onDeliver,
 }: {
   rows: readonly CrewRow[];
@@ -151,7 +151,6 @@ export function CrewTab({
   onOpen?: (row: CrewRow) => void;
   onMessage?: (row: CrewRow, text: string) => void;
   onStop?: (row: CrewRow) => void;
-  onRetry?: (row: CrewRow) => void;
   onDeliver?: (row: CrewRow) => void;
 }) {
   return (
@@ -180,7 +179,6 @@ export function CrewTab({
             onOpen={onOpen}
             onMessage={onMessage}
             onStop={onStop}
-            onRetry={onRetry}
             onDeliver={onDeliver}
           />
         ))

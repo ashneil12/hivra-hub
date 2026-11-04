@@ -9,6 +9,8 @@ import { tauriFirstMate } from "../../firstmate/model/steering";
 import { tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import type { SessionSummary } from "../../sessions/data/sessionStore";
 import { clearCrewFocus, crewFocus, subscribeCrewFocus } from "../model/focus";
+import { loadCrewDelegations } from "../model/load";
+import { steerRequestId } from "../model/steerId";
 import {
   crewRows,
   httpsUrl,
@@ -50,8 +52,6 @@ function asChecks(watch: PrWatch): CrewChecksInput {
   };
 }
 
-let messages = 0;
-
 export function CrewPanel({
   project,
   sessions,
@@ -75,11 +75,8 @@ export function CrewPanel({
 
   const load = useCallback(async () => {
     const ticket = ++generation.current;
-    const recent = tauriDelegations.recent
-      ? tauriDelegations.recent(0).then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const }))
-      : Promise.resolve({ ok: false as const });
     const [listed, delivered, watches]: [Load<Delegation[]>, Load<unknown>, Load<PrWatch[]>] = await Promise.all([
-      recent,
+      loadCrewDelegations(),
       invoke("delivery_list", { project }).then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
       tauriPrWatches.list().then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
     ]);
@@ -139,17 +136,17 @@ export function CrewPanel({
   async function onMessage(row: CrewRow, text: string) {
     const body = text.trim();
     if (!body || !row.sessionId || !row.ownerSession) return;
+    if (!rows.some((item) => item.id === row.id)) return;
     if (body.length > 2000) {
       setNote("That message is too long.");
       return;
     }
-    messages += 1;
     try {
       await tauriFirstMate.record({
         ownerSession: row.ownerSession,
         childSession: row.sessionId,
         delegationId: row.id,
-        requestId: `crew-${row.id}-${messages}`,
+        requestId: steerRequestId(row.id),
         text: body,
       });
       setNote("Sent.");
@@ -159,25 +156,13 @@ export function CrewPanel({
   }
 
   async function onStop(row: CrewRow) {
+    // The list is already this project. A row that is not on it is not stopped.
+    if (!rows.some((item) => item.id === row.id)) return;
     try {
       await tauriDelegations.cancel([row.id], "Stopped from the crew tab");
       setNote(null);
     } catch {
       setNote("Couldn't stop that. Trying again.");
-    }
-  }
-
-  async function onRetry(row: CrewRow) {
-    if (!row.ownerSession || !tauriDelegations.noteRedo) {
-      setNote("Couldn't retry that. Trying again.");
-      return;
-    }
-    messages += 1;
-    try {
-      await tauriDelegations.noteRedo(row.ownerSession, row.id, `crew-retry-${messages}`);
-      setNote("Retry noted.");
-    } catch {
-      setNote("Couldn't retry that. Trying again.");
     }
   }
 
@@ -215,7 +200,6 @@ export function CrewPanel({
       }}
       onMessage={(row, text) => void onMessage(row, text)}
       onStop={(row) => void onStop(row)}
-      onRetry={(row) => void onRetry(row)}
       onDeliver={(row) => void onDeliver(row)}
     />
   );
