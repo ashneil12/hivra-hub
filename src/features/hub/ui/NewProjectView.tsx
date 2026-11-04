@@ -4,7 +4,7 @@ import { Check, Plus } from "../../../shared/ui/icons";
 import { addMockProject } from "../model/mockData";
 import { liveHubStore } from "../model/hubData";
 import { leadSpecFor } from "../model/hubLeads";
-import { setHubSelection, showProjectToday } from "../model/hubNav";
+import { openCodingTeam, showProjectToday } from "../model/hubNav";
 import { createProject, defaultProjectFolder, projectSlug } from "../model/projectActions";
 import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
@@ -118,7 +118,7 @@ export function NewProjectView() {
       setTemplate(project.id, tpl);
       ended.current = true;
       clearProjectDraft();
-      setHubSelection({ project: project.id, item: "inbox" });
+      openCodingTeam(project.id);
     };
     if (!liveHubStore()) {
       // The example data: no Ash OS to make it, so it is kept on this Mac only.

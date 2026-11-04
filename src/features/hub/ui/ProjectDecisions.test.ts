@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
-// D2 (Ash, 19 Oct: "nothing sorts in the background", so the app must show what holds): each project's hub lists its
-// own Decisions, last among its items. Opening it shows that project's open asks and memory only: no project picker,
-// nothing from another project. Settings → Decisions still lists every project.
+// D2 (Ash, 19 Oct: "nothing sorts in the background", so the app must show what holds). WP-06: Being built and the
+// project's Decisions row are not in the sidebar, and a stored Decisions item is not a page. Settings → Decisions
+// still lists every project, and one project's page shows only that project's asks and memory.
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -52,14 +52,11 @@ const until = async (ok: () => unknown) => {
   for (let i = 0; i < 50 && !ok(); i++) await act(async () => new Promise((r) => setTimeout(r, 10)));
 };
 
-it("every project's sidebar lists Decisions last, and picking it opens that project's Decisions", async () => {
-  const picked: ProjectItem[] = [];
-  await act(async () => root!.render(createElement(HubProjectItems, { selection: { project: "exo-game", item: "being-built" }, onPick: (i: ProjectItem) => picked.push(i) })));
-  const rows = [...host.querySelectorAll<HTMLButtonElement>("[data-hub-item]")];
-  expect(rows.map((b) => b.textContent)).toEqual(["Being built", "Decisions"]);
-  act(() => rows[1].click());
-  expect(picked.map((i) => i.id)).toEqual(["decisions"]);
-  expect(JSON.parse(localStorage.getItem("monocode:hub-nav") ?? "{}")).toMatchObject({ project: "exo-game", item: "decisions" });
+it("the sidebar does not list Being built or Decisions", async () => {
+  await act(async () => root!.render(createElement(HubProjectItems, { selection: { project: "exo-game", item: "coding-team" }, onPick: () => undefined })));
+  const rows = [...host.querySelectorAll<HTMLButtonElement>("[data-hub-item]")].map((b) => b.textContent);
+  expect(rows).not.toContain("Being built");
+  expect(rows).not.toContain("Decisions");
 });
 
 it("a project's Decisions shows only that project: its asks and its memory, with no project picker", async () => {
@@ -78,14 +75,9 @@ it("Settings → Decisions still offers every project", async () => {
   expect([...host.querySelectorAll("[data-hub-decisions-project]")].map((b) => b.textContent)).toEqual(["Hivra", "Exo game"]);
 });
 
-it("the hub opens a project's Decisions full width under its own header", async () => {
+it("a stored Decisions item is not a project page", async () => {
   const { HubSurface } = await import("./HubSurface");
   await act(async () => root!.render(createElement(HubSurface, { selection: { project: "exo-game", item: "decisions" } })));
-  await until(() => host.querySelector("[data-hub-decision-line]"));
-  const page = host.querySelector('[data-hub-project-decisions="exo-game"]')!;
-  expect(page).not.toBeNull();
-  expect(page.getAttribute("aria-label")).toBe("Decisions");
-  expect(page.className).not.toMatch(/max-w-/);
-  expect(page.innerHTML).not.toMatch(/max-w-/);
-  expect(page.textContent).toContain("Approve the new art");
+  expect(host.querySelector("[data-hub-project-decisions]")).toBeNull();
+  expect(host.textContent ?? "").not.toContain("Approve the new art");
 });

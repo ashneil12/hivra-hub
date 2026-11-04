@@ -157,9 +157,9 @@ export function resetCodingTeamChats(): void {
 /**
  * r62 (A6: Alfred's tap on Nibbii didn't switch projects, so his next message went to Hivra's Leadership): where a tap
  * on a project in the strip lands, set before anything else opens, so the project switches even when its Lead's chat
- * opens on top (and before that chat's own lookups finish). A project with a code folder lands in its coding team; one
- * without, on its own Today.
+ * opens on top (and before that chat's own lookups finish). A project lands in its coding team, folder or not
+ * (WP-06: a folderless project does not open Today).
  */
 export function projectTapSelection(project: { id: string; folder?: string | null }): { project: string; item: string } {
-  return { project: project.id, item: project.folder ? "coding-team" : "inbox" };
+  return { project: project.id, item: "coding-team" };
 }

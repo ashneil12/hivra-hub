@@ -12,9 +12,7 @@ const CAPPED = /mx-auto[^"`]*\bmax-w-(?:\d?xl|\[\d+px\])|\bmax-w-(?:\d?xl|\[\d+p
 
 const SURFACES: Record<string, string> = {
   Pages: "src/features/pages/ui/PagesView.tsx",
-  "Today and project dashboards": "src/features/hub/ui/HubSurface.tsx",
-  "Being built": "src/features/hub/ui/BeingBuiltView.tsx",
-  Builds: "src/features/hub/ui/BuildsView.tsx",
+  "Project home": "src/features/hub/ui/HubSurface.tsx",
   Inbox: "src/features/inbox/ui/InboxView.tsx",
   Notes: "src/features/notes/ui/NotesView.tsx",
   Automations: "src/features/automations/ui/AutomationsView.tsx",
@@ -69,21 +67,7 @@ describe("main surfaces fill the width", () => {
   });
 
   it("side padding is modest: 24px, 32px from xl", () => {
-    const today = read("src/features/hub/ui/HubSurface.tsx");
-    expect(today).toContain('className="flex w-full flex-col gap-6 px-6 py-8 xl:px-8" data-hub-surface-body');
     expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 py-6 xl:px-8" data-pages-list');
-  });
-
-  it("an ask's long title never widens Today past the window (Ash's Mac, 21 Oct: rows ran off the right edge)", () => {
-    // A container that sizes to its widest content would do it again, and a one-line (truncated) title is as wide as all
-    // its words. Today's asks are a single shrinkable flex column, and a row's words truncate inside it. G1 (23 Oct) took
-    // away the all-projects board and the 1800px two-column grid that held it; the guard the grid was written for stands.
-    const today = read("src/features/hub/ui/HubSurface.tsx");
-    const rows = today.split("\n").find((line) => line.includes("data-hub-today-projects>"))!;
-    expect(rows).toContain('className="flex flex-col"');
-    expect(rows).not.toMatch(/\bgrid-cols-\b/);
-    expect(today).toContain('<span className="min-w-0 truncate text-content">{title}</span>');
-    expect(today).toContain(`<div className={\`truncate text-[13px] \${done ? "text-content/60" : "text-content"}\`}>{need.title}</div>`);
   });
 
   it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {

@@ -66,7 +66,7 @@ export function userProjects(): HubProject[] {
   return USER_PROJECTS;
 }
 
-/** What a project lists in the sidebar: its teams, chats, template sections and Being built. No folder, no Coding team. */
+/** What a project lists in the sidebar: its teams, chats and Pages. No folder, no Coding team. WP-06: not Being built or Builds. */
 export function projectItems(projectId: string, hasFolder = true): ProjectItem[] {
   return [
     ...(hasFolder ? [{ id: "coding-team", kind: "coding-team" as const, title: "Coding team" }] : []),
@@ -74,9 +74,8 @@ export function projectItems(projectId: string, hasFolder = true): ProjectItem[]
     ...listChats(projectId)
       .filter((c) => !c.isDefault)
       .map((c): ProjectItem => ({ id: `chat:${c.id}`, kind: "group-chat", title: c.name })),
-    // The template's own sections (Builds & playtests, Dashboards): each one opens a real screen for this project.
-    ...templateOf(projectId).sections,
-    { id: "being-built", kind: "being-built", title: "Being built" },
+    // Pages (Dashboards). Builds & playtests went with WP-06.
+    ...templateOf(projectId).sections.filter((section) => section.sectionType !== "builds-playtests"),
   ];
 }
 

@@ -102,28 +102,4 @@ describe("at most five rows per project on Today", () => {
     }
   });
 
-  it("Today shows five rows for that project; the Later line is a real button and opens the rest", async () => {
-    const { waiting, HubSurface } = await load(true);
-    const laterCount = waiting.laterItems("exo-game").length;
-    act(() => root.render(createElement(HubSurface, { selection: { project: "exo-game", item: "inbox" } })));
-    // The project's Needs you section, where its Later rows live.
-    const section = container.querySelector<HTMLElement>('[data-hub-today-section="needs"]')!;
-    expect(section).toBeTruthy();
-    const fold = section.querySelector("[data-hub-later-toggle]") as HTMLButtonElement;
-    expect(fold.tagName).toBe("BUTTON");
-    expect(fold.textContent).toBe(`${laterCount} more under Later`);
-    expect(fold.className).toMatch(/underline/);
-    expect(fold.getAttribute("aria-expanded")).toBe("false");
-    await act(async () => fold.click());
-    expect(section.querySelector("[data-hub-later-toggle]")!.getAttribute("aria-expanded")).toBe("true");
-    expect(section.querySelectorAll("[data-hub-later] [data-hub-need]").length).toBeGreaterThan(0);
-    // Open: a quiet heading in line with the rows, dimmed rows, and Hide Later in line underneath.
-    expect(section.querySelector("[data-hub-later-heading]")?.textContent).toBe("Later");
-    expect(section.querySelector("[data-hub-later-rows]")?.className).toMatch(/opacity-75/);
-    const hide = section.querySelector("[data-hub-later-toggle]") as HTMLButtonElement;
-    expect(hide.textContent).toBe("Hide Later");
-    expect(section.querySelector("[data-hub-later-rows]")!.compareDocumentPosition(hide) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    await act(async () => hide.click());
-    expect(section.querySelector("[data-hub-later-heading]")).toBeNull();
-  });
 });

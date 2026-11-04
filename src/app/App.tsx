@@ -222,6 +222,7 @@ import {
   hubSurfaceOpen,
   monoTeamInView,
   monoTeamItem,
+  retiredHubItem,
   setCodingTeamOpener,
   setHubSelection,
   setMonoChatOpener,
@@ -1553,6 +1554,10 @@ function Workspace({
   const monoViewIdRef = useRef(monoViewId);
   monoViewIdRef.current = monoViewId;
   const monoViewRequest = useRef(0);
+  // WP-06: opening the coding team reveals the project's own pane, and that pane taking focus would cancel the
+  // Lead's open (onFocusPane). Held until the focus from this open has passed; a real chat pick still closes it.
+  const openingMono = useRef(false);
+  const openingMonoGen = useRef(0);
   const closeMonoView = useCallback(() => {
     monoViewRequest.current += 1;
     monoViewIdRef.current = null;
@@ -4819,6 +4824,9 @@ function Workspace({
       // Over the Mono every workspace tab is hidden, and a pane outside the workspace is a launched session sliding
       // away from its sidebar: Ash can't have clicked either, so their focus never closes the Mono (r61).
       if (focus === "ignore") return;
+      // WP-06: opening the coding team reveals the project's pane, and that pane taking focus is not Ash leaving
+      // the Lead. A real chat pick still closes it (it calls closeMonoView itself).
+      if (openingMono.current) return;
       closeMonoView();
       if (
         tabsRef.current.find((tab) => tab.id === activeTabIdRef.current)
@@ -5472,6 +5480,10 @@ function Workspace({
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
     async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean } = {}) => {
+      // WP-06: held until the focus from uncovering the project pane has passed (onFocusPane).
+      const opening = ++openingMonoGen.current;
+      openingMono.current = true;
+      try {
       // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
@@ -5485,10 +5497,11 @@ function Workspace({
         noteCodingTeamView(team.id, "lead");
         if (!sameProjectPath(projectCwdRef.current, team.folder)) {
           selectProjectRef.current(team.folder);
-          // The project's own chat must not take the focus meanwhile: a pane taking focus closes the Mono's view
-          // (onFocusPane). The Lead's composer takes it once its view is up.
-          setComposerFocused(false);
         }
+        // The project's own chat must not take the focus meanwhile: a pane taking focus closes the Mono's view
+        // (onFocusPane). The Lead's composer takes it once its view is up. The pane is already showing when the
+        // folder has not changed, so this is not only for a project switch (WP-06).
+        setComposerFocused(false);
       } else if (own) {
         const mono = findMono(monoId);
         // The Mono's own team opens over the project Ash was last in (a project is the unit of the hub, G1).
@@ -5497,8 +5510,8 @@ function Workspace({
         noteCodingTeamView(monoTeamItem(monoId), "lead");
         if (!sameProjectPath(projectCwdRef.current, own.folder)) {
           selectProjectRef.current(own.folder);
-          setComposerFocused(false);
         }
+        setComposerFocused(false);
       }
       setMonoActivity(null);
       workspaceNavigation.cancel();
@@ -5541,6 +5554,15 @@ function Workspace({
       setProjectTerminalFocused(false);
       setComposerFocused(true);
       setComposerFocusToken((token) => token + 1);
+      } finally {
+        // The stray focus is an effect after paint, later than this function's return.
+        const mine = opening;
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (openingMonoGen.current === mine) openingMono.current = false;
+          });
+        });
+      }
     },
     [ensureOpenSession, workspaceNavigation.cancel],
   );
@@ -7051,8 +7073,8 @@ function Workspace({
 
   /**
    * Open a hub project's coding team (hubNav.ts openCodingTeam): its folder's workspace and Sessions list, on its
-   * Lead's chat by default (`lead`), or the chat Ash was last in there. A project with no code folder has no coding
-   * team: it opens on its own Inbox.
+   * Lead's chat by default (`lead`), or the chat Ash was last in there. WP-06: a project with no code folder still
+   * selects the coding team. It does not open Today.
    */
   const openCodingTeam = useCallback(
     (projectId: string, target: CodingTeamTarget = {}) => {
@@ -7065,7 +7087,8 @@ function Workspace({
       setAutomationsViewOpen(false);
       if (!project?.folder) {
         closeMonoView();
-        setHubSelection({ project: projectId, item: "inbox" });
+        // WP-06: no Today. There is no folder to switch to.
+        setHubSelection({ project: projectId, item: "coding-team" });
         return;
       }
       const lead = leadMono(leadSpecFor(project));
@@ -16141,10 +16164,11 @@ function Workspace({
     automationsViewOpen ||
     monoCovers;
   const hubShown = hubSurfaceOpen(hubSel) && !hubItemsCovered;
-  const onHubOpenInbox = () => {
-    closeChromeViews();
-    setHubSelection({ project: hubSel.project, item: "inbox" });
-  };
+  // WP-06: a stored Today, Being built, Decisions or Builds item opens the project's coding team.
+  useEffect(() => {
+    if (!hubDefaultsOn()) return;
+    if (hubSel.project !== NO_PROJECT && retiredHubItem(hubSel.item)) openCodingTeam(hubSel.project);
+  }, [hubSel.project, hubSel.item, openCodingTeam]);
   const hubMonos = sidebarMonos
     ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
@@ -16471,8 +16495,7 @@ function Workspace({
       selection={hubSel}
       onPickProject={(project) => {
         closeChromeViews();
-        // Its coding team, on the Lead's chat or the one Ash was last in there. A project with no code folder has no
-        // coding team: it opens on its own Inbox.
+        // WP-06: its coding team. A project with no folder still selects the coding team, not Today.
         openCodingTeam(project.id);
       }}
       onCreateProject={pickProject}
@@ -16590,7 +16613,8 @@ function Workspace({
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}
-      onOpenInbox={hubDefaultsOn() ? onHubOpenInbox : onOpenInbox}
+      // WP-06: the Inbox button opens the Inbox, not Today's screen.
+      onOpenInbox={onOpenInbox}
       onOpenInboxItem={onOpenLinkedWorkItem}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onOpenAutomations={onOpenAutomations}
@@ -16598,7 +16622,7 @@ function Workspace({
       onGoToFile={onGoToFile}
       searchActive={searchViewOpen}
       inboxActive={
-        hubShown && hubSel.project !== NO_PROJECT && hubSel.item === "inbox"
+        hubDefaultsOn() ? inboxViewOpen : hubShown && hubSel.project !== NO_PROJECT && hubSel.item === "inbox"
       }
       notesActive={notesViewOpen}
       automationsActive={automationsViewOpen && !pagesMode}

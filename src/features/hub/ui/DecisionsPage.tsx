@@ -113,7 +113,7 @@ function Empty({ children }: { children: ReactNode }) {
   return <p className="px-3 text-[13px] text-content/60">{children}</p>;
 }
 
-/** One open ask. The page never answers it: it goes to the project's Asking view, where QuestionSheet already does. */
+/** One open ask. Settings lists it. Answering happens in the Inbox or the project's chat, not on this page. */
 function AskLine({ ask, onOpen }: { ask: DecisionAsk; onOpen: () => void }) {
   return (
     <div className="flex items-start gap-3 rounded-lg px-3 py-2.5 hover:bg-content/5" data-hub-decision-ask={ask.id}>
