@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -473,7 +474,7 @@ describe("desktop gate", () => {
       path.dirname(fileURLToPath(import.meta.url)),
       "../../../../plugins/desktop-control/bin/agent-desktop",
     );
-    expect(existsSync(bundled)).toBe(false);
+    expect(existsSync(bundled)).toBe(true);
 
     const relative = runGate({
       argv: ["--project", ctx.project, "--binary", "agent-desktop", "status"],
@@ -692,6 +693,16 @@ process.stdout.write(JSON.stringify({
     expect(session.code).toBe(0);
     expect(ctx.calls.at(-1)?.args).toContain("--screenshots");
     expect(ctx.calls.at(-1)?.args).toContain("--app");
+  });
+
+  it("refuses a direct call to bin/agent-desktop", () => {
+    const wrapper = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../../plugins/desktop-control/bin/agent-desktop",
+    );
+    const direct = spawnSync(process.execPath, [wrapper], { encoding: "utf8" });
+    expect(direct.status).not.toBe(0);
+    expect(`${direct.stdout}${direct.stderr}`).toContain("desktop gate");
   });
 
   it("treats a folder named ..foo as inside the enabled project", () => {

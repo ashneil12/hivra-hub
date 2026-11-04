@@ -12,7 +12,7 @@ Changed by adding Hivra's gate, consent and visible-control rules. The observe, 
 
 # agent-desktop
 
-Workers use desktop apps through Hivra's gate, never by calling the `agent-desktop` binary. The binary is not on `PATH` and it is not in this folder. The app points the gate at the pinned agent-desktop 1.1.0.
+Workers use desktop apps through Hivra's gate, never by calling the `agent-desktop` binary. The binary is not on `PATH` and it is not in this folder. `bin/agent-desktop` refuses a direct call. The app points the gate at the pinned agent-desktop 1.1.0.
 
 ## How to call it
 
