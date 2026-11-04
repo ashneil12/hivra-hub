@@ -746,6 +746,10 @@ pub fn add(store: &SessionStore, gh: &dyn Gh, input: AddInput, now: i64) -> Resu
     w.last_error = None;
     w.updated_at = now;
     save(&tx, &w)?;
+    // Hivra WP-12: the first read is stored as already told, so a checked PR that is already
+    // green or red would stay "checking". Tell its delivery now. Later polls only report changes.
+    // A failed tell rolls this registration back: the read was not stored as already told.
+    crate::delivery::events::note_current(&tx, &repo, input.number, &read, now)?;
     tx.commit().map_err(|e| e.to_string())?;
     drop(conn);
     nudge();
@@ -1100,6 +1104,9 @@ fn apply(
             QUIET_EVERY
         };
     let mut changed = before != (w.status.clone(), w.memo.clone(), w.title.clone());
+    // Hivra WP-12: CI red, CI green, merged and closed feed delivery (and WP-11's classifier).
+    let mut delivery_news =
+        crate::delivery::events::classify(read, report.as_ref().map(|r| r.changes.as_slice()));
     match (read.state, report) {
         (PrState::Merged, _) => {
             w.merge_sha = read.merge_sha.clone();
@@ -1146,6 +1153,15 @@ fn apply(
         (PrState::Open, None) => {}
     }
     save(&tx, &w)?;
+    let head = read.detail.head_sha.as_deref();
+    // A delivery still checking takes this read's current checks: the first read was already told,
+    // so a delta may never arrive.
+    if let Ok(Some(open)) = crate::delivery::deliver::by_pr(&tx, &w.repo, w.number) {
+        crate::delivery::events::include_current(&mut delivery_news, read, &open.state);
+    }
+    // Hivra WP-12: the watch ends only once the delivery has the news. A failed record rolls
+    // this read back, so the next sweep tries again instead of treating a lost merge as final.
+    crate::delivery::events::record(&tx, &w.repo, w.number, head, &delivery_news, now)?;
     tx.commit().map_err(|e| e.to_string())?;
     if changed {
         swept.changed.push(w.id);
@@ -1616,6 +1632,65 @@ mod tests {
         let gh = FakeGh::new(vec![]);
         run(&store, &gh, t7 + 3_600_000, &mut paused);
         assert!(gh.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_delivery_record_does_not_end_the_watch() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(pending())]),
+            input("mono-a"),
+            T0,
+        )
+        .unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch("DROP TABLE delivery_events")
+            .unwrap();
+        let merged = recorded(|v| {
+            pr(v)["state"] = json!("MERGED");
+            pr(v)["mergeCommit"] = json!({ "oid": "feedface00000000000000000000000000000000" });
+            pr(v)["mergedAt"] = json!("2026-10-20T10:00:00Z");
+        });
+        let now = T0 + IN_FLIGHT_EVERY;
+        let err = sweep(
+            &store,
+            &FakeGh::new(vec![Ok(merged.clone())]),
+            &PlainMaker,
+            &frame,
+            now,
+            &mut 0,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("delivery_events"),
+            "the record failure is the reason, not a closed watch: {err}"
+        );
+        let w = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
+            .unwrap()
+            .remove(0);
+        assert_eq!(w.state.as_str(), WATCHING);
+        assert!(w.end_reason.is_none());
+        // The same read lands once the record can be written. A timeout was not final.
+        crate::delivery::ensure_tables(&store.lock_conn().unwrap()).unwrap();
+        sweep(
+            &store,
+            &FakeGh::new(vec![Ok(merged)]),
+            &PlainMaker,
+            &frame,
+            now,
+            &mut 0,
+        )
+        .unwrap();
+        let w = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            (w.state.as_str(), w.end_reason.as_deref()),
+            (ENDED, Some("merged"))
+        );
     }
 
     #[test]
