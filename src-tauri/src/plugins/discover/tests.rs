@@ -103,7 +103,10 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     );
     match &browser.source {
         Some(InstallSource::Local { path }) => {
-            assert!(path.ends_with("plugins/browser"), "{path}");
+            assert!(
+                Path::new(path).ends_with(Path::new("plugins").join("browser")),
+                "{path}"
+            );
             assert!(std::path::Path::new(path).join("plugin.json").is_file());
         }
         other => panic!("the browser plugin is pinned to its folder, not {other:?}"),
