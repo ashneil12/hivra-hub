@@ -36,6 +36,7 @@ export type SettingsSectionId =
   | "archive"
   | "changes"
   | "decisions"
+  | "activity"
   | "dashboards"
   | "portable"
   | "connectors";
@@ -99,6 +100,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
     keywords: "decision ask waiting memory never rule history per project inbox",
+  },
+  {
+    id: "activity",
+    group: "app",
+    label: "Activity",
+    description:
+      "What agents and the app did, newest first. Kept for 90 days.",
+    keywords: "activity log audit history who did what",
   },
   {
     id: "dashboards",
