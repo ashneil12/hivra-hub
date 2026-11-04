@@ -143,6 +143,42 @@
       "url": "https://github.com/ChristopherKahler",
       "licence": "MIT",
       "gave": "rule staging behind approval and a four-state worker status"
+    },
+    {
+      "name": "Orbit",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "gave": "tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E"
+    },
+    {
+      "name": "no-mistakes",
+      "url": "https://github.com/kunchenguid/no-mistakes",
+      "licence": "MIT",
+      "gave": "the local gate that checks a crew's branch before it reaches GitHub, used as a pinned tool, planned for Wave F"
+    },
+    {
+      "name": "treehouse",
+      "url": "https://github.com/kunchenguid/treehouse",
+      "licence": "MIT",
+      "gave": "a pool of ready worktrees that keep their installs and build cache, used as a pinned tool, planned for Wave F"
+    },
+    {
+      "name": "backpass",
+      "url": "https://github.com/kunchenguid/backpass",
+      "licence": "MIT",
+      "gave": "evidence-gated edits to agent instructions learned from past chats, planned for Wave F"
+    },
+    {
+      "name": "kun",
+      "url": "https://github.com/kunchenguid/kun",
+      "licence": "no licence",
+      "gave": "a person's opinions and voice kept as files agents read (ideas only)"
+    },
+    {
+      "name": "Kun Chen's dotfiles",
+      "url": "https://github.com/kunchenguid/dotfiles",
+      "licence": "MIT-0",
+      "gave": "one AGENTS.md shared by every agent CLI"
     }
   ],
   "components": [

@@ -52,6 +52,12 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [agent-desktop](https://github.com/vercel-labs/agent-desktop) | Apache-2.0 | Desktop control for workers, headless-first safety model | Optional plugin | 44 |
 | [Crest](https://github.com/pauljoda/Crest) | MPL-2.0 (name not licensed) | Per-agent browser profiles, driving indicator and Stop, browsing safety defaults | Ideas; engine is Playwright or Chrome DevTools MCP | 43 |
 | [CARL and PAUL](https://github.com/ChristopherKahler) | MIT | Rule staging behind approval; a four-state worker status | Ideas | 10 |
+| [Orbit](https://github.com/coollabsio/orbit) | Apache-2.0 | Tasks with per-project workflows and sub-tasks, board, list and timeline views with saved views, block-editor docs with versions, home, a ⌘K palette, verified backups with one-item restore, 30-day trash, GitHub label sync, audit log, an MCP endpoint with its own OAuth, team workspaces and live co-editing | Vendor its TypeScript logic and editor with credit; translate its Rust to rusqlite; restyle its components | 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80 |
+| [no-mistakes](https://github.com/kunchenguid/no-mistakes) | MIT | The gate between a branch and the PR: review, test, docs and lint in a throwaway worktree, safe fixes applied, judgment calls parked for the person, CI repair, never losing work | Pinned tool driven through `axi`; not ported (Go, releases daily) | 81 |
+| [treehouse](https://github.com/kunchenguid/treehouse) | MIT | A pool of reusable worktrees with leases, verified return, lingering-process cleanup, quarantine of unknown ownership, `.worktreeinclude` seeding | Pinned tool driven through `get --lease --json`; not ported (Go) | 82 |
+| [backpass](https://github.com/kunchenguid/backpass) | MIT | Instruction files as weights and transcripts as signal: verbatim quotes, the two-session rule, a ledger across runs, rejection memory, staging-copy diffs, a token budget, seven transcript adapters | Vendor its JavaScript as TypeScript with credit; translate missing adapters to Rust | 83 |
+| [kun](https://github.com/kunchenguid/kun) | no licence | A person's OPINIONS.md and VOICE.md refreshed from what they said, read by agents; thin skills that load detail on demand | Ideas only | 83 |
+| [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles) | MIT-0 | One AGENTS.md shared by every agent CLI | Ideas | 83 |
 
 ## Vision to packages
 
@@ -71,3 +77,8 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Opinionated, minimal, not robotic, UI that flows | 03, 04, 05, 06, 15 |
 | Mergeable with upstream, Windows working | 01, 02, 09, PLAN.md upstream rules |
 | Named Hivra, sources credited | 07, 08 |
+| Tasks the person and agents share, boards, docs, a home and one search box (Orbit, 4 Nov) | 70, 71, 72, 73, 74 |
+| Safety nets: checked backups, trash, an activity log | 75, 76, 78 |
+| GitHub issues as briefs, outside AI tools, team workspaces | 77, 79, 80 |
+| Crews' work checked before GitHub, ready worktrees (Kun Chen's tools, 4 Nov) | 81, 82 |
+| Agents learn from past chats with evidence; the person's opinions and voice | 83 |
