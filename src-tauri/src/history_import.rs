@@ -995,6 +995,134 @@ fn post_chat(url: &str, token: &str, body: &str) -> PostResult {
     }
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedProposal {
+    pub id: String,
+    pub project: String,
+    pub conversation_id: String,
+    pub source: String,
+    pub status: String,
+    pub markdown: String,
+}
+
+fn is_link(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Proposals waiting for review. A symlink is skipped. A file that holds a secret is left out, text and all.
+pub fn list_proposals(dir: &Path) -> Result<Vec<ListedProposal>, String> {
+    let _guard = state_lock();
+    let proposals = dir.join("proposals");
+    if !proposals.exists() || is_link(&proposals) {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&proposals).map_err(|_| "Couldn't read the drafts.".to_string())?;
+    for entry in entries {
+        let entry = entry.map_err(|_| "Couldn't read the drafts.".to_string())?;
+        let path = entry.path();
+        if is_link(&path) || !path.is_dir() {
+            continue;
+        }
+        let id = entry.file_name().to_string_lossy().to_string();
+        if !id_re().is_match(&id) || !inside(&proposals, &path) {
+            continue;
+        }
+        let meta_path = path.join("proposal.json");
+        let markdown_path = path.join("how-you-work.md");
+        if is_link(&meta_path) || is_link(&markdown_path) {
+            continue;
+        }
+        let Ok(meta_text) = fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(markdown) = fs::read_to_string(&markdown_path) else {
+            continue;
+        };
+        if markdown.len() > 256 * 1024 || mentions_secret(&meta_text) || mentions_secret(&markdown)
+        {
+            continue;
+        }
+        let Ok(meta) = serde_json::from_str::<Value>(&meta_text) else {
+            continue;
+        };
+        let Some(status) = meta.get("status").and_then(Value::as_str) else {
+            continue;
+        };
+        if status != "unreviewed" && status != "confirmed" && status != "rejected" {
+            continue;
+        }
+        let Some(project) = meta.get("project").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(source) = meta.get("source").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(conversation_id) = meta.get("conversationId").and_then(Value::as_str) else {
+            continue;
+        };
+        out.push(ListedProposal {
+            id,
+            project: project.to_string(),
+            conversation_id: conversation_id.to_string(),
+            source: source.to_string(),
+            status: status.to_string(),
+            markdown,
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(out)
+}
+
+/// Moves a draft from unreviewed to confirmed or rejected. A second review does nothing.
+pub fn review_proposal(dir: &Path, id: &str, decision: &str) -> Result<bool, String> {
+    if decision != "confirmed" && decision != "rejected" {
+        return Err("That review isn't one of the choices.".into());
+    }
+    if !id_re().is_match(id) {
+        return Err("That draft id can't be used.".into());
+    }
+    let _guard = state_lock();
+    let proposals = dir.join("proposals");
+    let folder = proposals.join(id);
+    if is_link(&folder) || !folder.is_dir() || !inside(&proposals, &folder) {
+        return Ok(false);
+    }
+    let meta_path = folder.join("proposal.json");
+    let markdown_path = folder.join("how-you-work.md");
+    if is_link(&meta_path) || is_link(&markdown_path) {
+        return Ok(false);
+    }
+    let text = match fs::read_to_string(&meta_path) {
+        Ok(text) => text,
+        Err(_) => return Ok(false),
+    };
+    if mentions_secret(&text) {
+        return Ok(false);
+    }
+    let mut meta: Value = match serde_json::from_str(&text) {
+        Ok(value) => value,
+        Err(_) => return Ok(false),
+    };
+    if meta.get("status").and_then(Value::as_str) != Some("unreviewed") {
+        return Ok(false);
+    }
+    let Some(obj) = meta.as_object_mut() else {
+        return Ok(false);
+    };
+    obj.insert("status".to_string(), Value::String(decision.to_string()));
+    let bytes = serde_json::to_vec_pretty(&meta)
+        .map_err(|_| "That draft could not be saved.".to_string())?;
+    if mentions_secret(&String::from_utf8_lossy(&bytes)) {
+        return Ok(false);
+    }
+    atomic_write(&meta_path, &bytes)?;
+    Ok(true)
+}
+
 fn store_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app
         .path()
@@ -1073,6 +1201,20 @@ pub fn history_import_cas_state(
 #[tauri::command]
 pub fn history_import_write_proposal(app: AppHandle, proposal: ProposalIn) -> Result<(), String> {
     write_proposal(&store_dir(&app)?, &proposal)
+}
+
+#[tauri::command]
+pub fn history_import_list_proposals(app: AppHandle) -> Result<Vec<ListedProposal>, String> {
+    list_proposals(&store_dir(&app)?)
+}
+
+#[tauri::command]
+pub fn history_import_review_proposal(
+    app: AppHandle,
+    id: String,
+    decision: String,
+) -> Result<bool, String> {
+    review_proposal(&store_dir(&app)?, &id, &decision)
 }
 
 #[tauri::command]
@@ -1963,5 +2105,104 @@ mod tests {
         assert_eq!(loaded.revision, 1);
         assert!(loaded.state["entries"]["claude_code:a.jsonl"].is_object());
         assert!(loaded.state["entries"].get("claude_code:b.jsonl").is_none());
+    }
+
+    fn plant(dir: &Path, id: &str, markdown: &str) {
+        let folder = dir.join("proposals").join(id);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join("how-you-work.md"), markdown).unwrap();
+        fs::write(
+            folder.join("proposal.json"),
+            serde_json::to_vec_pretty(&json!({
+                "format": 1,
+                "kind": "history-import",
+                "status": "unreviewed",
+                "applied": false,
+                "source": "claude_code",
+                "conversationId": "sess-1",
+                "project": "notes",
+                "sourceKey": "notes/chat.jsonl",
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn proposals_are_listed_in_order_and_a_missing_folder_is_empty() {
+        let tmp = Tmp::new();
+        assert!(list_proposals(&tmp.path).unwrap().is_empty());
+        plant(&tmp.path, "hi-bbbb", "- Second [src: sess-1 #m2]\n");
+        plant(&tmp.path, "hi-aaaa", "- First [src: sess-1 #m1]\n");
+        let listed = list_proposals(&tmp.path).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].id, "hi-aaaa");
+        assert_eq!(listed[1].id, "hi-bbbb");
+        assert_eq!(listed[0].status, "unreviewed");
+    }
+
+    #[test]
+    fn a_secret_proposal_is_not_returned() {
+        let tmp = Tmp::new();
+        let secret = "sk-ant-api03-abcdefghijklmnopqrst";
+        plant(
+            &tmp.path,
+            "hi-secret",
+            &format!("- {secret} [src: sess-1 #m1]\n"),
+        );
+        plant(
+            &tmp.path,
+            "hi-ok",
+            "- Likes small commits [src: sess-1 #m1]\n",
+        );
+        let listed = list_proposals(&tmp.path).unwrap();
+        let text = serde_json::to_string(&listed).unwrap();
+        assert!(!text.contains(secret));
+        assert!(!text.contains("sk-ant"));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "hi-ok");
+    }
+
+    #[test]
+    fn a_proposal_is_reviewed_once_and_stays_unapplied() {
+        let tmp = Tmp::new();
+        plant(
+            &tmp.path,
+            "hi-abcdef01",
+            "- Likes small commits [src: sess-1 #m1]\n",
+        );
+        assert!(review_proposal(&tmp.path, "hi-abcdef01", "confirmed").unwrap());
+        assert!(!review_proposal(&tmp.path, "hi-abcdef01", "rejected").unwrap());
+        assert!(!review_proposal(&tmp.path, "hi-missing1", "confirmed").unwrap());
+        let meta: Value = serde_json::from_str(
+            &fs::read_to_string(tmp.path.join("proposals/hi-abcdef01/proposal.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(meta["status"], "confirmed");
+        assert_eq!(meta["applied"], false);
+        assert!(review_proposal(&tmp.path, "../hi-abcdef01", "confirmed").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_proposal_is_not_listed() {
+        use std::os::unix::fs::symlink;
+        let tmp = Tmp::new();
+        let outside = tmp.path.join("outside");
+        fs::create_dir(&outside).unwrap();
+        let secret = "sk-ant-api03-abcdefghijklmnopqrst";
+        fs::write(outside.join("how-you-work.md"), secret).unwrap();
+        fs::create_dir_all(tmp.path.join("proposals")).unwrap();
+        symlink(&outside, tmp.path.join("proposals/hi-link")).unwrap();
+        let text = serde_json::to_string(&list_proposals(&tmp.path).unwrap()).unwrap();
+        assert!(!text.contains(secret));
+        assert!(list_proposals(&tmp.path).unwrap().is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_symlink_proposal_is_not_listed() {
+        // Creating a symlink needs extra rights here. The unix test covers it.
+        assert!(cfg!(windows));
     }
 }

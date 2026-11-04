@@ -36,6 +36,8 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// WP-51: memory the person reviews.
+mod memory_review;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
 mod hub_plugin;
 mod inbox_media;
@@ -1032,6 +1034,11 @@ pub fn run() {
             history_import::history_import_cas_state,
             history_import::history_import_write_proposal,
             history_import::history_import_ask,
+            // WP-51: memory the person reviews, and a decision on a drafted chat.
+            memory_review::memory_review_load,
+            memory_review::memory_review_cas,
+            history_import::history_import_list_proposals,
+            history_import::history_import_review_proposal,
         ])
         .build(context)
         .expect("error while building MonoCode");
