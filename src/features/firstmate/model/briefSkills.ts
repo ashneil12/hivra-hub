@@ -25,11 +25,14 @@ export const BRIEF_SKILLS: Record<BriefTask, readonly string[]> = {
 
 const ORDER: { task: BriefTask; pattern: RegExp }[] = [
   { task: "measure", pattern: /\b(?:benchmark|perf|performance|speedup|latency|profil(?:e|ing)|measure)\b/i },
-  { task: "design", pattern: /\b(?:design|ui|ux|layout|architect)\b/i },
-  { task: "writing", pattern: /\b(?:writ(?:e|ing)|docs|documentation|copy|prose|readme)\b/i },
+  // Test and fix words beat "write" and "copy", so "Write the tests for the save bug" is code, not writing.
+  { task: "code", pattern: /\btests?\b/i },
   { task: "debug", pattern: /\b(?:bugs?|crash|error|failing|broken|debug|fix)\b/i },
+  { task: "design", pattern: /\b(?:design|ui|ux|layout|architect)\b/i },
   { task: "review", pattern: /\b(?:review|audit|critique)\b/i },
-  { task: "code", pattern: /\b(?:code|implement|refactor|change|add|tests?|function|file|\.ts)\b/i },
+  { task: "code", pattern: /\b(?:code|implement|refactor|change|function|file|\.ts)\b/i },
+  { task: "writing", pattern: /\b(?:writ(?:e|ing)|docs|documentation|copy|prose|readme)\b/i },
+  { task: "code", pattern: /\badd\b/i },
 ];
 
 /** The kind of work a brief is, or none when the words don't say. Earlier kinds win. */

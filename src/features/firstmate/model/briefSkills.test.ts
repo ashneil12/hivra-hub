@@ -18,7 +18,10 @@ describe("brief skills", () => {
     expect(classifyBriefTask("Change a.ts")).toBe("code");
     expect(classifyBriefTask("design the settings screen")).toBe("design");
     expect(classifyBriefTask("write the readme")).toBe("writing");
-    expect(classifyBriefTask("Write the tests")).toBe("writing");
+    expect(classifyBriefTask("Write the tests")).toBe("code");
+    expect(classifyBriefTask("Write the tests for the save bug")).toBe("code");
+    expect(classifyBriefTask("Copy the file into src/")).toBe("code");
+    expect(classifyBriefTask("Fix the save bug in the docs")).toBe("debug");
     expect(classifyBriefTask("benchmark the export")).toBe("measure");
     expect(classifyBriefTask("design the benchmark")).toBe("measure");
     expect(classifyBriefTask("review the change")).toBe("review");
@@ -29,6 +32,15 @@ describe("brief skills", () => {
   });
 
   it("attaches those skills to the brief, and the chat never shows the path", () => {
+    const classified = renderBrief(
+      { intent: "Ash: Write the tests for the save bug", spec: "Write the tests for the save bug" },
+      { kind: "own-checkout", mainCheckout: "/p" },
+      classifyBriefTask("Write the tests for the save bug"),
+    );
+    expect(classified).toContain("tdd");
+    expect(classified).toContain("principle-prove-it-works");
+    expect(classified).not.toContain("technical-writing");
+    expect(classified).not.toContain("unslop");
     const brief = renderBrief({ intent: "Ash: change it", spec: "Change a.ts" }, { kind: "own-checkout", mainCheckout: "/p" }, "code");
     expect(brief).toContain("## Skills");
     for (const name of BRIEF_SKILLS.code) expect(brief).toContain(name);
