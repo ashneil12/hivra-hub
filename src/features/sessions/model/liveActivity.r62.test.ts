@@ -86,14 +86,14 @@ describe("the verify bench's record of the live line", () => {
   };
   it("is written only on the bench, once per line and text", async () => {
     const { noteLiveLine, VERIFY_LIVE_LINES_KEY } = await import("./verifyLiveLines");
-    const seen = { key: "a", text: "frank · Thinking · 1s", runner: true, runnerAfterText: true, stalled: false };
+    const seen = { key: "a", text: "ed · Thinking · 1s", runner: true, runnerAfterText: true, stalled: false };
     const off = store();
     noteLiveLine(seen, off, false);
     expect(off.getItem(VERIFY_LIVE_LINES_KEY)).toBeNull();
     const on = store();
     noteLiveLine(seen, on, true);
     noteLiveLine(seen, on, true);
-    noteLiveLine({ ...seen, text: "frank · Thinking · 2s" }, on, true);
-    expect(JSON.parse(on.getItem(VERIFY_LIVE_LINES_KEY)!).map((l: { text: string }) => l.text)).toEqual(["frank · Thinking · 1s", "frank · Thinking · 2s"]);
+    noteLiveLine({ ...seen, text: "ed · Thinking · 2s" }, on, true);
+    expect(JSON.parse(on.getItem(VERIFY_LIVE_LINES_KEY)!).map((l: { text: string }) => l.text)).toEqual(["ed · Thinking · 1s", "ed · Thinking · 2s"]);
   });
 });

@@ -28,15 +28,15 @@ function setup(): Setup {
       projects: () => PROJECTS,
       now: () => NOW,
       holdRed: (id, red) => holds.set(id, red),
-      monoName: (id) => ({ "chief-of-staff": "Chief of Staff", "hivra-lead": "Hivra lead", marketing: "Marketing" })[id] ?? id,
-      isLeadership: (id) => id === "chief-of-staff",
+      monoName: (id) => ({ "ada": "Chief of Staff", "hivra-lead": "Hivra lead", marketing: "Marketing" })[id] ?? id,
+      isLeadership: (id) => id === "ada",
       leadProject: (id) => (id === "hivra-lead" ? "hivra" : undefined),
     },
   };
 }
 
 const MONOS: Record<string, { id: string; projects: string[] }> = {
-  "cos-chat": { id: "chief-of-staff", projects: PROJECTS.map((p) => p.folder) },
+  "cos-chat": { id: "ada", projects: PROJECTS.map((p) => p.folder) },
   "hivra-chat": { id: "hivra-lead", projects: ["/Users/ash/Projects/hivra"] },
   "mkt-chat": { id: "marketing", projects: ["/Users/ash/Projects/hub", "/Users/ash/Projects/monocode-hub"] },
 };
@@ -65,7 +65,7 @@ describe("switching autopilot from a chat", () => {
     const result = (await call(cos, "autopilot.set", { until: "Monday 9:00", ashSaid: "go autopilot until Monday 9:00" }, s)) as Record<string, unknown>;
     expect(result).toMatchObject({ on: true, for: "everything", untilLabel: "Mon 9:00", until: new Date(MONDAY_9).toISOString() });
     const sw = s.backend.switches.get("*")!;
-    expect(sw).toMatchObject({ untilMs: MONDAY_9, setBy: "mono:chief-of-staff", chatId: "cos-chat", said: "go autopilot until Monday 9:00" });
+    expect(sw).toMatchObject({ untilMs: MONDAY_9, setBy: "mono:ada", chatId: "cos-chat", said: "go autopilot until Monday 9:00" });
     expect(s.backend.entries.at(-1)).toMatchObject({ kind: "switch", outcome: "on", who: "Chief of Staff", chatId: "cos-chat" });
   });
 

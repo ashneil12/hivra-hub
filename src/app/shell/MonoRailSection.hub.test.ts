@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { railMonos } from "./MonoRailSection";
-import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { hubMonoRank } from "../../features/hub/model/hubData";
 
 type M = { id: string; name: string; projects: string[] };
@@ -12,7 +11,12 @@ const LEADS: M[] = [
   { id: "nibbii-lead", name: "Nibbii lead", projects: [FOLDERS.Nibbii] },
   { id: "ash-lead", name: "Harness lead", projects: [FOLDERS.Harness] },
 ];
-const EXPECTED = ["Chief of Staff", "Projects Manager", "frank", "Alfred", "EXO lead", "Hivra lead", "Nibbii lead", "Harness lead"];
+const ORDINARY = [
+  { id: "ada", name: "Ada" },
+  { id: "bo", name: "Bo" },
+  { id: "ed", name: "Ed" },
+  { id: "cam", name: "Cam" },
+] as const;
 const roster = () => JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as M[];
 
 beforeEach(() => {
@@ -23,13 +27,19 @@ beforeEach(() => {
 });
 
 describe("hub Monos section: one global list", () => {
-  it("shows all 4 defaults first, then all 4 Leads", () => {
-    ensureBuiltInMonos();
-    expect(railMonos(roster(), undefined, hubMonoRank).map((m) => m.name)).toEqual(EXPECTED);
+  it("does not insert a default team in front of Monos already on the roster", async () => {
+    vi.resetModules();
+    const { ensureBuiltInMonos, DEFAULT_TEAM_IDS } = await import("../../features/hub/model/builtInMonos");
+    expect(DEFAULT_TEAM_IDS).toEqual([]);
+    expect(ensureBuiltInMonos()).toBe(0);
+    expect(railMonos(roster(), undefined, hubMonoRank).map((m) => m.name)).toEqual(LEADS.map((m) => m.name));
   });
 
-  it("shows only explicitly assigned Monos on each project while keeping everyone available on Today", () => {
-    ensureBuiltInMonos();
+  it("shows only explicitly assigned Monos on each project while keeping everyone available on Today", async () => {
+    vi.resetModules();
+    const { addMono } = await import("../../features/monos/model/mono");
+    for (const { id, name } of ORDINARY) addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
+    expect(railMonos(roster(), undefined, hubMonoRank).map((m) => m.name)).toEqual([...LEADS.map((m) => m.name), ...ORDINARY.map((m) => m.name)]);
     for (const folder of Object.values(FOLDERS))
       expect(railMonos(roster(), folder, hubMonoRank).map((m) => m.name)).toEqual(LEADS.filter((m) => m.projects.includes(folder)).map((m) => m.name));
   });

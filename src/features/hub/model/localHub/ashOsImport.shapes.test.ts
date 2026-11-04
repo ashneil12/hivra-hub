@@ -26,7 +26,7 @@ it("imports the real service's projects and Monos per project as they were", asy
   // Ash OS's own bookkeeping (workOwner, needsCount) stays behind.
   expect(projects.some((p) => "workOwner" in p || "needsCount" in p)).toBe(false);
   const { byProject, memberships } = await hub.monoProjects();
-  expect(byProject).toEqual({ hivra: ["chief-of-staff", "hivra-lead"] });
+  expect(byProject).toEqual({ hivra: ["ada", "hivra-lead"] });
   expect(memberships.find((m) => m.monoId === "hivra-lead")).toMatchObject({ role: "lead", addedAt: "2026-10-15T02:32:48.622547Z" });
   // The strip reads them in the same order.
   expect((await hub.layout()).strip.map((p) => p.id)).toEqual(["ash", "hivra", "nibbii", "vg-game"]);

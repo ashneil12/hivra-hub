@@ -46,7 +46,7 @@
  "mono_projects": {
   "memberships": [
    {
-    "monoId": "chief-of-staff",
+    "monoId": "ada",
     "projectId": "hivra",
     "role": "member",
     "addedAt": "2026-10-15T02:32:48.622547Z"
@@ -60,12 +60,12 @@
   ],
   "byProject": {
    "hivra": [
-    "chief-of-staff",
+    "ada",
     "hivra-lead"
    ]
   },
   "byMono": {
-   "chief-of-staff": [
+   "ada": [
     "hivra"
    ],
    "hivra-lead": [

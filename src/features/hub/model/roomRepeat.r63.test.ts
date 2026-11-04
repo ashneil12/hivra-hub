@@ -32,11 +32,11 @@ it("in the room, the near-copy stays out and the seat with something new posts",
   const team = await import("./builtInMonos");
   team.ensureBuiltInMonos();
   const chat = await import("./hubChats");
-  const c = chat.createChat("hub", "Leadership team", ["chief-of-staff", "projects-manager", "alfred"]);
+  const c = chat.createChat("hub", "Leadership team", ["ada", "bo", "cam"]);
   const replies: Record<string, string> = {
-    "chief-of-staff": LEAD,
-    "projects-manager": "The sitemap is live on Canary with 412 URLs, all 200, and Google was asked to recrawl it. Nothing needs you.",
-    alfred: "One thing from me: the Canary robots.txt still blocks /blog, so the recrawl will skip those pages.",
+    "ada": LEAD,
+    "bo": "The sitemap is live on Canary with 412 URLs, all 200, and Google was asked to recrawl it. Nothing needs you.",
+    cam: "One thing from me: the Canary robots.txt still blocks /blog, so the recrawl will skip those pages.",
   };
   const prompts: RoomTurnRequest[] = [];
   chat.setGroupChatRunner({
@@ -51,9 +51,9 @@ it("in the room, the near-copy stays out and the seat with something new posts",
   await chat.requestReply(c.id, conv);
   const msgs = chat.getChat(c.id)!.conversations.find((x) => x.id === conv)!.messages;
   const posted = msgs.filter((m) => m.from !== "ash" && m.from !== "app").map((m) => m.from);
-  expect(posted).toContain("chief-of-staff");
-  expect(posted).toContain("alfred");
-  expect(posted).not.toContain("projects-manager");
+  expect(posted).toContain("ada");
+  expect(posted).toContain("cam");
+  expect(posted).not.toContain("bo");
   expect(msgs.every((m) => !/NO_REPLY/.test(m.text))).toBe(true);
   expect(prompts.every((p) => p.prompt.includes("Silence is the default"))).toBe(true);
 });

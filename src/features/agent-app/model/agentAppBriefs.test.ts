@@ -21,7 +21,7 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
 
 const PROJECT = "/tmp/monocode-hub";
 
-function host(over: Partial<AgentAppHost> = {}, mono = { id: "chief-of-staff", name: "Chief of Staff" }) {
+function host(over: Partial<AgentAppHost> = {}, mono = { id: "ada", name: "Chief of Staff" }) {
   const target: Session = { ...newSession("claude", PROJECT, "claude:opus-5-5"), id: "lead-chat", title: "MonoCode Hub lead" };
   const sent: unknown[][] = [];
   const queue: QueuedBrief[] = [];
@@ -88,7 +88,7 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
   it("goes to the Lead's own chat as a stored task, queued behind its work unless steering is asked for", async () => {
     const h = leadHost();
     const out = await handleAgentApp(source, "b1", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub", asks: ["a_1"] }, h.api);
-    expect(h.briefLead).toHaveBeenCalledWith(source, expect.objectContaining({ id: "chief-of-staff" }), {
+    expect(h.briefLead).toHaveBeenCalledWith(source, expect.objectContaining({ id: "ada" }), {
       lead: "hub",
       requestId: "app-cos-chat-b1",
       // Hivra WP-10: a Lead is a first mate; its brief comes from the same template, read-only on the project.

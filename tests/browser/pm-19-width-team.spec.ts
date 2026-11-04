@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { openLocalHub } from "./localHub";
+import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 19 proofs, a browser preview only (not Ash's Mac):
 // - Ash 21 Oct, width: Pages and a project's own Today (G1: its Inbox; a fresh load opens the first project)
@@ -72,16 +73,20 @@ for (const size of SIZES) {
 test("fresh install onboarding: our team with a role line under each name, and no pre-load", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/hub-dev.html?onboarding");
-  await expect(page.locator("[data-hub-onboarding]")).toBeVisible({ timeout: 60_000 });
-  const notNow = page.getByRole("button", { name: "Not now" });
-  if (await notNow.isVisible().catch(() => false)) await notNow.click();
+  await openOnboarding(page);
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.locator("[data-hub-onboarding-next]").click();
+  await assertStartersUnticked(page);
   const text = () => page.evaluate(() => document.body.innerText);
-  await expect.poll(text).toMatch(/Team setup/);
+  await expect.poll(text).toMatch(/None are added unless you tick them/);
   const body = await text();
-  for (const [name, role] of [["Chief of Staff", "Business partner"], ["Projects Manager", "Screens and board"], ["frank", "Memory and checks"], ["Alfred", "Team setup"]]) {
+  for (const [name, role] of [
+    ["Coordinator", "The first mono you talk to about work."],
+    ["Planner", "Keeps the board: owner, state, evidence."],
+    ["Record keeper", "Checks plans against what was said."],
+    ["Team steward", "One owner for each job. No spare seats."],
+    ["Design review", "Looks at a screen and ranks what to fix."],
+  ]) {
     expect(body).toContain(name);
     expect(body).toContain(role);
   }
@@ -89,4 +94,6 @@ test("fresh install onboarding: our team with a role line under each name, and n
   expect(body).not.toMatch(/\bAsh\b|Hivra|Nibbii/);
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${SHOTS}/pm-19-onboarding-team.png` });
+  await skipAddsNobody(page);
+  await tickedBecomesOrdinaryMono(page);
 });

@@ -161,7 +161,8 @@ test("Rebuild changes the page from Ash's words: the new version previews live, 
   await shot(page, "rebuild-1-ask");
   await page.locator("[data-pages-rebuild-ask] form button[type=submit]").click();
   const version = page.locator("[data-pages-new-version]");
-  await expect(version).toContainText("“Add a column for stuck time” · Projects Manager built a new version");
+  // The project's lead builds a page when one is seated on it; otherwise the first seated Mono does. Nothing is special-cased.
+  await expect(version).toContainText("“Add a column for stuck time” · Chief of Staff built a new version");
   await expect(version.locator("[data-pages-new-version-keeps]")).toHaveText("It keeps what you allowed it (6 things).");
   // The new version runs in its preview on the live data it asked to read.
   const preview = page.frameLocator("[data-pages-new-version] iframe[data-bespoke-page]");

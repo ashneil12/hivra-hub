@@ -173,13 +173,13 @@ export function memoryAutopilot(clock: () => number = Date.now, seed: LogEntry[]
 export function exampleAutopilot(now = Date.now()): MemoryAutopilot {
   const h = 3_600_000;
   const seed: LogEntry[] = [
-    { id: "ex-1", at: now - 30 * h, kind: "switch", outcome: "on", project: null, chatId: "ex-cos", monoId: "chief-of-staff", who: "Chief of Staff", what: "Example: Autopilot on for everything", recommendation: null, red: null, detail: "go autopilot until monday 9" },
+    { id: "ex-1", at: now - 30 * h, kind: "switch", outcome: "on", project: null, chatId: "ex-cos", monoId: "ada", who: "Chief of Staff", what: "Example: Autopilot on for everything", recommendation: null, red: null, detail: "go autopilot until monday 9" },
     { id: "ex-2", at: now - 26 * h, kind: "decision", outcome: "taken", project: "hivra", chatId: "ex-hivra", monoId: "hivra-lead", who: "Hivra lead", what: "Example: Split the canary fix into two PRs?", recommendation: "Yes: the migration first, the UI second", red: null, detail: null },
     { id: "ex-3", at: now - 20 * h, kind: "question", outcome: "taken", project: "vg-game", chatId: "ex-exo", monoId: "vg-game-lead", who: "EXO lead", what: "Example: Which lighting pass first, Dusk or Night?", recommendation: "Dusk", red: null, detail: null },
     { id: "ex-4", at: now - 9 * h, kind: "decision", outcome: "held", project: "hivra", chatId: "ex-hivra", monoId: "hivra-lead", who: "Hivra lead", what: "Example: Refund the customer who was double charged?", recommendation: "Refund the second charge", red: "money", detail: null },
     { id: "ex-5", at: now - 2 * h, kind: "approval", outcome: "taken", project: "hub", chatId: "ex-hub", monoId: "hub-lead", who: "MonoCode Hub lead", what: "Example: npm run check", recommendation: "Allowed", red: null, detail: null },
   ];
   const backend = memoryAutopilot(() => Date.now(), seed);
-  backend.switches.set("*", { scope: "*", untilMs: now + 40 * h, setBy: "mono:chief-of-staff", setAt: now - 30 * h, chatId: "ex-cos", said: "go autopilot until monday 9" });
+  backend.switches.set("*", { scope: "*", untilMs: now + 40 * h, setBy: "mono:ada", setAt: now - 30 * h, chatId: "ex-cos", said: "go autopilot until monday 9" });
   return backend;
 }

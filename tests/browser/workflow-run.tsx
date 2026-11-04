@@ -69,6 +69,11 @@ localStorage.setItem(
   "monocode:mono-roster",
   JSON.stringify([{ id: "vg-game-lead", name: "EXO lead", sessionId: "lead", projects: ["/repo"] }]),
 );
+// No project ships with a lead. Being built counts this chat for vg-game only when the lead is recorded.
+localStorage.setItem(
+  "monocode:hub-project-leads",
+  JSON.stringify([{ projectId: "vg-game", id: "vg-game-lead", name: "EXO lead", projectName: "EXO" }]),
+);
 
 const SESSION = "lead";
 const handlers = new Map<string, (event: { payload: unknown }) => void>();

@@ -6,7 +6,7 @@ import { claudeLaunchDelta, type ClaudeLaunch } from "./claudeLaunch";
 /**
  * A custom model whose provider refuses the chat's reasoning level: the router retries without it (model_router.rs)
  * and announces the refusal. The chat must say so in one plain line, once, instead of quietly answering at the
- * provider's default while the picker still shows the level as picked (frank, 20 Oct: a button that looks live but
+ * provider's default while the picker still shows the level as picked (ed, 20 Oct: a button that looks live but
  * isn't). Driven through the live Claude adapter with a scripted Claude Code process.
  */
 

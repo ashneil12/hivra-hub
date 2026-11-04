@@ -1,4 +1,4 @@
-// r30c (frank on Ash's D5 words, 22 Oct): red "Needs you" also fires for a request the provider refused, a key it
+// r30c (ed on Ash's D5 words, 22 Oct): red "Needs you" also fires for a request the provider refused, a key it
 // rejected (even sent with no error kind), and a broken job its Lead can't fix (a failure self-repair's retries ran out
 // on). A stall, a crash still being retried, a usage limit and an ordinary failure its Lead has stay grey.
 import { describe, expect, it } from "vitest";

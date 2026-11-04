@@ -1,0 +1,8 @@
+{
+  "name": "Design review",
+  "role": "Looks at a screen and ranks what to fix.",
+  "skills": [],
+  "crewRules": [
+    { "match": { "labels": ["screen"] }, "cli": "claude", "effort": "medium" }
+  ]
+}

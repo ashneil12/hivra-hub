@@ -1,12 +1,9 @@
 // @vitest-environment happy-dom
-// The seam for double delegation (leadership team -> project Lead -> subagents). The delegate tool itself is H3; this
-// proves who a team Mono may brief (through its project membership), the brief's shape, and that delegating is refused
-// plainly until H3 registers its implementation.
+// Who may brief a project's Lead: every ordinary Mono that is a member of that project. A Lead and the checker never
+// brief. Membership is the gate, and a project beyond the old four still has a Lead.
 import { beforeEach, describe, expect, it } from "vitest";
-import { ensureBuiltInMonos } from "./builtInMonos";
+import { addMono, addMonoProject, createMono, removeMonoProject } from "../../monos/model/mono";
 import { ensureProjectLeads } from "./hubLeads";
-import { tieTeamToProjects } from "./hubTeam";
-import { addMono, createMono, listMonos, removeMonoProject } from "../../monos/model/mono";
 import {
   briefsLeads,
   delegateToLead,
@@ -14,8 +11,8 @@ import {
   formatLeadBrief,
   leadBriefPrompt,
   leadDelegationReady,
-  leadTargetsFor,
   leadNoteName,
+  leadTargetsFor,
   setLeadDelegator,
 } from "./leadershipDelegation";
 import type { HubProject } from "./types";
@@ -27,87 +24,86 @@ const PROJECTS: HubProject[] = [
   { id: "hub", name: "MonoCode Hub", shortName: "Hub", iconShape: "gauge", folder: "/p/monocode-hub" },
 ];
 
+const MINA = { id: "mina", name: "Mina", mascot: "letter", color: "x", projects: PROJECTS.map((p) => p.folder!) };
+
 beforeEach(() => localStorage.clear());
 
-describe("leadership -> Lead", () => {
-  it("through membership, Chief of Staff's reachable Leads are the four project Leads (the double-delegation seam)", async () => {
-    ensureBuiltInMonos();
+describe("any Mono -> Lead", () => {
+  it("an ordinary Mono can brief the Lead of each project it belongs to, and a Lead never briefs", async () => {
     ensureProjectLeads(PROJECTS);
-    expect(leadTargetsFor("chief-of-staff", PROJECTS)).toEqual([]); // not a member of anything yet
-    tieTeamToProjects(PROJECTS);
-    expect(leadTargetsFor("chief-of-staff", PROJECTS).map((t) => [t.leadName, t.projectId])).toEqual([
-      ["EXO lead", "vg-game"], ["Hivra lead", "hivra"], ["Nibbii lead", "nibbii"], ["MonoCode Hub lead", "hub"],
+    expect(leadTargetsFor("mina", PROJECTS)).toEqual([]);
+    addMono(MINA);
+    expect(leadTargetsFor("mina", PROJECTS).map((t) => [t.leadName, t.projectId])).toEqual([
+      ["EXO lead", "vg-game"],
+      ["Hivra lead", "hivra"],
+      ["Nibbii lead", "nibbii"],
+      ["Hub lead", "hub"],
     ]);
-    expect(leadTargetsFor("hivra-lead", PROJECTS)).toEqual([]); // a Lead briefs workers, not other Leads
-    const brief = formatLeadBrief("Chief of Staff", { outcome: "Ship the room", done: "Ash clicks it in the app" });
-    expect(brief.split("\n")[0]).toBe("[MonoCode brief from Chief of Staff]");
+    expect(leadTargetsFor("hivra-lead", PROJECTS)).toEqual([]);
+    const brief = formatLeadBrief("Mina", { outcome: "Ship the room", done: "it is clicked in the app" });
+    expect(brief.split("\n")[0]).toBe("[MonoCode brief from Mina]");
     expect(brief).toContain("start-ack");
-    // H3 plugs in here; until then delegating says so plainly
     expect(leadDelegationReady()).toBe(false);
-    const target = leadTargetsFor("chief-of-staff", PROJECTS)[1];
-    await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't connected yet");
+    const target = leadTargetsFor("mina", PROJECTS)[1];
+    await expect(delegateToLead("mina", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't connected yet");
     const undo = setLeadDelegator(async () => ({ taskId: "t1" }));
-    await expect(delegateToLead("chief-of-staff", target, { outcome: "x", done: "y" }, PROJECTS)).resolves.toEqual({ taskId: "t1" });
+    await expect(delegateToLead("mina", target, { outcome: "x", done: "y" }, PROJECTS)).resolves.toEqual({ taskId: "t1" });
     await expect(delegateToLead("someone", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("isn't here");
     await expect(delegateToLead("hivra-lead", target, { outcome: "x", done: "y" }, PROJECTS)).rejects.toThrow("doesn't brief another Lead");
-    await expect(delegateToLead("chief-of-staff", { ...target, projectId: "elsewhere" }, "x", PROJECTS)).rejects.toThrow("isn't in one of your projects");
+    await expect(delegateToLead("mina", { ...target, projectId: "elsewhere" }, "x", PROJECTS)).rejects.toThrow("isn't in one of your projects");
     undo();
   });
 
   it("a Lead that isn't a member of its project can't be briefed there; a Lead is found by its id, name or project", () => {
-    ensureBuiltInMonos();
     ensureProjectLeads(PROJECTS);
-    tieTeamToProjects(PROJECTS);
-    expect(findLeadTarget("chief-of-staff", PROJECTS, "hub")?.leadName).toBe("MonoCode Hub lead");
-    expect(findLeadTarget("chief-of-staff", PROJECTS, "MonoCode Hub")?.projectId).toBe("hub");
-    expect(findLeadTarget("chief-of-staff", PROJECTS, "monocode hub lead")?.projectId).toBe("hub");
-    expect(findLeadTarget("chief-of-staff", PROJECTS, "Nobody")).toBeUndefined();
-    // Take the Hub lead off its project: it stops being a target.
-    const lead = listMonos().find((m) => m.name === "MonoCode Hub lead")!;
-    removeMonoProject(lead.id, "/p/monocode-hub");
-    expect(findLeadTarget("chief-of-staff", PROJECTS, "hub")).toBeUndefined();
-    expect(leadTargetsFor("chief-of-staff", PROJECTS).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii"]);
+    addMono(MINA);
+    expect(findLeadTarget("mina", PROJECTS, "hub")?.leadName).toBe("Hub lead");
+    expect(findLeadTarget("mina", PROJECTS, "Hub lead")?.projectId).toBe("hub");
+    expect(findLeadTarget("mina", PROJECTS, "MonoCode Hub")?.projectId).toBe("hub");
+    expect(findLeadTarget("mina", PROJECTS, "monocode hub lead")?.projectId).toBe("hub");
+    expect(findLeadTarget("mina", PROJECTS, "Nobody")).toBeUndefined();
+    removeMonoProject("hub-lead", "/p/monocode-hub");
+    expect(findLeadTarget("mina", PROJECTS, "hub")).toBeUndefined();
+    expect(leadTargetsFor("mina", PROJECTS).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii"]);
   });
 
-  it("a project beyond the four (one Ash made with New project) has a Lead the team can brief too", () => {
-    const more: HubProject[] = [...PROJECTS, { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket", folder: "/p/verify" }];
-    ensureBuiltInMonos();
+  it("a project beyond those four still has a Lead, and the global memory never does", () => {
+    const verify: HubProject = { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket", folder: "/p/verify" };
+    const more = [...PROJECTS, verify];
     ensureProjectLeads(more);
-    tieTeamToProjects(more);
-    const target = findLeadTarget("chief-of-staff", more, "verify");
+    addMono({ ...MINA, projects: [...MINA.projects, "/p/verify", "/p/ash"] });
+    const target = findLeadTarget("mina", more, "verify");
     expect(target).toMatchObject({ leadId: "verify-lead", leadName: "Verify lead", projectId: "verify", folder: "/p/verify" });
-    expect(leadTargetsFor("chief-of-staff", more).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii", "hub", "verify"]);
-    // Still only through membership, and never the global memory.
-    expect(leadTargetsFor("chief-of-staff", [...more, { id: "ash", name: "Ash", shortName: "Ash", iconShape: "folder", folder: "/p/ash" }]).map((t) => t.projectId)).not.toContain("ash");
-    removeMonoProject("chief-of-staff", "/p/verify");
-    expect(findLeadTarget("chief-of-staff", more, "verify")).toBeUndefined();
+    expect(leadTargetsFor("mina", more).map((t) => t.projectId)).toEqual(["vg-game", "hivra", "nibbii", "hub", "verify"]);
+    const withAsh: HubProject[] = [...more, { id: "ash", name: "Harness", shortName: "Harness", iconShape: "folder", folder: "/p/ash" }];
+    expect(leadTargetsFor("mina", withAsh).map((t) => t.projectId)).not.toContain("ash");
+    removeMonoProject("mina", "/p/verify");
+    expect(findLeadTarget("mina", more, "verify")).toBeUndefined();
   });
 
   it("a delegate-tool brief to a Lead says how a Lead works it, with no Done when (no /goal in a Lead's chat)", () => {
-    const text = leadBriefPrompt("Chief of Staff", "Ash said: \"ship the room\".", "the room shows the report");
-    expect(text.split("\n")[0]).toBe("[MonoCode brief from Chief of Staff]");
+    const text = leadBriefPrompt("Mina", "Ship the room.", "the room shows the report");
+    expect(text.split("\n")[0]).toBe("[MonoCode brief from Mina]");
     expect(text).toContain("Done looks like: the room shows the report");
     expect(text).not.toContain("Done when:");
     expect(text).toContain("delegate_task");
   });
 
-
-  it("every Mono briefs Leads (Ash, 20 Oct), not only the leadership team; a Lead and the checker never do", async () => {
-    ensureBuiltInMonos();
+  it("every ordinary Mono can brief, including one just made; a Lead and the checker never do", async () => {
     ensureProjectLeads(PROJECTS);
-    expect(briefsLeads("chief-of-staff")).toBe(true);
+    addMono(MINA);
+    expect(briefsLeads("mina")).toBe(true);
     expect(briefsLeads("hivra-lead")).toBe(false);
     expect(briefsLeads("nobody")).toBe(false);
-    // A Mono Ash made himself (a marketing Mono), once it is a member of EXO, briefs EXO's coding team like the team does.
     const marketing = createMono(["/p/vg-game"]);
     expect(briefsLeads(marketing.id)).toBe(true);
     expect(leadTargetsFor(marketing.id, PROJECTS).map((t) => t.projectId)).toEqual(["vg-game"]);
     const undo = setLeadDelegator(async () => ({ taskId: "t9" }));
     await expect(delegateToLead(marketing.id, leadTargetsFor(marketing.id, PROJECTS)[0], "fix it", PROJECTS)).resolves.toEqual({ taskId: "t9" });
-    undo();
-    // The checker only reads.
     addMono({ id: "checker", name: "Checker", mascot: "ghost", color: "#888", projects: ["/p/vg-game"] });
     expect(briefsLeads("checker")).toBe(false);
+    await expect(delegateToLead("checker", leadTargetsFor(marketing.id, PROJECTS)[0], "fix it", PROJECTS)).rejects.toThrow("only reads");
+    undo();
   });
 });
 

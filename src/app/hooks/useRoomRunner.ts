@@ -8,7 +8,7 @@
 //   Work in the Mono's 1:1 chat never takes a room turn (r62): the room's own session does, so the answer posts in the room.
 // - Stop: a running room turn is stopped with the app's Stop (managed, so the Mono's own queue isn't left paused); a
 //   wake still waiting is taken back out of the queue.
-// - Private messages between Monos (monos.message): a hidden turn in the receiver's own chat, shown as "From frank".
+// - Private messages between Monos (monos.message): a hidden turn in the receiver's own chat, shown as "From ed".
 // - Work a Mono delegated during a room turn comes back to that room: once the Mono has had its report turn, the room
 //   gets "X is back" from it (roomConductor.postBack).
 // - A room belongs to a project: each seat's room turn carries that project's memory primer, once per conversation of

@@ -80,14 +80,8 @@ export type Mono = {
   longChat?: boolean;
 };
 
-/** A built-in Mono's role until Ash writes his own. */
-const DEFAULT_ROLES: Readonly<Record<string, string>> = {
-  "chief-of-staff": "Business partner",
-  "projects-manager": "Screens and board",
-  frank: "Memory and checks",
-  alfred: "Team setup",
-  critiquito: "Design review",
-};
+/** No id carries a built-in role. A Mono shows the role it was given, or none. */
+const DEFAULT_ROLES: Readonly<Record<string, string>> = {};
 
 /** A project's Lead is named for its project and carries no role label. */
 export function isProjectLeadId(id: string): boolean {
@@ -544,8 +538,8 @@ export function monoAvatar(mono: Pick<Mono, "mascot" | "mascotPicked" | "name">)
 }
 
 /**
- * Two letters, so Monos don't share a tile: the initials of two capitalised words ("Chief of Staff" → CS,
- * "Projects Manager" → PM), otherwise the first two letters ("Hivra lead" → HI, "Harness lead" → HA, "frank" → FR).
+ * Two letters, so Monos don't share a tile: the initials of two capitalised words ("Record Keeper" → RK),
+ * otherwise the first two letters ("Hivra lead" → HI, "Harness lead" → HA, "ed" → ED).
  */
 /** The letters Ash chose for a Mono's tile (one or two, shown as typed); empty goes back to the automatic ones. */
 export function saveMonoTileLetters(monoId: string, letters: string): void {

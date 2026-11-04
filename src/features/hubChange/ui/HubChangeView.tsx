@@ -23,8 +23,6 @@ const PLACEHOLDER: Record<ChangeFlow, string> = {
   today: "Ask for a change to Today, like “put my sign-ups page on Today”…",
   connect: "Say what to connect, like “hook the EXO page up to our bug tracker”…",
 };
-const DEFAULT_ASKER = "projects-manager";
-
 function Side({ side }: { side: ChangeSide }) {
   if (side.image) return <img src={side.image} alt="" className="w-full rounded-lg ring-1 ring-surface-ring" />;
   return (
@@ -98,11 +96,11 @@ function History({ flow }: { flow: ChangeFlow }) {
 export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projectId: string }) {
   const [text, setText] = useState("");
   const [state, setState] = useState<{ prompt: string; result?: ChangeResult; applied?: boolean; undoProblem?: string; lead?: { sending?: boolean; sent?: string; problem?: string } }>();
-  // Who builds it: any seated Mono (never a temporary worker), Projects Manager first.
+  // Who builds it: any seated Mono (never a temporary worker). The project's lead is preferred by the caller; otherwise the first one.
   const seated = listMonos().map((m) => ({ id: m.id, name: m.name ?? m.id }));
   const [picked, setPicked] = useState<string>();
-  const askerId = picked && seated.some((m) => m.id === picked) ? picked : seated.some((m) => m.id === DEFAULT_ASKER) ? DEFAULT_ASKER : seated[0]?.id ?? DEFAULT_ASKER;
-  const asker = seated.find((m) => m.id === askerId)?.name ?? "Projects Manager";
+  const askerId = picked && seated.some((m) => m.id === picked) ? picked : seated[0]?.id ?? "";
+  const asker = seated.find((m) => m.id === askerId)?.name ?? "A Mono";
   const ask = (prompt: string) => {
     setState({ prompt });
     void requestChange({ flow, projectId, monoId: askerId, prompt }).then((result) => setState({ prompt, result }));

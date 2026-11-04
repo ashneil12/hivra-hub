@@ -12,14 +12,14 @@ afterEach(() => off?.());
 it("goes through the app's Mono chat opener when there is one", () => {
   const opened: string[] = [];
   off = setMonoChatOpener((id) => opened.push(id));
-  openMonoChat("alfred");
-  expect(opened).toEqual(["alfred"]);
+  openMonoChat("cam");
+  expect(opened).toEqual(["cam"]);
 });
 
 it("without the app (a browse-only page) it still selects the Mono's team, over the project Ash was in", () => {
   setHubSelection({ project: "vg-game", item: "inbox" });
-  openMonoChat("alfred");
-  expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "vg-game", item: monoTeamItem("alfred") });
+  openMonoChat("cam");
+  expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "vg-game", item: monoTeamItem("cam") });
 });
 
 it("the app's opener leaves Settings when the Mono's chat arrives", () => {

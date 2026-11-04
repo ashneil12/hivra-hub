@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { withoutNoReply } from "./noReply";
 
 describe("withoutNoReply (r51: the raw NO_REPLY never shows)", () => {
-  it("drops it on its own last line, as in frank's e02 message", () => {
+  it("drops it on its own last line, as in ed's e02 message", () => {
     expect(withoutNoReply("CoS treated \"Ye go\" as not a lock. I'm checking Hub memory so a test doesn't sit there as a decision.\n\nNO_REPLY")).toBe(
       "CoS treated \"Ye go\" as not a lock. I'm checking Hub memory so a test doesn't sit there as a decision.",
     );

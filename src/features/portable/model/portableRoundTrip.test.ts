@@ -29,6 +29,7 @@ async function app(projects = PROJECTS) {
     templates: await import("../../hub/model/templates"),
     workers: await import("../../monos/model/workerPool"),
     monoTeams: await import("../../hub/model/monoTeams"),
+    leads: await import("../../hub/model/hubLeads"),
     doc: await import("./setupDoc"),
     plan: await import("./importPlan"),
     secrets: await import("./secrets"),
@@ -45,14 +46,15 @@ function folders() {
   };
 }
 
-const SOUL = "# Chief of Staff\n\n## Role\nRuns the day\n\n## Skills\n- memory-notes\n- dump-triage\n";
+const SOUL = "# Ada\n\n## Role\nRuns the day\n\n## Skills\n- memory-notes\n- dump-triage\n";
 
 /** This Mac: projects, Monos (one on Codex), teams with conversations, connectors, Pages, models, settings. */
 async function seed(a: Awaited<ReturnType<typeof app>>) {
-  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", role: "Runs Ash's day", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: "claude", engineModel: "opus" });
+  a.mono.addMono({ id: "ada", name: "Ada", role: "Runs Ash's day", mascot: "robot", color: "hsl(1 2% 3%)", projects: ["/Users/ash/Projects/hivra"], engine: "claude", engineModel: "opus" });
   a.mono.addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "crab", mascotPicked: true, color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"], engine: "codex" });
+  a.leads.ensureProjectLeads([PROJECTS[0]]);
   const team = a.chats.ensureLeadership("hivra");
-  a.chats.addMember(team.id, "chief-of-staff");
+  a.chats.addMember(team.id, "ada");
   const conv = a.chats.startConversation(team.id, `what's left? (pasted ${GITHUB})`);
   expect(conv).toBeTruthy();
   a.connectors.addConnectors([{ id: "c-github", name: "GitHub", projectId: "hivra" }]);
@@ -76,13 +78,13 @@ beforeEach(() => localStorage.clear());
 it("the setup goes out as files and comes back as the same document", async () => {
   const a = await app();
   await seed(a);
-  const monoFiles = { "chief-of-staff": { "SOUL.md": SOUL, "habits.json": "[]", "MEMORY.md": "- Ash files on Fridays" } };
+  const monoFiles = { "ada": { "SOUL.md": SOUL, "habits.json": "[]", "MEMORY.md": "- Ash files on Fridays" } };
   const doc = a.doc.buildSetupDoc({ monoFiles, workspace: true, now: new Date("2026-10-19T10:00:00Z") });
   const files = a.doc.setupDocToFiles(doc);
   expect(Object.keys(files)).toEqual(expect.arrayContaining([
     "setup/setup.json", "setup/projects/hivra.json", "setup/projects/vg-game.json", "setup/connectors.json",
-    "setup/monos/chief-of-staff/mono.json", "setup/monos/chief-of-staff/SOUL.md", "setup/monos/chief-of-staff/sheet.md",
-    "setup/monos/chief-of-staff/skills.json", "setup/monos/hivra-lead/mono.json", "workspace/hub/group-chats.json",
+    "setup/monos/ada/mono.json", "setup/monos/ada/SOUL.md", "setup/monos/ada/sheet.md",
+    "setup/monos/ada/skills.json", "setup/monos/hivra-lead/mono.json", "workspace/hub/group-chats.json",
   ]));
   // The same document, scrubbed (the pasted token in the team's conversation goes).
   expect(a.doc.setupDocFromFiles(files)).toEqual(a.secrets.redactValue(doc).value);
@@ -90,7 +92,7 @@ it("the setup goes out as files and comes back as the same document", async () =
   // Each Mono says which engine it runs on, never assumed Claude.
   expect(doc.monos.find((m) => m.id === "hivra-lead")!.engine).toEqual({ harness: "codex" });
   expect(files["setup/monos/hivra-lead/sheet.md"]).toContain("Engine: Codex");
-  expect(doc.monos.find((m) => m.id === "chief-of-staff")).toMatchObject({ role: "Runs the day", skills: ["memory-notes", "dump-triage"], team: "leadership", projectIds: ["hivra"] });
+  expect(doc.monos.find((m) => m.id === "ada")).toMatchObject({ role: "Runs the day", skills: ["memory-notes", "dump-triage"], team: "leadership", projectIds: ["hivra"] });
   expect(doc.monos.find((m) => m.id === "hivra-lead")!.team).toBe("lead");
   // Every Mono folder has a MEMORY.md; an empty one isn't memory and doesn't travel.
   const empty = a.doc.buildSetupDoc({ monoFiles: { "hivra-lead": { "SOUL.md": "# s", "MEMORY.md": "  \n" } }, workspace: false });
@@ -121,7 +123,7 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
   const a = await app();
   await seed(a);
   const monoFiles = {
-    "chief-of-staff": { "SOUL.md": SOUL, "habits.json": '[{"name":"Morning"}]', "MEMORY.md": "- Ash files on Fridays", "memory/clients.md": "notes" },
+    "ada": { "SOUL.md": SOUL, "habits.json": '[{"name":"Morning"}]', "MEMORY.md": "- Ash files on Fridays", "memory/clients.md": "notes" },
     "hivra-lead": { "SOUL.md": "# Hivra lead\n" },
   };
   const doc = a.doc.buildSetupDoc({ monoFiles, workspace: true });
@@ -141,7 +143,7 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
   expect(b.mono.listMonos()).toEqual([]);
   const pending = { name: "export", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: { "memory-notes": true, "dump-triage": false } };
   const plan = b.plan.planImport(pending);
-  expect(plan.monos.map((m) => [m.mono.id, m.state, m.engineLabel])).toEqual([["chief-of-staff", "new", "Claude Code · opus"], ["hivra-lead", "new", "Codex"]]);
+  expect(plan.monos.map((m) => [m.mono.id, m.state, m.engineLabel])).toEqual([["ada", "new", "Claude Code · opus"], ["hivra-lead", "new", "Codex"]]);
   expect(plan.monos[0].folders).toEqual(["/Volumes/New/hivra"]);
   expect(plan.monos[0].skillsMissing).toEqual(["dump-triage"]);
   expect(plan.projects.every((p) => p.state === "here")).toBe(true);
@@ -157,11 +159,11 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
 
   const after = b.mono.listMonos().map(({ sessionId: _, ...m }) => m);
   expect(after).toEqual(before.roster.map((m) => ({ ...m, projects: ["/Volumes/New/hivra"] })));
-  expect(disk.files.get("chief-of-staff/SOUL.md")).toBe(SOUL);
+  expect(disk.files.get("ada/SOUL.md")).toBe(SOUL);
   // Its habits come back paused.
-  expect(JSON.parse(disk.files.get("chief-of-staff/habits.json")!)).toEqual([{ name: "Morning", enabled: false }]);
-  expect(disk.files.get("chief-of-staff/MEMORY.md")).toBe("- Ash files on Fridays");
-  expect(disk.files.get("chief-of-staff/memory/clients.md")).toBe("notes");
+  expect(JSON.parse(disk.files.get("ada/habits.json")!)).toEqual([{ name: "Morning", enabled: false }]);
+  expect(disk.files.get("ada/MEMORY.md")).toBe("- Ash files on Fridays");
+  expect(disk.files.get("ada/memory/clients.md")).toBe("notes");
   const scrub = (v: unknown) => b.secrets.redactValue(v).value;
   expect(b.chats.exportChats()).toEqual(scrub(before.chats));
   expect(b.pages.allKeptPages().map((p) => p.id)).toEqual(before.pages);
@@ -177,26 +179,26 @@ it("imported into an empty copy, the setup comes back the same, minus secrets, w
 it("the preview shows each conflict, and the restore keeps what is already here", async () => {
   const a = await app();
   await seed(a);
-  const doc = a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL, "MEMORY.md": "- from the file" } }, workspace: true });
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL, "MEMORY.md": "- from the file" } }, workspace: true });
   const files = a.doc.setupDocToFiles(doc);
 
   localStorage.clear();
   const b = await app();
-  // Already here: the same Chief of Staff (own soul), another Mono called "Hivra lead", the team with no
+  // Already here: the same Ada (own soul), another Mono called "Hivra lead", the team with no
   // conversations yet, the connector, a different theme, a different template.
-  b.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "x", projects: [] });
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
   b.mono.addMono({ id: "someone-else", name: "Hivra lead", mascot: "robot", color: "x", projects: [] });
   b.chats.ensureLeadership("hivra");
   b.connectors.addConnectors([{ id: "c-github", name: "GitHub", projectId: "hivra" }]);
   localStorage.setItem("monocode.themeScheme", "daylight");
   b.templates.setTemplate("hivra", "org-ops");
   const disk = folders();
-  disk.files.set("chief-of-staff/SOUL.md", "# my own soul");
+  disk.files.set("ada/SOUL.md", "# my own soul");
 
   const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   const plan = b.plan.planImport(pending);
   const mono = (id: string) => plan.monos.find((m) => m.mono.id === id)!;
-  expect(mono("chief-of-staff").state).toBe("here");
+  expect(mono("ada").state).toBe("here");
   expect(mono("hivra-lead")).toMatchObject({ state: "new", nameClash: "Hivra lead" });
   expect(plan.teams[0]).toMatchObject({ state: "here", newConversations: 1 });
   expect(plan.connectors[0].state).toBe("here");
@@ -210,19 +212,19 @@ it("the preview shows each conflict, and the restore keeps what is already here"
   expect(localStorage.getItem("monocode.themeScheme")).toBe("daylight");
   expect(localStorage.getItem("monocode.accentColor")).toBe("hsl(200 50% 50%)");
   expect(b.templates.templateOf("hivra").id).toBe("org-ops");
-  expect(disk.files.get("chief-of-staff/SOUL.md")).toBe("# my own soul");
-  expect(disk.files.get("chief-of-staff/MEMORY.md")).toBe("- from the file");
-  expect(b.mono.findMono("chief-of-staff")!.projects).toEqual(["/Users/ash/Projects/hivra"]);
-  expect(b.mono.monoEngine(b.mono.findMono("chief-of-staff")!)).toEqual({ harness: "claude", model: "opus" });
+  expect(disk.files.get("ada/SOUL.md")).toBe("# my own soul");
+  expect(disk.files.get("ada/MEMORY.md")).toBe("- from the file");
+  expect(b.mono.findMono("ada")!.projects).toEqual(["/Users/ash/Projects/hivra"]);
+  expect(b.mono.monoEngine(b.mono.findMono("ada")!)).toEqual({ harness: "claude", model: "opus" });
   expect(b.mono.findMono("someone-else")!.name).toBe("Hivra lead");
   expect(b.chats.getChat("hivra:leadership")!.conversations).toHaveLength(1);
   expect(b.connectors.allConnectors()).toHaveLength(1);
 
   // Ticked on purpose: the file's soul and the file's settings.
   const again = b.plan.planImport(pending);
-  const all = { ...b.plan.defaultChoices(again), settings: "all" as const, replaceSouls: new Set(["chief-of-staff"]) };
+  const all = { ...b.plan.defaultChoices(again), settings: "all" as const, replaceSouls: new Set(["ada"]) };
   await b.plan.applyImport(pending, again, all, { agentFiles: { read: disk.read, write: disk.write } });
-  expect(disk.files.get("chief-of-staff/SOUL.md")).toBe(SOUL);
+  expect(disk.files.get("ada/SOUL.md")).toBe(SOUL);
   expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
 });
 
@@ -263,13 +265,13 @@ it("imported habits come back paused, with no run waiting, for a new Mono and fo
   await seed(a);
   const habit = { id: "h1", name: "Morning", instructions: "Summarise the night", schedule: { scheduleKind: "daily", time: "09:00", minute: 0, dayOfWeek: 1 }, createdAt: 1, nextRunAt: 2 };
   const habits = JSON.stringify([{ ...habit, enabled: true, runRequested: true }, { ...habit, id: "h2" }]);
-  const doc = a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL, "habits.json": habits }, "hivra-lead": { "SOUL.md": "# s", "habits.json": habits } }, workspace: false });
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL, "habits.json": habits }, "hivra-lead": { "SOUL.md": "# s", "habits.json": habits } }, workspace: false });
   const files = a.doc.setupDocToFiles(doc);
 
-  // Here already: Chief of Staff, with no habits of its own yet. Hivra lead is new.
+  // Here already: Ada, with no habits of its own yet. Hivra lead is new.
   localStorage.clear();
   const b = await app();
-  b.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "robot", color: "x", projects: [] });
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
   const disk = folders();
   const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   const plan = b.plan.planImport(pending);
@@ -277,7 +279,7 @@ it("imported habits come back paused, with no run waiting, for a new Mono and fo
   await b.souls.seatWaitingSoul("hivra-lead", disk.write, undefined, disk.read);
 
   const { parseHabits } = await import("../../monos/model/monoHabits");
-  for (const id of ["chief-of-staff", "hivra-lead"]) {
+  for (const id of ["ada", "hivra-lead"]) {
     const written = parseHabits(disk.files.get(`${id}/habits.json`));
     expect(written.map((h) => h.id), id).toEqual(["h1", "h2"]);
     expect(written.every((h) => !h.enabled && !h.runRequested), id).toBe(true);
@@ -288,7 +290,7 @@ it("imported habits come back paused, with no run waiting, for a new Mono and fo
 it("the ticks decide: no memory leaves the Monos' memory out, no workspace leaves the conversations and Rust out", async () => {
   const a = await app();
   await seed(a);
-  const doc = a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL, "MEMORY.md": "- private" } }, workspace: true });
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL, "MEMORY.md": "- private" } }, workspace: true });
   const files = a.doc.setupDocToFiles(doc);
   localStorage.clear();
   const b = await app();
@@ -305,7 +307,7 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
   choices.workspace.on = false;
   await b.plan.applyImport(pending, plan, choices, { rustImport });
   expect(rustImport).not.toHaveBeenCalled();
-  expect(b.souls.waitingSouls().find((s) => s.monoId === "chief-of-staff")!.memory).toBe("");
+  expect(b.souls.waitingSouls().find((s) => s.monoId === "ada")!.memory).toBe("");
   expect(b.chats.getChat("hivra:leadership")!.conversations).toEqual([]);
 
   // Both ticked: Rust gets exactly what was ticked.
@@ -319,13 +321,13 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
     memory: { projects: ["hivra"], keepBoth: false, history: true },
     workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false },
   });
-  expect(c.souls.waitingSouls().find((s) => s.monoId === "chief-of-staff")!.memory).toBe("- private");
+  expect(c.souls.waitingSouls().find((s) => s.monoId === "ada")!.memory).toBe("- private");
 });
 
 it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {
   const a = await app();
   await seed(a);
-  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "chief-of-staff": { "SOUL.md": SOUL } }, workspace: false }));
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: false }));
   localStorage.clear();
   const b = await app();
   const inspection = {
@@ -378,16 +380,16 @@ it("a newer setup is refused in plain words, and so is a damaged one", async () 
   expect(() => b.doc.setupDocFromFiles({})).toThrow("no setup");
 });
 
-it("a Mono's own role label travels: set, cleared, or left to the built-in one", async () => {
+it("a Mono's own role label travels: set, cleared, or none", async () => {
   const a = await app();
-  a.mono.addMono({ id: "chief-of-staff", name: "Chief of Staff", role: "Runs Ash's day", mascot: "robot", color: "x", projects: [] });
-  a.mono.addMono({ id: "frank", name: "Frank", role: "", mascot: "robot", color: "x", projects: [] });
-  a.mono.addMono({ id: "alfred", name: "Alfred", mascot: "robot", color: "x", projects: [] });
+  a.mono.addMono({ id: "ada", name: "Ada", role: "Runs Ash's day", mascot: "robot", color: "x", projects: [] });
+  a.mono.addMono({ id: "ed", name: "Ed", role: "", mascot: "robot", color: "x", projects: [] });
+  a.mono.addMono({ id: "cam", name: "Cam", mascot: "robot", color: "x", projects: [] });
   const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
   const mono = (id: string) => JSON.parse(files[`setup/monos/${id}/mono.json`]);
-  expect(mono("chief-of-staff").roleLabel).toBe("Runs Ash's day");
-  expect(mono("frank").roleLabel).toBe("");
-  expect("roleLabel" in mono("alfred")).toBe(false);
+  expect(mono("ada").roleLabel).toBe("Runs Ash's day");
+  expect(mono("ed").roleLabel).toBe("");
+  expect("roleLabel" in mono("cam")).toBe(false);
 
   localStorage.clear();
   const b = await app();
@@ -397,9 +399,9 @@ it("a Mono's own role label travels: set, cleared, or left to the built-in one",
   const disk = folders();
   for (const w of b.souls.waitingSouls()) await b.souls.seatWaitingSoul(w.monoId, disk.write, undefined, disk.read);
   const role = (id: string) => b.mono.monoRole(b.mono.findMono(id)!);
-  expect(role("chief-of-staff")).toBe("Runs Ash's day");
-  expect(role("frank")).toBeUndefined();
-  expect(role("alfred")).toBe("Team setup");
+  expect(role("ada")).toBe("Runs Ash's day");
+  expect(role("ed")).toBeUndefined();
+  expect(role("cam")).toBeUndefined();
 });
 
 // A10 (Ash, 21 Oct 20:40, "transferable"): the whole setup moves into a fresh MonoCode. Two preferences used to stay
@@ -431,18 +433,18 @@ it("A10: a project's worker limits and a Mono's own team come back on a fresh co
   a.mono.addMono({ id: "scout", name: "Scout", mascot: "crab", color: "hsl(4 5% 6%)", projects: [] });
   const oldFolder = async (monoId: string) => `/Volumes/Old/mono-teams/${monoId}`;
   a.workers.setWorkerLimits("hivra", { workers: 20, heavy: 5 });
-  await a.monoTeams.ensureMonoTeam("chief-of-staff", oldFolder, 1000);
+  await a.monoTeams.ensureMonoTeam("ada", oldFolder, 1000);
   await a.monoTeams.ensureMonoTeam("scout", oldFolder, 1000);
 
   const doc = a.doc.buildSetupDoc({ monoFiles: {}, workspace: false });
   expect(JSON.parse(doc.settings["monocode.workerLimits.v1"])).toEqual({ hivra: { workers: 20, heavy: 5 } });
   expect(JSON.parse(doc.settings["monocode:mono-teams"])).toMatchObject({
-    "chief-of-staff": { folder: "/Volumes/Old/mono-teams/chief-of-staff", createdAt: 1000 },
+    "ada": { folder: "/Volumes/Old/mono-teams/ada", createdAt: 1000 },
   });
   const files = a.doc.setupDocToFiles(doc);
   localStorage.clear();
 
-  // The fresh copy, with Ash bringing the Chief of Staff in and leaving the Scout out.
+  // The fresh copy, with Ash bringing Ada in and leaving the Scout out.
   const b = await app();
   const made: string[] = [];
   const makeTeamFolder = async (monoId: string) => {
@@ -461,53 +463,66 @@ it("A10: a project's worker limits and a Mono's own team come back on a fresh co
   expect(b.workers.workerLimits("hivra")).toEqual({ workers: 20, heavy: 5 });
   expect(b.workers.workerLimits("vg-game")).toEqual({ workers: 6, heavy: 2 });
   // The team is this Mac's folder, with the day it was first made.
-  expect(b.monoTeams.monoTeam("chief-of-staff")).toEqual({ monoId: "chief-of-staff", folder: "/Volumes/New/mono-teams/chief-of-staff", createdAt: 1000 });
+  expect(b.monoTeams.monoTeam("ada")).toEqual({ monoId: "ada", folder: "/Volumes/New/mono-teams/ada", createdAt: 1000 });
   expect(b.monoTeams.monoTeam("scout")).toBeUndefined();
-  expect(made).toEqual(["/Volumes/New/mono-teams/chief-of-staff"]);
+  expect(made).toEqual(["/Volumes/New/mono-teams/ada"]);
   expect(localStorage.getItem("monocode:mono-teams")).not.toContain("/Volumes/Old");
 });
 
 it("A10: deleted Monos stay deleted, after a restart and after an import", async () => {
   const a = await app();
   const built = await import("../../hub/model/builtInMonos");
-  built.ensureBuiltInMonos();
+  expect(built.ensureBuiltInMonos()).toBe(0);
+  for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"], ["cam", "Cam"]] as const)
+    a.mono.addMono({ id, name, mascot: "robot", color: "x", projects: [] });
   a.mono.addMono({ id: "scout", name: "Scout", mascot: "crab", color: "hsl(4 5% 6%)", projects: ["/Users/ash/Projects/hivra"] });
   const ids = (list: { id: string }[]) => list.map((m) => m.id);
-  expect(ids(a.mono.listMonos())).toEqual(expect.arrayContaining(["alfred", "scout"]));
+  expect(ids(a.mono.listMonos())).toEqual(expect.arrayContaining(["cam", "ed", "scout"]));
   const before = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
-  a.mono.removeMono("alfred");
+  a.mono.removeMono("cam");
   a.mono.removeMono("scout");
 
-  // Restart: the default-team repair runs again and brings back neither.
+  // Restart: nothing puts a removed Mono back, and one that is still here stays.
   const r = await app();
-  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
-  expect(ids(r.mono.listMonos())).not.toContain("alfred");
+  expect((await import("../../hub/model/builtInMonos")).ensureBuiltInMonos()).toBe(0);
+  expect(ids(r.mono.listMonos())).not.toContain("cam");
   expect(ids(r.mono.listMonos())).not.toContain("scout");
-  expect(ids(r.mono.listMonos())).toContain("frank");
+  expect(ids(r.mono.listMonos())).toContain("ed");
 
   // An older export that still has them: imported here, neither is ticked, so neither comes back.
   const old = { name: "old", path: null, doc: r.doc.setupDocFromFiles(before), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   const oldPlan = r.plan.planImport(old);
   const oldChoices = r.plan.defaultChoices(oldPlan);
   expect(oldChoices.monos.has("scout")).toBe(false);
-  expect(oldChoices.monos.has("alfred")).toBe(false);
+  expect(oldChoices.monos.has("cam")).toBe(false);
   await r.plan.applyImport(old, oldPlan, oldChoices);
-  expect(ids(r.mono.listMonos())).not.toContain("alfred");
+  expect(ids(r.mono.listMonos())).not.toContain("cam");
   expect((await import("../../hub/model/setupSouls")).waitingSouls().map((s) => s.monoId)).not.toContain("scout");
 
-  // Today's export into a fresh install, whose first launch seeded the default team (Alfred too): Alfred goes again.
+  // Today's export into a fresh install. Nothing is seeded. Ed is in the file and waits; Cam stays deleted.
   const files = r.doc.setupDocToFiles(r.doc.buildSetupDoc({ monoFiles: {}, workspace: false }));
   localStorage.clear();
   const fresh = await app();
-  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
-  expect(ids(fresh.mono.listMonos())).toContain("alfred");
+  const freshBuilt = await import("../../hub/model/builtInMonos");
+  expect(freshBuilt.ensureBuiltInMonos()).toBe(0);
+  expect(ids(fresh.mono.listMonos())).toEqual([]);
   const pending = { name: "x", path: null, doc: fresh.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   const plan = fresh.plan.planImport(pending);
   await fresh.plan.applyImport(pending, plan, fresh.plan.defaultChoices(plan));
-  expect(ids(fresh.mono.listMonos())).not.toContain("alfred");
-  expect(ids(fresh.mono.listMonos())).toContain("frank");
+  const souls = await import("../../hub/model/setupSouls");
+  const waiting = souls.waitingSouls().map((s) => s.monoId);
+  expect(waiting).toContain("ed");
+  expect(waiting).not.toContain("cam");
+  expect(waiting).not.toContain("scout");
+  expect(ids(fresh.mono.listMonos())).not.toContain("cam");
+  expect(freshBuilt.isMonoRemovedByUser("cam")).toBe(true);
+  const disk = folders();
+  await souls.seatWaitingSoul("ed", disk.write, undefined, disk.read);
+  expect(ids(fresh.mono.listMonos())).toContain("ed");
+  expect(ids(fresh.mono.listMonos())).not.toContain("cam");
   // And it stays gone on the fresh copy's next launch.
   const next = await app();
-  (await import("../../hub/model/builtInMonos")).ensureBuiltInMonos();
-  expect(ids(next.mono.listMonos())).not.toContain("alfred");
+  expect((await import("../../hub/model/builtInMonos")).ensureBuiltInMonos()).toBe(0);
+  expect(ids(next.mono.listMonos())).not.toContain("cam");
+  expect(ids(next.mono.listMonos())).toContain("ed");
 });

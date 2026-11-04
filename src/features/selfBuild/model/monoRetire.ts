@@ -4,7 +4,6 @@
 import { findMono, listMonos, monoLook, type Mono } from "../../monos/model/mono";
 import { retireMono } from "../../monos/model/monoArchive";
 import { recordChatRetirement } from "../../hub/model/botChanges";
-import { COS_MONO_ID } from "../../hub/model/liveMonos";
 import { forUser } from "../../hub/model/userName";
 import { ASK_ASH_FIRST } from "./ashSaid";
 
@@ -34,10 +33,10 @@ export type RetireHost = { ashSpokeSince(since: number): boolean; now?: () => nu
 
 /**
  * mono_retire: with `mono`, names the Mono to retire (nothing happens yet); with `retireId` alone, after Ash's yes in the
- * chat, retires it (folder archived, roster entry and connectors entry kept for Undo). Chief of Staff only.
+ * chat, retires it (folder archived, roster entry and connectors entry kept for Undo). Any Mono's own chat may ask.
  */
 export async function handleMonoRetire(input: Record<string, unknown>, caller: { monoId: string; name: string }, host: RetireHost) {
-  if (caller.monoId !== COS_MONO_ID) throw new Error(forUser("Only Chief of Staff retires Monos. Tell Ash in one line that Chief of Staff can do it."));
+  if (!caller.monoId) throw new Error("Only a Mono's own chat retires Monos.");
   const now = host.now?.() ?? Date.now();
   if (input.retireId !== undefined) {
     if (Object.keys(input).length > 1) throw new Error("With retireId, send nothing else: the Mono you named is what gets retired.");

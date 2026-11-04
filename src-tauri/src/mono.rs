@@ -773,8 +773,8 @@ mod tests {
         assert!(mono_home::rename_mono_folder(&root, "ash-lead", "hub-lead").is_err());
         assert!(root.join("ash-lead/MEMORY.md").is_file());
         // A Mono that was never renamed still gets its folder on first use.
-        load(&root, "frank", None).unwrap();
-        assert!(root.join("frank/MEMORY.md").is_file());
+        load(&root, "ed", None).unwrap();
+        assert!(root.join("ed/MEMORY.md").is_file());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -945,12 +945,12 @@ mod tests {
     #[test]
     fn a_monos_team_folder_sits_beside_monos_and_only_a_mono_id_names_it() {
         let data = temp_root();
-        let team = team_dir(&data, "alfred").unwrap();
-        assert_eq!(team, data.join(TEAMS_DIR).join("alfred"));
+        let team = team_dir(&data, "cam").unwrap();
+        assert_eq!(team, data.join(TEAMS_DIR).join("cam"));
         assert!(team.is_dir());
         // Made once; asking again finds the same folder and keeps what is in it.
         std::fs::write(team.join("notes.md"), "kept").unwrap();
-        assert_eq!(team_dir(&data, "alfred").unwrap(), team);
+        assert_eq!(team_dir(&data, "cam").unwrap(), team);
         assert_eq!(
             std::fs::read_to_string(team.join("notes.md")).unwrap(),
             "kept"
@@ -1214,29 +1214,21 @@ mod tests {
     fn chat_ids_and_the_soul_template_live_in_the_monos_folder_and_are_checked_before_saving() {
         let root = temp_root();
         let chats = r#"{"main":"df9afb39","history":["older"]}"#;
-        save(&root, "chief-of-staff", None, CHATS_FILE, chats, None).unwrap();
-        save(
-            &root,
-            "chief-of-staff",
-            None,
-            SOUL_TEMPLATE_FILE,
-            "# Soul\n",
-            None,
-        )
-        .unwrap();
+        save(&root, "ada", None, CHATS_FILE, chats, None).unwrap();
+        save(&root, "ada", None, SOUL_TEMPLATE_FILE, "# Soul\n", None).unwrap();
         assert_eq!(
-            read(&root, "chief-of-staff", None, CHATS_FILE)
+            read(&root, "ada", None, CHATS_FILE)
                 .unwrap()
                 .text
                 .as_deref(),
             Some(chats)
         );
         // A broken write is refused and the last good text stays.
-        assert!(save(&root, "chief-of-staff", None, CHATS_FILE, "{", None).is_err());
-        assert!(save(&root, "chief-of-staff", None, HABITS_FILE, "not json", None).is_err());
-        assert!(save(&root, "chief-of-staff", None, SOUL_FILE, "   ", None).is_err());
+        assert!(save(&root, "ada", None, CHATS_FILE, "{", None).is_err());
+        assert!(save(&root, "ada", None, HABITS_FILE, "not json", None).is_err());
+        assert!(save(&root, "ada", None, SOUL_FILE, "   ", None).is_err());
         assert_eq!(
-            read(&root, "chief-of-staff", None, CHATS_FILE)
+            read(&root, "ada", None, CHATS_FILE)
                 .unwrap()
                 .text
                 .as_deref(),
@@ -1250,7 +1242,7 @@ mod tests {
             "index.json",
         ] {
             assert!(
-                save(&root, "chief-of-staff", None, path, "{}", None).is_err(),
+                save(&root, "ada", None, path, "{}", None).is_err(),
                 "{path}"
             );
         }
@@ -1263,7 +1255,7 @@ mod tests {
         let root = temp_root();
         let empty = roster_load(&root).unwrap();
         assert_eq!(empty.text, None);
-        let first = r#"{"version":1,"monos":[{"id":"chief-of-staff","sessionId":"df9afb39"}]}"#;
+        let first = r#"{"version":1,"monos":[{"id":"ada","sessionId":"df9afb39"}]}"#;
         let hash = roster_save(&root, first, Some(&empty.hash)).unwrap();
         assert_eq!(roster_load(&root).unwrap().text.as_deref(), Some(first));
         assert_eq!(

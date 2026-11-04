@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// r67 (S8 on the 0.16.9 dev copy): frank chimed in unasked, streamed "Ash locked two calls. I'll check they're actually
+// r67 (S8 on the 0.16.9 dev copy): ed chimed in unasked, streamed "Ash locked two calls. I'll check they're actually
 // in Tally's memory before I say anything.", checked, and ended on NO_REPLY; the room still got "Ash locked two calls."
 // A seat that chimed in and narrated its way to NO_REPLY posts nothing: its lead-in goes with the narration.
 import { beforeEach, expect, it, vi } from "vitest";
@@ -14,7 +14,7 @@ async function room() {
   const team = await import("./builtInMonos");
   team.ensureBuiltInMonos();
   const chat = await import("./hubChats");
-  const c = chat.createChat("hub", "Leadership team", ["chief-of-staff", "projects-manager", "frank", "alfred"]);
+  const c = chat.createChat("hub", "Leadership team", ["ada", "bo", "ed", "cam"]);
   const said = (convId: string) => chat.getChat(c.id)!.conversations.find((x) => x.id === convId)!.messages;
   return { chat, id: c.id, said };
 }
@@ -25,8 +25,8 @@ it("a chime that streamed a lead-in, narrated a check and ended on NO_REPLY leav
   let end!: (text: string) => void;
   chat.setGroupChatRunner({
     run: (request) => {
-      if (request.monoId === "chief-of-staff") return Promise.resolve({ kind: "reply", text: "Locked. Median first in a worktree off main, then the weekly reset." });
-      if (request.monoId !== "frank") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
+      if (request.monoId === "ada") return Promise.resolve({ kind: "reply", text: "Locked. Median first in a worktree off main, then the weekly reset." });
+      if (request.monoId !== "ed") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
       write = (text) => request.onText?.(text);
       return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
     },
@@ -39,8 +39,8 @@ it("a chime that streamed a lead-in, narrated a check and ended on NO_REPLY leav
   end(`${words}\n\nNO_REPLY`);
   await done;
   await vi.waitFor(() => expect(chat.roomDrafts(id, conv)).toEqual([]));
-  expect(said(conv).filter((m) => m.from === "frank")).toEqual([]);
-  expect(said(conv).some((m) => m.from === "chief-of-staff")).toBe(true);
+  expect(said(conv).filter((m) => m.from === "ed")).toEqual([]);
+  expect(said(conv).some((m) => m.from === "ada")).toBe(true);
 });
 
 it("a chime with a real fact before NO_REPLY and no narration still keeps the words Ash watched (r52)", async () => {
@@ -49,8 +49,8 @@ it("a chime with a real fact before NO_REPLY and no narration still keeps the wo
   let end!: (text: string) => void;
   chat.setGroupChatRunner({
     run: (request) => {
-      if (request.monoId === "chief-of-staff") return Promise.resolve({ kind: "reply", text: "Locked. Median first." });
-      if (request.monoId !== "frank") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
+      if (request.monoId === "ada") return Promise.resolve({ kind: "reply", text: "Locked. Median first." });
+      if (request.monoId !== "ed") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
       write = (text) => request.onText?.(text);
       return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
     },
@@ -63,5 +63,5 @@ it("a chime with a real fact before NO_REPLY and no narration still keeps the wo
   end(`${words}\n\nNO_REPLY`);
   await done;
   await vi.waitFor(() => expect(chat.roomDrafts(id, conv)).toEqual([]));
-  expect(said(conv).find((m) => m.from === "frank")?.text).toBe(words);
+  expect(said(conv).find((m) => m.from === "ed")?.text).toBe(words);
 });

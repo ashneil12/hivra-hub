@@ -1,0 +1,8 @@
+{
+  "name": "Record keeper",
+  "role": "Checks plans against what was said.",
+  "skills": [],
+  "crewRules": [
+    { "match": { "labels": ["memory"] }, "cli": "claude", "effort": "low" }
+  ]
+}

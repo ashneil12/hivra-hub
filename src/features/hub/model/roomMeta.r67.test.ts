@@ -40,7 +40,7 @@ async function leadership(replies: Record<string, string>) {
   team.ensureBuiltInMonos();
   const chat = await import("./hubChats");
   const meta = await import("./roomMeta");
-  const c = chat.createChat("hub", "Leadership team", ["chief-of-staff", "projects-manager", "alfred", "frank"]);
+  const c = chat.createChat("hub", "Leadership team", ["ada", "bo", "cam", "ed"]);
   const prompts: RoomTurnRequest[] = [];
   const shown: string[] = [];
   chat.setGroupChatRunner({
@@ -63,38 +63,38 @@ async function leadership(replies: Record<string, string>) {
 }
 
 it("on 'wat now' a non-host seat's prompt asks for NO_REPLY with nothing before it and no tools", async () => {
-  const { ask, prompts } = await leadership({ "chief-of-staff": HOST });
+  const { ask, prompts } = await leadership({ "ada": HOST });
   await ask("wat now");
-  const chime = prompts.find((p) => p.monoId === "projects-manager")!.prompt;
+  const chime = prompts.find((p) => p.monoId === "bo")!.prompt;
   expect(chime).toContain("your reply is exactly NO_REPLY, with nothing before it");
   expect(chime).toContain("Don't open the board, run a tool or check anything for this turn");
   expect(chime).toContain("write no line about what you're doing or why you're staying quiet");
   // The host still reads the board and gives the one status.
-  expect(prompts.find((p) => p.monoId === "chief-of-staff")!.prompt).toContain("read task_status and the board first");
+  expect(prompts.find((p) => p.monoId === "ada")!.prompt).toContain("read task_status and the board first");
 });
 
 it("on 'wat now' ack and intent posts from other seats are dropped whole; a missed fact still lands", async () => {
   const { ask, shown, log } = await leadership({
-    "chief-of-staff": HOST,
-    "projects-manager": "I'll check the board against that status before I stay quiet.",
-    frank: "Checking the board first.",
-    alfred: "Got it. The median fix lands in a worktree off main, not on main.",
+    "ada": HOST,
+    "bo": "I'll check the board against that status before I stay quiet.",
+    ed: "Checking the board first.",
+    cam: "Got it. The median fix lands in a worktree off main, not on main.",
   });
   const posted = await ask("wat now");
   expect(posted.map((m) => [m.from, m.text])).toEqual([
-    ["chief-of-staff", HOST],
-    ["alfred", "The median fix lands in a worktree off main, not on main."],
+    ["ada", HOST],
+    ["cam", "The median fix lands in a worktree off main, not on main."],
   ]);
-  expect(log().filter((e) => e.why === "status-ack").map((e) => e.monoId)).toEqual(["frank"]);
-  expect(shown.filter((s) => !s.startsWith("chief-of-staff:"))).toEqual([]);
+  expect(log().filter((e) => e.why === "status-ack").map((e) => e.monoId)).toEqual(["ed"]);
+  expect(shown.filter((s) => !s.startsWith("ada:"))).toEqual([]);
 });
 
 it("outside a status ask the same intent line doesn't silence a seat with a fact", async () => {
   const { ask } = await leadership({
-    "chief-of-staff": "Morning. The Pages round is next.",
-    frank: "Checking the board first. Three cards are open, all with the Tally lead.",
+    "ada": "Morning. The Pages round is next.",
+    ed: "Checking the board first. Three cards are open, all with the Tally lead.",
   });
   const posted = await ask("hey team");
-  expect(posted.map((m) => m.from)).toEqual(["chief-of-staff", "frank"]);
+  expect(posted.map((m) => m.from)).toEqual(["ada", "ed"]);
   expect(posted[1].text).toContain("Three cards are open");
 });

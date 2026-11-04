@@ -5,7 +5,7 @@
 // the MonoCode Hub lead's work (a worktree, a dev copy Ash tries, then Ship). When the Mono says a request is that, Change
 // the hub explains it and, on Ash's tap, puts his words in that Lead's own chat through the composer's send (the same hands
 // a page's message uses).
-import { LEADS, leadMono } from "../../hub/model/hubLeads";
+import { leadSpecFor } from "../../hub/model/hubLeads";
 import { findMono, type Mono } from "../../monos/model/mono";
 import { pageActionsHost } from "../../pages/model/pageActions";
 import { agentName } from "../../pages/model/pageData";
@@ -21,10 +21,13 @@ export function isAppChange(message: string): boolean {
   return /\bis a change to the app itself\b/i.test(message);
 }
 
-/** The MonoCode Hub project's Lead today (its own seat, or the old Harness lead's it adopted). */
+/**
+ * The hub project's lead today: `hub-lead`, named "Hub lead" when the project short name is "Hub" (leadSpecFor).
+ * The old Harness lead seat is not adopted.
+ */
 export function hubLeadMono(): Mono | undefined {
-  const spec = LEADS.find((l) => l.projectId === HUB_PROJECT);
-  return spec ? leadMono(spec) : undefined;
+  const spec = leadSpecFor({ id: HUB_PROJECT, name: "MonoCode Hub", shortName: "Hub" });
+  return findMono(spec.id);
 }
 
 /** What the Lead is told: Ash's words, and how MonoCode changes itself. */

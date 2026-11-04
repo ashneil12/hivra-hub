@@ -218,7 +218,7 @@ mod tests {
             write(
                 &conn,
                 "memberships",
-                &json!({"memberships": [{"monoId": "frank", "projectId": "exo"}]}),
+                &json!({"memberships": [{"monoId": "ed", "projectId": "exo"}]}),
             )
             .unwrap();
             write(
@@ -243,7 +243,7 @@ mod tests {
         );
         assert_eq!(
             read(&conn, "memberships").unwrap().unwrap()["memberships"][0]["monoId"],
-            "frank"
+            "ed"
         );
         assert_eq!(
             read(&conn, "pages").unwrap().unwrap()["pages"][0]["id"],

@@ -25,11 +25,12 @@ afterEach(() => {
 });
 
 async function render() {
-  const team = await import("../model/builtInMonos");
-  team.ensureBuiltInMonos();
+  const mono = await import("../../monos/model/mono");
+  for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"]] as const)
+    mono.addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
   const chat = await import("../model/hubChats");
   const { GroupChatView } = await import("./GroupChatView");
-  const room = chat.createChat("hub", "Leadership Board", ["chief-of-staff", "projects-manager", "frank"]);
+  const room = chat.createChat("hub", "Leadership Board", ["ada", "bo", "ed"]);
   const conv = chat.startConversation(room.id, "what now?");
   const show = () => act(() => root.render(createElement(GroupChatView, { chatId: room.id, projectId: "hub" })));
   show();
@@ -50,8 +51,8 @@ it("shows who is writing with a Stop, and after Stop the team waits with Keep go
     await new Promise((r) => setTimeout(r, 10));
   });
   // Not "is writing…": what it is doing, from its stream, and for how long. Nothing from the stream yet: Thinking.
-  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking(?! · 0s)/); // r96: no time under 1s
-  expect(q("[data-hub-member-working]")!.textContent).toContain("Chief of Staff");
+  expect(q("[data-hub-typing]")!.textContent).toMatch(/Ada · Thinking(?! · 0s)/); // r96: no time under 1s
+  expect(q("[data-hub-member-working]")!.textContent).toContain("Ada");
   await act(async () => {
     q("[data-hub-room-stop]")!.click();
     await new Promise((r) => setTimeout(r, 30));
@@ -71,22 +72,22 @@ it("a notice says which Mono couldn't answer, with Try again; reactions show und
     await chat.requestReply(room.id, conv);
   });
   const notice = q("[data-hub-msg-notice]")!;
-  expect(notice.textContent).toContain("Chief of Staff couldn't answer: You've hit your usage limit. Resets at 4pm.");
-  // The host names frank, so he answers it; the other seats' one turns have nothing to add.
-  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? "Next: the Pages round. frank, check it." : mono === "frank" ? "Got it." : "NO_REPLY"));
+  expect(notice.textContent).toContain("Ada couldn't answer: You've hit your usage limit. Resets at 4pm.");
+  // The host names ed, so he answers it; the other seats' one turns have nothing to add.
+  chat.setGroupChatRunner(async (mono) => (mono === "ada" ? "Next: the Pages round. ed, check it." : mono === "ed" ? "Got it." : "NO_REPLY"));
   await act(async () => {
     q("[data-hub-notice-retry]")!.click();
     await chat.roomIdle(room.id);
   });
   expect(q("[data-hub-notice-retry]")).toBeNull();
-  expect(container.textContent).toContain("Next: the Pages round. frank, check it.");
-  // frank's "Got it." became a 👍 on the host's message, not a bubble.
+  expect(container.textContent).toContain("Next: the Pages round. ed, check it.");
+  // ed's "Got it." became a 👍 on the host's message, not a bubble.
   expect(container.textContent).not.toContain("Got it.");
-  expect(q("[data-hub-msg-reactions]")!.textContent).toBe("👍frank");
+  expect(q("[data-hub-msg-reactions]")!.textContent).toBe("👍Ed");
   await act(async () => {
     (container.querySelector('[data-hub-react="✅"]') as HTMLElement).click();
   });
-  expect([...container.querySelectorAll("[data-hub-msg-reactions]")].map((x) => x.textContent)).toContain("👍frank✅You");
+  expect([...container.querySelectorAll("[data-hub-msg-reactions]")].map((x) => x.textContent)).toContain("👍Ed✅You");
 }, 20_000);
 
 it("the host's answer fills in where it will stay: a live message while it writes, the same message once it lands", async () => {
@@ -97,7 +98,7 @@ it("the host's answer fills in where it will stay: a live message while it write
   chat.setGroupChatRunner({
     run: (request) => {
       // The other seats' one turns have nothing to add.
-      if (request.monoId !== "chief-of-staff") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
+      if (request.monoId !== "ada") return Promise.resolve({ kind: "reply", text: "NO_REPLY" });
       write = (text) => request.onText?.(text);
       step = (activity) => request.onActivity?.(activity);
       return new Promise((resolve) => (end = (text) => resolve({ kind: "reply", text })));
@@ -108,14 +109,14 @@ it("the host's answer fills in where it will stay: a live message while it write
     await new Promise((r) => setTimeout(r, 10));
   });
   // Not started yet: the line above the composer says what it is doing.
-  expect(q("[data-hub-typing]")!.textContent).toMatch(/Chief of Staff · Thinking(?! · 0s)/); // r96: no time under 1s
+  expect(q("[data-hub-typing]")!.textContent).toMatch(/Ada · Thinking(?! · 0s)/); // r96: no time under 1s
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 14_000, lastEventAt: Date.now() }));
-  expect(q("[data-hub-typing]")!.textContent).toContain("Chief of Staff · Reading src/app.tsx · 14s");
+  expect(q("[data-hub-typing]")!.textContent).toContain("Ada · Reading src/app.tsx · 14s");
   // r62 (Critiquito): before its words show, the status line is the live line, the runner right after the timer.
   expect(q("[data-hub-typing] [data-live-activity-text] + [data-live-runner]")).toBeTruthy();
   await act(async () => write("Heard you. Waiting on the Tally lead's start-ack."));
   const live = q("[data-hub-msg-draft]")!;
-  expect(live.textContent).toContain("Chief of Staff");
+  expect(live.textContent).toContain("Ada");
   expect(live.textContent).toContain("Heard you. Waiting on the Tally lead's start-ack.");
   // The line under its name, in place of a bare "writing…", and the little MonoCode running under the words.
   expect(live.textContent).not.toContain("writing…");
@@ -126,7 +127,7 @@ it("the host's answer fills in where it will stay: a live message while it write
   expect(line.querySelector("[data-live-runner]")).toBeTruthy();
   expect(line.querySelector("[data-live-activity-text] + [data-live-runner]")).toBeTruthy();
   // Its words are on screen, so the line above the composer doesn't repeat it.
-  expect(q("[data-hub-typing]")!.textContent).not.toContain("Chief of Staff");
+  expect(q("[data-hub-typing]")!.textContent).not.toContain("Ada");
   // A minute with nothing new: the line goes grey and says so, and the runner stands still.
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 75_000, lastEventAt: Date.now() - 61_000 }));
   expect(live.querySelector("[data-live-activity-stalled]")!.textContent).toContain("No activity for 1 min");
@@ -149,7 +150,7 @@ it("the host's answer fills in where it will stay: a live message while it write
 it("a long post shows its first lines with Show more; a short one shows whole", async () => {
   const { chat, room, conv, q } = await render();
   const long = ["Heard you: seven things for this week.", "", ...Array.from({ length: 14 }, (_, i) => `${i + 1}. Item ${i + 1} with its owner and what done looks like.`)].join("\n");
-  chat.setGroupChatRunner(async (mono) => (mono === "chief-of-staff" ? long : "NO_REPLY"));
+  chat.setGroupChatRunner(async (mono) => (mono === "ada" ? long : "NO_REPLY"));
   await act(async () => {
     await chat.requestReply(room.id, conv);
     await chat.roomIdle(room.id);
@@ -162,12 +163,20 @@ it("a long post shows its first lines with Show more; a short one shows whole", 
   expect(q("[data-hub-msg-more]")!.textContent).toBe("Show less");
 }, 20_000);
 
-it("r61 (PM's blind G4): the room's member list gives each Mono its role line, like the sidebar", async () => {
-  const { q } = await render();
+it("r61: the room's member list gives each Mono the role it was given, and none when it has no role", async () => {
+  const { q, show } = await render();
   const mono = await import("../../monos/model/mono");
-  for (const id of ["chief-of-staff", "projects-manager", "frank"]) {
-    const role = mono.monoRole({ id });
-    expect(role).toBeTruthy();
-    expect(q(`[data-hub-member="${id}"] [data-hub-member-role]`)!.textContent).toBe(role);
+  for (const id of ["ada", "bo", "ed"]) {
+    expect(mono.monoRole(mono.findMono(id)!)).toBeUndefined();
+    expect(q(`[data-hub-member="${id}"] [data-hub-member-role]`)).toBeNull();
+  }
+  const roles = { ada: "Keeps the plan", bo: "Writes it down", ed: "Checks the work" };
+  act(() => {
+    for (const [id, role] of Object.entries(roles)) mono.saveMonoRole(id, role);
+  });
+  show();
+  for (const id of ["ada", "bo", "ed"] as const) {
+    expect(mono.monoRole(mono.findMono(id)!)).toBe(roles[id]);
+    expect(q(`[data-hub-member="${id}"] [data-hub-member-role]`)!.textContent).toBe(roles[id]);
   }
 });

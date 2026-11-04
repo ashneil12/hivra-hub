@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // G5 proof, round 18, updated round 19: a fresh install's onboarding (hub-dev.html?onboarding, empty storage, no Ash OS)
 // asks what the team should call you, and offers no pre-load (Ash 21 Oct). No "Ash" in any of it. The round 18 photos
@@ -12,11 +13,7 @@ test.use({ viewport: { width: 1440, height: 900 } });
 
 test("fresh install onboarding: your name, and no pre-load", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
-  await page.goto("/hub-dev.html?onboarding");
-  const onboarding = page.locator("[data-hub-onboarding]");
-  await expect(onboarding).toBeVisible({ timeout: 60_000 });
-  const notNow = page.getByRole("button", { name: "Not now" });
-  if (await notNow.isVisible().catch(() => false)) await notNow.click();
+  await openOnboarding(page);
   await expect(page.getByText("What should your team call you?")).toBeVisible();
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.waitForTimeout(300);
@@ -25,12 +22,14 @@ test("fresh install onboarding: your name, and no pre-load", async ({ page }) =>
   await noAsh();
 
   await page.locator("[data-hub-onboarding-next]").click();
-  await expect(page.getByText("Pre-load a saved team")).toHaveCount(0);
-  await expect(page.getByText("Business partner").first()).toBeVisible(); // the role line under Chief of Staff
+  await assertStartersUnticked(page);
+  await expect(page.getByText("The first mono you talk to about work.").first()).toBeVisible();
   const line = page.locator("[data-hub-onboarding-dashboards]");
   const box = await line.boundingBox();
   expect(box && box.height).toBeLessThan(24); // one line: "Org / ops" doesn't wrap
   await noAsh();
+  await skipAddsNobody(page);
+  await tickedBecomesOrdinaryMono(page);
 });
 
 test("Settings → General: the same name, to change later", async ({ page }) => {

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 
 // Round 20 proofs (a browser fixture, not Ash's Mac; tests/browser/agent-notes.tsx, made-up data labelled Example:):
@@ -62,15 +63,16 @@ test("A8: an empty Sessions list says nothing is running right now", async ({ pa
   fs.mkdirSync(SHOTS, { recursive: true });
   {
     await page.setViewportSize({ width: 1440, height: 900 });
+    await seedExampleRoster(page);
     await openLocalHub(page);
     await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
     const notNow = page.getByRole("button", { name: "Not now" });
     await notNow.waitFor({ timeout: 4000 }).then(() => notNow.click(), () => undefined);
-    await page.locator("[data-mono-rail]").first().locator('button[aria-label^="frank"]').first().click();
+    await page.locator("[data-mono-rail]").first().locator('button[aria-label^="Ada"]').first().click();
     await page.getByRole("tab", { name: /Sessions/ }).or(page.getByRole("button", { name: /^Sessions/ })).first().click();
     const empty = page.locator("[data-mono-sessions-empty]").first();
     await expect(empty).toBeVisible({ timeout: 15_000 });
-    await expect(empty).toHaveText(/^Nothing running right now\. Sessions show here while frank is working/);
+    await expect(empty).toHaveText(/^Nothing running right now\. Sessions show here while Ada is working/);
     expect(await empty.textContent()).not.toMatch(/ghost/i);
     await page.mouse.move(5, 450);
     await page.waitForTimeout(400);

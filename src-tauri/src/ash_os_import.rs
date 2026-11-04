@@ -345,7 +345,7 @@ mod tests {
             ),
             (
                 "ash-hub-mono-projects",
-                json!({"memberships": [{"monoId": "frank", "projectId": "exo", "role": "lead"}]}),
+                json!({"memberships": [{"monoId": "ed", "projectId": "exo", "role": "lead"}]}),
             ),
             (
                 "ash-hub-pages",
@@ -364,7 +364,7 @@ mod tests {
         let found = fetch(&endpoint);
         assert_eq!(found.state, ImportState::Found, "{found:?}");
         assert_eq!(found.projects[0]["id"], "exo");
-        assert_eq!(found.memberships[0]["monoId"], "frank");
+        assert_eq!(found.memberships[0]["monoId"], "ed");
         assert_eq!(found.pages[0]["id"], "pg-1");
         // Reads only: exactly the three import calls, nothing else.
         let paths = seen.lock().unwrap().clone();
