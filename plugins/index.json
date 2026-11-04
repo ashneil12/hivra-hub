@@ -1,0 +1,87 @@
+{
+  "format": "hivra-plugin-index/1",
+  "title": "Hivra plugins",
+  "description": "The plugins Hivra offers by default. Each one is pinned to an exact commit or version.",
+  "plugins": [
+    {
+      "name": "pstack",
+      "title": "pstack",
+      "description": "Skills for rigor and verification: go deep first, write less and better code, prove it works.",
+      "author": "Lauren Tan",
+      "license": "MIT",
+      "homepage": "https://github.com/cursor/plugins/tree/main/pstack",
+      "repository": { "url": "https://github.com/cursor/plugins", "directory": "pstack" },
+      "category": "workflow",
+      "keywords": ["rigor", "verification", "workflow", "skills"],
+      "contributes": { "skills": ["architect","arena","automate-me","benchmark-checklist","blast-radius","bro","correct","create-formal-verification-skill","create-verification-skill","figure-it-out","how","in-your-own-words","interrogate","ketchup","ketchup-video","maintain-formal-verification-skill","maintain-verification-skill","make-bot-ui","no-comments","poteto-help","poteto-mode","principle-attack-the-premise","principle-boundary-discipline","principle-build-the-lever","principle-encode-lessons-in-structure","principle-exhaust-the-design-space","principle-experience-first","principle-explain-the-number","principle-fix-root-causes","principle-foundational-thinking","principle-guard-the-context-window","principle-laziness-protocol","principle-make-operations-idempotent","principle-migrate-callers-then-delete-legacy-apis","principle-minimize-reader-load","principle-model-the-domain","principle-never-block-on-the-human","principle-outcome-oriented-execution","principle-prove-it-works","principle-redesign-from-first-principles","principle-separate-before-serializing-shared-state","principle-sequence-verifiable-units","principle-subtract-before-you-add","principle-test-behavior-not-implementation","principle-type-system-discipline","recall","reflect","setup-pstack","sharpen","show-me-your-work","statechart","swarm","tdd","teach","technical-writing","typescript-best-practices","unslop","why"] },
+      "permissions": [],
+      "versions": [
+        {
+          "version": "0.15.36",
+          "source": {
+            "type": "git",
+            "url": "https://github.com/cursor/plugins",
+            "commit": "6ea74587e384e1a8035c09ae33a46fe3f881eb9b",
+            "path": "pstack"
+          }
+        }
+      ]
+    },
+    {
+      "name": "e2e-verify",
+      "title": "Verify (e2e)",
+      "description": "Workers prove UI changes by driving the app and attaching evidence. Built on tester-army/e2e.",
+      "author": "Tester Army",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/tester-army/e2e",
+      "category": "testing",
+      "keywords": ["e2e", "testing", "verification", "mcp"],
+      "contributes": { "skills": ["create-verification-skill"], "mcpServers": ["e2e"] },
+      "permissions": ["Runs e2e's MCP server on this computer", "Opens the app under test in a browser or simulator"],
+      "status": "planned",
+      "plannedIn": "WP-42"
+    },
+    {
+      "name": "browser",
+      "title": "Browser",
+      "description": "A real browser for agents, with a profile per agent, safe defaults and a visible Stop.",
+      "author": "Hivra",
+      "homepage": "https://github.com/ashneil12/hivra-hub",
+      "category": "control",
+      "keywords": ["browser", "playwright", "web", "mcp"],
+      "contributes": { "mcpServers": ["browser"] },
+      "permissions": ["Runs a browser on this computer", "Opens web pages agents ask for", "Keeps a browser profile per agent in Hivra's data folder"],
+      "status": "planned",
+      "plannedIn": "WP-43"
+    },
+    {
+      "name": "desktop-control",
+      "title": "Desktop control",
+      "description": "Workers use desktop apps through the accessibility tree. Off by default, with consent per app. Built on agent-desktop.",
+      "author": "Vercel Labs",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/vercel-labs/agent-desktop",
+      "category": "control",
+      "keywords": ["desktop", "accessibility", "computer use"],
+      "platforms": ["macos", "windows", "linux"],
+      "contributes": { "skills": ["agent-desktop"] },
+      "permissions": ["Reads and controls the desktop apps you allow", "Needs the system's accessibility permission"],
+      "status": "planned",
+      "plannedIn": "WP-44"
+    },
+    {
+      "name": "council-personas",
+      "title": "Council personas",
+      "description": "Eighteen personas for council seats, from council-of-high-intelligence.",
+      "author": "0xnyk",
+      "license": "MIT",
+      "homepage": "https://github.com/0xnyk/council-of-high-intelligence",
+      "category": "councils",
+      "keywords": ["council", "personas", "groups"],
+      "contributes": { "personas": 18 },
+      "permissions": [],
+      "status": "planned",
+      "plannedIn": "WP-23"
+    }
+  ]
+}

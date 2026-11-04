@@ -16,6 +16,7 @@ import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
 import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
@@ -646,6 +647,7 @@ import {
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
@@ -3362,12 +3364,11 @@ function Workspace({
     const cwd = sidebarCwd;
     const session = newWorkspaceSession(cwd, sessionDefaults?.runtimeMode);
     // An untouched New session tab for this project is already open: go to
-    // it rather than stacking another empty one beside it.
-    const blank = reusableBlankSessionTab(
-      tabsRef.current,
-      sessionsRef.current,
-      session,
-    );
+    // it rather than stacking another empty one beside it. A Hub default
+    // (hubDefaultsOn): upstream's own build appends a new tab every time.
+    const blank = hubDefaultsOn()
+      ? reusableBlankSessionTab(tabsRef.current, sessionsRef.current, session)
+      : undefined;
     if (blank) {
       setActiveTabId(blank.tabId);
       setComposerFocused(true);
@@ -10148,6 +10149,13 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
+  const steering = useSteering(sessions, {
+    chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
+    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    submit: async (id, text, { appRequestId, steer }) =>
+      await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
+  });
 
   useMobileWorkspace({
     sessions,
@@ -13650,6 +13658,7 @@ function Workspace({
             habits: { load: loadHabits, update: updateHabits },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
+              firstMate: steering,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),
@@ -16433,7 +16442,7 @@ function Workspace({
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
       onSearch={onOpenSearch}
-      onOpenInbox={onHubOpenInbox}
+      onOpenInbox={hubDefaultsOn() ? onHubOpenInbox : onOpenInbox}
       onOpenInboxItem={onOpenLinkedWorkItem}
       onOpenNotes={notesEnabled ? onOpenNotes : undefined}
       onOpenAutomations={onOpenAutomations}
@@ -17109,8 +17118,9 @@ function Workspace({
             />
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
-              not prompt for the new one; it stays in Settings → Appearance. */}
-          {IS_HUB_BUNDLE ? null : (
+              not prompt for the new one; it stays in Settings → Appearance.
+              The hub's dev page doesn't either (hubDefaultsOn). */}
+          {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
               onHeightChange={setNewLayoutNoticeHeight}

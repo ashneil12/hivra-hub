@@ -30,6 +30,10 @@ import {
   replyProblem,
   retryReply,
   roomDrafts,
+  roomGoal,
+  setRoomLead,
+  setRoomResponder,
+  startGoal,
   roomPick,
   roomWorking,
   useHubChatsVersion,
@@ -37,6 +41,9 @@ import {
 import { setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import { roomAttachments } from "../model/roomAttachments";
+import { GOAL_MAX_TURNS, RESPONDER_LABELS, RESPONDER_MODES, responderOf } from "../model/roomModes";
+import { quickModel } from "../model/roomDecider";
+import { hostOf } from "../model/roomTurns";
 import type { ChatMessage, GroupChat, RoomAttachment } from "../model/types";
 import type { Attachment } from "../../sessions/model/session";
 import { StatusMark } from "./StatusMark";
@@ -90,12 +97,21 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
     setDraftTitle(undefined);
     if (renamingConv === "draft") setRenamingConv(null);
   };
+  /** WP-22: the next message is a goal the room's lead works toward. */
+  const [goalNext, setGoalNext] = useState(false);
   const begin = (text: string, attachments?: RoomAttachment[]) => {
     const id = startConversation(chat.id, text, { title: draftTitle, attachments });
     setDrafting(false);
     setDraftTitle(undefined);
     setConvId(id);
-    simulateReplies(chat.id, id);
+    answer(id);
+  };
+  /** Ash sent: the room answers, or (goal on) its lead starts working toward the goal. */
+  const answer = (id: string | undefined) => {
+    if (goalNext) {
+      setGoalNext(false);
+      void startGoal(chat.id, id);
+    } else simulateReplies(chat.id, id);
   };
   useEffect(() => {
     if (!drafting) return;
@@ -238,6 +254,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
             Add a Mono
           </button>
         </div>
+        {members.length ? <RoomResponder chat={chat} members={members} /> : null}
         {picker ? <MonoPicker chat={chat} monos={monos} anchor={picker} onClose={() => setPicker(null)} /> : null}
         {members.length || chat.conversations.length ? (
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pb-2">
@@ -454,6 +471,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           {roomPick(chat.id) ? <span data-hub-chat-error-pick={roomPick(chat.id)!.id}>{nameOf(roomPick(chat.id)!.id)} was picked to answer ({roomPick(chat.id)!.why}). </span> : null}
           {replyProblem(chat.id, conv?.id)} <button type="button" onClick={() => void retryReply(chat.id)} className="ml-2 underline">Try again</button>
         </div> : null}
+        <GoalBar chat={chat} members={members} convId={conv?.id} on={goalNext} onChange={setGoalNext} />
         <div className="w-full shrink-0 px-6 pb-3 xl:px-8">
           <MonoComposer
             sessionId={`hub-chat:${chat.id}`}
@@ -469,11 +487,77 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                 return;
               }
               sendMessage(chat.id, text.trim(), conv?.id, kept);
-              simulateReplies(chat.id, conv?.id);
+              answer(conv?.id);
             }}
           />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * WP-22: who answers in this room (its responder mode) and who leads it. Auto names the quick model it asks, or says
+ * the lead answers until one is set up.
+ */
+function RoomResponder({ chat, members }: { chat: GroupChat; members: Mono[] }) {
+  const mode = responderOf(chat);
+  const lead = hostOf(members.map((m) => ({ id: m.id, name: monoLook(m).name })), chat.leadId);
+  const model = mode === "auto" ? quickModel() : undefined;
+  const select = "h-6 w-full rounded-md border border-content/15 bg-transparent px-1 text-[12px] text-content";
+  return (
+    <div className="flex flex-col gap-1 px-3 pb-3" data-hub-room-settings>
+      <label className="flex flex-col gap-0.5 text-xs leading-5 text-content/60">
+        Who answers
+        <select className={select} value={mode} onChange={(e) => setRoomResponder(chat.id, e.target.value as typeof mode)} data-hub-room-responder>
+          {RESPONDER_MODES.map((m) => (
+            <option key={m} value={m}>
+              {RESPONDER_LABELS[m].label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <p className="text-[11px] leading-4 text-content/55" data-hub-room-responder-hint>
+        {RESPONDER_LABELS[mode].hint}
+        {mode === "auto" ? (model ? ` It asks ${model.name}.` : " Add a model in Settings, Other models; until then the lead answers.") : ""}
+      </p>
+      {members.length > 1 ? (
+        <label className="flex flex-col gap-0.5 text-xs leading-5 text-content/60">
+          Lead
+          <select className={select} value={lead?.id ?? ""} onChange={(e) => setRoomLead(chat.id, e.target.value || undefined)} data-hub-room-lead>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {monoLook(m).name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+    </div>
+  );
+}
+
+/** WP-22: above the composer: make the next message a goal for the lead, and show how a goal run stands. */
+function GoalBar({ chat, members, convId, on, onChange }: { chat: GroupChat; members: Mono[]; convId?: string; on: boolean; onChange: (on: boolean) => void }) {
+  if (!members.length) return null;
+  const goal = convId ? roomGoal(chat.id, convId) : undefined;
+  const lead = hostOf(members.map((m) => ({ id: m.id, name: monoLook(m).name })), chat.leadId);
+  return (
+    <div className="flex w-full shrink-0 items-center gap-2 px-6 pb-1 text-[12px] text-content/60 xl:px-8" data-hub-goal-bar data-hub-goal-state={goal?.state}>
+      <button
+        type="button"
+        aria-pressed={on}
+        onClick={() => onChange(!on)}
+        className={`rounded-md border px-1.5 py-0.5 ${on ? "border-content/40 text-content" : "border-content/15 hover:text-content"}`}
+        data-hub-goal-toggle
+      >
+        Goal
+      </button>
+      {on ? (
+        <span data-hub-goal-hint>
+          Your next message is a goal. {lead?.name ?? "The lead"} works toward it for up to {GOAL_MAX_TURNS} turns and stops when it's done or needs you.
+        </span>
+      ) : null}
     </div>
   );
 }

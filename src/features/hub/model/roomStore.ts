@@ -46,6 +46,8 @@ export type StoredRoom = {
   name: string;
   isDefault: boolean;
   leadId?: string;
+  /** WP-22: the room's responder mode; unset is "everyone". */
+  responder?: string;
   seated: boolean;
   createdAt: number;
   updatedAt: number;
@@ -61,6 +63,7 @@ export type RoomInput = {
   name: string;
   isDefault: boolean;
   leadId?: string;
+  responder?: string;
   seated: boolean;
   memberIds: string[];
   createdAt?: number;
@@ -227,6 +230,8 @@ export function roomInput(chat: GroupChat): RoomInput {
     name: chat.name,
     isDefault: chat.isDefault,
     ...(chat.leadId ? { leadId: chat.leadId } : {}),
+    // Only a mode the store accepts: anything else (an imported or hand-edited value) is saved as everyone.
+    ...(isResponderMode(chat.responder) ? { responder: chat.responder } : {}),
     seated: !!chat.seated,
     memberIds: [...chat.memberIds],
   };
@@ -243,7 +248,13 @@ export function conversationInput(roomId: string, conversation: ChatConversation
   };
 }
 
-const PICKS = new Set(["mention", "only", "named", "lead", "router", "lanes", "room", "chime", "addressed", "digest", "report", "back", "post"]);
+/** WP-22: the modes roomModes.ts knows (kept here too so the store stays free of the room's rules). */
+const RESPONDERS = new Set(["lead", "mentions", "auto"]);
+function isResponderMode(value: unknown): value is "lead" | "mentions" | "auto" {
+  return typeof value === "string" && RESPONDERS.has(value);
+}
+
+const PICKS = new Set(["mention", "only", "named", "lead", "router", "lanes", "room", "chime", "addressed", "digest", "report", "back", "post", "auto", "goal"]);
 
 function reactionsOf(value: Record<string, unknown>): Record<string, string[]> | undefined {
   const out: Record<string, string[]> = {};
@@ -290,6 +301,7 @@ export function groupChats(snapshot: RoomSnapshot, now = Date.now()): GroupChat[
     isDefault: room.isDefault,
     memberIds: [...room.memberIds],
     ...(room.leadId ? { leadId: room.leadId } : {}),
+    ...(isResponderMode(room.responder) ? { responder: room.responder } : {}),
     ...(room.seated ? { seated: true } : {}),
     conversations: room.conversations.map((c) => ({
       id: c.id,

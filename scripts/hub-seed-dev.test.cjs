@@ -72,6 +72,10 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO delegations VALUES ('t-1', 's1', 'completed', 'pending'), ('t-2', 's1', 'running', 'pending');
     CREATE TABLE delegation_chat_binds (provider_session TEXT PRIMARY KEY, chat_id TEXT NOT NULL);
     INSERT INTO delegation_chat_binds VALUES ('claude-real-1', 's1');
+    CREATE TABLE steer_messages (id TEXT PRIMARY KEY, child_session TEXT NOT NULL, state TEXT NOT NULL);
+    INSERT INTO steer_messages VALUES ('s-1', 's2', 'pending');
+    CREATE TABLE decisions (project TEXT NOT NULL, decision_key TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY (project, decision_key));
+    INSERT INTO decisions VALUES ('hivra', 'retention', 'open');
     CREATE TABLE autopilot_switches (scope TEXT PRIMARY KEY, until_ms INTEGER NOT NULL, set_by TEXT NOT NULL, set_at INTEGER NOT NULL);
     INSERT INTO autopilot_switches VALUES ('*', 9999999999999, 'ash', 1);
     CREATE TABLE autopilot_resumes (session_id TEXT PRIMARY KEY, resets_at INTEGER NOT NULL, resume_at INTEGER NOT NULL, state TEXT NOT NULL);
@@ -134,6 +138,8 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     orchestrationWorkers: 1,
     delegations: 2,
     delegationChatBinds: 1,
+    steerMessages: 1,
+    decisions: 1,
     autopilotSwitches: 1,
     autopilotResumes: 1,
     prWatchWakes: 2,
@@ -150,7 +156,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
   assert.deepEqual(rows(copy, "SELECT count(*) AS n FROM autopilot_log"), [{ n: 1 }], "the autopilot log is history and stays");
   assert.deepEqual(rows(copy, "SELECT body FROM notes"), [{ body: "kept" }], "everything else is kept");

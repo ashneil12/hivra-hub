@@ -33,7 +33,8 @@ test("shows the run's phases and agents in the chat and in Being built, busy the
   await expect(page.locator("[data-hub-being-built]")).toContainText("running workflow: Scan (1/2 agents)");
   await expect(page.locator("[data-hub-being-built]")).toContainText("EXO lead");
   await expect.poll(async () => (await proof(page)).held).toBe(true);
-  await expect(page.locator("[data-mono-work]").first()).toContainText("Running workflow: Scan (1/2 agents)");
+  // r67: the Lead's live line says it is waiting on its workers; the run's own row above carries the phase and count.
+  await expect(page.locator("[data-mono-work]").first()).toContainText("Waiting on workers");
   await shot(page, "workflow-1-busy");
 
   await page.evaluate(() => (window as unknown as { proof: Proof }).proof.resume());
@@ -42,7 +43,7 @@ test("shows the run's phases and agents in the chat and in Being built, busy the
   await expect(page.locator("[data-workflow-stop]")).toHaveCount(0);
   await expect(page.locator("[data-hub-being-built]")).not.toContainText("running workflow");
   // The Lead's one-line ticker holds each status a moment before the next.
-  await expect(page.locator("[data-mono-work]").first()).not.toContainText("Running workflow");
+  await expect(page.locator("[data-mono-work]").first()).not.toContainText("Waiting on workers");
   await shot(page, "workflow-2-done");
 });
 
@@ -124,7 +125,7 @@ test("once the run ends while the Lead's turn goes on, its line says what the Le
   await page.goto("/tests/browser/workflow-run.html?scenario=ended");
   await expect.poll(async () => (await proof(page)).held).toBe(true);
   const ticker = page.locator("[data-mono-work] [role=status] .sr-only").first();
-  await expect(ticker).toHaveText("Running workflow: Verify (2/3 agents)");
+  await expect(ticker).toHaveText("Waiting on workers");
   // The ticker just moved to the run's line, so it would hold it for most of its 850 ms. The run ends now.
   const moved = await page.evaluate(async () => {
     const run = () => document.querySelector("[data-workflow-run] [data-workflow-status]")?.textContent ?? "";
@@ -135,14 +136,15 @@ test("once the run ends while the Lead's turn goes on, its line says what the Le
     };
     (window as unknown as { proof: Proof }).proof.resume();
     const ended = await wait(() => run().startsWith("Finished"));
-    const changed = await wait(() => !line().startsWith("Running workflow"));
+    const changed = await wait(() => !line().startsWith("Waiting on workers"));
     return { ms: changed - ended, line: line() };
   });
-  expect(moved.line).toBe("Thinking…");
+  expect(moved.line).toBe("Thinking");
   expect(moved.ms).toBeLessThan(150);
-  await expect(page.locator("[data-mono-work]").first()).not.toContainText("Running workflow");
-  // Still the Lead's live turn (Claude Code has yet to pick the thread back up).
-  expect((await proof(page)).held).toBe(true);
+  await expect(page.locator("[data-mono-work]").first()).not.toContainText("Waiting on workers");
+  // Still the Lead's live turn (Claude Code has yet to pick the thread back up). The replay may still be sending the
+  // frames up to the run's notification, 40 ms apart, so wait for it to stop there.
+  await expect.poll(async () => (await proof(page)).held).toBe(true);
   await expect(page.locator("[data-workflow-run] [data-workflow-status]").first()).toHaveText(
     "Finished · 2 of 3 agents done · 1 failed",
   );

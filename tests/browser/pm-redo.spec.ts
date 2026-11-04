@@ -221,14 +221,20 @@ test("Reduced motion stops the bob and the blink", async ({ page }) => {
 test("C6: a Page's calendar block is react-day-picker on the theme's tokens", async ({ page }) => {
   await open(page);
   await page.getByRole("button", { name: /^Pages/ }).first().click();
-  const newButton = page.locator("[data-pages-new-button]").first();
-  if (await newButton.isVisible().catch(() => false)) await newButton.click();
+  // WP-01: the list (ready-made pages are there from the start) with its New page button, or the ask box when
+  // there are no pages yet. Wait for one of them instead of checking before the view has rendered.
+  await expect(page.locator("[data-pages-list], [data-pages-new]").first()).toBeVisible();
+  if (await page.locator("[data-pages-list]").count()) await page.locator("[data-pages-new-button]").first().click();
+  // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
+  // build here, as in agents-page, so the preview it draws is what this checks.
+  await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
   await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   const calendar = page.locator("[data-block-calendar]").first();
   await expect(calendar).toBeVisible({ timeout: 30_000 });
   await expect(calendar.locator("th")).toHaveText(["M", "T", "W", "T", "F", "S", "S"]);
-  await expect(page.getByText("Sample page. No Mono has built this yet.")).toBeVisible();
+  // The "Sample page" note came from the Ash OS stub WP-04 retired; the dev stub's preview says it is a preview instead.
+  await expect(page.locator("[data-pages-preview-note]")).toContainText("This is a preview.");
   await expect(page.getByText(/No real Mono ran/)).toHaveCount(0);
   await calendar.scrollIntoViewIfNeeded();
   await page.mouse.move(5, 450);

@@ -4,6 +4,8 @@
 //! processes, through `plugin-mcp`) or, for panels, inside the Pages sandbox.
 
 mod compat;
+pub mod defaults;
+pub mod discover;
 mod fsutil;
 pub mod hivra;
 mod install;
@@ -13,6 +15,8 @@ pub mod registry;
 mod source;
 pub mod wiring;
 
+#[cfg(test)]
+mod defaults_tests;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]

@@ -9,7 +9,7 @@ import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
-import { InstalledPlugins } from "../../plugins/ui/InstalledPlugins";
+import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -77,6 +77,7 @@ import { McpSettings } from "./McpSettings";
 import { InboxProviderMark } from "../../inbox/ui/InboxProviderMark";
 import { RemoveProjectDialog } from "../../projects/ui/RemoveProjectDialog";
 import { WindowControls } from "../../../app/shell/WindowControls";
+import { CreditsList } from "./CreditsList";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { useColorScheme } from "../../../shared/hooks/useColorScheme";
 import {
@@ -692,14 +693,16 @@ export function SettingsView({
               {section === "portable" ? <PortablePage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
+              {section === "plugins" ? (
+                // WP-32: Discover. Listing reads indexes; it never runs plugin code.
+                <PluginsPage />
+              ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}
               {section === "monos" ? <MonosPage /> : null}
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
-              {/* WP-31: the Installed list. */}
-              {section === "plugins" ? <InstalledPlugins /> : null}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}
@@ -1112,6 +1115,7 @@ function GeneralPage({
 
       <Group title="About">
         <UpdateRow onOpenWhatsNew={onOpenWhatsNew} />
+        <CreditsRow />
       </Group>
     </>
   );
@@ -1915,6 +1919,25 @@ function LinearSettings() {
           </div>
         </div>
       ) : null}
+    </>
+  );
+}
+
+/** WP-08: the projects Hivra learns from and the third-party code it carries (docs/hivra/credits.json). */
+function CreditsRow() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Row
+        id="credits"
+        label="Credits"
+        description="The projects Hivra takes ideas or code from, and the licences of the code it carries."
+      >
+        <SecondaryButton onClick={() => setOpen((shown) => !shown)}>
+          {open ? "Hide" : "Show"}
+        </SecondaryButton>
+      </Row>
+      {open ? <CreditsList /> : null}
     </>
   );
 }

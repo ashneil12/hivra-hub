@@ -8,6 +8,7 @@ import {
 import { SessionStateStore } from "../../src/features/sessions/model/sessionStateStore";
 import { newTab } from "../../src/features/workspace/model/layout";
 import "../../src/styles/index.css";
+import { hubFixtureAnswer } from "./hubFixtureServices";
 
 // Exercise the real workspace and its shortcut handler. Native services are
 // isolated so this benchmark never launches agents or touches saved sessions.
@@ -208,6 +209,8 @@ const fixtureInvoke = async (
   )
     return;
   if (command === "quick_composer_take") return null;
+  const hub = hubFixtureAnswer(command);
+  if (hub) return hub.value;
   throw new Error(`Unavailable fixture service: ${command}`);
 };
 Object.assign(window, {
