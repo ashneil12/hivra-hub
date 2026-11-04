@@ -9,6 +9,8 @@ test("a panel is built, previewed, kept, undone and discarded", async ({ page })
 
   const frame = page.frameLocator("iframe");
   await expect(frame.locator("p")).toHaveText("Ship the panel");
+  await expect(page.getByRole("button", { name: "Open the Creator chat" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Test the server" })).toHaveCount(0);
   await expect(page.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
   await expect(page.locator("[data-creator-status]")).toHaveText("Drafted. Nothing is installed yet.");
   await expect(page.locator("body")).toHaveAttribute("data-creator-view", "this-view");
@@ -33,11 +35,14 @@ test("an MCP server does not run until it is allowed", async ({ page }) => {
   await page.getByLabel("What should it do?").fill("Ship the panel");
   await page.getByRole("button", { name: "Build" }).click();
   await expect(page.getByText("This server doesn't run until you allow it.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open the Creator chat" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Test the server" })).toHaveCount(0);
   await page.getByRole("button", { name: "Preview" }).click();
   await page.getByRole("button", { name: "Keep" }).click();
   await expect(page.locator("[data-creator]")).toHaveAttribute("data-phase", "previewed");
   await page.getByRole("button", { name: "Allow this server" }).click();
   await expect(page.getByText("This server doesn't run until you allow it.")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Test the server" })).toBeVisible();
   await page.getByRole("button", { name: "Keep" }).click();
   await expect(page.locator("[data-creator-status]")).toHaveText("Kept.");
 });
