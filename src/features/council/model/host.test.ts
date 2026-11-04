@@ -99,3 +99,58 @@ it("hands the verdict to the room as a normal brief", async () => {
   expect(chats.getChat(chat.id)!.conversations[0].messages[0]).toMatchObject({ from: "app", kind: "system" });
   host.setCouncilDelegator(undefined);
 });
+
+it("asks the room's first model, and the verdict a different provider when one is connected", async () => {
+  const host = await import("./host");
+  const { defaultModelId, resolveModel } = await import("../../sessions/model/models");
+  expect(host.councilAsk([], async () => "")).toBeUndefined();
+  const seen: string[] = [];
+  const ask = host.councilAsk(
+    [
+      { id: "grok", provider: "xai", baseUrl: "https://api.x.ai/v1", modelId: "grok" },
+      { id: "other", provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", modelId: "gpt" },
+    ],
+    async (model) => {
+      seen.push(`${model.id}`);
+      return "noted";
+    },
+  );
+  const signal = new AbortController().signal;
+  expect((await ask!({ seatId: "a", round: "blind", prompt: "p", signal })).text).toBe("noted");
+  expect((await ask!({ seatId: "a", round: "verdict", prompt: "p", signal })).text).toBe("noted");
+  expect(seen).toEqual(["grok", "other"]);
+
+  host.installCouncilModel();
+  expect(host.councilModelInUse()).toBeUndefined();
+
+  host.setCouncilEnginesForTests([
+    { cli: "claude", family: "Anthropic", label: "Claude Code" },
+    { cli: "claude", family: "Anthropic", label: "Claude Code", model: "kept" },
+    { cli: "not-a-cli", family: "Other", label: "Other" },
+  ]);
+  const engines = host.availableCouncilEngines();
+  expect(engines[0].model).toBe(resolveModel("claude", defaultModelId("claude")).name);
+  expect(engines[1].model).toBe("kept");
+  expect(engines[2].model).toBeUndefined();
+  host.setCouncilEnginesForTests(undefined);
+});
+
+it("keeps a fractional tally and a confidence factor, and drops a factor that is not one of the three", () => {
+  const stance = { seatId: "a", member: "Member A", option: "Ship", confidence: 75, reason: "Because.", weight: 1, factor: 0.75 as const };
+  const record = {
+    ...blankProposal("ship"),
+    stances: [stance],
+    tally: {
+      consensus: false,
+      total: 3.5,
+      line: (3.5 * 2) / 3,
+      options: [{ option: "Ship", weight: 2.25, share: 2.25 / 3.5 }],
+      minority: [{ seatId: "a", member: "Member A", option: "Ship", confidence: 75, reason: "Because.", weight: 1 }],
+      abstained: ["Member C"],
+    },
+  };
+  const back = councilFromUnknown(JSON.parse(councilToJson(record)!));
+  expect(back?.tally?.total).toBe(3.5);
+  expect(back?.stances[0].factor).toBe(0.75);
+  expect(councilToJson({ ...blankProposal("ship"), stances: [{ ...stance, factor: 2 }] })).toBeNull();
+});
