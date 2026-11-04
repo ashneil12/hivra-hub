@@ -869,9 +869,11 @@ fn alive(pid: u32) -> bool {
         return false;
     }
     unsafe {
-        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+        use windows_sys::Win32::Foundation::{
+            CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, STILL_ACTIVE,
+        };
         use windows_sys::Win32::System::Threading::{
-            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if handle.is_null() {
@@ -881,7 +883,7 @@ fn alive(pid: u32) -> bool {
         let mut code = 0u32;
         let ok = GetExitCodeProcess(handle, &mut code);
         let _ = CloseHandle(handle);
-        ok == 0 || code == STILL_ACTIVE
+        ok == 0 || code == STILL_ACTIVE as u32
     }
 }
 
