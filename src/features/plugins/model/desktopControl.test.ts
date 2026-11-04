@@ -95,6 +95,19 @@ function launchFor(ctx: ReturnType<typeof setup>, binary = ctx.binary) {
   return { registry: ctx.registry, consent: ctx.consent, binary, pin: ctx.pin };
 }
 
+function launched(ctx: ReturnType<typeof setup>, argv: string[], stdout = "") {
+  return runGate({
+    argv: ["--project", ctx.project, "--hivra-app", "Notes", ...argv],
+    env: { PATH: "/usr/bin" },
+    launch: launchFor(ctx),
+    seen: ctx.seen,
+    spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
+      ctx.calls.push({ binary, args, options });
+      return { status: 0, stdout, stderr: "" };
+    },
+  });
+}
+
 function gate(
   ctx: ReturnType<typeof setup>,
   argv: string[],
@@ -878,6 +891,19 @@ describe("desktop gate, app launch", () => {
     expect(ctx.calls).toEqual([]);
     expect(dock.stdout).not.toContain("dock");
 
+    const findDock = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "find", "--app", "Notes", "--surface", "dock"],
+      env: { PATH: "/usr/bin" },
+      launch: launchFor(ctx),
+      spawnImpl: () => {
+        ctx.calls.push({ binary: ctx.binary, args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(findDock, "INVALID_ARGS", "unsafe");
+    expect(ctx.calls).toEqual([]);
+    expect(findDock.stdout).not.toContain("dock");
+
     const extras = runGate({
       argv: ["--project", ctx.project, "--hivra-app", "Notes", "snapshot", "--app", "Notes", "--surface", "menu-bar-extras"],
       env: { PATH: "/usr/bin" },
@@ -1114,6 +1140,145 @@ describe("desktop gate, app launch", () => {
     expect(body.result.isError).toBe(true);
     expect(body.result.content[0].text).toContain("DESKTOP_CONTROL_OFF");
     expect(real.calls).toEqual([]);
+  });
+
+  it("scopes every ref command from a snapshot of the allowed app and adds no --app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const snap = launched(ctx, ["snapshot", "--app", "Notes"], '{"ok":true,"data":{"snapshot_id":"s1","refs":["@s1:e2"]}}\n');
+    expect(snap.code).toBe(0);
+    const shapes = [
+      ["click", "@s1:e2"],
+      ["double-click", "@s1:e2"],
+      ["triple-click", "@s1:e2"],
+      ["right-click", "@s1:e2"],
+      ["clear", "@s1:e2"],
+      ["focus", "@s1:e2"],
+      ["toggle", "@s1:e2"],
+      ["check", "@s1:e2"],
+      ["uncheck", "@s1:e2"],
+      ["expand", "@s1:e2"],
+      ["collapse", "@s1:e2"],
+      ["scroll-to", "@s1:e2"],
+      ["get", "@s1:e2", "--property", "text"],
+      ["is", "@s1:e2"],
+      ["type", "@s1:e2", "hello"],
+      ["set-value", "@s1:e2", "hello"],
+      ["select", "@s1:e2", "Red"],
+      ["scroll", "@s1:e2", "--direction", "down"],
+    ];
+    for (const argv of shapes) {
+      const result = launched(ctx, argv);
+      expect(result.code, argv[0]).toBe(0);
+      expect(ctx.calls.at(-1)?.args, argv[0]).toEqual(argv);
+    }
+  });
+
+  it("scopes snapshot, find, list-surfaces and wait with --app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const shapes: [string[], string[]][] = [
+      [["snapshot"], ["snapshot", "--app", "Notes"]],
+      [["find", "--role", "button"], ["find", "--role", "button", "--app", "Notes"]],
+      [["list-surfaces"], ["list-surfaces", "--app", "Notes"]],
+      [["wait", "200"], ["wait", "200", "--app", "Notes"]],
+    ];
+    for (const [argv, expected] of shapes) {
+      const result = launched(ctx, argv);
+      expect(result.code, argv[0]).toBe(0);
+      expect(ctx.calls.at(-1)?.args, argv[0]).toEqual(expected);
+    }
+    const event = launched(ctx, ["wait", "--event", "focus-changed"]);
+    expect(event.code).not.toBe(0);
+    expect(ctx.calls).toHaveLength(shapes.length);
+  });
+
+  it("scopes press, screenshot and hover only while visible, and keeps hover on a ref", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const snap = launched(ctx, ["snapshot", "--app", "Notes"], '{"ok":true,"data":{"snapshot_id":"s1","refs":["@s1:e2"]}}\n');
+    expect(snap.code).toBe(0);
+    expect(launched(ctx, ["hover", "@s1:e2"]).code).not.toBe(0);
+    expect(ctx.calls).toHaveLength(1);
+    const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
+    expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
+    expect(launched(ctx, ["press", "cmd+q"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["press", "cmd+q", "--app", "Notes"]);
+    expect(launched(ctx, ["screenshot"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["screenshot", "--app", "Notes"]);
+    expect(launched(ctx, ["hover", "@s1:e2"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["hover", "@s1:e2"]);
+    const xy = launched(ctx, ["hover", "@s1:e2", "--xy", "10,10"]);
+    expect(xy.code).not.toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["hover", "@s1:e2"]);
+  });
+
+  it("scopes launch and close-app by the app name argument", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    expect(launched(ctx, ["launch", "Notes"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["launch", "Notes"]);
+    expect(launched(ctx, ["close-app", "Notes", "--force"]).code).toBe(0);
+    expect(ctx.calls.at(-1)?.args).toEqual(["close-app", "Notes", "--force"]);
+    expect(launched(ctx, ["launch", "Mail"]).code).not.toBe(0);
+    expect(ctx.calls).toHaveLength(2);
+  });
+
+  it("refuses every 1.1.0 command that cannot be kept on the allowed app", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const shown = setVisible(JSON.parse(readFileSync(ctx.consent, "utf8")) as ConsentState, ctx.project, true);
+    expect(saveConsent(ctx.consent, 1, shown).conflict).toBeUndefined();
+    const refused = [
+      "key-down",
+      "key-up",
+      "drag",
+      "mouse-move",
+      "mouse-click",
+      "mouse-down",
+      "mouse-up",
+      "mouse-wheel",
+      "list-windows",
+      "list-displays",
+      "list-apps",
+      "focus-window",
+      "resize-window",
+      "move-window",
+      "minimize",
+      "maximize",
+      "restore",
+      "open-system-surface",
+      "list-notifications",
+      "dismiss-notification",
+      "dismiss-all-notifications",
+      "notification-action",
+      "clipboard-get",
+      "clipboard-set",
+      "clipboard-clear",
+      "status",
+      "permissions",
+      "version",
+      "batch",
+      "skills",
+      "session",
+      "cursor-overlay",
+      "trace",
+    ];
+    for (const command of refused) {
+      const result = launched(ctx, [command]);
+      expect(result.code, command).not.toBe(0);
+      expect(ctx.calls, command).toEqual([]);
+    }
   });
 
   it("does not tell the worker to run the gate or the binary", () => {
