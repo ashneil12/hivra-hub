@@ -1,8 +1,10 @@
-// Browser proof for Settings → Activity (WP-78). Seeded rows, no app.
+// Browser proof for Settings → Activity (WP-78). The seeded list and the live
+// page are the ActivityPage Settings renders, not a copy of its markup.
 import { createRoot } from "react-dom/client";
 import { ActivityPage } from "../../src/features/activity/ui/ActivityPage";
 import type { ActivityEntry, Who } from "../../src/features/activity/model/activity";
 import "../../src/styles/index.css";
+import { installFakeTauri } from "./fakeTauri";
 
 const person: Who = { role: "person" };
 const ada: Who = { role: "first-mate", id: "lead-1", name: "Ada" };
@@ -70,3 +72,32 @@ createRoot(document.getElementById("log")!).render(
 );
 
 createRoot(document.getElementById("empty")!).render(<ActivityPage entries={[]} />);
+
+const liveNewer: ActivityEntry = {
+  id: "live-new",
+  seq: 9,
+  kind: "git.push",
+  actor: ada,
+  initiator: person,
+  project: "acme/web",
+  target: "live",
+  summary: "Newer live row.",
+  link: "",
+  at: 1_700_000_400_000,
+};
+const liveOlder: ActivityEntry = {
+  ...liveNewer,
+  id: "live-old",
+  seq: 8,
+  summary: "Older live row.",
+  at: 1_700_000_000_000,
+};
+
+installFakeTauri("wp78-activity", (command, args) => {
+  if (command !== "activity_list") return { entries: [], next: null };
+  const before = (args.query as { before?: unknown } | undefined)?.before;
+  if (before) return { entries: [liveOlder], next: null };
+  return { entries: [liveNewer], next: { at: liveNewer.at, seq: liveNewer.seq } };
+});
+
+createRoot(document.getElementById("paged")!).render(<ActivityPage />);

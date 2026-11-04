@@ -50,6 +50,18 @@ test("filters by project, agent and kind, and a percent sign is not a wildcard",
   await expect(log.getByText("Nothing matches.")).toBeVisible();
 });
 
+test("loads the next page of the live list", async ({ page }) => {
+  await page.goto(pageUrl);
+  const live = page.locator("#paged");
+  await expect(live.getByRole("listitem")).toHaveCount(1);
+  await expect(live.getByText("Newer live row.")).toBeVisible();
+  await live.getByRole("button", { name: "Show older" }).click();
+  await expect(live.getByRole("listitem")).toHaveCount(2);
+  await expect(live.getByText("Older live row.")).toBeVisible();
+  await expect(live.getByText("Newer live row.")).toBeVisible();
+  await expect(live.getByRole("button", { name: "Show older" })).toHaveCount(0);
+});
+
 test("says when nothing is recorded", async ({ page }) => {
   await page.goto(pageUrl);
   const empty = page.locator("#empty");
