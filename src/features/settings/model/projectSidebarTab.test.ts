@@ -46,6 +46,11 @@ describe("project Workspace tab", () => {
     expect(loadProjectSidebarTab("/work/new")).toBe("files");
   });
 
+  it("remembers Crew for a project", () => {
+    saveProjectSidebarTab("/work/one", "crew");
+    expect(loadProjectSidebarTab("/work/one")).toBe("crew");
+  });
+
   it("follows a project rename and clears a deleted project's choice", () => {
     saveProjectSidebarTab("/work/one", "files");
     rebaseProjectSidebarTab("/work/one", "/work/renamed");

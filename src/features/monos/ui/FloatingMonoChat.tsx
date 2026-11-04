@@ -547,6 +547,7 @@ function FloatingConversation({
             onStopAll={delegationPane.onStopAll}
             // Read-only here: the coding team opens in the main window.
             briefs={delegationPane.briefs}
+            crewLines={delegationPane.crewLines}
           />
         ) : null}
         <MonoComposer

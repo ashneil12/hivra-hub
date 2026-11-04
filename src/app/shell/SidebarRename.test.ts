@@ -1102,7 +1102,13 @@ describe("sidebar reorder affordances", () => {
     act(() => render());
 
     const tabs = container.querySelectorAll<HTMLElement>('[role="tab"]');
-    expect(tabs).toHaveLength(3);
+    // WP-15: Crew is a Classic sidebar tab, and it is not a drag handle either.
+    expect(Array.from(tabs, (tab) => tab.textContent)).toEqual([
+      "Sessions",
+      "Explorer",
+      "Changes",
+      "Crew",
+    ]);
     for (const tab of tabs) {
       expect(tab.className).not.toContain("cursor-grab");
       expect(tab.parentElement?.className).not.toContain("cursor-grab");
@@ -1864,6 +1870,8 @@ describe("collapsed rail Inbox actions", () => {
       "Sessions",
       "Explorer",
       "Changes",
+      // WP-15: Crew sits with the other Classic sidebar tabs.
+      "Crew",
       "Search",
       "Inbox",
       "Notes",
@@ -1878,7 +1886,7 @@ describe("collapsed rail Inbox actions", () => {
       Array.from(workspaceTabs.querySelectorAll('[role="tab"]'), (button) =>
         button.getAttribute("aria-label"),
       ),
-    ).toEqual(["Sessions", "Explorer", "Changes"]);
+    ).toEqual(["Sessions", "Explorer", "Changes", "Crew"]);
     const sessionsTab = workspaceTabs.querySelector<HTMLButtonElement>(
       '[aria-label="Sessions"]',
     )!;

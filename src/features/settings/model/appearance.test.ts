@@ -92,6 +92,8 @@ describe("right panel tabs", () => {
     expect(loadRightPanelTab()).toBe("files");
     saveRightPanelTab("graph");
     expect(loadRightPanelTab()).toBe("graph");
+    saveRightPanelTab("crew");
+    expect(loadRightPanelTab()).toBe("crew");
     localStorage.setItem("monocode.rightPanelTab", "unknown");
     expect(loadRightPanelTab()).toBe("files");
   });
@@ -101,13 +103,13 @@ describe("right panel tabs", () => {
       "monocode.sidebarTabOrder",
       JSON.stringify(["sessions", "changes", "inbox", "files"]),
     );
-    expect(loadRightPanelTabOrder()).toEqual(["changes", "files", "graph"]);
+    expect(loadRightPanelTabOrder()).toEqual(["changes", "files", "graph", "crew"]);
   });
 
   it("persists an independent order without changing the classic sidebar", () => {
     const classic = loadSidebarTabOrder();
     saveRightPanelTabOrder(["graph", "files", "changes"]);
-    expect(loadRightPanelTabOrder()).toEqual(["graph", "files", "changes"]);
+    expect(loadRightPanelTabOrder()).toEqual(["graph", "files", "changes", "crew"]);
     expect(loadSidebarTabOrder()).toEqual(classic);
   });
 
@@ -116,9 +118,9 @@ describe("right panel tabs", () => {
       "monocode.rightPanelTabOrder",
       JSON.stringify(["graph", "unknown", "graph"]),
     );
-    expect(loadRightPanelTabOrder()).toEqual(["graph", "files", "changes"]);
+    expect(loadRightPanelTabOrder()).toEqual(["graph", "files", "changes", "crew"]);
     localStorage.setItem("monocode.rightPanelTabOrder", "invalid JSON");
-    expect(loadRightPanelTabOrder()).toEqual(["files", "changes", "graph"]);
+    expect(loadRightPanelTabOrder()).toEqual(["files", "changes", "graph", "crew"]);
   });
 });
 

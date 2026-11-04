@@ -7,7 +7,8 @@ type ProjectSidebarTab = Exclude<SidebarTabId, "inbox">;
 type StoredTabs = Record<string, ProjectSidebarTab>;
 
 function isProjectSidebarTab(value: unknown): value is ProjectSidebarTab {
-  return value === "sessions" || value === "files" || value === "changes";
+  // WP-15: Crew is remembered per project, the same way Files and Changes are.
+  return value === "sessions" || value === "files" || value === "changes" || value === "crew";
 }
 
 function readAll(): StoredTabs {
