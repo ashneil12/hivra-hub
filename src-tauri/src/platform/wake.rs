@@ -3,9 +3,11 @@
 // so a crash never leaves the Mac awake. These two do the same: the Windows call is
 // cleared when its thread ends, and the Linux inhibit ends when the pipe closes.
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
+use std::cell::RefCell;
+#[cfg(any(test, target_os = "linux"))]
 use std::process::Command;
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 use std::time::Duration;
 
 use crate::autopilot::Wake;
@@ -40,7 +42,9 @@ pub fn current() -> Box<dyn Wake> {
     }
     #[cfg(target_os = "linux")]
     {
-        Box::new(InhibitWake { child: None })
+        Box::new(InhibitWake {
+            child: RefCell::new(None),
+        })
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
@@ -144,15 +148,16 @@ mod windows_wake {
 #[cfg(target_os = "windows")]
 pub use windows_wake::ExecutionWake;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 struct InhibitWake {
-    child: Option<std::process::Child>,
+    child: RefCell<Option<std::process::Child>>,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl Wake for InhibitWake {
     fn hold(&mut self, reason: &str) -> Result<(), String> {
-        if self.child.is_some() {
+        // A child that has already exited is not a hold. Spawn again.
+        if self.held() {
             return Ok(());
         }
         let mut command = Command::new("systemd-inhibit");
@@ -181,12 +186,12 @@ impl Wake for InhibitWake {
         let child = command
             .spawn()
             .map_err(|_| "Couldn't ask the system to stay awake.".to_string())?;
-        self.child = Some(child);
+        *self.child.borrow_mut() = Some(child);
         Ok(())
     }
 
     fn release(&mut self) {
-        let Some(mut child) = self.child.take() else {
+        let Some(mut child) = self.child.borrow_mut().take() else {
             return;
         };
         drop(child.stdin.take());
@@ -207,11 +212,24 @@ impl Wake for InhibitWake {
     }
 
     fn held(&self) -> bool {
-        self.child.is_some()
+        let mut slot = self.child.borrow_mut();
+        let Some(child) = slot.as_mut() else {
+            return false;
+        };
+        match child.try_wait() {
+            Ok(None) => true,
+            // Reaped. Dropping it here does not wait a second time.
+            Ok(Some(_)) => {
+                *slot = None;
+                false
+            }
+            // Can't tell. Treat it as held so a second inhibit isn't started.
+            Err(_) => true,
+        }
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(test, target_os = "linux"))]
 impl Drop for InhibitWake {
     fn drop(&mut self) {
         Wake::release(self);
@@ -249,27 +267,41 @@ mod tests {
         wake.release();
     }
 
-    #[cfg(target_os = "linux")]
     #[test]
-    fn linux_inhibit_releases_when_the_pipe_closes() {
+    fn a_finished_inhibit_child_is_not_held_and_hold_does_not_pretend_it_is() {
         use super::InhibitWake;
         use crate::autopilot::Wake;
-        if std::process::Command::new("systemd-inhibit")
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_err()
-        {
-            return;
+        use std::cell::RefCell;
+        use std::process::Command;
+        use std::time::Duration;
+        let mut command = if cfg!(windows) {
+            let mut command = Command::new("cmd");
+            command.args(["/C", "exit", "0"]);
+            command
+        } else {
+            Command::new("true")
+        };
+        let child = command
+            .spawn()
+            .expect("a short-lived process to stand in for systemd-inhibit");
+        let mut wake = InhibitWake {
+            child: RefCell::new(Some(child)),
+        };
+        let start = std::time::Instant::now();
+        while wake.held() && start.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
         }
-        let mut wake = InhibitWake { child: None };
-        // No session bus (a CI job, a container) is not a failure of the seam.
-        if wake.hold("MonoCode Hub autopilot test").is_err() {
-            return;
+        assert!(
+            !wake.held(),
+            "an inhibit child that has exited is not still holding the machine awake"
+        );
+        // No session bus is not a passing hold. Ok is only allowed when a new child is running.
+        let again = wake.hold("MonoCode Hub autopilot test");
+        if again.is_ok() {
+            assert!(wake.held(), "hold returned ok but nothing is running");
+            wake.release();
+        } else {
+            assert!(!wake.held());
         }
-        assert!(wake.held());
-        wake.release();
-        assert!(!wake.held());
     }
 }
