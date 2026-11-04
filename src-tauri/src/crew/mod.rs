@@ -1,9 +1,9 @@
-//! Hivra WP-13: which CLI, model and effort a task uses, and the move to the next worker when the
-//! account can't take it. The same rules live in `src/features/crew` for Settings. This side is the
-//! one the watcher tick runs, so a usage limit resumes without a person sitting here.
+//! Hivra WP-13: which CLI, model and effort a task uses, and what to do when the account can't take it.
+//! The same rules live in `src/features/crew` for Settings.
 //!
-//! Nothing here starts a CLI or makes a network call. The store takes the signed-in list it is given.
-//! Settings and an empty route list read the account files the CLIs already wrote.
+//! Nothing here starts a CLI or makes a network call. A usage limit is only noted. The app resumes that
+//! chat. The store takes the signed-in list it is given. Settings and an empty route list read the
+//! account files the CLIs already wrote.
 
 mod budget;
 mod failure;
@@ -22,7 +22,7 @@ use tauri::State;
 
 use crate::session_store::{now_millis, SessionStore};
 
-pub(crate) use store::{ensure_tables, resume_due};
+pub(crate) use store::ensure_tables;
 
 use resolve::Presence;
 use rules::Rule;
@@ -194,7 +194,15 @@ pub fn crew_route(
 ) -> Result<resolve::Route, String> {
     fill_present(&mut query.present, live_presence(&app));
     let plugins = plugin_rules(&app, query.project.as_deref());
-    store::route(&*store.lock_conn()?, &query, &plugins)
+    store::route_at(&*store.lock_conn()?, &query, &plugins, now_millis())
+}
+
+#[tauri::command(async)]
+pub fn crew_note_pause(
+    store: State<'_, SessionStore>,
+    input: store::PauseQuery,
+) -> Result<store::FailureResult, String> {
+    store::note_pause(&mut *store.lock_conn()?, &input, now_millis())
 }
 
 #[tauri::command(async)]

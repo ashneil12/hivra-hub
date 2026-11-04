@@ -9,7 +9,7 @@ use super::reroute::{decide, Attempt, FailureInput};
 use super::resolve::{role_model, Pick, Presence};
 use super::rules::{self, Rule};
 use super::store::{self, FailureQuery, RouteQuery, RuleDraft};
-use crate::delegations::{self, RecordInput, SettleInput};
+use crate::delegations::{self, DeliveryInput, RecordInput, SettleInput};
 use crate::session_store::SessionStore;
 
 fn memory() -> SessionStore {
@@ -141,6 +141,32 @@ fn failure<'a>(
         present: present(who),
         project: project.map(str::to_string),
         mono: mono.map(str::to_string),
+    }
+}
+
+fn running_row(conn: &mut Connection, child: &str, request: &str) -> delegations::Delegation {
+    delegations::record(
+        conn,
+        RecordInput {
+            owner_session: "lead".into(),
+            request_id: request.into(),
+            child_session: child.into(),
+            ..RecordInput::default()
+        },
+        1_000,
+    )
+    .unwrap()
+}
+
+fn pause_input(id: &str, resets_at: Option<i64>, cli: &str) -> store::PauseQuery {
+    store::PauseQuery {
+        delegation_id: id.into(),
+        resets_at,
+        current: Pick {
+            cli: some(cli),
+            model: some("opus"),
+            effort: some("high"),
+        },
     }
 }
 
@@ -604,136 +630,107 @@ fn the_budget_rejects_a_boolean_and_falls_back_when_garbage_is_already_stored() 
 }
 
 #[test]
-fn a_usage_limit_pauses_then_the_watcher_resumes_the_same_row() {
+fn a_usage_limit_is_noted_while_the_row_stays_open() {
     let store = memory();
     let mut conn = store.lock_conn().unwrap();
-    let row = fail_row(&mut conn, "worker-pause", Some("usage_limit"), Some(5_000));
-    let who = [("claude", true, true)];
-    let paused = store::on_failure(
+    let row = running_row(&mut conn, "worker-open-limit", "req-open-limit");
+    let noted = store::note_pause(
         &mut conn,
-        &failure(&row.id, Some("quota"), None, "claude", &who, None, None),
+        &pause_input(&row.id, Some(5_000), "claude"),
         1_200,
     )
     .unwrap();
-    assert_eq!(paused.action, "pause");
-    assert_eq!(paused.until, Some(5_000));
-    assert!(paused.applied);
-    assert_eq!(hold_count(&conn, &row.id), 1);
-    crate::watcher::tick(&mut conn, 4_000).unwrap();
-    let waiting = delegations::get(&conn, &row.id).unwrap().unwrap();
-    assert_eq!(waiting.state, "failed");
-    assert_eq!(waiting.generation, 1);
+    assert!(noted.applied);
+    assert_eq!(noted.action, "pause");
+    assert_eq!(noted.until, Some(5_000));
+    let stayed = delegations::get(&conn, &row.id).unwrap().unwrap();
+    assert_eq!(stayed.state, "running");
+    assert_eq!(stayed.generation, row.generation);
+    assert_eq!(outcomes(&conn, &row.id), vec!["paused".to_string()]);
+    let resume_at: i64 = conn
+        .query_row(
+            "SELECT resume_at FROM crew_holds WHERE delegation_id = ?1",
+            [&row.id],
+            |got| got.get(0),
+        )
+        .unwrap();
+    assert_eq!(resume_at, 5_000);
+    let stored: String = conn
+        .query_row(
+            "SELECT error_class || ' ' || outcome FROM crew_attempts WHERE delegation_id = ?1",
+            [&row.id],
+            |got| got.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, "usage_limit paused");
     crate::watcher::tick(&mut conn, 5_000).unwrap();
-    let resumed = delegations::get(&conn, &row.id).unwrap().unwrap();
-    assert_eq!(resumed.state, "running");
-    assert_eq!(resumed.generation, 2);
-    assert_eq!(resumed.error_class, None);
-    assert_eq!(hold_count(&conn, &row.id), 0);
-    assert_eq!(
-        outcomes(&conn, &row.id),
-        vec!["paused".to_string(), "resumed".to_string()]
-    );
-    crate::watcher::tick(&mut conn, 9_000).unwrap();
-    assert_eq!(
-        delegations::get(&conn, &row.id)
-            .unwrap()
-            .unwrap()
-            .generation,
-        2
-    );
-    conn.execute(
-        "INSERT INTO crew_holds (delegation_id, hold, resume_at, child_session, cli, model, effort, claim) VALUES (?1, 'paused', 1, 'worker-pause', 'claude', NULL, NULL, 0)",
-        [&row.id],
-    )
-    .unwrap();
-    crate::watcher::tick(&mut conn, 9_000).unwrap();
-    assert_eq!(
-        delegations::get(&conn, &row.id)
-            .unwrap()
-            .unwrap()
-            .generation,
-        2
-    );
-    assert_eq!(hold_count(&conn, &row.id), 0);
+    let after_tick = delegations::get(&conn, &row.id).unwrap().unwrap();
+    assert_eq!(after_tick.state, "running");
+    assert_eq!(after_tick.generation, row.generation);
+    let later = running_row(&mut conn, "worker-open-limit", "req-later-open");
+    let first_before = delegations::get(&conn, &row.id).unwrap().unwrap();
+    crate::watcher::tick(&mut conn, 5_000).unwrap();
+    let later_now = delegations::get(&conn, &later.id).unwrap().unwrap();
+    assert_eq!(later_now.state, later.state);
+    assert_eq!(later_now.generation, later.generation);
+    let first_after = delegations::get(&conn, &row.id).unwrap().unwrap();
+    assert_eq!(first_after.state, first_before.state);
+    assert_eq!(first_after.generation, first_before.generation);
 }
 
 #[test]
-fn a_cancelled_or_disposed_row_is_not_reopened() {
+fn a_cancelled_or_disposed_row_is_not_noted() {
     let store = memory();
     let mut conn = store.lock_conn().unwrap();
-    let running = delegations::record(
+    let running = running_row(&mut conn, "worker-stop", "req-stop");
+    delegations::cancel(
         &mut conn,
-        RecordInput {
-            owner_session: "lead".into(),
-            request_id: "req-stop".into(),
-            child_session: "worker-stop".into(),
-            ..RecordInput::default()
-        },
-        1_000,
+        std::slice::from_ref(&running.id),
+        Some("Stopped.".into()),
+        None,
+        1_100,
     )
     .unwrap();
-    delegations::settle(
+    let cancelled = store::note_pause(
         &mut conn,
-        SettleInput {
-            id: running.id.clone(),
-            generation: 1,
-            state: "cancelled".into(),
-            ..SettleInput::default()
+        &pause_input(&running.id, Some(5_000), "claude"),
+        1_200,
+    )
+    .unwrap();
+    assert!(!cancelled.applied);
+    assert!(outcomes(&conn, &running.id).is_empty());
+    assert_eq!(
+        delegations::get(&conn, &running.id).unwrap().unwrap().state,
+        "cancelled"
+    );
+
+    let open = running_row(&mut conn, "worker-dispose", "req-dispose");
+    delegations::set_delivery(
+        &mut conn,
+        DeliveryInput {
+            ids: vec![open.id.clone()],
+            delivery: "disposed".into(),
+            ..DeliveryInput::default()
         },
         1_100,
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO crew_holds (delegation_id, hold, resume_at, child_session, cli, model, effort, claim) VALUES (?1, 'paused', 1, 'worker-stop', 'claude', NULL, NULL, 0)",
-        [&running.id],
-    )
-    .unwrap();
-    store::resume_due(&mut conn, 2_000).unwrap();
-    let stayed = delegations::get(&conn, &running.id).unwrap().unwrap();
-    assert_eq!(stayed.state, "cancelled");
-    assert_eq!(stayed.generation, 1);
-    assert_eq!(hold_count(&conn, &running.id), 0);
-
-    let failed = fail_row(
+    let disposed = store::note_pause(
         &mut conn,
-        "worker-dispose",
-        Some("usage_limit"),
-        Some(9_000),
-    );
-    let paused = store::on_failure(
-        &mut conn,
-        &failure(
-            &failed.id,
-            None,
-            None,
-            "claude",
-            &[("claude", true, true)],
-            None,
-            None,
-        ),
+        &pause_input(&open.id, Some(5_000), "claude"),
         1_200,
     )
     .unwrap();
-    assert_eq!(paused.action, "pause");
-    delegations::cancel(
-        &mut conn,
-        std::slice::from_ref(&failed.id),
-        Some("Stopped.".into()),
-        None,
-        1_300,
-    )
-    .unwrap();
-    store::resume_due(&mut conn, 9_000).unwrap();
-    let disposed = delegations::get(&conn, &failed.id).unwrap().unwrap();
-    assert_eq!(disposed.state, "failed");
-    assert_ne!(disposed.state, "running");
-    assert_eq!(disposed.generation, 1);
-    assert_eq!(hold_count(&conn, &failed.id), 0);
+    assert!(!disposed.applied);
+    assert!(outcomes(&conn, &open.id).is_empty());
+    let stayed = delegations::get(&conn, &open.id).unwrap().unwrap();
+    assert_eq!(stayed.state, "running");
+    assert_eq!(stayed.generation, open.generation);
 }
 
-/// The hold names one delegation. A later task on the same child session is another row, and the timer must not touch it.
+/// A failed usage limit is noted, and the watcher does not flip that row, or a later one, back to running.
 #[test]
-fn a_due_hold_resumes_the_delegation_it_was_recorded_for() {
+fn a_paused_failure_is_not_reopened_by_the_watcher() {
     let store = memory();
     let mut conn = store.lock_conn().unwrap();
     let paused = fail_row(
@@ -757,77 +754,16 @@ fn a_due_hold_resumes_the_delegation_it_was_recorded_for() {
     )
     .unwrap();
     assert_eq!(decision.action, "pause");
-    let running = delegations::record(
-        &mut conn,
-        RecordInput {
-            owner_session: "lead".into(),
-            request_id: "req-later-running".into(),
-            child_session: "shared-running".into(),
-            ..RecordInput::default()
-        },
-        2_000,
-    )
-    .unwrap();
-    store::resume_due(&mut conn, 5_000).unwrap();
+    assert!(decision.applied);
+    let running = running_row(&mut conn, "shared-running", "req-later-running");
+    crate::watcher::tick(&mut conn, 5_000).unwrap();
     let later = delegations::get(&conn, &running.id).unwrap().unwrap();
     assert_eq!(later.state, "running");
     assert_eq!(later.generation, running.generation);
-    let resumed = delegations::get(&conn, &paused.id).unwrap().unwrap();
-    assert_eq!(resumed.state, "running");
-    assert_eq!(resumed.generation, paused.generation + 1);
-    assert_eq!(hold_count(&conn, &paused.id), 0);
-    assert_eq!(
-        outcomes(&conn, &paused.id),
-        vec!["paused".to_string(), "resumed".to_string()]
-    );
-
-    let task = fail_row(&mut conn, "shared-task", Some("usage_limit"), Some(8_000));
-    store::on_failure(
-        &mut conn,
-        &failure(
-            &task.id,
-            None,
-            None,
-            "claude",
-            &[("claude", true, true)],
-            None,
-            None,
-        ),
-        2_100,
-    )
-    .unwrap();
-    let denied = delegations::record(
-        &mut conn,
-        RecordInput {
-            owner_session: "lead".into(),
-            request_id: "req-later-denied".into(),
-            child_session: "shared-task".into(),
-            ..RecordInput::default()
-        },
-        3_000,
-    )
-    .unwrap();
-    delegations::settle(
-        &mut conn,
-        SettleInput {
-            id: denied.id.clone(),
-            generation: denied.generation,
-            state: "failed".into(),
-            error_class: Some("approval_denied".into()),
-            ..SettleInput::default()
-        },
-        3_100,
-    )
-    .unwrap();
-    store::resume_due(&mut conn, 8_000).unwrap();
-    let stayed = delegations::get(&conn, &denied.id).unwrap().unwrap();
+    let stayed = delegations::get(&conn, &paused.id).unwrap().unwrap();
     assert_eq!(stayed.state, "failed");
-    assert_eq!(stayed.error_class.as_deref(), Some("approval_denied"));
-    assert_eq!(stayed.generation, denied.generation);
-    let own = delegations::get(&conn, &task.id).unwrap().unwrap();
-    assert_eq!(own.state, "running");
-    assert_eq!(own.generation, task.generation + 1);
-    assert_eq!(hold_count(&conn, &task.id), 0);
+    assert_eq!(stayed.generation, paused.generation);
+    assert_eq!(outcomes(&conn, &paused.id), vec!["paused".to_string()]);
 }
 
 #[test]
@@ -1043,12 +979,12 @@ fn another_signed_in_cli_is_used_instead_of_waiting_and_the_budget_is_kept() {
     )
     .unwrap();
     assert_eq!(resumed.action, "resume");
-    assert!(resumed.applied);
-    assert_eq!(
-        delegations::get(&conn, &past.id).unwrap().unwrap().state,
-        "running"
-    );
+    assert!(!resumed.applied);
+    let stayed = delegations::get(&conn, &past.id).unwrap().unwrap();
+    assert_eq!(stayed.state, "failed");
+    assert_eq!(stayed.generation, 1);
     assert_eq!(hold_count(&conn, &past.id), 0);
+    assert!(outcomes(&conn, &past.id).is_empty());
 }
 
 #[test]
@@ -1084,4 +1020,114 @@ fn a_destination_is_not_skipped_just_because_an_earlier_try_named_it() {
     });
     assert_eq!(decision.action, "reroute");
     assert_eq!(decision.to.as_deref(), Some("cursor"));
+}
+
+/// An account failure names the next CLI. Nothing is relaunched, and that CLI is skipped for half an hour.
+#[test]
+fn a_route_skips_a_cli_that_failed_its_account_in_the_last_half_hour() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let now = 1_000_000;
+    let who = &[("claude", true, true), ("codex", true, true)];
+    let failed = fail_row(&mut conn, "worker-auth", Some("auth"), None);
+    let moved = store::on_failure(
+        &mut conn,
+        &failure(&failed.id, None, None, "claude", who, None, None),
+        now,
+    )
+    .unwrap();
+    assert_eq!(moved.action, "reroute");
+    assert_eq!(moved.to.as_deref(), Some("codex"));
+    let stayed = delegations::get(&conn, &failed.id).unwrap().unwrap();
+    assert_eq!(stayed.state, "failed");
+    assert_eq!(stayed.generation, failed.generation);
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM delegations", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 1);
+
+    let minute = now + 60_000;
+    let skipped =
+        store::route_at(&conn, &query("", "", "", "", None, None, who), &[], minute).unwrap();
+    assert_eq!(skipped.cli.as_deref(), Some("codex"));
+    assert_eq!(skipped.cli_from, "default");
+
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("ui", "", "claude", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    let ruled = store::route_at(
+        &conn,
+        &query("ui", "", PROJECT, "", None, None, who),
+        &[],
+        minute,
+    )
+    .unwrap();
+    assert_ne!(ruled.cli.as_deref(), Some("claude"));
+    assert_eq!(ruled.cli.as_deref(), Some("codex"));
+
+    let over = store::route_at(
+        &conn,
+        &query(
+            "ui",
+            "",
+            PROJECT,
+            "",
+            Some(Pick {
+                cli: Some("claude".into()),
+                model: None,
+                effort: None,
+            }),
+            None,
+            who,
+        ),
+        &[],
+        minute,
+    )
+    .unwrap();
+    assert_eq!(over.cli.as_deref(), Some("claude"));
+    assert_eq!(over.cli_from, "override");
+
+    let cooled_off = now + 31 * 60 * 1000;
+    let again = store::route_at(
+        &conn,
+        &query("", "", "", "", None, None, who),
+        &[],
+        cooled_off,
+    )
+    .unwrap();
+    assert_eq!(again.cli.as_deref(), Some("claude"));
+    assert_eq!(again.cli_from, "default");
+
+    let task_store = memory();
+    let mut task = task_store.lock_conn().unwrap();
+    let denied = fail_row(&mut task, "worker-denied", Some("approval_denied"), None);
+    let told = store::on_failure(
+        &mut task,
+        &failure(&denied.id, None, None, "claude", who, None, None),
+        now,
+    )
+    .unwrap();
+    assert_eq!(told.action, "first-mate");
+    let still =
+        store::route_at(&task, &query("", "", "", "", None, None, who), &[], minute).unwrap();
+    assert_eq!(still.cli.as_deref(), Some("claude"));
+
+    let pause_store = memory();
+    let mut pause = pause_store.lock_conn().unwrap();
+    let open = running_row(&mut pause, "worker-limit", "req-limit");
+    store::note_pause(
+        &mut pause,
+        &pause_input(&open.id, Some(now + 9_000), "claude"),
+        now,
+    )
+    .unwrap();
+    let kept =
+        store::route_at(&pause, &query("", "", "", "", None, None, who), &[], minute).unwrap();
+    assert_eq!(kept.cli.as_deref(), Some("claude"));
 }

@@ -891,55 +891,6 @@ pub fn reattach(
     Ok(Some(row))
 }
 
-/// Reopen one delegation by its id. A usage-limit hold names that id. Resuming by child session would pick up
-/// whatever task last used the session, including one that is still running or that failed the work itself.
-pub(crate) fn reopen(
-    conn: &mut Connection,
-    id: &str,
-    by: Option<String>,
-    now: i64,
-) -> Result<Option<Delegation>, String> {
-    let by = actor(by);
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(|e| e.to_string())?;
-    let Some(mut row) = get(&tx, id)? else {
-        return Ok(None);
-    };
-    if row.delivery == DISPOSED {
-        return Ok(None);
-    }
-    let superseded = row
-        .log
-        .iter()
-        .any(|entry| entry.get("event").and_then(Value::as_str) == Some("superseded"));
-    if superseded || (row.state != FAILED && row.state != CANCELLED) {
-        return Ok(None);
-    }
-    let was = row.state.clone();
-    row.generation += 1;
-    row.unstall();
-    row.state = RUNNING.into();
-    row.result = None;
-    row.error = None;
-    row.error_class = None;
-    row.retryable = None;
-    row.resets_at = None;
-    row.settled_at = None;
-    row.delivery = PENDING.into();
-    row.delivery_message = None;
-    row.note(
-        now,
-        &by,
-        "resumed",
-        json!({ "generation": row.generation, "was": was }),
-    );
-    row.touch(now);
-    save(&tx, &row)?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(Some(row))
-}
-
 /// A worker's question to its owner (H4): running → question with the question, or back to running once answered
 /// (`question` empty). Only an open row moves. The app writes through `set_question_with`, which logs a detail too.
 #[cfg(test)]

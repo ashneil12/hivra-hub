@@ -101,9 +101,19 @@ fn pick_field(
 
 /// Claude Code when it is installed and signed in, else the first signed-in CLI in the given order.
 pub fn default_cli(present: &[Presence]) -> Option<String> {
+    default_cli_except(present, &[])
+}
+
+/// The same default, skipping CLIs that just failed their account.
+pub fn default_cli_except(present: &[Presence], cooled: &[String]) -> Option<String> {
     let usable: Vec<&Presence> = present
         .iter()
-        .filter(|row| row.installed && row.signed_in && CREW_CLIS.contains(&row.cli.as_str()))
+        .filter(|row| {
+            row.installed
+                && row.signed_in
+                && CREW_CLIS.contains(&row.cli.as_str())
+                && !cooled.iter().any(|cli| cli == &row.cli)
+        })
         .collect();
     if usable.iter().any(|row| row.cli == "claude") {
         return Some("claude".into());

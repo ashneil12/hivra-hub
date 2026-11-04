@@ -1,14 +1,15 @@
 //! Crew rules, the attempt ledger and usage-limit holds. A delegation row is not given a new column:
-//! `delegations` is positional upstream. Two windows compare-and-swap the revision, and a hold is claimed
-//! before a resume, so a late tick cannot reopen a row the other window already took.
+//! `delegations` is positional upstream. Two windows compare-and-swap the revision. A usage-limit note
+//! records a hold for display and does not change the row. The app resumes that chat itself.
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::budget::normalize_failure_policy;
+use super::failure::is_account_class;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
-use super::resolve::{resolve_route, Pick, Presence, Route};
+use super::resolve::{default_cli_except, resolve_route, role_model, Pick, Presence, Route};
 use super::rules::{self, Rule};
 
 const MAX_RULES: usize = 40;
@@ -121,6 +122,16 @@ pub struct FailureQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub mono: Option<String>,
+}
+
+/// A usage limit on a row that is still open. The row is not settled, and the text of the failure is not stored.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PauseQuery {
+    pub delegation_id: String,
+    #[serde(default)]
+    pub resets_at: Option<i64>,
+    pub current: Pick,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -422,7 +433,44 @@ pub fn set_rules(
     get_rules(conn, &scope, &scope_id)
 }
 
+/// Far enough ahead that a real attempt is outside the cool-down. The command passes `now` to `route_at`.
+#[cfg(test)]
 pub fn route(conn: &Connection, query: &RouteQuery, plugins: &[Rule]) -> Result<Route, String> {
+    route_at(conn, query, plugins, i64::MAX)
+}
+
+const COOL_MS: i64 = 30 * 60 * 1000;
+
+fn cooled_clis(conn: &Connection, now: i64) -> Result<Vec<String>, String> {
+    let since = now.saturating_sub(COOL_MS);
+    let mut statement = conn
+        .prepare("SELECT cli, error_class FROM crew_attempts WHERE at >= ?1 AND cli IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map(params![since], |row| {
+            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut cooled = Vec::new();
+    for row in rows {
+        let (cli, class) = row.map_err(|e| e.to_string())?;
+        let Some(cli) = cli.filter(|cli| !cli.is_empty()) else {
+            continue;
+        };
+        if !is_account_class(&class) || cooled.iter().any(|have| have == &cli) {
+            continue;
+        }
+        cooled.push(cli);
+    }
+    Ok(cooled)
+}
+
+pub fn route_at(
+    conn: &Connection,
+    query: &RouteQuery,
+    plugins: &[Rule],
+    now: i64,
+) -> Result<Route, String> {
     let mono = match query
         .mono
         .as_deref()
@@ -442,14 +490,35 @@ pub fn route(conn: &Connection, query: &RouteQuery, plugins: &[Rule]) -> Result<
         None => Vec::new(),
     };
     let merged = rules::merge_rules(&mono, &project, plugins);
-    Ok(resolve_route(
+    let mut route = resolve_route(
         &query.labels,
         &query.paths,
         query.override_pick.as_ref(),
         query.brief.as_ref(),
         &merged,
         &query.present,
-    ))
+    );
+    let cooled = cooled_clis(conn, now)?;
+    if route.cli_from != "override" {
+        if let Some(cli) = route.cli.clone() {
+            if cooled.iter().any(|have| have == &cli) {
+                let next = default_cli_except(&query.present, &cooled);
+                route.cli_from = if next.is_some() {
+                    "default".into()
+                } else {
+                    "none".into()
+                };
+                route.cli = next;
+                let (plan_model, plan_effort) = role_model("plan", &route);
+                let (verdict_model, verdict_effort) = role_model("verdict", &route);
+                route.plan_model = plan_model;
+                route.plan_effort = plan_effort;
+                route.verdict_model = verdict_model;
+                route.verdict_effort = verdict_effort;
+            }
+        }
+    }
+    Ok(route)
 }
 
 fn read_attempts(conn: &Connection, id: &str) -> Result<Vec<Attempt>, String> {
@@ -555,17 +624,11 @@ fn refused(reason: &str) -> FailureResult {
     }
 }
 
-struct OpenFailure {
-    decision: Decision,
-    /// `resume` still has to reopen the row, after this transaction commits.
-    resume: bool,
-}
-
 fn record_failure(
     tx: &Connection,
     input: &FailureQuery,
     now: i64,
-) -> Result<Result<OpenFailure, FailureResult>, String> {
+) -> Result<Result<Decision, FailureResult>, String> {
     let Some(row) = crate::delegations::get(tx, &input.delegation_id)? else {
         let ledger = Vec::new();
         let decision = decide(&FailureInput {
@@ -598,10 +661,10 @@ fn record_failure(
         ledger: &ledger,
         budget: budget.as_ref(),
     });
-    let resume = decision.action == "resume";
-    if resume {
-        write_hold(tx, &row.id, &row.child_session, now, &input.current)?;
-    } else if decision.action == "pause" {
+    if decision.action == "resume" {
+        return Ok(Err(result_of(&decision, false)));
+    }
+    if decision.action == "pause" {
         append_attempt(tx, &row.id, &decision.attempt)?;
         write_hold(
             tx,
@@ -614,7 +677,7 @@ fn record_failure(
         append_attempt(tx, &row.id, &decision.attempt)?;
         delete_hold(tx, &row.id)?;
     }
-    Ok(Ok(OpenFailure { decision, resume }))
+    Ok(Ok(decision))
 }
 
 pub fn on_failure(
@@ -632,117 +695,64 @@ pub fn on_failure(
         }
         opened
     };
-    let OpenFailure { decision, resume } = match opened {
-        Ok(opened) => opened,
-        Err(result) => return Ok(result),
-    };
-    if !resume {
-        return Ok(result_of(&decision, true));
+    match opened {
+        Ok(decision) => Ok(result_of(&decision, true)),
+        Err(result) => Ok(result),
     }
-    resume_due(conn, now)?;
-    let after = crate::delegations::get(conn, &input.delegation_id)?;
-    let applied = after.is_some_and(|row| row.state == crate::delegations::RUNNING);
-    Ok(result_of(&decision, applied))
 }
 
-struct Hold {
-    id: String,
-    claim: i64,
-    cli: Option<String>,
-    model: Option<String>,
-    effort: Option<String>,
+fn row_is_open(row: &crate::delegations::Delegation) -> bool {
+    (row.state == crate::delegations::RUNNING || row.state == crate::delegations::QUESTION)
+        && row.delivery != crate::delegations::DISPOSED
 }
 
-fn due_holds(conn: &Connection, now: i64) -> Result<Vec<Hold>, String> {
-    let mut statement = conn
-        .prepare(
-            "SELECT delegation_id, claim, cli, model, effort FROM crew_holds
-             WHERE resume_at <= ?1 AND hold IN ('paused', 'taken')
-             ORDER BY resume_at, delegation_id",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = statement
-        .query_map(params![now], |row| {
-            Ok(Hold {
-                id: row.get(0)?,
-                claim: row.get(1)?,
-                cli: row.get(2)?,
-                model: row.get(3)?,
-                effort: row.get(4)?,
-            })
-        })
-        .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())
-}
-
-fn claim_hold(conn: &Connection, hold: &Hold) -> Result<bool, String> {
-    let changed = conn
-        .execute(
-            "UPDATE crew_holds SET hold = 'taken', claim = claim + 1
-             WHERE delegation_id = ?1 AND claim = ?2 AND hold IN ('paused', 'taken')",
-            params![hold.id, hold.claim],
-        )
-        .map_err(|e| e.to_string())?;
-    Ok(changed == 1)
-}
-
-fn release_hold(conn: &Connection, id: &str, claim: i64) -> Result<(), String> {
-    conn.execute(
-        "UPDATE crew_holds SET hold = 'paused' WHERE delegation_id = ?1 AND claim = ?2",
-        params![id, claim],
-    )
-    .map(|_| ())
-    .map_err(|e| e.to_string())
-}
-
-fn finished(row: &crate::delegations::Delegation) -> bool {
-    row.state == crate::delegations::CANCELLED
-        || row.state == crate::delegations::COMPLETED
-        || row.state == crate::delegations::RUNNING
-        || row.state == crate::delegations::QUESTION
-        || row.delivery == crate::delegations::DISPOSED
-}
-
-fn resumed_attempt(hold: &Hold, now: i64) -> Attempt {
-    Attempt {
-        at: now,
-        cli: hold.cli.clone(),
-        model: hold.model.clone(),
-        effort: hold.effort.clone(),
-        error_class: "usage_limit".into(),
-        outcome: "resumed".into(),
+fn not_open(until: Option<i64>) -> FailureResult {
+    FailureResult {
+        action: "pause".into(),
         to: None,
+        until,
+        reason: "the task is not open".into(),
+        applied: false,
     }
 }
 
-/// Reopen holds whose reset time has come. A cancelled, disposed, finished or already-running row is not reopened.
-/// One resume that fails to write goes back to paused; the tick itself is not failed for that.
-pub(crate) fn resume_due(conn: &mut Connection, now: i64) -> Result<usize, String> {
-    let holds = due_holds(conn, now)?;
-    let mut resumed = 0;
-    for hold in holds {
-        if !claim_hold(conn, &hold)? {
-            continue;
-        }
-        let claimed = hold.claim + 1;
-        let row = crate::delegations::get(conn, &hold.id)?;
-        let reopen = row
-            .as_ref()
-            .is_some_and(|row| row.state == crate::delegations::FAILED && !finished(row));
-        if !reopen {
-            delete_hold(conn, &hold.id)?;
-            continue;
-        }
-        match crate::delegations::reopen(conn, &hold.id, Some("crew".into()), now) {
-            Ok(Some(_)) => {
-                append_attempt(conn, &hold.id, &resumed_attempt(&hold, now))?;
-                delete_hold(conn, &hold.id)?;
-                resumed += 1;
-            }
-            Ok(None) => delete_hold(conn, &hold.id)?,
-            Err(_) => release_hold(conn, &hold.id, claimed)?,
-        }
+/// Record a usage-limit pause on a row that is still open. The delegation row is not changed.
+pub fn note_pause(
+    conn: &mut Connection,
+    input: &PauseQuery,
+    now: i64,
+) -> Result<FailureResult, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(row) = crate::delegations::get(&tx, &input.delegation_id)? else {
+        return Ok(not_open(input.resets_at));
+    };
+    if !row_is_open(&row) {
+        return Ok(not_open(input.resets_at));
     }
-    Ok(resumed)
+    append_attempt(
+        &tx,
+        &row.id,
+        &Attempt {
+            at: now,
+            cli: input.current.cli.clone(),
+            model: input.current.model.clone(),
+            effort: input.current.effort.clone(),
+            error_class: "usage_limit".into(),
+            outcome: "paused".into(),
+            to: None,
+        },
+    )?;
+    if let Some(at) = input.resets_at {
+        write_hold(&tx, &row.id, &row.child_session, at, &input.current)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(FailureResult {
+        action: "pause".into(),
+        to: None,
+        until: input.resets_at,
+        reason: "waiting for a usage limit to reset".into(),
+        applied: true,
+    })
 }

@@ -425,6 +425,11 @@ pub fn sanitize_class(value: Option<&str>) -> String {
         .collect()
 }
 
+pub(crate) fn is_account_class(value: &str) -> bool {
+    let class = sanitize_class(Some(value));
+    ACCOUNT.contains(&class.as_str())
+}
+
 const ACCOUNT: &[&str] = &[
     "quota",
     "billing",

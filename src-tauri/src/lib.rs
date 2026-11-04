@@ -560,6 +560,7 @@ pub fn run() {
             crew::crew_rules_set,
             crew::crew_route,
             crew::crew_on_failure,
+            crew::crew_note_pause,
             steering::steering_record,
             steering::steering_pending,
             steering::steering_list,
