@@ -15,7 +15,8 @@ export type DelegateToolName =
   | "task_wait"
   | "task_cancel"
   | "task_cannot"
-  | "task_answer";
+  | "task_answer"
+  | "task_accept";
 
 /**
  * T3's verb table (packages/shared/src/t3McpToolPresentation.ts, MIT): what the tool does, while it runs, once it is
@@ -46,6 +47,10 @@ const DELEGATE_TOOLS: Record<
   task_answer: {
     labels: ["Answer", "Answering", "Answered", "a worker's question"],
     count: { noun: "worker's question", id: (output) => output.taskId },
+  },
+  task_accept: {
+    labels: ["Accept", "Accepting", "Accepted", "a finished task"],
+    count: { noun: "task", id: (output) => output.taskId },
   },
 };
 

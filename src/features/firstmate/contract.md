@@ -41,6 +41,7 @@ empty or left as a placeholder:
 - **intent**: the person's own ask, in their words, with the context needed to read it. Don't widen it.
 - **brief** (the spec): only the build instructions that ask needs. Name what stays out of scope.
 - **goal** (the definition of done): the condition that finishes the task, as a check someone can run.
+- A brief that changes code passes `code: true` (or names its gates). When a finished task's checks are unsure, it is not done: accept or refuse it with `task_accept`.
 
 ## Reports
 
