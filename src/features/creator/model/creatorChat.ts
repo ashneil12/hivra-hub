@@ -8,6 +8,8 @@ import type { Session } from "../../sessions/model/session";
 import { creatorStart, type CreatorState } from "./creator";
 import type { ContributionKind } from "./draftFor";
 import { CREATOR_BRIEF_EVENT, CREATOR_DRAFT_EVENT, CREATOR_MONO_ID } from "./creatorEvents";
+// The bundled template's soul, read the way WP-05's starter Monos read theirs. It seeds the Mono's SOUL.md.
+import creatorSoul from "../../../../src-tauri/plugins/hivra-creator/hivra/monos/creator/SOUL.md?raw";
 
 export { CREATOR_BRIEF_EVENT, CREATOR_DRAFT_EVENT, CREATOR_MONO_ID };
 
@@ -39,14 +41,19 @@ export function creatorBrief(input: { ask: string; kind: string; id: string; rev
   ].join("\n");
 }
 
+/** The Creator Mono, made once from the bundled template: its soul is the template's SOUL.md. */
 function ensureCreatorMono(): void {
   if (findMono(CREATOR_MONO_ID)) return;
+  const soul = creatorSoul.trim() ? (creatorSoul.endsWith("\n") ? creatorSoul : `${creatorSoul}\n`) : "";
   addMono({
     id: CREATOR_MONO_ID,
     name: "Creator",
     mascot: "robot",
     color: "hsl(200 40% 50%)",
     projects: [],
+    // A role is a short label (40 characters at most), not the template's sentence.
+    role: "Builds plugins",
+    ...(soul ? { instructions: soul } : {}),
   });
 }
 

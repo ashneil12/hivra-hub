@@ -60,6 +60,9 @@ it("starts the Creator Mono's chat and puts the ask in its brief", async () => {
   expect(started.brief).toContain(started.state.id);
   expect(started.brief).toContain(String(started.state.revision));
   expect(findMono(CREATOR_MONO_ID)?.name).toBe("Creator");
+  // The Mono runs with the bundled template's soul, which keeps it off Hivra's own code.
+  expect(findMono(CREATOR_MONO_ID)?.instructions).toContain("I never change Hivra's own code.");
+  expect(findMono(CREATOR_MONO_ID)?.role).toBe("Builds plugins");
   const session = stored.get(started.sessionId);
   expect(session).toBeTruthy();
   expect(isWaitingBrief(session?.queuedMessages?.[0])).toBe(true);
