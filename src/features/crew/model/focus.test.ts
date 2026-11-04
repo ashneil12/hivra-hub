@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { clearCrewFocus, crewFocus, openCrew, resetCrewFocus, subscribeCrewFocus } from "./focus";
+import { clearCrewFocus, crewFocus, holdCrewOpen, openCrew, resetCrewFocus, subscribeCrewFocus } from "./focus";
 
 describe("crew focus", () => {
   it("remembers one brief, and the tab button clears it", () => {
@@ -27,6 +27,31 @@ describe("crew focus", () => {
     openCrew("brief-1");
     expect(heard).toHaveBeenCalledOnce();
     window.removeEventListener("hivra:open-crew", heard);
+    resetCrewFocus();
+  });
+
+  it("keeps the brief while the open is still held, and clears it when the last hold drops", async () => {
+    resetCrewFocus();
+    openCrew("brief-1");
+    const release = holdCrewOpen();
+    release();
+    const held = holdCrewOpen();
+    await Promise.resolve();
+    expect(crewFocus().briefId).toBe("brief-1");
+    held();
+    await Promise.resolve();
+    expect(crewFocus().briefId).toBeNull();
+    resetCrewFocus();
+  });
+
+  it("does not clear a newer brief when an older open ends", async () => {
+    resetCrewFocus();
+    openCrew("brief-1");
+    const release = holdCrewOpen();
+    openCrew("brief-2");
+    release();
+    await Promise.resolve();
+    expect(crewFocus().briefId).toBe("brief-2");
     resetCrewFocus();
   });
 });
