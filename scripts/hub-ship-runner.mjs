@@ -27,6 +27,8 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+// WP-09: Windows process start, bundle spawn and copy. macOS still uses ps, ditto and the binary path.
+import { appCommand, copyBundle, processStartWindows, spawnFailure, trialAppEnv } from "./ship-platform.mjs";
 
 export const STATE = "state.json";
 export const RUNNER_LOCK = "runner.lock";
@@ -135,9 +137,51 @@ export function releaseLock(db) {
   db.close();
 }
 
+// WP-09: a PowerShell start-time call can take seconds on a CI runner. A pid's start time never changes while it
+// lives, so one pass of the runner asks once per pid; a call over a second is logged, so a slow trial shows why.
+const START_CACHE_MS = 10_000;
+const SLOW_START_MS = 1_000;
+const startCache = new Map();
+let startTimeLog = null;
+
+/** Where slow start-time calls are written (the runner's log for this ship), or null for nowhere. */
+export function setStartTimeLog(log) {
+  startTimeLog = typeof log === "function" ? log : null;
+}
+
+/** Test seam: forget the cached start times. */
+export function clearStartCache() {
+  startCache.clear();
+}
+
+/** The Windows start time of `pid`, cached for a short while, with a slow call logged. `read` is a test seam. */
+export function windowsStart(pid, read = processStartWindows, now = Date.now) {
+  const cached = startCache.get(pid);
+  if (cached && now() - cached.at < START_CACHE_MS) return cached.value;
+  const began = now();
+  const value = read(pid);
+  const took = now() - began;
+  if (value === undefined) startTimeLog?.(`a PowerShell start-time check for pid ${pid} didn't answer (${took} ms); taken as still running`);
+  else if (took > SLOW_START_MS) startTimeLog?.(`a PowerShell start-time check for pid ${pid} took ${took} ms`);
+  // A missing process is not cached (it may be one that is still starting), nor is an unknown answer.
+  if (value !== null && value !== undefined) startCache.set(pid, { value, at: now() });
+  return value;
+}
+
+/**
+ * Whether a live pid (kill(pid, 0) found it) is the process that started at `startTime`. `started` is its start
+ * time in ms, null when it's gone, or undefined when the check didn't answer: an unknown answer is never "gone".
+ */
+export function sameStart(started, startTime) {
+  if (started === undefined) return true;
+  return started != null && Math.abs(Math.floor(started / 1000) - Math.floor(startTime / 1000)) <= 1;
+}
+
 /** When `pid` started, in ms (from ps, to the second), or null when there is no such process. */
 export function processStart(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
+  // WP-09: Windows has no `ps -o lstart`. The PowerShell start time is the same second.
+  if (process.platform === "win32") return windowsStart(pid);
   const out = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
@@ -159,8 +203,7 @@ export function isRunning(pid, startTime) {
     if (error.code === "ESRCH") return false;
   }
   if (startTime == null) return true;
-  const started = processStart(pid);
-  return started != null && Math.abs(Math.floor(started / 1000) - Math.floor(startTime / 1000)) <= 1;
+  return sameStart(processStart(pid), startTime);
 }
 
 export function dirSize(target) {
@@ -176,6 +219,31 @@ export function dirSize(target) {
   return total;
 }
 
+// WP-09: on Windows a just-quit app's folder can stay locked for a moment (antivirus, handles closing), so the
+// app's own renames are tried again for a while there before a ship cancels or rolls back. Each try is logged.
+const RENAME_RETRY_MS = 10_000;
+const RENAME_STEP_MS = 250;
+const LOCKED_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/** Rename the app folder `from` to `to`, retrying a locked folder on Windows. The options are test seams. */
+export function renameApp(from, to, log = () => {}, { platform = process.platform, rename = fs.renameSync, now = Date.now, wait = sleepSync } = {}) {
+  const deadline = now() + RENAME_RETRY_MS;
+  for (;;) {
+    try {
+      rename(from, to);
+      return;
+    } catch (error) {
+      if (platform !== "win32" || !LOCKED_CODES.has(error.code) || now() >= deadline) throw error;
+      log(`renaming ${from} failed (${error.code}); trying again`);
+      wait(RENAME_STEP_MS);
+    }
+  }
+}
+
 /** Rename, or copy and remove when the two sides are on different volumes. */
 export function moveDir(from, to) {
   fs.mkdirSync(path.dirname(to), { recursive: true });
@@ -183,7 +251,7 @@ export function moveDir(from, to) {
     fs.renameSync(from, to);
   } catch (error) {
     if (error.code !== "EXDEV") throw error;
-    execFileSync("/usr/bin/ditto", [from, to]);
+    copyBundle(from, to);
     fs.rmSync(from, { recursive: true, force: true });
   }
 }
@@ -416,6 +484,7 @@ export function restoreData(backup, data, expected, aside, { beforeChange } = {}
 /** Run one ship to the end. Returns the exit code: 0 once the ship is final (launchd then leaves it alone). */
 export async function runShip(dir) {
   const log = (line) => appendLog(dir, line);
+  setStartTimeLog(log);
   const lock = tryLock(path.join(dir, RUNNER_LOCK));
   if (!lock) {
     log("another runner (or the app) holds this ship; leaving it");
@@ -577,7 +646,7 @@ async function swap(ctx, ship) {
       const previous = path.join(ctx.dir, PREVIOUS_APP);
       if (exists(app)) {
         if (exists(previous)) throw new Error(`${previous} is in the way`);
-        fs.renameSync(app, previous);
+        renameApp(app, previous, (line) => appendLog(ctx.dir, line));
       }
       markStep(ship, "oldMoved");
       saveShip(ctx.dir, ship);
@@ -590,7 +659,7 @@ async function swap(ctx, ship) {
   try {
     if (!step(ship, "newMoved")) {
       fs.mkdirSync(path.dirname(app), { recursive: true });
-      fs.renameSync(stagedApp(ctx, ship), app);
+      renameApp(stagedApp(ctx, ship), app, (line) => appendLog(ctx.dir, line));
       markStep(ship, "newMoved");
       saveShip(ctx.dir, ship);
       testCrash(ship);
@@ -602,7 +671,11 @@ async function swap(ctx, ship) {
   saveShip(ctx.dir, ship);
   releaseLock(ctx.instance);
   ctx.instance = null;
-  launch(ctx, ship, "trial");
+  try {
+    launch(ctx, ship, "trial");
+  } catch (error) {
+    return toRollback(ship, `The new build couldn't start: ${error.message}`);
+  }
   markStep(ship, "launched");
 }
 
@@ -610,17 +683,43 @@ async function swap(ctx, ship) {
 function launch(ctx, ship, purpose) {
   const app = appPath(ship);
   if (ship.launch?.mode === "direct") {
+    // Resolve the program before opening the log, so a refusal does not leak the handle.
+    const spec = appCommand(app, ship.home);
     const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
-    const child = spawn(path.join(app, "Contents/MacOS/monocode"), [], {
+    // macOS direct launch keeps the process environment and overlays the ship's.
+    // Off macOS the trial app gets an allow-list, never the runner's whole environment.
+    const env =
+      process.platform === "darwin"
+        ? { ...process.env, ...(ship.launch.env ?? {}) }
+        : trialAppEnv(process.env, ship.launch.env);
+    const child = spawn(spec.command, spec.args, {
       detached: true,
       stdio: ["ignore", out, out],
-      env: { ...process.env, ...(ship.launch.env ?? {}) },
+      env,
     });
+    child.on("error", (error) => ctx.log(spawnFailure(error) ?? "couldn't start (unknown)"));
     child.unref();
     fs.closeSync(out);
     ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
     (ship.launched ??= {})[purpose] = { ...ctx.child, at: nowIso() };
     ctx.log(`opened ${app} directly (pid ${child.pid})`);
+    return;
+  }
+  // WP-09: no Launch Services off macOS. Open the bundle the direct way.
+  if (process.platform !== "darwin") {
+    const spec = appCommand(app, ship.home);
+    const out = fs.openSync(path.join(ctx.dir, `app-${purpose}.log`), "a");
+    const child = spawn(spec.command, spec.args, {
+      detached: true,
+      stdio: ["ignore", out, out],
+      env: trialAppEnv(process.env, ship.launch?.env),
+    });
+    child.on("error", (error) => ctx.log(spawnFailure(error) ?? "couldn't start (unknown)"));
+    child.unref();
+    fs.closeSync(out);
+    ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
+    (ship.launched ??= {})[purpose] = { ...ctx.child, at: nowIso() };
+    ctx.log(`opened ${app} (pid ${child.pid})`);
     return;
   }
   execFileSync("/usr/bin/open", ["-n", app]);
@@ -631,7 +730,11 @@ function launch(ctx, ship, purpose) {
 async function watchTrial(ctx, ship) {
   const { startMs, commitMs } = timeouts(ship);
   if (!step(ship, "launched")) {
-    launch(ctx, ship, "trial");
+    try {
+      launch(ctx, ship, "trial");
+    } catch (error) {
+      return toRollback(ship, `The new build couldn't start: ${error.message}`);
+    }
     markStep(ship, "launched");
     saveShip(ctx.dir, ship);
   }
@@ -694,6 +797,8 @@ function newBuildProcesses(ctx, ship) {
   // Opened through Launch Services: find it by its binary, started after the trial began.
   const binary = path.join(appPath(ship), "Contents/MacOS/monocode");
   const since = Date.parse(ship.steps?.launched ?? ship.steps?.newMoved ?? "") - 2000;
+  // WP-09: the Windows trial is the child this runner started. ps is the macOS/Linux scan.
+  if (process.platform === "win32") return [...found.entries()];
   const ps = spawnSync("/bin/ps", ["-axo", "pid=,command="], { encoding: "utf8" });
   for (const line of ps.stdout?.split("\n") ?? []) {
     const match = /^\s*(\d+)\s+(.*)$/.exec(line);
@@ -745,7 +850,7 @@ async function rollBack(ctx, ship) {
       if (exists(app) && stampOf(app)?.sha === ship.to?.sha) {
         const aside = path.join(ctx.dir, REJECTED_APP);
         fs.rmSync(aside, { recursive: true, force: true });
-        fs.renameSync(app, aside);
+        renameApp(app, aside, (line) => appendLog(ctx.dir, line));
       }
       markStep(ship, "newRemoved");
       saveShip(ctx.dir, ship);
@@ -755,7 +860,7 @@ async function rollBack(ctx, ship) {
       const previous = path.join(ctx.dir, PREVIOUS_APP);
       if (exists(previous)) {
         if (exists(app)) throw new Error(`something else is at ${app}`);
-        fs.renameSync(previous, app);
+        renameApp(previous, app, (line) => appendLog(ctx.dir, line));
       } else if (!(exists(app) && stampOf(app)?.sha === ship.from?.sha) && ship.from) {
         throw new Error(`the previous build isn't at ${previous}`);
       }
@@ -785,7 +890,12 @@ async function rollBack(ctx, ship) {
   releaseLock(ctx.instance);
   ctx.instance = null;
   if (!exists(app)) return;
-  launch(ctx, ship, "reopen");
+  try {
+    launch(ctx, ship, "reopen");
+  } catch (error) {
+    ctx.log(`the old build couldn't start: ${error.message}`);
+    return;
+  }
   markStep(ship, "reopened");
   saveShip(ctx.dir, ship);
   const deadline = Date.now() + timeouts(ship).startMs;
@@ -805,7 +915,7 @@ function finish(ctx, ship) {
   // Tidy first: the receipt says the ship is over, and whoever reads it (hub:ship, hub:rollback, a test) may stage the
   // next one straight away; nothing of this ship's should still be moving folders by then.
   try {
-    const moved = retainShips(path.dirname(ctx.dir), path.join(ship.home, "Archive/monocode/ships"), ship.id);
+    const moved = retainShips(path.dirname(ctx.dir), ship.archive || path.join(ship.home, "Archive/monocode/ships"), ship.id);
     if (moved.length) ctx.log(`archived ${moved.join(", ")}`);
   } catch (error) {
     ctx.log(`couldn't archive old ships: ${error.message}`);

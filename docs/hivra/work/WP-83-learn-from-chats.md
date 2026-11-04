@@ -54,6 +54,13 @@ Ash, 4 Nov: shared three of Kun Chen's repos.
    - a project's instruction file;
    - a first mate's SOUL.md and skills;
    - the person's user-level file, only when they pick it.
+
+   It never edits pstack's skills or any other installed plugin's files: plugins stay exactly as their authors ship
+   them. A lesson about how to use one goes in the first mate's own instructions instead.
+   **A hard size cap** keeps these files lean: each instruction file and the profile has a token cap (default 2,000
+   for an instruction file and 1,500 for each profile file), shown in the memory screen. A proposal that would go
+   over it must remove or merge something in the same edit, as backpass's budget does (Ash, 4 Nov: "will it cause
+   bloat?").
 5. **The person's profile** (kun's idea): `opinions.md` and `voice.md` in Hivra's data folder. Each opinion has its
    reasoning and links to the chats it came from, under the same two-chat rule. Agents read opinions for judgment
    calls. They read voice only when drafting something in the person's name. The person can edit either file.
@@ -74,6 +81,8 @@ Ash, 4 Nov: shared three of Kun Chen's repos.
   - the budget is respected;
   - nothing is written before accept;
   - the redaction patterns;
-  - each adapter's fixture.
+  - each adapter's fixture;
+  - a proposal touching a plugin's file is refused;
+  - a proposal that would go over the size cap must remove or merge something.
 - [ ] Browser spec: proposals with quotes in the memory screen, accept and reject.
 - [ ] `npm run check` passes. Dev-copy check with stand-in transcripts.
