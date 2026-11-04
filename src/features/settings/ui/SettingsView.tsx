@@ -693,7 +693,8 @@ export function SettingsView({
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.
-                <PluginsPage />
+                // WP-42: offer Verify when this project looks like a web or mobile app.
+                <PluginsPage projectFolder={cwd} />
               ) : null}
               {section === "crew" ? (
                 // WP-13: crew rules, the ordered list a person edits.

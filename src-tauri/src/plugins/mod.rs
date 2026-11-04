@@ -13,6 +13,7 @@ pub mod manifest;
 pub mod mcp;
 pub mod registry;
 mod source;
+pub mod verify;
 pub mod wiring;
 
 #[cfg(test)]
@@ -21,6 +22,8 @@ mod defaults_tests;
 mod install_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod verify_tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -124,13 +127,17 @@ pub fn plugins_install(
     app: tauri::AppHandle,
     source: source::InstallSource,
     requested_by: Option<install::RequestedBy>,
+    project: Option<String>,
 ) -> Result<install::InstallResult, String> {
-    install::install(
-        &host(&app)?,
-        &source::Tools::app(),
-        &source,
-        requested_by.unwrap_or_default(),
-    )
+    let host = host(&app)?;
+    let by = requested_by.unwrap_or_default();
+    // No folder keeps the original path, which leaves the plugin off. A folder is stored with the request and
+    // turned on once the install lands, including one that waits for the Inbox.
+    if project.is_none() {
+        install::install(&host, &source::Tools::app(), &source, by)
+    } else {
+        install::install_for(&host, &source::Tools::app(), &source, by, project)
+    }
 }
 
 /// Update an installed plugin to another pinned version. The installed one stays until the new one validates.
