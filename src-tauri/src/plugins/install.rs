@@ -93,6 +93,9 @@ pub struct PendingRequest {
     pub mcp_servers: Vec<String>,
     pub reports: Vec<Report>,
     pub created_at_ms: u64,
+    /// The project folder to turn this plugin on for, once the install lands. None leaves it off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 /// What `install`, `update` and `approve` did: put it in place, or left it waiting for the person.
@@ -125,8 +128,34 @@ pub fn install(
     source: &InstallSource,
     by: RequestedBy,
 ) -> Result<InstallResult, String> {
-    let (dir, request) = prepare(host, tools, source, None, by)?;
+    install_for(host, tools, source, by, None)
+}
+
+/// Install, and once it lands turn it on for `project` only. A package that has to wait keeps the folder on the
+/// pending request, so the person's OK enables that project and no other.
+pub fn install_for(
+    host: &Host,
+    tools: &Tools,
+    source: &InstallSource,
+    by: RequestedBy,
+    project: Option<String>,
+) -> Result<InstallResult, String> {
+    let project = normalize_project(project)?;
+    let (dir, request) = prepare(host, tools, source, None, by, project)?;
     settle(host, tools, dir, request)
+}
+
+/// An empty project is a mistake, not "everywhere". A real one is stored as the same key enable uses.
+fn normalize_project(project: Option<String>) -> Result<Option<String>, String> {
+    let Some(project) = project else {
+        return Ok(None);
+    };
+    let project = project.trim();
+    if project.is_empty() {
+        return Err("Name a project folder.".into());
+    }
+    let path = crate::fs::expand_home(project);
+    registry::project_key(&path.to_string_lossy()).map(Some)
 }
 
 /// Update an installed plugin to another pinned version. The installed one stays until the new one validates.
@@ -137,7 +166,7 @@ pub fn update(
     source: &InstallSource,
     by: RequestedBy,
 ) -> Result<InstallResult, String> {
-    let (dir, request) = prepare(host, tools, source, Some(name), by)?;
+    let (dir, request) = prepare(host, tools, source, Some(name), by, None)?;
     settle(host, tools, dir, request)
 }
 
@@ -200,6 +229,33 @@ fn drop_pending(host: &Host, dir: &Path) {
     fsutil::remove_dir_if_empty(&host.pending());
 }
 
+/// Fetch the request's pinned source back into `pending/<id>/plugin`. The pending request itself is left in place,
+/// including when this fails, so the same approval can be tried again.
+fn restage(dir: &Path, request: &PendingRequest, tools: &Tools) -> Result<(), String> {
+    let staged = dir.join("plugin");
+    let work = dir.join("fetch");
+    let _ = fsutil::remove_tree(&work);
+    let _ = fsutil::remove_tree(&staged);
+    let outcome = (|| {
+        let fetched = source::fetch(&request.source, tools, &work)?;
+        super::verify::prepare_package(&fetched.root, &request.source)?;
+        let checked = load_plugin(&fetched.root).map_err(|e| e.0)?;
+        if checked.manifest.name != request.name {
+            return Err(format!(
+                "That source holds \"{}\", not \"{}\".",
+                checked.manifest.name, request.name
+            ));
+        }
+        manifest_declared(&checked)?.check(&tools.target)?;
+        fsutil::copy_plugin_tree(&fetched.root, &staged)
+    })();
+    let _ = fsutil::remove_tree(&work);
+    if outcome.is_err() {
+        let _ = fsutil::remove_tree(&staged);
+    }
+    outcome
+}
+
 /// Fetch, check and stage a plugin under `pending/<id>/plugin`. Nothing outside that folder changes, and on failure
 /// it goes too.
 fn prepare(
@@ -208,6 +264,7 @@ fn prepare(
     source: &InstallSource,
     updating: Option<&str>,
     by: RequestedBy,
+    project: Option<String>,
 ) -> Result<(PathBuf, PendingRequest), String> {
     source.check()?;
     let installed = registry::read(host)?;
@@ -221,6 +278,8 @@ fn prepare(
     let result = (|| {
         let work = dir.join("fetch");
         let fetched = source::fetch(source, tools, &work)?;
+        // WP-42: the npm package e2e has no plugin.json. Add Hivra's entry before the loader reads it.
+        super::verify::prepare_package(&fetched.root, source)?;
         let checked = load_plugin(&fetched.root).map_err(|e| e.0)?;
         manifest_declared(&checked)?.check(&tools.target)?;
         let name = checked.manifest.name.clone();
@@ -268,6 +327,7 @@ fn prepare(
             mcp_servers: loaded.mcp_servers.iter().map(|s| s.name.clone()).collect(),
             reports: loaded.reports,
             created_at_ms: registry::now_ms(),
+            project,
         })
     })();
     match result {
@@ -293,7 +353,25 @@ fn commit(
     approved: bool,
 ) -> Result<InstallResult, String> {
     let staged = dir.join("plugin");
-    if !request.steps.is_empty() {
+    // A previous approval installed it and then failed to turn it on. The staged copy was moved into
+    // place, so this retry must not run the steps again or install a second time. It only enables.
+    let already = if request.op.as_str() == "update" {
+        None
+    } else {
+        registry::read(host)
+            .ok()
+            .and_then(|registry| registry.plugins.get(&request.name).cloned())
+    };
+    // The staged copy can already be gone while the plugin is still not installed: a previous attempt moved it
+    // and then failed. Fetch the pinned source again. If that cannot be done, keep the request so it can be tried again.
+    if already.is_none() && !staged.is_dir() {
+        if let Err(why) = restage(dir, request, tools) {
+            return Err(format!(
+                "The downloaded copy is gone and couldn't be fetched again ({why}). Try again."
+            ));
+        }
+    }
+    if already.is_none() && !request.steps.is_empty() {
         if !approved {
             return Err("It needs the person's OK before anything runs.".into());
         }
@@ -304,13 +382,44 @@ fn commit(
     }
     let result = {
         let _guard = registry::lock();
-        match request.op.as_str() {
-            "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
-            _ => registry::install_staged(host, &staged, request.resolved.clone()),
+        if let Some(entry) = already {
+            Ok(registry::Outcome {
+                entry: Some(entry),
+                reports: Vec::new(),
+            })
+        } else {
+            match request.op.as_str() {
+                "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
+                _ => registry::install_staged(host, &staged, request.resolved.clone()),
+            }
         }
     };
+    let outcome = match result {
+        Ok(outcome) => outcome,
+        Err(why) => {
+            drop_pending(host, dir);
+            return Err(why);
+        }
+    };
+    // WP-42: the offer's project was stored on the request. Turn it on for that folder only, once it is in place.
+    // Enable takes the registry lock itself, so this stays outside the install lock above.
+    let outcome = if let Some(project) = &request.project {
+        match registry::enable(
+            host,
+            &request.name,
+            &registry::Scope::Project(project.clone()),
+        ) {
+            Ok(enabled) => enabled,
+            Err(why) => {
+                // The plugin is in place, but not on for this project. Keep the request so the same approval
+                // can be retried; dropping it would leave Verify off with nothing left to approve.
+                return Err(why);
+            }
+        }
+    } else {
+        outcome
+    };
     drop_pending(host, dir);
-    let outcome = result?;
     Ok(InstallResult::Installed {
         entry: outcome.entry.map(Box::new),
         reports: outcome.reports,

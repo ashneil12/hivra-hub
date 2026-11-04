@@ -793,6 +793,9 @@ pub fn run() {
             browser::browser_drives,
             browser::browser_stop,
             browser::browser_stop_all,
+            // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
+            plugins::verify::plugins_verify_offer,
+            plugins::verify::plugins_verify_decline,
             // WP-33: panels from plugins, and kept pages moved into My panels.
             panels::panels_catalog,
             panels::panels_migrate,

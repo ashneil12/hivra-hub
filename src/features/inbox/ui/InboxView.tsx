@@ -39,6 +39,7 @@ import { InboxFiltersMenu, INBOX_FILTER_MENU_WIDTH } from "./InboxFiltersMenu";
 import { InboxConnectMenu } from "./InboxConnectMenu";
 import { InboxProviderMark } from "./InboxProviderMark";
 import { PluginApprovals } from "../../plugins/ui/PluginApprovals";
+import { FirstMateInboxPanel } from "../../crew/ui/FirstMateInboxPanel";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { Popover } from "../../../shared/ui/Popover";
@@ -1048,6 +1049,8 @@ export function InboxView({
       >
         {/* WP-31: plugin installs that need a yes sit with the rest of the Inbox. */}
         <PluginApprovals />
+        {/* WP-15: first-mate decisions, results, failures and credential needs. */}
+        <FirstMateInboxPanel cwd={cwd} onOpenSession={onOpenSession} />
         {noSourcesConnected ? (
           <p className="px-3 py-3 text-[12px] text-content/50">
             Add a connection to start using the Inbox.

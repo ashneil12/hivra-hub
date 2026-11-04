@@ -157,7 +157,23 @@ pub fn session_wiring_for(
                 ));
                 continue;
             }
-            let project = (!entry.enabled.global).then_some(cwd).flatten();
+            // WP-42: e2e treats its working directory as the project, so the session folder is passed even when
+            // Verify is on everywhere. A plugin `cwd` cannot point outside the plugin.
+            if super::verify::runs_in_session_folder(&entry.name, &server.name) && cwd.is_none() {
+                out.reports.push(Report::new(
+                    format!("{}/mcp.json", entry.name),
+                    format!(
+                        "Left out \"{}\": it needs the worker's project folder.",
+                        server.name
+                    ),
+                ));
+                continue;
+            }
+            let project = if super::verify::runs_in_session_folder(&entry.name, &server.name) {
+                cwd
+            } else {
+                (!entry.enabled.global).then_some(cwd).flatten()
+            };
             match server_entries(host, &entry.name, server, cli, project, agent) {
                 Ok((claude, codex)) => {
                     out.claude_mcp_servers.insert(name.clone(), claude);
@@ -334,7 +350,13 @@ pub fn prepare_launch(args: &[String]) -> Result<std::process::Command, String> 
         })?;
     let data = host.data(&plugin);
     std::fs::create_dir_all(&data).map_err(|e| format!("its data folder couldn't be made: {e}"))?;
-    let plan = launch_plan(&loaded.root, &super::fsutil::resolved(&data), found)?;
+    let mut plan = launch_plan(&loaded.root, &super::fsutil::resolved(&data), found)?;
+    // WP-42: start e2e in the worker's checkout. Relative plugin args are made absolute first, so `node ./…` still
+    // finds the server. The installed mcp.json is not changed.
+    if let Some(folder) = super::verify::project_workdir(&plugin, &server, project.as_deref())? {
+        plan.args = super::verify::absolute_plugin_args(&plan.args, &loaded.root)?;
+        plan.cwd = folder;
+    }
     let mut command = std::process::Command::new(&plan.program);
     command.args(&plan.args).current_dir(&plan.cwd);
     // A plugin server starts from a clean environment: only what a program needs to run (`passed_env`) plus its own

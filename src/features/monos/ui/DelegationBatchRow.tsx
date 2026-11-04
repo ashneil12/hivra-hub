@@ -19,6 +19,7 @@ import {
 } from "../model/delegationView";
 import type { LaunchedSessionView } from "../model/monoSpawnedSessions";
 import { LaunchedSessionCard } from "./LaunchedSessionCard";
+import { CrewE2eLinks } from "../../firstmate/ui/CrewE2eLinks";
 import {
   dequeueWorker,
   heldLine,
@@ -170,6 +171,8 @@ export function DelegationBatchRow({
                 {busy ? "Stopping" : "Stop"}
               </button>
             ) : null}
+            {/* WP-42: .e2e proof on this worker's report, until the Crew tab lists it. */}
+            <CrewE2eLinks report={delegationOf(launch.sessionId, rows)?.report} />
           </div>
         );
       })}
