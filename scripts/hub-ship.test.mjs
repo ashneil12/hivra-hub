@@ -17,8 +17,9 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, isIsolatedHome, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
-import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { appCommand, isInside } from "./ship-platform.mjs";
+import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, renameApp, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -32,6 +33,8 @@ const roots = [];
  * app, the shell that execs it, the runner), plus anything those spawned.
  */
 function strays() {
+  // WP-09: Windows has no ps. The drill's processes are found by command line instead.
+  if (process.platform === "win32") return straysWindows();
   const ps = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,command="], { encoding: "utf8" });
   const rows = (ps.stdout ?? "").split("\n").flatMap((line) => {
     const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -40,6 +43,36 @@ function strays() {
   const found = new Map();
   for (const row of rows)
     if (row.pid !== process.pid && roots.some((root) => row.command.includes(`${root}/`))) found.set(row.pid, row);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of rows)
+      if (!found.has(row.pid) && found.has(row.ppid)) {
+        found.set(row.pid, row);
+        grew = true;
+      }
+  }
+  return [...found.values()];
+}
+
+function straysWindows() {
+  const bin = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const ps = spawnSync(
+    bin,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
+  );
+  let parsed = [];
+  try {
+    const value = JSON.parse(ps.stdout || "[]");
+    parsed = Array.isArray(value) ? value : [value];
+  } catch {
+    parsed = [];
+  }
+  const rows = parsed.map((row) => ({ pid: Number(row.ProcessId), ppid: Number(row.ParentProcessId), command: String(row.CommandLine ?? "") }));
+  const norm = (value) => value.replaceAll("/", "\\").toLowerCase();
+  const found = new Map();
+  for (const row of rows)
+    if (row.pid !== process.pid && roots.some((root) => norm(row.command).includes(`${norm(root)}\\`))) found.set(row.pid, row);
   for (let grew = true; grew; ) {
     grew = false;
     for (const row of rows)
@@ -136,6 +169,8 @@ while (!lock) {
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
   catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
 }
+// Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
+globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
 const m = /^\w{3}\s+(\w{3})\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+(\d{4})$/.exec(lstart);
 const month = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"].indexOf(m[1]);
@@ -170,6 +205,47 @@ setInterval(() => {
 }, 100);
 `;
 
+function fakeAppSource() {
+  if (process.platform === "darwin") return FAKE_APP;
+  const data =
+    process.platform === "win32"
+      ? 'path.join(process.env.HOME, "AppData", "Roaming", "com.ash.monocode-hub")'
+      : 'path.join(process.env.HOME, ".local", "share", "com.ash.monocode-hub")';
+  let source = FAKE_APP.replace('path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub")', data);
+  if (process.platform !== "win32") return source;
+  source = source.replace(
+    'const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();',
+    'const lstart = spawnSync(path.join(process.env.SystemRoot || "C:\\\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "[System.Diagnostics.Process]::GetProcessById(" + process.pid + ").StartTime.ToString(\'yyyy-MM-dd HH:mm:ss\')"], { encoding: "utf8" }).stdout.trim();',
+  );
+  source = source.replace(
+    "const m = /^\\w{3}\\s+(\\w{3})\\s+(\\d{1,2})\\s+(\\d{2}):(\\d{2}):(\\d{2})\\s+(\\d{4})$/.exec(lstart);",
+    "const m = /^(\\d{4})-(\\d{2})-(\\d{2}) (\\d{2}):(\\d{2}):(\\d{2})$/.exec(lstart);",
+  );
+  source = source.replace(
+    "const startTime = new Date(+m[6], month, +m[2], +m[3], +m[4], +m[5]).getTime();",
+    "const startTime = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]).getTime();",
+  );
+  return source;
+}
+
+const FAKE_CODESIGN_MJS = `import fs from "node:fs";
+const app = process.argv.at(-1);
+const fake = JSON.parse(fs.readFileSync(app + "/Contents/Resources/fake.json", "utf8"));
+const sig = fake.signature;
+if (sig === "unsigned") {
+  console.error(app + ": code object is not signed at all");
+  process.exit(1);
+}
+if (process.argv[2] === "-dv") {
+  if (sig === "adhoc") console.error("Signature=adhoc");
+  else console.error("Authority=Apple Development: Test (" + sig + ")");
+} else if (process.argv[2] === "-d") {
+  if (sig === "adhoc") console.log('designated => cdhash H"0000"');
+  else console.log('designated => identifier "com.ash.monocode-hub" and certificate leaf[subject.CN] = "' + sig + '"');
+}
+process.exit(0);
+`;
+
 const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
@@ -193,11 +269,52 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
+  const binary = path.join(app, "Contents/MacOS/monocode");
   fs.writeFileSync(
-    path.join(app, "Contents/MacOS/monocode"),
+    binary,
     `#!/bin/sh\n# MONOCODE-STAMP:${stamp}\n# MONOCODE-SHIP:1\nexec "${NODE}" --disable-warning=ExperimentalWarning "${path.join(root, "fake-app.mjs")}" "$0" "$@"\n`,
     { mode: 0o755 },
   );
+  // Windows cannot CreateProcess the stamp script. node.exe is a copy, not a
+  // hard link: a hard link's canonical path is the Node install, outside the
+  // bundle. The spec names that copy relatively, and "{binary}" stands for this
+  // bundle's stamp, so a copy of the bundle starts itself. An absolute path
+  // would keep pointing at this folder, and a short TEMP name would not match
+  // the long path git reports.
+  if (process.platform === "win32") {
+    const macos = path.join(app, "Contents", "MacOS");
+    const nodeInBundle = path.join(macos, "node.exe");
+    const source = fs.statSync(NODE);
+    let current = null;
+    try {
+      current = fs.statSync(nodeInBundle);
+    } catch {
+      current = null;
+    }
+    const sameFile = current && current.ino !== 0 && current.ino === source.ino && current.dev === source.dev;
+    if (!current || current.size !== source.size || sameFile) {
+      fs.copyFileSync(NODE, nodeInBundle);
+      for (const name of fs.readdirSync(path.dirname(NODE))) {
+        if (!name.toLowerCase().endsWith(".dll")) continue;
+        const from = path.join(path.dirname(NODE), name);
+        let stat;
+        try {
+          stat = fs.statSync(from);
+        } catch {
+          continue;
+        }
+        if (!stat.isFile()) continue;
+        fs.copyFileSync(from, path.join(macos, name));
+      }
+    }
+    fs.writeFileSync(
+      `${binary}.spawn.json`,
+      JSON.stringify({
+        command: "node.exe",
+        args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), "{binary}"],
+      }),
+    );
+  }
   fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
   return app;
 }
@@ -206,14 +323,14 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
 function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
-  fs.writeFileSync(path.join(root, "fake-app.mjs"), FAKE_APP);
-  const codesign = path.join(root, "codesign");
-  fs.writeFileSync(codesign, FAKE_CODESIGN, { mode: 0o755 });
+  fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
+  const codesign = path.join(root, process.platform === "win32" ? "codesign.mjs" : "codesign");
+  fs.writeFileSync(codesign, process.platform === "win32" ? FAKE_CODESIGN_MJS : FAKE_CODESIGN, { mode: 0o755 });
   const home = path.join(root, "home");
   const repo = path.join(root, "repo");
   fs.mkdirSync(repo, { recursive: true });
   const git = (...args) =>
-    execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], {
+    execFileSync("git", ["-C", repo, "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${process.platform === "win32" ? "NUL" : "/dev/null"}`, ...args], {
       encoding: "utf8",
     }).trim();
   git("init", "-q", "-b", "hub/test");
@@ -226,14 +343,15 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   const sha = git("rev-parse", "HEAD");
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
   fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
-  const app = bundleAt(path.join(home, "Applications/MonoCode Hub.app"), { sha: SHA_A, behavior: oldBehavior, root });
+  const paths = homePaths(home);
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
     root,
     ...newBundle,
   });
-  const data = path.join(home, "Library/Application Support", HUB);
+  const data = paths.data;
   fs.mkdirSync(path.join(data, "monos/frank"), { recursive: true });
   fs.writeFileSync(path.join(data, "monocode.db"), crypto.randomBytes(64 * 1024));
   fs.writeFileSync(path.join(data, "monocode.db-wal"), crypto.randomBytes(8 * 1024));
@@ -287,10 +405,35 @@ function ship(w, args = [], env = {}) {
 }
 
 function startApp(w) {
-  const child = spawn(path.join(w.app, "Contents/MacOS/monocode"), [], { env: w.env, detached: true, stdio: "ignore" });
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
   child.unref();
   pids.add(child.pid);
   return child.pid;
+}
+
+// WP-09: on Windows a drill can stall where this Mac never does. A timed-out wait or a failed ship assertion
+// carries the tail of each ship folder's logs and state, so a CI run shows where the runner stopped.
+const watchedShips = new Set();
+const SHIP_FILES = ["runner.log", "app-trial.log", "app-reopen.log", "state.json"];
+afterEach(() => watchedShips.clear());
+
+function tail(file, lines = 40) {
+  try {
+    return fs.readFileSync(file, "utf8").split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "(none)";
+  }
+}
+
+function shipEvidence(dir) {
+  if (!dir) return "";
+  return SHIP_FILES.map((name) => `--- ${path.join(dir, name)}\n${tail(path.join(dir, name))}`).join("\n");
+}
+
+function evidence(...dirs) {
+  const all = new Set([...dirs.filter(Boolean), ...watchedShips]);
+  return [...all].map(shipEvidence).join("\n");
 }
 
 async function until(what, check, ms = 60_000) {
@@ -298,13 +441,14 @@ async function until(what, check, ms = 60_000) {
   for (;;) {
     const value = check();
     if (value) return value;
-    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}\n${evidence()}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 
 const stateOf = (dir) => readJson(path.join(dir, "state.json"));
 const settled = (dir, phase) => () => {
+  watchedShips.add(dir);
   const state = stateOf(dir);
   return state?.phase === phase && fs.existsSync(path.join(dir, "receipt.json")) ? state : null;
 };
@@ -322,22 +466,113 @@ test("a temporary HOME is recognised, and the runner's LaunchAgent restarts only
   roots.push(root);
   assert.equal(isIsolatedHome(root), true);
   assert.equal(isIsolatedHome(os.userInfo().homedir), false);
+  if (process.platform === "win32") assert.equal(isIsolatedHome(os.userInfo().homedir.toUpperCase()), false);
   const plist = runnerPlist({ label: "test.monocode-hub-ship.x", node: NODE, dir: "/tmp/ship dir", home: root });
   assert.match(plist, /<key>Label<\/key>\s*<string>test\.monocode-hub-ship\.x<\/string>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/);
   assert.match(plist, /<key>AbandonProcessGroup<\/key>\s*<true\/>/);
-  assert.match(plist, new RegExp(`<key>HOME</key>\\s*<string>${root.replace(/[/.]/g, "\\$&")}</string>`));
-  assert.match(plist, /<string>\/tmp\/ship dir\/runner\.mjs<\/string>/);
+  const escapeRe = (value) => value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+  assert.match(plist, new RegExp(`<key>HOME</key>\\s*<string>${escapeRe(root)}</string>`));
+  assert.match(plist, new RegExp(`<string>${escapeRe(path.join("/tmp/ship dir", "runner.mjs"))}</string>`));
 });
+
+test("the Windows fixture's spawn spec is a copy inside the bundle, and a real home ignores it", () => {
+  const w = world();
+  const stamp = path.join(w.app, "Contents", "MacOS", "monocode");
+  if (process.platform !== "win32") {
+    const spec = appCommand(w.app, w.home);
+    assert.equal(spec.command, stamp);
+    assert.deepEqual(spec.args, []);
+    return;
+  }
+  const nodeInBundle = path.join(w.app, "Contents", "MacOS", "node.exe");
+  const spec = appCommand(w.app, w.home);
+  assert.equal(spec.command, fs.realpathSync.native(nodeInBundle));
+  assert.equal(isInside(spec.command, fs.realpathSync.native(w.app), "win32"), true);
+  const copied = fs.statSync(nodeInBundle);
+  const source = fs.statSync(NODE);
+  if (copied.ino !== 0 && source.ino !== 0) assert.notEqual(`${copied.dev}:${copied.ino}`, `${source.dev}:${source.ino}`);
+  assert.deepEqual(spec.args.at(-1), stamp);
+  assert.throws(() => appCommand(w.app, os.userInfo().homedir), /This build has no monocode\.exe/);
+});
+
+test(
+  "a build with no program is rolled back instead of stopping the runner",
+  { skip: process.platform === "win32" ? false : "only Windows refuses a bundle with no monocode.exe" },
+  async () => {
+    const w = world();
+    const strip = (app) => {
+      const macos = path.join(app, "Contents", "MacOS");
+      fs.rmSync(path.join(macos, "node.exe"), { force: true });
+      fs.rmSync(path.join(macos, "monocode.exe"), { force: true });
+      fs.rmSync(path.join(macos, "monocode.spawn.json"), { force: true });
+    };
+    strip(w.app);
+    strip(w.bundle);
+    const dir = path.join(w.root, "ships", "nospec");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.cpSync(w.app, path.join(dir, PREVIOUS_APP), { recursive: true });
+    fs.rmSync(w.app, { recursive: true, force: true });
+    fs.cpSync(w.bundle, w.app, { recursive: true });
+    writeJson(path.join(dir, "state.json"), {
+      version: 1,
+      id: "nospec",
+      phase: "trial",
+      reason: null,
+      home: w.home,
+      appPath: w.app,
+      dataDir: w.data,
+      shipDir: dir,
+      to: { sha: w.sha, branch: "hub/test" },
+      from: { sha: SHA_A, branch: "hub/test" },
+      launch: { mode: "direct", env: { HOME: w.home, MONOCODE_NO_ALERT: "1" } },
+      timeouts: { startMs: 3000, commitMs: 3000, quitMs: 3000 },
+      steps: { newMoved: new Date().toISOString() },
+      history: [],
+    });
+    const code = await runShip(dir);
+    const state = readJson(path.join(dir, "state.json"));
+    const log = fs.readFileSync(path.join(dir, "runner.log"), "utf8");
+    assert.equal(code, 0, log);
+    assert.equal(state.phase, "rolled-back", log);
+    assert.match(state.reason, /The new build couldn't start: This build has no monocode\.exe/);
+    assert.match(log, /the old build couldn't start: This build has no monocode\.exe/);
+    assert.doesNotMatch(log, /stopped:/);
+    assert.equal(stampOf(w.app).sha, SHA_A);
+  },
+);
+
+function pidAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== "ESRCH";
+  }
+}
 
 test("a ship commits: the new build is in place, the old one kept, the database backed up byte for byte", async () => {
   const w = world();
-  startApp(w);
+  const oldPid = startApp(w);
   await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  // WP-09: the ship reads "running" from the old app's lock. Prove the lock is held and the app alive first.
+  const lockFile = path.join(w.data, "instance-owner.sqlite");
+  const stolen = tryLock(lockFile);
+  if (stolen) releaseLock(stolen);
+  assert.equal(stolen, null, "the old app holds its instance lock before the ship");
+  assert.equal(pidAlive(oldPid), true, "the old app is alive before the ship");
   const { code, answer } = ship(w);
   assert.equal(code, 0, JSON.stringify(answer));
   assert.equal(answer.scheduled, true);
-  assert.equal(answer.appRunning, true);
+  const facts = {
+    running: readJson(path.join(w.data, "running.json")),
+    oldPidAlive: pidAlive(oldPid),
+    lockFileExists: fs.existsSync(lockFile),
+    acceptedExists: answer.shipDir ? fs.existsSync(path.join(answer.shipDir, "accepted.json")) : null,
+    testData: w.data,
+    shipData: answer.data,
+  };
+  assert.equal(answer.appRunning, true, `the old app holds its lock\n${JSON.stringify(facts)}\n${evidence(answer.shipDir)}`);
   const dir = answer.shipDir;
   const state = await until("the commit", settled(dir, "committed"));
   remember(dir);
@@ -430,6 +665,46 @@ test("a rollback drill goes all the way to a commit, then puts the old build bac
   assert.match(state.reason, /Rollback drill/);
   assert.equal(stampOf(w.app).sha, SHA_A);
   assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db);
+});
+
+test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not register a service", async () => {
+  const w = world();
+  const result = spawnSync(
+    NODE,
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    { env: w.env, encoding: "utf8" },
+  );
+  const answer = JSON.parse(result.stdout.trim().split("\n").pop());
+  assert.equal(result.status, 0, JSON.stringify(answer));
+  const state = await until("the drill", settled(answer.shipDir, "rolled-back"));
+  remember(answer.shipDir);
+  assert.equal(state.launcher, "detach");
+  assert.equal(state.service, null);
+  assert.equal(state.trial.committedInDrill, true);
+  assert.equal(stampOf(w.app).sha, SHA_A);
+});
+
+test("a drill refuses a home that is not temporary, and Windows can take USERPROFILE", async () => {
+  assert.equal(homeFromEnv({ USERPROFILE: "C:\\Users\\ada" }, "win32"), "C:\\Users\\ada");
+  assert.equal(homeFromEnv({ HOME: "D:\\temp", USERPROFILE: "C:\\Users\\ada" }, "win32"), "D:\\temp");
+  assert.equal(homeFromEnv({ HOME: "" , USERPROFILE: "C:\\Users\\ada" }, "win32"), "C:\\Users\\ada");
+  assert.equal(homeFromEnv({ USERPROFILE: "C:\\Users\\ada" }, "darwin"), null);
+  assert.equal(homeFromEnv({}, "linux"), null);
+  assert.equal(isIsolatedHome(os.userInfo().homedir), false);
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  process.env.HOME = os.userInfo().homedir;
+  let pending;
+  try {
+    // main reads HOME before its first await, so restore before yielding to other tests.
+    pending = main(["--drill-rollback", "--json", "--repo", os.tmpdir()]);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME;
+    else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = savedProfile;
+  }
+  assert.equal(await pending, 1);
 });
 
 test("the running app refusing the build calls the ship off without changing anything", async () => {
@@ -707,7 +982,7 @@ function launchdShip(ships, agents, id, phase) {
   return { label, plist, target: `${domain}/${label}` };
 }
 
-test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", () => {
+test("SH-4: an archived ship's LaunchAgent is booted out and its plist removed first", { skip: process.platform === "win32" }, () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   const ships = path.join(root, "home/Library/Application Support", HUB, "ship");
@@ -757,7 +1032,7 @@ test("SH-1: tidying old ships never archives the ship a rollback under way resto
   assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
 });
 
-test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", async () => {
+test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", { skip: process.platform === "win32" }, async () => {
   const w = world();
   const ships = path.join(w.data, "ship");
   const old = "20261019-000001-ccccccc";
@@ -785,8 +1060,25 @@ test("hub:install (--legacy) keeps the old app instead of deleting it", () => {
   assert.equal(answer.ok, true);
   assert.equal(stampOf(w.app).sha, w.sha);
   assert.equal(stampOf(answer.previousKeptAt).sha, SHA_A);
-  assert.ok(answer.previousKeptAt.startsWith(path.join(w.home, "Archive/monocode/ships/legacy-")));
+  assert.ok(answer.previousKeptAt.startsWith(path.join(homePaths(w.home).archive, "legacy-")));
 });
+
+/** chmod 0 on Unix. On Windows that does not deny read, so icacls does, and the deny is removed afterwards. */
+function denyRead(file) {
+  if (process.platform !== "win32") {
+    fs.chmodSync(file, 0);
+    return () => fs.chmodSync(file, 0o600);
+  }
+  const user = process.env.USERNAME;
+  if (!user) throw new Error("USERNAME is not set");
+  const icacls = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "icacls.exe");
+  const deny = spawnSync(icacls, [file, "/deny", `${user}:(R)`], { encoding: "utf8" });
+  if (deny.status !== 0) throw new Error((deny.stderr || deny.stdout || deny.error?.message || "icacls /deny failed").trim());
+  return () => {
+    const back = spawnSync(icacls, [file, "/remove:d", user], { encoding: "utf8" });
+    if (back.status !== 0) throw new Error((back.stderr || back.stdout || "icacls /remove:d failed").trim());
+  };
+}
 
 test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fails leaves the old app installed", () => {
   const legacy = (w) =>
@@ -802,28 +1094,34 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
   assert.equal(stampOf(unsigned.app).sha, SHA_A);
 
   // ditto stops on a file it can't read, after copying part of the bundle.
+  // chmod 0 does not deny read on Windows; an icacls deny does, and is taken off again so the temp tree can go.
   const w = world();
   const locked = path.join(w.bundle, "Contents/Resources/locked");
   fs.writeFileSync(locked, "unreadable");
-  fs.chmodSync(locked, 0);
+  const restoreRead = denyRead(locked);
   try {
     result = legacy(w);
   } finally {
-    fs.chmodSync(locked, 0o600);
+    restoreRead();
   }
   assert.equal(result.status, 1, result.stderr);
   assert.match(result.stdout, /Copying the bundle failed/);
   assert.equal(stampOf(w.app).sha, SHA_A, "the old app is still installed");
-  assert.deepEqual(fs.readdirSync(path.join(w.home, "Applications")), ["MonoCode Hub.app"], "no half copy left beside it");
-  assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
+  // Linux keeps the app beside its data folder in ~/.local/share, so the check is the leftover copy, not the whole directory.
+  const half = fs.readdirSync(path.dirname(w.app)).filter((name) => name.includes(".installing"));
+  assert.deepEqual(half, [], "no half copy left beside it");
+  assert.equal(fs.existsSync(homePaths(w.home).archive), false, "nothing was moved aside");
+  if (process.platform === "darwin") assert.equal(fs.existsSync(path.join(w.home, "Archive")), false, "nothing was moved aside");
 });
 
 test("a fake app quits by itself once the test run that started it is gone", async () => {
   const w = world();
   // A stand-in for a test run that was killed: the app's owner is a process that ends while the app runs.
-  const owner = spawn("/bin/sleep", ["1"], { stdio: "ignore" });
+  const owner = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+  pids.add(owner.pid);
   const exited = new Promise((resolve) => owner.on("exit", resolve));
-  const child = spawn(path.join(w.app, "Contents/MacOS/monocode"), [], {
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, {
     env: { ...w.env, HUB_SHIP_TEST_OWNER: String(owner.pid) },
     detached: true,
     stdio: "ignore",
@@ -833,6 +1131,7 @@ test("a fake app quits by itself once the test run that started it is gone", asy
   child.on("exit", () => (quit = true));
   await until("the app", () => readJson(path.join(w.data, "running.json"))?.pid === child.pid);
   assert.equal(quit, false, "it runs while its owner does");
+  owner.kill();
   await exited;
   await until("the app to quit", () => quit, 5_000);
 });
@@ -840,7 +1139,7 @@ test("a fake app quits by itself once the test run that started it is gone", asy
 test("a ship also copies the Monos' permanent home, byte for byte, and never needs one", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "monos-home-"));
   try {
-    assert.equal(monosHome("/Users/ash"), "/Users/ash/agent-memory/monos");
+    assert.equal(monosHome("/Users/ash"), path.join("/Users/ash", "agent-memory", "monos"));
     const home = path.join(root, "agent-memory", "monos");
     const backup = path.join(root, "backup");
     assert.equal(backupMonoHome(home, backup), null);
@@ -855,7 +1154,7 @@ test("a ship also copies the Monos' permanent home, byte for byte, and never nee
   }
 });
 
-test("r50: the runner is submitted to launchd with no plist, so macOS sees no new login item (no 'App Background Activity' banner)", () => {
+test("r50: the runner is submitted to launchd with no plist, so macOS sees no new login item (no 'App Background Activity' banner)", { skip: process.platform === "win32" }, () => {
   const args = runnerSubmitArgs({ label: "test.monocode-hub-ship.x", node: NODE, dir: "/tmp/ship dir", home: "/tmp/h" });
   assert.deepEqual(args.slice(0, 8), ["submit", "-l", "test.monocode-hub-ship.x", "-o", "/tmp/ship dir/runner.log", "-e", "/tmp/ship dir/runner.log", "--"]);
   assert.deepEqual(args.slice(8), ["/usr/bin/env", "HOME=/tmp/h", "PATH=/usr/bin:/bin:/usr/sbin:/sbin", NODE, "--disable-warning=ExperimentalWarning", "/tmp/ship dir/runner.mjs", "/tmp/ship dir"]);
@@ -880,7 +1179,7 @@ test("r50: the runner is submitted to launchd with no plist, so macOS sees no ne
   remember(answer.shipDir);
 });
 
-test("r50: a submitted runner removes its own launchd job when it ends cleanly, and never another ship's", () => {
+test("r50: a submitted runner removes its own launchd job when it ends cleanly, and never another ship's", { skip: process.platform === "win32" }, () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   const launchctl = fakeLaunchctl(root);
@@ -910,7 +1209,13 @@ test("r53: the runner is detached in its own session with its output in runner.l
   const options = runnerDetachOptions({ home: "/tmp/h", logFd: 7, env: { KEEP: "1", HOME: "/elsewhere", PATH: "/opt/bin" } });
   assert.equal(options.detached, true, "its own session (setsid): no hangup or process-group kill reaches it");
   assert.deepEqual(options.stdio, ["ignore", 7, 7], "no pipe of the caller's held open");
-  assert.deepEqual(options.env, { KEEP: "1", HOME: "/tmp/h", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+  if (process.platform === "win32") {
+    assert.equal(options.env.KEEP, "1");
+    assert.equal(options.env.HOME, "/tmp/h");
+    assert.match(options.env.PATH, /System32/);
+  } else {
+    assert.deepEqual(options.env, { KEEP: "1", HOME: "/tmp/h", PATH: "/usr/bin:/bin:/usr/sbin:/sbin" });
+  }
 });
 
 // r53 dry run of the default path: a whole ship under a temporary HOME (the real app is never touched) with no
@@ -936,7 +1241,8 @@ test("r53 drill: the default ship starts a detached runner, asks launchd for not
   assert.equal(staged.launchd, null, "no launchd job");
   assert.equal(staged.launcher, "detach");
   const pid = staged.runner.pid;
-  const ps = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim().split(/\s+/).map(Number);
+  const psOut = spawnSync("/bin/ps", ["-o", "pid=,ppid=,pgid=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+  const ps = String(psOut ?? "").trim().split(/\s+/).filter(Boolean).map(Number);
   if (ps.length === 3) {
     assert.equal(ps[2], pid, "the runner leads its own process group");
     assert.notEqual(ps[1], process.pid, "and is nobody's child here");
@@ -977,4 +1283,116 @@ test("r50 drill: a submitted runner carries a ship across the app's restart and 
   await until("the runner's job gone", () => spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`]).status !== 0, 20000);
   assert.deepEqual(fs.readdirSync(path.join(w.home, "Library")).includes("LaunchAgents") ? fs.readdirSync(path.join(w.home, "Library/LaunchAgents")) : [], []);
   console.log(`DRILL label=${label} ship=${answer.shipDir}`);
+});
+
+// WP-09: the instance lock is how a ship knows the app is running. One process holding BEGIN EXCLUSIVE on a file
+// must keep another from taking it, on every OS, or a ship on Windows would think the app was gone.
+test("a lock another process holds is not taken, and is free once that process is gone", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-lock-")));
+  roots.push(root);
+  const file = path.join(root, "instance-owner.sqlite");
+  const holder = spawn(
+    process.execPath,
+    [
+      "--disable-warning=ExperimentalWarning",
+      "-e",
+      `const { DatabaseSync } = require("node:sqlite");
+       const db = new DatabaseSync(${JSON.stringify(file)});
+       db.exec("PRAGMA busy_timeout = 0");
+       db.exec("BEGIN EXCLUSIVE");
+       globalThis.held = db; // a collected DatabaseSync closes and drops the lock
+       process.stdout.write("held\\n");
+       process.stdin.resume();`,
+    ],
+    { stdio: ["pipe", "pipe", "inherit"] },
+  );
+  pids.add(holder.pid);
+  let out = "";
+  holder.stdout.on("data", (chunk) => (out += chunk));
+  await until("the other process to hold the lock", () => out.includes("held"), 15_000);
+  assert.equal(tryLock(file), null, "the lock another process holds is not taken");
+  const gone = new Promise((resolve) => holder.once("exit", resolve));
+  holder.kill();
+  await gone;
+  const lock = await until("the lock to be free", () => tryLock(file), 15_000);
+  releaseLock(lock);
+});
+
+test("a Windows start time is asked once per pid for a while, and a slow ask is logged", () => {
+  clearStartCache();
+  const lines = [];
+  setStartTimeLog((line) => lines.push(line));
+  let clock = 0;
+  let asks = 0;
+  const read = () => {
+    asks += 1;
+    clock += 1500;
+    return 1_700_000_000_000;
+  };
+  const now = () => clock;
+  try {
+    assert.equal(windowsStart(4242, read, now), 1_700_000_000_000);
+    assert.equal(windowsStart(4242, read, now), 1_700_000_000_000);
+    assert.equal(asks, 1, "the second check uses the cached start time");
+    assert.match(lines.join("\n"), /pid 4242 took 1500 ms/);
+    clock += 60_000;
+    windowsStart(4242, read, now);
+    assert.equal(asks, 2, "an old cached start time is asked again");
+    let missing = 0;
+    windowsStart(9999, () => (missing += 1, null), now);
+    windowsStart(9999, () => (missing += 1, null), now);
+    assert.equal(missing, 2, "a missing process is not cached");
+  } finally {
+    setStartTimeLog(null);
+    clearStartCache();
+  }
+});
+
+test("a start-time check that doesn't answer is never read as a gone process", () => {
+  clearStartCache();
+  const lines = [];
+  setStartTimeLog((line) => lines.push(line));
+  try {
+    assert.equal(windowsStart(5151, () => undefined, () => 0), undefined);
+    assert.match(lines.join("\n"), /pid 5151 didn't answer/);
+    assert.equal(sameStart(undefined, 1_700_000_000_000), true, "unknown counts as the same, still running");
+    assert.equal(sameStart(null, 1_700_000_000_000), false, "no such process is gone");
+    assert.equal(sameStart(1_700_000_000_400, 1_700_000_000_000), true);
+    assert.equal(sameStart(1_700_000_009_000, 1_700_000_000_000), false, "another process on a reused pid");
+  } finally {
+    setStartTimeLog(null);
+    clearStartCache();
+  }
+});
+
+test("on Windows a briefly locked app folder is renamed again, for up to ten seconds, and each try is logged", () => {
+  const lines = [];
+  let clock = 0;
+  let calls = 0;
+  const busy = (code) => Object.assign(new Error(code), { code });
+  const rename = () => {
+    calls += 1;
+    if (calls < 3) throw busy(calls === 1 ? "EPERM" : "EBUSY");
+  };
+  renameApp("a", "b", (line) => lines.push(line), { platform: "win32", rename, now: () => clock, wait: (ms) => (clock += ms) });
+  assert.equal(calls, 3);
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /EPERM/);
+
+  calls = 0;
+  clock = 0;
+  const stuck = () => {
+    calls += 1;
+    throw busy("EACCES");
+  };
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: stuck, now: () => clock, wait: (ms) => (clock += ms) }), /EACCES/);
+  assert.ok(clock >= 10_000 && clock < 11_000, "it gives up after about ten seconds");
+
+  calls = 0;
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "darwin", rename: stuck, now: () => 0, wait: () => {} }), /EACCES/);
+  assert.equal(calls, 1, "off Windows a failed rename is not retried");
+
+  calls = 0;
+  assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: () => { calls += 1; throw busy("ENOENT"); }, now: () => 0, wait: () => {} }), /ENOENT/);
+  assert.equal(calls, 1, "only a locked folder is retried");
 });

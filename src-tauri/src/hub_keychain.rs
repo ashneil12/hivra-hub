@@ -55,7 +55,8 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
         Kind::Dev
     };
     let service = scoped_service(kind, service);
-    keyring::Entry::new(&service, account).map_err(|_| "Couldn't reach the Keychain.".to_string())
+    keyring::Entry::new(&service, account)
+        .map_err(|_| crate::platform::secrets::unreachable().to_string())
 }
 
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {
@@ -64,14 +65,14 @@ pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {
     }
     entry(service, account)?
         .set_password(secret)
-        .map_err(|_| "The Keychain didn't save the login.".to_string())
+        .map_err(|_| crate::platform::secrets::not_saved().to_string())
 }
 
 pub fn exists(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err("Couldn't check the Keychain.".into()),
+        Err(_) => Err(crate::platform::secrets::not_checked().into()),
     }
 }
 
@@ -80,7 +81,7 @@ pub(crate) fn read(service: &str, account: &str) -> Result<Option<String>, Strin
     match entry(service, account)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err("Couldn't read the key from the Keychain.".into()),
+        Err(_) => Err(crate::platform::secrets::not_read().into()),
     }
 }
 
@@ -88,7 +89,7 @@ pub fn delete(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err("The Keychain didn't remove the login.".into()),
+        Err(_) => Err(crate::platform::secrets::not_removed().into()),
     }
 }
 
@@ -100,21 +101,21 @@ pub async fn connector_login_store(
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || store(&service, &account, &secret))
         .await
-        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
+        .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
 
 #[tauri::command]
 pub async fn connector_login_exists(service: String, account: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || exists(&service, &account))
         .await
-        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
+        .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
 
 #[tauri::command]
 pub async fn connector_login_delete(service: String, account: String) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || delete(&service, &account))
         .await
-        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
+        .map_err(|_| crate::platform::secrets::unreachable().to_string())?
 }
 
 #[cfg(test)]

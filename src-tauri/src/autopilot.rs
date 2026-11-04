@@ -893,7 +893,8 @@ fn platform_wake() -> Box<dyn Wake> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Box::new(NoWake)
+        // WP-09: Windows SetThreadExecutionState, Linux systemd-inhibit. Anything else stays NoWake.
+        crate::platform::wake::current()
     }
 }
 
@@ -1237,10 +1238,39 @@ fn pid_alive(pid: u32) -> bool {
     {
         pid > 0 && unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        windows_pid_alive(pid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         false
+    }
+}
+
+/// `OpenProcess` + `GetExitCodeProcess`. A process that has already exited is not alive.
+/// Exit code 259 is `STILL_ACTIVE`; a process that really exited with 259 looks alive,
+/// and that collision is accepted. Pid 0 is not a process.
+#[cfg(windows)]
+fn windows_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    const STILL_ACTIVE: u32 = 259;
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return false;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok != 0 && code == STILL_ACTIVE
     }
 }
 
@@ -1291,13 +1321,18 @@ pub fn watch_main(args: &[String]) -> i32 {
         Verdict::Idle(_) => 0,
         Verdict::Retire => {
             println!("autopilot-watch: autopilot ended; removing {}", watch.label);
-            if let Err(error) = remove_agent(
+            // macOS takes the LaunchAgent out. Everywhere else, the task or the unit.
+            #[cfg(target_os = "macos")]
+            let removed = remove_agent(
                 &SystemLaunchd,
                 &watch.label,
                 &watch.domain,
                 &watch.plist,
                 &data_dir,
-            ) {
+            );
+            #[cfg(not(target_os = "macos"))]
+            let removed = crate::platform::relaunch::remove(&watch.label, &watch.plist, &data_dir);
+            if let Err(error) = removed {
                 eprintln!("autopilot-watch: {error}");
             }
             0
@@ -1322,12 +1357,27 @@ pub fn watch_main(args: &[String]) -> i32 {
                 "autopilot-watch: the app stopped without quitting; reopening {}",
                 bundle.display()
             );
-            match Command::new("/usr/bin/open").arg(&bundle).status() {
-                Ok(status) if status.success() => 0,
-                Ok(status) => status.code().unwrap_or(1),
-                Err(error) => {
-                    eprintln!("autopilot-watch: open failed: {error}");
-                    1
+            // macOS stays on Launch Services. Windows and Linux run the bundle binary
+            // (`monocode.exe` where the build produced one).
+            #[cfg(target_os = "macos")]
+            {
+                match Command::new("/usr/bin/open").arg(&bundle).status() {
+                    Ok(status) if status.success() => 0,
+                    Ok(status) => status.code().unwrap_or(1),
+                    Err(error) => {
+                        eprintln!("autopilot-watch: open failed: {error}");
+                        1
+                    }
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                match crate::platform::ship::spawn_app(&bundle) {
+                    Ok(()) => 0,
+                    Err(error) => {
+                        eprintln!("autopilot-watch: open failed: {error}");
+                        1
+                    }
                 }
             }
         }
@@ -1376,6 +1426,7 @@ pub struct Autopilot {
     awake_error: Mutex<Option<String>>,
     relaunch: Result<AgentPlan, String>,
     installed: Mutex<bool>,
+    #[cfg(target_os = "macos")]
     launchd: Box<dyn Launchd>,
     signal: Arc<(Mutex<u64>, Condvar)>,
     relaunched_after_crash: bool,
@@ -1417,16 +1468,19 @@ fn plan_for(identity: &instance::Identity, data_dir: &Path) -> Result<AgentPlan,
     relaunch_support(
         identity.kind,
         instance::isolated_home().is_some(),
-        cfg!(target_os = "macos"),
+        // WP-09: the same decision on Windows and Linux. On macOS this is still true.
+        cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
     )
     .map_err(str::to_string)?;
     let home = dirs::home_dir().ok_or("No home folder")?;
     let program = std::env::current_exe().map_err(|e| e.to_string())?;
     let label = agent_label(&identity.identifier);
     Ok(AgentPlan {
-        plist: home
-            .join("Library/LaunchAgents")
-            .join(format!("{label}.plist")),
+        plist: crate::platform::relaunch::agent_file(&home, &label),
         label,
         domain: launch_domain(),
         program,
@@ -1509,9 +1563,21 @@ fn sync(app: &AppHandle, what: &str) {
         }
     }
     if let (Ok(plan), Ok(mut installed)) = (&state.relaunch, state.installed.lock()) {
+        // WP-09: macOS keeps launchd. Windows and Linux install their own watcher.
+        #[cfg(target_os = "macos")]
         sync_agent(
             state.launchd.as_ref(),
             plan,
+            &mut installed,
+            last_end(&switches),
+        );
+        #[cfg(not(target_os = "macos"))]
+        crate::platform::relaunch::sync_watcher(
+            &plan.label,
+            &plan.program,
+            &plan.data_dir,
+            &plan.plist,
+            &plan.domain,
             &mut installed,
             last_end(&switches),
         );
@@ -1524,6 +1590,7 @@ fn sync(app: &AppHandle, what: &str) {
 /// `installed` says it may be in place. Only a removal that worked clears it, so a failed install never hides a watcher
 /// that is still loaded from an earlier one, and switching off always takes it away; a half-done install (its plist
 /// written) is taken away too.
+#[cfg(target_os = "macos")]
 fn sync_agent(launchd: &dyn Launchd, plan: &AgentPlan, installed: &mut bool, until: Option<i64>) {
     match until {
         Some(until) => match install_agent(launchd, plan, until) {
@@ -1609,6 +1676,7 @@ pub(crate) fn init(app: &AppHandle, identity: &instance::Identity, data_dir: Pat
         awake_error: Mutex::new(None),
         relaunch,
         installed: Mutex::new(installed),
+        #[cfg(target_os = "macos")]
         launchd: Box::new(SystemLaunchd),
         signal: signal.clone(),
         relaunched_after_crash: relaunched,
@@ -1795,6 +1863,13 @@ pub fn autopilot_resumes(store: State<'_, SessionStore>) -> Result<Vec<Resume>, 
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[cfg(windows)]
+    #[test]
+    fn the_running_process_is_alive_and_pid_zero_is_not() {
+        assert!(pid_alive(std::process::id()));
+        assert!(!pid_alive(0));
+    }
 
     const HOUR: i64 = 60 * 60 * 1000;
     const T0: i64 = 1_760_000_000_000;
@@ -2272,6 +2347,7 @@ mod tests {
     }
 
     /// launchd as current macOS behaves: bootstrapping a label that is already loaded fails with 5.
+    #[cfg(target_os = "macos")]
     #[derive(Default)]
     struct FakeLaunchd {
         calls: Mutex<Vec<String>>,
@@ -2282,12 +2358,14 @@ mod tests {
         stuck: Mutex<bool>,
     }
 
+    #[cfg(target_os = "macos")]
     impl FakeLaunchd {
         fn is_loaded(&self) -> bool {
             *self.loaded.lock().unwrap()
         }
     }
 
+    #[cfg(target_os = "macos")]
     impl Launchd for FakeLaunchd {
         fn bootstrap(&self, domain: &str, plist: &Path) -> Result<(), String> {
             self.calls
@@ -2315,6 +2393,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn switching_off_removes_the_watcher_even_after_a_later_install_failed_on_a_loaded_label() {
         let dir = std::env::temp_dir().join(format!("ap-sync-{}", uuid::Uuid::new_v4()));
@@ -2337,6 +2416,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_removal_that_fails_keeps_the_watcher_on_the_books_until_one_works() {
         let dir = std::env::temp_dir().join(format!("ap-stuck-{}", uuid::Uuid::new_v4()));
@@ -2355,6 +2435,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn a_half_done_install_is_cleaned_up_when_autopilot_ends() {
         let dir = std::env::temp_dir().join(format!("ap-half-{}", uuid::Uuid::new_v4()));
@@ -2371,6 +2452,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn installing_and_removing_the_watcher_writes_and_clears_its_files() {
         let dir = std::env::temp_dir().join(format!("ap-agent-{}", uuid::Uuid::new_v4()));
