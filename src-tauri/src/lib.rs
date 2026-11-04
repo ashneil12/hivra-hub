@@ -783,6 +783,11 @@ pub fn run() {
             plugins::plugins_rollback,
             // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
+            // WP-44: desktop control stays off until it is installed and turned on.
+            plugins::desktop::desktop_consent_read,
+            plugins::desktop::desktop_consent_write,
+            plugins::desktop::desktop_control_install,
+            plugins::desktop::desktop_control_fetch,
             // WP-42: offer Verify for a web or mobile project. Listing it does not install it.
             plugins::verify::plugins_verify_offer,
             plugins::verify::plugins_verify_decline,

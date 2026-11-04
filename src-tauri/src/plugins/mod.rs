@@ -5,6 +5,8 @@
 
 mod compat;
 pub mod defaults;
+pub mod desktop;
+mod desktop_program;
 pub mod discover;
 mod fsutil;
 pub mod hivra;
@@ -18,6 +20,8 @@ pub mod wiring;
 
 #[cfg(test)]
 mod defaults_tests;
+#[cfg(test)]
+mod desktop_tests;
 #[cfg(test)]
 mod install_tests;
 #[cfg(test)]
