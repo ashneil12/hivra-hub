@@ -31,6 +31,7 @@ import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, ver
 import {
   appCommand,
   copyBundle,
+  spawnBundleSync,
   defaultLauncher,
   detachPath,
   homePathsFor,
@@ -254,7 +255,7 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   if (!skipHealthcheck && exists(bundle) && verified.ok) {
     const db = path.join(paths.data, "monocode.db");
     const spec = appCommand(bundle);
-    const result = spawnSync(spec.command, [...spec.args, "healthcheck", "--json", "--db", db], {
+    const result = spawnBundleSync(spec, ["healthcheck", "--json", "--db", db], {
       encoding: "utf8",
       timeout: 300_000,
       env: { ...process.env, MONOCODE_NO_ALERT: "1" },
@@ -270,7 +271,7 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
     if (result.status === 65)
       refusals.push(`The live database is newer than this build (schema ${report?.schemaFound}; the build knows ${report?.buildSchema}).`);
     else if (result.status !== 0)
-      refusals.push(`The healthcheck failed on a copy of the live database: ${report?.error ?? result.stderr?.trim().split("\n").pop() ?? `exit ${result.status}`}`);
+      refusals.push(`The healthcheck failed on a copy of the live database: ${report?.error ?? result.stderr?.trim().split("\n").pop() ?? (result.error?.code ? `${result.error.code} exit ${result.status}` : `exit ${result.status}`)}`);
   }
   // One ship at a time.
   const busy = shipInProgress(paths);

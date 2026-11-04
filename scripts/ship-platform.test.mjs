@@ -11,6 +11,7 @@ import {
   HUB_IDENTIFIER,
   acceptedSpawnCommand,
   appCommand,
+  cmdArg,
   copyBundle,
   defaultLauncher,
   detachPath,
@@ -24,9 +25,12 @@ import {
   runnerSystemdUnit,
   runnerTaskRemoveScript,
   runnerTaskScript,
+  shouldRetryWindowsSpawn,
+  spawnBundleSync,
   systemdBooted,
   trialAppEnv,
   unitQuote,
+  windowsShellArgs,
 } from "./ship-platform.mjs";
 
 test("install and data folders for each platform", () => {
@@ -279,6 +283,56 @@ test("the trial app does not inherit the runner's secrets", () => {
   assert.equal(env.MONOCODE_NO_ALERT, "1");
   assert.equal(env.HUB_SHIP_TEST_OWNER, "4");
   assert.equal(env.AWS_SECRET_ACCESS_KEY, undefined);
+});
+
+test("cmd quoting doubles percent and quotes cmd metacharacters", () => {
+  assert.equal(cmdArg("healthcheck"), "healthcheck");
+  assert.equal(cmdArg(""), '""');
+  assert.equal(cmdArg("C:\\Program Files\\MonoCode Hub.app\\node.exe"), '"C:\\Program Files\\MonoCode Hub.app\\node.exe"');
+  assert.equal(cmdArg("C:\\Users\\%USERNAME%\\app.exe"), "C:\\Users\\%%USERNAME%%\\app.exe");
+  assert.equal(cmdArg("100% done"), '"100%% done"');
+  assert.equal(cmdArg("a&b"), '"a&b"');
+  assert.equal(cmdArg("a|b"), '"a|b"');
+  assert.equal(cmdArg("a<b"), '"a<b"');
+  assert.equal(cmdArg("a>b"), '"a>b"');
+  assert.equal(cmdArg("a^b"), '"a^b"');
+  assert.equal(cmdArg('say "hi"'), '"say ""hi"""');
+});
+
+test("the Windows retry is System32 cmd.exe, never ComSpec, and /s can strip one pair of quotes", () => {
+  const via = windowsShellArgs(
+    "C:\\Program Files\\MonoCode Hub.app\\node.exe",
+    ["healthcheck", "--db", "C:\\data dir\\monocode.db"],
+    { SystemRoot: "D:\\Windows", ComSpec: "C:\\evil\\cmd.exe" },
+  );
+  assert.equal(via.command, "D:\\Windows\\System32\\cmd.exe");
+  assert.equal(via.windowsVerbatimArguments, true);
+  assert.deepEqual(via.args, [
+    "/d",
+    "/s",
+    "/c",
+    '""C:\\Program Files\\MonoCode Hub.app\\node.exe" healthcheck --db "C:\\data dir\\monocode.db""',
+  ]);
+  assert.equal(windowsShellArgs("node.exe", ["-v"], {}).command, "C:\\Windows\\System32\\cmd.exe");
+});
+
+test("a lost Windows process is retried, and a real exit or a timeout is not", () => {
+  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null }, "win32"), true);
+  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null, error: { code: "ENOENT" } }, "win32"), true);
+  assert.equal(shouldRetryWindowsSpawn({ status: 0 }, "win32"), false);
+  assert.equal(shouldRetryWindowsSpawn({ status: 1, signal: null }, "win32"), false);
+  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: "SIGTERM" }, "win32"), false);
+  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null, error: { code: "ETIMEDOUT" } }, "win32"), false);
+  assert.equal(shouldRetryWindowsSpawn({ status: null, signal: null }, "linux"), false);
+  assert.equal(shouldRetryWindowsSpawn(null, "win32"), false);
+});
+
+test("spawnBundleSync returns the command's own status", () => {
+  const ok = spawnBundleSync({ command: process.execPath, args: ["-e", "process.stdout.write('ok')"] }, [], { encoding: "utf8" });
+  assert.equal(ok.status, 0);
+  assert.equal(ok.stdout, "ok");
+  const failed = spawnBundleSync({ command: process.execPath, args: ["-e", "process.exit(3)"] }, [], { encoding: "utf8" });
+  assert.equal(failed.status, 3);
 });
 
 test("appCommand on macOS is the bundle binary and ignores a spawn spec", () => {

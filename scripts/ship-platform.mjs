@@ -195,6 +195,54 @@ function winArg(value) {
   return `"${text.replaceAll('"', '\\"')}"`;
 }
 
+/**
+ * One argument for `cmd.exe /c`. `%` is expanded even inside quotes, so it is
+ * doubled. A space or `&|<>^"` is quoted; cmd does not use backslash escapes.
+ */
+export function cmdArg(value) {
+  const text = String(value).replaceAll("%", "%%");
+  if (text.length === 0) return '""';
+  if (!/[\s"&|<>^]/.test(text)) return text;
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+/**
+ * `cmd.exe /d /s /c` of one quoted command line. The exe is System32, never
+ * ComSpec. `/s` strips one pair of quotes, so the line is wrapped in another.
+ * Spawn this with `windowsVerbatimArguments`, or Node quotes it again.
+ */
+export function windowsShellArgs(command, args, env = process.env) {
+  const root = env.SystemRoot || "C:\\Windows";
+  const cmd = path.win32.join(root, "System32", "cmd.exe");
+  const line = [command, ...args].map(cmdArg).join(" ");
+  return { command: cmd, args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
+}
+
+/**
+ * spawnSync lost the process: no exit code and no signal. A timeout is not that
+ * (it must not be run twice). Windows does this for an executable path that
+ * contains a space; cmd.exe has no space in its path and can start the same argv.
+ */
+export function shouldRetryWindowsSpawn(result, platform = process.platform) {
+  if (platform !== "win32" || result == null || result.status != null || result.signal) return false;
+  if (result.error?.code === "ETIMEDOUT") return false;
+  return true;
+}
+
+/**
+ * Run a command and wait. On Windows, a failed CreateProcess (the usual cause is
+ * a bundle path with a space, which `spawn` can start and `spawnSync` cannot) is
+ * tried once through System32 cmd.exe. A real exit code is never retried.
+ */
+export function spawnBundleSync(spec, extraArgs = [], options = {}) {
+  const args = [...(spec?.args ?? []), ...extraArgs];
+  const command = spec?.command;
+  const result = spawnSync(command, args, options);
+  if (!shouldRetryWindowsSpawn(result)) return result;
+  const via = windowsShellArgs(command, args, options.env ?? process.env);
+  return spawnSync(via.command, via.args, { ...options, windowsVerbatimArguments: true });
+}
+
 function assertTaskName(taskName) {
   if (!/^[A-Za-z0-9._-]{1,160}$/.test(taskName)) throw new Error("The task name has characters Task Scheduler must not see.");
 }
