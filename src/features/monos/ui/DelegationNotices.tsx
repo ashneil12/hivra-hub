@@ -7,6 +7,7 @@
 // - a Mono with a brief out to a coding team reads one line for it (Ash, 20 Oct: "Briefed EXO coding team: <task> · 2
 //   working · 1 with EXO lead"; never "stuck", r30b), which opens that coding team on its Lead: the brief's workers live there, not in this chat.
 import { useState } from "react";
+import { CrewBriefLines } from "../../crew/ui/BriefLines";
 import { ChevronRight, Square, Terminal } from "../../../shared/ui/icons";
 import type { HarnessId } from "../../sessions/model/session";
 import { MonoModelLine } from "./MonoModelLine";
@@ -182,6 +183,7 @@ export function DelegationWaitingLine({
   onStopAll,
   briefs = [],
   onOpenBrief,
+  crewLines = [],
 }: {
   count: number;
   /** What is out by title, still running (not stalled) and asking: "2 working: API, UI". */
@@ -200,9 +202,11 @@ export function DelegationWaitingLine({
   /** Its briefs out to coding teams: a line each, above the working line (BriefedTeamLine). */
   briefs?: readonly BriefedTeam[];
   onOpenBrief?: (brief: BriefedTeam) => void;
+  /** WP-15: one compact line per brief, from derive_status. */
+  crewLines?: readonly { id: string; text: string }[];
 }) {
   const [stopping, setStopping] = useState(false);
-  if (count <= 0 && !failed.length && !unloaded.length && !stuck.length)
+  if (count <= 0 && !failed.length && !unloaded.length && !stuck.length && !crewLines.length)
     return null;
   // Stalled and failed workers are named by whose they are (r30b, the red rule): a retry's ("1 retrying: Tests"), its
   // Lead's ("2 with Hivra lead: API, UI"), or Ash's only when its provider refused it ("1 needs you: Docs", red). Never
@@ -235,6 +239,7 @@ export function DelegationWaitingLine({
           ))}
         </div>
       ) : null}
+      <CrewBriefLines lines={crewLines} />
       <div
         data-delegation-waiting={count}
         className="flex items-center gap-2 px-1 pb-1.5 font-sans text-[12px] text-content/55"

@@ -117,6 +117,9 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import { OPEN_CREW } from "../features/crew/model/focus";
+import { registerCrewCancel } from "../features/crew/model/cancel";
+import { registerCrewDelegate } from "../features/crew/model/retry";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
 import {
   tauriPrWatches,
@@ -1696,6 +1699,13 @@ function Workspace({
     setRightPanelClosing(false);
     saveRightPanelOpen(true);
   }, []);
+  // WP-15: a brief line opens the Crew tab. Classic uses the sidebar; the inset layout uses its panel.
+  const openCrewTab = useRef<() => void>(() => {});
+  useEffect(() => {
+    const onCrew = () => openCrewTab.current();
+    window.addEventListener(OPEN_CREW, onCrew);
+    return () => window.removeEventListener(OPEN_CREW, onCrew);
+  }, []);
   const onToggleRightPanel = useCallback(() => {
     const next = !rightPanelOpenRef.current;
     rightPanelOpenRef.current = next;
@@ -2460,6 +2470,11 @@ function Workspace({
     },
     [showRightPanel],
   );
+  // WP-15: the brief line opens Crew in the sidebar Hivra actually shows.
+  openCrewTab.current = () => {
+    if (insetLayoutRef.current) showRightPanel("crew");
+    else setSidebarTab("crew");
+  };
   const sidebarCwdKey =
     sidebarCwd && sidebarCwd !== "~" ? normalizeProjectPath(sidebarCwd) : null;
   const historyFailed =
@@ -12950,6 +12965,26 @@ function Workspace({
     });
     // A worker that waited for a free worker (H8) starts through its own delegate_task, asked again by the app.
     controlRequestRef.current = runControlRequest;
+    // WP-15: Retry re-delegates through tasks.delegate, the same path as a redo, which keeps the attempt ledger.
+    registerCrewDelegate((ownerSession, requestId, input) =>
+      runControlRequest({
+        namespace: "app",
+        sessionId: ownerSession,
+        requestId,
+        action: "tasks.delegate",
+        input,
+      }),
+    );
+    // WP-15: Stop uses tasks.cancel as the row's owner, so a busy child stops and a queued worker never starts.
+    registerCrewCancel((ownerSession, requestId, input) =>
+      runControlRequest({
+        namespace: "app",
+        sessionId: ownerSession,
+        requestId,
+        action: "tasks.cancel",
+        input: { taskId: input.taskId, reason: input.reason },
+      }),
+    );
     async function runControlRequest(payload: {
       namespace: string;
       sessionId: string;
@@ -13876,6 +13911,8 @@ function Workspace({
     }
     return () => {
       controlRequestRef.current = undefined;
+      registerCrewDelegate(null);
+      registerCrewCancel(null);
       void listening.then((unlisten) => unlisten());
     };
   }, []);

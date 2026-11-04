@@ -1,0 +1,241 @@
+// Hivra WP-15: the Crew tab. A refresh that fails keeps the last list.
+
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
+import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegations";
+import { tauriFirstMate } from "../../firstmate/model/steering";
+import { tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
+import type { SessionSummary } from "../../sessions/data/sessionStore";
+import { clearCrewFocus, crewFocus, holdCrewOpen, subscribeCrewFocus } from "../model/focus";
+import { loadCrewDelegations } from "../model/load";
+import { CREW_STOP_REASON, crewCancel, stopRequestId } from "../model/cancel";
+import { crewDelegate, retrySameBrief } from "../model/retry";
+import { steerRequestId } from "../model/steerId";
+import {
+  crewRows,
+  httpsUrl,
+  settleLoad,
+  type CrewChecksInput,
+  type CrewDeliveryInput,
+  type CrewRow,
+  type CrewWorkerInput,
+} from "../model/rows";
+import { CrewTab } from "./CrewTab";
+
+// steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
+const STEER_TEXT_MAX = 8_000;
+
+function steerTextLength(text: string): number {
+  return Array.from(text).length;
+}
+
+type Load<T> = { ok: true; value: T } | { ok: false };
+
+function asDelivery(value: unknown): CrewDeliveryInput | null {
+  if (!value || typeof value !== "object") return null;
+  const row = value as Record<string, unknown>;
+  return {
+    delegationId: typeof row.delegationId === "string" ? row.delegationId : null,
+    mode: typeof row.mode === "string" ? row.mode : null,
+    state: typeof row.state === "string" ? row.state : null,
+    url: typeof row.url === "string" ? row.url : null,
+    number: typeof row.number === "number" ? row.number : null,
+    branch: typeof row.branch === "string" ? row.branch : null,
+    checkout: typeof row.checkout === "string" ? row.checkout : null,
+    updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : 0,
+  };
+}
+
+function asChecks(watch: PrWatch): CrewChecksInput {
+  const status = watch.status;
+  return {
+    number: watch.number,
+    url: watch.url,
+    repo: watch.repo,
+    passed: status?.passed === true,
+    pending: status?.pending,
+    failed: Array.isArray(status?.failed) ? status.failed : [],
+    checks: status?.checks,
+  };
+}
+
+export function CrewPanel({
+  project,
+  sessions,
+  onOpenSession,
+}: {
+  project: string;
+  sessions: readonly SessionSummary[];
+  onOpenSession: (sessionId: string) => void;
+}) {
+  const focus = useSyncExternalStore(subscribeCrewFocus, crewFocus, crewFocus);
+  const [workers, setWorkers] = useState<CrewWorkerInput[]>([]);
+  const [deliveries, setDeliveries] = useState<CrewDeliveryInput[]>([]);
+  const [checks, setChecks] = useState<CrewChecksInput[]>([]);
+  const [stale, setStale] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const generation = useRef(0);
+  const mounted = useRef(true);
+  const held = useRef({ workers, deliveries, checks });
+  held.current = { workers, deliveries, checks };
+
+  const load = useCallback(async () => {
+    const ticket = ++generation.current;
+    const [listed, delivered, watches]: [Load<Delegation[]>, Load<unknown>, Load<PrWatch[]>] = await Promise.all([
+      loadCrewDelegations(),
+      invoke("delivery_list", { project }).then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
+      tauriPrWatches.list().then((value) => ({ ok: true as const, value })).catch(() => ({ ok: false as const })),
+    ]);
+    if (!mounted.current || ticket !== generation.current) return;
+    const nextWorkers = settleLoad(held.current.workers, listed.ok ? { ok: true, value: listed.value } : { ok: false });
+    const nextDeliveries = settleLoad(
+      held.current.deliveries,
+      delivered.ok && Array.isArray(delivered.value)
+        ? { ok: true, value: delivered.value.map(asDelivery).filter((row) => row != null) }
+        : { ok: false },
+    );
+    const nextChecks = settleLoad(
+      held.current.checks,
+      watches.ok && Array.isArray(watches.value)
+        ? { ok: true, value: watches.value.map(asChecks) }
+        : { ok: false },
+    );
+    setWorkers(nextWorkers.value);
+    setDeliveries(nextDeliveries.value);
+    setChecks(nextChecks.value);
+    setStale(nextWorkers.stale || nextDeliveries.stale || nextChecks.stale);
+    setNow(Date.now());
+  }, [project]);
+
+  useEffect(() => holdCrewOpen(), [focus.version]);
+
+  useEffect(() => {
+    mounted.current = true;
+    void load();
+    const timers = [window.setInterval(() => void load(), 60_000)];
+    let unlisten: (() => void) | undefined;
+    let dead = false;
+    void listen(DELEGATIONS_CHANGED, () => {
+      if (!dead) void load();
+    })
+      .then((off) => {
+        if (dead) off();
+        else unlisten = off;
+      })
+      .catch(() => undefined);
+    return () => {
+      dead = true;
+      mounted.current = false;
+      for (const timer of timers) window.clearInterval(timer);
+      unlisten?.();
+    };
+  }, [load]);
+
+  const rows = crewRows({
+    project,
+    rows: workers,
+    sessions,
+    deliveries,
+    checks,
+    now,
+    briefId: focus.briefId,
+  });
+
+  async function onMessage(row: CrewRow, text: string) {
+    const body = text.trim();
+    if (!body || !row.sessionId || !row.ownerSession) return;
+    if (!rows.some((item) => item.id === row.id)) return;
+    if (steerTextLength(body) > STEER_TEXT_MAX) {
+      const tooLong = `A message can be ${STEER_TEXT_MAX} characters at most.`;
+      setNote(tooLong);
+      throw new Error(tooLong);
+    }
+    try {
+      await tauriFirstMate.record({
+        ownerSession: row.ownerSession,
+        childSession: row.sessionId,
+        delegationId: row.id,
+        requestId: steerRequestId(row.id),
+        text: body,
+      });
+      setNote("Sent.");
+    } catch (error) {
+      setNote("Couldn't send that. Try again.");
+      throw error instanceof Error ? error : new Error("Couldn't send that.");
+    }
+  }
+
+  async function onRetry(row: CrewRow) {
+    if (!rows.some((item) => item.id === row.id)) return;
+    const worker = workers.find((item) => item.id === row.id);
+    if (!worker?.ownerSession) return;
+    try {
+      await retrySameBrief(worker, (requestId, input) =>
+        crewDelegate(worker.ownerSession as string, requestId, input),
+      );
+      setNote(null);
+      void load();
+    } catch {
+      setNote("Couldn't retry that. Try again.");
+    }
+  }
+
+  async function onStop(row: CrewRow) {
+    // The list is already this project. A row that is not on it is not stopped.
+    if (!rows.some((item) => item.id === row.id)) return;
+    if (!row.ownerSession) return;
+    try {
+      // WP-15: the owner's tasks.cancel, which stops a busy child, unqueues a waiter, and cancels what it delegated.
+      await crewCancel(row.ownerSession, stopRequestId(row.id), {
+        taskId: row.id,
+        reason: CREW_STOP_REASON,
+      });
+      setNote(null);
+      void load();
+    } catch {
+      setNote("Couldn't stop that. Try again.");
+    }
+  }
+
+  async function onDeliver(row: CrewRow) {
+    const url = httpsUrl(row.prUrl);
+    if (url) {
+      try {
+        await openUrl(url);
+      } catch {
+        setNote("Couldn't open that. Trying again.");
+      }
+      return;
+    }
+    if (!row.checkout) return;
+    try {
+      await invoke("delivery_deliver", {
+        input: { project, checkout: row.checkout, delegationId: row.id, title: row.title },
+      });
+      setNote(null);
+      void load();
+    } catch {
+      setNote("Couldn't do that just now. Trying again.");
+    }
+  }
+
+  return (
+    <CrewTab
+      rows={rows}
+      briefTitle={focus.briefId ? "This brief" : null}
+      stale={stale}
+      note={note}
+      onShowAll={clearCrewFocus}
+      onOpen={(row) => {
+        if (row.sessionId) onOpenSession(row.sessionId);
+      }}
+      onMessage={(row, text) => onMessage(row, text)}
+      onStop={(row) => void onStop(row)}
+      onRetry={(row) => void onRetry(row)}
+      onDeliver={(row) => void onDeliver(row)}
+    />
+  );
+}
