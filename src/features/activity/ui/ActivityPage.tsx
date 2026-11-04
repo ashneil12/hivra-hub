@@ -4,10 +4,11 @@ import {
   filterEntries,
   kindLabel,
   newestFirst,
-  readEntries,
+  readPage,
   sameWho,
   whenLabel,
   whoLabel,
+  type ActivityCursor,
   type ActivityEntry,
 } from "../model/activity";
 
@@ -28,22 +29,30 @@ export function ActivityPage({ entries, onOpenSession }: Props) {
   const [kind, setKind] = useState("");
   const [search, setSearch] = useState("");
   const [live, setLive] = useState<ActivityEntry[]>([]);
+  const [next, setNext] = useState<ActivityCursor | null>(null);
   const generation = useRef(0);
 
-  useEffect(() => {
-    if (seeded) return;
-    const mine = ++generation.current;
-    const query = {
+  function queryOf(before?: ActivityCursor) {
+    return {
       project: project.trim() || undefined,
       agent: agent.trim() || undefined,
       kind: kind.trim() || undefined,
       search: search.trim() || undefined,
+      before,
     };
+  }
+
+  useEffect(() => {
+    if (seeded) return;
+    const mine = ++generation.current;
+    setNext(null);
     let cancelled = false;
-    void invoke("activity_list", { query })
+    void invoke("activity_list", { query: queryOf() })
       .then((page) => {
         if (cancelled || mine !== generation.current) return;
-        setLive(readEntries(page));
+        const read = readPage(page);
+        setLive(read.entries);
+        setNext(read.next);
       })
       .catch(() => {
         // A timeout is not an empty log. Leave the rows already on screen.
@@ -54,16 +63,35 @@ export function ActivityPage({ entries, onOpenSession }: Props) {
     };
   }, [seeded, project, agent, kind, search]);
 
+  async function showOlder() {
+    const cursor = next;
+    if (!cursor) return;
+    const mine = generation.current;
+    try {
+      const page = await invoke("activity_list", { query: queryOf(cursor) });
+      if (mine !== generation.current) return;
+      const read = readPage(page);
+      setLive((rows) => {
+        const seen = new Set(rows.map((row) => row.id));
+        return [...rows, ...read.entries.filter((row) => !seen.has(row.id))];
+      });
+      setNext(read.next);
+    } catch {
+      // A timeout is not an empty log. Leave the rows already on screen.
+      if (mine !== generation.current) return;
+    }
+  }
+
   const shown = seeded ? filterEntries(entries, { project, agent, kind, search }).slice().sort(newestFirst) : live;
   const filtering = [project, agent, kind, search].some((value) => value.trim() !== "");
 
   return (
     <div className="flex flex-col gap-4" data-activity>
       <div className="flex flex-wrap gap-2">
-        <Field label="Project" value={project} onChange={setProject} />
-        <Field label="Agent" value={agent} onChange={setAgent} />
-        <Field label="Kind" value={kind} onChange={setKind} />
-        <Field label="Search" value={search} onChange={setSearch} />
+        <Field label="Project" value={project} onChange={(value) => { setProject(value); setNext(null); }} />
+        <Field label="Agent" value={agent} onChange={(value) => { setAgent(value); setNext(null); }} />
+        <Field label="Kind" value={kind} onChange={(value) => { setKind(value); setNext(null); }} />
+        <Field label="Search" value={search} onChange={(value) => { setSearch(value); setNext(null); }} />
       </div>
       {shown.length === 0 ? (
         <p className="px-3 text-[13px] text-content/60">
@@ -76,6 +104,11 @@ export function ActivityPage({ entries, onOpenSession }: Props) {
           ))}
         </ul>
       )}
+      {!seeded && next ? (
+        <button type="button" className="self-start px-3 text-[13px] text-content/80" onClick={() => void showOlder()}>
+          Show older
+        </button>
+      ) : null}
     </div>
   );
 }

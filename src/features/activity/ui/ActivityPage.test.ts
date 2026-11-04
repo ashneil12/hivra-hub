@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { invoke } from "@tauri-apps/api/core";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -97,5 +98,35 @@ describe("ActivityPage", () => {
     expect(container.textContent).toContain("Second.");
     expect(container.textContent).not.toContain("First.");
     expect(container.textContent).not.toContain("Nothing matches.");
+  });
+
+  it("asks for the next page and keeps the rows already shown", async () => {
+    const older = entry("Older row.");
+    older.id = "older";
+    const newer = entry("Newer row.");
+    newer.id = "newer";
+    const cursor = { at: newer.at, seq: newer.seq };
+    let calls = 0;
+    vi.mocked(invoke).mockImplementation(async (_command, args) => {
+      calls += 1;
+      if (calls === 1) return { entries: [newer], next: cursor };
+      const query = (args as { query?: { before?: unknown } } | undefined)?.query;
+      expect(query?.before).toEqual(cursor);
+      return { entries: [older], next: null };
+    });
+    await render();
+    expect(container.textContent).toContain("Newer row.");
+    expect(container.textContent).not.toContain("Older row.");
+
+    const more = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Show older"),
+    );
+    expect(more).toBeTruthy();
+    await act(async () => {
+      more!.click();
+    });
+    expect(container.textContent).toContain("Newer row.");
+    expect(container.textContent).toContain("Older row.");
+    expect(container.textContent).not.toContain("Show older");
   });
 });

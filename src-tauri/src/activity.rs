@@ -48,6 +48,8 @@ pub const PLUGIN_ROLLBACK: &str = "plugin.rollback";
 pub const PLUGIN_REMOVE: &str = "plugin.remove";
 pub const BROWSER_START: &str = "browser.start";
 pub const BROWSER_STOP: &str = "browser.stop";
+pub const DESKTOP_START: &str = "desktop.start";
+pub const DESKTOP_STOP: &str = "desktop.stop";
 pub const SHIP: &str = "ship";
 pub const SHIP_TRIAL: &str = "ship.trial";
 pub const SHIP_ROLLBACK: &str = "ship.rollback";
@@ -556,6 +558,9 @@ fn page_limit(limit: Option<u32>) -> usize {
 
 pub fn list(conn: &Connection, query: &ListQuery, now: i64) -> Result<Page, String> {
     let _ = conn.busy_timeout(Duration::from_secs(5));
+    // A clock more than a day ahead of the newest row is not the cut. Opening
+    // the screen must not delete the log.
+    let now = prune_clock(conn, now);
     // A prune that fails (the file is busy) still lets the screen read.
     if let Err(err) = prune(conn, now) {
         if !err.contains("locked") && !err.contains("busy") {
@@ -741,10 +746,15 @@ fn import_id(id: &str) -> bool {
 /// Adds rows from an export. A row already stored is left as it was. A row
 /// that isn't a real entry is skipped. Secrets are removed again.
 pub fn import_rows(conn: &Connection, rows: &[Value]) -> Result<usize, String> {
+    import_rows_at(conn, rows, now_millis())
+}
+
+/// `now` is the clock the caller trusts. Tests pass one that is ahead of the rows.
+pub(crate) fn import_rows_at(conn: &Connection, rows: &[Value], now: i64) -> Result<usize, String> {
     let _ = conn.busy_timeout(Duration::from_secs(5));
     // Same cut as the prune. A row older than 90 days is not added and then
     // deleted, or a second import of the same file would add it again.
-    let cutoff = prune_clock(conn, now_millis()).saturating_sub(RETENTION_MS);
+    let cutoff = prune_clock(conn, now).saturating_sub(RETENTION_MS);
     let mut added = 0;
     for row in rows {
         let Some(row) = row.as_object() else {
@@ -829,7 +839,9 @@ pub fn import_rows(conn: &Connection, rows: &[Value]) -> Result<usize, String> {
             .map_err(|e| e.to_string())?;
         added += changed;
     }
-    prune(conn, now_millis())?;
+    // Re-read the newest row. One this import just added can be the anchor, so a
+    // clock ahead of the file cannot delete the rows the cutoff kept.
+    prune(conn, prune_clock(conn, now))?;
     Ok(added)
 }
 

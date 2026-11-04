@@ -35,6 +35,8 @@ const KINDS: Record<string, string> = {
   "plugin.remove": "Plugin removal",
   "browser.start": "Browser started",
   "browser.stop": "Browser stopped",
+  "desktop.start": "Desktop started",
+  "desktop.stop": "Desktop stopped",
   "ship": "Ship",
   "ship.trial": "Trial",
   "ship.rollback": "Rollback",
@@ -107,6 +109,21 @@ function readEntry(value: unknown): ActivityEntry | undefined {
     link: textOf(row.link),
     at,
   };
+}
+
+export type ActivityCursor = { at: number; seq: number };
+
+/** The page the server sent, including the cursor for the next older rows. */
+export function readPage(page: unknown): { entries: ActivityEntry[]; next: ActivityCursor | null } {
+  const entries = readEntries(page);
+  if (!page || typeof page !== "object") return { entries, next: null };
+  const next = (page as { next?: unknown }).next;
+  if (!next || typeof next !== "object") return { entries, next: null };
+  const at = (next as { at?: unknown }).at;
+  const seq = (next as { seq?: unknown }).seq;
+  if (typeof at !== "number" || !Number.isFinite(at)) return { entries, next: null };
+  if (typeof seq !== "number" || !Number.isFinite(seq)) return { entries, next: null };
+  return { entries, next: { at, seq } };
 }
 
 /** A missing or odd payload is an empty page, never a throw. */

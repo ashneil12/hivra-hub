@@ -169,6 +169,61 @@ fn a_far_future_stamp_does_not_delete_rows_that_are_still_kept() {
 }
 
 #[test]
+fn a_clock_ahead_of_the_stored_rows_does_not_wipe_them_on_list_or_import() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    write(
+        &conn,
+        MERGE,
+        &Who::person(),
+        &Who::person(),
+        "",
+        "Still kept.",
+        NOW,
+    );
+    write(
+        &conn,
+        PUSH,
+        &Who::person(),
+        &Who::person(),
+        "",
+        "Eighty nine days old.",
+        NOW - 89 * DAY_MS,
+    );
+    // Two days fast is enough to push an 89-day-old row over the 90-day cut
+    // when the list uses the raw clock. A clock months ahead wipes every row.
+    for ahead in [2 * DAY_MS, 200 * DAY_MS] {
+        let page = list(&conn, &ListQuery::default(), NOW + ahead).unwrap();
+        let summaries: Vec<_> = page.entries.iter().map(|e| e.summary.as_str()).collect();
+        assert!(
+            summaries.contains(&"Still kept.") && summaries.contains(&"Eighty nine days old."),
+            "clock {ahead} ms ahead left {summaries:?}"
+        );
+    }
+
+    let imported = json!({
+        "id": "imported-1",
+        "kind": MERGE,
+        "actor_role": "person",
+        "initiator_role": "person",
+        "summary": "Imported and still kept.",
+        "at": NOW,
+    });
+    assert_eq!(
+        import_rows_at(&conn, std::slice::from_ref(&imported), NOW + 200 * DAY_MS).unwrap(),
+        1
+    );
+    let page = list(&conn, &ListQuery::default(), NOW).unwrap();
+    let summaries: Vec<_> = page.entries.iter().map(|e| e.summary.as_str()).collect();
+    assert!(
+        summaries.contains(&"Imported and still kept.")
+            && summaries.contains(&"Still kept.")
+            && summaries.contains(&"Eighty nine days old."),
+        "{summaries:?}"
+    );
+}
+
+#[test]
 fn a_summary_keeps_no_secret_the_scrubber_knows() {
     let store = memory();
     let conn = store.lock_conn().unwrap();

@@ -503,6 +503,9 @@ pub fn run_main(args: &[String]) -> i32 {
             return 78;
         }
     };
+    // WP-78: a desktop session is starting. A refusal returned above writes nothing.
+    // On Unix, exec replaces this process, so the stop cannot be written afterwards.
+    note_desktop_session(args, crate::activity::DESKTOP_START);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -513,11 +516,208 @@ pub fn run_main(args: &[String]) -> i32 {
     #[cfg(not(unix))]
     {
         match command.status() {
-            Ok(status) => status.code().unwrap_or(1),
+            Ok(status) => {
+                // The child has exited. This process is still here, so the stop can be written.
+                note_desktop_session(args, crate::activity::DESKTOP_STOP);
+                status.code().unwrap_or(1)
+            }
             Err(error) => {
                 eprintln!("hivra plugin server: it couldn't start: {error}");
                 127
             }
         }
+    }
+}
+
+/// One desktop control session. Any other plugin, a launch argument this parser
+/// rejects, or a database that is not already there writes nothing.
+pub(crate) fn note_desktop_session(args: &[String], kind: &str) {
+    let summary = match kind {
+        crate::activity::DESKTOP_START => "Started a desktop session.",
+        crate::activity::DESKTOP_STOP => "Stopped a desktop session.",
+        _ => return,
+    };
+    let Ok(parsed) = parse_launch_args(args) else {
+        return;
+    };
+    if parsed.plugin != "desktop-control" {
+        return;
+    }
+    let agent = parsed
+        .agent
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(str::to_string);
+    let name = parsed.agent_name.unwrap_or_default();
+    let who = match agent.as_deref() {
+        Some(id) => crate::activity::Who::first_mate(id, name.trim()),
+        None => crate::activity::Who::app(),
+    };
+    let link = match agent.as_deref() {
+        Some(id) => format!("session:{id}"),
+        None => String::new(),
+    };
+    let project = parsed.project.unwrap_or_default();
+    crate::activity::note_db(
+        &registry::activity_db(&parsed.host),
+        kind,
+        &who,
+        &who,
+        &project,
+        &parsed.server,
+        summary,
+        &link,
+    );
+}
+
+#[cfg(test)]
+mod desktop_session_tests {
+    use std::path::{Path, PathBuf};
+
+    use super::note_desktop_session;
+    use crate::activity::{self, ListQuery};
+    use crate::session_store::{now_millis, SessionStore};
+
+    struct Tmp(PathBuf);
+
+    impl Tmp {
+        fn new(label: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!(
+                "hivra-desktop-session-{label}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Tmp(dir)
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn args(root: &Path, plugin: &str, extra: &[&str]) -> Vec<String> {
+        let mut out = vec![
+            "--root".into(),
+            root.to_string_lossy().into_owned(),
+            "--plugin".into(),
+            plugin.into(),
+            "--server".into(),
+            "desktop".into(),
+        ];
+        out.extend(extra.iter().map(|item| (*item).to_string()));
+        out
+    }
+
+    fn rows(db: &Path) -> Vec<activity::Entry> {
+        let store = SessionStore::open(db.to_path_buf()).unwrap();
+        let conn = store.lock_conn().unwrap();
+        activity::list(
+            &conn,
+            &ListQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+            now_millis(),
+        )
+        .unwrap()
+        .entries
+    }
+
+    #[test]
+    fn a_desktop_session_records_its_start_and_its_stop_and_nothing_else_does() {
+        let tmp = Tmp::new("note");
+        let plugins = tmp.0.join("plugins");
+        std::fs::create_dir_all(&plugins).unwrap();
+        let db = tmp.0.join("monocode.db");
+        {
+            let _store = SessionStore::open(db.clone()).unwrap();
+        }
+
+        note_desktop_session(&args(&plugins, "browser", &[]), activity::DESKTOP_START);
+        note_desktop_session(
+            &["--plugin".into(), "desktop-control".into()],
+            activity::DESKTOP_START,
+        );
+        assert!(
+            rows(&db).is_empty(),
+            "another plugin or a bad launch writes nothing"
+        );
+
+        let absent = tmp.0.join("absent");
+        let absent_plugins = absent.join("plugins");
+        std::fs::create_dir_all(&absent_plugins).unwrap();
+        note_desktop_session(
+            &args(&absent_plugins, "desktop-control", &[]),
+            activity::DESKTOP_START,
+        );
+        assert!(
+            !absent.join("monocode.db").is_file(),
+            "a missing database is not created"
+        );
+
+        let project = "C:\\Users\\A B\\café";
+        note_desktop_session(
+            &args(
+                &plugins,
+                "desktop-control",
+                &[
+                    "--agent",
+                    "lead-1",
+                    "--agent-name",
+                    "Ada",
+                    "--project",
+                    project,
+                ],
+            ),
+            activity::DESKTOP_START,
+        );
+        note_desktop_session(
+            &args(
+                &plugins,
+                "desktop-control",
+                &[
+                    "--agent",
+                    "lead-1",
+                    "--agent-name",
+                    "Ada",
+                    "--project",
+                    project,
+                ],
+            ),
+            activity::DESKTOP_STOP,
+        );
+        let found = rows(&db);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].kind, activity::DESKTOP_STOP);
+        assert_eq!(found[0].summary, "Stopped a desktop session.");
+        assert_eq!(found[1].kind, activity::DESKTOP_START);
+        assert_eq!(found[1].summary, "Started a desktop session.");
+        for row in &found {
+            assert_eq!(row.actor, activity::Who::first_mate("lead-1", "Ada"));
+            assert_eq!(row.initiator, activity::Who::first_mate("lead-1", "Ada"));
+            assert_eq!(row.link, "session:lead-1");
+            assert_eq!(row.target, "desktop");
+            assert_eq!(row.project, project);
+        }
+
+        let blank = tmp.0.join("blank");
+        let blank_plugins = blank.join("plugins");
+        std::fs::create_dir_all(&blank_plugins).unwrap();
+        let blank_db = blank.join("monocode.db");
+        {
+            let _store = SessionStore::open(blank_db.clone()).unwrap();
+        }
+        note_desktop_session(
+            &args(&blank_plugins, "desktop-control", &["--agent", "   "]),
+            activity::DESKTOP_START,
+        );
+        let found = rows(&blank_db);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].actor, activity::Who::app());
+        assert_eq!(found[0].initiator, activity::Who::app());
+        assert_eq!(found[0].link, "");
     }
 }
