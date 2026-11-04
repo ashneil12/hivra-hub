@@ -83,6 +83,13 @@ Third-party components Hivra adds:
   Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
   Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
 
+- Orbit's audit log
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src-tauri/src/activity.rs
+  bounded_text, bounded_metadata and the newest-first page translated from apps/server/src/audit.rs to rusqlite (WP-78). The 90-day keep, the initiator and the activity screen are Hivra's.
+
 - Raven's chat importer
   Source: https://github.com/EverMind-AI/Raven
   License: Apache-2.0

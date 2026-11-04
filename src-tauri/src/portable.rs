@@ -10,7 +10,7 @@
 //! memory/<project>/…            Ash OS project memory, only if ticked; <project>.git.bundle with its history if ticked
 //! workspace/                    only if ticked: sessions/<id>.json (transcript, engine, provider transcript pointer),
 //!                               notes.json + note-assets/, automations.json, reminders.json, delegations.json,
-//!                               hub/ (the webview's group chats)
+//!                               activity.json (WP-78), hub/ (the webview's group chats)
 //! ```
 //!
 //! Every text that goes into an export passes the secret scrubber (one pattern list with the webview:
@@ -1192,6 +1192,13 @@ fn export_workspace(
         "workspace/delegations.json",
         Value::Array(delegations),
     )?;
+
+    // WP-78: the activity log rides with the workspace. Rows past 90 days stay
+    // out, and the writer scrubs the summaries again.
+    let activity = crate::activity::export_rows(conn)
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+    counts.insert("activity".into(), json!(activity.len()));
+    wrote(writer, "workspace/activity.json", Value::Array(activity))?;
     Ok(())
 }
 
@@ -1478,6 +1485,8 @@ pub struct WorkspacePreview {
     pub automations: Vec<ItemPreview>,
     pub reminders: usize,
     pub delegations: Vec<ItemPreview>,
+    /// Activity rows in the file. They come in with the workspace, with no tick of their own.
+    pub activity: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -1766,6 +1775,11 @@ fn workspace_preview(
             status,
         });
     }
+    // WP-78: how many activity rows the file holds. Import adds them whenever the workspace comes in.
+    preview.activity = opened
+        .json("workspace/activity.json")
+        .and_then(|v| v.as_array().map(Vec::len))
+        .unwrap_or(0);
     Ok(preview)
 }
 
@@ -1842,6 +1856,8 @@ pub struct ImportReport {
     pub automations_added: usize,
     pub reminders_added: usize,
     pub delegations_added: usize,
+    /// WP-78: activity rows added. A row already stored, or older than 90 days, is not counted.
+    pub activity_added: usize,
     pub memory_files_added: usize,
     pub memory_files_beside: usize,
     pub memory_history: Vec<String>,
@@ -2122,6 +2138,16 @@ fn workspace_rows(
                 report.delegations_added += 1;
             }
         }
+    }
+
+    // WP-78: the log comes with the workspace. There is no tick for it.
+    if let Some(rows) = opened
+        .json("workspace/activity.json")
+        .and_then(|v| v.as_array().cloned())
+    {
+        let added = crate::activity::import_rows(conn, &rows)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
+        report.activity_added += added;
     }
     Ok(())
 }

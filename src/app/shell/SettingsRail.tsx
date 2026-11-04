@@ -38,6 +38,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   archive: Archive,
   changes: Undo2,
   decisions: CheckCheck,
+  activity: Clock, // WP-78
   dashboards: DashboardSquare,
   portable: CloudUpload,
   history: Clock, // WP-50

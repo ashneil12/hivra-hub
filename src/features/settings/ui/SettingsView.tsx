@@ -5,6 +5,7 @@ import { HIVRA_LAYOUT_FIXED } from "../../hub/model/hivraLayout";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
+import { ActivityPage } from "../../activity/ui/ActivityPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
@@ -689,6 +690,10 @@ export function SettingsView({
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
               {section === "decisions" ? <DecisionsPage /> : null}
+              {section === "activity" ? (
+                // WP-78: Settings → Activity.
+                <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
               {section === "history" ? (

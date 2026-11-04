@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-78: the activity log.
+mod activity;
 mod artifacts;
 // WP-04: the one-time, read-only import from the retired Ash OS bridge.
 mod ash_os_import;
@@ -1034,6 +1036,8 @@ pub fn run() {
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
+            // WP-78: Settings → Activity.
+            activity::activity_list,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,

@@ -489,8 +489,16 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
                         Phase::RolledBack,
                         "The old build and its database are back.",
                     );
-                    let _ = ship.save();
+                    let saved = ship.save();
                     write_receipt(&ship, "app");
+                    // WP-78: the rollback is on the record. restore() itself writes nothing.
+                    if saved.is_ok() {
+                        note_ship(
+                            &ship,
+                            crate::activity::SHIP_ROLLBACK,
+                            "Rolled back to the previous build.",
+                        );
+                    }
                     if me == Me::New {
                         // This process is the build that was just put aside: open the old one and go.
                         drop(lock);
@@ -700,6 +708,81 @@ fn finish_commit(ship: &mut Ship, by: &str) {
     ship.set_phase(Phase::Committed, "The new build committed.");
     let _ = ship.save();
     write_receipt(ship, by);
+}
+
+/// Who asked for this ship. No session on the record means the person.
+fn ship_initiator(ship: &Ship) -> crate::activity::Who {
+    ship.doc
+        .pointer("/requestedBy/sessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| crate::activity::Who::first_mate(id, ""))
+        .unwrap_or_else(crate::activity::Who::person)
+}
+
+/// A ship hub-ship accepted. `accepted` false, or no data folder, writes nothing.
+fn note_accepted_ship(
+    accepted: bool,
+    data: Option<&Path>,
+    requested_by: Option<&str>,
+    target: &str,
+) {
+    if !accepted {
+        return;
+    }
+    let Some(data) = data else {
+        return;
+    };
+    let initiator = match requested_by.map(str::trim).filter(|id| !id.is_empty()) {
+        Some(id) => crate::activity::Who::first_mate(id, ""),
+        None => crate::activity::Who::person(),
+    };
+    crate::activity::note_db(
+        &data.join("monocode.db"),
+        crate::activity::SHIP,
+        &crate::activity::Who::app(),
+        &initiator,
+        "",
+        target,
+        "Started a ship.",
+        "",
+    );
+}
+
+/// Writes the commit, then the activity row. A failed commit writes no row.
+fn commit_and_note_trial(
+    trial: &Mutex<Option<TrialState>>,
+    dir: &Path,
+    note: &Value,
+) -> Result<(), String> {
+    record_commit(trial, dir, note)?;
+    note_trial_committed(dir);
+    Ok(())
+}
+
+/// The trial's commit is on record. A missing ship folder writes nothing.
+fn note_trial_committed(dir: &Path) {
+    if let Ok(ship) = Ship::load(dir) {
+        note_ship(
+            &ship,
+            crate::activity::SHIP_TRIAL,
+            "The new build's trial committed.",
+        );
+    }
+}
+
+fn note_ship(ship: &Ship, kind: &str, summary: &str) {
+    crate::activity::note_db(
+        &ship.data_dir().join("monocode.db"),
+        kind,
+        &crate::activity::Who::app(),
+        &ship_initiator(ship),
+        "",
+        ship.id(),
+        summary,
+        "",
+    );
 }
 
 /// What `receipt.json` says. The runner writes the same shape.
@@ -973,7 +1056,8 @@ fn run_trial_checks(app: &AppHandle, id: &str, dir: &Path) {
         "at": now_iso(),
         "checks": checks,
     });
-    if let Err(error) = record_commit(&TRIAL, dir, &note) {
+    // WP-78: the trial row is written only after committed.json lands.
+    if let Err(error) = commit_and_note_trial(&TRIAL, dir, &note) {
         log(dir, &format!("couldn't write {COMMITTED}: {error}"));
         return;
     }
@@ -1679,6 +1763,14 @@ pub fn ship_start(
             )
         })?;
     if output.status.success() && answer.get("ok").and_then(Value::as_bool) == Some(true) {
+        // WP-78: hub-ship accepted it. The build is not in place yet, and a refusal writes nothing.
+        let target = answer.get("id").and_then(Value::as_str).unwrap_or("");
+        note_accepted_ship(
+            true,
+            instance::data_dir(instance::DAILY_IDENTIFIER).as_deref(),
+            requested_by.as_deref(),
+            target,
+        );
         Ok(answer)
     } else {
         let refusals = answer
@@ -2175,6 +2267,209 @@ mod tests {
             saved.doc.pointer("/db/backup/monocode.db"),
             "byte for byte"
         );
+    }
+
+    fn activity_rows(db: &std::path::Path) -> Vec<crate::activity::Entry> {
+        let store = crate::session_store::SessionStore::open(db.to_path_buf()).unwrap();
+        let conn = store.lock_conn().unwrap();
+        crate::activity::list(
+            &conn,
+            &crate::activity::ListQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+            crate::session_store::now_millis(),
+        )
+        .unwrap()
+        .entries
+    }
+
+    #[test]
+    fn a_started_ship_records_one_line_and_a_refusal_records_nothing() {
+        let root = TempDir::new("ship-start");
+        let data = root.0.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let db = data.join("monocode.db");
+        {
+            let _store = crate::session_store::SessionStore::open(db.clone()).unwrap();
+        }
+        note_accepted_ship(false, Some(&data), Some("lead-1"), "refused");
+        note_accepted_ship(true, None, Some("lead-1"), "no-folder");
+        assert!(
+            activity_rows(&db).is_empty(),
+            "a refusal or a missing data folder writes nothing"
+        );
+        note_accepted_ship(true, Some(&data), Some("  lead-1  "), "ship-1");
+        let rows = activity_rows(&db);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, crate::activity::SHIP);
+        assert_eq!(rows[0].actor, crate::activity::Who::app());
+        assert_eq!(
+            rows[0].initiator,
+            crate::activity::Who::first_mate("lead-1", "")
+        );
+        assert_eq!(rows[0].target, "ship-1");
+        assert_eq!(rows[0].summary, "Started a ship.");
+        note_accepted_ship(true, Some(&data), None, "ship-2");
+        let rows = activity_rows(&db);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].initiator, crate::activity::Who::person());
+        assert_eq!(rows[0].summary, "Started a ship.");
+    }
+
+    #[test]
+    fn a_committed_trial_records_one_line_and_a_second_check_does_not_run() {
+        let root = TempDir::new("trial-note");
+        let data = root.0.join("data");
+        let dir = root.0.join("ship");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = data.join("monocode.db");
+        {
+            let _store = crate::session_store::SessionStore::open(db.clone()).unwrap();
+        }
+        let id = "20261019-210405-trial01";
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "version": 1,
+                "id": id,
+                "kind": "ship",
+                "phase": "trial",
+                "dataDir": data.to_string_lossy(),
+                "requestedBy": { "sessionId": "lead-1" },
+            }),
+        )
+        .unwrap();
+        let trial = Mutex::new(Some(TrialState {
+            id: id.to_string(),
+            dir: dir.clone(),
+            committed: false,
+            checking: false,
+        }));
+        assert!(begin_checks(&trial).is_some());
+        assert!(
+            commit_and_note_trial(&trial, &dir, &json!({ "id": id })).is_ok(),
+            "the commit has to land before the activity row"
+        );
+        assert!(
+            begin_checks(&trial).is_none(),
+            "a committed trial does not start its checks again"
+        );
+        let rows = activity_rows(&db);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, crate::activity::SHIP_TRIAL);
+        assert_eq!(rows[0].actor, crate::activity::Who::app());
+        assert_eq!(
+            rows[0].initiator,
+            crate::activity::Who::first_mate("lead-1", "")
+        );
+        assert_eq!(rows[0].target, id);
+        assert_eq!(rows[0].summary, "The new build's trial committed.");
+
+        let blocked = root.0.join("not-a-directory");
+        std::fs::write(&blocked, b"x").unwrap();
+        let again = Mutex::new(Some(TrialState {
+            id: id.to_string(),
+            dir: blocked.clone(),
+            committed: false,
+            checking: false,
+        }));
+        assert!(begin_checks(&again).is_some());
+        assert!(commit_and_note_trial(&again, &blocked, &json!({ "id": id })).is_err());
+        assert_eq!(
+            activity_rows(&db).len(),
+            1,
+            "a commit that did not land does not add a trial row"
+        );
+    }
+
+    #[test]
+    fn a_finished_rollback_records_one_line_and_a_dev_copy_records_nothing() {
+        let root = TempDir::new("activity");
+        let (mut ship, _) = swapped_fixture(&root.0);
+        let own = instance::stamp().sha.clone();
+        let to = "b".repeat(40);
+        assert!(!own.is_empty());
+        assert_ne!(own, to);
+        assert_eq!(
+            me_for(&own, &to, &own),
+            Me::Old,
+            "Me::New would exit the test process"
+        );
+        let seed = root.0.join("seed.db");
+        {
+            let store = crate::session_store::SessionStore::open(seed.clone()).unwrap();
+            let conn = store.lock_conn().unwrap();
+            let _: (i64, i64, i64) = conn
+                .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })
+                .unwrap();
+        }
+        let backup = ship.dir.join(BACKUP_DIR).join("monocode.db");
+        std::fs::copy(&seed, &backup).unwrap();
+        // The fixture's wal is not this database. Leaving it out makes the restore drop any live wal.
+        std::fs::remove_file(ship.dir.join(BACKUP_DIR).join("monocode.db-wal")).unwrap();
+        let sum = sha256_file(&backup).unwrap();
+        *ship.doc.pointer_mut("/from/sha").unwrap() = json!(own);
+        *ship.doc.pointer_mut("/db/backup/monocode.db").unwrap() = json!(sum);
+        ship.doc
+            .pointer_mut("/db/backup")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("monocode.db-wal");
+        ship.doc
+            .as_object_mut()
+            .unwrap()
+            .insert("requestedBy".into(), json!({ "sessionId": "lead-1" }));
+        ship.save().unwrap();
+        let data = ship.data_dir();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": ship.id() }),
+        )
+        .unwrap();
+        let dev = Identity {
+            kind: Kind::Dev,
+            identifier: "com.ash.monocode-hub.dev.wp78".into(),
+            slot: Some("wp78".into()),
+        };
+        assert!(matches!(startup(&dev, &data), Boot::Normal));
+        assert_eq!(
+            std::fs::read(data.join("monocode.db")).unwrap(),
+            b"migrated by the new build",
+            "a dev copy does not roll a ship back"
+        );
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        assert!(matches!(startup(&daily, &data), Boot::Normal));
+        assert!(matches!(startup(&daily, &data), Boot::Normal));
+        let store = crate::session_store::SessionStore::open(data.join("monocode.db")).unwrap();
+        let conn = store.lock_conn().unwrap();
+        let rows = crate::activity::list(
+            &conn,
+            &crate::activity::ListQuery {
+                limit: Some(20),
+                ..Default::default()
+            },
+            crate::session_store::now_millis(),
+        )
+        .unwrap()
+        .entries;
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].kind, crate::activity::SHIP_ROLLBACK);
+        assert_eq!(rows[0].actor, crate::activity::Who::app());
+        assert_eq!(
+            rows[0].initiator,
+            crate::activity::Who::first_mate("lead-1", "")
+        );
+        assert_eq!(rows[0].target, "20261019-210405-bbbbbbb");
+        assert_eq!(rows[0].summary, "Rolled back to the previous build.");
     }
 
     #[test]

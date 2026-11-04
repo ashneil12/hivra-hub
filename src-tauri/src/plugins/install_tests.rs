@@ -105,6 +105,30 @@ fn note(host: &Host, name: &str) -> String {
     std::fs::read_to_string(host.installed(name).join("note.txt")).unwrap()
 }
 
+fn activity_db(tmp: &Tmp) -> PathBuf {
+    tmp.path().join("app-data/monocode.db")
+}
+
+/// The table has to exist before the action. A missing file is not created by the note.
+fn ready_activity(tmp: &Tmp) {
+    drop(crate::session_store::SessionStore::open(activity_db(tmp)).unwrap());
+}
+
+fn activity_rows(tmp: &Tmp) -> Vec<crate::activity::Entry> {
+    let store = crate::session_store::SessionStore::open(activity_db(tmp)).unwrap();
+    let conn = store.lock_conn().unwrap();
+    crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(50),
+            ..Default::default()
+        },
+        crate::session_store::now_millis(),
+    )
+    .unwrap()
+    .entries
+}
+
 /// The platform this test is not running on, so a plugin that names only it is always refused.
 fn other_platform() -> &'static str {
     if cfg!(windows) {
@@ -415,6 +439,7 @@ fn a_missing_repository_leaves_nothing_waiting() {
 fn a_failing_update_puts_the_installed_version_back() {
     let tmp = Tmp::new("restore");
     let host = host(&tmp);
+    ready_activity(&tmp);
     let home = tmp.path().join("home");
     let before = fsutil::tree(&[host.root.as_path(), home.as_path()]);
     let v1 = tmp.path().join("v1");
@@ -489,6 +514,28 @@ fn a_failing_update_puts_the_installed_version_back() {
     assert!(!host.root.join("lock.json").exists());
     assert!(!host.root.join("registry.json").exists());
     assert_eq!(fsutil::tree(&[host.root.as_path(), home.as_path()]), before);
+    let rows = activity_rows(&tmp);
+    let kinds: Vec<_> = rows.iter().map(|row| row.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            crate::activity::PLUGIN_REMOVE,
+            crate::activity::PLUGIN_ROLLBACK,
+            crate::activity::PLUGIN_UPDATE,
+            crate::activity::PLUGIN_INSTALL,
+        ],
+        "{rows:?}"
+    );
+    assert!(rows
+        .iter()
+        .all(|row| row.actor == crate::activity::Who::app()));
+    assert!(rows
+        .iter()
+        .all(|row| row.initiator == crate::activity::Who::person()));
+    assert_eq!(rows[3].summary, "Installed demo.");
+    assert_eq!(rows[2].summary, "Updated demo.");
+    assert_eq!(rows[1].summary, "Rolled demo back.");
+    assert_eq!(rows[0].summary, "Removed demo.");
 }
 
 #[test]
@@ -662,6 +709,38 @@ fn an_agents_install_waits_and_declining_leaves_nothing() {
     let result = install::install(&host, &quiet_tools(), &local_source(&dir), unknown).unwrap();
     assert!(matches!(result, InstallResult::Waiting { .. }));
     assert!(!host.installed("demo").exists());
+}
+
+#[test]
+fn an_approved_agent_install_names_the_mono_and_drops_the_reason() {
+    let tmp = Tmp::new("activity-agent");
+    let host = host(&tmp);
+    ready_activity(&tmp);
+    let dir = tmp.path().join("src");
+    plugin(&dir, "demo", "1.2.3", json!({}));
+    let planted = "ghp_PLANTED0123456789abcdefghijklmnopqrstu";
+    let by = RequestedBy {
+        kind: "agent".into(),
+        session: Some("lead-1".into()),
+        mono: Some("mono-9".into()),
+        reason: Some(format!("It would help. {planted}")),
+    };
+    let result = install::install(&host, &quiet_tools(), &local_source(&dir), by).unwrap();
+    let InstallResult::Waiting { request } = result else {
+        panic!("an agent's install must wait");
+    };
+    assert!(activity_rows(&tmp).is_empty(), "waiting is not an install");
+    install::approve(&host, &quiet_tools(), &request.id).unwrap();
+    let again = install::approve(&host, &quiet_tools(), &request.id).unwrap_err();
+    assert!(again.contains("isn't waiting"), "{again}");
+    let rows = activity_rows(&tmp);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::PLUGIN_INSTALL);
+    assert_eq!(rows[0].actor, crate::activity::Who::app());
+    assert_eq!(rows[0].initiator, crate::activity::Who::mono("mono-9", ""));
+    assert_eq!(rows[0].summary, "Installed demo.");
+    assert!(!format!("{:?}", rows[0]).contains(planted));
+    assert!(!format!("{:?}", rows[0]).contains("lead-1"));
 }
 
 #[test]

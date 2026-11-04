@@ -625,6 +625,7 @@ describe("settings navigation", () => {
       "appearance",
       "changes",
       "decisions",
+      "activity",
       "dashboards",
       "portable",
       "history",
@@ -644,6 +645,7 @@ describe("settings navigation", () => {
     ]);
     // SSH machines are "Remote machines"; app logins live under Connectors.
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "connections")?.label).toBe("Remote machines");
+    expect(groups.flatMap((g) => g.sections).find((s) => s.id === "activity")?.label).toBe("Activity");
   });
 
   it("points every indexed setting at a real section", () => {

@@ -277,6 +277,14 @@
       "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
     },
     {
+      "name": "Orbit's audit log",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/activity.rs",
+      "how": "bounded_text, bounded_metadata and the newest-first page translated from apps/server/src/audit.rs to rusqlite (WP-78). The 90-day keep, the initiator and the activity screen are Hivra's."
+    },
+    {
       "name": "Raven's chat importer",
       "url": "https://github.com/EverMind-AI/Raven",
       "licence": "Apache-2.0",

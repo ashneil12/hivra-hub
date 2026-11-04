@@ -317,17 +317,65 @@ pub(crate) fn write_consent(
 ) -> Result<ConsentDoc, String> {
     let next_rev = validate(&consent, expected)?;
     with_consent_lock(path, || {
-        match load_consent(path) {
+        let previous = match load_consent(path) {
             Loaded::Bad => return Err(UNREADABLE.into()),
             Loaded::Missing if expected != 0 => return Err(CHANGED.into()),
             Loaded::Doc(current) if current.revision != expected => return Err(CHANGED.into()),
-            Loaded::Missing | Loaded::Doc(_) => {}
-        }
+            Loaded::Missing => ConsentDoc::empty(),
+            Loaded::Doc(current) => current,
+        };
         consent.revision = next_rev;
         let text = serde_json::to_string(&consent).map_err(|_| UNREADABLE.to_string())?;
         fsutil::write_atomic(path, format!("{text}\n").as_bytes())?;
+        // WP-78: a new allow is a grant. A refusal, or writing the same allows again, is not.
+        note_new_allows(path, &previous, &consent);
         Ok(consent)
     })
+}
+
+/// `<data>/plugins/data/desktop-control/consent.json` → `<data>/monocode.db`.
+/// Any other path is not this app's consent file, so it is not logged.
+fn activity_db_from_consent(path: &Path) -> Option<PathBuf> {
+    let control = path.parent()?;
+    let plugin_data = control.parent()?;
+    let plugins = plugin_data.parent()?;
+    let app_data = plugins.parent()?;
+    if plugins.file_name().and_then(|name| name.to_str()) != Some("plugins") {
+        return None;
+    }
+    if plugin_data.file_name().and_then(|name| name.to_str()) != Some("data") {
+        return None;
+    }
+    Some(app_data.join("monocode.db"))
+}
+
+fn note_new_allows(path: &Path, previous: &ConsentDoc, next: &ConsentDoc) {
+    let Some(db) = activity_db_from_consent(path) else {
+        return;
+    };
+    let person = crate::activity::Who::person();
+    for (project, consent) in &next.projects {
+        let before = previous
+            .projects
+            .get(project)
+            .map(|row| row.apps.as_slice())
+            .unwrap_or(&[]);
+        for app in &consent.apps {
+            if before.iter().any(|had| had == app) {
+                continue;
+            }
+            crate::activity::note_db(
+                &db,
+                crate::activity::PERMISSION_GRANT,
+                &person,
+                &person,
+                project,
+                app,
+                &format!("Allowed {app}."),
+                "",
+            );
+        }
+    }
 }
 
 fn installed(host: &Host) -> Result<(), String> {
