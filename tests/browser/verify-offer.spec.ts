@@ -27,6 +27,7 @@ test("Verify is offered for a web project and Install waits for a yes", async ({
   const install = after.find((call) => call.command === "plugins_install");
   expect(install?.args.source?.package).toBe("e2e");
   expect(install?.args.requestedBy).toEqual({ kind: "person" });
+  expect(install?.args.project).toBe("/code/sample web");
 
   const shot = testInfo.outputPath(`verify-offer-${testInfo.project.name}.png`);
   await page.screenshot({ path: shot, fullPage: true });

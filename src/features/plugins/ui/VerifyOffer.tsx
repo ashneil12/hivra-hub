@@ -33,6 +33,7 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
     setHolding(false);
     setBusy(false);
     setInstalledName(null);
+    setNote(null);
     if (!folder) {
       live.current = {};
       setOffer(null);
@@ -51,6 +52,7 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
       .catch(() => {
         if (gone || live.current !== token) return;
         setOffer(null);
+        setNote(null);
       });
     return () => {
       gone = true;
@@ -78,24 +80,31 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
     try {
       let name = installedName;
       if (!name) {
-        const result = await invoke("plugins_install", { source: current.source, requestedBy: { kind: "person" } });
-        if (live.current !== token) return;
+        const result = await invoke("plugins_install", {
+          source: current.source,
+          requestedBy: { kind: "person" },
+          project: folder,
+        });
+        const here = live.current === token;
         const outcome = installOutcome(result);
         if (outcome.message.startsWith("Waiting for your OK in the Inbox")) {
+          if (!here) return;
           setNote(outcome.message);
           setHolding(true);
           return;
         }
         if (!outcome.message.startsWith("Installed ")) {
+          if (!here) return;
           setNote(outcome.message);
           return;
         }
         name = readInstalledName(result);
         if (!name) {
+          if (!here) return;
           setNote("It wasn't installed.");
           return;
         }
-        setInstalledName(name);
+        if (here) setInstalledName(name);
       }
       try {
         await invoke("plugins_enable", { name, project: folder });
