@@ -239,6 +239,14 @@
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "plugins/desktop-control/skills/agent-desktop/SKILL.md",
       "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
+    },
+    {
+      "name": "Orbit's checked backups",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright coollabsio and the Orbit contributors",
+      "where": "src-tauri/src/backups/",
+      "how": "Snapshot layout, manifest written last, checksum verification and retention, translated from crates/platform/src/backup.rs and backup/reader.rs to rusqlite (WP-75). S3 and Postgres are not included."
     }
   ]
 }
