@@ -807,6 +807,8 @@ fn tasks_and_their_links_are_still_there_after_the_file_is_opened_again() {
     assert_eq!(std::fs::read_to_string(&marker).unwrap(), "keep");
     let again = make(&store, &person(".."), "Second", None);
     assert_ne!(task.number, again.number);
+    // Windows can't remove a database file that is still open.
+    drop(store);
     let dir = crate::fs::canonical(&dir).unwrap();
     let temp = crate::fs::canonical(std::env::temp_dir()).unwrap();
     assert!(
