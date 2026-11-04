@@ -238,7 +238,7 @@ describe("a room turn", () => {
     expect(queueMonoNote(woken, { id: "room-1", text: "again", note })).toBe(woken);
     expect(monoPendingTranscriptBlocks(woken, woken.blocks)).toBe(woken.blocks);
     expect(monoMessageDeliveries(woken).size).toBe(0);
-    const told = queueMonoNote(busy, { id: "m-1", text: "[MonoCode message from frank] ...", note: { kind: "message", from: "frank" }, waitForIdle: true });
+    const told = queueMonoNote(busy, { id: "m-1", text: "[MonoCode message from ed] ...", note: { kind: "message", from: "ed" }, waitForIdle: true });
     expect(told.queuedMessages![0].waitForIdle).toBe(true);
   });
 });

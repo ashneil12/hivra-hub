@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "starter-monos",
+  "version": "1.0.0",
+  "description": "Ordinary Mono templates a person can add. Nothing in the app treats them as a special team.",
+  "license": "MIT",
+  "keywords": ["monos", "starter"]
+}

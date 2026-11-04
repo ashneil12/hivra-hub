@@ -26,7 +26,7 @@ export const STALL_MS = 60_000;
 /**
  * r66 (Alfred, 0.16.5: "Thinking" for 5+ minutes): thinking this long with no tool, while the stream's heartbeat still
  * comes, the line says what it is still on ("Still working on running npm test"), not a bare "Thinking".
- * r67 (Alfred's r66 rechecks): at 60 s it never showed; real thinking stretches between steps run 20-30 s (frank's
+ * r67 (Alfred's r66 rechecks): at 60 s it never showed; real thinking stretches between steps run 20-30 s (ed's
  * longest was ~25 s), so it shows from 20 s.
  */
 export const STILL_MS = 20_000;

@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { ensureProjectLeads } from "../../hub/model/hubLeads";
 import { createMono, updateMono } from "../model/mono";
 import { chatBinding } from "./useDelegations";
 
@@ -13,20 +14,20 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-it("tells Ash OS which chat each Claude session is: a Lead, another Mono, a worker or a plain chat", () => {
-  const lead = createMono();
-  updateMono(lead.id, (mono) => ({ ...mono, id: "vg-game-lead", sessionId: "lead-chat" }));
+it("tells which chat each Claude session is: a Lead, another Mono, a worker or a plain chat", () => {
+  ensureProjectLeads([{ id: "desk", name: "Desk", shortName: "Desk", iconShape: "folder", folder: "/p/desk" }]);
+  updateMono("desk-lead", (mono) => ({ ...mono, sessionId: "lead-chat" }));
   const other = createMono();
-  updateMono(other.id, (mono) => ({ ...mono, sessionId: "frank-chat" }));
+  updateMono(other.id, (mono) => ({ ...mono, sessionId: "ed-chat" }));
   const claude = (id: string) => ({ id, harness: "claude" as const, providerSessionId: `p-${id}` });
 
   expect(chatBinding(claude("lead-chat"))).toEqual({
     providerSession: "p-lead-chat",
     chatId: "lead-chat",
-    monoId: "vg-game-lead",
+    monoId: "desk-lead",
     role: "lead",
   });
-  expect(chatBinding(claude("frank-chat"))).toMatchObject({ monoId: other.id, role: "mono" });
+  expect(chatBinding(claude("ed-chat"))).toMatchObject({ monoId: other.id, role: "mono" });
   expect(chatBinding(claude("app-lead-chat-1"), "t-1")).toEqual({
     providerSession: "p-app-lead-chat-1",
     chatId: "app-lead-chat-1",

@@ -42,9 +42,9 @@ it("convenes on the current project, and two windows cannot overwrite one counci
   expect(first.memberIds).toEqual([]);
 
   nav.setHubSelection({ project: "hub", item: "coding-team" });
-  expect(host.requestCouncil("who owns the price", ["chief-of-staff", "chief-of-staff", " frank "])).toBe(true);
+  expect(host.requestCouncil("who owns the price", ["ada", "ada", " ed "])).toBe(true);
   const withMembers = nav.currentHubSelection().item.slice("chat:".length);
-  expect(chats.getChat(withMembers)!.memberIds).toEqual(["chief-of-staff", "frank"]);
+  expect(chats.getChat(withMembers)!.memberIds).toEqual(["ada", "ed"]);
 
   const again = chats.saveCouncil(id, { ...first.council!, question: "a later write" }, 0);
   expect(again).toBe(false);

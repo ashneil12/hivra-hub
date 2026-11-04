@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { chatDeniedTools } from "../../../features/hub/model/hubMcp";
 import { CREDENTIAL_BLOCK_MESSAGE, credentialBlock, HUB_DB_BLOCK_MESSAGE, HUB_DB_DENY_RULES } from "./credentialGuard";
 
-// r67 (Alfred's r66 rechecks): frank answered from sqlite3 on the app's database; other Monos read sessions and
+// r67 (Alfred's r66 rechecks): ed answered from sqlite3 on the app's database; other Monos read sessions and
 // delegations out of monocode.db by hand. No agent reads the hub's database or the window's storage directly.
-const CWD = "/Users/ash/agent-memory/monos/frank";
+const CWD = "/Users/ash/agent-memory/monos/ed";
 const APP = "/Users/ash/Library/Application Support/com.ash.monocode-hub";
 
 describe("r67: no agent queries the hub's database directly", () => {

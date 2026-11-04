@@ -144,7 +144,7 @@ mod tests {
             "quick-session-1a2b",
             "quick-composer",
             "quick-composer-git",
-            "mono-chat-frank",
+            "mono-chat-ed",
             "mono-chat",
         ] {
             assert!(!is_launch_window(other), "{other}");

@@ -13,7 +13,7 @@ it("takes that conversation only, through the store's own delete", async () => {
   const backend = {
     kind: "app",
     load: async () => ({
-      rooms: [{ id: "hub:leadership", projectId: "hub", name: "Leadership team", isDefault: true, memberIds: ["chief-of-staff"],
+      rooms: [{ id: "hub:leadership", projectId: "hub", name: "Leadership team", isDefault: true, memberIds: ["ada"],
         seated: true, createdAt: 1, updatedAt: 1, conversations: [conv("old"), conv("new")] }],
     }),
     deleteConversation: async (room: string, id: string) => void deleted.push(`${room}/${id}`),

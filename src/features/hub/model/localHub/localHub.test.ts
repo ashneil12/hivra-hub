@@ -14,7 +14,7 @@ describe("the local hub store (WP-04)", () => {
     await first.projectCreate({ name: "EXO game", project_id: "exo", folder: "/tmp/exo" });
     await first.projectCreate({ name: "Nibbii" });
     await first.monoProjectAdd({ mono_id: "exo-lead", project_id: "exo", role: "lead" });
-    await first.monoProjectAdd({ mono_id: "frank", project_id: "nibbii" });
+    await first.monoProjectAdd({ mono_id: "ed", project_id: "nibbii" });
     await first.pageUpdate({ pageId: "pg-1", projectId: "exo", spec: blocks("Builds"), kept: true });
     await first.projectRename({ project_id: "exo", name: "EXO" });
 
@@ -25,7 +25,7 @@ describe("the local hub store (WP-04)", () => {
       ["exo", "EXO", "/tmp/exo"],
       ["nibbii", "Nibbii", null],
     ]);
-    expect((await again.monoProjects()).byProject).toEqual({ exo: ["exo-lead"], nibbii: ["frank"] });
+    expect((await again.monoProjects()).byProject).toEqual({ exo: ["exo-lead"], nibbii: ["ed"] });
     const { pages } = await again.pages();
     expect(pages.map((p) => [p.id, p.state, p.projectId])).toEqual([["pg-1", "kept", "exo"]]);
   });
@@ -98,11 +98,11 @@ describe("two windows on one database (WP-04 review)", () => {
     await one.projectCreate({ name: "EXO game", project_id: "exo" });
     await two.projectCreate({ name: "Nibbii", project_id: "nibbii" });
     await one.monoProjectAdd({ mono_id: "exo-lead", project_id: "exo", role: "lead" });
-    await two.monoProjectAdd({ mono_id: "frank", project_id: "exo" });
+    await two.monoProjectAdd({ mono_id: "ed", project_id: "exo" });
     // two knew nothing of exo from its own copy, and adds to it all the same.
     const fresh = new LocalHub(disk);
     expect((await fresh.projects()).projects.map((p) => p.id)).toEqual(["exo", "nibbii"]);
-    expect((await fresh.monoProjects()).byProject).toEqual({ exo: ["exo-lead", "frank"] });
+    expect((await fresh.monoProjects()).byProject).toEqual({ exo: ["exo-lead", "ed"] });
   });
 
   it("a write from an older copy is refused on disk and made again on top", async () => {
@@ -245,7 +245,7 @@ describe("the one-time Ash OS import", () => {
     const hub = new LocalHub(memoryDisk());
     let asked = 0;
     const importDeps = { fetch: async () => found, ask: async (): Promise<ImportAnswer> => (asked++, "later") };
-    for (const label of ["session-abc", "floating-mono-frank", undefined]) {
+    for (const label of ["session-abc", "floating-mono-ed", undefined]) {
       resetAshOsImportStartForTest();
       expect(await startAshOsImport(hub, { inTauri: true, label: async () => label, importDeps })).toBeUndefined();
     }

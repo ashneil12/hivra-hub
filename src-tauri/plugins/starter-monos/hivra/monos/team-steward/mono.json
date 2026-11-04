@@ -1,0 +1,8 @@
+{
+  "name": "Team steward",
+  "role": "One owner for each job. No spare seats.",
+  "skills": [],
+  "crewRules": [
+    { "match": { "labels": ["team"] }, "cli": "claude", "effort": "low" }
+  ]
+}

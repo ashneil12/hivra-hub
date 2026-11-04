@@ -30,6 +30,12 @@ test.use({ viewport: { width: 1440, height: 900 } });
 const EXO = "/Users/example/Projects/vg-game";
 /** Where this browser page's app data is (browserTauriMock.ts DEV_DATA), and so Alfred's team folder. */
 const TEAM = "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.browser/mono-teams/alfred";
+/** The people this proof used to get from the built-in team. The rail only lists a Mono on the open project. */
+const TEAM_ROSTER = [
+  { id: "alfred", name: "Alfred", mascot: "robot", color: "hsl(210 8% 58%)", engine: "claude", role: "Does its own work", projects: [EXO] },
+  { id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", color: "hsl(142 55% 50%)", engine: "claude", role: "Briefs the coding team", projects: [EXO] },
+  { id: "frank", name: "frank", mascot: "robot", color: "hsl(210 8% 58%)", engine: "claude", role: "Nothing out", projects: [EXO] },
+];
 
 const rail = (page: Page) => page.locator("[data-mono-rail]").first();
 const railRow = (page: Page, name: string) => rail(page).locator(`button[aria-label^="${name}"]`).first();
@@ -96,13 +102,14 @@ function sessions(chats: { alfred: string; lead: string }, now: number) {
 test("Monos show people, not work: briefs live in coding teams, a Mono's own work in its own team", async ({ page }) => {
   const now = Date.now();
   await page.addInitScript(
-    ({ team }) => {
+    ({ team, roster }) => {
+      localStorage.setItem("monocode:dev-roster-seed", JSON.stringify(roster));
       if (sessionStorage.getItem("seeded")) return;
       sessionStorage.setItem("seeded", "1");
       // Alfred made its team the first time it handed out work of its own (monoTeams.ts).
       localStorage.setItem("monocode:mono-teams", JSON.stringify({ alfred: { monoId: "alfred", folder: team, createdAt: Date.now() - 3_600_000 } }));
     },
-    { team: TEAM },
+    { team: TEAM, roster: TEAM_ROSTER },
   );
   await openLocalHub(page);
   await expect(rail(page)).toBeVisible({ timeout: 60_000 });

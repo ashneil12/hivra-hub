@@ -2,11 +2,8 @@
 // its own name after it in grey. Ash can keep the current names instead.
 import { useSyncExternalStore } from "react";
 
-export const ROLE_NAMES: Readonly<Record<string, string>> = {
-  frank: "Memory and checks",
-  alfred: "Team setup",
-  critiquito: "Design review",
-};
+/** No name is rewritten to a role. A Mono shows the name it has. */
+export const ROLE_NAMES: Readonly<Record<string, string>> = {};
 const KEY = "monocode:hub-role-names";
 const EVENT = "monocode:hub-role-names-changed";
 let version = 0;

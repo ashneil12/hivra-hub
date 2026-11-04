@@ -48,7 +48,7 @@ export const BUILD_MOVED = "Ask the Mono in its chat to build this page: pages a
 export const SEATED_ONLY_PAGES = "Only one of your own Monos can build pages. Temporary workers can't.";
 const DEV_STUB_KEY = "monocode:pages-dev-stub";
 
-/** Seated = on the Monos roster (CoS, PM, frank, Alfred, Leads, anything Ash added). Temporary workers never are. */
+/** Seated = on the Monos roster (CoS, PM, ed, Alfred, Leads, anything Ash added). Temporary workers never are. */
 export function isSeatedMono(monoId: string, roster: readonly { id: string }[] = listMonos()): boolean {
   return roster.some((m) => m.id === monoId);
 }

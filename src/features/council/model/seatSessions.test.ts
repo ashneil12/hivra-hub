@@ -56,7 +56,7 @@ it("starts each seat on its own CLI, opens that session, and hands the brief to 
   expect(shown).toEqual(["s-a"]);
   expect(sessions.filter((session) => session.id === "s-a")).toHaveLength(1);
 
-  const chat = chats.createChat("hub", "Council", ["chief-of-staff", "frank"]);
+  const chat = chats.createChat("hub", "Council", ["ada", "ed"]);
   const record = {
     ...blankProposal("should we ship"),
     phase: "done" as const,
@@ -69,7 +69,7 @@ it("starts each seat on its own CLI, opens that session, and hands the brief to 
     },
   };
   host.postCouncilBrief(chat.id, record);
-  expect(handed).toEqual([{ monoId: "chief-of-staff", text: expect.stringContaining("Publish the page.") }]);
+  expect(handed).toEqual([{ monoId: "ada", text: expect.stringContaining("Publish the page.") }]);
   stop();
   host.setCouncilModel(undefined);
 });

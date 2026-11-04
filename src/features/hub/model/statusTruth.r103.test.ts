@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
 import { openPartsOf, runningWorkers, statusTruthLine } from "./statusTruth";
-import { shortName, COS_CALL_NOTE, FIRST_REPLY_NOTE, STATUS_SHAPE, isDump, withInboxCount } from "./inboxCountNote";
+import { shortName, FIRST_REPLY_NOTE, STATUS_SHAPE, isDump, withInboxCount } from "./inboxCountNote";
 import { withCountLineChecked } from "../../../shared/text/countLine";
 import { cutWorkNote } from "../../sessions/model/inFlight";
 import { parseNeedsAsh } from "./chatQuestions";
@@ -72,23 +72,21 @@ it("r103 (Critiquito c): a reply counting asks as waiting never also says his In
   expect(withCountLineChecked("Of 3: 3 done.\n\nNothing from me is in your Inbox.")).toMatch(/Nothing from me is in your Inbox/);
 });
 
-it("r103 (Critiquito b, c, d; 7): the status shape keeps holds on the Inbox, parked lines whole, and Chief of Staff's call", () => {
+it("r103 (Critiquito b, c, d; 7): the status shape keeps holds on the Inbox and parked lines whole, and no Mono is a special case", () => {
   expect(STATUS_SHAPE).toMatch(/count only what is on his Inbox/);
   expect(STATUS_SHAPE).toMatch(/needs his yes or his pick is never parked/);
   expect(STATUS_SHAPE).toMatch(/Parked: the settings scroll, because that page needs a real build from the Hub lead\./);
   expect(STATUS_SHAPE).toMatch(/never a numbered list/);
-  // B5 7db4: a 457-character "Done" line, a preview awaiting Apply counted done, and CoS's "waits for your wording" told as a no.
+  // B5 7db4: a 457-character "Done" line, and a preview awaiting Apply counted done.
   expect(STATUS_SHAPE).toMatch(/each line under 45 words/);
   // B5 e46f: "and 7 more" left 22 of the 40 asks unnamed in the answer.
   expect(STATUS_SHAPE).toMatch(/naming every ask in two or three words, never "and N more"/);
   expect(STATUS_SHAPE).toMatch(/preview he has not applied is not done.*`Needs Ash:` line for the Apply/);
-  expect(STATUS_SHAPE).toMatch(/never turned into a no/);
   // B5 e46f: a launch thread and a kids-mode writeup called done with no report and no draft shown.
   expect(STATUS_SHAPE).toMatch(/Count as done only what a worker's report or your own earlier reply shows finished/);
-  expect(STATUS_SHAPE).toMatch(/Chief of Staff already made a call/);
-  const msg = "[MonoCode message from Chief of Staff]\n<message>Stripe: check and report only.</message>";
-  expect(withInboxCount("lead1", msg, () => true)).toContain(COS_CALL_NOTE);
-  expect(COS_CALL_NOTE).toMatch(/only Ash can override it/);
+  expect(STATUS_SHAPE).not.toMatch(/Chief of Staff/);
+  const msg = "[MonoCode message from Ada]\n<message>Stripe: check and report only.</message>";
+  expect(withInboxCount("lead1", msg, () => true)).toBe(msg);
 });
 
 it("r103 (6): Ash's question cut by a restart never shows as a task with an ask id", () => {

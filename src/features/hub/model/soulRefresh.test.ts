@@ -3,9 +3,6 @@
 // changes with Undo and never wait for a click). Ash's hand edits win, the row says in plain words what changes for the
 // Mono and what was skipped, and the whole old soul is saved first. The Mono files are a stand-in for the Rust
 // mono_read / mono_save commands (hash-checked, like mono.rs).
-import { mkdirSync, mkdtempSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { botChangeRows, findBotChange, redoBotChange, setBotFiles, undoBotChange } from "./botChanges";
 import { LIVE_15_OCT_LEAD_SOULS } from "./testdata/leadSouls15Oct";
@@ -16,14 +13,15 @@ import {
   planSoulRefresh,
   refreshSouls,
   SECTION_SENTENCES,
+  sectionSentence,
+  skippedLine,
   soulSections,
   soulTemplates,
   SOUL_TEMPLATE_FILE,
   templateFingerprint,
 } from "./soulRefresh";
+import { addMono } from "../../monos/model/mono";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
-import { TEAM_SOULS } from "./teamSouls";
-import { CHECKER_SOUL } from "./hubChecker";
 import { leadSoul } from "./hubLeads";
 import { defaultSoul } from "../../monos/model/monoFiles";
 
@@ -62,7 +60,7 @@ You are Hivra lead, the lead for Hivra, working in /Users/ash/Projects/Hivra.
 
 ## Your job
 - You are mainly an orchestrator.
-- You talk to Chief of Staff, and to Ash only when routed.
+- You talk to the room, and to Ash only when routed.
 
 ## How you run the project
 - Start-ack: your first reply cites the brief.
@@ -155,7 +153,7 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
     expect(c.undone).toBeFalsy();
     // One plain sentence per section that changed.
     expect(c.details).toEqual([
-      "Hivra lead will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
+      sectionSentence("## Your job", "Hivra lead"),
       "Hivra lead will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
       "Hivra lead picks up the app's newer skills and keeps the ones it learned.",
     ]);
@@ -252,14 +250,22 @@ describe("refreshSouls: a soul behind its template is refreshed on its own, with
   });
 });
 
-describe("refreshSouls with no recorded template: only a soul the app itself seeded is swapped", () => {
-  localStorage.setItem("monocode:hub-team-pack", "ash"); // the templates below are built at collection, on Ash's install
+describe("refreshSouls with no recorded template: a lead soul is left alone; the checker can still refresh", () => {
+  localStorage.setItem("monocode:hub-team-pack", "ash");
   const hivra = LIVE_15_OCT_LEAD_SOULS[0];
   const lead = { id: "hivra-lead", name: "Hivra lead", projectName: "Hivra", projectId: "hivra" } as Parameters<typeof leadSoul>[0];
   const template = defaultSoul(leadSoul(lead, hivra.values.folder));
   const hivraTemplate = [{ monoId: "hivra-lead", name: "Hivra lead", template, values: hivra.values }];
 
-  it("knows the three live 15 Oct lead souls (Alfred: untouched) as souls the app shipped", async () => {
+  function park(l: (typeof LIVE_15_OCT_LEAD_SOULS)[number], id: string, folder?: string | null) {
+    addMono({ id, name: l.values.name, mascot: "letter", color: "x", projects: folder ? [folder] : [] });
+    const f = fakeFiles();
+    const soul = l.soul.replaceAll(`ASH_MONO_ID=${l.monoId}`, `ASH_MONO_ID=${id}`);
+    f.set(id, "SOUL.md", soul);
+    return { f, soul };
+  }
+
+  it("knows the three live 15 Oct lead souls as souls the app once shipped", async () => {
     expect(LIVE_15_OCT_LEAD_SOULS.map((l) => [l.monoId, new TextEncoder().encode(l.soul).length])).toEqual([
       ["hivra-lead", 2023],
       ["nibbii-lead", 2015],
@@ -268,158 +274,115 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     for (const l of LIVE_15_OCT_LEAD_SOULS) expect(await isKnownSeededSoul(l.soul, l.values)).toBe(true);
     // One changed character and it isn't.
     expect(await isKnownSeededSoul(hivra.soul.replace("one row.", "one row!"), hivra.values)).toBe(false);
-    // Today's templates are known too: the team's, a Lead's, the hub's own Lead's and the checker's.
     const monos = [
-      { id: "chief-of-staff", name: "Chief of Staff", mascot: "letter", color: "x", projects: [] },
+      { id: "mina", name: "Mina", mascot: "letter", color: "x", projects: [] },
       { id: "nibbii-lead", name: "Nibbii lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/nibbii"] },
-      { id: "hub-lead", name: "MonoCode Hub lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/monocode-hub"] },
+      { id: "hub-lead", name: "Hub lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/monocode-hub"] },
       { id: "checker", name: "Checker", mascot: "robot", color: "x", projects: [] },
     ];
-    for (const t of soulTemplates(monos)) expect([t.monoId, await isKnownSeededSoul(t.template, t.values)]).toEqual([t.monoId, true]);
+    expect(soulTemplates(monos).map((t) => t.monoId)).toEqual(["checker"]);
+    expect(soulTemplates(monos)[0].template).toContain("I'm the Checker");
   });
 
-  it("swaps the untouched 15 Oct Hivra lead soul for today's, old soul saved, with Undo", async () => {
+  it("leaves the untouched 15 Oct Hivra lead soul as it is, and still refreshes the checker", async () => {
+    addMono({ id: "checker", name: "Checker", mascot: "robot", color: "x", projects: [] });
+    addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "letter", color: "x", projects: [hivra.values.folder] });
     const f = fakeFiles();
+    const old = "# Soul\n\n## Role\nLook later.\n";
+    f.set("checker", "SOUL.md", old);
+    f.set("checker", SOUL_TEMPLATE_FILE, old);
     f.set("hivra-lead", "SOUL.md", hivra.soul);
-    expect(await refreshSouls(f, hivraTemplate, DAY)).toEqual({ refreshed: ["hivra-lead"], recorded: [], skipped: [] });
-    const soul = f.get("hivra-lead", "SOUL.md")!;
-    expect(soul.replace(/\s+$/, "")).toBe(template.replace(/\s+$/, ""));
-    expect(soul).toContain("Your workers ask you, not Ash");
-    expect(soul).not.toContain("ash_ask_ash");
-    expect(f.get("hivra-lead", NOTE)).toBe(hivra.soul);
-    expect(f.get("hivra-lead", SOUL_TEMPLATE_FILE)).toBe(template);
-    const c = findBotChange(`soul-refresh:hivra-lead:${templateFingerprint(template)}`)!;
-    expect(c.details!.some((d) => d.startsWith("Hivra lead will now confirm when work has really started"))).toBe(true);
-    for (const text of [c.line, ...c.details!]) expectPlain(text);
-    await undoBotChange([c.id]);
+    const leadRows = () => botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "hivra-lead");
+    const before = leadRows().length;
+    expect(await refreshSouls(f, soulTemplates(), DAY)).toEqual({ refreshed: ["checker"], recorded: [], skipped: [] });
+    expect(f.get("checker", "SOUL.md")).toContain("I'm the Checker");
+    expect(f.get("checker", NOTE)).toBe(old);
     expect(f.get("hivra-lead", "SOUL.md")).toBe(hivra.soul);
+    expect(leadRows()).toHaveLength(before);
   });
 
-  /** What soulTemplates gives a Lead whose roster carries `folder` (none, a wrong one, or the real one). */
-  function leadEntry(l: (typeof LIVE_15_OCT_LEAD_SOULS)[number], folder: string | null, monoId = l.monoId) {
-    const spec = { id: monoId, name: l.values.name, projectName: l.values.projectName, projectId: l.values.projectId } as Parameters<typeof leadSoul>[0];
-    const render = (f: string | null) => defaultSoul(leadSoul(spec, f));
-    return { monoId, name: l.values.name, template: render(folder), values: { ...l.values, id: monoId, folder }, render };
-  }
-
-  it("a roster with no folder: the untouched lead is still swapped, keeping the folder its soul names, and the row says so", async () => {
+  it("a roster with no folder: the untouched lead soul is left alone, so the folder it names stays", async () => {
     for (const l of LIVE_15_OCT_LEAD_SOULS) {
       const id = `${l.monoId}-nofolder`;
-      const f = fakeFiles();
-      const soul = l.soul.replaceAll(`ASH_MONO_ID=${l.monoId}`, `ASH_MONO_ID=${id}`);
-      f.set(id, "SOUL.md", soul);
-      expect(await refreshSouls(f, [leadEntry(l, null, id)], DAY)).toEqual({ refreshed: [id], recorded: [], skipped: [] });
-      const now = f.get(id, "SOUL.md")!;
-      expect(now).toContain(`working in ${l.values.folder}.`);
-      expect(now).toContain("Your workers ask you, not Ash");
-      const row = botChangeRows().find((r) => r.kind === "one" && r.change.monoId === id);
-      expect(row?.kind === "one" && row.change.details).toContain(
-        `The app had no project folder for ${l.values.name}, so the folder its soul already named is kept.`,
-      );
-      if (row?.kind === "one") for (const t of row.change.details!) expectPlain(t);
+      const { f, soul } = park(l, id, null);
+      expect(await refreshSouls(f, soulTemplates(), DAY)).toEqual({ refreshed: [], recorded: [], skipped: [] });
+      expect(f.get(id, "SOUL.md")).toBe(soul);
+      expect(soul).toContain(`working in ${l.values.folder}.`);
+      expect(botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === id)).toHaveLength(0);
     }
   });
 
-  it("a roster with a different folder: still recognised as untouched; the new soul uses the roster's folder and says so", async () => {
+  it("a roster with a different folder: the soul is left alone, still naming its own folder", async () => {
     const exo = LIVE_15_OCT_LEAD_SOULS[2];
-    const f = fakeFiles();
-    const soul = exo.soul.replaceAll("ASH_MONO_ID=vg-game-lead", "ASH_MONO_ID=exo-wrong");
-    f.set("exo-wrong", "SOUL.md", soul);
-    const entry = leadEntry(exo, "/Users/ash/Projects/vg-game-moved", "exo-wrong");
-    expect(await refreshSouls(f, [entry], DAY)).toEqual({ refreshed: ["exo-wrong"], recorded: [], skipped: [] });
-    expect(f.get("exo-wrong", "SOUL.md")).toContain("working in /Users/ash/Projects/vg-game-moved.");
-    const c = findBotChange(`soul-refresh:exo-wrong:${templateFingerprint(entry.template)}`)!;
-    expect(c.details!.at(-1)).toBe("EXO lead's old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.");
-    for (const t of c.details!) expectPlain(t);
+    const { f, soul } = park(exo, "exo-wrong", "/Users/ash/Projects/vg-game-moved");
+    expect(await refreshSouls(f, soulTemplates(), DAY)).toEqual({ refreshed: [], recorded: [], skipped: [] });
+    expect(f.get("exo-wrong", "SOUL.md")).toBe(soul);
+    expect(soul).toContain(`working in ${exo.values.folder}.`);
+    expect(soul).not.toContain("vg-game-moved");
+    expect(botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "exo-wrong")).toHaveLength(0);
   });
 
-  it("EXO's real folder, with a space and a '?', matches whether the roster names it or not", async () => {
+  it("EXO's real folder, with a space and a '?', is still recognised, and a refresh does not rewrite the soul", async () => {
     const exo = LIVE_15_OCT_LEAD_SOULS[2];
     expect(exo.values.folder).toBe("/Users/ash/Projects/boxin game?/vg-game");
     expect(folderInSoul(exo.soul)).toBe("/Users/ash/Projects/boxin game?/vg-game");
     for (const folder of [exo.values.folder, null, "/somewhere/else"])
       expect(await matchSeededSoul(exo.soul, { ...exo.values, folder })).not.toBeNull();
-    const f = fakeFiles();
-    f.set("vg-game-lead", "SOUL.md", exo.soul);
-    expect((await refreshSouls(f, [leadEntry(exo, exo.values.folder)], DAY)).refreshed).toEqual(["vg-game-lead"]);
-    expect(f.get("vg-game-lead", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
-    // An edit in the body is still an edit, whatever the folder.
+    const { f, soul } = park(exo, "vg-game-lead", exo.values.folder);
+    expect((await refreshSouls(f, soulTemplates(), DAY)).refreshed).toEqual([]);
+    expect(f.get("vg-game-lead", "SOUL.md")).toBe(soul);
     const edited = exo.soul.replace("- Parallel work is fine.", "- Ash: no Fridays.\n- Parallel work is fine.");
     expect(await matchSeededSoul(edited, { ...exo.values, folder: null })).toBeNull();
   });
 
-  describe("the project's folder must be on this Mac", () => {
-    // Real folders on disk, checked the way the app checks them (a folder, not a file), one with spaces in its path.
-    const root = mkdtempSync(join(tmpdir(), "soul refresh folders "));
-    const onDisk = async (path: string) => {
-      try {
-        return statSync(path).isDirectory();
-      } catch {
-        return false;
-      }
-    };
+  describe("the project's folder on disk does not rewrite a lead soul", () => {
     const exo = LIVE_15_OCT_LEAD_SOULS[2];
     const hivra15 = LIVE_15_OCT_LEAD_SOULS[0];
-    function swap(l: (typeof LIVE_15_OCT_LEAD_SOULS)[number], id: string, folder: string) {
-      const f = fakeFiles();
-      f.set(id, "SOUL.md", l.soul.replaceAll(`ASH_MONO_ID=${l.monoId}`, `ASH_MONO_ID=${id}`));
-      const entry = leadEntry(l, folder, id);
-      return { f, entry, run: () => refreshSouls(f, [entry], DAY, onDisk) };
-    }
-    const details = (id: string) => {
-      const row = botChangeRows().find((r) => r.kind === "one" && r.change.monoId === id);
-      return row?.kind === "one" ? row.change.details! : [];
-    };
 
-    it("missing: the lead keeps its old soul's folder, and the row says so in plain words", async () => {
-      const missing = join(root, "hivra-not-here");
-      const { f, run } = swap(hivra15, "hivra-missing", missing);
-      expect((await run()).refreshed).toEqual(["hivra-missing"]);
-      const now = f.get("hivra-missing", "SOUL.md")!;
-      expect(now).toContain(`working in ${hivra15.values.folder}.`);
-      expect(now).not.toContain(missing);
-      expect(now).toContain("Your workers ask you, not Ash");
-      expect(details("hivra-missing")).toContain("Hivra lead kept its old folder because its project's folder wasn't found on this Mac.");
-      expect(details("hivra-missing").some((d) => d.includes("different folder"))).toBe(false);
-      for (const t of details("hivra-missing")) expectPlain(t);
+    it("missing: the lead keeps the soul it has, and the folder is never looked up", async () => {
+      const missing = "/no/such/hivra-not-here";
+      let asked = 0;
+      const { f, soul } = park(hivra15, "hivra-missing", missing);
+      expect((await refreshSouls(f, soulTemplates(), DAY, async () => { asked += 1; return false; })).refreshed).toEqual([]);
+      expect(f.get("hivra-missing", "SOUL.md")).toBe(soul);
+      expect(soul).toContain(`working in ${hivra15.values.folder}.`);
+      expect(soul).not.toContain(missing);
+      expect(asked).toBe(0);
+      expect(botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "hivra-missing")).toHaveLength(0);
     });
 
-    it("there: the new soul uses the project's folder, as before", async () => {
-      const there = join(root, "hivra");
-      mkdirSync(there);
-      const { f, run } = swap(hivra15, "hivra-there", there);
-      expect((await run()).refreshed).toEqual(["hivra-there"]);
-      expect(f.get("hivra-there", "SOUL.md")).toContain(`working in ${there}.`);
-      expect(details("hivra-there")).toContain(
-        "Hivra lead's old soul named a different folder from the one its project is set to now; the new soul uses its project's folder.",
-      );
-      expect(details("hivra-there").some((d) => d.includes("wasn't found"))).toBe(false);
+    it("there: the soul stays, and does not take the folder that exists", async () => {
+      const there = "/tmp/hivra-there-not-used";
+      const { f, soul } = park(hivra15, "hivra-there", there);
+      expect((await refreshSouls(f, soulTemplates(), DAY)).refreshed).toEqual([]);
+      expect(f.get("hivra-there", "SOUL.md")).toBe(soul);
+      expect(soul).not.toContain(there);
+      expect(soul).toContain(`working in ${hivra15.values.folder}.`);
     });
 
-    it("a path with spaces (and EXO's '?'): found when it is there, the old folder kept when it isn't", async () => {
-      // Windows can't name a folder with "?", so there it is only the spaces.
-      const spaced = join(root, process.platform === "win32" ? "boxin game" : "boxin game?", "vg game moved");
-      mkdirSync(spaced, { recursive: true });
-      const found = swap(exo, "exo-spaced", spaced);
-      expect((await found.run()).refreshed).toEqual(["exo-spaced"]);
-      expect(found.f.get("exo-spaced", "SOUL.md")).toContain(`working in ${spaced}.`);
+    it("a path with spaces (and a '?'): the soul stays whether or not that path exists", async () => {
+      const spaced = "/Users/ash/Projects/boxin game?/vg game moved";
+      const found = park(exo, "exo-spaced", spaced);
+      expect((await refreshSouls(found.f, soulTemplates(), DAY)).refreshed).toEqual([]);
+      expect(found.f.get("exo-spaced", "SOUL.md")).toBe(found.soul);
+      expect(found.soul).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
+      expect(found.soul).not.toContain("vg game moved");
 
-      const gone = swap(exo, "exo-spaced-gone", join(root, "boxin game?", "not here either"));
-      expect((await gone.run()).refreshed).toEqual(["exo-spaced-gone"]);
-      expect(gone.f.get("exo-spaced-gone", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
-      expect(details("exo-spaced-gone")).toContain("EXO lead kept its old folder because its project's folder wasn't found on this Mac.");
+      const gone = park(exo, "exo-spaced-gone", "/Users/ash/Projects/boxin game?/not here either");
+      expect((await refreshSouls(gone.f, soulTemplates(), DAY)).refreshed).toEqual([]);
+      expect(gone.f.get("exo-spaced-gone", "SOUL.md")).toBe(gone.soul);
+      expect(gone.soul).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
     });
 
     it("the same folder in the roster and the soul is never looked up", async () => {
       let asked = 0;
-      const f = fakeFiles();
-      f.set("vg-game-lead", "SOUL.md", exo.soul);
-      await refreshSouls(f, [leadEntry(exo, exo.values.folder)], DAY, async () => {
+      const { f, soul } = park(exo, "vg-game-same", exo.values.folder);
+      await refreshSouls(f, soulTemplates(), DAY, async () => {
         asked += 1;
         return false;
       });
       expect(asked).toBe(0);
-      expect(f.get("vg-game-lead", "SOUL.md")).toContain("working in /Users/ash/Projects/boxin game?/vg-game.");
+      expect(f.get("vg-game-same", "SOUL.md")).toBe(soul);
     });
   });
 
@@ -435,7 +398,7 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
     const rows = botChangeRows().filter((r) => r.kind === "one" && r.change.monoId === "lead-x");
     expect(rows).toHaveLength(1);
     const c = rows[0].kind === "one" ? rows[0].change : undefined;
-    expect(c?.line).toBe("Hivra lead's soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.");
+    expect(c?.line).toBe(skippedLine("Hivra lead"));
     expect(c?.note).toBe(true);
     expectPlain(c!.line);
     // Nothing to undo, and the next pass doesn't say it again.
@@ -449,11 +412,15 @@ describe("refreshSouls with no recorded template: only a soul the app itself see
 
 describe("plain sentences", () => {
   it("every section heading in the app's soul templates has its own sentence", () => {
-    const lead = { id: "hub-lead", name: "MonoCode Hub lead", projectId: "hub", projectName: "MonoCode Hub" } as Parameters<typeof leadSoul>[0];
-    const souls = [...Object.values(TEAM_SOULS).map((s) => defaultSoul(s)), defaultSoul(leadSoul(lead, "/x")), defaultSoul(CHECKER_SOUL)];
-    const headings = new Set(souls.flatMap((s) => soulSections(s).map((x) => x.key.replace(/^## /, ""))));
+    const headings = new Set(
+      soulTemplates([{ id: "checker", name: "Checker", mascot: "robot", color: "x", projects: [] }]).flatMap((t) =>
+        soulSections(t.template).map((x) => x.key.replace(/^## /, "")),
+      ),
+    );
+    expect([...headings].sort()).toEqual(["", "Limits", "Role", "What I watch for", "Who I am"]);
     expect([...headings].filter((h) => !(h in SECTION_SENTENCES))).toEqual([]);
-    for (const sentence of Object.values(SECTION_SENTENCES)) {
+    for (const key of headings) {
+      const sentence = SECTION_SENTENCES[key];
       expect(sentence).toContain("{name}");
       expectPlain(sentence);
       expect(sentence).toMatch(/\.$/);
@@ -462,19 +429,18 @@ describe("plain sentences", () => {
 });
 
 describe("soulTemplates", () => {
-  it("covers the team, each Lead (on its real folder) and the checker, and nobody else", () => {
+  it("covers only the checker", () => {
     const monos = [
-      { id: "chief-of-staff", name: "Chief of Staff", mascot: "letter", color: "x", projects: [] },
+      { id: "mina", name: "Mina", mascot: "letter", color: "x", projects: [] },
       { id: "hivra-lead", name: "Hivra lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/Hivra"] },
-      { id: "hub-lead", name: "MonoCode Hub lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/monocode-hub"] },
+      { id: "hub-lead", name: "Hub lead", mascot: "letter", color: "x", projects: ["/Users/ash/Projects/monocode-hub"] },
       { id: "checker", name: "Checker", mascot: "robot", color: "x", projects: [] },
-      { id: "some-mono", name: "Maya", mascot: "letter", color: "x", projects: [] },
+      { id: "maya", name: "Maya", mascot: "letter", color: "x", projects: [] },
     ];
     const t = soulTemplates(monos);
-    expect(t.map((x) => x.monoId)).toEqual(["chief-of-staff", "hivra-lead", "hub-lead", "checker"]);
-    expect(t[1].template).toContain("working in /Users/ash/Projects/Hivra");
-    expect(t[1].template).toContain("Your workers ask you, not Ash");
-    expect(t[2].template).toContain("You are hub-lead, the lead of hub.");
-    expect(t[2].template).toContain("Developing the hub from inside the hub");
+    expect(t.map((x) => x.monoId)).toEqual(["checker"]);
+    expect(t[0].template).toContain("## Role");
+    expect(t[0].template).toContain("I'm the Checker");
+    expect(t[0].template).not.toContain("You are Hivra lead");
   });
 });

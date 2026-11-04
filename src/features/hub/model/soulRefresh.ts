@@ -16,7 +16,7 @@
 //   as the 15 Oct leads), the soul is swapped only when it is exactly a soul the app itself once seeded
 //   (knownSouls.generated.ts, built from git history by scripts/known-souls.mjs); if it differs at all, Ash may have
 //   edited it, so it is left alone and a plain row says so ("Hivra lead's soul has your own changes, so the app's update
-//   was skipped. Ask Alfred to merge it if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
+//   was skipped. Ask for a merge if you want it."). "## Skills" (the skills a Mono picked up) keeps every skill and
 //   adds any new template ones.
 // - The row reads as what changes for that Mono, one plain sentence per section ("Hivra lead will now ask before
 //   handing work to Ash"), from SECTION_SENTENCES. Never a diff, an id or a file path (design brief rule 14).
@@ -24,11 +24,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listMonos, type Mono } from "../../monos/model/mono";
 import { defaultSoul, readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { findBotChange, recordBotChange, recordBotNote } from "./botChanges";
-import { teamSpecOf } from "./builtInMonos";
 import { CHECKER_MONO_ID, CHECKER_NAME, CHECKER_SOUL } from "./hubChecker";
-import { leadFor, leadSoul } from "./hubLeads";
 import { KNOWN_LEAD_SHAPES, KNOWN_SOUL_HASHES } from "./knownSouls.generated";
-import { teamSouls } from "./teamPack";
 import { forUser, forYou } from "./userName";
 
 export const SOUL_TEMPLATE_FILE: AgentFilePath = "soul-template.md";
@@ -59,20 +56,13 @@ export type SoulTemplate = {
   render?(folder: string | null): string;
 };
 
-/** The template each Mono on the roster follows today: the team's souls, each Lead's and the checker's. */
+/**
+ * Templates a refresh may apply. A team or lead soul is not one of them: a template only changes how a new Mono is
+ * made, and a soul already on disk stays, edited or not. The checker is still the app's own.
+ */
 export function soulTemplates(monos: readonly Mono[] = listMonos()): SoulTemplate[] {
   return monos.flatMap((mono): SoulTemplate[] => {
     const name = mono.name?.trim() || mono.id;
-    const spec = teamSpecOf(mono);
-    const souls = teamSouls();
-    if (spec && souls[spec.id]) return [{ monoId: mono.id, name, template: defaultSoul(souls[spec.id]) }];
-    const lead = leadFor(mono.id);
-    if (lead) {
-      const folder = mono.projects[0] ?? null;
-      const values = { id: mono.id, name: lead.name, projectName: lead.projectName, projectId: lead.projectId, folder };
-      const render = (f: string | null) => defaultSoul(leadSoul({ ...lead, id: mono.id }, f));
-      return [{ monoId: mono.id, name, template: render(folder), values, render }];
-    }
     if (mono.id === CHECKER_MONO_ID) return [{ monoId: mono.id, name: name || CHECKER_NAME, template: defaultSoul(forUser(CHECKER_SOUL)) }];
     return [];
   });
@@ -195,7 +185,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "": "{name}'s opening line is updated.",
   "Standing instructions": "{name}'s main instructions are updated to the app's newer wording.",
   // Leads
-  "Your job": "{name} will now act as an orchestrator: small things itself, bigger pieces to workers with Ash's own words, and it talks to Chief of Staff rather than Ash unless the work is routed to him.",
+  "Your job": "{name} will now act as an orchestrator: small things itself, and bigger pieces to workers in the user's own words.",
   "Before you act": "{name} will now check its project's memory before acting, answer a long message fast with every ask listed in Ash's order before it starts, and log only real asks, not questions it answers there and then.",
   "How you run the project": "{name} will now confirm when work has really started, keep anything stuck visible with the reason, and ask Ash only from its own chat when it can't go on without him.",
   "Finishing": "{name} will now prove its own work before calling it done, and ask Ash to look only at very critical work.",
@@ -208,7 +198,7 @@ export const SECTION_SENTENCES: Readonly<Record<string, string>> = {
   "How I talk to Ash": "{name} will now talk to Ash the newer way: outcome first, plain words, one question at a time.",
   "How I talk": "{name} will now talk the newer way: plain words, short, and saying what's real before anyone asks.",
   "What I own": "{name}'s list of what it owns is updated.",
-  "Ash's standing rules": "{name}'s list of Ash's standing rules is updated.",
+  "Standing rules": "{name}'s list of standing rules is updated.",
   "Limits": "{name}'s list of what it stays out of is updated.",
   "What I watch for": "{name}'s list of what it watches for is updated.",
   "How I hand work to a project Lead and get the report back": "{name} will now brief a Lead with the outcome, what's already done and what not to touch, and expect a start confirmation and proof back.",
@@ -259,11 +249,7 @@ export function templateFingerprint(text: string): string {
   return (h >>> 0).toString(16).padStart(8, "0");
 }
 
-/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name and pointing to Alfred, who looks after souls. */
-/** The skipped row's button: Alfred's chat, with the ask typed in for Ash to send. */
-export function askAlfred(name: string): { monoId: string; label: string; text: string } {
-  return { monoId: "alfred", label: "Ask Alfred", text: `merge ${name}'s update` };
-}
+/** "Hivra lead's soul has your own changes, ...": the row for a soul left alone, naming the Mono by its display name. */
 
 /** A soul row once undone. */
 export function undoneSoulLine(name: string): string {
@@ -271,7 +257,7 @@ export function undoneSoulLine(name: string): string {
 }
 
 export function skippedLine(name: string): string {
-  return `${name}'s soul has your own changes, so the app's update was skipped. Ask Alfred to merge it if you want it.`;
+  return `${name}'s soul has your own changes, so the app's update was skipped.`;
 }
 
 async function sha256(text: string): Promise<string> {
@@ -419,7 +405,7 @@ export async function refreshSouls(
         if (!match) {
           const id = `soul-skip:${monoId}:${templateFingerprint(template)}`;
           if (!findBotChange(id)) {
-            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is", ask: askAlfred(name) });
+            recordBotNote({ id, bot: name, monoId, line: skippedLine(name), now: "Your own version", after: "Left as it is" });
             skipped.push(monoId);
           }
           continue;

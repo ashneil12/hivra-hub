@@ -32,7 +32,7 @@ it("one saved before the filter is left out when the chat loads", async () => {
     model: "claude:sonnet-5",
     modelSettings: {},
     runtimeMode: "default",
-    title: "frank",
+    title: "ed",
     blocks: [
       { id: "u1", role: "user", text: "hi" },
       { id: "n1", role: "system", text: NOTICE },

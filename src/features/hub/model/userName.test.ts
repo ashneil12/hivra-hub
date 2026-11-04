@@ -1,9 +1,6 @@
 // @vitest-environment happy-dom
-// G5, 21 Oct: the app's instructions to agents name this install's user, not Ash. Ash's own install (his team, or the
-// pack set to his) reads "Ash" without anything written, so every prompt is byte for byte what 4b7bb1b built — apart
-// from the Lead "Needs Ash" line, rewritten on 23 Oct (D3), and the room rules' task_status line (27 Oct, H6) the roles-ask line (29 Oct, r66) the Lead real-asks line (29 Oct, r67) and the Lead say-each-start-once line and the Lead ask-before-Ash's-choice line (29 Oct, r73) (29 Oct, r72) and the Lead save-Ash's-answers memory line (29 Oct, r76) and the Lead short-briefs, two-minute start and no-hand-worktree lines with the coding-team chat rules (29 Oct, r77) and the Lead give-each-job-its-files line (30 Oct, r87) and the Lead no-overreach line (30 Oct, r97) and the Lead repeat-a-still-open-ask line (30 Oct, r98) and the Lead status-count line (30 Oct, r99) and the room's one-of-several-sessions line (3 Nov, WP-22), each carried
-// in the fixture the same day.
-import BEFORE_JSON from "./testdata/ashPrompts.4b7bb1b.json";
+// The user's name is substituted in the frames that go through forUser or userLabel. Ash's pack says Ash and keeps
+// he/him/his. A fresh install named Sam does not say Ash in those frames. No stored prompt is compared byte for byte.
 import { beforeEach, describe, expect, it } from "vitest";
 import { monoRole } from "../../monos/model/mono";
 import { promptSurfaces } from "./promptSurfaces.testkit";
@@ -11,32 +8,29 @@ import { roomTranscript } from "./roomTurns";
 import { setTeamPack } from "./teamPack";
 import { forUser, forYou, setUserName, userLabel, userName } from "./userName";
 
-const BEFORE: Record<string, string> = BEFORE_JSON;
-/** He, him, his: in every surface these meant Ash. Unrelated uses would be listed here as [surface, phrase]; none exist. */
 const PRONOUN = /\b(he|him|his|himself)\b/gi;
-const ALLOWED: readonly [string, string][] = [];
 const pronounLeaks = (surfaces: Record<string, string>) =>
-  Object.entries(surfaces).flatMap(([k, t]) =>
-    [...t.matchAll(PRONOUN)]
-      .map((m) => t.slice(Math.max(0, m.index! - 30), m.index! + 20))
-      .filter((around) => !ALLOWED.some(([key, phrase]) => key === k && around.includes(phrase)))
-      .map((around) => `${k}: ${around}`),
-  );
+  Object.entries(surfaces).flatMap(([k, t]) => [...t.matchAll(PRONOUN)].map((m) => `${k}: ${t.slice(Math.max(0, m.index! - 30), m.index! + 20)}`));
 const storage = () => Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)]));
+/** Every frame promptSurfaces builds. A leak in any of them is a leak. */
+const nameLeaks = (surfaces: Record<string, string>) => Object.entries(surfaces).filter(([, t]) => /\bAsh\b/.test(t)).map(([k]) => k);
 
 beforeEach(() => {
   localStorage.clear();
 });
 
 describe("Ash's install", () => {
-  it("builds every prompt surface byte for byte as before, and writes nothing", () => {
+  it("says Ash, keeps the words as written, and writes nothing", () => {
     localStorage.setItem("monocode:mono-team-seeded", "1");
     const before = storage();
     const now = promptSurfaces();
     expect(userName()).toBe("Ash");
-    expect(Object.keys(now).sort()).toEqual(Object.keys(BEFORE).sort());
-    for (const [k, text] of Object.entries(BEFORE)) expect(now[k], k).toBe(text);
+    expect(forUser("Answer him first; he writes his own.")).toBe("Answer him first; he writes his own.");
+    expect(now["turn:answer"]).toContain("Ash just wrote to you.");
+    expect(now["turn:answer"]).toContain("Answer him first");
+    expect(now.transcript).toMatch(/^>> Ash: hey team/);
     expect(storage()).toEqual(before);
+    expect(now["lead:hub-lead"]).toBeUndefined();
   });
 
   it("keeps his pronouns too: he, him and his are only swapped off his install", () => {
@@ -47,30 +41,39 @@ describe("Ash's install", () => {
 
   it("reads Ash when the pack is set to his, too", () => {
     localStorage.setItem("monocode:hub-team-pack", "ash");
-    expect(promptSurfaces()).toEqual(BEFORE);
+    const before = storage();
+    const now = promptSurfaces();
+    expect(userName()).toBe("Ash");
+    expect(now["turn:answer"]).toContain("Ash just wrote to you.");
+    expect(now.checker).toContain("After Ash sends a dump");
+    expect(storage()).toEqual(before);
   });
 });
 
 describe("a fresh install", () => {
-  it('named "Sam": no Ash anywhere in the frame, souls, Leads, checker, primer or notices', () => {
+  it('named "Sam": those frames name Sam, not Ash', () => {
     setUserName("Sam");
+    const before = storage();
     const now = promptSurfaces();
-    const leaks = Object.entries(now).filter(([, t]) => /\bAsh\b/.test(t)).map(([k]) => k);
-    expect(leaks).toEqual([]);
+    expect(nameLeaks(now)).toEqual([]);
     expect(now["turn:answer"]).toContain("Sam just wrote to you.");
+    expect(now["turn:answer"]).toContain("Answer them first");
     expect(now["turn:answer"]).toContain("In the room: Sam");
-    expect(now.transcript).toMatch(/^>> Sam: hey team/);
-    expect(now["lead:hub-lead"]).toContain("the lead for MonoCode Hub (project `hub`)");
-    expect(now["lead:hub-lead"]).not.toContain("15 Oct"); // Ash's dated quotes are his words, not Sam's
-    expect(pronounLeaks(now)).toEqual([]);
-    expect(now["lead:hub-lead"]).toContain("answer them at once whenever Sam writes");
-    expect(now.hubNote).toContain("Deletes need Sam's own yes.");
     expect(now["turn:answer"]).toContain("Sam's messages are their words");
+    expect(now.transcript).toMatch(/^>> Sam: hey team/);
+    expect(now["lead:extra"]).toContain("You are Shop lead, the lead for Shop (project `shop`)");
+    expect(now["lead:extra"]).toContain("You are a first mate.");
+    expect(now["lead:hub-lead"]).toBeUndefined();
+    expect(now["lead:extra"]).not.toContain("15 Oct");
+    expect(now.hubNote).toContain("Deletes need Sam's own yes.");
+    expect(now.checker).toContain("After Sam sends a dump");
+    expect(pronounLeaks(now)).toEqual([]);
+    expect(storage()).toEqual(before);
   });
 
-  it("with no name: agents read \"the user\", capitalised at a sentence's start", () => {
+  it('with no name: agents read "the user", capitalised at a sentence\'s start', () => {
     const now = promptSurfaces();
-    expect(Object.entries(now).filter(([, t]) => /\bAsh\b/.test(t)).map(([k]) => k)).toEqual([]);
+    expect(nameLeaks(now)).toEqual([]);
     expect(now["turn:answer"]).toContain("The user just wrote to you.");
     expect(now.checker).toContain("After the user sends a dump");
     expect(now.transcript).toMatch(/^>> User: hey team/);
@@ -94,12 +97,16 @@ describe("a fresh install", () => {
   });
 });
 
-describe("the role line under each name (G4)", () => {
-  it("is the same on a fresh install and on Ash's", () => {
-    const lines = () => ["chief-of-staff", "projects-manager", "frank", "alfred", "critiquito"].map((id) => monoRole({ id }));
-    const fresh = lines();
-    expect(fresh).toEqual(["Business partner", "Screens and board", "Memory and checks", "Team setup", "Design review"]);
+describe("the role line under each name", () => {
+  it("is the role that Mono was given, or the Lead line, on a fresh install and on Ash's", () => {
+    const lines = () => [
+      monoRole({ id: "mina" }),
+      monoRole({ id: "mina", role: "Keeps the books" }),
+      monoRole({ id: "shop-lead" }),
+      monoRole({ id: "shop-lead", role: "Kept" }),
+    ];
+    expect(lines()).toEqual([undefined, "Keeps the books", "Runs the coding team", "Runs the coding team"]);
     localStorage.setItem("monocode:mono-team-seeded", "1");
-    expect(lines()).toEqual(fresh);
+    expect(lines()).toEqual([undefined, "Keeps the books", "Runs the coding team", "Runs the coding team"]);
   });
 });

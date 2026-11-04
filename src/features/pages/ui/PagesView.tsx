@@ -43,15 +43,13 @@ const btn = "rounded-md px-3 py-1.5 text-[12px] transition-colors";
 const quietBtn = `${btn} text-content/70 hover:bg-surface-raised hover:text-content`;
 const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const STATE_DOT = { ok: "bg-status-ok", warn: "bg-status-warn", bad: "bg-status-bad" } as const;
-const ASKER = "Projects Manager";
-const ASKER_ID = "projects-manager";
 export const NOT_TIED = "Not tied to a project";
-/** The project's lead if one is seated, else Projects Manager, else the first seated Mono. */
+/** The project's lead if one is seated, else the first seated Mono. */
 export function defaultBuilder(projectId: string, seated: { id: string }[]): string {
   const folder = hubData().listProjects().find((p) => p.id === projectId)?.folder;
   const lead = folder ? listMonos().find((m) => leadFor(m.id) && monoWorksOn(m, folder)) : undefined;
   if (lead && seated.some((m) => m.id === lead.id)) return lead.id;
-  return seated.some((m) => m.id === ASKER_ID) ? ASKER_ID : seated[0]?.id ?? ASKER_ID;
+  return seated[0]?.id ?? "";
 }
 export const PAGES_CANT = "This can't change the app's core screens, the sidebar, settings, keys or Monos.";
 function Limits() {
@@ -573,7 +571,7 @@ export function PagesContent() {
   const seated = listMonos().map((m) => ({ id: m.id, name: m.name ?? m.id }));
   const [picked, setPicked] = useState<string>();
   const askerId = picked && seated.some((m) => m.id === picked) ? picked : defaultBuilder(projectId, seated);
-  const asker = seated.find((m) => m.id === askerId)?.name ?? ASKER;
+  const asker = seated.find((m) => m.id === askerId)?.name ?? "A Mono";
 
   const ask = (prompt: string) => {
     setBuild({ prompt, state: "building" });

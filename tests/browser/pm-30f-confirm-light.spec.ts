@@ -1,6 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { PNG } from "pngjs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 import { ringContrast } from "./contrastProbe";
 
@@ -68,6 +69,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1512, height: 982 });
   await page.addInitScript(() => localStorage.setItem("monocode.colorScheme", "light"));
+  await seedExampleRoster(page);
   await openLocalHub(page);
   await expect(page.locator("html")).toHaveClass(/theme-light/, { timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
@@ -99,7 +101,7 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
   await expect(roomRow).toHaveCount(1);
 
   // The Mono confirm.
-  const row = page.locator("[data-mono-status]", { hasText: "Alfred" }).first();
+  const row = page.locator("[data-mono-status]", { hasText: "Ada" }).first();
   await row.hover();
   await row.locator('button[title="Mono options"]').click();
   const nameBox = page.getByRole("textbox", { name: "Mono name" });

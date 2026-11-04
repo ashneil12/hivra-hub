@@ -1022,7 +1022,6 @@ function otherSeatNames(chatId: string, me: Seat): string[] {
       const words = n.trim().split(/\s+/);
       if (words.length > 1) out.add(words.map((w) => w[0]).join(""));
     }
-    if (seat.id === "chief-of-staff") out.add("CoS");
   }
   return [...out].filter((n) => n.length >= 2);
 }
@@ -1097,8 +1096,8 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     text = NO_REPLY;
   }
   // Words Ash already watched arrive stay in the room: a turn that wrote them and then decided on NO_REPLY posts them
-  // without it, rather than its live message vanishing when the turn ends (r52, frank). Unseen, it stays quiet.
-  // r67 (S8 on 0.16.9 dev): not for a seat that chimed in unasked and narrated its way to NO_REPLY. frank's "Ash locked
+  // without it, rather than its live message vanishing when the turn ends (r52, ed). Unseen, it stays quiet.
+  // r67 (S8 on 0.16.9 dev): not for a seat that chimed in unasked and narrated its way to NO_REPLY. ed's "Ash locked
   // two calls. I'll check they're actually in Tally's memory before I say anything." then NO_REPLY posted "Ash locked two
   // calls.", a lead-in to the narration that adds nothing; the seat chose silence, so its draft goes with the narration.
   const narratedChime = wake.kind === "chime" && meta.dropped.length > 0;

@@ -32,27 +32,27 @@ beforeEach(() => {
 describe("a Mono's own team", () => {
   it("is made the first time it is needed, in the folder the app gives, and kept by the Mono's id", async () => {
     const make = vi.fn(async (monoId: string) => `${DATA}/${monoId}`);
-    expect(monoTeam("alfred")).toBeUndefined();
-    const team = await ensureMonoTeam("alfred", make, 1000);
-    expect(team).toEqual({ monoId: "alfred", folder: `${DATA}/alfred`, createdAt: 1000 });
-    expect(make).toHaveBeenCalledWith("alfred");
+    expect(monoTeam("cam")).toBeUndefined();
+    const team = await ensureMonoTeam("cam", make, 1000);
+    expect(team).toEqual({ monoId: "cam", folder: `${DATA}/cam`, createdAt: 1000 });
+    expect(make).toHaveBeenCalledWith("cam");
     // Asked again (a folder removed by hand comes back), it is the same team, made when it first was.
-    expect(await ensureMonoTeam("alfred", make, 5000)).toEqual(team);
+    expect(await ensureMonoTeam("cam", make, 5000)).toEqual(team);
     // It survives a reload (kept on this Mac), and is found by its folder, a trailing slash or not.
     resetMonoTeams();
-    expect(monoTeam("alfred")).toEqual(team);
-    expect(monoTeamOfFolder(`${DATA}/alfred/`)?.monoId).toBe("alfred");
-    expect(isMonoTeamFolder(`${DATA}/frank`)).toBe(false);
+    expect(monoTeam("cam")).toEqual(team);
+    expect(monoTeamOfFolder(`${DATA}/cam/`)?.monoId).toBe("cam");
+    expect(isMonoTeamFolder(`${DATA}/ed`)).toBe(false);
     expect(isMonoTeamFolder(undefined)).toBe(false);
   });
 
   it("refuses a folder the app couldn't make, and a deleted Mono's team is forgotten", async () => {
-    await expect(ensureMonoTeam("frank", async () => "")).rejects.toThrow("couldn't make a folder");
-    expect(monoTeam("frank")).toBeUndefined();
-    await ensureMonoTeam("frank", async () => `${DATA}/frank`);
-    forgetMonoTeam("frank");
-    expect(monoTeam("frank")).toBeUndefined();
-    expect(isMonoTeamFolder(`${DATA}/frank`)).toBe(false);
+    await expect(ensureMonoTeam("ed", async () => "")).rejects.toThrow("couldn't make a folder");
+    expect(monoTeam("ed")).toBeUndefined();
+    await ensureMonoTeam("ed", async () => `${DATA}/ed`);
+    forgetMonoTeam("ed");
+    expect(monoTeam("ed")).toBeUndefined();
+    expect(isMonoTeamFolder(`${DATA}/ed`)).toBe(false);
   });
 
   it("is named after its Mono", () => {
@@ -75,12 +75,12 @@ describe("which team a Mono opens", () => {
     expect(teamFor({ id: "vg-game-lead" }, PROJECTS)?.kind).toBe("coding");
     // A project with no code folder has no coding team.
     expect(teamFor({ id: "ideas-lead" }, PROJECTS)).toBeUndefined();
-    expect(teamFor({ id: "alfred", name: "Alfred" }, PROJECTS)).toBeUndefined();
-    await ensureMonoTeam("alfred", async () => `${DATA}/alfred`);
-    expect(teamFor({ id: "alfred", name: "Alfred" }, PROJECTS)).toEqual({
+    expect(teamFor({ id: "cam", name: "Alfred" }, PROJECTS)).toBeUndefined();
+    await ensureMonoTeam("cam", async () => `${DATA}/cam`);
+    expect(teamFor({ id: "cam", name: "Alfred" }, PROJECTS)).toEqual({
       kind: "mono",
-      monoId: "alfred",
-      folder: `${DATA}/alfred`,
+      monoId: "cam",
+      folder: `${DATA}/cam`,
       name: "Alfred's team",
     });
   });
@@ -103,9 +103,9 @@ describe("a project a Mono names", () => {
 
 describe("a Mono's team in the hub's navigation", () => {
   it("is a workspace like a coding team, selected with no project", () => {
-    const sel = { project: "today", item: monoTeamItem("alfred") };
-    expect(sel.item).toBe("team:alfred");
-    expect(monoTeamInView(sel)).toBe("alfred");
+    const sel = { project: "today", item: monoTeamItem("cam") };
+    expect(sel.item).toBe("team:cam");
+    expect(monoTeamInView(sel)).toBe("cam");
     expect(hubSurfaceOpen(sel)).toBe(false);
     expect(monoTeamInView({ project: "today", item: "inbox" })).toBeUndefined();
     expect(hubSurfaceOpen({ project: "today", item: "inbox" })).toBe(true);

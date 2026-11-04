@@ -5,6 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { noteChats, resetWaitingChats } from "../../hub/model/waitingChats";
 import { resetDelegationStore, setDelegationRows } from "../../monos/model/delegationStore";
 import type { Delegation } from "../../monos/model/delegations";
+import { ensureProjectLeads } from "../../hub/model/hubLeads";
 import { addMono } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { SessionStateStore } from "../../sessions/model/sessionStateStore";
@@ -23,6 +24,7 @@ beforeEach(() => {
   resetDelegationStore();
   resetWaitingChats();
   addMono({ id: "vg-game-lead", sessionId: "s-exo", mascot: "letter", color: "#000", projects: [] });
+  ensureProjectLeads([{ id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/p/vg-game" }]);
 });
 afterEach(() => vi.useRealTimers());
 

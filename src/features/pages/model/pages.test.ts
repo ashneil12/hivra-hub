@@ -11,7 +11,7 @@ it("matches a request to a layout of all five ready-made blocks", () => {
   expect(p.title).toBe("Example: EXO · Bugs and fixes");
   expect(pageBlocks(p).map((b) => b.kind).sort()).toEqual(["calendar", "chart", "list", "note", "status"]);
   expect(pageBlocks(p)[0].kind).toBe("status");
-  expect(pageBlocks(buildPreview("my schedule this week", "frank", 2))[0].kind).toBe("calendar");
+  expect(pageBlocks(buildPreview("my schedule this week", "ed", 2))[0].kind).toBe("calendar");
 });
 
 it("Keep lists the page and adds a Bot changes row whose Undo takes it away again", async () => {

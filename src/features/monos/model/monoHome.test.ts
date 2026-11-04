@@ -38,8 +38,8 @@ function fakeHome() {
   return { files, backend, roster, chats, saves };
 }
 
-const COS = { id: "chief-of-staff", name: "Chief of Staff", mascot: "letter", color: "x", projects: [], sessionId: "df9afb39" };
-const FRANK = { id: "frank", name: "frank", mascot: "letter", color: "x", projects: [], sessionId: "2f89e6f4" };
+const COS = { id: "ada", name: "Chief of Staff", mascot: "letter", color: "x", projects: [], sessionId: "df9afb39" };
+const FRANK = { id: "ed", name: "ed", mascot: "letter", color: "x", projects: [], sessionId: "2f89e6f4" };
 
 beforeEach(() => {
   localStorage.clear();
@@ -55,12 +55,12 @@ describe("the Monos' roster lives in their home, not only in the WebView", () =>
     resetHomeForTests(true);
     expect(await hydrateRosterFromHome()).toBe("imported");
     expect(home.roster()!.monos.map((m) => [m.id, m.sessionId])).toEqual([
-      ["chief-of-staff", "df9afb39"],
-      ["frank", "2f89e6f4"],
+      ["ada", "df9afb39"],
+      ["ed", "2f89e6f4"],
     ]);
     // And each Mono's own chats.json has its chat.
-    expect(home.chats("chief-of-staff")).toEqual({ main: "df9afb39", history: [] });
-    expect(home.chats("frank")).toEqual({ main: "2f89e6f4", history: [] });
+    expect(home.chats("ada")).toEqual({ main: "df9afb39", history: [] });
+    expect(home.chats("ed")).toEqual({ main: "2f89e6f4", history: [] });
   });
 
   it("survives the WebView forgetting everything: the Monos come back with their chats", async () => {
@@ -71,8 +71,8 @@ describe("the Monos' roster lives in their home, not only in the WebView", () =>
     expect(listMonos()).toEqual([]);
     expect(await hydrateRosterFromHome()).toBe("restored");
     expect(listMonos().map((m) => [m.id, m.sessionId])).toEqual([
-      ["chief-of-staff", "df9afb39"],
-      ["frank", "2f89e6f4"],
+      ["ada", "df9afb39"],
+      ["ed", "2f89e6f4"],
     ]);
   });
 
@@ -83,14 +83,14 @@ describe("the Monos' roster lives in their home, not only in the WebView", () =>
     resetHomeForTests(false);
     // The rail repaired the team on first render, into the empty WebView: same id as the file, no chat yet; plus a
     // new one that somehow names CoS's chat.
-    addMono({ id: "chief-of-staff", name: "Chief of Staff", mascot: "letter", color: "x", projects: [] });
-    addMono({ id: "alfred", name: "Alfred", mascot: "letter", color: "x", projects: [], sessionId: "df9afb39" } as never);
+    addMono({ id: "ada", name: "Chief of Staff", mascot: "letter", color: "x", projects: [] });
+    addMono({ id: "cam", name: "Alfred", mascot: "letter", color: "x", projects: [], sessionId: "df9afb39" } as never);
     expect(await hydrateRosterFromHome()).toBe("merged");
     const monos = listMonos();
-    expect(monos.map((m) => m.id)).toEqual(["chief-of-staff", "alfred"]);
+    expect(monos.map((m) => m.id)).toEqual(["ada", "cam"]);
     expect(monos[0].sessionId).toBe("df9afb39");
     expect(monos[1].sessionId).toBeUndefined();
-    expect(home.roster()!.monos.map((m) => m.id)).toEqual(["chief-of-staff", "alfred"]);
+    expect(home.roster()!.monos.map((m) => m.id)).toEqual(["ada", "cam"]);
   });
 
   it("writes every roster change through to MONOS.json once the launch reconcile is done", async () => {
@@ -101,12 +101,12 @@ describe("the Monos' roster lives in their home, not only in the WebView", () =>
     setHomeBackend(home.backend);
     resetHomeForTests(true);
     // A change before the reconcile waits for it (never a half-read file overwritten).
-    updateMono("chief-of-staff", (m) => ({ ...m, name: "CoS" }));
+    updateMono("ada", (m) => ({ ...m, name: "CoS" }));
     expect(home.saves).toEqual([]);
     expect(await hydrateRosterFromHome()).toBe("saved");
-    updateMono("chief-of-staff", (m) => ({ ...m, name: "Chief of Staff" }));
+    updateMono("ada", (m) => ({ ...m, name: "Chief of Staff" }));
     await rosterWritesSettled();
-    expect(home.roster()!.monos[0]).toMatchObject({ id: "chief-of-staff", name: "Chief of Staff" });
+    expect(home.roster()!.monos[0]).toMatchObject({ id: "ada", name: "Chief of Staff" });
   });
 
   it("takes a newer file over an older cache", async () => {
@@ -117,12 +117,12 @@ describe("the Monos' roster lives in their home, not only in the WebView", () =>
     setHomeBackend(home.backend);
     resetHomeForTests(true);
     expect(await hydrateRosterFromHome()).toBe("file-newer");
-    expect(listMonos().map((m) => m.id)).toEqual(["chief-of-staff", "frank"]);
+    expect(listMonos().map((m) => m.id)).toEqual(["ada", "ed"]);
   });
 
   it("is off outside the app: nothing is read or written", async () => {
     expect(await hydrateRosterFromHome()).toBe("off");
-    expect(await recordMonoChat("frank", "x")).toBe(false);
+    expect(await recordMonoChat("ed", "x")).toBe(false);
   });
 });
 
@@ -133,10 +133,10 @@ describe("chat ids move out of the WebView into each Mono's chats.json", () => {
     setHomeBackend(home.backend);
     resetHomeForTests(true);
     await hydrateRosterFromHome();
-    saveMonoSessionId("chief-of-staff", "fresh-chat");
+    saveMonoSessionId("ada", "fresh-chat");
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(home.chats("chief-of-staff")).toEqual({ main: "fresh-chat", history: ["df9afb39"] });
+    expect(home.chats("ada")).toEqual({ main: "fresh-chat", history: ["df9afb39"] });
     // The same chat again changes nothing.
-    expect(await recordMonoChat("chief-of-staff", "fresh-chat")).toBe(false);
+    expect(await recordMonoChat("ada", "fresh-chat")).toBe(false);
   });
 });

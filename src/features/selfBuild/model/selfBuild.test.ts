@@ -39,7 +39,7 @@ async function app() {
 }
 
 const ME = {
-  monoId: "chief-of-staff",
+  monoId: "ada",
   name: "Chief of Staff",
   projects: ["/Users/ash/Projects/hivra"],
 };
@@ -364,7 +364,7 @@ it("in a room, Ash writing back after the seat's post counts as heard back; his 
   const a = await app();
   const chat = () => ({ blocks: [] }) as never;
   const room = (messages: Array<{ from: string; text: string }>) =>
-    [{ id: "tally:leadership", memberIds: ["cos", "alfred"], conversations: [{ id: "c1", messages }] }] as never;
+    [{ id: "tally:leadership", memberIds: ["cos", "cam"], conversations: [{ id: "c1", messages }] }] as never;
   expect(a.said.askedAshAndHeardBack(chat(), "cos", room([{ from: "ash", text: "add a new mono for x posts" }]))).toBe(false);
   expect(
     a.said.askedAshAndHeardBack(chat(), "cos", room([
@@ -383,7 +383,7 @@ it("in a room, Ash writing back after the seat's post counts as heard back; his 
   expect(
     a.said.askedAshAndHeardBack(chat(), "cos", room([
       { from: "ash", text: "add a new mono for x posts" },
-      { from: "alfred", text: "Who does it answer to?" },
+      { from: "cam", text: "Who does it answer to?" },
       { from: "ash", text: "cos" },
     ])),
   ).toBe(true);

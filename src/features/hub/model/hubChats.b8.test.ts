@@ -56,7 +56,7 @@ it("a named new conversation and a renamed one keep their names, and the attachm
   const store = memoryStore();
   let chat = await import("./hubChats");
   await chat.loadRooms(store);
-  const room = chat.createChat("hub", "Leadership Board", ["chief-of-staff"]);
+  const room = chat.createChat("hub", "Leadership Board", ["ada"]);
   const photo = { id: "p", name: "hud.png", mimeType: "image/png", kind: "image" as const, size: 9, path: "/tmp/monocode-attachments/hud.png" };
   const named = chat.startConversation(room.id, "the hud looks off on the external monitor", { title: "HUD crispness", attachments: [photo] });
   const other = chat.startConversation(room.id, "what needs me today");

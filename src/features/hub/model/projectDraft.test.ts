@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// New project's interview with Chief of Staff's engine mocked (the turn itself: projectInterview.ts): the draft keeps the
+// New project's interview with the engine mocked (the turn itself: projectInterview.ts): the draft keeps the
 // chat, a reply's `project` block becomes the preview card, nothing is made before Create, and with no engine the chat
 // says so instead of asking scripted questions.
 import { createElement } from "react";
@@ -67,7 +67,7 @@ it("a draft with a name is kept (and stored); an unnamed one isn't shown", () =>
   expect(projectDraft()).toBeNull();
 });
 
-it("Chief of Staff asks what it needs, and its proposal becomes the card; nothing is made before Create", async () => {
+it("the interview asks what it needs, and its proposal becomes the card; nothing is made before Create", async () => {
   harness.replies = [
     "Moonrise, nice. What's it about, and do you already have code for it?",
     'Got it.\n```project\n{"name": "Moonrise", "oneLine": "A cosy farming game for the Mac notch", "template": "game-studio", "code": "none", "addon": true}\n```',
@@ -78,7 +78,8 @@ it("Chief of Staff asks what it needs, and its proposal becomes the card; nothin
   await enter("[data-hub-new-project-name]", "Moonrise");
   expect(host.textContent).toContain("What's it about, and do you already have code for it?");
   // The first turn: the short note on what Create needs, not a script.
-  expect(harness.prompts[0]).toContain('Ash is setting up a new project in the hub, called "Moonrise"');
+  expect(harness.prompts[0]).toContain('A new project is being set up in the hub, called "Moonrise"');
+  expect(harness.prompts[0]).toContain("You are a first mate.");
   expect(harness.prompts[0]).toContain("```project");
   expect(q("[data-hub-new-project-preview]")).toBeNull();
 
@@ -92,16 +93,16 @@ it("Chief of Staff asks what it needs, and its proposal becomes the card; nothin
   expect(host.textContent).not.toContain("```project");
   expect(q('[data-hub-template="game-studio"]')?.className).toContain("bg-content/12");
   expect(q("[data-hub-new-project-code]")?.getAttribute("data-hub-new-project-code")).toBe("none");
-  expect(q("[data-hub-addon] [role=checkbox]")?.getAttribute("aria-checked")).toBe("true");
+  expect(q("[data-hub-new-project-team]")?.textContent).toContain("Moonrise lead, its own lead");
   expect(mockHubData.listProjects()).toHaveLength(before);
   expect(made).toEqual([]);
-  expect(projectDraft()).toMatchObject({ name: "Moonrise", tpl: "game-studio", oneLine: "A cosy farming game for the Mac notch" });
+  expect(projectDraft()).toMatchObject({ name: "Moonrise", tpl: "game-studio", oneLine: "A cosy farming game for the Mac notch", addon: true });
 
   await act(async () => q("[data-hub-create-project]")!.click());
   expect(made).toEqual([{ name: "Moonrise", oneLine: "A cosy farming game for the Mac notch", code: false, folder: undefined, shape: "gamepad" }]);
 });
 
-it("leaving mid-interview and coming back shows the chat as it was, and Chief of Staff answers Ash's last line", async () => {
+it("leaving mid-interview and coming back shows the chat as it was, and the interview answers the last line", async () => {
   saveProjectDraft({
     name: "Moonrise", started: true, tpl: null, addon: false,
     lines: [{ from: "cos", text: "What's Moonrise about?" }, { from: "ash", text: "A cosy farming game" }],
@@ -117,7 +118,7 @@ it("leaving mid-interview and coming back shows the chat as it was, and Chief of
   await act(async () => root.unmount());
   expect(projectDraft()?.lines.map((l) => l.text)).toEqual(["What's Moonrise about?", "A cosy farming game", "Who's it for?"]);
   root = createRoot(host);
-  // Back again, its last word is Chief of Staff's: nothing is asked again.
+  // Back again, the last word is already the interview's: nothing is asked again.
   await act(async () => root.render(createElement(NewProjectView)));
   await settle();
   expect(harness.prompts).toHaveLength(1);
@@ -128,7 +129,7 @@ it("with no engine to talk on, the chat says so plainly and asks nothing scripte
   harness.live = false;
   await act(async () => root.render(createElement(NewProjectView)));
   await enter("[data-hub-new-project-name]", "Moonrise");
-  expect(q("[data-hub-new-project-stuck]")?.textContent).toContain("no Claude Code runtime is connected");
+  expect(q("[data-hub-new-project-stuck]")?.textContent).toContain("no Claude runtime is connected");
   expect(harness.prompts).toHaveLength(0);
   expect(projectDraft()?.lines).toEqual([]);
   expect(q("[data-hub-new-project-preview]")).toBeNull();

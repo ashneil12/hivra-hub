@@ -43,7 +43,6 @@ export function changeStubOn(): boolean {
 }
 
 export type ChangeDeps = { roster?: readonly { id: string }[]; stub?: boolean };
-const NAMES: Record<string, string> = { "projects-manager": "Projects Manager", "chief-of-staff": "Chief of Staff" };
 /** Dev stub only: words that ask for a screen's look or behaviour. */
 const STUB_SCREEN = /\b(bigger|smaller|colou?r|font|rounder|button|screen|dark mode|look)\b/i;
 
@@ -52,7 +51,7 @@ export async function requestChange(req: ChangeRequest, deps: ChangeDeps = {}): 
   if (!req.prompt.trim()) return { status: "turned-down", reason: "Say what should change." };
   if (deps.stub ?? changeStubOn()) {
     if (req.flow !== "connect" && STUB_SCREEN.test(req.prompt))
-      return { status: "app-change", reason: `${NAMES[req.monoId] ?? req.monoId} says this is a change to the app itself: Example: that's how a screen looks.` };
+      return { status: "app-change", reason: `${req.monoId} says this is a change to the app itself: Example: that's how a screen looks.` };
     return { status: "ready", preview: stubPreview(req) };
   }
   return { status: "not-connected", reason: NOT_WIRED[req.flow] };
@@ -74,7 +73,7 @@ export async function redoChange(_previewId: string, _deps: ChangeDeps = {}): Pr
 setHubChangeHooks({ undo: (id) => undoChange(id), redo: (id) => redoChange(id) });
 
 const FLOW_WORD: Record<ChangeFlow, string> = { hub: "the hub", today: "Today", connect: "a connection" };
-/** "Projects Manager changed Today: Put “Sign-ups” on Today". */
+/** "<who> changed Today: Put “Sign-ups” on Today". `by` is the Mono that asked. */
 export function changeLine(c: Pick<HubChangeRecord, "by" | "flow" | "title">): string {
   return `${c.by} changed ${FLOW_WORD[c.flow]}: ${c.title}`;
 }
@@ -101,7 +100,7 @@ setHubChangeSource(() => {
 
 /** Dev only: example previews for each flow, every made-up row labelled Example:. */
 export function stubPreview(req: ChangeRequest): ChangePreview {
-  const by = NAMES[req.monoId] ?? req.monoId;
+  const by = req.monoId;
   const id = `example-${req.flow}-${Date.now().toString(36)}`;
   if (req.flow === "today")
     return { previewId: id, by, title: "Builds this week on Today",

@@ -1,21 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { test } from "@playwright/test";
+import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
-// G5, round 17, updated round 19 (Ash 21 Oct): a fresh install's onboarding (hub-dev.html?onboarding, empty storage,
-// no Ash OS) offers no pre-load; Ash's team arrives by importing his export. The team behind the card is the leadership
-// team. Its round 17 photos (pm-17-onboarding-*.png) show the old pre-load and are kept only as history.
-// A browser preview only: not Ash's Mac.
+// WP-05: a fresh install's onboarding offers the five starter templates, all unticked. Skip adds nobody.
+// Ticking one adds an ordinary Mono. There is no pre-load. A browser preview only: not Ash's Mac.
 // PM_PROOF_SPEC=pm-17-team-pack.spec.ts npx playwright test -c tests/browser/pm-screens.config.ts
 
 test.use({ viewport: { width: 1440, height: 900 } });
 
-test("fresh install onboarding: no pre-load, the default four behind it", async ({ page }) => {
-  await page.goto("/hub-dev.html?onboarding");
-  const onboarding = page.locator("[data-hub-onboarding]");
-  await expect(onboarding).toBeVisible({ timeout: 60_000 });
-  const notNow = page.getByRole("button", { name: "Not now" });
-  if (await notNow.isVisible().catch(() => false)) await notNow.click();
+test("fresh install onboarding: no pre-load, starter Monos unticked", async ({ page }) => {
+  await openOnboarding(page);
   await page.locator("[data-hub-onboarding-next]").click();
-  await expect(page.getByText("Pre-load a saved team")).toHaveCount(0);
-  await expect(page.locator("[data-hub-onboarding-team]")).toHaveText("Chief of Staff, Projects Manager, frank and Alfred.");
-  expect(await page.evaluate(() => localStorage.getItem("monocode:hub-team-pack"))).toBe("plain");
+  await assertStartersUnticked(page);
+  await skipAddsNobody(page);
+  await tickedBecomesOrdinaryMono(page);
 });

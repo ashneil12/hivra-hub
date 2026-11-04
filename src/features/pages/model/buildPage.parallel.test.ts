@@ -5,7 +5,7 @@
 import { beforeEach, expect, it } from "vitest";
 import { buildPage, rebuildPage } from "./buildPage";
 
-const roster = [{ id: "projects-manager" }, { id: "hivra-lead" }];
+const roster = [{ id: "bo" }, { id: "hivra-lead" }];
 
 beforeEach(() => localStorage.clear());
 

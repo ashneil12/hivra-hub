@@ -30,5 +30,5 @@ it("names each app sender plainly and leaves another Mono's name alone", () => {
   expect(appNoteTitle("Self-repair", "please retry the job")).toBe("The app asked this chat to retry");
   expect(appNoteTitle("Hourly check", "anything")).toBe("The app's hourly check asked this chat how it's going");
   expect(appNoteTitle("MonoCode", "Asked for the self-review")).toBe("The app sent this chat a note");
-  expect(appNoteTitle("frank", "hi")).toBeUndefined();
+  expect(appNoteTitle("ed", "hi")).toBeUndefined();
 });

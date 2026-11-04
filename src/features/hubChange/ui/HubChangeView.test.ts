@@ -8,7 +8,7 @@ import { HubChangeContent, NOT_ON_COPY } from "./HubChangeView";
 
 it("the Not connected yet card has the plain copy and only Back", async () => {
   localStorage.clear();
-  localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "projects-manager", name: "Projects Manager" }]));
+  localStorage.setItem("monocode:mono-roster", JSON.stringify([{ id: "bo", name: "Projects Manager" }]));
   const host = document.createElement("div");
   document.body.append(host);
   await act(async () => createRoot(host).render(createElement(HubChangeContent, { flow: "hub", projectId: "hivra" })));

@@ -13,7 +13,7 @@ import { WaitingOnYou } from "../../src/features/hub/ui/WaitingOnYou";
 import { installFakeTauri } from "./fakeTauri";
 import "../../src/styles/index.css";
 
-// The five ideas on the real components, with example data (every made-up line says "Example:"): the Chief of Staff's
+// The five ideas on the real components, with example data (every made-up line says "Example:"): Ada's
 // chat with the EXO coding team's reports in it after Ash was away 4 h (ideas 1, 5), its composer during a turn (2),
 // Needs you with a reason per row and a red-line approval (3). Idea 4 is proved on the real rail (pm-ui-ideas-hub.spec.ts).
 installFakeTauri("main", (command) => (command === "session_checkpoint_status" ? { files: [] } : null));
@@ -76,7 +76,7 @@ function Fixture() {
     Object.assign(window, { proof: { setBusy, stops, sent } });
   }, []);
   const session: Session = {
-    id: "cos-chat", title: "Chief of Staff", cwd: "/code", harness: "claude", model: "claude:sonnet", modelSettings: {},
+    id: "cos-chat", title: "Ada", cwd: "/code", harness: "claude", model: "claude:sonnet", modelSettings: {},
     runtimeMode: "supervised", blocks: busy ? [...blocks, { id: "u2", role: "user", text: "Example: Which build has the fix?", startedAt: Date.now() }, { id: "a4", role: "assistant", text: "" }] : blocks, busy,
   } as Session;
   return (

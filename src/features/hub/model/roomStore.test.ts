@@ -120,7 +120,7 @@ function legacy(): GroupChat[] {
       projectId: "hub",
       name: "Leadership team",
       isDefault: true,
-      memberIds: ["chief-of-staff", "frank"],
+      memberIds: ["ada", "ed"],
       conversations: [
         {
           id: `conv-${t36("2026-10-18T10:00:00Z")}-2`,
@@ -129,7 +129,7 @@ function legacy(): GroupChat[] {
           answeredThrough: "a2",
           messages: [
             { id: "a2", from: "ash", text: "pages next?" },
-            { id: `${t36("2026-10-18T10:00:09Z")}chief-of-staff3`, from: "chief-of-staff", text: "Yes. PM builds it.", pick: { by: "lanes", why: "x" } },
+            { id: `${t36("2026-10-18T10:00:09Z")}ada3`, from: "ada", text: "Yes. PM builds it.", pick: { by: "lanes", why: "x" } },
           ],
         },
         {
@@ -138,7 +138,7 @@ function legacy(): GroupChat[] {
           title: "Kickoff",
           messages: [
             { id: "a1", from: "ash", text: "hello team" },
-            { id: "r1", from: "frank", text: "Logged.", quiet: true },
+            { id: "r1", from: "ed", text: "Logged.", quiet: true },
           ],
         },
       ],
@@ -155,14 +155,14 @@ it("the old key's rooms are copied to the app database by id, read back, and the
   await chat.loadRooms(store.backend, at("2026-10-20T09:00:00Z"));
   expect(store.calls).toEqual(["load", "import 4", "load"]);
   const room = chat.getChat("hub:leadership")!;
-  expect(room.memberIds).toEqual(["chief-of-staff", "frank"]);
+  expect(room.memberIds).toEqual(["ada", "ed"]);
   expect(room.seated).toBe(true);
   // Newest first, each with the time its id carried, and Ash's words as they were.
   expect(room.conversations.map((c) => c.title)).toEqual(["Pages", "Kickoff"]);
   expect(room.conversations[0].createdAt).toBe(at("2026-10-18T10:00:00Z"));
   expect(room.conversations[0].messages.map((m) => [m.from, m.kind, m.text])).toEqual([
     ["ash", "ash", "pages next?"],
-    ["chief-of-staff", "mono", "Yes. PM builds it."],
+    ["ada", "mono", "Yes. PM builds it."],
   ]);
   expect(room.conversations[0].messages[1].at).toBe(at("2026-10-18T10:00:09Z"));
   expect(room.conversations[0].messages[1].pick).toEqual({ by: "lanes", why: "x" });
@@ -205,12 +205,12 @@ it("after the move, each change is its own row, in order: the room, the thread, 
   const store = fakeStore();
   const chat = await import("./hubChats");
   await chat.loadRooms(store.backend);
-  const room = chat.createChat("hub", "Launch week", ["frank"]);
+  const room = chat.createChat("hub", "Launch week", ["ed"]);
   const conv = chat.startConversation(room.id, "what's left?");
   chat.sendMessage(room.id, "and the copy?", conv);
-  const reply = chat.appendMessage(room.id, conv, { from: "frank", kind: "mono", text: "Two cards.", replyTo: `${conv}-1` })!;
+  const reply = chat.appendMessage(room.id, conv, { from: "ed", kind: "mono", text: "Two cards.", replyTo: `${conv}-1` })!;
   chat.react(room.id, reply.message.id, "ash", "👍");
-  chat.addMember(room.id, "alfred");
+  chat.addMember(room.id, "cam");
   await chat.roomWritesSettled();
   expect(store.calls.slice(1)).toEqual([
     `room ${room.id}`,
@@ -222,35 +222,35 @@ it("after the move, each change is its own row, in order: the room, the thread, 
     `room ${room.id}`,
   ]);
   const saved = store.messages.find((m) => m.id === reply.message.id)!;
-  expect(saved).toMatchObject({ author: "frank", kind: "mono", replyTo: `${conv}-1`, reactions: { "👍": ["ash"] } });
-  expect(store.rooms.get(room.id)!.memberIds).toEqual(["frank", "alfred"]);
+  expect(saved).toMatchObject({ author: "ed", kind: "mono", replyTo: `${conv}-1`, reactions: { "👍": ["ash"] } });
+  expect(store.rooms.get(room.id)!.memberIds).toEqual(["ed", "cam"]);
   // Nothing went to the window's storage.
   expect(localStorage.getItem("monocode:hub-chats")).toBeNull();
 });
 
 it("changes made before the database answered wait for it, and a room it already has is never made twice", async () => {
   const store = fakeStore();
-  await store.backend.upsertRoom({ id: "hub:leadership", projectId: "hub", name: "Leadership team", isDefault: true, seated: true, memberIds: ["chief-of-staff"] });
+  await store.backend.upsertRoom({ id: "hub:leadership", projectId: "hub", name: "Leadership team", isDefault: true, seated: true, memberIds: ["ada"] });
   let release!: () => void;
   const slow: RoomBackend = { ...store.backend, load: () => new Promise((r) => (release = () => void store.backend.load().then(r))) };
   const chat = await import("./hubChats");
   const loading = chat.loadRooms(slow);
   chat.ensureLeadership("hub");
-  chat.addMember("hub:leadership", "frank");
+  chat.addMember("hub:leadership", "ed");
   expect(chat.getChat("hub:leadership")).toBeUndefined();
   release();
   await loading;
   await chat.roomWritesSettled();
-  expect(chat.getChat("hub:leadership")!.memberIds).toEqual(["chief-of-staff", "frank"]);
-  expect(store.rooms.get("hub:leadership")!.memberIds).toEqual(["chief-of-staff", "frank"]);
+  expect(chat.getChat("hub:leadership")!.memberIds).toEqual(["ada", "ed"]);
+  expect(store.rooms.get("hub:leadership")!.memberIds).toEqual(["ada", "ed"]);
 });
 
 it("Ash's last message, unanswered when the app closed, offers Try again instead of silence", async () => {
   const store = fakeStore();
   const now = at("2026-10-20T09:00:00Z");
-  await store.backend.upsertRoom({ id: "r", projectId: "hub", name: "Room", isDefault: false, seated: false, memberIds: ["frank"] });
+  await store.backend.upsertRoom({ id: "r", projectId: "hub", name: "Room", isDefault: false, seated: false, memberIds: ["ed"] });
   await store.backend.upsertConversation({ roomId: "r", id: "c", title: "x", named: false, createdAt: now - 60_000 });
-  await store.backend.addMessage({ roomId: "r", conversationId: "c", id: "m", author: "ash", kind: "ash", text: "frank?", createdAt: now - 30_000 });
+  await store.backend.addMessage({ roomId: "r", conversationId: "c", id: "m", author: "ash", kind: "ash", text: "ed?", createdAt: now - 30_000 });
   const chat = await import("./hubChats");
   await chat.loadRooms(store.backend, now);
   expect(chat.replyProblem("r", "c")).toBe("The room's answer was cut off when the app closed. Your message is saved.");
