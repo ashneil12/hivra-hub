@@ -201,6 +201,14 @@
       "copyright": "Copyright (c) 2026 nyk",
       "where": "src/features/council/personas, src/features/council/model/prompts.ts",
       "how": "The 18 council personas and the blind, cross-exam, stance and chairman prompts, copied with the MIT notice (WP-23)"
+    },
+    {
+      "name": "agent-desktop skill",
+      "url": "https://github.com/vercel-labs/agent-desktop",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "plugins/desktop-control/skills/agent-desktop/SKILL.md",
+      "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
     }
   ]
 }
