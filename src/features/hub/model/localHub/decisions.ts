@@ -20,6 +20,8 @@ export interface DecisionSource {
   checks(): Promise<unknown>;
   /** Ash's taps on a need, a question or a job (`need-seen`, `answer`, `job-act`, ...). */
   act(action: string, payload: Record<string, unknown>): Promise<unknown>;
+  /** Calls `fn` whenever what `needs()` or `jobs()` returns may have changed (WP-14: a decision asked or answered). */
+  onChange?(fn: () => void): void;
 }
 
 const DECISION_ACTIONS = ["need-seen", "need-accept", "question", "answer", "job-options", "job-act", "job-seen", "check-delivered"] as const;
@@ -150,8 +152,10 @@ async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "ans
 export function delegationDecisions(
   listOpen: () => Promise<Delegation[]>,
   decisions?: Pick<FirstMateBackend, "decisions" | "answer">,
+  onDecisionsChanged?: (fn: () => void) => void,
 ): DecisionSource {
   return {
+    ...(onDecisionsChanged ? { onChange: onDecisionsChanged } : {}),
     async needs() {
       if (!decisions) return { projects: [], setup: [] };
       return decisionNeeds(await decisions.decisions(0).catch(() => []));

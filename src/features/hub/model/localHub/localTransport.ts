@@ -8,7 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { tauriDelegations } from "../../../monos/model/delegations";
 import { HubCallError, type HubFeedHandlers, type HubTransport } from "../hubTransport";
 import { delegationDecisions, isDecisionAction, type DecisionSource } from "./decisions";
-import { tauriFirstMate } from "../../../firstmate/model/steering";
+import { DECISIONS_CHANGED, tauriFirstMate } from "../../../firstmate/model/steering";
 import { LocalHub, memoryDisk, type LocalHubDisk } from "./localHub";
 
 type Payload = Record<string, unknown>;
@@ -50,6 +50,8 @@ export function createLocalTransport(hub: LocalHub, decisions: DecisionSource): 
   };
   // Any change to the record (a tap, the import) reads projects, the strip and Pages again.
   hub.onChange(() => changed("hub.local.changed", ["projects", "layout", "pages"]));
+  // Hivra WP-14: a decision asked or answered reads the Needs (and the jobs it released) again.
+  decisions.onChange?.(() => changed("decisions.changed", ["needs", "jobs"]));
 
   const answer = async (action: string, v: Payload): Promise<unknown> => {
     switch (action) {
@@ -124,6 +126,7 @@ export function appHubTransport(): HubTransport & { hub: LocalHub } {
       () => (inTauri ? tauriDelegations.listOpen() : Promise.resolve([])),
       // Hivra WP-14: open decisions are the Needs rows.
       inTauri ? tauriFirstMate : undefined,
+      inTauri ? (fn) => void listen(DECISIONS_CHANGED, fn).catch(() => undefined) : undefined,
     ));
   }
   return app;

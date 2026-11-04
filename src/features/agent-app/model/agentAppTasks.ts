@@ -1213,7 +1213,8 @@ async function firstMateTool(
   }
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
-  const project = owner.team?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
+  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
 }
 
