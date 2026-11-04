@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "decisions"
   | "dashboards"
   | "portable"
+  | "history"
   | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -113,6 +114,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Export and import",
     description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
     keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
+  },
+  {
+    id: "history",
+    group: "app",
+    label: "Chat history",
+    description:
+      "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
+    keywords: "history import claude codex hermes transcript memory",
   },
   {
     id: "connectors",

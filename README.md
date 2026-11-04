@@ -55,6 +55,11 @@ in Settings, under About.
 - [Crest](https://github.com/pauljoda/Crest): per-agent browser profiles and browsing safety defaults (ideas only).
 - [CARL and PAUL](https://github.com/ChristopherKahler): rule staging behind approval and a four-state worker status.
 - [Orbit](https://github.com/coollabsio/orbit): tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E.
+- [no-mistakes](https://github.com/kunchenguid/no-mistakes): the local gate that checks a crew's branch before it reaches GitHub, used as a pinned tool, planned for Wave F.
+- [treehouse](https://github.com/kunchenguid/treehouse): a pool of ready worktrees that keep their installs and build cache, used as a pinned tool, planned for Wave F.
+- [backpass](https://github.com/kunchenguid/backpass): evidence-gated edits to agent instructions learned from past chats, planned for Wave F.
+- [kun](https://github.com/kunchenguid/kun): a person's opinions and voice kept as files agents read (ideas only).
+- [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).

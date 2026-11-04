@@ -80,6 +80,9 @@ pub struct Scrubber {
     marker: String,
     patterns: Vec<Pattern>,
     keys: Regex,
+    /// A key name from the shared list, then a value of 8 or more characters.
+    /// Chat text is not JSON, so `redact_value` never sees it.
+    assignment: Regex,
 }
 
 /// The one scrubber, from the pattern list the webview uses too.
@@ -110,10 +113,17 @@ impl Scrubber {
                 mixed: spec.mixed,
             });
         }
+        let bare = file
+            .secret_keys
+            .trim_start_matches('^')
+            .trim_end_matches('$');
+        let assignment =
+            format!(r#"(?i)(?:^|[\s,{{"'])["']?{bare}["']?\s*[:=]\s*["']?([^\s"',}}\]]{{8,}})"#);
         Ok(Self {
             marker: file.marker,
             patterns,
             keys: Regex::new(&format!("(?i){}", file.secret_keys)).map_err(|e| e.to_string())?,
+            assignment: Regex::new(&assignment).map_err(|e| e.to_string())?,
         })
     }
 
@@ -203,6 +213,17 @@ impl Scrubber {
             }
         }
         names.into_iter().collect()
+    }
+
+    /// A token shape, or a value of 8 or more characters written after a key name.
+    pub fn has_secret(&self, text: &str) -> bool {
+        if !self.findings(text).is_empty() {
+            return true;
+        }
+        self.assignment.captures_iter(text).any(|caps| {
+            caps.get(1)
+                .is_some_and(|value| value.as_str().len() >= 8 && value.as_str() != self.marker)
+        })
     }
 }
 

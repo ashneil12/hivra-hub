@@ -149,6 +149,36 @@
       "url": "https://github.com/coollabsio/orbit",
       "licence": "Apache-2.0",
       "gave": "tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E"
+    },
+    {
+      "name": "no-mistakes",
+      "url": "https://github.com/kunchenguid/no-mistakes",
+      "licence": "MIT",
+      "gave": "the local gate that checks a crew's branch before it reaches GitHub, used as a pinned tool, planned for Wave F"
+    },
+    {
+      "name": "treehouse",
+      "url": "https://github.com/kunchenguid/treehouse",
+      "licence": "MIT",
+      "gave": "a pool of ready worktrees that keep their installs and build cache, used as a pinned tool, planned for Wave F"
+    },
+    {
+      "name": "backpass",
+      "url": "https://github.com/kunchenguid/backpass",
+      "licence": "MIT",
+      "gave": "evidence-gated edits to agent instructions learned from past chats, planned for Wave F"
+    },
+    {
+      "name": "kun",
+      "url": "https://github.com/kunchenguid/kun",
+      "licence": "no licence",
+      "gave": "a person's opinions and voice kept as files agents read (ideas only)"
+    },
+    {
+      "name": "Kun Chen's dotfiles",
+      "url": "https://github.com/kunchenguid/dotfiles",
+      "licence": "MIT-0",
+      "gave": "one AGENTS.md shared by every agent CLI"
     }
   ],
   "components": [
@@ -247,6 +277,22 @@
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "src/features/docs/model",
       "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72)"
+    },
+    {
+      "name": "Raven's chat importer",
+      "url": "https://github.com/EverMind-AI/Raven",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src/features/historyImport, src-tauri/src/history_import.rs",
+      "how": "Translated line by line from the importer. Tool noise is dropped, provenance is stricter, and a preview reads only the header (WP-50)"
+    },
+    {
+      "name": "Agent Zero's migrate-agents preview",
+      "url": "https://github.com/agent0ai/agent-zero",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
+      "where": "src/features/historyImport",
+      "how": "The chat preview and the Claude, Codex and Hermes readers, translated line by line. A preview counts from the header only (WP-50)"
     }
   ]
 }

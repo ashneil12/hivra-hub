@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-45 work packages in five waves. A wave's packages run in parallel; a package starts when everything it depends on
+48 work packages in six waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -118,6 +118,19 @@ React stack, so copy its code with credit and make it sleeker. 70, 72, 75, 76 an
 | [78](work/WP-78-activity-log.md) | Activity log | M | none | yes |
 | [79](work/WP-79-outside-tools.md) | A safe door for outside AI tools | L | 70, 72 | yes |
 | [80](work/WP-80-team-workspaces.md) | Team workspaces (start when Ash says, after 61) | L | 61, 70, 72 | yes |
+
+### Wave F: checked delivery, ready worktrees, learning from chats (Kun Chen's tools, Ash 4 Nov)
+
+Ash shared five of Kun Chen's repos (firstmate's author). no-mistakes and treehouse are MIT Go tools that release
+almost daily, so Hivra uses them as pinned tools instead of porting them. backpass is MIT JavaScript, so its rules are
+copied in. kun and the dotfiles give two smaller ideas folded into 83. 81 and 82 start at once; 83 starts when 51
+merges.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [81](work/WP-81-delivery-gate.md) | Every crew's work is checked before it reaches GitHub | L | none | yes |
+| [82](work/WP-82-worktree-pool.md) | Ready worktrees for every crew | M | none | yes |
+| [83](work/WP-83-learn-from-chats.md) | Agents learn from past chats, with evidence | L | 50, 51 | yes |
 
 ## Running it
 
