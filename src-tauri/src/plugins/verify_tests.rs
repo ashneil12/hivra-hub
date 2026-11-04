@@ -392,7 +392,7 @@ fn the_e2e_server_runs_in_the_workers_project() {
         .collect();
     let script = launched
         .iter()
-        .find(|arg| arg.ends_with("dist/cli/bin.js"))
+        .find(|arg| Path::new(arg).ends_with(Path::new("dist").join("cli").join("bin.js")))
         .unwrap_or_else(|| panic!("script arg missing in {launched:?}"));
     let plugin_root = fsutil::canonical(&host.installed("e2e-verify")).unwrap();
     assert!(
