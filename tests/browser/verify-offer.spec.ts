@@ -4,7 +4,10 @@ import { expect, test } from "@playwright/test";
 // WP-42. What a person sees: Verify is offered, and nothing installs until they say so.
 test.use({ viewport: { width: 960, height: 900 } });
 
-type Call = { command: string; args: { source?: { package?: string }; requestedBy?: { kind?: string }; revision?: number } };
+type Call = {
+  command: string;
+  args: { source?: { package?: string }; requestedBy?: { kind?: string }; revision?: number; name?: string; project?: string };
+};
 
 function calls(page: import("@playwright/test").Page) {
   return page.evaluate(() => (window as unknown as { verifyCalls: () => Call[] }).verifyCalls());
@@ -28,6 +31,16 @@ test("Verify is offered for a web project and Install waits for a yes", async ({
   const shot = testInfo.outputPath(`verify-offer-${testInfo.project.name}.png`);
   await page.screenshot({ path: shot, fullPage: true });
   expect(statSync(shot).size).toBeGreaterThan(2000);
+});
+
+test("Install turns Verify on for this project", async ({ page }) => {
+  await page.goto("/tests/browser/verify-offer.html?installed=1");
+  await expect(page.locator("[data-verify-sentence]")).toHaveText("This project looks like a web app.");
+  await page.getByRole("button", { name: "Install", exact: true }).click();
+  await expect(page.locator("[data-verify-status]")).toHaveText("Installed and on for this project.");
+  await expect(page.getByRole("button", { name: "Install", exact: true })).toHaveCount(0);
+  const enable = (await calls(page)).find((call) => call.command === "plugins_enable");
+  expect(enable?.args).toEqual({ name: "e2e-verify", project: "/code/sample web" });
 });
 
 test("Not now remembers the no and the offer goes away", async ({ page }) => {

@@ -7,18 +7,32 @@ import { offerSentence, offerVisible, readDecline, readOffer, type VerifyOffer a
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-50";
+const ON = "Installed and on for this project.";
+
+function readInstalledName(result: unknown): string | null {
+  if (!result || typeof result !== "object") return null;
+  const entry = (result as { entry?: unknown }).entry;
+  if (!entry || typeof entry !== "object") return null;
+  const name = (entry as { name?: unknown }).name;
+  if (typeof name !== "string") return null;
+  const text = name.replace(/\r/g, "").trim();
+  if (!text || text.includes("\0")) return null;
+  return text;
+}
 
 export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
   const [offer, setOffer] = useState<Offer | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [holding, setHolding] = useState(false);
+  const [installedName, setInstalledName] = useState<string | null>(null);
   const live = useRef<object | null>(null);
 
   useEffect(() => {
     const folder = projectFolder.trim();
     setHolding(false);
     setBusy(false);
+    setInstalledName(null);
     if (!folder) {
       live.current = {};
       setOffer(null);
@@ -43,21 +57,56 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
     };
   }, [projectFolder]);
 
+  if (note === ON) {
+    return (
+      <div data-verify-offer className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-content/10 px-3 py-2">
+        <p data-verify-status className="w-full text-xs text-content/70">
+          {note}
+        </p>
+      </div>
+    );
+  }
   if (!offerVisible(offer) || !offer) return null;
   const current = offer;
 
   async function install() {
-    if (!current.source || busy || holding) return;
+    if ((!current.source && !installedName) || busy || holding) return;
     const token = live.current;
+    const folder = projectFolder.trim();
+    if (!folder) return;
     setBusy(true);
     try {
-      const outcome = installOutcome(
-        await invoke("plugins_install", { source: current.source, requestedBy: { kind: "person" } }),
-      );
+      let name = installedName;
+      if (!name) {
+        const result = await invoke("plugins_install", { source: current.source, requestedBy: { kind: "person" } });
+        if (live.current !== token) return;
+        const outcome = installOutcome(result);
+        if (outcome.message.startsWith("Waiting for your OK in the Inbox")) {
+          setNote(outcome.message);
+          setHolding(true);
+          return;
+        }
+        if (!outcome.message.startsWith("Installed ")) {
+          setNote(outcome.message);
+          return;
+        }
+        name = readInstalledName(result);
+        if (!name) {
+          setNote("It wasn't installed.");
+          return;
+        }
+        setInstalledName(name);
+      }
+      try {
+        await invoke("plugins_enable", { name, project: folder });
+      } catch {
+        if (live.current !== token) return;
+        setNote("It isn't on for this project yet. Try again.");
+        return;
+      }
       if (live.current !== token) return;
-      setNote(outcome.message);
-      if (outcome.message.startsWith("Installed ")) setOffer({ ...current, installed: true });
-      if (outcome.message.startsWith("Waiting for your OK in the Inbox")) setHolding(true);
+      setNote(ON);
+      setOffer({ ...current, installed: true });
     } catch {
       if (live.current !== token) return;
       setNote("It wasn't installed. Try again.");

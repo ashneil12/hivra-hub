@@ -5,7 +5,9 @@ import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
 // WP-42. The real Plugins page, offered Verify for one project folder. Nothing installs until Install is pressed.
+// `?installed=1` is the path where the person says yes and the plugin goes in.
 const FOLDER = "/code/sample web";
+const installed = new URLSearchParams(window.location.search).has("installed");
 const calls: { command: string; args: Record<string, unknown> }[] = [];
 
 installFakeTauri("verify-offer", (command, args) => {
@@ -20,7 +22,11 @@ installFakeTauri("verify-offer", (command, args) => {
       source: { kind: "npm", package: "e2e", version: "0.22.0" },
     };
   }
-  if (command === "plugins_install") return { status: "waiting", request: { steps: [] } };
+  if (command === "plugins_install") {
+    if (installed) return { status: "installed", entry: { name: "e2e-verify" } };
+    return { status: "waiting", request: { steps: [] } };
+  }
+  if (command === "plugins_enable") return { reports: [] };
   if (command === "plugins_verify_decline") {
     return {
       applied: true,

@@ -157,6 +157,64 @@ describe("VerifyOffer", () => {
     expect(container.querySelector("[data-verify-sentence]")?.textContent).toBe("This project looks like a mobile app.");
   });
 
+  it("turns Verify on for this project only after it installs", async () => {
+    let enableFails = true;
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "plugins_verify_offer") return payload();
+      if (command === "plugins_install") return { status: "installed", entry: { name: "e2e-verify" } };
+      if (command === "plugins_enable") {
+        if (enableFails) throw new Error("not yet");
+        return { reports: [] };
+      }
+      return undefined;
+    });
+    await show();
+    await act(async () => {
+      container.querySelector("button")!.click();
+    });
+    const enable = vi.mocked(invoke).mock.calls.filter((call) => call[0] === "plugins_enable");
+    expect(enable).toEqual([["plugins_enable", { name: "e2e-verify", project: FOLDER }]]);
+    expect(container.querySelector("[data-verify-status]")?.textContent).not.toBe("Installed and on for this project.");
+    expect(container.querySelector("[data-verify-offer]")).not.toBeNull();
+
+    enableFails = false;
+    await act(async () => {
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "Install")!.click();
+    });
+    const calls = vi.mocked(invoke).mock.calls;
+    expect(calls.filter((call) => call[0] === "plugins_install")).toHaveLength(1);
+    expect(calls.filter((call) => call[0] === "plugins_enable")).toEqual([
+      ["plugins_enable", { name: "e2e-verify", project: FOLDER }],
+      ["plugins_enable", { name: "e2e-verify", project: FOLDER }],
+    ]);
+    expect(calls.some((call) => call[0] === "plugins_enable" && !(call[1] && "project" in (call[1] as object)))).toBe(false);
+    expect(container.querySelector("[data-verify-status]")?.textContent).toBe("Installed and on for this project.");
+  });
+
+  it("does not turn Verify on after the offer has moved to another folder", async () => {
+    let finishInstall: ((value: unknown) => void) | null = null;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      const folder = args && "folder" in args ? String(args.folder) : "";
+      if (command === "plugins_verify_offer") {
+        return Promise.resolve(payload(folder.endsWith("other") ? { surfaces: ["mobile"], revision: 9 } : {}));
+      }
+      if (command === "plugins_install") return new Promise((resolve) => { finishInstall = resolve; });
+      if (command === "plugins_enable") return Promise.resolve({ reports: [] });
+      return Promise.resolve(undefined);
+    });
+    await show();
+    await act(async () => {
+      container.querySelector("button")!.click();
+    });
+    await show("/code/other");
+    await act(async () => {
+      finishInstall?.({ status: "installed", entry: { name: "e2e-verify" } });
+    });
+    expect(vi.mocked(invoke).mock.calls.some((call) => call[0] === "plugins_enable")).toBe(false);
+    expect(container.querySelector("[data-verify-status]")?.textContent ?? "").not.toBe("Installed and on for this project.");
+    expect(container.querySelector("[data-verify-sentence]")?.textContent).toBe("This project looks like a mobile app.");
+  });
+
   it("shows nothing when the offer can't be fetched, and does not ask for a blank folder", async () => {
     vi.mocked(invoke).mockRejectedValue(new Error("timed out"));
     await show();
