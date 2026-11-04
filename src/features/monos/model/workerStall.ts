@@ -77,7 +77,7 @@ export function stallOptions(): StallOptions {
  */
 export function providerStallNote(row: Pick<Delegation, "id" | "title">, stall: Stall): string {
   const title = row.title?.trim().split("\n")[0].slice(0, 80) || "its job";
-  return `Your worker on "${title}" hit a provider error and has made no progress since (${stall.reason.replace(`${PROVIDER_STALL_PREFIX}, `, "")}). It shows as stuck on Today and Being built. It may recover by itself; if it doesn't, retry it with delegate_task redoes "${row.id}" and the same brief. Tell Ash in one line that it stalled on a provider error and what you're doing about it.`;
+  return `Your worker on "${title}" hit a provider error and has made no progress since (${stall.reason.replace(`${PROVIDER_STALL_PREFIX}, `, "")}). It shows as stuck on the rail. It may recover by itself; if it doesn't, retry it with delegate_task redoes "${row.id}" and the same brief. Tell Ash in one line that it stalled on a provider error and what you're doing about it.`;
 }
 
 /**
@@ -91,7 +91,7 @@ export function providerStallChatLine(row: Pick<Delegation, "id" | "title">, sta
     id: `provider-stall-${row.id}-${stall.since}`,
     role: "system",
     // r91 (Critiquito): Ash's words, no codes ("API retry 2 of 2 · API overloaded (529)" stays in the Lead's note).
-    text: `The worker on "${title}" has stalled. ${serviceStallLine(why).replace(/^Stalled: t/, "T")} It shows as Stalled on Inbox, Being built and the rail; its Lead can try it again, or you can open its chat from the rail.`,
+    text: `The worker on "${title}" has stalled. ${serviceStallLine(why).replace(/^Stalled: t/, "T")} It shows as stalled on the rail; its Lead can try it again, or you can open its chat from the rail.`,
     startedAt: stall.since,
   } as Block;
 }

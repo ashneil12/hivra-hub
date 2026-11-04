@@ -1525,7 +1525,7 @@ export async function handleAgentApp(
       // "restart" quits the app over chats still running: only Ash's Restart now tap does that.
       if (whenBusy === "restart")
         throw new Error(
-          forUser('Only Ash\'s Restart now (in Today) restarts the app over running chats. Ship with whenBusy "wait" (the default): it restarts when they are quiet.'),
+          forUser('Only Ash\'s Restart now (at the top of the main pane) restarts the app over running chats. Ship with whenBusy "wait" (the default): it restarts when they are quiet.'),
         );
       if (whenBusy !== undefined && whenBusy !== "wait")
         throw new Error('whenBusy must be "wait"');

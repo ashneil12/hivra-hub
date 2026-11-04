@@ -102,14 +102,14 @@ receipt).
 2. **Stage:** `ditto` into `<data>/ship/<id>/staged/`, `state.json`, and the runner as a one-shot LaunchAgent
    (`com.ash.monocode-hub.ship.<id>`, outside the app's process group). Returns "scheduled" within seconds.
 3. **The app** accepts the staged build only if its signature matches its own, then quits for the update when no
-   other turn is running (or on **Restart now** in Today; `whenBusy: "restart"` doesn't wait). Cut turns are saved
+   other turn is running (or on **Restart now** at the top of the main pane; `whenBusy: "restart"` doesn't wait). Cut turns are saved
    for resume, marked with the ship.
 4. **The runner** waits for the app's data-folder lock, backs up `monocode.db*` and `monos/`, renames the old app
    to `ship/<id>/previous.app.off`, moves the new one in and opens it ("trial").
 5. **Trial:** the new build holds auto-resume, habits and automations until its window and database
    are up, then writes `committed.json`. Not in `running.json` within 30 s, no commit within 120 s, or an early
    exit: the runner stops that verified process, puts the old app and database copy back, and reopens it.
-6. `receipt.json` and `runner.log` in the ship folder say what happened; Today shows it; the shipping Lead's
+6. `receipt.json` and `runner.log` in the ship folder say what happened; the main pane shows it; the shipping Lead's
    resume note carries it. At startup the app finishes a trial or a restore a dead runner left.
 
 After a commit, rollback is manual: `npm run hub:rollback -- <id> --confirm` (the database goes back to that

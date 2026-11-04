@@ -156,10 +156,8 @@ describe("Being built", () => {
     expect(appWorkers?.("hivra", [], [row("done", { state: "completed", error: null })], NOW, where)).toEqual([]);
   });
 
-  it("the page lists them (BeingBuiltView)", () => {
-    // r51: through the one list's builder (needsYouRows.ts beingBuiltJobRows), which adds the app workers the same way.
-    const src = readFileSync(`${process.cwd()}/src/features/hub/ui/BeingBuiltView.tsx`, "utf8");
-    expect(src).toMatch(/beingBuiltJobRows\(projectId, .*APP_WORKER_WHERE\)/);
+  it("the list still folds a worker under its job", () => {
+    // WP-06: Being built is gone. The rail's list (needsYouRows) still folds app workers the same way.
     const lib = readFileSync(`${process.cwd()}/src/features/hub/model/needsYouRows.ts`, "utf8");
     expect(lib).toMatch(/withStuckWorkers\(\[\.\.\.jobs, \.\.\.own\]/);
     expect(workerStuck.rowsUnderJob("delegation:run", [row("run")]).map((r) => r.id)).toEqual(["run"]);

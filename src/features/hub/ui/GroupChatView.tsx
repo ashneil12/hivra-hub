@@ -38,7 +38,7 @@ import {
   roomWorking,
   useHubChatsVersion,
 } from "../model/hubChats";
-import { setHubSelection, useHubSelection } from "../model/hubNav";
+import { openCodingTeam, setHubSelection, useHubSelection } from "../model/hubNav";
 import { findWaiting } from "../model/waiting";
 import { roomAttachments } from "../model/roomAttachments";
 import { GOAL_MAX_TURNS, RESPONDER_LABELS, RESPONDER_MODES, responderOf } from "../model/roomModes";
@@ -460,7 +460,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                             <button
                               type="button"
                               data-hub-take-look={w.id}
-                              onClick={() => setHubSelection({ project: w.projectId, item: "inbox" })}
+                              onClick={() => openCodingTeam(w.projectId)}
                               className="rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12"
                             >
                               Take a look

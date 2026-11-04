@@ -79,7 +79,7 @@ list); the Monos rail shows people, not work.
 - **Rules**: `<team_rules>` (`monoFiles.ts` `MONO_TEAM_RULES`) for every Mono with the delegate tool but a Lead;
   `<lead_brief_rules>` speaks to every Mono; the room's shared rules and ROOM.md say work started from the room goes to
   a team. `MONO_PROMPT_VERSION` 29.
-- **Proof**: `tests/browser/mono-teams.spec.ts` (photographed), `stuck-workers.spec.ts` (sub-chats in the coding team);
+- **Proof**: `tests/browser/mono-teams.spec.ts` (photographed), `tests/browser/wp06-rail.spec.ts` (the rail mark and the Lead's stuck cards);
   `hub:verify-live` checks 22 (`mono_briefs_coding_team`) and 23 (`mono_own_team`), read through the driver.
 - **Not done**: `app sessions.start` is unchanged (the rules tell a Mono to use delegate_task): a Mono with no team of
   its own that still starts a session in a project with it gets a hidden chat that only its Overview's Sessions tab

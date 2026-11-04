@@ -17,3 +17,17 @@ export function paneFocus(paneId: string, view: { monoViewId: string | null; sho
   if (view.monoViewId) return "ignore";
   return "workspace";
 }
+
+/**
+ * WP-06: opening the coding team reveals the project's pane, and that pane taking focus is not Ash leaving the Lead.
+ * A real click is. It must cancel an open still in flight, including one whose session never settles.
+ */
+export function focusClosesMono(input: { opening: boolean; pointer: boolean }): boolean {
+  if (!input.opening) return true;
+  return input.pointer === true;
+}
+
+/** The open that captured `captured` may take the screen only while no later leave has moved the request. */
+export function leadOpenMayShow(captured: number, now: number): boolean {
+  return captured === now;
+}

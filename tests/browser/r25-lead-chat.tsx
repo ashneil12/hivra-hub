@@ -48,7 +48,6 @@ const PROJECT: HubProject = { id: "example-hub", name: "Example: MonoCode Hub", 
 const ITEMS: ProjectItem[] = [
   { id: "coding-team", kind: "coding-team", title: "Coding team" },
   { id: "leadership", kind: "leadership-team", title: "Leadership team" },
-  { id: "being-built", kind: "being-built", title: "Being built" },
 ];
 const src = Object.create(hubData());
 src.listProjects = () => [PROJECT];

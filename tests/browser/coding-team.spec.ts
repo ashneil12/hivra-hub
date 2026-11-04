@@ -6,8 +6,8 @@ import { openLocalHub } from "./localHub";
 // to"; "I don't talk to workers. I only talk to orchestrators."). The real app in a browser (hub-dev.html reading the
 // local store through its real transport), with chats seeded in EXO's folder as session_list_by_project returns them and
 // delegation rows as delegations.rs does: the Lead pinned on top and opened by default, its sub-chats folded until one
-// is stuck, Ash's own chats at the top level with theirs folded under them, one click into a chat or a sub-chat, and
-// "Open in coding team" landing on the Lead. Each step is photographed.
+// is stuck, Ash's own chats at the top level with theirs folded under them, and one click into a chat or a sub-chat.
+// Each step is photographed. WP-06: Being built's "Open in coding team" went with that screen.
 //
 //   STUCK_PROOF_PORT=1523 PROOF_SPEC=coding-team.spec.ts npx playwright test -c tests/browser/stuck-workers.config.ts
 
@@ -193,16 +193,7 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   await expect.poll(() => monoViewShown(page)).toBe(false);
   await leadRow(page).locator("[data-session-card]").click();
   await expect.poll(() => monoViewShown(page)).toBe(true);
-
-  // Being built: "Open in coding team" lands on the Lead in its coding team, never the room.
-  await page.getByRole("button", { name: "Being built" }).click();
-  await expect(page.locator("[data-hub-worker]").first()).toBeVisible({ timeout: 15_000 });
-  await page.locator("[data-hub-worker]").first().click();
-  await page.locator("[data-hub-open-coding]").click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("monocode:hub-nav"))).toContain('"item":"coding-team"');
-  await expect.poll(() => monoViewShown(page)).toBe(true);
   await expect(leadRow(page).locator('[aria-current="true"]')).toBeVisible();
   await expect(page.locator('[data-hub-item="coding-team"]')).toHaveAttribute("title", "EXO lead and your chats in EXO's code");
   await expect(page.locator('[data-hub-item="leadership-team"]')).toHaveAttribute("title", "The leadership team's group chat");
-  await shot(page, "6-open-in-coding-team");
 });

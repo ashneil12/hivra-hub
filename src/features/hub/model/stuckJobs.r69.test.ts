@@ -52,10 +52,4 @@ describe("r69 (d): a job whose workers are all done stops reading Working", () =
     const [g] = withStuckWorkers([workerOf(job({ state: "lead_gave_up" }), group, NOW)], [row("t-tidy")], NOW);
     expect(jobStateWord(g)).toBe("Needs you");
   });
-
-  it("Today's Being built leaves such a job out of its active list", async () => {
-    const { readFileSync } = await import("node:fs");
-    const surface = readFileSync(new URL("../ui/HubSurface.tsx", import.meta.url), "utf8");
-    expect(surface).toContain('!(j.state === "working" && jobRowsFinishedAt(j.sourceRef, delegations) !== undefined)');
-  });
 });

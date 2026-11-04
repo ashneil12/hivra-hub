@@ -3,18 +3,13 @@ import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu } from "./ProjectMenu";
 import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
 import { deleteChat } from "../model/hubChats";
-import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Play as PackageOpen, Terminal as Code2, Wrench as Hammer, StickyNote, type IconComponent } from "../../../shared/ui/icons";
+import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Terminal as Code2, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useHubChatsVersion } from "../model/hubChats";
 import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
 import { leadSpecFor } from "../model/hubLeads";
-import { DECISIONS_ITEM } from "../model/decisions";
 import type { HubProject, ProjectItem } from "../model/types";
-import { useWaitingChatsVersion, waitingChats } from "../model/waitingChats";
-import { askText } from "../model/chatQuestions";
-import { NEEDS_YOU } from "../model/statusChip";
-import { ChipMark } from "./StatusMark";
 
 function iconFor(item: ProjectItem): IconComponent {
   switch (item.kind) {
@@ -23,11 +18,14 @@ function iconFor(item: ProjectItem): IconComponent {
     case "leadership-team":
     case "group-chat":
       return MessagesSquare;
-    case "being-built":
-      return Hammer;
     default:
-      return item.sectionType === "builds-playtests" ? PackageOpen : item.sectionType === "decisions" ? StickyNote : Layers;
+      return Layers;
   }
+}
+
+/** WP-06: Being built, Builds and the Decisions row are not sidebar items. */
+function keptNavItem(item: ProjectItem): boolean {
+  return item.kind !== "being-built" && item.sectionType !== "builds-playtests" && item.sectionType !== "decisions" && item.id !== "decisions";
 }
 
 /** What an item is, on hover: the coding team (its Lead and chats) against the leadership team's group chat. */
@@ -62,18 +60,14 @@ export function HubProjectItems({
   useHubChatsVersion();
   // The project's sections come from its template, so switching it changes this list too.
   useTemplatesVersion();
-  useWaitingChatsVersion();
   const [menu, setMenu] = useState<PopoverAnchor>();
   const project = hubData().listProjects().find((p) => p.id === selection.project);
   if (!project) return null;
   // A new project's draft is no project's page (PM's r60 G2): the project Ash was last in stays underneath, so leaving
   // the draft comes back to it, but its name and items aren't shown as if the draft were one of its pages.
   if (selection.item === "new-project") return null;
-  // D2: every project's own Decisions, last (Settings → Decisions still lists them all).
-  const items = [...hubData().listProjectItems(project.id), DECISIONS_ITEM];
-  // r77: a coding-team chat (not a Mono, whose own row says it) waiting on Ash, such as a held permission card, puts the
-  // red Needs you line under Coding team, the same as a Mono's row.
-  const teamWaiting = waitingChats(project.id).filter((c) => !c.monoId && !c.routedToLead);
+  // WP-06: Being built, Builds and the project's Decisions row are gone. Settings → Decisions still lists them.
+  const items = hubData().listProjectItems(project.id).filter((item) => keptNavItem(item));
   return (
     <div className="mb-2 shrink-0" data-hub-items>
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header
@@ -122,16 +116,6 @@ export function HubProjectItems({
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
             </button>
           );
-          if (item.kind === "coding-team" && teamWaiting.length)
-            return (
-              <div key={item.id} className="flex flex-col">
-                {row}
-                <div className="ml-5 flex min-w-0 items-center px-1.5 text-[12px]" data-hub-item-waiting={item.kind}
-                  title={teamWaiting.map((c) => `${c.chatName}: ${askText(c.question)}`).join("\n")}>
-                  <ChipMark chip={NEEDS_YOU} />
-                </div>
-              </div>
-            );
           // A room Ash made can be deleted (r30d), after the shared confirm; the Leadership team and the rest can't.
           if (item.kind !== "group-chat") return row;
           return (
