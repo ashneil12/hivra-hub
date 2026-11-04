@@ -153,7 +153,7 @@ afterAll(async () => {
   __codexTestReset();
   setClaudePluginArgs(undefined);
   setCodexExtraConfig(undefined);
-  for (const tmp of tmps) rmSync(tmp, { recursive: true, force: true });
+  for (const tmp of tmps) rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 describe("pstack reaches every chat", () => {

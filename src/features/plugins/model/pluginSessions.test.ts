@@ -138,7 +138,8 @@ afterAll(async () => {
   setClaudeExtraArgs(undefined);
   if (previousLaunches === undefined) delete process.env.HIVRA_FAKE_LAUNCHES;
   else process.env.HIVRA_FAKE_LAUNCHES = previousLaunches;
-  rmSync(tmp, { recursive: true, force: true });
+  // Windows: a just-killed fake MCP server can still hold its folder for a moment (EBUSY); retry rather than fail.
+  rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
 });
 
 /** What the fake server says it was started with (PLUGIN_ROOT, PLUGIN_DATA, its folder, any app token). */
