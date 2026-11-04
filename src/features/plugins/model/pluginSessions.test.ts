@@ -139,7 +139,13 @@ afterAll(async () => {
   if (previousLaunches === undefined) delete process.env.HIVRA_FAKE_LAUNCHES;
   else process.env.HIVRA_FAKE_LAUNCHES = previousLaunches;
   // Windows: a just-killed fake MCP server can still hold its folder for a moment (EBUSY); retry rather than fail.
-  rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  // If it still holds it after the retries, the temp folder is left for the OS: cleanup is not what this file tests.
+  try {
+    rmSync(tmp, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  } catch (error) {
+    if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EBUSY") throw error;
+    console.warn(`pluginSessions.test: left ${tmp} behind (still busy)`);
+  }
 });
 
 /** What the fake server says it was started with (PLUGIN_ROOT, PLUGIN_DATA, its folder, any app token). */
