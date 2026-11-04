@@ -16,9 +16,9 @@ test("deleting a room asks first in the shared confirm; Cancel (and Enter) keep 
   await openLocalHub(page);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
-  await page.locator("[data-hub-surface]").waitFor({ timeout: 60_000 });
-  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "inbox" }));
-  await page.locator('[data-hub-item="being-built"]').click();
+  await page.locator("[data-hub-new-chat-button]").waitFor({ timeout: 60_000 });
+  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "hivra", item: "leadership-team" }));
+  await page.locator('[data-hub-item="leadership-team"]').click();
   await page.locator("[data-hub-new-chat-button]").click();
   await page.getByRole("textbox").first().fill("Example: launch room");
   await page.locator("[data-hub-create-chat]").click();

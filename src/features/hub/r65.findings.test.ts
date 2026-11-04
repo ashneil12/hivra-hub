@@ -63,12 +63,6 @@ describe("#4 a key only Ash can make is a provide card, no Approve or Deny", () 
     expect(provideNeeded("Approve the deploy to prod?")).toBeUndefined();
     expect(provideNeeded("Stripe key please", "provide")).toBeDefined();
   });
-  it("the card says Ash needs to provide it and has no Approve/Deny", () => {
-    const view = src("./ui/WaitingOnYou.tsx");
-    expect(view).toMatch(/needs to provide/);
-    const card = view.slice(view.indexOf("needs to provide") - 1500, view.indexOf("needs to provide") + 1500);
-    expect(card).toMatch(/provide/);
-  });
 });
 
 describe("#5 a Lead's question to Ash is red, and every Inbox ask row is red", () => {
@@ -78,9 +72,6 @@ describe("#5 a Lead's question to Ash is red, and every Inbox ask row is red", (
     ];
     expect(monoState({ blocks, busy: false }).status).toBe("needs-you");
     expect(monoState({ blocks: [{ id: "b", role: "assistant", text: "All done." } as Block], busy: false }).status).toBe("idle");
-  });
-  it("Waiting on you draws a red mark on every row", () => {
-    expect(src("./ui/WaitingOnYou.tsx")).toContain("data-hub-waiting-red");
   });
 });
 

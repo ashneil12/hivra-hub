@@ -108,7 +108,9 @@ describe("a Mono's team in the hub's navigation", () => {
     expect(monoTeamInView(sel)).toBe("cam");
     expect(hubSurfaceOpen(sel)).toBe(false);
     expect(monoTeamInView({ project: "today", item: "inbox" })).toBeUndefined();
-    expect(hubSurfaceOpen({ project: "today", item: "inbox" })).toBe(true);
+    // WP-06: a stored Today item is not a surface. A room still is.
+    expect(hubSurfaceOpen({ project: "today", item: "inbox" })).toBe(false);
+    expect(hubSurfaceOpen({ project: "vg-game", item: "leadership-team" })).toBe(true);
     expect(hubSurfaceOpen({ project: "vg-game", item: "coding-team" })).toBe(false);
   });
 });

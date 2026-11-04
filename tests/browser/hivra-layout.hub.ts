@@ -5,7 +5,8 @@ import { openLocalHub } from "./localHub";
 // WP-03: Hivra has one layout (Classic; src/features/hub/model/hivraLayout.ts). The real app in a browser with the Hub
 // flag (hivra-layout.config.ts sets VITE_MONOCODE_HUB=1) reading its own local store (WP-04: no Ash OS), with Focused
 // stored the way an earlier build or upstream's Settings left it: the app still opens in Classic, offers no layout
-// switch or invitation, and every main Hub screen renders there. Each screen is photographed.
+// switch or invitation, and every main Hub screen that is still a screen renders there. Each one is photographed.
+// WP-06: Today, Being built, Builds & playtests and the project's Decisions page are not screens.
 //
 //   npx playwright test -c tests/browser/hivra-layout.config.ts
 
@@ -52,10 +53,6 @@ test("opens in Classic with Focused stored, and every main Hub screen renders th
     ["Inbox", (p) => p.getByRole("region", { name: "Inbox" })],
     ["Coding team", (p) => p.getByRole("main").getByRole("heading", { name: "EXO lead" })],
     ["Leadership team", (p) => p.getByPlaceholder("Message EXO's leadership team")],
-    ["Builds & playtests", (p) => p.getByText("No builds of EXO yet.")],
-    // WP-04: Being built reads the app's own delegations; with none it says so.
-    ["Being built", (p) => p.getByText(/Nobody's working on/).first()],
-    ["Decisions", (p) => p.getByRole("region", { name: "Decisions" })],
     ["Pages", (p) => p.getByRole("region", { name: "Pages" })],
     ["Notes", (p) => p.getByRole("region", { name: "Notes" })],
     ["Automations", (p) => p.getByRole("heading", { name: "New automation" })],

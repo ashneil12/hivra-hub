@@ -36,15 +36,15 @@ it("an old 'today' selection opens on no project, so the hub shows a project or 
 it("every way in names a project or the app's own view", () => {
   act(() => root.render(createElement(Probe)));
   act(() => showProjectToday("hivra"));
-  expect(seen).toEqual({ project: "hivra", item: "inbox" });
+  expect(seen).toEqual({ project: "hivra", item: "coding-team" });
   // New project and Restore open over the project Ash was in, so leaving them comes back to it.
   act(() => showAppItem("new-project"));
   expect(seen).toEqual({ project: "hivra", item: "new-project" });
   act(() => showProjectToday());
-  expect(seen).toEqual({ project: "hivra", item: "inbox" });
-  // With no project at all, Today is the empty state that asks for one (HubSurface picks the first once there is one).
+  expect(seen).toEqual({ project: "hivra", item: "coding-team" });
+  // With no project at all, the empty state asks for one (HubSurface picks the first once there is one).
   act(() => setHubSelection({ project: NO_PROJECT, item: "" }));
   act(() => showProjectToday());
-  expect(seen).toEqual({ project: NO_PROJECT, item: "inbox" });
+  expect(seen).toEqual({ project: NO_PROJECT, item: "" });
   expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!).project).not.toBe("today");
 });

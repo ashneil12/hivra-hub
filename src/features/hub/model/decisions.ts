@@ -1,8 +1,8 @@
 // One proper place for decisions (scorecard D2; Ash 19 Oct: nothing sorts in the background, so the app must show
 // what holds). Settings > Decisions reads two real sources and invents nothing:
 //
-// - What is still open for a project: the inbox's own needs (hubData().listNeeds(projectId)), the same rows Today and
-//   the project's Asking view show. Answering happens there (WaitingOnYou / QuestionSheet), never in a second copy.
+// - What is still open for a project: the inbox's own needs (hubData().listNeeds(projectId)). Answering happens in
+//   the Inbox or the project's chat, never in a second copy on this page.
 // - What is already decided: the project's current memory as Ash OS composes it for a Lead's fresh session
 //   (hubMemoryPrimer.ts): the project's never-do rules and decisions, newest first, then
 //   Ash's global layer (`ash`). Each line is the short form `- <text> [14 Oct]` (studio/memory.py `_compact`), so a
