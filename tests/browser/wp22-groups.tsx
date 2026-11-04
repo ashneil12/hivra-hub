@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
-import { ensureBuiltInMonos } from "../../src/features/hub/model/builtInMonos";
 import { createChat, getChat, setGroupChatRunner, setRoomDecider } from "../../src/features/hub/model/hubChats";
+import { addMono } from "../../src/features/monos/model/mono";
 import { GroupChatView } from "../../src/features/hub/ui/GroupChatView";
 import "../../src/styles/index.css";
 
@@ -18,18 +18,20 @@ Object.assign(window, {
 });
 
 localStorage.clear();
-ensureBuiltInMonos();
-const room = createChat("hub", "Example: launch room", ["chief-of-staff", "projects-manager", "frank"]);
+addMono({ id: "ada", name: "Ada", mascot: "crab", color: "hsl(142 55% 50%)", projects: [] });
+addMono({ id: "bo", name: "Bo", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] });
+addMono({ id: "ed", name: "ed", mascot: "robot", color: "hsl(210 8% 58%)", projects: [] });
+const room = createChat("hub", "Example: launch room", ["ada", "bo", "ed"]);
 setRoomDecider(null);
 setGroupChatRunner({
   run: async (request) => {
     await new Promise((r) => setTimeout(r, 300));
-    if (request.monoId === "chief-of-staff" && request.prompt.includes("<room_control>"))
+    if (request.monoId === "ada" && request.prompt.includes("<room_control>"))
       return {
         kind: "reply",
         text: 'Example: two prices are on the table, 9 or 12 a month.\n<room_control>{"status":"needs_input","reason":"Ash picks between 9 and 12 a month"}</room_control>',
       };
-    return { kind: "reply", text: request.monoId === "chief-of-staff" ? "Example: morning." : "NO_REPLY" };
+    return { kind: "reply", text: request.monoId === "ada" ? "Example: morning." : "NO_REPLY" };
   },
   stop: () => undefined,
 });
