@@ -58,6 +58,7 @@ import {
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
+import { crewRouteFor, recordCrewFailure } from "../features/crew/model/host";
 import {
   briefCancelled,
   briefSentAt,
@@ -9897,6 +9898,15 @@ function Workspace({
       const landing = landingDue(result, sessionsRef.current.find((session) => session.id === result.sessionId));
       return landing ? withLanding(result, await landWorkerCopy(landing)) : result;
     },
+    // WP-13: a failed task is recorded from the CLI the child actually ran.
+    crewFailure: (row, result) => {
+      const child = sessionsRef.current.find((session) => session.id === row.childSession);
+      return recordCrewFailure(row, result, {
+        cli: child?.harness,
+        model: child?.model,
+        effort: child?.modelSettings?.effort,
+      });
+    },
   });
   delegationsRef.current = delegations;
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
@@ -13092,10 +13102,17 @@ function Workspace({
               ...(latestTurn && firstReport ? { earlierReport: firstReport } : {}),
               ...(reviewRequired ? { reviewRequired: true } : {}),
             });
-            // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
-            // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
+            // WP-13: a usage limit is settled failed first, so it can be paused or resumed. A pause, a resume,
+            // or a tracker that is not ready, is not reported. A move still reaches the Lead.
             if (holdForLimit(result)) {
-              settle.discard();
+              if (settled) return;
+              settled = true;
+              const action = await launch?.settle(result);
+              if (!launch || action === "pause" || action === "resume") {
+                settle.discard();
+                return;
+              }
+              settle(result);
               return;
             }
             // r84 (s14): stopped on a choice that is Ash's: its Lead hears the stop now, and the job stays open (not
@@ -13772,6 +13789,8 @@ function Workspace({
                     },
                   }
                 : {}),
+              // WP-13: the start of a delegated task asks which CLI, model and effort to use.
+              crewRoute: (query) => crewRouteFor(query),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,

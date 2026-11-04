@@ -45,6 +45,8 @@ import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
+import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import type { AgentAppHost } from "./agentApp";
 import {
   limitsLine,
@@ -213,6 +215,17 @@ export type AgentAppTasksHost = {
    * (hub/model/hubMemoryPrimer.ts workerMemoryBlock, the default), or undefined for a chat with no project.
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
+  /**
+   * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
+   * Labels are areas such as `ui`, not `area:ui`.
+   */
+  crewRoute?(query: {
+    labels: string[];
+    paths: string[];
+    override?: { cli?: string; model?: string; effort?: string };
+    project?: string;
+    mono?: string;
+  }): Promise<{ cli?: string | null; model?: string | null; effort?: string | null } | null | undefined>;
   /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
@@ -737,8 +750,42 @@ async function delegate(
       : withOffBridgeWhy(routeWorker(source, difficulty, tasks.pool?.model(projectKey), onBridge), offBridgeAsk);
   const model = namedModel ?? (route ? { harness: route.harness, model: route.model } : undefined);
   const effort = input.effort !== undefined ? input.effort : route?.effort;
+  // WP-13: the crew route picks the CLI, model and effort. A failure, or a CLI that isn't available, keeps this one.
+  let launchHarness = model?.harness;
+  let launchModel = model?.model;
+  let chosenEffort = effort;
+  let crewChose = false;
+  if (tasks.crewRoute) {
+    const baseline = model?.harness ?? source.harness;
+    const baselineModel = model?.model ?? source.model;
+    try {
+      const override = callerOverride(namedModel, input.effort);
+      const answer = await tasks.crewRoute({
+        labels: crewLabels(areasNamed(title, brief)),
+        paths: crewPaths(fileList(input.files), filesNamed(brief)),
+        ...(override ? { override } : {}),
+        ...(folder ? { project: folder } : {}),
+        ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
+      });
+      const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
+      if (next.harness && isHarnessAvailable(next.harness)) {
+        const moved = next.harness !== baseline || next.model !== baselineModel || next.effort !== effort;
+        if (moved) {
+          crewChose = next.harness !== model?.harness || next.model !== model?.model;
+          launchHarness = next.harness;
+          launchModel = next.model;
+          chosenEffort = next.effort;
+        }
+      }
+    } catch {
+      // A timeout is not a final failure: the model already chosen still starts.
+    }
+  }
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
-  const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(source.id, model?.harness ?? source.harness).catch(
+  const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
+    source.id,
+    launchHarness ?? model?.harness ?? source.harness,
+  ).catch(
     () => undefined,
   );
   const id = `app-${source.id}-${requestId}`;
@@ -793,8 +840,9 @@ async function delegate(
           : named !== undefined && !owner.team
             ? { project: tasks.hubProjectFolder?.(named) ?? named }
             : {}),
-        ...(model ? { harness: model.harness, model: model.model } : {}),
-        ...(effort !== undefined ? { effort } : {}),
+        ...(launchHarness ? { harness: launchHarness } : {}),
+        ...(launchModel ? { model: launchModel } : {}),
+        ...(chosenEffort !== undefined ? { effort: chosenEffort } : {}),
         // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
         // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
         runtimeMode: WORKER_RUNTIME_MODE,
@@ -853,7 +901,7 @@ async function delegate(
         model: launch.model,
         ...(launchEffort(launch) ? { effort: launchEffort(launch) } : {}),
         ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
-        ...(route ? { modelWhy: route.why } : {}),
+        ...(route && !crewChose ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
         note: forUser`${admission.line}${admission.reason === "files" ? " If this work belongs with that job, cancel this one (task_cancel) and send that job a follow-up instead; otherwise leave it." : ""} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence), then end your turn.`,
       };
@@ -894,7 +942,7 @@ async function delegate(
     // The model and effort in Ash's words: what the Lead says, never the raw model id.
     ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
     // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
-    ...(route ? { modelWhy: route.why } : {}),
+    ...(route && !crewChose ? { modelWhy: route.why } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? {

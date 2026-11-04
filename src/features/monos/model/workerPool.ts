@@ -677,9 +677,8 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
 // ---- a running worker the provider refused -----------------------------------------------------------------------
 
 /**
- * A worker's turn ended refused for a usage or rate limit: its task is not failed. App.tsx keeps the row open and
- * doesn't report; E5 moves the chat to the next account with room, or it resumes at the reset, and the resumed turn
- * settles the row as usual (delegations.ts resumeMonitor).
+ * A worker's turn ended refused for a usage or rate limit. App.tsx settles that row as failed first (WP-13), so the
+ * crew can pause it until the reset or move it, and does not report a pause or a resume to the Lead.
  */
 export function holdForLimit(result: { status: string; errorClass?: string; retryable?: boolean }): boolean {
   return result.status === "failed" && result.errorClass === "usage_limit" && result.retryable !== false;

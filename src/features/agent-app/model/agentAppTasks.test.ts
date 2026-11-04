@@ -624,6 +624,127 @@ describe("tasks.delegate", () => {
     expect(effort).toMatchObject({ model: "claude:opus-5-5", effort: "High" });
   });
 
+  it("asks the crew which CLI to start, and uses that CLI, model and effort", async () => {
+    setHarnessModels("codex", [
+      {
+        id: "codex:gpt-5",
+        harness: "codex",
+        name: "GPT-5",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "low",
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+            ],
+          },
+        ],
+      },
+    ]);
+    const { source, host, started, api } = fixture();
+    api.memoryBrief = vi.fn(async () => undefined);
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", model: "codex:gpt-5", effort: "medium" }));
+    await handleAgentApp(source, "r-crew", "tasks.delegate", { brief: "Build the UI.", files: ["src/app/main.tsx"] }, host);
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: ["ui"],
+        paths: ["src/app/main.tsx"],
+        project: PROJECT,
+        mono: "vg-game-lead",
+      }),
+    );
+    const asked = (api.crewRoute as ReturnType<typeof vi.fn>).mock.calls[0][0] as { labels: string[]; paths: string[] };
+    expect(asked.labels.some((label) => label.startsWith("area:"))).toBe(false);
+    expect(api.memoryBrief).toHaveBeenCalledWith("mono-exo", "codex");
+    expect(started[0][0]).toMatchObject({
+      harness: "codex",
+      model: "codex:gpt-5",
+      modelSettings: { effort: "medium" },
+    });
+  });
+
+  it("keeps the model already chosen when the crew route fails or names no usable CLI", async () => {
+    const down = fixture();
+    down.api.crewRoute = vi.fn(async () => {
+      throw new Error("crew route timed out");
+    });
+    await handleAgentApp(down.source, "r-down", "tasks.delegate", { brief: "Tidy the title." }, down.host);
+    expect(down.api.crewRoute).toHaveBeenCalled();
+    expect(down.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+
+    const odd = fixture();
+    odd.api.crewRoute = vi.fn(async () => ({ cli: "not-a-cli", model: "nope" }));
+    await handleAgentApp(odd.source, "r-odd", "tasks.delegate", { brief: "Tidy the title." }, odd.host);
+    expect(odd.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+
+    // Cursor is a real CLI, and this test's harness probe does not have it. The start still uses the model already chosen.
+    const missing = fixture();
+    missing.api.crewRoute = vi.fn(async () => ({ cli: "cursor", model: "cursor:composer" }));
+    await handleAgentApp(missing.source, "r-missing", "tasks.delegate", { brief: "Tidy the title." }, missing.host);
+    expect(missing.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
+  });
+
+  it("does not send another engine's model id when the crew names a CLI and no model", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: "codex" }));
+    await handleAgentApp(source, "r-bare", "tasks.delegate", { brief: "Tidy the title." }, host);
+    expect(api.crewRoute).toHaveBeenCalled();
+    const launch = started[0][0] as { harness: string; model: string };
+    expect(launch.harness).toBe("codex");
+    expect(launch.model.startsWith("claude:")).toBe(false);
+  });
+
+  it("sends a model or effort the caller names as the override, which beats a rule", async () => {
+    setHarnessModels("claude", [
+      {
+        id: "claude:opus-5-5",
+        harness: "claude",
+        name: "Opus 5.5",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "medium",
+            options: [
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+      { id: "claude:sonnet-5", harness: "claude", name: "Sonnet 5", settings: [] },
+    ]);
+    const { source, host, started, api } = fixture();
+    source.model = "claude:sonnet-5";
+    api.crewRoute = vi.fn(async (query: { override?: { cli?: string; model?: string; effort?: string } }) => ({
+      cli: query.override?.cli ?? "codex",
+      model: query.override?.model ?? "codex:gpt-5",
+      effort: query.override?.effort ?? null,
+    }));
+    await handleAgentApp(
+      source,
+      "r-named-crew",
+      "tasks.delegate",
+      { brief: "Do it.", hard: true, model: "opus-5-5", effort: "high" },
+      host,
+    );
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        override: { cli: "claude", model: "claude:opus-5-5", effort: "high" },
+      }),
+    );
+    expect(started[0][0]).toMatchObject({
+      harness: "claude",
+      model: "claude:opus-5-5",
+      modelSettings: { effort: "high" },
+    });
+  });
+
   it("runs a project's jobs on its own worker model, and an explicit one per task still wins", async () => {
     resetWorkerPool();
     const { source, host, started } = fixture();
