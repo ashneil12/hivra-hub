@@ -8,6 +8,8 @@ import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
+// WP-75: checked backups.
+import { BackupsPage } from "../../backups/ui/BackupsPage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
@@ -689,6 +691,8 @@ export function SettingsView({
               {section === "decisions" ? <DecisionsPage /> : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
+              {/* WP-75: checked backups, one item or everything. */}
+              {section === "backups" ? <BackupsPage /> : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (

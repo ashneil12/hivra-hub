@@ -627,6 +627,7 @@ describe("settings navigation", () => {
       "decisions",
       "dashboards",
       "portable",
+      "backups",
       "connectors",
       "keybindings",
       "chat",
