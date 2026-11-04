@@ -12,7 +12,16 @@ const NOW = 1_700_000_000_000;
 const PROJECT = "/work/proj";
 
 function worker(id: string, status: CrewWorkerInput["status"]): CrewWorkerInput {
-  return { id, project: PROJECT, title: id, status, createdAt: NOW - 60_000, updatedAt: NOW, childSession: `chat-${id}` };
+  return {
+    id,
+    project: PROJECT,
+    title: id,
+    status,
+    createdAt: NOW - 60_000,
+    updatedAt: NOW,
+    childSession: `chat-${id}`,
+    ownerSession: "lead",
+  };
 }
 
 describe("crew tab", () => {

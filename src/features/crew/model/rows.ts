@@ -53,7 +53,7 @@ export type CrewChecksInput = {
   checks?: number;
 };
 
-export type CrewAction = "open" | "message" | "stop" | "retry" | "land" | "open-pr";
+export type CrewAction = "open" | "message" | "stop" | "land" | "open-pr";
 
 export type CrewRow = {
   id: string;
@@ -102,6 +102,20 @@ function plainToken(value: string | null | undefined, max: number): string | nul
   return text;
 }
 
+const SECRET = /sk-|api[_ -]?key|\btoken\b|bearer /i;
+const STACK = /^\s*at /;
+
+/** The first line a person may read. A stack frame or a secret is skipped. Nothing plain means nothing shown. */
+export function firstPlainLine(value: string | null | undefined, max = 240): string | null {
+  const raw = (value ?? "").replace(/\r\n/g, "\n");
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    if (!text || STACK.test(text) || SECRET.test(text)) continue;
+    return text.slice(0, max);
+  }
+  return null;
+}
+
 function cliOf(harness: string | null | undefined): string | null {
   const text = (harness ?? "").trim().toLowerCase();
   return HARNESS.test(text) ? text : null;
@@ -130,10 +144,10 @@ function checksWord(checks: CrewChecksInput | undefined): string | null {
   const pending = countOf(checks.pending) ?? 0;
   const failed = Array.isArray(checks.failed) ? checks.failed.length : 0;
   const total = countOf(checks.checks) ?? 0;
-  if (pending > 0) return "checks running";
-  if (failed > 0) return "checks failing";
-  if (checks.passed) return "checks passing";
-  if (total === 0) return "checks not started";
+  if (pending > 0) return pending === 1 ? "1 check still going" : `${pending} checks still going`;
+  if (failed > 0) return failed === 1 ? "1 check did not pass" : `${failed} checks did not pass`;
+  if (checks.passed) return "Every check passed";
+  if (total === 0) return "No checks yet";
   return null;
 }
 
@@ -143,13 +157,15 @@ function actionsFor(
   sessionId: string | null,
   checkout: string | null,
   project: string,
+  ownerSession: string | null,
 ): CrewAction[] {
   const actions: CrewAction[] = [];
   if (sessionId) actions.push("open");
   if (status === "working" || status === "needs-you" || status === "paused") {
-    actions.push("message", "stop");
+    // Message needs a chat to send to. Stop does not.
+    if (ownerSession) actions.push("message");
+    actions.push("stop");
   }
-  if (status === "failed") actions.push("retry");
   if (status === "done") {
     const mode = (delivery?.mode ?? "").trim();
     const state = (delivery?.state ?? "").trim();
@@ -260,7 +276,9 @@ export function crewRows(input: {
   const sessions = new Map((input.sessions ?? []).map((session) => [session.id, session]));
   const out: CrewRow[] = [];
   for (const row of unique) {
-    if (allowed ? !allowed.has(row.id) : !inProject(row, project)) continue;
+    if (allowed && !allowed.has(row.id)) continue;
+    // A brief filter never lists another project's worker, even when it sits under the brief.
+    if (!inProject(row, project)) continue;
     const session = row.childSession ? sessions.get(row.childSession) : undefined;
     const delivery = newestDelivery(row.id, input.deliveries ?? []);
     const status = knownStatus(row.status);
@@ -273,7 +291,7 @@ export function crewRows(input: {
           ? row.updatedAt
           : input.now
       : input.now;
-    const notice = plainToken(row.statusNotice, 240);
+    const notice = firstPlainLine(row.statusNotice, 240);
     const checkout =
       plainToken(delivery?.checkout, 1024) ??
       plainToken(session?.worktreeCwd, 1024) ??
@@ -296,7 +314,14 @@ export function crewRows(input: {
       sessionId: plainToken(row.childSession, 200),
       ownerSession: plainToken(row.ownerSession, 200),
       checkout,
-      actions: actionsFor(status, delivery, plainToken(row.childSession, 200), checkout, project),
+      actions: actionsFor(
+        status,
+        delivery,
+        plainToken(row.childSession, 200),
+        checkout,
+        project,
+        plainToken(row.ownerSession, 200),
+      ),
     });
   }
   out.sort((a, b) => {

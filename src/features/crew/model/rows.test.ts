@@ -118,7 +118,7 @@ describe("crew rows", () => {
     ];
     list.push(worker({ id: "brief", parentId: "loop", title: "Back" }));
     const shown = crewRows({ project: PROJECT, rows: list, now: NOW, briefId: "brief" });
-    expect(shown.map((row) => row.id)).toEqual(["child", "grand", "loop"]);
+    expect(shown.map((row) => row.id)).toEqual(["child", "loop"]);
     expect(shown[0]?.title).toBe("../not/a/path");
     expect(crewRows({ project: PROJECT, rows: list, now: NOW, briefId: "missing" })).toEqual([]);
   });
@@ -166,8 +166,8 @@ describe("crew rows", () => {
         { number: 9, repo: "other/b", pending: 0, failed: ["lint"], passed: false, checks: 1 },
       ],
       rows: [
-        worker({ id: "live", status: "working", childSession: "chat" }),
-        worker({ id: "ask", status: "needs-you", childSession: "chat" }),
+        worker({ id: "live", status: "working", childSession: "chat", ownerSession: "lead" }),
+        worker({ id: "ask", status: "needs-you", childSession: "chat", ownerSession: "lead" }),
         worker({ id: "wait", status: "paused" }),
         worker({ id: "broke", status: "failed", childSession: "chat", ownerSession: "lead" }),
         worker({ id: "landed", status: "done", childSession: "chat" }),
@@ -179,10 +179,10 @@ describe("crew rows", () => {
     const byId = Object.fromEntries(shown.map((row) => [row.id, row]));
     expect(byId.live?.actions).toEqual(["open", "message", "stop"]);
     expect(byId.ask?.actions).toEqual(["open", "message", "stop"]);
-    expect(byId.wait?.actions).toEqual(["message", "stop"]);
-    expect(byId.broke?.actions).toEqual(["open", "retry"]);
+    expect(byId.wait?.actions).toEqual(["stop"]);
+    expect(byId.broke?.actions).toEqual(["open"]);
     expect(byId.landed?.actions).toEqual(["open", "open-pr"]);
-    expect(byId.landed?.checks).toBe("checks passing");
+    expect(byId.landed?.checks).toBe("Every check passed");
     expect(byId.local?.actions).toContain("land");
     expect(byId.local?.branch).toBe("fix-save");
     expect(byId.main?.actions).not.toContain("land");
@@ -233,10 +233,21 @@ describe("crew rows", () => {
     });
     const byId = Object.fromEntries(shown.map((row) => [row.id, row.checks]));
     expect(byId).toEqual({
-      run: "checks running",
-      bad: "checks failing",
-      none: "checks not started",
+      run: "2 checks still going",
+      bad: "1 check did not pass",
+      none: "No checks yet",
     });
+  });
+
+  it("hides a secret or a stack the same way a failure does, and shows the plain line", () => {
+    const shown = rows([
+      worker({ id: "secret", status: "failed", statusNotice: "The key is sk-live-secret" }),
+      worker({ id: "stack", status: "failed", statusNotice: "at save (/tmp/a.ts:1)" }),
+      worker({ id: "plain", status: "failed", statusNotice: "The save did not finish.\nsk-live-secret" }),
+    ]);
+    expect(shown.find((row) => row.id === "secret")?.notice).toBeNull();
+    expect(shown.find((row) => row.id === "stack")?.notice).toBeNull();
+    expect(shown.find((row) => row.id === "plain")?.notice).toBe("The save did not finish.");
   });
 
   it("keeps the last list when a refresh fails, and replaces it when the next one is empty", () => {
