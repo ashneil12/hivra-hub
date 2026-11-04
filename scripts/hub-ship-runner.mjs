@@ -137,11 +137,41 @@ export function releaseLock(db) {
   db.close();
 }
 
+// WP-09: a PowerShell start-time call can take seconds on a CI runner. A pid's start time never changes while it
+// lives, so one pass of the runner asks once per pid; a call over a second is logged, so a slow trial shows why.
+const START_CACHE_MS = 10_000;
+const SLOW_START_MS = 1_000;
+const startCache = new Map();
+let startTimeLog = null;
+
+/** Where slow start-time calls are written (the runner's log for this ship), or null for nowhere. */
+export function setStartTimeLog(log) {
+  startTimeLog = typeof log === "function" ? log : null;
+}
+
+/** Test seam: forget the cached start times. */
+export function clearStartCache() {
+  startCache.clear();
+}
+
+/** The Windows start time of `pid`, cached for a short while, with a slow call logged. `read` is a test seam. */
+export function windowsStart(pid, read = processStartWindows, now = Date.now) {
+  const cached = startCache.get(pid);
+  if (cached && now() - cached.at < START_CACHE_MS) return cached.value;
+  const began = now();
+  const value = read(pid);
+  const took = now() - began;
+  if (took > SLOW_START_MS) startTimeLog?.(`a PowerShell start-time check for pid ${pid} took ${took} ms`);
+  // A missing process is not cached: it may be one that is still starting.
+  if (value !== null) startCache.set(pid, { value, at: now() });
+  return value;
+}
+
 /** When `pid` started, in ms (from ps, to the second), or null when there is no such process. */
 export function processStart(pid) {
   if (!Number.isInteger(pid) || pid <= 1) return null;
   // WP-09: Windows has no `ps -o lstart`. The PowerShell start time is the same second.
-  if (process.platform === "win32") return processStartWindows(pid);
+  if (process.platform === "win32") return windowsStart(pid);
   const out = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
@@ -420,6 +450,7 @@ export function restoreData(backup, data, expected, aside, { beforeChange } = {}
 /** Run one ship to the end. Returns the exit code: 0 once the ship is final (launchd then leaves it alone). */
 export async function runShip(dir) {
   const log = (line) => appendLog(dir, line);
+  setStartTimeLog(log);
   const lock = tryLock(path.join(dir, RUNNER_LOCK));
   if (!lock) {
     log("another runner (or the app) holds this ship; leaving it");

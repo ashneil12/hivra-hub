@@ -19,7 +19,7 @@ import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
-import { PREVIOUS_APP, backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, runShip, sha256File, stampOf, writeJson } from "./hub-ship-runner.mjs";
+import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -410,18 +410,43 @@ function startApp(w) {
   return child.pid;
 }
 
+// WP-09: on Windows a drill can stall where this Mac never does. A timed-out wait or a failed ship assertion
+// carries the tail of each ship folder's logs and state, so a CI run shows where the runner stopped.
+const watchedShips = new Set();
+const SHIP_FILES = ["runner.log", "app-trial.log", "app-reopen.log", "state.json"];
+afterEach(() => watchedShips.clear());
+
+function tail(file, lines = 40) {
+  try {
+    return fs.readFileSync(file, "utf8").split(/\r?\n/).slice(-lines).join("\n");
+  } catch {
+    return "(none)";
+  }
+}
+
+function shipEvidence(dir) {
+  if (!dir) return "";
+  return SHIP_FILES.map((name) => `--- ${path.join(dir, name)}\n${tail(path.join(dir, name))}`).join("\n");
+}
+
+function evidence(...dirs) {
+  const all = new Set([...dirs.filter(Boolean), ...watchedShips]);
+  return [...all].map(shipEvidence).join("\n");
+}
+
 async function until(what, check, ms = 60_000) {
   const deadline = Date.now() + ms;
   for (;;) {
     const value = check();
     if (value) return value;
-    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}`);
+    if (Date.now() > deadline) assert.fail(`timed out waiting for ${what}\n${evidence()}`);
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
 }
 
 const stateOf = (dir) => readJson(path.join(dir, "state.json"));
 const settled = (dir, phase) => () => {
+  watchedShips.add(dir);
   const state = stateOf(dir);
   return state?.phase === phase && fs.existsSync(path.join(dir, "receipt.json")) ? state : null;
 };
@@ -522,7 +547,7 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   const { code, answer } = ship(w);
   assert.equal(code, 0, JSON.stringify(answer));
   assert.equal(answer.scheduled, true);
-  assert.equal(answer.appRunning, true);
+  assert.equal(answer.appRunning, true, `the old app holds its lock\n${JSON.stringify(readJson(path.join(w.data, "running.json")))}\n${evidence(answer.shipDir)}`);
   const dir = answer.shipDir;
   const state = await until("the commit", settled(dir, "committed"));
   remember(dir);
@@ -1233,4 +1258,66 @@ test("r50 drill: a submitted runner carries a ship across the app's restart and 
   await until("the runner's job gone", () => spawnSync("/bin/launchctl", ["print", `gui/${process.getuid()}/${label}`]).status !== 0, 20000);
   assert.deepEqual(fs.readdirSync(path.join(w.home, "Library")).includes("LaunchAgents") ? fs.readdirSync(path.join(w.home, "Library/LaunchAgents")) : [], []);
   console.log(`DRILL label=${label} ship=${answer.shipDir}`);
+});
+
+// WP-09: the instance lock is how a ship knows the app is running. One process holding BEGIN EXCLUSIVE on a file
+// must keep another from taking it, on every OS, or a ship on Windows would think the app was gone.
+test("a lock another process holds is not taken, and is free once that process is gone", async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-lock-")));
+  roots.push(root);
+  const file = path.join(root, "instance-owner.sqlite");
+  const holder = spawn(
+    process.execPath,
+    [
+      "--disable-warning=ExperimentalWarning",
+      "-e",
+      `const { DatabaseSync } = require("node:sqlite");
+       const db = new DatabaseSync(${JSON.stringify(file)});
+       db.exec("PRAGMA busy_timeout = 0");
+       db.exec("BEGIN EXCLUSIVE");
+       process.stdout.write("held\\n");
+       process.stdin.resume();`,
+    ],
+    { stdio: ["pipe", "pipe", "inherit"] },
+  );
+  pids.add(holder.pid);
+  let out = "";
+  holder.stdout.on("data", (chunk) => (out += chunk));
+  await until("the other process to hold the lock", () => out.includes("held"), 15_000);
+  assert.equal(tryLock(file), null, "the lock another process holds is not taken");
+  const gone = new Promise((resolve) => holder.once("exit", resolve));
+  holder.kill();
+  await gone;
+  const lock = await until("the lock to be free", () => tryLock(file), 15_000);
+  releaseLock(lock);
+});
+
+test("a Windows start time is asked once per pid for a while, and a slow ask is logged", () => {
+  clearStartCache();
+  const lines = [];
+  setStartTimeLog((line) => lines.push(line));
+  let clock = 0;
+  let asks = 0;
+  const read = () => {
+    asks += 1;
+    clock += 1500;
+    return 1_700_000_000_000;
+  };
+  const now = () => clock;
+  try {
+    assert.equal(windowsStart(4242, read, now), 1_700_000_000_000);
+    assert.equal(windowsStart(4242, read, now), 1_700_000_000_000);
+    assert.equal(asks, 1, "the second check uses the cached start time");
+    assert.match(lines.join("\n"), /pid 4242 took 1500 ms/);
+    clock += 60_000;
+    windowsStart(4242, read, now);
+    assert.equal(asks, 2, "an old cached start time is asked again");
+    let missing = 0;
+    windowsStart(9999, () => (missing += 1, null), now);
+    windowsStart(9999, () => (missing += 1, null), now);
+    assert.equal(missing, 2, "a missing process is not cached");
+  } finally {
+    setStartTimeLog(null);
+    clearStartCache();
+  }
 });
