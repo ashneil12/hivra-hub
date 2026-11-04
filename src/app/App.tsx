@@ -50,6 +50,7 @@ import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
 import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
+import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
   tauriDelegations,
@@ -108,6 +109,7 @@ import {
   leadBriefPrompt,
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
+import { bindCouncilApp } from "../features/council/model/seatSessions";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -827,6 +829,8 @@ import {
   recordAgentContext,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
+import { withFirstMateContract } from "../features/firstmate/model/contract";
+import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
 import {
@@ -9148,7 +9152,7 @@ function Workspace({
               ...agentFiles,
               soulHash: `${agentFiles.soulHash}:${agentLook.name}:${agentLook.projects
                 .map((project) => project.path)
-                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}`,
+                .join("|")}:${MONO_PROMPT_VERSION}${delegateTool ? ":delegate" : ""}:plain:${plainEnglishEndings() ? "1" : "0"}`,
             };
           const agentPlan = handedFiles
             ? planAgentContext(
@@ -9194,14 +9198,15 @@ function Workspace({
           const appended = appendsHubNote(current.harness, !!rawCommand);
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
-            const noteKey = handedFiles.soulHash;
+            // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
+            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
             const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
                 : undefined;
-              const note = monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
+              const note = withFirstMateContract(monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
@@ -9212,7 +9217,7 @@ function Workspace({
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(leadNoteName),
                     }
                   : {}),
-              });
+              }));
               if (appended) setHubNote(sessionId, { key: noteKey, text: note });
               else appContext.push(note);
               notedMono = true;
@@ -9223,14 +9228,14 @@ function Workspace({
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
           const teamHanded =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate`, memoryHash: "" }
+              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
               : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
-            const note = codingTeamContext(
+            const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
                 projectName: team.name,
@@ -9238,7 +9243,7 @@ function Workspace({
                 leadName: leadSpecFor(team).name,
               },
               projectMemory ? { projectMemory } : {},
-            );
+            ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
           }
@@ -10288,6 +10293,50 @@ function Workspace({
   // conversation; a busy Mono gets the room's wake in its queue. Also its router, private messages between Monos, and
   // work delegated from a room coming back to it (app/hooks/useRoomRunner.ts).
   const onStopRef = useRef<(sessionId: string, managed?: boolean) => unknown>(() => undefined);
+  // WP-23: a seat tab opens that seat's session. Read on each open, so the first render is not frozen in.
+  const showCouncilSeatRef = useRef<(sessionId: string) => void>(() => undefined);
+  showCouncilSeatRef.current = (sessionId) => {
+    if (focusOpenSession(sessionId)) return;
+    const session = sessionsRef.current.find((s) => s.id === sessionId);
+    if (!session) return;
+    const tab = newTab(session.id);
+    appendTab(tab, session.cwd);
+    setActiveTabId(tab.id);
+    setComposerFocused(false);
+  };
+  useEffect(() => {
+    // WP-23: each seat is a session on its own CLI, its tab opens that session, and the first mate who convened gets the brief.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindCouncilApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      show: (sessionId) => showCouncilSeatRef.current(sessionId),
+      cwd: () => folder,
+      hand: (monoId, text) => {
+        void ensureMonoSession(monoId, {
+          home: homeDir,
+          load: (id) => ensureOpenSessionRef.current(id),
+          create: (path) => newDefaultSession(path),
+          add: (created) => {
+            sessionsRef.current = [...sessionsRef.current, created];
+            setSessions(sessionsRef.current);
+          },
+        }).then((session) => {
+          if (session) void submitSessionRef.current(session.id, text, [], { followsUp: true });
+        });
+      },
+    });
+  }, []);
   const roomsHost = useRoomRunner({
     sessions,
     sessionsRef,
@@ -13077,24 +13126,53 @@ function Workspace({
             if (gateDue(result)) {
               const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
               const projectId = delegation?.project ?? hubProjectIdFor(project);
-              const run = checkout && projectId
-                ? await runWorkerGate({ projectId, checkout, signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []) })
+              // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
+              // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
+              // come back as not run. A brief with no plan still returns nothing and falls through.
+              const briefGates = row
+                ? await briefGatesFor({
+                    delegationId: row.id,
+                    checkout: checkout ?? row.id,
+                    projectId,
+                    signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
+                    report: result.result ?? "",
+                    failures: gateFailures,
+                  })
                 : null;
-              if (run && !run.ok) gateFailures += 1;
-              const verdict = gateVerdict(run, gateFailures);
-              if (verdict === "resend" && run) {
-                // The worker's next report is a whole one again, not a self-review joined to this one.
+              if (briefGates?.action === "resend") {
+                gateFailures += 1;
                 firstReport = undefined;
-                const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
-                  monoNote: gateAskNote(run),
+                const accepted = await submitSessionRef.current(sessionId, briefGates.ask, [], {
+                  monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(gateFailedResult(result, run));
+                if (!accepted) finish(briefGates.failed(result));
                 return;
               }
-              if (verdict === "deliver-failed" && run) {
-                finish(gateFailedResult(result, run));
+              if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
+                finish(briefGates.apply(result));
                 return;
+              }
+              if (!briefGates) {
+                const run = checkout && projectId
+                  ? await runWorkerGate({ projectId, checkout, signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []) })
+                  : null;
+                if (run && !run.ok) gateFailures += 1;
+                const verdict = gateVerdict(run, gateFailures);
+                if (verdict === "resend" && run) {
+                  // The worker's next report is a whole one again, not a self-review joined to this one.
+                  firstReport = undefined;
+                  const accepted = await submitSessionRef.current(sessionId, gateAsk(run), [], {
+                    monoNote: gateAskNote(run),
+                    onSettled: (next) => void turnEnded(next, true),
+                  });
+                  if (!accepted) finish(gateFailedResult(result, run));
+                  return;
+                }
+                if (verdict === "deliver-failed" && run) {
+                  finish(gateFailedResult(result, run));
+                  return;
+                }
               }
             }
             // r84: a finished worker's changes go into the project, and its Lead reads what happened first.

@@ -48,6 +48,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/plugins/fixtures/pstack
   Copied unchanged from cursor/plugins at commit 6ea74587 as a test fixture, with its LICENSE (WP-30).
 
+- council-of-high-intelligence personas and protocol
+  Source: https://github.com/0xnyk/council-of-high-intelligence
+  License: MIT
+  Copyright (c) 2026 nyk
+  Used in: src/features/council/personas, src/features/council/model/prompts.ts
+  The 18 council personas and the blind, cross-exam, stance and chairman prompts, copied with the MIT notice (WP-23).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

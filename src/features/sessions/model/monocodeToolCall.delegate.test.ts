@@ -38,6 +38,10 @@ describe("the delegate tool's calls", () => {
     expect(delegateToolName(call("task_answer", "pending"))).toBe(
       "task_answer",
     );
+    expect(delegateToolName(call("task_accept", "completed"))).toBe("task_accept");
+    expect(delegateToolLabel(call("task_accept", "completed"), "task_accept")).toBe(
+      "Accepted a finished task",
+    );
     expect(
       delegateToolName({ ...call("other_tool", "completed") }),
     ).toBeUndefined();

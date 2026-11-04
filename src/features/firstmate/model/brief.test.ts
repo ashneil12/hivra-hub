@@ -85,6 +85,8 @@ describe("the brief scaffold (Hivra WP-10)", () => {
     expect(FIRST_MATE_CONTRACT).toContain("**Never write to a project.**");
     expect(FIRST_MATE_CONTRACT).toContain("**Never merge a PR without the captain's explicit word.**");
     expect(FIRST_MATE_CONTRACT).toContain("**Never tear down unlanded work.**");
+    expect(FIRST_MATE_CONTRACT).toContain("code: true");
+    expect(FIRST_MATE_CONTRACT).toContain("task_accept");
     expect(FIRST_MATE_CONTRACT).not.toContain("<!--");
   });
 

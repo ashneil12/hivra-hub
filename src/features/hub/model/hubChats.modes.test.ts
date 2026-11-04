@@ -31,7 +31,9 @@ function scripted(replies: Record<string, Reply>) {
     calls.push(request);
     const n = (count.get(request.monoId) ?? 0) + 1;
     count.set(request.monoId, n);
-    await new Promise((r) => setTimeout(r, 1));
+    // A microtask, not a timer. Short timeouts share one tick on Windows, so a test that slept until a turn
+    // "must have started" could run first and then hang, or act on a turn that had not moved on yet.
+    await Promise.resolve();
     const reply = replies[request.monoId] ?? "NO_REPLY";
     return { kind: "reply", text: await (typeof reply === "function" ? reply(request, n) : reply) };
   });
@@ -188,6 +190,15 @@ it("a room's mode is saved with the room and read back", async () => {
 
 const control = (c: Record<string, string>) => `<room_control>${JSON.stringify(c)}</room_control>`;
 
+/** Wait until `ready`, one microtask at a time. A sleep races Windows, where short timers share one tick. */
+async function until(ready: () => boolean): Promise<void> {
+  for (let i = 0; i < 100; i++) {
+    if (ready()) return;
+    await Promise.resolve();
+  }
+  throw new Error("the room never reached the state this test waits for");
+}
+
 it("goal: the lead chooses who goes next with an instruction, hidden from the room, and stops when it's completed", async () => {
   const { chat, id, said } = await room("lead");
   const script = scripted({
@@ -292,7 +303,8 @@ it("goal: a failed turn blocks the run with a notice; Stop ends it", async () =>
   next.chat.setGroupChatRunner({ run: () => new Promise<RoomTurnOutcome>((r) => (release = (text) => r({ kind: "reply", text }))), stop: vi.fn() });
   const conv2 = next.chat.startConversation(next.id, "Long goal");
   const running = next.chat.startGoal(next.id, conv2);
-  await new Promise((r) => setTimeout(r, 5));
+  // The turn is already in flight: startGoal runs it up to the runner before returning, and this runner captures
+  // release synchronously. Sleeping here only raced the clock.
   expect(next.chat.roomStrip(next.id, conv2)).toEqual({ kind: "goal", text: "Working toward the goal · turn 1 of 13" });
   next.chat.stopRoom(next.id, conv2);
   release(control({ status: "continue", next: "frank", instruction: "x" }));
@@ -358,17 +370,24 @@ it("goal: a goal whose lead left the room ends with a line, and Ash's next messa
 it("goal: a running goal whose lead leaves mid-run ends as blocked, with a line, instead of hanging", async () => {
   const { chat, id, said } = await room("lead");
   let release: () => void = () => undefined;
+  let holding: () => void = () => undefined;
+  const frankHeld = new Promise<void>((resolve) => {
+    holding = resolve;
+  });
   const script = scripted({
     "chief-of-staff": control({ status: "continue", next: "frank", instruction: "Check." }),
-    frank: async () => {
-      await new Promise<void>((r) => (release = r));
-      return "Checked.";
-    },
+    frank: () =>
+      new Promise<string>((resolve) => {
+        release = () => resolve("Checked.");
+        holding();
+      }),
   });
   chat.setGroupChatRunner(script.runner);
   const conv = chat.startConversation(id, "Check memory");
   const running = chat.startGoal(id, conv);
-  await new Promise((r) => setTimeout(r, 10));
+  // Frank's turn is in flight and release is the resolver it is waiting on. A sleep can run first, on a coarse
+  // timer tick, and call the empty release; Frank then waits forever and the test hits the 30s timeout.
+  await frankHeld;
   chat.removeMember(id, "chief-of-staff");
   release();
   await running;
@@ -383,10 +402,9 @@ it("goal: a busy member's room_post moves the run on; its session failing afterw
   const leadTurns: string[] = [];
   const runner = {
     run: vi.fn(async (request: RoomTurnRequest): Promise<RoomTurnOutcome> => {
-      await new Promise((r) => setTimeout(r, 1));
+      await Promise.resolve();
       if (request.monoId === "frank") {
         // frank is busy in his own chat: the turn goes in as a wake, and he answers with room_post.
-        setTimeout(() => chat.postFromMono(id, "frank", "Checked: the decision is in memory."), 2);
         return { kind: "wake", delivery: "queued", done: new Promise((r) => (endFrank = r)) };
       }
       leadTurns.push(request.prompt);
@@ -400,8 +418,12 @@ it("goal: a busy member's room_post moves the run on; its session failing afterw
   chat.setGroupChatRunner(runner);
   const conv = chat.startConversation(id, "Check memory");
   const done = chat.startGoal(id, conv);
-  await new Promise((r) => setTimeout(r, 30));
-  // frank posted; the run moved on to the lead and completed. Now his own session reports a failure.
+  // room_post is refused while the turn is still managed, so wait until the wake is accepted. Then let the run
+  // finish before his session fails. A sleep can deliver that failure on the same tick as the post, and the room
+  // stays empty (the lead's first turn is only a control block).
+  await until(() => chat.roomWorking(id, conv).some((w) => w.monoId === "frank" && w.state === "queued"));
+  chat.postFromMono(id, "frank", "Checked: the decision is in memory.");
+  await until(() => chat.roomGoal(id, conv)?.state === "completed");
   endFrank({ status: "failed", error: "usage limit reached" });
   await done;
   expect(posts(said(conv))).toEqual(["frank", "chief-of-staff"]);
