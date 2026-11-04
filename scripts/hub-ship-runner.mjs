@@ -606,7 +606,11 @@ async function swap(ctx, ship) {
   saveShip(ctx.dir, ship);
   releaseLock(ctx.instance);
   ctx.instance = null;
-  launch(ctx, ship, "trial");
+  try {
+    launch(ctx, ship, "trial");
+  } catch (error) {
+    return toRollback(ship, `The new build couldn't start: ${error.message}`);
+  }
   markStep(ship, "launched");
 }
 
@@ -661,7 +665,11 @@ function launch(ctx, ship, purpose) {
 async function watchTrial(ctx, ship) {
   const { startMs, commitMs } = timeouts(ship);
   if (!step(ship, "launched")) {
-    launch(ctx, ship, "trial");
+    try {
+      launch(ctx, ship, "trial");
+    } catch (error) {
+      return toRollback(ship, `The new build couldn't start: ${error.message}`);
+    }
     markStep(ship, "launched");
     saveShip(ctx.dir, ship);
   }
@@ -817,7 +825,12 @@ async function rollBack(ctx, ship) {
   releaseLock(ctx.instance);
   ctx.instance = null;
   if (!exists(app)) return;
-  launch(ctx, ship, "reopen");
+  try {
+    launch(ctx, ship, "reopen");
+  } catch (error) {
+    ctx.log(`the old build couldn't start: ${error.message}`);
+    return;
+  }
   markStep(ship, "reopened");
   saveShip(ctx.dir, ship);
   const deadline = Date.now() + timeouts(ship).startMs;

@@ -19,7 +19,7 @@ import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
-import { backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, sha256File, stampOf } from "./hub-ship-runner.mjs";
+import { PREVIOUS_APP, backupMonoHome, isRunning, leaveSubmittedJob, monosHome, readJson, restoreData, retainShips, runShip, sha256File, stampOf, writeJson } from "./hub-ship-runner.mjs";
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -273,11 +273,12 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
     `#!/bin/sh\n# MONOCODE-STAMP:${stamp}\n# MONOCODE-SHIP:1\nexec "${NODE}" --disable-warning=ExperimentalWarning "${path.join(root, "fake-app.mjs")}" "$0" "$@"\n`,
     { mode: 0o755 },
   );
-  // Windows cannot CreateProcess the stamp script. The spawn spec may name only a
-  // file whose canonical path stays inside the bundle. A hard link to node.exe does
-  // not: Windows realpath reports the Node install, which is outside, so the spec
-  // was refused. A copy has one path. DLLs beside node are copied with it, because
-  // Windows looks next to the exe it started.
+  // Windows cannot CreateProcess the stamp script. node.exe is a copy, not a
+  // hard link: a hard link's canonical path is the Node install, outside the
+  // bundle. The spec names that copy relatively, and "{binary}" stands for this
+  // bundle's stamp, so a copy of the bundle starts itself. An absolute path
+  // would keep pointing at this folder, and a short TEMP name would not match
+  // the long path git reports.
   if (process.platform === "win32") {
     const macos = path.join(app, "Contents", "MacOS");
     const nodeInBundle = path.join(macos, "node.exe");
@@ -307,8 +308,8 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
     fs.writeFileSync(
       `${binary}.spawn.json`,
       JSON.stringify({
-        command: nodeInBundle,
-        args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), binary],
+        command: "node.exe",
+        args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), "{binary}"],
       }),
     );
   }
@@ -438,6 +439,7 @@ test("a temporary HOME is recognised, and the runner's LaunchAgent restarts only
   roots.push(root);
   assert.equal(isIsolatedHome(root), true);
   assert.equal(isIsolatedHome(os.userInfo().homedir), false);
+  if (process.platform === "win32") assert.equal(isIsolatedHome(os.userInfo().homedir.toUpperCase()), false);
   const plist = runnerPlist({ label: "test.monocode-hub-ship.x", node: NODE, dir: "/tmp/ship dir", home: root });
   assert.match(plist, /<key>Label<\/key>\s*<string>test\.monocode-hub-ship\.x<\/string>/);
   assert.match(plist, /<key>KeepAlive<\/key>\s*<dict>\s*<key>SuccessfulExit<\/key>\s*<false\/>/);
@@ -458,14 +460,60 @@ test("the Windows fixture's spawn spec is a copy inside the bundle, and a real h
   }
   const nodeInBundle = path.join(w.app, "Contents", "MacOS", "node.exe");
   const spec = appCommand(w.app, w.home);
-  assert.equal(spec.command, fs.realpathSync(nodeInBundle));
-  assert.equal(isInside(spec.command, fs.realpathSync(w.app), "win32"), true);
+  assert.equal(spec.command, fs.realpathSync.native(nodeInBundle));
+  assert.equal(isInside(spec.command, fs.realpathSync.native(w.app), "win32"), true);
   const copied = fs.statSync(nodeInBundle);
   const source = fs.statSync(NODE);
   if (copied.ino !== 0 && source.ino !== 0) assert.notEqual(`${copied.dev}:${copied.ino}`, `${source.dev}:${source.ino}`);
   assert.deepEqual(spec.args.at(-1), stamp);
   assert.throws(() => appCommand(w.app, os.userInfo().homedir), /This build has no monocode\.exe/);
 });
+
+test(
+  "a build with no program is rolled back instead of stopping the runner",
+  { skip: process.platform === "win32" ? false : "only Windows refuses a bundle with no monocode.exe" },
+  async () => {
+    const w = world();
+    const strip = (app) => {
+      const macos = path.join(app, "Contents", "MacOS");
+      fs.rmSync(path.join(macos, "node.exe"), { force: true });
+      fs.rmSync(path.join(macos, "monocode.exe"), { force: true });
+      fs.rmSync(path.join(macos, "monocode.spawn.json"), { force: true });
+    };
+    strip(w.app);
+    strip(w.bundle);
+    const dir = path.join(w.root, "ships", "nospec");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.cpSync(w.app, path.join(dir, PREVIOUS_APP), { recursive: true });
+    fs.rmSync(w.app, { recursive: true, force: true });
+    fs.cpSync(w.bundle, w.app, { recursive: true });
+    writeJson(path.join(dir, "state.json"), {
+      version: 1,
+      id: "nospec",
+      phase: "trial",
+      reason: null,
+      home: w.home,
+      appPath: w.app,
+      dataDir: w.data,
+      shipDir: dir,
+      to: { sha: w.sha, branch: "hub/test" },
+      from: { sha: SHA_A, branch: "hub/test" },
+      launch: { mode: "direct", env: { HOME: w.home, MONOCODE_NO_ALERT: "1" } },
+      timeouts: { startMs: 3000, commitMs: 3000, quitMs: 3000 },
+      steps: { newMoved: new Date().toISOString() },
+      history: [],
+    });
+    const code = await runShip(dir);
+    const state = readJson(path.join(dir, "state.json"));
+    const log = fs.readFileSync(path.join(dir, "runner.log"), "utf8");
+    assert.equal(code, 0, log);
+    assert.equal(state.phase, "rolled-back", log);
+    assert.match(state.reason, /The new build couldn't start: This build has no monocode\.exe/);
+    assert.match(log, /the old build couldn't start: This build has no monocode\.exe/);
+    assert.doesNotMatch(log, /stopped:/);
+    assert.equal(stampOf(w.app).sha, SHA_A);
+  },
+);
 
 test("a ship commits: the new build is in place, the old one kept, the database backed up byte for byte", async () => {
   const w = world();
@@ -1019,7 +1067,8 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
 test("a fake app quits by itself once the test run that started it is gone", async () => {
   const w = world();
   // A stand-in for a test run that was killed: the app's owner is a process that ends while the app runs.
-  const owner = spawn(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { stdio: "ignore" });
+  const owner = spawn(process.execPath, ["-e", "process.stdin.resume()"], { stdio: ["pipe", "ignore", "ignore"] });
+  pids.add(owner.pid);
   const exited = new Promise((resolve) => owner.on("exit", resolve));
   const spec = appCommand(w.app, w.home);
   const child = spawn(spec.command, spec.args, {
@@ -1032,6 +1081,7 @@ test("a fake app quits by itself once the test run that started it is gone", asy
   child.on("exit", () => (quit = true));
   await until("the app", () => readJson(path.join(w.data, "running.json"))?.pid === child.pid);
   assert.equal(quit, false, "it runs while its owner does");
+  owner.kill();
   await exited;
   await until("the app to quit", () => quit, 5_000);
 });
