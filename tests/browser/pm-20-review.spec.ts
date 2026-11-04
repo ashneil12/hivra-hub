@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { openLocalHub } from "./localHub";
+import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 20 review fixes, a browser preview only (not Ash's Mac): a project's own Today keeps its ask rows in one
 // column even at 2560 wide (G1 took away the all-projects board and its 1800px two-column grid; the single shrinkable
@@ -40,20 +41,17 @@ test("a Page preview has no watermark; the bar says it is a preview", async ({ p
   await page.screenshot({ path: `${SHOTS}/pm-20-pages-nowatermark.png` });
 });
 
-test("onboarding: the team is the four, Critiquito optional and unticked", async ({ page }) => {
+test("onboarding: the five starter Monos, all unticked, and skip adds nobody", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/hub-dev.html?onboarding");
-  await expect(page.locator("[data-hub-onboarding]")).toBeVisible({ timeout: 60_000 });
-  const notNow = page.getByRole("button", { name: "Not now" });
-  if (await notNow.isVisible().catch(() => false)) await notNow.click();
+  await openOnboarding(page);
   await page.locator("[data-hub-onboarding-next]").click();
-  await expect(page.locator("[data-hub-onboarding-team]")).toHaveText("Chief of Staff, Projects Manager, frank and Alfred.");
-  await expect(page.locator("[data-hub-onboarding-addon]")).toHaveAttribute("aria-checked", "false");
-  await expect(page.locator("[data-hub-onboarding-addon]")).toContainText("Also add Critiquito");
+  await assertStartersUnticked(page);
   const rail = page.locator("[data-mono-rail]").first();
   await expect(rail.getByText("Critiquito")).toHaveCount(0);
-  expect(await page.evaluate(() => /\bAsh\b|pre-load/i.test(document.body.innerText))).toBe(false);
+  expect(await page.evaluate(() => /\bAsh\b|pre-load|Critiquito/i.test(document.body.innerText))).toBe(false);
   await page.waitForTimeout(400);
   await page.screenshot({ path: `${SHOTS}/pm-20-onboarding-critiquito-optional.png` });
+  await skipAddsNobody(page);
+  await tickedBecomesOrdinaryMono(page);
 });
