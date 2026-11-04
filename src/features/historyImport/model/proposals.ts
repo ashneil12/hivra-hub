@@ -1,20 +1,20 @@
-// A proposal WP-51 can review. Nothing here is applied. The id is a stable hash
-// of the source so two windows write the same folder and the second one loses.
+// A proposal WP-51 can review. Nothing here is applied. The id is a SHA-256 of
+// the source, so two chats do not share a folder. A 32-bit hash did.
 
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
+import { sha256Hex } from "./hash";
 import type { ProposalMeta, SourceId } from "./types";
 
 export function proposalId(source: string, sourceKey: string): string {
-  let hash = 2166136261;
-  const text = `${source}:${sourceKey}`;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `hi-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+  return `hi-${sha256Hex(`${source}:${sourceKey}`)}`;
 }
 
-export function proposalMeta(source: SourceId, conversationId: string, project: string): ProposalMeta {
+export function proposalMeta(
+  source: SourceId,
+  conversationId: string,
+  project: string,
+  sourceKey: string,
+): ProposalMeta {
   return {
     format: 1,
     kind: "history-import",
@@ -23,6 +23,7 @@ export function proposalMeta(source: SourceId, conversationId: string, project: 
     source,
     conversationId,
     project,
+    sourceKey,
   };
 }
 
@@ -35,5 +36,5 @@ export function assertProposal(id: string, markdown: string): void {
       throw new Error("A line without a source was left in.");
     }
   }
-  if (findSecrets(markdown).length > 0) throw new Error("That draft looks like it contains a secret, so it was not saved.");
+  if (hasSecretText(markdown)) throw new Error("That draft looks like it contains a secret, so it was not saved.");
 }

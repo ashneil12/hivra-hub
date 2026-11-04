@@ -2,10 +2,10 @@
 // has to use. Secret messages are not passed in; the caller filters them first.
 
 import type { Conversation, TranscriptMessage } from "./types";
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 
 export function sendable(messages: readonly TranscriptMessage[]): TranscriptMessage[] {
-  return messages.filter((message) => !message.secret && findSecrets(message.content).length === 0);
+  return messages.filter((message) => !message.secret && !hasSecretText(message.content));
 }
 
 export function batchPrompt(conversation: Conversation, batch: readonly TranscriptMessage[]): string {

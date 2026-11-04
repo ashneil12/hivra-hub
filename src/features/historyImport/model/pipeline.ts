@@ -52,6 +52,14 @@ export type RunInput = {
 
 type Stop = { status: "failed" | "deferred"; reason: string };
 
+/** The file path of a Hermes session key (`file#id`). Other sources have none. */
+function hermesFile(source: string, sourceKey: string): string | null {
+  if (source !== "hermes") return null;
+  const at = sourceKey.lastIndexOf("#");
+  if (at <= 0) return null;
+  return sourceKey.slice(0, at);
+}
+
 async function flushBatch(
   prompt: string,
   ask: RunInput["ask"],
@@ -66,6 +74,10 @@ async function flushBatch(
       result = await ask(prompt);
     } catch {
       result = { ok: false, kind: "retryable", reason };
+    }
+    if (cancelled()) {
+      const stop: Stop = { status: "deferred", reason: "cancelled" };
+      throw stop;
     }
     if (result.ok) return result.text;
     reason = result.reason || reason;
@@ -125,6 +137,26 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
     return false;
   };
 
+  // A Hermes file holds several sessions. The file itself is submitted only
+  // when every session from this run is, so the next list can move past it
+  // without hiding a session that still needs a run.
+  const rememberFile = async (platform: string, sourceKey: string) => {
+    const path = hermesFile(platform, sourceKey);
+    if (!path || isSubmitted(state, platform, path)) return;
+    const pending = input.units.some((unit) => {
+      const unitPlatform = unit.kind === "chat" ? unit.conversation.source : unit.source;
+      const unitKey = unit.kind === "chat" ? unit.conversation.sourceKey : unit.sourceKey;
+      return unitPlatform === platform && hermesFile(unitPlatform, unitKey) === path && !isSubmitted(state, platform, unitKey);
+    });
+    if (!pending) await commit(platform, path, "submitted", null);
+  };
+
+  const markSubmitted = async (platform: string, sourceKey: string): Promise<boolean> => {
+    const wrote = await commit(platform, sourceKey, "submitted", null);
+    if (isSubmitted(state, platform, sourceKey)) await rememberFile(platform, sourceKey);
+    return wrote;
+  };
+
   for (let index = 0; index < input.units.length; index++) {
     if (input.cancelled()) {
       summary.cancelled = true;
@@ -144,7 +176,7 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
     }
 
     if (unit.kind === "empty") {
-      if (await commit(platform, sourceKey, "submitted", null)) summary.submitted += 1;
+      if (await markSubmitted(platform, sourceKey)) summary.submitted += 1;
       progress("submitted");
       continue;
     }
@@ -159,7 +191,7 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
     summary.secrets += conversation.secrets;
     const messages = sendable(conversation.messages);
     if (messages.length === 0) {
-      if (await commit(platform, sourceKey, "submitted", null)) summary.submitted += 1;
+      if (await markSubmitted(platform, sourceKey)) summary.submitted += 1;
       progress("submitted");
       continue;
     }
@@ -190,7 +222,7 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
       }
     }
 
-    if (cancelledMid) {
+    if (cancelledMid || input.cancelled()) {
       summary.cancelled = true;
       progress("cancelled");
       break;
@@ -214,20 +246,22 @@ export async function runImport(input: RunInput): Promise<RunSummary> {
     }
 
     const id = proposalId(platform, sourceKey);
-    const meta = proposalMeta(conversation.source, conversation.id, conversation.project);
+    const meta = proposalMeta(conversation.source, conversation.id, conversation.project, sourceKey);
     try {
       assertProposal(id, dropped.text);
       await input.writeProposal(id, dropped.text, meta);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (!/already/i.test(message)) {
+      // Only this chat's own draft counts. A folder that belongs to a
+      // different chat, or any other "already", is not a success.
+      if (message !== "This chat was already drafted.") {
         const reason = message || "The draft could not be saved.";
         if (await commit(platform, sourceKey, "failed", reason)) summary.failed += 1;
         progress("failed", reason);
         continue;
       }
     }
-    if (await commit(platform, sourceKey, "submitted", null)) {
+    if (await markSubmitted(platform, sourceKey)) {
       summary.submitted += 1;
       summary.proposals.push({ id, markdown: dropped.text, meta });
     }

@@ -9,7 +9,7 @@
 // lines are skipped (Raven), not fatal (Agent Zero), because a local file often
 // ends torn.
 
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 import type { Conversation, TranscriptMessage } from "./types";
 import { jsonLines, parseIsoTsMs, projectName, sourceToken, truncateContent } from "./text";
 
@@ -46,7 +46,7 @@ export function parseCodex(sourceKey: string, text: string): Conversation | null
   for (const turn of raw) {
     const full = turn.content.trim();
     if (!full) continue;
-    const secret = findSecrets(full).length > 0;
+    const secret = hasSecretText(full);
     messages.push({
       conversationId: id,
       messageId: `m${messages.length + 1}`,

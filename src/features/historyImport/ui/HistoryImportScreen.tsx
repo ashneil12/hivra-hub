@@ -12,7 +12,7 @@ function realPorts(): HistoryPorts {
   return {
     roots: () => invoke<HistoryRoots>("history_import_roots"),
     list: (root, source: SourceId) => invoke<ListReport>("history_import_list", { root, source }),
-    read: (root, path) => invoke<string>("history_import_read", { root, path }),
+    read: (root, path, source) => invoke<string>("history_import_read", { root, path, source }),
     loadState: () => invoke<{ revision: number; state: ImportStateFile }>("history_import_load_state"),
     casState: (revision, state) => invoke<boolean>("history_import_cas_state", { revision, state }),
     writeProposal: (id, markdown, meta: ProposalMeta) =>
@@ -23,6 +23,7 @@ function realPorts(): HistoryPorts {
           source: meta.source,
           conversationId: meta.conversationId,
           project: meta.project,
+          sourceKey: meta.sourceKey,
           applied: false,
         },
       }),

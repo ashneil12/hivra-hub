@@ -7,7 +7,7 @@
 // cite a conversation and a message that was actually sent: the package says a
 // line without a source is removed, and a made-up id is not a source.
 
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 
 const SRC = /\[src:\s+([A-Za-z0-9._:-]+)\s+#([A-Za-z0-9._:-]+)\]/g;
 
@@ -40,7 +40,7 @@ export function dropLinesWithoutSource(
       continue;
     }
     const ok = citationsIn(line).some((cite) => allowed.has(citeKey(cite.conversationId, cite.messageId)));
-    if (!ok || findSecrets(line).length > 0) {
+    if (!ok || hasSecretText(line)) {
       dropped += 1;
       continue;
     }

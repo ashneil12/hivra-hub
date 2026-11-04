@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { batchesOf, slicePause } from "./batch";
@@ -225,6 +226,7 @@ describe("the run", () => {
       ...unitsFrom("codex", "sessions/rollout.jsonl", fixture("codex.jsonl")),
     ];
     let asks = 0;
+    let stop = false;
     const first = harness(store, units, {
       state: (await store.load()).state,
       revision: (await store.load()).revision,
@@ -232,7 +234,12 @@ describe("the run", () => {
         asks += 1;
         return citingAsk([])(prompt);
       },
-      cancelled: () => asks >= 1,
+      // After the first chat is saved, not during its model call. A cancel
+      // that lands while that call is in flight is a different case.
+      cancelled: () => stop,
+      onProgress: (event) => {
+        if (event.status === "submitted") stop = true;
+      },
     });
     const stopped = await runImport(first);
     expect(stopped.cancelled).toBe(true);
@@ -504,6 +511,139 @@ describe("state and estimate", () => {
       },
       [message({ content: "ok" })],
     )).not.toContain(KEY);
+  });
+});
+
+describe("a cancel, a shared id, and a key-name secret", () => {
+  const one = (content: string, sourceKey = "one.jsonl"): Conversation => ({
+    id: "sess-1",
+    sourceKey,
+    source: "claude_code",
+    project: "notes",
+    title: "",
+    messages: [message({ content })],
+    skippedLines: 0,
+    secrets: 0,
+  });
+
+  it("does not save a chat cancelled while the model call is in flight", async () => {
+    const store = disk();
+    let stop = false;
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello") }], {
+        ask: async (prompt) => {
+          stop = true;
+          return citingAsk([])(prompt);
+        },
+        cancelled: () => stop,
+      }),
+    );
+    expect(summary.cancelled).toBe(true);
+    expect(summary.submitted).toBe(0);
+    expect(summary.proposals).toEqual([]);
+    expect(store.get().entries).toEqual({});
+  });
+
+  it("uses a full hash so two chats do not share an id", () => {
+    const hex = createHash("sha256").update("claude_code:notes/chat.jsonl").digest("hex");
+    const id = proposalId("claude_code", "notes/chat.jsonl");
+    expect(id).toBe(`hi-${hex}`);
+    expect(id).toMatch(/^hi-[a-f0-9]{64}$/);
+    expect(proposalId("claude_code", "other.jsonl")).not.toBe(id);
+  });
+
+  it("does not mark a chat done when that draft id belongs to someone else", async () => {
+    const store = disk();
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello", "second.jsonl") }], {
+        writeProposal: async () => {
+          throw new Error("A draft with that id is already there.");
+        },
+      }),
+    );
+    expect(summary.submitted).toBe(0);
+    expect(summary.proposals).toEqual([]);
+    expect(isSubmitted(store.get(), "claude_code", "second.jsonl")).toBe(false);
+  });
+
+  it("marks the same chat done when its draft is already on disk", async () => {
+    const store = disk();
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation: one("hello") }], {
+        writeProposal: async () => {
+          throw new Error("This chat was already drafted.");
+        },
+      }),
+    );
+    expect(summary.submitted).toBe(1);
+    expect(isSubmitted(store.get(), "claude_code", "one.jsonl")).toBe(true);
+  });
+
+  it("drops a key-name secret before it is sent or kept, and keeps a short value", async () => {
+    const named = "token=abcdefgh";
+    const conversation: Conversation = {
+      ...one("I decide on Tuesday"),
+      messages: [message({ content: named, messageId: "m1" }), message({ content: "I decide on Tuesday", messageId: "m2" })],
+    };
+    expect(sendable(conversation.messages).map((item) => item.messageId)).toEqual(["m2"]);
+    expect(sendable([message({ content: "token=short" })])).toHaveLength(1);
+    const prompts: string[] = [];
+    const store = disk();
+    const summary = await runImport(
+      harness(store, [{ kind: "chat", conversation }], {
+        ask: async (prompt) => {
+          prompts.push(prompt);
+          return {
+            ok: true as const,
+            text: [`- ${named} [src: sess-1 #m2]`, "- Decides on Tuesday [src: sess-1 #m2]"].join("\n"),
+          };
+        },
+      }),
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).not.toContain(named);
+    expect(summary.proposals).toHaveLength(1);
+    expect(summary.proposals[0].markdown).toBe("- Decides on Tuesday [src: sess-1 #m2]");
+    expect(summary.proposals[0].markdown).not.toContain(named);
+  });
+
+  it("marks a hermes file done only once every session in it is submitted", async () => {
+    const session = (id: string): Conversation => ({
+      id,
+      sourceKey: `sessions/h.jsonl#${id}`,
+      source: "hermes",
+      project: "notes",
+      title: "",
+      messages: [message({ conversationId: id, content: id })],
+      skippedLines: 0,
+      secrets: 0,
+    });
+    const store = disk();
+    const both = await runImport(
+      harness(store, [
+        { kind: "chat", conversation: session("one") },
+        { kind: "chat", conversation: session("two") },
+      ]),
+    );
+    expect(both.submitted).toBe(2);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl#one")).toBe(true);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl#two")).toBe(true);
+    expect(isSubmitted(store.get(), "hermes", "sessions/h.jsonl")).toBe(true);
+
+    const stuck = disk();
+    await runImport(
+      harness(stuck, [
+        { kind: "chat", conversation: session("one") },
+        { kind: "chat", conversation: session("two") },
+      ], {
+        writeProposal: async (_id, _markdown, meta) => {
+          if (meta.conversationId === "two") throw new Error("The draft could not be saved.");
+        },
+      }),
+    );
+    expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl#one")).toBe(true);
+    expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl#two")).toBe(false);
+    expect(isSubmitted(stuck.get(), "hermes", "sessions/h.jsonl")).toBe(false);
   });
 });
 

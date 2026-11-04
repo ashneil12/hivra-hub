@@ -113,4 +113,6 @@ export type ProposalMeta = {
   source: SourceId;
   conversationId: string;
   project: string;
+  /** The resume key, so a folder that already exists can be told apart. */
+  sourceKey: string;
 };

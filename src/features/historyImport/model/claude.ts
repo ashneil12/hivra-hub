@@ -8,7 +8,7 @@
 // dropped too. Raven keeps them; the package says to skip tool noise, and the
 // profile is how the person works, not the tool trace.
 
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 import type { Conversation, TranscriptMessage } from "./types";
 import { jsonLines, parseIsoTsMs, projectName, sourceToken, truncateContent } from "./text";
 
@@ -40,7 +40,7 @@ function turns(raw: RawTurn[], id: string): { messages: TranscriptMessage[]; sec
   for (const turn of raw) {
     const full = turn.content.trim();
     if (!full) continue;
-    const secret = findSecrets(full).length > 0;
+    const secret = hasSecretText(full);
     messages.push({
       conversationId: id,
       messageId: `m${messages.length + 1}`,

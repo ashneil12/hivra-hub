@@ -2,7 +2,7 @@
 // without Tauri. It does not import the Tauri API.
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 import { estimateSentence } from "../model/estimate";
 import { runImport, type RunSummary } from "../model/pipeline";
 import { previewFrom, rangeText } from "../model/preview";
@@ -40,7 +40,7 @@ export type HistoryRoots = {
 export type HistoryPorts = {
   roots: () => Promise<HistoryRoots>;
   list: (root: string, source: SourceId) => Promise<ListReport>;
-  read: (root: string, path: string) => Promise<string>;
+  read: (root: string, path: string, source: SourceId) => Promise<string>;
   loadState: () => Promise<{ revision: number; state: ImportStateFile }>;
   casState: (revision: number, state: ImportStateFile) => Promise<boolean>;
   writeProposal: (id: string, markdown: string, meta: ProposalMeta) => Promise<void>;
@@ -79,7 +79,7 @@ function conversationWord(count: number): string {
 function visibleLines(markdown: string): string[] {
   return markdown.split(/\r?\n/).filter((line) => {
     const trimmed = line.trim();
-    return trimmed.length > 0 && /\[src:\s+[A-Za-z0-9._:-]+\s+#[A-Za-z0-9._:-]+\]/.test(trimmed) && findSecrets(trimmed).length === 0;
+    return trimmed.length > 0 && /\[src:\s+[A-Za-z0-9._:-]+\s+#[A-Za-z0-9._:-]+\]/.test(trimmed) && !hasSecretText(trimmed);
   });
 }
 
@@ -183,7 +183,7 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
           if (file.tooBig) continue;
           let text = "";
           try {
-            text = await ports.read(item.root, file.path);
+            text = await ports.read(item.root, file.path, item.source);
           } catch {
             units.push({ kind: "unreadable" as const, source: item.source, sourceKey: file.path });
             continue;
@@ -348,7 +348,9 @@ function PreviewBlock({ preview }: { preview: Preview }) {
       {preview.tooBig > 0 ? <p>{preview.tooBig} chats are too big to read in one go.</p> : null}
       {preview.links > 0 ? <p>{preview.links} links were left out.</p> : null}
       {preview.database ? <p>Hermes also keeps chats in its database. Those are not read from here.</p> : null}
-      {preview.truncated ? <p>There are more chats than this pass lists.</p> : null}
+      {preview.truncated ? (
+        <p>There are more chats than this pass lists. Chats already read are left out, so the next run continues.</p>
+      ) : null}
       {preview.duplicates > 0 ? <p>{preview.duplicates} copies of a chat were skipped.</p> : null}
     </div>
   );

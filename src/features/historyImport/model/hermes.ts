@@ -8,7 +8,7 @@
 // too: Raven keeps it, and the package says to skip tool noise. Timestamps are
 // seconds and must be greater than zero, then multiplied by 1000, as Raven does.
 
-import { findSecrets } from "../../portable/model/secrets";
+import { hasSecretText } from "../../portable/model/secrets";
 import type { Conversation, TranscriptMessage } from "./types";
 import { jsonLines, projectName, sourceToken, truncateContent } from "./text";
 
@@ -64,7 +64,7 @@ function oneSession(row: Record<string, unknown>, fileKey: string, skipped: numb
     if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) continue;
     const full = stripImages(rec.content).trim();
     if (!full) continue;
-    const secret = findSecrets(full).length > 0;
+    const secret = hasSecretText(full);
     kept.push({
       conversationId: id,
       messageId: `m${kept.length + 1}`,
