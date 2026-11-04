@@ -58,6 +58,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [backpass](https://github.com/kunchenguid/backpass) | MIT | Instruction files as weights and transcripts as signal: verbatim quotes, the two-session rule, a ledger across runs, rejection memory, staging-copy diffs, a token budget, seven transcript adapters | Vendor its JavaScript as TypeScript with credit; translate missing adapters to Rust | 83 |
 | [kun](https://github.com/kunchenguid/kun) | no licence | A person's OPINIONS.md and VOICE.md refreshed from what they said, read by agents; thin skills that load detail on demand | Ideas only | 83 |
 | [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles) | MIT-0 | One AGENTS.md shared by every agent CLI | Ideas | 83 |
+| [HumanLayer](https://github.com/humanlayer/humanlayer) | Apache-2.0 | Research, Plan, Implement phases with short documents reviewed before code, and its 22 skills; a Claude Code plugin that mirrors terminal sessions live with reply, stop and permission answers; commit attribution by session trailer and line-hash overlap; a full local stack per worktree; tasks that group sessions and their documents. Its cloud sync (Postgres and Electric) is a reference for 61 and 80 | Copy with credit; swap its cloud transport for Hivra's local control port | 84, 85, 86, 87 |
 
 ## Vision to packages
 
@@ -82,3 +83,4 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | GitHub issues as briefs, outside AI tools, team workspaces | 77, 79, 80 |
 | Crews' work checked before GitHub, ready worktrees (Kun Chen's tools, 4 Nov) | 81, 82 |
 | Agents learn from past chats with evidence; the person's opinions and voice | 83 |
+| Research and plan before building, terminal sessions in Hivra, who made each commit, a stack per worktree (HumanLayer, 4 Nov) | 84, 85, 86, 87 |
