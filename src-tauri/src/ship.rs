@@ -846,24 +846,17 @@ fn reopen(ship: &mut Ship) {
     let app = ship.app_path();
     let direct = ship.text("/launch/mode") == "direct";
     let result = if direct {
-        let mut command = Command::new(app.join("Contents/MacOS/monocode"));
+        let mut pairs = Vec::new();
         if let Some(env) = ship.doc.pointer("/launch/env").and_then(Value::as_object) {
             for (key, value) in env {
                 if let Some(value) = value.as_str() {
-                    command.env(key, value);
+                    pairs.push((key.clone(), value.to_string()));
                 }
             }
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        command.spawn().map(|_| ())
+        // The binary inside the bundle, including monocode.exe on Windows.
+        // The ship's launch env is overlaid; it is not dropped.
+        crate::platform::ship::spawn_app_env(&app, &pairs)
     } else {
         // -n: this process (the build being put aside) still runs under the same identifier, and a plain open would
         // only bring it to the front.

@@ -22,7 +22,16 @@ pub fn bundle_binary(app: &Path) -> PathBuf {
 
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn spawn_app(app: &Path) -> std::io::Result<()> {
+    spawn_app_env(app, &[])
+}
+
+/// Open the bundle binary, then overlay `env` on the inherited environment.
+/// Direct reopen uses this on every OS so Windows runs `monocode.exe`.
+pub fn spawn_app_env(app: &Path, env: &[(String, String)]) -> std::io::Result<()> {
     let mut command = Command::new(bundle_binary(app));
+    for (key, value) in env {
+        command.env(key, value);
+    }
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -193,5 +202,42 @@ mod tests {
         let binary = bundle_binary(app);
         assert!(binary.starts_with(app));
         assert!(binary.ends_with("Contents/MacOS/monocode") || binary.ends_with("monocode.exe"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spawn_app_env_runs_the_bundle_binary_with_the_ship_env() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("wp09-spawn-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("MonoCode Hub.app");
+        let bin_dir = app.join("Contents").join("MacOS");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let marker = root.join("marker");
+        let script = bin_dir.join("monocode");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\nprintf '%s' \"$WP09_MARKER\" > \"$WP09_MARKER_PATH\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        super::spawn_app_env(
+            &app,
+            &[
+                ("WP09_MARKER".into(), "kept".into()),
+                (
+                    "WP09_MARKER_PATH".into(),
+                    marker.to_string_lossy().into_owned(),
+                ),
+            ],
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let text = std::fs::read_to_string(&marker).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(text, "kept");
     }
 }
