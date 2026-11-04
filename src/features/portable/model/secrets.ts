@@ -13,6 +13,11 @@ const PATTERNS: Pattern[] = spec.patterns.map((p) => ({
   mixed: "mixed" in p && p.mixed === true,
 }));
 const SECRET_KEYS = new RegExp(spec.secretKeys, "i");
+const KEY_NAMES = spec.secretKeys.replace(/^\^/, "").replace(/\$$/, "");
+const ASSIGNED_SECRET = new RegExp(
+  `(?:^|[\\s,{"'])["']?(?:${KEY_NAMES})["']?\\s*[:=]\\s*["']?([^\\s"',}\\]]{8,})`,
+  "gi",
+);
 
 function qualifies(text: string, mixed?: boolean): boolean {
   return text !== SECRET_MARKER && (!mixed || (/[A-Za-z]/.test(text) && /[0-9]/.test(text)));
@@ -64,6 +69,21 @@ export function redactValue<T>(value: T): { value: T; count: number } {
     return v;
   };
   return { value: walk(value) as T, count };
+}
+
+/**
+ * A token shape, or a value of 8 or more characters after a key name from the
+ * shared list (`token=abcdefgh`). Chat text is not JSON, so the key rule has
+ * to be read from the line itself.
+ */
+export function hasSecretText(text: string): boolean {
+  if (findSecrets(text).length > 0) return true;
+  ASSIGNED_SECRET.lastIndex = 0;
+  for (const match of text.matchAll(ASSIGNED_SECRET)) {
+    const value = match[1];
+    if (typeof value === "string" && value.length >= 8 && value !== SECRET_MARKER) return true;
+  }
+  return false;
 }
 
 /** The names of the patterns that find a secret in `text`. */

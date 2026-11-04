@@ -8,6 +8,7 @@ import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
+import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
@@ -689,6 +690,10 @@ export function SettingsView({
               {section === "decisions" ? <DecisionsPage /> : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
+              {section === "history" ? (
+                // WP-50: past chats, only with a person's OK, drafted for review.
+                <HistoryImportScreen />
+              ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (

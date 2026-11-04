@@ -1,0 +1,5 @@
+{"type":"session_meta","timestamp":"2026-02-01T00:00:00Z","payload":{"id":"codex-1","cwd":"/work/hub"}}
+{"type":"event_msg","timestamp":"2026-02-01T00:01:00Z","payload":{"type":"user_message","message":"Always write the test first"}}
+{"type":"response_item","timestamp":"2026-02-01T00:02:00Z","payload":{"type":"function_call","name":"shell","arguments":"{}"}}
+{"type":"event_msg","timestamp":"2026-02-01T00:03:00Z","payload":{"type":"agent_message","phase":"commentary","message":"THOUGHT_NOISE"}}
+{"type":"event_msg","timestamp":"2026-02-01T00:04:00Z","payload":{"type":"agent_message","phase":"final_answer","message":"Tests go first."}}
