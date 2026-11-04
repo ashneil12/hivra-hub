@@ -281,6 +281,36 @@ fn a_token_must_be_its_own_word() {
 }
 
 #[test]
+fn a_filetime_floors_to_epoch_seconds() {
+    // 100-nanosecond ticks from 1601-01-01 to 1970-01-01.
+    const UNIX_EPOCH_TICKS: u64 = 11_644_473_600 * 10_000_000;
+    assert_eq!(epoch_seconds_from_ticks(UNIX_EPOCH_TICKS), Some(0));
+    assert_eq!(
+        epoch_seconds_from_ticks(UNIX_EPOCH_TICKS + 10_000_000 + 9_999_999),
+        Some(1)
+    );
+    assert_eq!(epoch_seconds_from_ticks(UNIX_EPOCH_TICKS - 1), None);
+}
+
+#[cfg(windows)]
+#[test]
+fn the_native_start_time_of_this_process_is_stable_epoch_seconds() {
+    let first = process_start(std::env::temp_dir().as_path(), std::process::id()).unwrap();
+    let second = process_start(std::env::temp_dir().as_path(), std::process::id()).unwrap();
+    assert_eq!(first, second, "two reads of this process must not move");
+    assert!(is_epoch(&first), "{first}");
+    let seconds: u64 = first.parse().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(
+        seconds > 1_500_000_000 && seconds <= now.saturating_add(2),
+        "{seconds} is not epoch seconds against {now}"
+    );
+}
+
+#[test]
 fn stopping_a_missing_drive_is_fine_and_a_low_pid_is_not_signalled() {
     let tmp = Tmp::new();
     assert!(stop(tmp.data(), "nope").is_err());

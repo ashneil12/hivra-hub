@@ -796,10 +796,35 @@ pub fn visible_drives(data: &Path) -> Result<Vec<Drive>, String> {
 
 fn allow_path(command: &mut Command) {
     command.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
+    for key in command_env_keys() {
+        if let Some(value) = std::env::var_os(key) {
+            if !value.is_empty() {
+                command.env(key, value);
+            }
+        }
     }
     command.stdin(Stdio::null());
+}
+
+fn command_env_keys() -> &'static [&'static str] {
+    // PowerShell and taskkill cannot start with only PATH. Node's start-time helper
+    // is not used on Windows; these are the variables the commands that remain need.
+    #[cfg(windows)]
+    {
+        &[
+            "PATH",
+            "SystemRoot",
+            "WINDIR",
+            "ComSpec",
+            "PATHEXT",
+            "TEMP",
+            "TMP",
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        &["PATH"]
+    }
 }
 
 fn token_in(line: &str, token: &str) -> bool {
@@ -838,20 +863,26 @@ fn alive(pid: u32) -> bool {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn alive(pid: u32) -> bool {
     if pid_i32(pid).is_none() {
         return false;
     }
-    let mut command = Command::new("tasklist");
-    command.args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]);
-    allow_path(&mut command);
-    command
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
-        .unwrap_or(true)
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER};
+        use windows_sys::Win32::System::Threading::{
+            GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, STILL_ACTIVE,
+        };
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            // A missing pid is dead. Any other open failure is not proof, so a lock stays put.
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code = 0u32;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        let _ = CloseHandle(handle);
+        ok == 0 || code == STILL_ACTIVE
+    }
 }
 
 #[cfg(unix)]
@@ -869,7 +900,7 @@ fn command_line(pid: u32) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn command_line(pid: u32) -> Result<String, String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
@@ -889,12 +920,14 @@ fn command_line(pid: u32) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+#[cfg(not(windows))]
 fn helper_file(path: &Path) -> bool {
     path.is_file() && path.file_name().is_some_and(|name| name == "startTime.mjs")
 }
 
 /// The wrapper and Stop both run this file. The installed copy wins, so a shipped
 /// app does not depend on the tree it was built from. Tests fall back to that tree.
+#[cfg(not(windows))]
 fn start_helper(data: &Path) -> Result<PathBuf, String> {
     let installed = data
         .join("plugins")
@@ -920,6 +953,15 @@ fn is_epoch(text: &str) -> bool {
     !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// 100-nanosecond ticks since 1601-01-01, floored to seconds since 1970-01-01.
+/// A tick before the Unix epoch is not a start time.
+#[cfg(any(test, windows))]
+fn epoch_seconds_from_ticks(ticks: u64) -> Option<u64> {
+    const UNIX_EPOCH_TICKS: u64 = 11_644_473_600 * 10_000_000;
+    let ticks = ticks.checked_sub(UNIX_EPOCH_TICKS)?;
+    Some(ticks / 10_000_000)
+}
+
 /// `Ok(true)` is the same start. `Ok(false)` is a confirmed different process: both
 /// values are epoch seconds and they differ. Any other pair is not comparable, and
 /// that must not be reported as gone.
@@ -940,6 +982,7 @@ fn same_start(recorded: &str, now: &str) -> Result<bool, String> {
 
 /// Epoch seconds, via the same helper the wrapper uses. A missing helper or a
 /// non-numeric reply is "couldn't check", not a start time.
+#[cfg(not(windows))]
 fn process_start(data: &Path, pid: u32) -> Result<String, String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
@@ -957,6 +1000,47 @@ fn process_start(data: &Path, pid: u32) -> Result<String, String> {
         return Err(NOT_CHECKED.into());
     }
     Ok(text)
+}
+
+/// Epoch seconds from the process's creation time. The same form `startTime.mjs` prints,
+/// so the wrapper and Stop still compare. No PowerShell, and no start helper.
+#[cfg(windows)]
+fn process_start(_data: &Path, pid: u32) -> Result<String, String> {
+    if pid_i32(pid).is_none() {
+        return Err(NOT_OURS.into());
+    }
+    let text = windows_start_seconds(pid)
+        .map(|seconds| seconds.to_string())
+        .ok_or_else(|| NOT_CHECKED.to_string())?;
+    if !is_epoch(&text) {
+        return Err(NOT_CHECKED.into());
+    }
+    Ok(text)
+}
+
+#[cfg(windows)]
+fn windows_start_seconds(pid: u32) -> Option<u64> {
+    unsafe {
+        use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows_sys::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut created: FILETIME = std::mem::zeroed();
+        let mut exited: FILETIME = std::mem::zeroed();
+        let mut kernel: FILETIME = std::mem::zeroed();
+        let mut user: FILETIME = std::mem::zeroed();
+        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+        let _ = CloseHandle(handle);
+        if ok == 0 {
+            return None;
+        }
+        let ticks = u64::from(created.dwLowDateTime) | (u64::from(created.dwHighDateTime) << 32);
+        epoch_seconds_from_ticks(ticks)
+    }
 }
 
 #[cfg(unix)]
@@ -989,7 +1073,7 @@ fn list_group(pid: u32) -> Result<Vec<u32>, String> {
     Ok(pids)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn list_group(pid: u32) -> Result<Vec<u32>, String> {
     let Some(raw) = pid_i32(pid) else {
         return Err(NOT_OURS.into());
@@ -1113,7 +1197,7 @@ fn kill_one(pid: u32, kill: bool) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn kill_one(pid: u32, kill: bool) -> Result<(), String> {
     let Some(pid) = pid_i32(pid) else {
         return Err(NOT_OURS.into());

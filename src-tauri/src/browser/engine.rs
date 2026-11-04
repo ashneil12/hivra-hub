@@ -318,22 +318,7 @@ fn process_alive(pid: u32) -> bool {
 
 #[cfg(windows)]
 fn process_alive(pid: u32) -> bool {
-    if pid < 2 {
-        return false;
-    }
-    let mut command = Command::new("tasklist");
-    command.args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"]);
-    command.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
-    }
-    command.stdin(Stdio::null());
-    command
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .map(|out| String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
-        .unwrap_or(true)
+    super::alive(pid)
 }
 
 fn remove_work(data: &Path, job: &Path) {
