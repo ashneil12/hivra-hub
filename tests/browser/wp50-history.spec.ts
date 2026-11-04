@@ -20,8 +20,9 @@ test("a preview stays a count, then a run drafts a sourced line", async ({ page 
   await expect(page.locator("body")).not.toContainText("sk-ant-");
   await expect.poll(() => page.evaluate(() => (window as unknown as { __historyReads: number }).__historyReads)).toBe(0);
 
-  await expect(page.getByRole("button", { name: "Run" })).toBeDisabled();
-  await expect(page.getByText("Add a model in Other models first.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Run" })).toBeEnabled();
+  await expect(page.getByText("This uses your signed-in CLI, unless you pick a model.")).toBeVisible();
+  await expect(page.getByText("Add a model in Other models first.")).toHaveCount(0);
 
   await page.locator("[data-add-model]").click();
   await page.getByLabel("Model").selectOption("local");

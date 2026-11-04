@@ -5,11 +5,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
-import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
+import { collectAnswer, settleTurn, type CuratorContext } from "../../features/memory/model/curator";
+import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { commitDoc } from "../../features/memory/model/review";
 import type { Session } from "../../features/sessions/model/session";
-import { isolatedCompaction } from "./useMonoTrees";
 
 type Loaded = { revision: number; doc: unknown };
 
@@ -82,14 +82,9 @@ export function curatorFeeds(
   return out;
 }
 
-async function askModel(prompt: string): Promise<CuratorAsk> {
-  try {
-    return { ok: true, text: await isolatedCompaction(prompt) };
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : "The model didn't answer.";
-    if (/timeout/i.test(reason)) return { ok: false, kind: "timeout", reason };
-    return { ok: false, kind: "unreachable", reason };
-  }
+// WP-51: a signed-in CLI through the crew. No key is read or stored.
+function askModel(prompt: string) {
+  return askCrew(prompt);
 }
 
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
