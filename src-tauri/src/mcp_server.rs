@@ -1338,7 +1338,8 @@ mod tests {
     /// A merge that keeps two packages' tools must not register the same name twice.
     #[test]
     fn the_tool_list_has_no_duplicate_names() {
-        let names: Vec<&str> = tools()
+        let listed = tools();
+        let names: Vec<&str> = listed
             .as_array()
             .unwrap()
             .iter()
