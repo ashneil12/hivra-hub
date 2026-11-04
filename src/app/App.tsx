@@ -837,6 +837,7 @@ import {
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
+import { monoTurnNote } from "../features/monos/model/monoMate";
 import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
 import { appPolicy } from "./model/appIdentity";
@@ -9286,7 +9287,8 @@ function Workspace({
               const projectMemory = agentPlan.soul || appended
                 ? await leadMemoryBlock(sessionId, current.harness).catch(() => undefined)
                 : undefined;
-              const note = withFirstMateContract(monoContext(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
+              // WP-21: a Mono's turn is the first mate contract plus its soul.
+              const note = monoTurnNote(agentLook, agentFiles, appended ? { soul: true, memory: true } : agentPlan, {
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
@@ -9297,7 +9299,7 @@ function Workspace({
                       leads: leadTargetsFor(monoForSession(sessionId)!.id, hubData().listProjects()).map(leadNoteName),
                     }
                   : {}),
-              }));
+              });
               if (appended) setHubNote(sessionId, { key: noteKey, text: note });
               else appContext.push(note);
               notedMono = true;

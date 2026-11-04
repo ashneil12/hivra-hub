@@ -6,8 +6,10 @@ import { planWorkspaceTabClose } from "../../workspace/model/workspaceTabGroups"
 import { addMono, createMono, engineFieldsOf, findMono, monoEngine, parseMonoEngine, saveMonoName, saveMonoSessionId } from "./mono";
 import { planAgentContext, recordAgentContext } from "./monoFiles";
 import { loadMonoRotation, saveMonoRotation } from "./monoRotation";
+import { removeMono } from "./mono";
 import {
   detachMonoTabs,
+  ensureMonoRoomSession,
   ensureMonoSession,
   resetMonoSession,
 } from "./monoWorkspace";
@@ -67,6 +69,55 @@ it("starts a new Mono's conversation with Auto permissions in the home folder, o
   expect(await ensureMonoSession(monoId, host)).toBe(agent);
   expect(host.create).toHaveBeenCalledOnce();
   expect(host.add).toHaveBeenCalledOnce();
+});
+
+it("marks a Mono's chat as a first mate, including one already open", async () => {
+  const agent = { ...chat("resident"), runtimeMode: "auto" as const };
+  const monoId = monoFor(agent.cwd, agent.id);
+  const host = {
+    home: vi.fn().mockResolvedValue("/home"),
+    load: vi.fn().mockResolvedValue(agent),
+    create: vi.fn(createSession),
+    add: vi.fn(),
+  };
+  expect((await ensureMonoSession(monoId, host))?.firstMate).toBe(true);
+  expect(agent.firstMate).toBe(true);
+  const freshId = createMono(["/work/My Project"]).id;
+  const created = {
+    home: vi.fn().mockResolvedValue("/home/My Project"),
+    load: vi.fn(),
+    create: vi.fn(createSession),
+    add: vi.fn(),
+  };
+  const session = await ensureMonoSession(freshId, created);
+  expect(session?.firstMate).toBe(true);
+  expect(session?.cwd).toBe("/home/My Project");
+});
+
+it("marks a room chat as a first mate, and drops it when the Mono was removed", async () => {
+  const monoId = createMono().id;
+  const host = {
+    home: vi.fn().mockResolvedValue("/home/My Project"),
+    load: vi.fn(),
+    create: vi.fn(createSession),
+    add: vi.fn(),
+  };
+  const session = await ensureMonoRoomSession(monoId, "room", "conv", host);
+  expect(session?.firstMate).toBe(true);
+  let during: () => void = () => undefined;
+  const late = {
+    home: vi.fn(async () => {
+      during();
+      return "/home";
+    }),
+    load: vi.fn(),
+    create: vi.fn(createSession),
+    add: vi.fn(),
+  };
+  const gone = createMono().id;
+  during = () => removeMono(gone);
+  expect(await ensureMonoRoomSession(gone, "room", "conv", late)).toBeUndefined();
+  expect(late.add).not.toHaveBeenCalled();
 });
 
 it("opens nothing for a Mono that no longer exists", async () => {
