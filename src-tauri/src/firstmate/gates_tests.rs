@@ -88,7 +88,7 @@ fn run(command: &str, outcome: Outcome, output: &str) -> CommandEvidence {
         exit_code: match outcome {
             Outcome::Passed => Some(0),
             Outcome::Failed => Some(1),
-            Outcome::NotRun => None,
+            Outcome::NotRun | Outcome::Held => None,
         },
         output: output.into(),
         seconds: 0.1,
@@ -138,6 +138,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             done_when: "app.ts exports b",
             report: "## Report\nSummary: added b",
             now: 1,
+            gate_owns_checks: false,
         },
         fake,
     )
@@ -529,6 +530,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             done_when: "  ",
             report: "",
             now: 1,
+            gate_owns_checks: false,
         },
         &fake,
     );

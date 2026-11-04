@@ -149,6 +149,8 @@ pub enum Outcome {
     Failed,
     /// It couldn't run. Never a pass.
     NotRun,
+    /// WP-81: the delivery gate runs this check once, before GitHub. Not a pass and not a failure.
+    Held,
 }
 
 impl Outcome {
@@ -157,15 +159,21 @@ impl Outcome {
             Outcome::Passed => "passed",
             Outcome::Failed => "failed",
             Outcome::NotRun => "not run",
+            Outcome::Held => "run by no-mistakes",
         }
     }
 
-    /// Any failure fails; then anything that couldn't run; else a pass. Nothing at all is not run.
+    /// Any failure fails; then anything that couldn't run; a round that only handed its checks to
+    /// no-mistakes is not run; else a pass. Nothing at all is not run. A held check does not block
+    /// a round whose other gates passed.
     pub fn aggregate(outcomes: impl IntoIterator<Item = Outcome>) -> Outcome {
         let all: Vec<Outcome> = outcomes.into_iter().collect();
         if all.contains(&Outcome::Failed) {
             Outcome::Failed
-        } else if all.is_empty() || all.contains(&Outcome::NotRun) {
+        } else if all.contains(&Outcome::NotRun)
+            || all.iter().all(|outcome| *outcome == Outcome::Held)
+        {
+            // An empty list is all-held, so it is not run. A held check beside a pass does not block.
             Outcome::NotRun
         } else {
             Outcome::Passed
@@ -274,6 +282,8 @@ pub struct RoundInput<'a> {
     pub done_when: &'a str,
     pub report: &'a str,
     pub now: i64,
+    /// WP-81: the delivery gate runs this brief's project checks, so the checks gate does not.
+    pub gate_owns_checks: bool,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -282,7 +292,13 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     for gate in &input.plan.gates {
         let result = match gate {
             GateKind::Diff => diff_gate(&repo),
-            GateKind::Checks => checks_gate(&repo, input.checkout, &input.plan.checks, runners),
+            GateKind::Checks => checks_gate(
+                &repo,
+                input.checkout,
+                &input.plan.checks,
+                runners,
+                input.gate_owns_checks,
+            ),
             GateKind::Committed => committed_gate(&repo),
             GateKind::Ratchet => ratchet_gate(&repo),
             // Run below for every brief whose project has one.
@@ -298,7 +314,9 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
             detail: match run.outcome {
                 Outcome::Passed => "The project's routes check passed.".into(),
                 Outcome::Failed => "The project's routes check failed.".into(),
-                Outcome::NotRun => "The project's routes check couldn't run.".into(),
+                Outcome::NotRun | Outcome::Held => {
+                    "The project's routes check couldn't run.".into()
+                }
             },
             evidence: vec![run],
         }),
@@ -333,7 +351,7 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
 fn summary_of(gates: &[GateResult], check: Option<&VerdictResult>, verdict: Verdict) -> String {
     let mut lines = Vec::new();
     for gate in gates {
-        if gate.outcome != Outcome::Passed {
+        if gate.outcome != Outcome::Passed && gate.outcome != Outcome::Held {
             lines.push(format!(
                 "{} {}: {}",
                 gate.gate.name(),
@@ -363,13 +381,22 @@ fn summary_of(gates: &[GateResult], check: Option<&VerdictResult>, verdict: Verd
         _ => {}
     }
     if verdict == Verdict::Passed {
-        let names: Vec<&str> = gates.iter().map(|g| g.gate.name()).collect();
+        let names: Vec<&str> = gates
+            .iter()
+            .filter(|gate| gate.outcome == Outcome::Passed)
+            .map(|gate| gate.gate.name())
+            .collect();
         let lead = if names.is_empty() {
             "No gates to run".to_string()
         } else {
             format!("{} passed", names.join(", "))
         };
-        return format!("{lead}; the quick check says the brief was met.");
+        let handoff = if gates.iter().any(|gate| gate.outcome == Outcome::Held) {
+            " The no-mistakes layer runs the project's checks before GitHub."
+        } else {
+            ""
+        };
+        return format!("{lead}; the quick check says the brief was met.{handoff}");
     }
     lines.join("\n")
 }
@@ -669,7 +696,17 @@ fn checks_gate(
     checkout: &Path,
     named: &[String],
     runners: &dyn Runners,
+    gate_owns_checks: bool,
 ) -> GateResult {
+    // WP-81: with the delivery gate on, no-mistakes runs this command once at delivery.
+    if gate_owns_checks {
+        return GateResult {
+            gate: GateKind::Checks,
+            outcome: Outcome::Held,
+            detail: "The no-mistakes layer runs this check before GitHub.".into(),
+            evidence: Vec::new(),
+        };
+    }
     let changed = repo.changed().unwrap_or_default();
     match runners.checks(checkout, named, &changed) {
         Ok(runs) if runs.is_empty() => GateResult {
@@ -698,6 +735,7 @@ fn checks_gate(
                         .collect();
                     format!("{} couldn't run.", skipped.join(", "))
                 }
+                Outcome::Held => "The no-mistakes layer runs this check before GitHub.".into(),
             };
             GateResult {
                 gate: GateKind::Checks,
@@ -744,11 +782,21 @@ pub fn verdict_prompt(input: &RoundInput, diff: &str, gates: &[GateResult]) -> S
         .iter()
         .map(|g| format!("- {}: {} ({})", g.gate.name(), g.outcome.word(), g.detail))
         .collect();
+    let mut checks_text = if checks.is_empty() {
+        "- none".to_string()
+    } else {
+        checks.join("\n")
+    };
+    if gates.iter().any(|gate| gate.outcome == Outcome::Held) {
+        checks_text.push_str(
+            "\nThe no-mistakes layer runs the project's checks once before GitHub. That is expected, not a missing check.",
+        );
+    }
     format!(
         "{VERDICT_RULES}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## Worker's report\n{}\n\n## Diff\n{}",
         head_of(input.brief.trim(), REPORT_MAX),
         input.done_when.trim(),
-        if checks.is_empty() { "- none".to_string() } else { checks.join("\n") },
+        checks_text,
         head_of(input.report.trim(), REPORT_MAX),
         if diff.trim().is_empty() { "(no diff)" } else { diff },
     )
@@ -1287,7 +1335,7 @@ pub async fn firstmate_run_gates(
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let store = app.state::<SessionStore>();
-        let (plan, row) = {
+        let (plan, row, gate_owns_checks) = {
             let conn = store.lock_conn()?;
             let Some(plan) = plan_of(&conn, &input.delegation_id)? else {
                 return Ok(None);
@@ -1295,7 +1343,12 @@ pub async fn firstmate_run_gates(
             let row = delegations::tree(&conn, &input.delegation_id)?
                 .into_iter()
                 .find(|r| r.id == input.delegation_id);
-            (plan, row)
+            let gate_owns_checks = row.as_ref().is_some_and(|row| {
+                row.project.as_deref().is_some_and(|project| {
+                    crate::delivery_gate::owns_project_checks(&conn, project, &input.delegation_id)
+                })
+            });
+            (plan, row, gate_owns_checks)
         };
         let Some(row) = row else {
             return Ok(None);
@@ -1335,6 +1388,7 @@ pub async fn firstmate_run_gates(
                 done_when: row.goal.as_deref().unwrap_or(""),
                 report: &input.report,
                 now: now_millis(),
+                gate_owns_checks,
             },
             &runners,
         );

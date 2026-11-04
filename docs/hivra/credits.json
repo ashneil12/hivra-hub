@@ -179,6 +179,12 @@
       "url": "https://github.com/kunchenguid/dotfiles",
       "licence": "MIT-0",
       "gave": "one AGENTS.md shared by every agent CLI"
+    },
+    {
+      "name": "HumanLayer",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "gave": "research and plan before building, terminal sessions mirrored into the app, commit attribution and a local stack per worktree, planned for Wave G"
     }
   ],
   "components": [

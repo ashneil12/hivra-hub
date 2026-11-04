@@ -123,6 +123,38 @@ pub fn by_pr(conn: &Connection, repo: &str, number: u64) -> Result<Option<Delive
     .map_err(|e| e.to_string())
 }
 
+/// True when this pull request was opened by the local check (WP-81). False when the column or the
+/// row is missing: a missing check is not a reason to skip the fix crew.
+pub fn through_gate(conn: &Connection, repo: &str, number: u64) -> bool {
+    conn.query_row(
+        "SELECT gate FROM work_deliveries WHERE repo = ?1 AND number = ?2 \
+         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        params![repo.to_ascii_lowercase(), number as i64],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(0)
+        != 0
+}
+
+pub(crate) fn mark_gate(conn: &Connection, id: &str) -> Result<(), String> {
+    let updated = conn
+        .execute("UPDATE work_deliveries SET gate = 1 WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if updated == 0 {
+        return Err("The delivery wasn't recorded, so the check wasn't linked.".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn delete_row(conn: &Connection, id: &str) -> Result<(), String> {
+    conn.execute("DELETE FROM work_deliveries WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub fn list(conn: &Connection, project: Option<&str>) -> Result<Vec<Delivery>, String> {
     let key = project.map(settings::key);
     let mut statement = conn
@@ -377,6 +409,10 @@ pub fn deliver(
         input.report = input.report.or_else(|| row.result.clone());
         input.title = input.title.or_else(|| row.title.clone());
     }
+    // WP-81: the gate uses the crew's goal. The delivery row itself is unchanged.
+    let gate_goal = row.as_ref().and_then(|row| row.goal.clone());
+    let gate_owner = row.as_ref().map(|row| row.owner_session.clone());
+    let gate_child = row.as_ref().map(|row| row.child_session.clone());
     let stored = settings::get(&*store.lock_conn()?, &project_key)?;
     let probe = settings::probe(&project, gh);
     let effective = settings::effective(stored, &probe);
@@ -396,6 +432,7 @@ pub fn deliver(
         created_at: now,
         updated_at: now,
     };
+    let mut gated = false;
     match effective.mode {
         Mode::Local => {
             let landing = crate::land::land(&checkout, &project)?;
@@ -420,8 +457,12 @@ pub fn deliver(
             });
         }
         Mode::Pr | Mode::CheckedPr => {
-            if let Some(why) = effective.blocked {
-                return Err(why);
+            // WP-81: with the check on, no-mistakes opens the pull request, so a missing GitHub sign-in is not a refusal.
+            let gate_on = crate::delivery_gate::enabled(&*store.lock_conn()?, &project_key)?;
+            if !gate_on {
+                if let Some(why) = effective.blocked {
+                    return Err(why);
+                }
             }
             let remote = probe.remote.clone().unwrap_or_else(|| "origin".into());
             let repo = probe.github_repo.clone().unwrap_or_default();
@@ -479,77 +520,141 @@ pub fn deliver(
                     "{branch} has no commits beyond {base}, so there is nothing to deliver."
                 ));
             }
-            git(
-                &checkout,
-                &[
-                    "push",
-                    "--set-upstream",
-                    &remote,
-                    &format!("HEAD:refs/heads/{branch}"),
-                ],
-            )
-            .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
-            let body = pr_body(
-                effective.mode,
-                input.brief.as_deref(),
-                input.report.as_deref(),
-            );
-            let body_file = std::env::temp_dir().join(format!("hivra-pr-body-{}.md", delivery.id));
-            std::fs::write(&body_file, body).map_err(|e| e.to_string())?;
-            let title = input
-                .title
-                .clone()
-                .filter(|t| !t.trim().is_empty())
-                .unwrap_or_else(|| branch.clone());
-            let title: String = title
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(200)
-                .collect();
-            let created = gh.run(
-                Some(&checkout),
-                &[
-                    "pr".into(),
-                    "create".into(),
-                    "--repo".into(),
-                    repo.clone(),
-                    "--head".into(),
-                    branch.clone(),
-                    "--base".into(),
-                    base.clone(),
-                    "--title".into(),
-                    title,
-                    "--body-file".into(),
-                    body_file.to_string_lossy().into_owned(),
-                ],
-            );
-            let _ = std::fs::remove_file(&body_file);
-            let printed = match created {
-                Ok(out) => out,
-                Err(error) if error.contains("already exists") => error,
-                Err(error) => return Err(format!("The pull request couldn't be opened: {error}")),
-            };
-            let (pr_repo, number) = pr_from_output(&printed).ok_or_else(|| {
-                format!("The pull request was opened, but its address couldn't be read: {printed}")
-            })?;
-            delivery.url = Some(format!("https://github.com/{pr_repo}/pull/{number}"));
-            delivery.repo = Some(pr_repo);
-            delivery.number = Some(number);
-            delivery.branch = Some(branch.clone());
-            delivery.state = if effective.mode == Mode::CheckedPr {
-                CHECKING
+            if gate_on {
+                gated = true;
+                let body = pr_body(
+                    effective.mode,
+                    input.brief.as_deref(),
+                    input.report.as_deref(),
+                );
+                let title = input
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| branch.clone());
+                let title: String = title
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(200)
+                    .collect();
+                let filled = crate::delivery_gate::fill(
+                    store,
+                    crate::delivery_gate::FillInput {
+                        project: project_key.clone(),
+                        checkout: checkout.clone(),
+                        delegation_id: input.delegation_id.clone(),
+                        goal: gate_goal.clone(),
+                        brief: input.brief.clone(),
+                        title,
+                        body,
+                        owner_session: gate_owner.clone(),
+                        child_session: gate_child.clone(),
+                        branch: branch.clone(),
+                        now,
+                    },
+                )?;
+                delivery.url = filled.url;
+                delivery.repo = filled.repo;
+                delivery.number = filled.number;
+                delivery.branch = Some(branch.clone());
+                delivery.state = if filled.state == "passed" && effective.mode != Mode::CheckedPr {
+                    READY
+                } else {
+                    CHECKING
+                }
+                .into();
+                delivery.detail = filled.detail;
             } else {
-                READY
+                git(
+                    &checkout,
+                    &[
+                        "push",
+                        "--set-upstream",
+                        &remote,
+                        &format!("HEAD:refs/heads/{branch}"),
+                    ],
+                )
+                .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
+                let body = pr_body(
+                    effective.mode,
+                    input.brief.as_deref(),
+                    input.report.as_deref(),
+                );
+                let body_file =
+                    std::env::temp_dir().join(format!("hivra-pr-body-{}.md", delivery.id));
+                std::fs::write(&body_file, body).map_err(|e| e.to_string())?;
+                let title = input
+                    .title
+                    .clone()
+                    .filter(|t| !t.trim().is_empty())
+                    .unwrap_or_else(|| branch.clone());
+                let title: String = title
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .take(200)
+                    .collect();
+                let created = gh.run(
+                    Some(&checkout),
+                    &[
+                        "pr".into(),
+                        "create".into(),
+                        "--repo".into(),
+                        repo.clone(),
+                        "--head".into(),
+                        branch.clone(),
+                        "--base".into(),
+                        base.clone(),
+                        "--title".into(),
+                        title,
+                        "--body-file".into(),
+                        body_file.to_string_lossy().into_owned(),
+                    ],
+                );
+                let _ = std::fs::remove_file(&body_file);
+                let printed = match created {
+                    Ok(out) => out,
+                    Err(error) if error.contains("already exists") => error,
+                    Err(error) => {
+                        return Err(format!("The pull request couldn't be opened: {error}"))
+                    }
+                };
+                let (pr_repo, number) = pr_from_output(&printed).ok_or_else(|| {
+                    format!(
+                        "The pull request was opened, but its address couldn't be read: {printed}"
+                    )
+                })?;
+                delivery.url = Some(format!("https://github.com/{pr_repo}/pull/{number}"));
+                delivery.repo = Some(pr_repo);
+                delivery.number = Some(number);
+                delivery.branch = Some(branch.clone());
+                delivery.state = if effective.mode == Mode::CheckedPr {
+                    CHECKING
+                } else {
+                    READY
+                }
+                .into();
+                delivery.detail = Some(format!(
+                    "Pushed {branch} and opened a pull request into {base}."
+                ));
             }
-            .into();
-            delivery.detail = Some(format!(
-                "Pushed {branch} and opened a pull request into {base}."
-            ));
         }
     }
     insert(&*store.lock_conn()?, &delivery)?;
+    if gated {
+        let marked = {
+            let conn = store.lock_conn()?;
+            mark_gate(&conn, &delivery.id)
+        };
+        if let Err(error) = marked {
+            let conn = store.lock_conn()?;
+            let _ = delete_row(&conn, &delivery.id);
+            return Err(error);
+        }
+    }
     Ok(delivery)
 }
 

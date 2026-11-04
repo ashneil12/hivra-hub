@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-48 work packages in six waves. A wave's packages run in parallel; a package starts when everything it depends on
+52 work packages in seven waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -131,6 +131,19 @@ merges.
 | [81](work/WP-81-delivery-gate.md) | Every crew's work is checked before it reaches GitHub | L | none | yes |
 | [82](work/WP-82-worktree-pool.md) | Ready worktrees for every crew | M | none | yes |
 | [83](work/WP-83-learn-from-chats.md) | Agents learn from past chats, with evidence | L | 50, 51 | yes |
+
+### Wave G: research before building, terminal sessions, commit attribution, per-worktree stacks (HumanLayer, Ash 4 Nov)
+
+Ash shared HumanLayer, the closest look-alike of Hivra so far. It is Apache-2.0, so its code is copied with credit.
+Its cloud sync (Postgres and Electric, a hosted API) is heavier than local-first Hivra needs and stays a reference
+for WP-61 and WP-80. 84 starts when 70 and 72 merge, 85 and 86 when 70 (and 78) merge, 87 when 82 merges.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [84](work/WP-84-research-plan-build.md) | Big tasks are researched and planned before they are built | L | 70, 72 | yes |
+| [85](work/WP-85-terminal-sessions.md) | Claude Code sessions started in a terminal show up in Hivra | L | 50, 70 | yes |
+| [86](work/WP-86-commit-attribution.md) | Every commit says which agent, chat and task made it | M | 70, 78 | yes |
+| [87](work/WP-87-worktree-stacks.md) | Each worktree runs its own copy of the project without clashes | M | 82 | yes |
 
 ## Running it
 

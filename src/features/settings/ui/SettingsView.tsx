@@ -14,6 +14,7 @@ import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen"
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
+import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -706,8 +707,12 @@ export function SettingsView({
                 <PluginsPage projectFolder={cwd} />
               ) : null}
               {section === "crew" ? (
-                // WP-13: crew rules, the ordered list a person edits.
-                <CrewRulesPage cwd={cwd} />
+                <>
+                  {/* WP-13: crew rules, the ordered list a person edits. */}
+                  <CrewRulesPage cwd={cwd} />
+                  {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
+                  <GateSetting project={cwd} />
+                </>
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}

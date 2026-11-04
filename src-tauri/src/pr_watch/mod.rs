@@ -1089,15 +1089,20 @@ fn apply(
     // The checkout is prepared before the wake is stored (and without holding the database): git fetches. A fork's
     // head is never checked out: anyone can open a pull request and comment on it to wake the owner.
     let fork = read.fork(&w.repo);
+    // WP-81: a gated pull request still updates its status. A red check does not open a fix checkout.
+    let gated = store
+        .lock_conn()
+        .ok()
+        .is_some_and(|conn| crate::delivery::deliver::through_gate(&conn, &w.repo, w.number));
     let prepared = report
         .as_ref()
-        .filter(|r| !r.changes.is_empty())
+        .filter(|r| !crate::delivery_gate::wake_changes(&r.changes, gated).is_empty())
         .map(|report| {
             if let Some(fork) = &fork {
                 return (Outcome::Fork(fork.clone()), None);
             }
-            let needs_fix = report
-                .changes
+            let changes = crate::delivery_gate::wake_changes(&report.changes, gated);
+            let needs_fix = changes
                 .iter()
                 .any(|c| !matches!(c, Change::ChecksPassed { .. }));
             let worktree = w.worktree.as_deref().map(std::path::Path::new);
@@ -1168,19 +1173,14 @@ fn apply(
             changed = true;
         }
         (PrState::Open, Some(report)) => {
-            if !report.changes.is_empty() {
+            let changes = crate::delivery_gate::wake_changes(&report.changes, gated);
+            if !changes.is_empty() {
                 let (outcome, made) =
                     prepared.unwrap_or((Outcome::Skipped("no checkout prepared".into()), None));
                 if let Some(made) = made {
                     w.worktree = Some(made);
                 }
-                let wake = wake::update(
-                    &w.about(),
-                    &report.changes,
-                    &outcome,
-                    report.exhausted,
-                    &frame(),
-                );
+                let wake = wake::update(&w.about(), &changes, &outcome, report.exhausted, &frame());
                 swept.wakes.push(add_wake(&tx, &mut w, &wake, now)?);
                 if report.exhausted {
                     end(&mut w, now, "comment-limit");
