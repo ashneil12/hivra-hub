@@ -64,9 +64,25 @@ describe("applyCrewLaunch", () => {
     expect(applyCrewLaunch({ cli: "not-a-cli", model: "nope" }, claude)).toEqual(claude);
   });
 
+  it("leaves the launch alone when the CLI came only from the default", () => {
+    withEffort();
+    const codex: CrewLaunch = { harness: "codex", model: "codex:gpt-5", effort: "medium" };
+    expect(
+      applyCrewLaunch(
+        { cli: "claude", cliFrom: "default", modelFrom: "none", effortFrom: "none" },
+        codex,
+      ),
+    ).toEqual(codex);
+  });
+
   it("uses a known model and an effort that model offers", () => {
     withEffort();
-    expect(applyCrewLaunch({ cli: "codex", model: "codex:gpt-5", effort: "medium" }, claude)).toEqual({
+    expect(
+      applyCrewLaunch(
+        { cli: "codex", model: "codex:gpt-5", effort: "medium", cliFrom: "rule", modelFrom: "rule", effortFrom: "rule" },
+        claude,
+      ),
+    ).toEqual({
       harness: "codex",
       model: "codex:gpt-5",
       effort: "medium",
@@ -75,15 +91,31 @@ describe("applyCrewLaunch", () => {
 
   it("drops another engine's model id, and an effort the new model does not offer", () => {
     withEffort();
-    expect(applyCrewLaunch({ cli: "codex", model: "claude:sonnet-5", effort: "high" }, claude)).toEqual({
+    expect(
+      applyCrewLaunch(
+        { cli: "codex", model: "claude:sonnet-5", effort: "high", cliFrom: "rule", modelFrom: "rule", effortFrom: "rule" },
+        claude,
+      ),
+    ).toEqual({
       harness: "codex",
     });
-    expect(applyCrewLaunch({ cli: "codex" }, claude)).toEqual({ harness: "codex" });
+    expect(applyCrewLaunch({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }, claude)).toEqual({
+      harness: "codex",
+    });
+  });
+
+  it("moves a Claude launch to the CLI a matching rule names", () => {
+    withEffort();
+    expect(
+      applyCrewLaunch({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }, claude),
+    ).toEqual({ harness: "codex" });
   });
 
   it("keeps this engine's model when the route names one the catalog does not list", () => {
     withEffort();
-    expect(applyCrewLaunch({ cli: "claude", model: "no-such-model" }, claude)).toEqual({
+    expect(
+      applyCrewLaunch({ cli: "claude", model: "no-such-model", cliFrom: "rule", modelFrom: "rule", effortFrom: "none" }, claude),
+    ).toEqual({
       harness: "claude",
       model: "claude:sonnet-5",
       effort: "high",
@@ -95,7 +127,9 @@ describe("applyCrewLaunch", () => {
     importCustomModels([
       { id: "deepseek-test", name: "DeepSeek", provider: "deepseek", baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-chat" },
     ]);
-    expect(applyCrewLaunch({ cli: "claude", model: "custom:deepseek-test" }, claude)).toMatchObject({
+    expect(
+      applyCrewLaunch({ cli: "claude", model: "custom:deepseek-test", cliFrom: "rule", modelFrom: "rule" }, claude),
+    ).toMatchObject({
       harness: "claude",
       model: "custom:deepseek-test",
     });

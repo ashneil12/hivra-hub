@@ -647,7 +647,14 @@ describe("tasks.delegate", () => {
     ]);
     const { source, host, started, api } = fixture();
     api.memoryBrief = vi.fn(async () => undefined);
-    api.crewRoute = vi.fn(async () => ({ cli: "codex", model: "codex:gpt-5", effort: "medium" }));
+    api.crewRoute = vi.fn(async () => ({
+      cli: "codex",
+      model: "codex:gpt-5",
+      effort: "medium",
+      cliFrom: "rule",
+      modelFrom: "rule",
+      effortFrom: "rule",
+    }));
     await handleAgentApp(source, "r-crew", "tasks.delegate", { brief: "Build the UI.", files: ["src/app/main.tsx"] }, host);
     expect(api.crewRoute).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -677,13 +684,18 @@ describe("tasks.delegate", () => {
     expect(down.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
 
     const odd = fixture();
-    odd.api.crewRoute = vi.fn(async () => ({ cli: "not-a-cli", model: "nope" }));
+    odd.api.crewRoute = vi.fn(async () => ({ cli: "not-a-cli", model: "nope", cliFrom: "rule", modelFrom: "rule" }));
     await handleAgentApp(odd.source, "r-odd", "tasks.delegate", { brief: "Tidy the title." }, odd.host);
     expect(odd.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
 
     // Cursor is a real CLI, and this test's harness probe does not have it. The start still uses the model already chosen.
     const missing = fixture();
-    missing.api.crewRoute = vi.fn(async () => ({ cli: "cursor", model: "cursor:composer" }));
+    missing.api.crewRoute = vi.fn(async () => ({
+      cli: "cursor",
+      model: "cursor:composer",
+      cliFrom: "rule",
+      modelFrom: "rule",
+    }));
     await handleAgentApp(missing.source, "r-missing", "tasks.delegate", { brief: "Tidy the title." }, missing.host);
     expect(missing.started[0][0]).toMatchObject({ harness: "claude", model: "claude:sonnet-5" });
   });
@@ -691,9 +703,71 @@ describe("tasks.delegate", () => {
   it("does not send another engine's model id when the crew names a CLI and no model", async () => {
     setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
     const { source, host, started, api } = fixture();
-    api.crewRoute = vi.fn(async () => ({ cli: "codex" }));
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }));
     await handleAgentApp(source, "r-bare", "tasks.delegate", { brief: "Tidy the title." }, host);
     expect(api.crewRoute).toHaveBeenCalled();
+    const launch = started[0][0] as { harness: string; model: string };
+    expect(launch.harness).toBe("codex");
+    expect(launch.model.startsWith("claude:")).toBe(false);
+  });
+
+  it("keeps a project's Codex worker when the crew only has its default", async () => {
+    setHarnessModels("codex", [
+      {
+        id: "codex:gpt-5",
+        harness: "codex",
+        name: "GPT-5",
+        settings: [
+          {
+            id: "effort",
+            label: "Effort",
+            kind: "select",
+            value: "low",
+            options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+            ],
+          },
+        ],
+      },
+    ]);
+    resetWorkerPool();
+    setProjectWorkerModel("vg-game", { model: "codex:gpt-5", effort: "medium" });
+    const pool = workerPoolHost({ openRows: () => [], room: () => ({ room: true }), card: () => {} });
+    const asCodex = (source: Session) => {
+      source.harness = "codex";
+      source.model = "codex:gpt-5";
+      source.modelSettings = { effort: "medium" };
+    };
+    const plain = fixture();
+    asCodex(plain.source);
+    const plainHost = { ...plain.host, tasks: { ...(plain.host.tasks as object), pool } } as AgentAppHost;
+    await handleAgentApp(plain.source, "r-plain-codex", "tasks.delegate", { brief: "Tidy the title." }, plainHost);
+    const without = plain.started[0][0] as { harness: string; model: string; modelSettings?: { effort?: string } };
+
+    const routed = fixture();
+    asCodex(routed.source);
+    routed.api.crewRoute = vi.fn(async () => ({
+      cli: "claude",
+      cliFrom: "default",
+      modelFrom: "none",
+      effortFrom: "none",
+    }));
+    const routedHost = { ...routed.host, tasks: { ...routed.api, pool } } as AgentAppHost;
+    await handleAgentApp(routed.source, "r-default-codex", "tasks.delegate", { brief: "Tidy the title." }, routedHost);
+    const withCrew = routed.started[0][0] as { harness: string; model: string; modelSettings?: { effort?: string } };
+    expect(withCrew.harness).toBe(without.harness);
+    expect(withCrew.model).toBe(without.model);
+    expect(withCrew.modelSettings?.effort).toBe(without.modelSettings?.effort);
+    expect(withCrew).toMatchObject({ harness: "codex", model: "codex:gpt-5", modelSettings: { effort: "medium" } });
+  });
+
+  it("moves a Claude task to Codex when a rule for its label says so", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    const { source, host, started, api } = fixture();
+    api.crewRoute = vi.fn(async () => ({ cli: "codex", cliFrom: "rule", modelFrom: "none", effortFrom: "none" }));
+    await handleAgentApp(source, "r-rule-ui", "tasks.delegate", { brief: "Build the UI.", files: ["src/app/main.tsx"] }, host);
+    expect(api.crewRoute).toHaveBeenCalledWith(expect.objectContaining({ labels: ["ui"] }));
     const launch = started[0][0] as { harness: string; model: string };
     expect(launch.harness).toBe("codex");
     expect(launch.model.startsWith("claude:")).toBe(false);
@@ -726,6 +800,9 @@ describe("tasks.delegate", () => {
       cli: query.override?.cli ?? "codex",
       model: query.override?.model ?? "codex:gpt-5",
       effort: query.override?.effort ?? null,
+      cliFrom: "override",
+      modelFrom: "override",
+      effortFrom: "override",
     }));
     await handleAgentApp(
       source,

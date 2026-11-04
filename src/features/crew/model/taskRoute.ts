@@ -31,6 +31,10 @@ export type CrewRouteAnswer = {
   cli?: string | null;
   model?: string | null;
   effort?: string | null;
+  /** Where the CLI came from. Only an override, a brief or a rule replaces the launch. */
+  cliFrom?: string | null;
+  modelFrom?: string | null;
+  effortFrom?: string | null;
 };
 
 export type CrewLaunch = {
@@ -94,21 +98,36 @@ function effortFits(harness: HarnessId, modelId: string | undefined, effort: unk
   return value;
 }
 
+const CHOSEN_FROM = new Set(["override", "brief", "rule"]);
+
+function chosen(from: string | null | undefined): boolean {
+  return typeof from === "string" && CHOSEN_FROM.has(from);
+}
+
 /**
- * The launch fields a crew answer replaces. An unknown CLI leaves the launch as it was.
- * A different CLI does not keep the previous model's id. An effort the model doesn't
- * offer is left off, so the start is not refused for it.
+ * The launch fields a crew answer replaces. A field changes only when it came from the override,
+ * the brief or a matching rule. A default, or no source, keeps what the app already picked.
+ * An unknown CLI leaves the launch as it was. A different CLI does not keep the previous model's id.
+ * An effort the model doesn't offer is left off, so the start is not refused for it.
  */
 export function applyCrewLaunch(route: CrewRouteAnswer | null | undefined, current: CrewLaunch): CrewLaunch {
-  const cli = typeof route?.cli === "string" ? route.cli.trim() : "";
-  if (!cli || !isCli(cli) || !(HARNESSES as readonly string[]).includes(cli)) return current;
-  const harness = cli as HarnessId;
+  if (!route) return current;
+  const cliChosen = chosen(route.cliFrom);
+  const modelChosen = chosen(route.modelFrom);
+  const effortChosen = chosen(route.effortFrom);
+  if (!cliChosen && !modelChosen && !effortChosen) return current;
+  const askedCli = cliChosen && typeof route.cli === "string" ? route.cli.trim() : "";
+  if (cliChosen && (!askedCli || !isCli(askedCli) || !(HARNESSES as readonly string[]).includes(askedCli))) {
+    return current;
+  }
+  const harness = (cliChosen ? askedCli : current.harness) as HarnessId | undefined;
+  if (!harness) return current;
   const same = current.harness === harness;
-  const asked = typeof route?.model === "string" ? route.model.trim() : "";
+  const asked = modelChosen && typeof route.model === "string" ? route.model.trim() : "";
   const known = asked && knownModel(harness, asked) ? asked : undefined;
   const model = known ?? (same ? current.model : undefined);
-  const namedEffort = typeof route?.effort === "string" && route.effort.trim() ? route.effort : undefined;
-  const effort = effortFits(harness, model, namedEffort ?? current.effort);
+  const namedEffort = effortChosen && typeof route.effort === "string" && route.effort.trim() ? route.effort : undefined;
+  const effort = effortFits(harness, model, namedEffort ?? (effortChosen ? undefined : current.effort));
   return {
     harness,
     ...(model ? { model } : {}),
