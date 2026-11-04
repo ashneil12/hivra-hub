@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -424,10 +424,39 @@ describe("desktop gate", () => {
 
     const old = Date.now() / 1000 - 60;
     utimesSync(`${ctx.consent}.lock`, old, old);
+    const still = gate(ctx, ["click", "--app", "Notes"], { binary: false });
+    refusal(still, "CONSENT_BUSY", "safe");
+    expect(existsSync(`${ctx.consent}.lock`)).toBe(true);
+    expect(readFileSync(ctx.consent)).toEqual(before);
+  });
+
+  it("does not drop a live owner's lock, and a release only removes its own", async () => {
+    const ctx = setup();
+    on(ctx);
+    const token = randomBytes(8).toString("hex");
+    const lock = `${ctx.consent}.lock`;
+    writeFileSync(lock, `${process.pid}\n${token}\n`);
+    const old = Date.now() / 1000 - 60;
+    utimesSync(lock, old, old);
+    const held = readFileSync(lock);
+    const busy = gate(ctx, ["click", "--app", "Notes"], { binary: false });
+    refusal(busy, "CONSENT_BUSY", "safe");
+    expect(readFileSync(lock)).toEqual(held);
+    expect(existsSync(ctx.consent)).toBe(false);
+
+    writeFileSync(lock, `2147483646\n${token}\n`);
+    utimesSync(lock, old, old);
     const asked = gate(ctx, ["click", "--app", "Notes"], { binary: false });
     refusal(asked, "CONSENT_REQUIRED", "unsafe");
-    expect(existsSync(`${ctx.consent}.lock`)).toBe(false);
-    expect(JSON.parse(readFileSync(ctx.consent, "utf8")).pending).toHaveLength(1);
+    expect(existsSync(lock)).toBe(false);
+
+    const owned = `${ctx.consent}.other.lock`;
+    writeFileSync(owned, `${process.pid}\nbbbbbbbb\n`);
+    const { releaseOwnedLock } = await import("../../../../plugins/desktop-control/bin/gate.mjs");
+    releaseOwnedLock(owned, "aaaaaaaa");
+    expect(readFileSync(owned, "utf8")).toBe(`${process.pid}\nbbbbbbbb\n`);
+    releaseOwnedLock(owned, "bbbbbbbb");
+    expect(existsSync(owned)).toBe(false);
   });
 
   it("reports a missing binary only after the app is allowed, and never searches PATH", () => {

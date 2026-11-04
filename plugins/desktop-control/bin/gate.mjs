@@ -5,10 +5,11 @@
 // per-app consent, and the visible-control check. It does not search PATH and it does not keep secrets.
 
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
+  linkSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -140,7 +141,6 @@ const PASSED = new Set([
 
 const MAX_TEXT = 256 * 1024;
 const LOCK_TRIES = 8;
-const LOCK_STALE_MS = 30_000;
 
 function defaultRegistry() {
   return path.resolve(binDir, "../../../registry.json");
@@ -185,15 +185,69 @@ function sleep(ms) {
   Atomics.wait(view, 0, 0, ms);
 }
 
-function lockIsStale(lock) {
+function processAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    return Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists and we may not signal it. That is still alive.
+    return Boolean(error && error.code === "EPERM");
+  }
+}
+
+function lockOwner(text) {
+  const lines = String(text).split("\n");
+  const pid = Number(lines[0]);
+  const token = lines[1] ?? "";
+  if (!Number.isInteger(pid) || pid <= 0 || token.length === 0 || token.includes("\0")) return null;
+  return { pid, token };
+}
+
+/** Drop the lock only when it still carries our token. A replaced lock is left alone. */
+export function releaseOwnedLock(lock, token) {
+  let text;
+  try {
+    text = readFileSync(lock, "utf8");
+  } catch {
+    return;
+  }
+  const owner = lockOwner(text);
+  if (!owner || owner.token !== token) return;
+  try {
+    const again = readFileSync(lock, "utf8");
+    if (again !== text) return;
+    unlinkSync(lock);
+  } catch {
+    // Already gone, or replaced between the read and the unlink.
+  }
+}
+
+/** Remove a lock whose owner pid is dead, and only if the bytes are still the ones just read. */
+function reclaimDead(lock) {
+  let text;
+  try {
+    text = readFileSync(lock);
+  } catch (error) {
+    return Boolean(error && error.code === "ENOENT");
+  }
+  const owner = lockOwner(text.toString("utf8"));
+  if (!owner || processAlive(owner.pid)) return false;
+  try {
+    const again = readFileSync(lock);
+    if (!again.equals(text)) return false;
+    unlinkSync(lock);
+    return true;
   } catch {
     return false;
   }
 }
 
-/** One writer at a time. A lock left by a crash (older than 30s) is removed once. A fresh lock is never stolen. */
+/**
+ * One writer. The lock name appears only after the pid and token are written (a hard link).
+ * A live pid is never removed. A dead pid is removed only when the file is unchanged.
+ * Age is not a reason to take the lock.
+ */
 function withLock(file, fn) {
   try {
     mkdirSync(path.dirname(file), { recursive: true });
@@ -205,22 +259,32 @@ function withLock(file, fn) {
     };
   }
   const lock = `${file}.lock`;
-  let stole = false;
+  const token = randomBytes(16).toString("hex");
+  const body = `${process.pid}\n${token}\n`;
+  const pending = `${lock}.pending-${process.pid}-${token}`;
   for (let attempt = 0; attempt < LOCK_TRIES; attempt += 1) {
     let fd;
     try {
-      fd = openSync(lock, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+      fd = openSync(pending, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
+    } catch {
+      return {
+        error: "CONSENT_UNREADABLE",
+        message: "The consent file couldn't be read. Try again.",
+        retry: "safe",
+      };
+    }
+    try {
+      writeFileSync(fd, body);
+      linkSync(pending, lock);
     } catch (error) {
+      closeSync(fd);
+      try {
+        unlinkSync(pending);
+      } catch {
+        // The pending name is ours. Leave it if it is already gone.
+      }
       if (error && error.code === "EEXIST") {
-        if (!stole && lockIsStale(lock)) {
-          try {
-            unlinkSync(lock);
-            stole = true;
-            continue;
-          } catch {
-            // The other writer removed it, or still holds it. Try again.
-          }
-        }
+        if (reclaimDead(lock)) continue;
         sleep(25);
         continue;
       }
@@ -230,15 +294,16 @@ function withLock(file, fn) {
         retry: "safe",
       };
     }
+    closeSync(fd);
+    try {
+      unlinkSync(pending);
+    } catch {
+      // The lock name already points at the same bytes.
+    }
     try {
       return fn();
     } finally {
-      closeSync(fd);
-      try {
-        unlinkSync(lock);
-      } catch {
-        // Already gone.
-      }
+      releaseOwnedLock(lock, token);
     }
   }
   return { busy: true };

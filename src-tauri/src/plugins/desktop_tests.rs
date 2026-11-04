@@ -182,6 +182,30 @@ fn a_corrupt_consent_file_is_not_overwritten() {
 }
 
 #[test]
+fn a_live_owner_is_not_reclaimed_when_the_lock_is_old() {
+    let tmp = Tmp::new("live-lock");
+    let path = tmp.path().join("consent.json");
+    std::fs::write(
+        &path,
+        b"{\"revision\":0,\"nextId\":1,\"projects\":{},\"pending\":[]}\n",
+    )
+    .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let lock = desktop::consent_lock(&path);
+    let body = format!("{}\nsecret-token\n", std::process::id());
+    std::fs::write(&lock, &body).unwrap();
+    let handle = OpenOptions::new().write(true).open(&lock).unwrap();
+    handle
+        .set_modified(SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+    drop(handle);
+    let busy = desktop::write_consent(&path, 0, doc(1)).unwrap_err();
+    assert_eq!(busy, "Desktop consent is busy. Try again.");
+    assert_eq!(std::fs::read(&lock).unwrap(), body.as_bytes());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
 fn a_fresh_lock_is_busy_and_a_stale_lock_is_reclaimed() {
     let tmp = Tmp::new("lock");
     let path = tmp.path().join("consent.json");
@@ -198,14 +222,37 @@ fn a_fresh_lock_is_busy_and_a_stale_lock_is_reclaimed() {
     assert_eq!(std::fs::read(&path).unwrap(), before);
     assert!(lock.exists());
 
+    // An empty lock has no owner. Age does not make it ours to take.
     let handle = OpenOptions::new().write(true).open(&lock).unwrap();
     handle
         .set_modified(SystemTime::now() - Duration::from_secs(60))
         .unwrap();
     drop(handle);
+    let still = desktop::write_consent(&path, 0, doc(1)).unwrap_err();
+    assert_eq!(still, "Desktop consent is busy. Try again.");
+    assert!(lock.exists());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // A dead owner is reclaimed, and the bytes have to still be that owner's.
+    let dead = dead_pid();
+    std::fs::write(&lock, format!("{dead}\ndead-token\n")).unwrap();
     desktop::write_consent(&path, 0, doc(1)).unwrap();
     assert!(!lock.exists());
     assert_eq!(desktop::read_consent(&path).unwrap().revision, 1);
+}
+
+fn dead_pid() -> u32 {
+    let mut child = std::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" })
+        .args(if cfg!(windows) {
+            vec!["/C", "exit 0"]
+        } else {
+            vec!["-c", "exit 0"]
+        })
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    let _ = child.wait();
+    pid
 }
 
 #[test]

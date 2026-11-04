@@ -4,8 +4,9 @@
 
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ use super::registry::{self, Host, Outcome, Source};
 
 const MAX_CONSENT: usize = 256 * 1024;
 const LOCK_TRIES: u32 = 8;
-const LOCK_STALE: Duration = Duration::from_secs(30);
+static LOCK_TOKEN: AtomicU64 = AtomicU64::new(1);
 const UNREADABLE: &str = "The consent file can't be read, so it was left as it is.";
 const CHANGED: &str = "That list changed. Look again.";
 const BUSY: &str = "Desktop consent is busy. Try again.";
@@ -167,17 +168,106 @@ fn validate(doc: &ConsentDoc, expected: u64) -> Result<u64, String> {
     Ok(next_rev)
 }
 
-fn lock_is_stale(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    let Ok(modified) = meta.modified() else {
-        return false;
-    };
-    modified.elapsed().is_ok_and(|age| age > LOCK_STALE)
+fn owner_token() -> String {
+    let n = LOCK_TOKEN.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("{n:x}-{nanos:x}")
 }
 
-/// One writer. A lock older than 30 seconds is removed once. A fresh lock is never stolen.
+/// A pid of 0 is not a process. EPERM means it exists and we cannot signal it, so it is alive.
+fn process_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        if pid > i32::MAX as u32 {
+            return false;
+        }
+        let rc = unsafe { libc::kill(pid as i32, 0) };
+        if rc == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::Threading::{
+            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let _ = CloseHandle(handle);
+            true
+        }
+    }
+}
+
+fn lock_owner(bytes: &[u8]) -> Option<(u32, String)> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut lines = text.split('\n');
+    let pid: u32 = lines.next()?.parse().ok()?;
+    let token = lines.next()?;
+    if pid == 0 || token.is_empty() || token.contains('\0') {
+        return None;
+    }
+    Some((pid, token.to_string()))
+}
+
+fn release_owned(lock: &Path, token: &str) {
+    let Ok(bytes) = std::fs::read(lock) else {
+        return;
+    };
+    let Some((_, owned)) = lock_owner(&bytes) else {
+        return;
+    };
+    if owned != token {
+        return;
+    }
+    if std::fs::read(lock).ok().as_deref() != Some(bytes.as_slice()) {
+        return;
+    }
+    let _ = std::fs::remove_file(lock);
+}
+
+/// A missing lock can be taken. A live owner is never removed. A dead owner is removed only when the
+/// bytes are still the ones just read, so a reclaim cannot let two writers in.
+fn reclaim_dead(lock: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(lock) else {
+        return !lock.exists();
+    };
+    let Some((pid, _)) = lock_owner(&bytes) else {
+        return false;
+    };
+    if process_alive(pid) {
+        return false;
+    }
+    if std::fs::read(lock).ok().as_deref() != Some(bytes.as_slice()) {
+        return false;
+    }
+    std::fs::remove_file(lock).is_ok()
+}
+
+fn pending_lock(lock: &Path, token: &str) -> PathBuf {
+    let mut name = lock
+        .file_name()
+        .map(|name| name.to_os_string())
+        .unwrap_or_default();
+    name.push(format!(".pending-{}-{token}", std::process::id()));
+    match lock.parent() {
+        Some(parent) => parent.join(name),
+        None => PathBuf::from(name),
+    }
+}
+
+/// One writer. The lock name appears only after the pid and token are written. Age is not a reason to take it.
 fn with_consent_lock<T>(
     file: &Path,
     body: impl FnOnce() -> Result<T, String>,
@@ -186,18 +276,30 @@ fn with_consent_lock<T>(
         std::fs::create_dir_all(parent).map_err(|_| UNREADABLE.to_string())?;
     }
     let lock = consent_lock(file);
-    let mut stole = false;
+    let token = owner_token();
+    let record = format!("{}\n{token}\n", std::process::id());
+    let pending = pending_lock(&lock, &token);
     for _ in 0..LOCK_TRIES {
-        match OpenOptions::new().write(true).create_new(true).open(&lock) {
-            Ok(handle) => {
+        let published = (|| {
+            let mut handle = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&pending)?;
+            handle.write_all(record.as_bytes())?;
+            handle.sync_all()?;
+            drop(handle);
+            std::fs::hard_link(&pending, &lock)?;
+            Ok::<(), std::io::Error>(())
+        })();
+        let _ = std::fs::remove_file(&pending);
+        match published {
+            Ok(()) => {
                 let result = body();
-                drop(handle);
-                let _ = std::fs::remove_file(&lock);
+                release_owned(&lock, &token);
                 return result;
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if !stole && lock_is_stale(&lock) && std::fs::remove_file(&lock).is_ok() {
-                    stole = true;
+                if reclaim_dead(&lock) {
                     continue;
                 }
                 thread::sleep(Duration::from_millis(20));
