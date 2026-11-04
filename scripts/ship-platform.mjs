@@ -131,39 +131,50 @@ export function copyBundle(from, to, options = {}) {
   fs.cpSync(from, to, { recursive: true, verbatimSymlinks: true });
 }
 
+/** Same path. Windows paths are not case-sensitive. */
+function samePath(a, b) {
+  if (process.platform === "win32") return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+
 /**
- * A spawn spec may name only a file inside the bundle. The path is canonicalised
- * first, so a symlink, a `..`, or a hard link whose canonical path leaves the
- * bundle is refused. On Windows that canonical path can be the other name of a
- * hard link, so a link to the installed node is outside even though the link
- * itself sits in the bundle.
+ * A spawn spec may name only a file inside the bundle, as a relative path
+ * (an absolute path, or any `..`, is refused). It is resolved against
+ * Contents/MacOS and then canonicalised with realpathSync.native, so a Windows
+ * 8.3 short name and the long path are the same file, and a hard link whose
+ * other name is outside the bundle is refused. `{binary}` is this bundle's stamp.
  */
 export function acceptedSpawnCommand(bundle, spec, platform = process.platform) {
   const command = spec?.command;
   const args = spec?.args;
   const p = platform === "win32" ? path.win32 : path.posix;
-  if (typeof command !== "string" || !p.isAbsolute(command)) return null;
+  if (typeof command !== "string" || command.length === 0 || p.isAbsolute(command)) return null;
+  if (command.split(/[\\/]/).includes("..")) return null;
   if (!Array.isArray(args) || args.some((arg) => typeof arg !== "string")) return null;
+  const resolved = path.resolve(path.join(bundle, "Contents", "MacOS"), command);
   let realCommand;
   let realBundle;
   try {
-    realCommand = fs.realpathSync(command);
-    realBundle = fs.realpathSync(bundle);
+    realCommand = fs.realpathSync.native(resolved);
+    realBundle = fs.realpathSync.native(bundle);
     if (!fs.statSync(realCommand).isFile()) return null;
   } catch {
     return null;
   }
   if (!isInside(realCommand, realBundle, platform)) return null;
-  return { command: realCommand, args };
+  const binary = path.join(bundle, "Contents", "MacOS", "monocode");
+  return { command: realCommand, args: args.map((arg) => (arg === "{binary}" ? binary : arg)) };
 }
 
 /** Whether `home` is a temporary HOME rather than the user's own (os.userInfo reads the user database). */
 export function isIsolatedHome(home) {
   const real = os.userInfo().homedir;
   try {
-    return fs.realpathSync(home) !== fs.realpathSync(real);
+    // native, not the JS realpath: on Windows the JS one keeps an 8.3 short name,
+    // so the real home can look like a different, temporary one.
+    return !samePath(fs.realpathSync.native(home), fs.realpathSync.native(real));
   } catch {
-    return path.resolve(home) !== path.resolve(real);
+    return !samePath(path.resolve(String(home)), path.resolve(real));
   }
 }
 

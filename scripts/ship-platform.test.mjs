@@ -250,23 +250,72 @@ test("a spawn command outside the bundle is refused", () => {
     fs.writeFileSync(sibling, "");
     assert.equal(acceptedSpawnCommand(bundle, { command: outside, args: [] }), null);
     assert.equal(acceptedSpawnCommand(bundle, { command: sibling, args: ["x"] }), null);
-    const ok = acceptedSpawnCommand(bundle, { command: inside, args: ["--ok"] });
-    assert.equal(ok.command, fs.realpathSync(inside));
-    assert.deepEqual(ok.args, ["--ok"]);
-    assert.equal(acceptedSpawnCommand(bundle, { command: inside, args: [1] }), null);
+    const ok = acceptedSpawnCommand(bundle, { command: "helper", args: ["--ok", "{binary}"] });
+    assert.equal(ok.command, fs.realpathSync.native(inside));
+    assert.deepEqual(ok.args, ["--ok", path.join(bundle, "Contents", "MacOS", "monocode")]);
+    assert.equal(acceptedSpawnCommand(bundle, { command: "helper", args: [1] }), null);
     const link = path.join(bundle, "Contents", "MacOS", "linked");
     try {
       fs.symlinkSync(outside, link);
-      assert.equal(acceptedSpawnCommand(bundle, { command: link, args: [] }), null, "a symlink out of the bundle is refused");
+      assert.equal(acceptedSpawnCommand(bundle, { command: "linked", args: [] }), null, "a symlink out of the bundle is refused");
     } catch (error) {
       if (error.code !== "EPERM" && error.code !== "ENOTSUP") throw error;
     }
     const hard = path.join(bundle, "Contents", "MacOS", "hardlinked");
     fs.linkSync(outside, hard);
-    const realHard = fs.realpathSync(hard);
-    const acceptedHard = acceptedSpawnCommand(bundle, { command: hard, args: [] });
-    if (isInside(realHard, fs.realpathSync(bundle))) assert.equal(acceptedHard.command, realHard);
+    const realHard = fs.realpathSync.native(hard);
+    const acceptedHard = acceptedSpawnCommand(bundle, { command: "hardlinked", args: [] });
+    if (isInside(realHard, fs.realpathSync.native(bundle))) assert.equal(acceptedHard.command, realHard);
     else assert.equal(acceptedHard, null, "a hard link whose canonical path leaves the bundle is refused");
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an absolute or parent spawn command is refused", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ship-spawn-abs-")));
+  try {
+    const bundle = path.join(root, "MonoCode Hub.app");
+    const helper = path.join(bundle, "Contents", "MacOS", "node.exe");
+    fs.mkdirSync(path.dirname(helper), { recursive: true });
+    fs.writeFileSync(helper, "node");
+    assert.equal(acceptedSpawnCommand(bundle, { command: helper, args: [] }), null, "an absolute path is refused");
+    assert.equal(acceptedSpawnCommand(bundle, { command: "../node.exe", args: [] }), null);
+    assert.equal(acceptedSpawnCommand(bundle, { command: "..\\node.exe", args: [] }), null);
+    assert.equal(acceptedSpawnCommand(bundle, { command: "dir/../../node.exe", args: [] }), null);
+    assert.equal(acceptedSpawnCommand(bundle, { command: "C:\\Windows\\node.exe", args: [] }, "win32"), null);
+    assert.equal(acceptedSpawnCommand(bundle, { command: "", args: [] }), null);
+    const ok = acceptedSpawnCommand(bundle, { command: "node.exe", args: [] });
+    assert.equal(ok.command, fs.realpathSync.native(helper));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a copied bundle resolves its own node and its own stamp, never the source's", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ship-spawn-copy-")));
+  try {
+    const source = path.join(root, "source.app");
+    const macos = path.join(source, "Contents", "MacOS");
+    fs.mkdirSync(macos, { recursive: true });
+    fs.writeFileSync(path.join(macos, "node.exe"), "node");
+    fs.writeFileSync(path.join(macos, "monocode"), "stamp");
+    const spec = {
+      command: "node.exe",
+      args: ["--disable-warning=ExperimentalWarning", path.join(root, "fake-app.mjs"), "{binary}"],
+    };
+    fs.writeFileSync(path.join(macos, "monocode.spawn.json"), JSON.stringify(spec));
+    const dest = path.join(root, "installed.app");
+    fs.cpSync(source, dest, { recursive: true });
+    const copied = JSON.parse(fs.readFileSync(path.join(dest, "Contents", "MacOS", "monocode.spawn.json"), "utf8"));
+    const accepted = acceptedSpawnCommand(dest, copied);
+    const sourceNode = fs.realpathSync.native(path.join(macos, "node.exe"));
+    const destNode = fs.realpathSync.native(path.join(dest, "Contents", "MacOS", "node.exe"));
+    assert.notEqual(destNode, sourceNode);
+    assert.equal(accepted.command, destNode);
+    assert.equal(accepted.args.at(-1), path.join(dest, "Contents", "MacOS", "monocode"));
+    assert.equal(accepted.args.includes(path.join(source, "Contents", "MacOS", "monocode")), false);
+    assert.equal(accepted.args[1], path.join(root, "fake-app.mjs"));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -332,7 +381,7 @@ test("a spawn.json is ignored under a non-temporary HOME", () => {
     fs.mkdirSync(path.dirname(binary), { recursive: true });
     fs.writeFileSync(binary, "stamp");
     fs.writeFileSync(helper, "not the real node");
-    fs.writeFileSync(`${binary}.spawn.json`, JSON.stringify({ command: helper, args: ["--from-spec"] }));
+    fs.writeFileSync(`${binary}.spawn.json`, JSON.stringify({ command: "node.exe", args: ["--from-spec"] }));
     const realHome = os.userInfo().homedir;
     if (process.platform !== "win32") {
       assert.equal(appCommand(app, realHome).command, binary);
@@ -341,7 +390,7 @@ test("a spawn.json is ignored under a non-temporary HOME", () => {
     }
     assert.throws(() => appCommand(app, realHome), /This build has no monocode\.exe/);
     const spec = appCommand(app, root);
-    assert.equal(spec.command, fs.realpathSync(helper));
+    assert.equal(spec.command, fs.realpathSync.native(helper));
     assert.deepEqual(spec.args, ["--from-spec"]);
     fs.writeFileSync(`${binary}.exe`, "program");
     assert.equal(appCommand(app, root).command, `${binary}.exe`);
