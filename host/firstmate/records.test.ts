@@ -96,4 +96,63 @@ describe("first mate records", () => {
     expect(again.row.id).toBe(claimed.row.id);
     expect(book.catchUp("project-1", 0)).toHaveLength(2);
   });
+
+  it("starts a retryable failure again on the same row, and names the chat on every journal line", () => {
+    const { book } = records();
+    const claimed = book.claim(input(3_000));
+    book.releaseLaunchLease(claimed.row.launchKey, claimed.holder);
+    book.finish(
+      claimed.row.id,
+      {
+        state: "failed",
+        status: "failed",
+        result: null,
+        error: "connect ECONNREFUSED 127.0.0.1:9",
+        errorClass: "unavailable",
+        retryable: true,
+      },
+      { kind: "failed", text: "connect ECONNREFUSED 127.0.0.1:9" },
+      [],
+      3_100,
+    );
+
+    const again = book.claim(input(3_200));
+    expect(again.created).toBe(false);
+    expect(again.start).toBe(true);
+    expect(again.row.id).toBe(claimed.row.id);
+    expect(again.row.state).toBe("running");
+    expect(again.row.generation).toBe(2);
+    expect(again.row.retryable).toBe(false);
+    expect(again.row.error).toBeNull();
+
+    const held = book.claim(input(3_201));
+    expect(held.start).toBe(false);
+    expect(held.row.id).toBe(claimed.row.id);
+    expect(held.row.generation).toBe(2);
+    expect(book.list("project-1")).toHaveLength(1);
+
+    const page = book.catchUp("project-1", 0);
+    expect(page.map((entry) => entry.kind)).toEqual(["started", "failed", "started"]);
+    expect(page.every((entry) => entry.ownerSession === "owner-1")).toBe(true);
+    expect(page.at(-1)?.text).toMatch(/again/);
+  });
+
+  it("does not start a finished or a non-retryable failure again", () => {
+    const { book } = records();
+    const claimed = book.claim(input(4_000));
+    book.releaseLaunchLease(claimed.row.launchKey, claimed.holder);
+    book.finish(
+      claimed.row.id,
+      { state: "failed", status: "failed", result: null, error: "The brief was refused.", errorClass: null, retryable: false },
+      { kind: "failed", text: "The brief was refused." },
+      [],
+      4_100,
+    );
+    const before = book.catchUp("project-1", 0).length;
+    const again = book.claim(input(4_200));
+    expect(again.start).toBe(false);
+    expect(again.row.state).toBe("failed");
+    expect(again.row.generation).toBe(1);
+    expect(book.catchUp("project-1", 0)).toHaveLength(before);
+  });
 });

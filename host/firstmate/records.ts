@@ -29,6 +29,8 @@ export type Claim = {
   /** This caller holds the launch lease and is the one that may start the worker. */
   start: boolean;
   holder: string;
+  /** The last try failed in a way that can be sent again. A running row is never this. */
+  restart: boolean;
 };
 
 type Stored = {
@@ -126,6 +128,7 @@ export class FirstMateRecords {
         delegation_id TEXT NOT NULL,
         kind TEXT NOT NULL,
         started_by TEXT NOT NULL,
+        owner_session TEXT NOT NULL DEFAULT '',
         text TEXT NOT NULL,
         at INTEGER NOT NULL
       );
@@ -152,6 +155,13 @@ export class FirstMateRecords {
         until_ms INTEGER NOT NULL
       );
     `);
+    // A database created before the chat was recorded on each line still opens.
+    try {
+      this.db.exec("ALTER TABLE fm_journal ADD COLUMN owner_session TEXT NOT NULL DEFAULT ''");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (!/duplicate column/i.test(message)) throw error;
+    }
   }
 
   get(id: string): HostDelegation | null {
@@ -209,16 +219,40 @@ export class FirstMateRecords {
         ) {
           throw new LaunchConflictError();
         }
-        // A finished run is the result. A running one can be adopted (the same
-        // native session, never a second) by whoever holds the launch lease.
+        // A retryable failure can be sent again, on this same row. A finished run,
+        // or a failure that will not succeed by trying again, is the result.
+        if (existing.state === "failed" && existing.retryable) {
+          const holder = randomUUID();
+          if (!this.takeLease(existing.launchKey, holder, input.now)) {
+            return { row: existing, created: false, start: false, holder: "", restart: false };
+          }
+          const saved = this.db
+            .prepare(
+              `UPDATE fm_delegations
+               SET state='running', status='working', generation=generation+1, retryable=0,
+                   result=NULL, error=NULL, error_class=NULL, updated_at=?
+               WHERE id=? AND state='failed' AND retryable=1`,
+            )
+            .run(input.now, existing.id);
+          if (saved.changes !== 1) {
+            this.db.prepare("DELETE FROM fm_leases WHERE key=? AND holder=?").run(existing.launchKey, holder);
+            const current = this.get(existing.id) ?? existing;
+            return { row: current, created: false, start: false, holder: "", restart: false };
+          }
+          const row = this.get(existing.id)!;
+          this.journal(row, "started", `Started "${row.title}" again.`, input.now);
+          return { row, created: false, start: true, holder, restart: true };
+        }
+        // A running one can be adopted (the same native session, never a second)
+        // by whoever holds the launch lease.
         if (existing.state !== "running") {
-          return { row: existing, created: false, start: false, holder: "" };
+          return { row: existing, created: false, start: false, holder: "", restart: false };
         }
         const holder = randomUUID();
         if (!this.takeLease(existing.launchKey, holder, input.now)) {
-          return { row: existing, created: false, start: false, holder: "" };
+          return { row: existing, created: false, start: false, holder: "", restart: false };
         }
-        return { row: existing, created: false, start: true, holder };
+        return { row: existing, created: false, start: true, holder, restart: false };
       }
       const now = input.now;
       const row: HostDelegation = {
@@ -252,13 +286,13 @@ export class FirstMateRecords {
         const raced = this.byLaunchKey(input.launchKey);
         if (!raced) throw error;
         if (raced.fingerprint !== input.fingerprint) throw new LaunchConflictError();
-        return { row: raced, created: false, start: false, holder: "" };
+        return { row: raced, created: false, start: false, holder: "", restart: false };
       }
       this.journal(row, "started", `Started "${row.title}".`, now);
       if (!this.takeLease(row.launchKey, holder, now)) {
-        return { row, created: true, start: false, holder: "" };
+        return { row, created: true, start: false, holder: "", restart: false };
       }
-      return { row, created: true, start: true, holder };
+      return { row, created: true, start: true, holder, restart: false };
     });
   }
 
@@ -329,7 +363,7 @@ export class FirstMateRecords {
   catchUp(projectId: string, after: number): CatchUpEntry[] {
     const rows = this.db
       .prepare(
-        "SELECT seq, project_id, delegation_id, kind, started_by, text, at FROM fm_journal WHERE project_id=? AND seq>? ORDER BY seq",
+        "SELECT seq, project_id, delegation_id, kind, started_by, owner_session, text, at FROM fm_journal WHERE project_id=? AND seq>? ORDER BY seq",
       )
       .all(projectId, after) as Array<{
       seq: number;
@@ -337,6 +371,7 @@ export class FirstMateRecords {
       delegation_id: string;
       kind: CatchUpEntry["kind"];
       started_by: Initiator;
+      owner_session: string;
       text: string;
       at: number;
     }>;
@@ -344,6 +379,7 @@ export class FirstMateRecords {
       seq: row.seq,
       projectId: row.project_id,
       delegationId: row.delegation_id,
+      ownerSession: row.owner_session,
       kind: row.kind,
       startedBy: row.started_by,
       text: row.text,
@@ -441,8 +477,10 @@ export class FirstMateRecords {
 
   private journal(row: HostDelegation, kind: CatchUpEntry["kind"], text: string, now: number): void {
     this.db
-      .prepare("INSERT INTO fm_journal (project_id, delegation_id, kind, started_by, text, at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(row.projectId, row.id, kind, row.startedBy, text, now);
+      .prepare(
+        "INSERT INTO fm_journal (project_id, delegation_id, kind, started_by, owner_session, text, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(row.projectId, row.id, kind, row.startedBy, row.ownerSession, text, now);
   }
 
   private enqueue(projectId: string, wake: Wake, now: number): void {

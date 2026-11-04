@@ -41,6 +41,8 @@ export type CatchUpEntry = {
   seq: number;
   projectId: string;
   delegationId: string;
+  /** The chat the report goes back to. Empty when an older host did not record one. */
+  ownerSession: string;
   kind: "started" | "finished" | "failed" | "cancelled";
   startedBy: Initiator;
   text: string;
