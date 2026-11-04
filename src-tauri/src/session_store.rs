@@ -670,29 +670,89 @@ pub fn cancel_session_search(search_owner: String) {
 pub fn session_delete(
     app: AppHandle,
     store: State<'_, SessionStore>,
+    live: State<'_, crate::live_turns::LiveTurns>,
     session_id: String,
-    mut image_paths: Vec<String>,
+    image_paths: Vec<String>,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
+    // Images stay until the chat is purged or deleted forever. The argument stays so the
+    // existing invoke keeps working.
+    let _ = image_paths;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let persisted_paths = get_session(&conn, &session_id)
+    // WP-76: a chat a Mono just moved is already in the ledger. Say so, and don't refuse it
+    // for a turn this window has already stopped.
+    if crate::trash::is_trashed(&conn, "chat", &session_id).map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    let Some(record) = get_session(&conn, &session_id).map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    // WP-76: the running check and the ledger insert hold the live-turn lock together.
+    crate::trash::commit_if_idle(
+        &conn,
+        &live,
+        &crate::trash::Item {
+            kind: "chat".into(),
+            id: session_id,
+            title: record.title,
+            parent_kind: Some("project".into()),
+            parent_id: Some(record.cwd),
+            payload: "{}".into(),
+        },
+        &[],
+        now_millis(),
+    )
+    .map_err(|error| error.to_string())?;
+    drop(conn);
+    let _ = app.emit(crate::trash::CHANGED, ());
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FAIL_IMAGE_FOR: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn fail_chat_image_read_for(id: Option<&str>) {
+    FAIL_IMAGE_FOR.with(|cell| *cell.borrow_mut() = id.map(str::to_string));
+}
+
+/// Image paths a hard delete must know before it removes anything. A failed read is not "no images".
+pub(crate) fn collect_chat_image_paths(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Vec<String>, String> {
+    #[cfg(test)]
+    if FAIL_IMAGE_FOR.with(|cell| cell.borrow().as_deref() == Some(session_id)) {
+        return Err(format!("image read failed for {session_id}"));
+    }
+    let mut image_paths = get_session(conn, session_id)
         .ok()
         .flatten()
         .map(|record| generated_image_paths(&record.blocks))
         .unwrap_or_default();
-    image_paths.extend(persisted_paths);
     image_paths.extend(
-        crate::mono_transcript::generated_image_paths(&conn, &session_id)
-            .map_err(|e| e.to_string())?,
+        crate::mono_transcript::generated_image_paths(conn, session_id)
+            .map_err(|error| error.to_string())?,
     );
-    delete_session(&conn, &session_id).map_err(|e| e.to_string())?;
-    drop(conn);
+    Ok(image_paths)
+}
+
+/// Hard-delete a chat and its generated images. Only the daily purge calls this. Delete forever
+/// preflights every chat, then deletes the ledger and the rows in one transaction.
+pub(crate) fn purge_chat(
+    app: &AppHandle,
+    conn: &Connection,
+    session_id: &str,
+) -> Result<(), String> {
+    let image_paths = collect_chat_image_paths(conn, session_id)?;
+    delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(&app, &image_paths) {
+        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
-    let _ = app.emit(crate::reminders::CHANGED, ());
     Ok(())
 }
 
@@ -1263,6 +1323,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
+    crate::trash::ensure_table(conn)?;
     Ok(())
 }
 
@@ -1615,6 +1677,7 @@ fn search_sessions_sql(include_archived: bool, cwd_scoped: bool) -> String {
     }
     sql.push_str(
         " WHERE id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
+            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
             AND has_user_message = 1
             AND (LOWER(title) LIKE LOWER(?1) ESCAPE '\\'
                  OR CASE WHEN octet_length(blocks_json) <= ?2
@@ -1926,6 +1989,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
            AND has_user_message = 1
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
          ORDER BY updated_at DESC, id ASC",
     )?;
     let rows = statement.query_map(params![cwd], |row| {
@@ -1978,6 +2042,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
            AND linked_work_item_json IS NOT NULL
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
          ORDER BY updated_at DESC, id ASC",
     )?;
     let rows = statement.query_map([], |row| {
@@ -2039,9 +2104,29 @@ fn optional_json(raw: Option<String>) -> Option<Value> {
     raw.and_then(|value| serde_json::from_str(&value).ok())
 }
 
-fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    let parent = worker_parent(&tx, session_id)?;
+pub(crate) fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    if conn.is_autocommit() {
+        let tx = conn.unchecked_transaction()?;
+        delete_session_in(&tx, session_id)?;
+        return tx.commit();
+    }
+    conn.execute_batch("SAVEPOINT trash_delete_session")?;
+    match delete_session_in(conn, session_id) {
+        Ok(()) => conn.execute_batch("RELEASE trash_delete_session"),
+        Err(error) => match conn.execute_batch("ROLLBACK TO trash_delete_session") {
+            Ok(()) => {
+                conn.execute_batch("RELEASE trash_delete_session")?;
+                Err(error)
+            }
+            Err(rollback) => Err(rusqlite::Error::InvalidParameterName(format!(
+                "{error}; rollback failed: {rollback}"
+            ))),
+        },
+    }
+}
+
+fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> {
+    let parent = worker_parent(tx, session_id)?;
     // Ownership is also carried in transcripts for older clients. Release
     // that metadata along with the index so reopening a worker stays detached.
     let workers = tx.prepare("SELECT id, blocks_json FROM sessions WHERE id IN (SELECT session_id FROM orchestration_workers WHERE lead_id = ?1)")?
@@ -2128,11 +2213,11 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
                     "UPDATE orchestration_runs SET state = ?1 WHERE lead_id = ?2",
                     params![run.to_string(), parent],
                 )?;
-                index_orchestration(&tx, &parent, &run)?;
+                index_orchestration(tx, &parent, &run)?;
             }
         }
         // Also handle summaries left by an older client without a run record.
-        if let Some(mut summary) = orchestration_summary(&tx, &parent)? {
+        if let Some(mut summary) = orchestration_summary(tx, &parent)? {
             if let Some(tasks) = summary["tasks"].as_array_mut() {
                 tasks.retain(|task| task["sessionId"] != session_id);
             }
@@ -2147,7 +2232,7 @@ fn delete_session(conn: &Connection, session_id: &str) -> rusqlite::Result<()> {
         [session_id],
     )?;
     tx.execute("DELETE FROM sessions WHERE id = ?1", [session_id])?;
-    tx.commit()
+    Ok(())
 }
 
 fn set_archived(conn: &Connection, session_id: &str, archived: bool) -> rusqlite::Result<()> {
@@ -2211,7 +2296,8 @@ fn get_session_record(
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
                 goal_json, archived
          FROM sessions
-         WHERE id = ?1 AND inbox_ask IS NULL"
+         WHERE id = ?1 AND inbox_ask IS NULL
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
         ),
         params![session_id],
         |row| {
@@ -2693,6 +2779,7 @@ mod tests {
                    AND has_user_message = 1
                    AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
                    AND id NOT IN (SELECT session_id FROM orchestration_workers)
+                   AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
                  ORDER BY updated_at DESC, id ASC",
                     params!["/tmp/a"],
                     |row| row.get(3),

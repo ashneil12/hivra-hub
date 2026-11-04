@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // r30f: Delete mono's confirm says only what happens. Deleting a Mono takes its current chat, its roster entry and its
-// hub team, and its habits stop (the runner only walks the roster); its folder (soul, memory, habits.json, chats.json)
-// is never touched, so the copy says the soul and memory are kept (r30g: no folder path).
+// hub team, and its habits stop (the runner only walks the roster). WP-76: its files go to the trash for 30 days
+// and can be put back. The copy does not name a folder path.
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
@@ -21,12 +21,14 @@ afterEach(() => vi.unstubAllGlobals());
 
 const src = (path: string) => readFileSync(`${process.cwd()}/${path}`, "utf8");
 
-it("says the chat goes, habits stop, and the soul and memory are kept, with no folder path", async () => {
+it("says the chat stops, habits stop, and the files can be put back, with no folder path", async () => {
   const { monoDeleteDetail } = await import("./monoDelete");
-  expect(monoDeleteDetail(true)).toBe("Its current chat will be deleted and its habits stop. Its soul and memory are kept.");
-  // No chat: none to delete, and no habits run (they need its chat), so only what is kept is said.
-  expect(monoDeleteDetail(false)).toBe("Its soul and memory are kept.");
+  expect(monoDeleteDetail(true)).toBe(
+    "Its current chat is stopped and moved to the trash with it, and its habits stop. Its files go to the trash for 30 days, and you can put them back.",
+  );
+  expect(monoDeleteDetail(false)).toBe("Its files go to the trash for 30 days, and you can put them back.");
   expect(monoDeleteDetail.length).toBe(1);
+  expect(monoDeleteDetail(true)).not.toMatch(/\/|\\/);
 });
 
 it("removing a Mono never asks the app to delete, move or archive its folder", async () => {

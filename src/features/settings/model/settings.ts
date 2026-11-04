@@ -34,6 +34,7 @@ export type SettingsSectionId =
   | "inbox"
   | "worktrees"
   | "archive"
+  | "trash"
   | "changes"
   | "decisions"
   | "activity"
@@ -227,6 +228,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Archive",
     description: "Projects and conversations you have archived.",
     keywords: "archived restore delete hidden",
+  },
+  {
+    id: "trash",
+    group: "workspace",
+    label: "Trash",
+    description:
+      "Deleted chats, Monos, projects, notes, docs and tasks. Restore them, or delete them forever.",
+    keywords: "trash restore delete forever bin",
   },
   {
     id: "worktrees",

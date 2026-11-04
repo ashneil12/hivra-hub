@@ -641,6 +641,7 @@ describe("settings navigation", () => {
       "teams",
       "inbox",
       "archive",
+      "trash",
       "worktrees",
     ]);
     // SSH machines are "Remote machines"; app logins live under Connectors.
