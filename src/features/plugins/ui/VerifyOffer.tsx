@@ -12,12 +12,17 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
   const [offer, setOffer] = useState<Offer | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [holding, setHolding] = useState(false);
   const live = useRef<object | null>(null);
 
   useEffect(() => {
     const folder = projectFolder.trim();
+    setHolding(false);
+    setBusy(false);
     if (!folder) {
+      live.current = {};
       setOffer(null);
+      setNote(null);
       return;
     }
     const token = {};
@@ -42,28 +47,35 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
   const current = offer;
 
   async function install() {
-    if (!current.source || busy) return;
+    if (!current.source || busy || holding) return;
+    const token = live.current;
     setBusy(true);
     try {
       const outcome = installOutcome(
         await invoke("plugins_install", { source: current.source, requestedBy: { kind: "person" } }),
       );
+      if (live.current !== token) return;
       setNote(outcome.message);
       if (outcome.message.startsWith("Installed ")) setOffer({ ...current, installed: true });
+      if (outcome.message.startsWith("Waiting for your OK in the Inbox")) setHolding(true);
     } catch {
+      if (live.current !== token) return;
       setNote("It wasn't installed. Try again.");
     } finally {
-      setBusy(false);
+      if (live.current === token) setBusy(false);
     }
   }
 
   async function decline() {
     if (busy) return;
+    const token = live.current;
+    const folder = projectFolder.trim();
     setBusy(true);
     try {
       const result = readDecline(
-        await invoke("plugins_verify_decline", { folder: projectFolder.trim(), revision: current.revision }),
+        await invoke("plugins_verify_decline", { folder, revision: current.revision }),
       );
+      if (live.current !== token) return;
       if (!result) {
         setNote("It wasn't saved. Try again.");
         return;
@@ -71,9 +83,10 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
       setOffer(result.offer);
       setNote(result.applied ? null : "Another window changed this. Try again.");
     } catch {
+      if (live.current !== token) return;
       setNote("It wasn't saved. Try again.");
     } finally {
-      setBusy(false);
+      if (live.current === token) setBusy(false);
     }
   }
 
@@ -90,7 +103,7 @@ export function VerifyOffer({ projectFolder }: { projectFolder: string }) {
           {note}
         </p>
       ) : null}
-      <button type="button" className={PRIMARY} disabled={busy} onClick={() => void install()}>
+      <button type="button" className={PRIMARY} disabled={busy || holding} onClick={() => void install()}>
         Install
       </button>
       <button type="button" className={BTN} disabled={busy} onClick={() => void decline()}>

@@ -55,6 +55,48 @@ describe("VerifyOffer", () => {
     expect(install?.[1]).toEqual({ source: SOURCE, requestedBy: { kind: "person" } });
     expect(container.querySelector("[data-verify-status]")?.textContent).toBe("Waiting for your OK in the Inbox");
     expect(container.querySelector("[data-verify-offer]")).not.toBeNull();
+    const installButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Install");
+    expect(installButton?.hasAttribute("disabled")).toBe(true);
+    await act(async () => {
+      installButton!.click();
+    });
+    expect(vi.mocked(invoke).mock.calls.filter((call) => call[0] === "plugins_install")).toHaveLength(1);
+  });
+
+  it("drops a late Install or Not now once the folder has changed", async () => {
+    let finishInstall: ((value: unknown) => void) | null = null;
+    let finishDecline: ((value: unknown) => void) | null = null;
+    vi.mocked(invoke).mockImplementation((command, args) => {
+      const folder = args && "folder" in args ? String(args.folder) : "";
+      if (command === "plugins_verify_offer") {
+        return Promise.resolve(payload(folder.endsWith("other") ? { surfaces: ["mobile"], revision: 9 } : {}));
+      }
+      if (command === "plugins_install") return new Promise((resolve) => { finishInstall = resolve; });
+      if (command === "plugins_verify_decline") return new Promise((resolve) => { finishDecline = resolve; });
+      return Promise.resolve(undefined);
+    });
+    await show();
+    await act(async () => {
+      container.querySelector("button")!.click();
+    });
+    await show("/code/other");
+    await act(async () => {
+      finishInstall?.({ status: "waiting", request: { steps: [] } });
+    });
+    expect(container.querySelector("[data-verify-sentence]")?.textContent).toBe("This project looks like a mobile app.");
+    expect(container.querySelector("[data-verify-status]")).toBeNull();
+    const installButton = [...container.querySelectorAll("button")].find((button) => button.textContent === "Install");
+    expect(installButton?.hasAttribute("disabled")).toBe(false);
+
+    await act(async () => {
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "Not now")!.click();
+    });
+    await show(FOLDER);
+    await act(async () => {
+      finishDecline?.({ applied: true, offer: payload({ declined: true, revision: 4, surfaces: ["mobile"] }) });
+    });
+    expect(container.querySelector("[data-verify-sentence]")?.textContent).toBe("This project looks like a web app.");
+    expect(container.querySelector("[data-verify-offer]")).not.toBeNull();
   });
 
   it("hides the card when the person says not now", async () => {

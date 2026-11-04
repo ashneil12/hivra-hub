@@ -19,6 +19,7 @@ test("Verify is offered for a web project and Install waits for a yes", async ({
 
   await page.getByRole("button", { name: "Install", exact: true }).click();
   await expect(page.locator("[data-verify-status]")).toHaveText("Waiting for your OK in the Inbox");
+  await expect(page.getByRole("button", { name: "Install", exact: true })).toBeDisabled();
   const after = await calls(page);
   const install = after.find((call) => call.command === "plugins_install");
   expect(install?.args.source?.package).toBe("e2e");
