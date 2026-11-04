@@ -84,6 +84,7 @@ fn fixture(tag: &str) -> Fixture {
     let project = temp.0.join("web");
     std::fs::create_dir_all(&project).unwrap();
     git(&project, &["init", "-q", "-b", "main"]);
+    git(&project, &["config", "core.autocrlf", "false"]);
     git(&project, &["config", "user.name", "Test"]);
     git(&project, &["config", "user.email", "test@example.com"]);
     git(
