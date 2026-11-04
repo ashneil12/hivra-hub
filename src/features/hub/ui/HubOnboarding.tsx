@@ -45,6 +45,8 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [clis, setClis] = useState<string[]>([]);
   const [projectName, setProjectName] = useState("");
   const [group, setGroup] = useState(false);
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const finishing = useRef(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -69,13 +71,15 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   };
   const [theme, setTheme] = useState<ThemePresetId>("monocode");
   const done = (next: "today" | "new-project" | "restore" = "today") => {
-    finishOnboarding();
-    if (name.trim()) setUserName(name);
-    if (start === "fresh") for (const id of ticked) addStarterMono(id);
+    if (finishing.current) return;
     const choice = firstLaunchChoice({ projectName, group, clis });
-    saveChosenClis(choice.clis);
-    // WP-20: a chosen project opens on its coding team. No project keeps today's path (Today, New project, or Restore).
+    // WP-20: a chosen project opens on its coding team. Onboarding finishes only after that project exists.
+    // A failed create stays on this card, with the name, CLIs and group still filled in.
     if (choice.projectName && start === "fresh") {
+      // Saved before the project opens: the coding team is planned from these ticks, not after the card closes.
+      saveChosenClis(choice.clis);
+      finishing.current = true;
+      setProjectError(null);
       void beginFirstProject(
         { projectName: choice.projectName, group: choice.group },
         {
@@ -100,10 +104,24 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           },
           open: (projectId) => openCodingTeam(projectId),
         },
-      );
-      onClose();
+      ).then((result) => {
+        finishing.current = false;
+        if (result !== "opened") {
+          setProjectError("That project could not be made. Nothing was lost. Try again.");
+          setStep(steps.indexOf("start"));
+          return;
+        }
+        finishOnboarding();
+        if (name.trim()) setUserName(name);
+        for (const id of ticked) addStarterMono(id);
+        onClose();
+      });
       return;
     }
+    saveChosenClis(choice.clis);
+    finishOnboarding();
+    if (name.trim()) setUserName(name);
+    if (start === "fresh") for (const id of ticked) addStarterMono(id);
     // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
     // (New project, Restore) opens over it.
     if (next === "today") showProjectToday();
@@ -172,6 +190,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
               </label>
               <Check2 id="group" dataAttr="data-hub-onboarding-group" on={group} onClick={() => setGroup((on) => !on)}
                 title="Add a group" sub="Only if you want one" />
+              {projectError ? <p className="text-[13px] leading-5 text-content/75" data-hub-onboarding-error>{projectError}</p> : null}
               <Group label="Your team">
                 <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>Add any of these. Each one is an ordinary Mono. None are added unless you tick them.</p>
                 {offers.map((offer) => (
