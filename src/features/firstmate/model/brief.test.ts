@@ -66,6 +66,8 @@ describe("the brief scaffold (Hivra WP-10)", () => {
   it("ships the role rules without the credit comment", () => {
     expect(FIRST_MATE_CONTRACT.startsWith("# The first mate contract")).toBe(true);
     expect(FIRST_MATE_CONTRACT).toContain("**Never edit the project.**");
+    expect(FIRST_MATE_CONTRACT).toContain("code: true");
+    expect(FIRST_MATE_CONTRACT).toContain("task_accept");
     expect(FIRST_MATE_CONTRACT).not.toContain("<!--");
   });
 

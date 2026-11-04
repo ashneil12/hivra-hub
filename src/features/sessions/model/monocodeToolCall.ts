@@ -16,6 +16,7 @@ export type DelegateToolName =
   | "task_cancel"
   | "task_cannot"
   | "task_answer"
+  | "task_accept"
   // Hivra WP-14.
   | "task_message"
   | "ask_person";
@@ -49,6 +50,10 @@ const DELEGATE_TOOLS: Record<
   task_answer: {
     labels: ["Answer", "Answering", "Answered", "a worker's question"],
     count: { noun: "worker's question", id: (output) => output.taskId },
+  },
+  task_accept: {
+    labels: ["Accept", "Accepting", "Accepted", "a finished task"],
+    count: { noun: "task", id: (output) => output.taskId },
   },
   task_message: {
     labels: ["Message", "Messaging", "Messaged", "a worker"],
