@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { renderBrief } from "../../firstmate/model/brief";
 import {
   appendPreparingHandoff,
   appendReadyHandoff,
@@ -17,6 +18,7 @@ import {
   shouldAskOutgoingAgent,
   userMessagesAfterHandoff,
   wrapHandoffPrompt,
+  wrapRecoveredPrompt,
 } from "./handoff";
 import { newSession, type Block, type Session } from "./session";
 
@@ -164,6 +166,40 @@ describe("deterministic handoff", () => {
     expect(brief).toContain("earlier messages omitted");
     expect(brief).not.toContain("first");
     expect(brief.length).toBeLessThan(2_100);
+  });
+
+  it("keeps a worker brief's spec when the template's opening is past the recap cap", () => {
+    const spec = "VERIFY-GOAL-B-WORKER run run-1: work until the goal is met.";
+    const prompt = [
+      "[MonoCode brief from Chief of Staff]",
+      renderBrief(
+        { intent: "Ash asked for this in the verify-live walk.", spec },
+        { kind: "shared", folder: "/tmp/verify/project" },
+      ),
+      "Done when: VERIFY-GOAL-B run run-1: the transcript says GOAL-B-DONE",
+    ].join("\n\n");
+    // The opening (isolation, intent) is what a 240-character line keeps. The job is the spec, further down.
+    expect(prompt.indexOf("VERIFY-GOAL-B-WORKER")).toBeGreaterThan(240);
+    const recovered = wrapRecoveredPrompt(
+      buildDeterministicHandoff(
+        sessionWith([
+          { id: "u1", role: "user", text: prompt },
+          { id: "a1", role: "assistant", text: "Starting on B." },
+        ]),
+        "Continue from where you left off.",
+      ),
+      "Continue from where you left off.",
+    );
+    expect(recovered).toContain("<chat_brief>");
+    expect(recovered).toContain("VERIFY-GOAL-B-WORKER");
+  });
+
+  it("does not repeat a spec the opening already shows", () => {
+    const spec = "Ship the label.";
+    const prompt = `[MonoCode brief from Ada]\n\n## Spec\n${spec}`;
+    expect(prompt.length).toBeLessThan(240);
+    const brief = buildDeterministicHandoff(sessionWith([{ id: "u1", role: "user", text: prompt }]));
+    expect(brief.split(spec).length - 1).toBe(1);
   });
 
   it("does not treat a greeting-only chat as having session edits", () => {

@@ -102,14 +102,24 @@ function sentMessages(runId: string, storage: Pick<Storage, "getItem"> | undefin
   }
 }
 
-/** The messages the stub lists that this run hasn't sent yet, in order. */
+/**
+ * The bench's list, whichever shape it came in: the verify command returns the array itself, and an older stub
+ * wrapped the same list as `{ messages }`.
+ */
+function verifyMessageList(answer: unknown): unknown[] | null {
+  if (Array.isArray(answer)) return answer;
+  const wrapped = (answer as { messages?: unknown } | null)?.messages;
+  return Array.isArray(wrapped) ? wrapped : null;
+}
+
+/** The messages the bench lists that this run hasn't sent yet, in order. */
 export function unsentVerifyMessages(
   runId: string,
   answer: unknown,
   storage: Pick<Storage, "getItem"> | undefined = globalThis.localStorage,
 ): VerifyMessage[] {
-  const list = (answer as { messages?: unknown } | null)?.messages;
-  if (!Array.isArray(list)) return [];
+  const list = verifyMessageList(answer);
+  if (!list) return [];
   const sent = sentMessages(runId, storage);
   return list.flatMap((entry: unknown) => {
     const m = entry as Partial<VerifyMessage> | null;
