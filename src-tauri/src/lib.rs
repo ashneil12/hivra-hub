@@ -773,6 +773,10 @@ pub fn run() {
             plugins::plugins_rollback,
             // WP-32: Discover. Listing reads indexes; it never runs plugin code.
             plugins::discover::plugins_discover,
+            // WP-44: desktop control stays off until it is installed and turned on.
+            plugins::desktop::desktop_consent_read,
+            plugins::desktop::desktop_consent_write,
+            plugins::desktop::desktop_control_install,
             search::search_project,
             search::cancel_project_search,
             cursor_store::cursor_tool_calls,

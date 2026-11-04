@@ -8,6 +8,8 @@ fn main() {
     println!("cargo:rerun-if-changed=macos/Assets.car");
     build_stamp();
     default_plugins();
+    // WP-44: the desktop plugin is carried, but it is not a default, so it stays off.
+    desktop_control();
     // GNU ld exports every symbol from the Tauri cdylib and blows past the
     // 65535 PE ordinal limit. Hide them; the desktop exe links the rlib.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
@@ -203,4 +205,54 @@ fn default_plugins() {
     code.push_str("];\n");
     let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("default_plugins.rs");
     std::fs::write(out, code).expect("default_plugins.rs");
+}
+
+/// WP-44: `plugins/desktop-control` at the repo root, embedded on its own so it is not a default plugin.
+fn desktop_control() {
+    fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, std::path::PathBuf)>) {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)
+            .expect("desktop-control folder")
+            .flatten()
+            .collect();
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let meta = std::fs::symlink_metadata(&path).expect("desktop-control file");
+            if meta.file_type().is_symlink() {
+                panic!(
+                    "{} is a link: the carried plugin is plain files",
+                    path.display()
+                );
+            }
+            if meta.is_dir() {
+                walk(base, &path, out);
+            } else {
+                let rel = path.strip_prefix(base).unwrap();
+                let rel: Vec<_> = rel
+                    .iter()
+                    .map(|part| part.to_string_lossy().into_owned())
+                    .collect();
+                out.push((rel.join("/"), path));
+            }
+        }
+    }
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let root = Path::new(&manifest_dir).join("../plugins/desktop-control");
+    println!("cargo:rerun-if-changed=../plugins/desktop-control");
+    let mut files = Vec::new();
+    walk(&root, &root, &mut files);
+    let mut code = String::from("pub static FILES: &[(&str, &[u8], bool)] = &[\n");
+    for (rel, path) in &files {
+        println!("cargo:rerun-if-changed={}", path.display());
+        let executable = std::fs::read(path)
+            .map(|bytes| bytes.starts_with(b"#!"))
+            .unwrap_or(false);
+        code.push_str(&format!(
+            "    ({rel:?}, include_bytes!({:?}), {executable}),\n",
+            path.to_string_lossy()
+        ));
+    }
+    code.push_str("];\n");
+    let out = Path::new(&std::env::var("OUT_DIR").unwrap()).join("desktop_control.rs");
+    std::fs::write(out, code).expect("desktop_control.rs");
 }
