@@ -27,6 +27,7 @@ export type SettingsSectionId =
   | "providers"
   | "mcp"
   | "skills"
+  | "plugins"
   | "monos"
   | "teams"
   | "inbox"
@@ -161,6 +162,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Discover and manage file skills from project, personal, and harness folders.",
     keywords: "skill instructions prompt",
+  },
+  {
+    id: "plugins",
+    group: "agents",
+    label: "Plugins",
+    description:
+      "Plugins on this machine. Update one to an exact version, roll back, or remove it.",
+    keywords: "plugin install update rollback remove uninstall",
   },
   {
     id: "monos",

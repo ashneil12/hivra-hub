@@ -9,6 +9,7 @@ import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
+import { InstalledPlugins } from "../../plugins/ui/InstalledPlugins";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -697,6 +698,8 @@ export function SettingsView({
               {section === "mcp" ? (
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
+              {/* WP-31: the Installed list. */}
+              {section === "plugins" ? <InstalledPlugins /> : null}
               {section === "providers" ? (
                 <ProvidersPage cwd={cwd} recents={recents} />
               ) : null}

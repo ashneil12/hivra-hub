@@ -1,5 +1,6 @@
 import {
   Archive,
+  AppWindow,
   ArrowLeft,
   Bot,
   Inbox,
@@ -29,6 +30,7 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   providers: Bot,
   mcp: Globe,
   skills: Sparkles,
+  plugins: AppWindow,
   monos: Bot,
   inbox: Inbox,
   worktrees: FolderTree,
