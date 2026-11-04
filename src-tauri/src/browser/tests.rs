@@ -644,6 +644,20 @@ fn wait_pid_file(path: &Path) -> u32 {
 }
 
 #[cfg(unix)]
+fn tree_lists_pid(path: &Path, pid: u32) -> bool {
+    let Ok(text) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    value.as_array().is_some_and(|rows| {
+        rows.iter()
+            .any(|row| row.get("pid").and_then(serde_json::Value::as_u64) == Some(u64::from(pid)))
+    })
+}
+
+#[cfg(unix)]
 #[test]
 fn stop_waits_for_a_child_that_exits_late() {
     let tmp = Tmp::new();
@@ -760,10 +774,69 @@ fn stop_does_not_succeed_when_the_browser_tree_was_not_confirmed() {
         || !alive(child.id()),
         "the wrapper was still running after it was killed",
     );
+    let tree = drives_dir(tmp.data()).join(format!("{}.tree", plan.token));
+    let _ = fs::remove_file(&tree);
+    let _ = visible_drives(tmp.data()).unwrap();
+    assert!(path.is_file(), "a missing done file keeps the drive");
     let error = stop(tmp.data(), &drive.id).unwrap_err();
-    assert!(error.contains("hasn't stopped"), "{error}");
+    assert!(error.contains("not stopped"), "{error}");
     assert!(alive(hold_pid), "the browser was not confirmed gone");
     assert!(!plan.done.is_file());
+    assert!(path.is_file(), "Stop keeps a browser it could not confirm");
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_follows_the_recorded_tree_when_the_wrapper_died_without_confirming() {
+    let tmp = Tmp::new();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/browser/server.mjs");
+    let late = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/lateChild.mjs");
+    let pid_file = tmp.data().join("hold.pid");
+    let mut command = std::process::Command::new("node");
+    command.arg(&server).arg(&plan.token);
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    allow_path(&mut command);
+    command.stdin(std::process::Stdio::piped());
+    command.env("HIVRA_BROWSER_PROFILE", &plan.profile);
+    command.env("HIVRA_BROWSER_HEADLESS", "1");
+    command.env("HIVRA_BROWSER_OWN_PROFILE", "0");
+    command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_DONE", &plan.done);
+    command.env("HIVRA_BROWSER_COMMAND", "node");
+    command.env(
+        "HIVRA_BROWSER_COMMAND_ARGS",
+        serde_json::json!([late.to_string_lossy(), "hold"]).to_string(),
+    );
+    command.env("HIVRA_LATE_PID", &pid_file);
+    let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let drive = load_drive(&path).unwrap();
+    let hold_pid = wait_pid_file(&pid_file);
+    let _end_hold = EndPid(hold_pid);
+    let tree = drives_dir(tmp.data()).join(format!("{}.tree", plan.token));
+    wait_until(
+        || tree_lists_pid(&tree, hold_pid),
+        "the wrapper never recorded the browser",
+    );
+    child.kill().unwrap();
+    wait_until(
+        || !alive(child.id()),
+        "the wrapper was still running after it was killed",
+    );
+    let _ = visible_drives(tmp.data()).unwrap();
+    assert!(
+        path.is_file(),
+        "a drive stays while its done file is missing"
+    );
+    stop(tmp.data(), &drive.id).unwrap();
+    assert!(!alive(hold_pid), "Stop ends the recorded browser");
+    assert!(
+        !path.is_file(),
+        "the drive goes only after that browser is gone"
+    );
     let _ = child.wait();
 }
 

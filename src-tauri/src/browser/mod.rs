@@ -711,9 +711,25 @@ fn drive_path(data: &Path, id: &str) -> Option<PathBuf> {
     Some(drives_dir(data).join(format!("{id}.json")))
 }
 
+fn tracked_tree(data: &Path, token: &str) -> Option<PathBuf> {
+    if !minted_token(token) {
+        return None;
+    }
+    Some(drives_dir(data).join(format!("{token}.tree")))
+}
+
+fn remove_tracked_tree(dir: &Path, token: &str) {
+    if minted_token(token) {
+        let _ = std::fs::remove_file(dir.join(format!("{token}.tree")));
+    }
+}
+
 fn remove_if_same(path: &Path, token: &str) {
     if load_drive(path).is_some_and(|drive| drive.token == token) {
         let _ = std::fs::remove_file(path);
+        if let Some(dir) = path.parent() {
+            remove_tracked_tree(dir, token);
+        }
     }
 }
 
@@ -740,8 +756,18 @@ fn read_drives(data: &Path) -> Result<Vec<StoredDrive>, String> {
             continue;
         }
         match load_drive(&path) {
-            Some(drive) if alive(drive.pid) => out.push(drive),
-            _ => {
+            // A dead wrapper that never wrote its done file still owns a browser.
+            // Listing drives must not forget it.
+            Some(drive) if alive(drive.pid) || owed_browser(data, &drive) => out.push(drive),
+            Some(drive) => {
+                if tree_confirmed(data, &drive) {
+                    if let Some(dir) = path.parent() {
+                        remove_tracked_tree(dir, &drive.token);
+                    }
+                }
+                let _ = std::fs::remove_file(&path);
+            }
+            None => {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -1119,12 +1145,102 @@ fn tree_confirmed(data: &Path, drive: &StoredDrive) -> bool {
     Path::new(&drive.done_path) == expected.as_path() && expected.is_file()
 }
 
+/// The wrapper has a browser to account for, and has not confirmed it is gone.
+fn owed_browser(data: &Path, drive: &StoredDrive) -> bool {
+    !drive.done_path.is_empty() && !tree_confirmed(data, drive)
+}
+
 fn finish_gone(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), String> {
     if !tree_confirmed(data, drive) {
         return Err(NOT_YET.into());
     }
     remove_if_same(path, &drive.token);
     Ok(())
+}
+
+struct TrackedPid {
+    pid: u32,
+    started: String,
+}
+
+fn load_tree(data: &Path, token: &str) -> Result<Vec<TrackedPid>, String> {
+    let Some(path) = tracked_tree(data, token) else {
+        return Err(NOT_CHECKED.into());
+    };
+    let text = std::fs::read_to_string(&path).map_err(|_| NOT_CHECKED.to_string())?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| NOT_CHECKED.to_string())?;
+    let Some(rows) = value.as_array() else {
+        return Err(NOT_CHECKED.into());
+    };
+    let mut out = Vec::new();
+    for item in rows {
+        let Some(pid) = item
+            .get("pid")
+            .and_then(Value::as_u64)
+            .and_then(|pid| u32::try_from(pid).ok())
+        else {
+            return Err(NOT_CHECKED.into());
+        };
+        if pid_i32(pid).is_none() {
+            return Err(NOT_CHECKED.into());
+        }
+        let started = item
+            .get("started")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        out.push(TrackedPid { pid, started });
+    }
+    Ok(out)
+}
+
+/// `Ok(true)` means that recorded process is gone. `Ok(false)` means it is still the same one.
+fn recorded_gone(pid: u32, started: &str) -> Result<bool, String> {
+    if !alive(pid) {
+        return Ok(true);
+    }
+    if started.is_empty() {
+        return Err(NOT_CHECKED.into());
+    }
+    match process_start(pid) {
+        Ok(now) if now == started => Ok(false),
+        Ok(_) => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+
+fn stop_tracked(row: &TrackedPid) -> Result<(), String> {
+    if recorded_gone(row.pid, &row.started)? {
+        return Ok(());
+    }
+    kill_one(row.pid, false)?;
+    if wait_gone(row.pid, 1500) {
+        return Ok(());
+    }
+    if recorded_gone(row.pid, &row.started)? {
+        return Ok(());
+    }
+    kill_one(row.pid, true)?;
+    if wait_gone(row.pid, 1500) || recorded_gone(row.pid, &row.started)? {
+        return Ok(());
+    }
+    Err(NOT_YET.into())
+}
+
+fn stop_recorded_tree(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), String> {
+    let rows = load_tree(data, &drive.token)?;
+    for row in &rows {
+        stop_tracked(row)?;
+    }
+    remove_if_same(path, &drive.token);
+    Ok(())
+}
+
+fn finish_or_tree(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), String> {
+    if tree_confirmed(data, drive) {
+        return finish_gone(data, path, drive);
+    }
+    stop_recorded_tree(data, path, drive)
 }
 
 /// Stop one drive. Missing is fine. A process that isn't this session is not signalled.
@@ -1145,12 +1261,12 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
         return Err(NOT_OURS.into());
     }
     if !alive(drive.pid) {
-        return finish_gone(data, &path, &drive);
+        return finish_or_tree(data, &path, &drive);
     }
     match confirm_session(drive.pid, &drive.token, &drive.process_start) {
         Ok(()) => {}
         Err(error) if error == NOT_CHECKED => return Err(error),
-        Err(error) if error == DEPARTED => return finish_gone(data, &path, &drive),
+        Err(error) if error == DEPARTED => return finish_or_tree(data, &path, &drive),
         Err(error) => {
             remove_if_same(&path, &drive.token);
             return Err(error);
@@ -1158,7 +1274,7 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
     }
     if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, false) {
         if error == DEPARTED {
-            return finish_gone(data, &path, &drive);
+            return finish_or_tree(data, &path, &drive);
         }
         if error != NOT_CHECKED && error != NOT_OURS {
             return Err(error);
@@ -1169,16 +1285,16 @@ pub fn stop(data: &Path, id: &str) -> Result<(), String> {
         return Err(error);
     }
     if wait_gone(drive.pid, 1500) {
-        return finish_gone(data, &path, &drive);
+        return finish_or_tree(data, &path, &drive);
     }
     if let Err(error) = signal(drive.pid, &drive.token, &drive.process_start, true) {
         if error == DEPARTED || !alive(drive.pid) {
-            return finish_gone(data, &path, &drive);
+            return finish_or_tree(data, &path, &drive);
         }
         return Err(error);
     }
     if wait_gone(drive.pid, 1500) {
-        return finish_gone(data, &path, &drive);
+        return finish_or_tree(data, &path, &drive);
     }
     Err(NOT_YET.into())
 }
@@ -1411,7 +1527,13 @@ fn finish_run(command: &mut Command, data: &Path, agent: &str, plan: &LaunchEnv)
                 .wait()
                 .map(|status| status.code().unwrap_or(1))
                 .unwrap_or(1);
-            remove_if_same(&path, &plan.token);
+            match load_drive(&path) {
+                Some(drive) if tree_confirmed(data, &drive) => remove_if_same(&path, &plan.token),
+                Some(drive) => {
+                    let _ = stop_recorded_tree(data, &path, &drive);
+                }
+                None => {}
+            }
             code
         }
         Err(code) => code,
