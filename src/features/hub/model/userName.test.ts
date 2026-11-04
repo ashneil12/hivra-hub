@@ -12,8 +12,8 @@ const PRONOUN = /\b(he|him|his|himself)\b/gi;
 const pronounLeaks = (surfaces: Record<string, string>) =>
   Object.entries(surfaces).flatMap(([k, t]) => [...t.matchAll(PRONOUN)].map((m) => `${k}: ${t.slice(Math.max(0, m.index! - 30), m.index! + 20)}`));
 const storage = () => Object.fromEntries(Object.keys(localStorage).sort().map((k) => [k, localStorage.getItem(k)]));
-/** Frames this install builds through forUser or userLabel. Seat names inside a turn are not one of them. */
-const NAMED = ["transcript", "turn:answer", "turn:chime", "lead:extra", "hubNote", "checker"] as const;
+/** Every frame promptSurfaces builds. A leak in any of them is a leak. */
+const nameLeaks = (surfaces: Record<string, string>) => Object.entries(surfaces).filter(([, t]) => /\bAsh\b/.test(t)).map(([k]) => k);
 
 beforeEach(() => {
   localStorage.clear();
@@ -55,8 +55,7 @@ describe("a fresh install", () => {
     setUserName("Sam");
     const before = storage();
     const now = promptSurfaces();
-    const leaks = NAMED.filter((k) => /\bAsh\b/.test(now[k] ?? ""));
-    expect(leaks).toEqual([]);
+    expect(nameLeaks(now)).toEqual([]);
     expect(now["turn:answer"]).toContain("Sam just wrote to you.");
     expect(now["turn:answer"]).toContain("Answer them first");
     expect(now["turn:answer"]).toContain("In the room: Sam");
@@ -68,18 +67,18 @@ describe("a fresh install", () => {
     expect(now["lead:extra"]).not.toContain("15 Oct");
     expect(now.hubNote).toContain("Deletes need Sam's own yes.");
     expect(now.checker).toContain("After Sam sends a dump");
-    expect(pronounLeaks(Object.fromEntries(NAMED.map((k) => [k, now[k]])))).toEqual([]);
+    expect(pronounLeaks(now)).toEqual([]);
     expect(storage()).toEqual(before);
   });
 
   it('with no name: agents read "the user", capitalised at a sentence\'s start', () => {
     const now = promptSurfaces();
-    expect(NAMED.filter((k) => /\bAsh\b/.test(now[k] ?? ""))).toEqual([]);
+    expect(nameLeaks(now)).toEqual([]);
     expect(now["turn:answer"]).toContain("The user just wrote to you.");
     expect(now.checker).toContain("After the user sends a dump");
     expect(now.transcript).toMatch(/^>> User: hey team/);
     expect(userLabel()).toBe("User");
-    expect(pronounLeaks(Object.fromEntries(NAMED.map((k) => [k, now[k]])))).toEqual([]);
+    expect(pronounLeaks(now)).toEqual([]);
     expect(now["turn:chime"]).toContain("so the user expects to hear from you too");
   });
 

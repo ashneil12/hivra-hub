@@ -300,16 +300,36 @@ fn switched_off_stays_off_and_removed_stays_removed() {
     assert!(registry.plugins["starter-monos"].enabled.global);
     assert!(!host.installed("pstack").exists());
     assert!(host.installed("starter-monos").exists());
-    // starter-monos stays under installed/, not as a loose folder next to the given-once record.
-    let mut left: Vec<String> = std::fs::read_dir(&host.root)
-        .unwrap()
-        .flatten()
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .collect();
-    left.sort();
-    assert!(left.iter().any(|n| n == "installed"));
-    assert!(left.iter().any(|n| n == STATE_FILE));
-    assert!(!left.iter().any(|n| n == "pstack"));
+    // starter-monos is still installed, so its registry records stay. Nothing else does: pstack's
+    // folders are gone, and no loose folder sits beside the given-once record.
+    let names = |dir: &std::path::Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(&host.root),
+        vec![
+            "data".to_string(),
+            STATE_FILE.to_string(),
+            "installed".to_string(),
+            "lock.json".to_string(),
+            "registry.json".to_string(),
+        ],
+        "nothing else is left behind"
+    );
+    assert_eq!(
+        names(&host.root.join("installed")),
+        vec!["starter-monos".to_string()]
+    );
+    assert_eq!(
+        names(&host.root.join("data")),
+        vec!["starter-monos".to_string()]
+    );
     assert!(skills_in(&host.agents_skills).is_empty());
 }
 
