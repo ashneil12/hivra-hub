@@ -19,4 +19,5 @@ The engine is Rust (`src-tauri/src/delivery/`); this folder holds the webview's 
   classifier, and move each delivery along.
 
 Credit: the modes, `yolo` and "red is never merged" come from firstmate (kunchenguid/firstmate, MIT): `AGENTS.md`
-section 7, `bin/fm-pr-merge.sh`, `bin/fm-teardown.sh`. Ideas ported, no text vendored.
+section 7, `bin/fm-pr-merge.sh`, `bin/fm-teardown.sh`. The behaviour is ported here. The sentences are vendored in
+`src/features/firstmate/vendor/firstmate-contract.md`.
