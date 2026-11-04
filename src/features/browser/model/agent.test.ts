@@ -99,9 +99,9 @@ describe("browserAgentFor", () => {
     expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(id.length).toBeLessThanOrEqual(120);
     expect(id.includes("..")).toBe(false);
-    expect(id).toContain("_2e");
-    expect(id).toContain("_2f");
-    expect(id).toContain("_5c");
+    expect(id).toContain("_00002e");
+    expect(id).toContain("_00002f");
+    expect(id).toContain("_00005c");
     expect(agentKey("chat", "a".repeat(200)).length).toBeLessThanOrEqual(120);
   });
 
@@ -130,6 +130,25 @@ describe("browserAgentFor", () => {
     expect(literal).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(cafe.length).toBeLessThanOrEqual(120);
     expect(literal.length).toBeLessThanOrEqual(120);
+  });
+
+  it("does not let a short escape collide with a different character", () => {
+    const pairs = [
+      ["café", "caf\u000e9"],
+      ["_", "\u0005f"],
+      [" 0", "\u{0200}"],
+    ] as const;
+    for (const [left, right] of pairs) {
+      const a = agentKey("chat", left);
+      const b = agentKey("chat", right);
+      expect(a).not.toBe(b);
+      expect(a).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(b).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(a.length).toBeLessThanOrEqual(120);
+      expect(b.length).toBeLessThanOrEqual(120);
+      expect(a.includes("..")).toBe(false);
+      expect(b.includes("..")).toBe(false);
+    }
   });
 
   it("does not share a profile when reading the roster throws", () => {

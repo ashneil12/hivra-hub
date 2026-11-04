@@ -15,8 +15,9 @@ export function agentKey(kind: (typeof KINDS)[number], raw: string): string {
   let body = "";
   for (const ch of raw) {
     const point = ch.codePointAt(0) ?? 0;
-    // `_` is the escape mark, so it is escaped too. Otherwise "caf_e9" and "café" share a profile.
-    body += point === 0x5f || !/^[A-Za-z0-9-]$/.test(ch) ? `_${point.toString(16)}` : ch;
+    // `_` starts a 6-digit escape, so it is escaped too. A shorter hex width would let
+    // "café" and "caf" plus U+000E share a profile.
+    body += point === 0x5f || !/^[A-Za-z0-9-]$/.test(ch) ? `_${point.toString(16).padStart(6, "0")}` : ch;
   }
   if (!body) body = "unknown";
   const mark = mix(`${kind}\0${raw}`);
