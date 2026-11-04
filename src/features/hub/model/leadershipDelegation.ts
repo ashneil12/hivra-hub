@@ -133,6 +133,8 @@ export type LeadDelegation = {
   askIds?: string[];
   /** A busy Lead: queue behind its work (default) or steer into it. */
   mode?: "queue" | "steer";
+  /** WP-70: the shared task this brief moves. */
+  taskId?: string;
 };
 
 /** The app's implementation: hand a brief to a Lead and report back to the sender. */

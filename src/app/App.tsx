@@ -10251,6 +10251,7 @@ function Workspace({
           brief: text,
           ...(input.goal ? { goal: input.goal } : {}),
           ...(input.askIds?.length ? { askIds: input.askIds } : {}),
+          ...(input.taskId ? { taskId: input.taskId } : {}),
           follow: "lead",
           by: `owner:${ownerSession}`,
         });
@@ -13324,6 +13325,7 @@ function Workspace({
             brief: prompt,
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
+            ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
@@ -14007,6 +14009,8 @@ function Workspace({
                 ? { project: project.id, name: codingTeamName(project), folder: project.folder }
                 : undefined;
             },
+            // WP-70: the shared task list. The handler sets who is asking.
+            taskStore: (command, args) => invoke(command, args),
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
@@ -14110,6 +14114,7 @@ function Workspace({
                   requestId: input.requestId,
                   title: input.title,
                   ...(input.goal ? { goal: input.goal } : {}),
+                  ...(input.taskId ? { taskId: input.taskId } : {}),
                   askIds: input.askIds,
                   mode: input.mode,
                 });

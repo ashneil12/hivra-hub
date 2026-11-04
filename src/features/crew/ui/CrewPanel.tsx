@@ -24,6 +24,7 @@ import {
 } from "../model/rows";
 import { GateCards } from "../../delivery-gate/ui/GateCards";
 import { CrewTab } from "./CrewTab";
+import { TaskPane } from "../../tasks/ui/TaskPane";
 
 // steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
 const STEER_TEXT_MAX = 8_000;
@@ -241,6 +242,8 @@ export function CrewPanel({
         onRetry={(row) => void onRetry(row)}
         onDeliver={(row) => void onDeliver(row)}
       />
+      {/* WP-70: the tasks of this project, under the crew. */}
+      <TaskPane project={project} />
     </>
   );
 }
