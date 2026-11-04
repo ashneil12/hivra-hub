@@ -217,3 +217,26 @@ fn the_fanout_cap_refuses_with_a_plain_reason() {
     // Another first mate is not held back.
     assert_eq!(crate::firstmate::check_fanout(&conn, "other").unwrap(), 0);
 }
+
+#[test]
+fn an_answer_given_in_the_askers_chat_is_not_repeated_to_it() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let a = record(&mut conn, launch("fm", "r1", "w1"), 1).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[&a.id]), 2).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("chat:fm".into()),
+        3,
+    )
+    .unwrap();
+    let to: Vec<&str> = out
+        .released
+        .iter()
+        .map(|m| m.child_session.as_str())
+        .collect();
+    assert_eq!(to, ["w1"]);
+}

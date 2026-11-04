@@ -2,8 +2,13 @@
 // store on start (so a message stored before a quit or crash still goes in), whenever a message is stored or settled,
 // whenever a chat starts or ends a turn (a held message goes in when its worker is idle), and every 30 s while any are
 // pending (a failed try is retried until the store gives up on it).
+//
+// Only the main window delivers (as useDelegations, useStallWatch and usePrWatches do): "New window" and the hidden
+// quick-session windows load the same App and would otherwise read the same pending rows and submit them twice. Every
+// window keeps the tools' host, so a task_message handled in another window still waits for main's delivery.
 import { useEffect, useMemo, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { Session } from "../../sessions/model/session";
 import {
   drainPending,
@@ -33,38 +38,59 @@ export function settledMessage(
   return look();
 }
 
+/** True in the main window (and outside Tauri, where there is only one). */
+export function isMainWindow(): boolean {
+  try {
+    return getCurrentWindow().label === "main";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * One drain at a time, rerun once if asked meanwhile. A window that doesn't deliver gets a drain that does nothing.
+ */
+export function steeringDrain(deps: () => DeliveryDeps, delivers: boolean): () => Promise<void> {
+  if (!delivers) return () => Promise.resolve();
+  let running: Promise<void> | null = null;
+  let again = false;
+  const run = (): Promise<void> => {
+    if (running) {
+      again = true;
+      return running;
+    }
+    running = drainPending(deps())
+      .then(() => undefined)
+      .catch((error) => console.warn("Steering delivery failed", error))
+      .finally(() => {
+        running = null;
+        if (again) {
+          again = false;
+          void run();
+        }
+      });
+    return running;
+  };
+  return run;
+}
+
 export function useSteering(
   sessions: readonly Pick<Session, "id" | "busy">[],
-  deps: Omit<DeliveryDeps, "backend"> & { backend?: DeliveryDeps["backend"] },
+  deps: Omit<DeliveryDeps, "backend"> & { backend?: DeliveryDeps["backend"]; delivers?: boolean },
 ): FirstMateTasksHost {
   const depsRef = useRef(deps);
   depsRef.current = deps;
   const backend = deps.backend ?? tauriFirstMate;
-  const running = useRef<Promise<void> | null>(null);
-  const again = useRef(false);
-  const drain = useMemo(() => {
-    const run = (): Promise<void> => {
-      if (running.current) {
-        again.current = true;
-        return running.current;
-      }
-      running.current = drainPending({ ...depsRef.current, backend })
-        .then(() => undefined)
-        .catch((error) => console.warn("Steering delivery failed", error))
-        .finally(() => {
-          running.current = null;
-          if (again.current) {
-            again.current = false;
-            void run();
-          }
-        });
-      return running.current;
-    };
-    return run;
-  }, [backend]);
+  const delivers = useRef<boolean | null>(null);
+  delivers.current ??= deps.delivers ?? isMainWindow();
+  const drain = useMemo(
+    () => steeringDrain(() => ({ ...depsRef.current, backend }), delivers.current!),
+    [backend],
+  );
 
   // On start, and every time a message is stored or settled.
   useEffect(() => {
+    if (!delivers.current) return;
     void drain();
     let unlisten: (() => void) | undefined;
     let gone = false;

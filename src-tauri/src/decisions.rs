@@ -460,7 +460,8 @@ pub struct AnswerOutcome {
     /// False when it was already answered (or there is no such decision): nothing changed.
     pub applied: bool,
     pub decision: Option<Decision>,
-    /// The steering messages that carry the answer: one per waiting task still open, then one to the asker.
+    /// The steering messages that carry the answer: one per waiting task still open, then one to the asker (unless the
+    /// answer came from the asker's own chat).
     pub released: Vec<SteerMessage>,
     /// The waiting delegations the answer went to.
     pub released_tasks: Vec<String>,
@@ -513,20 +514,25 @@ pub fn answer(
             released.push(message);
         }
     }
-    released.push(steering::record(
-        &tx,
-        SteerInput {
-            owner_session: decision.asked_by.clone(),
-            child_session: decision.asked_by.clone(),
-            delegation_id: None,
-            request_id: release_request(&decision.decision_key, "asker"),
-            text: owner_text(&decision, released_tasks.len()),
-            mode: Some("queue".into()),
-            source: Some("decision".into()),
-            decision_key: Some(decision.decision_key.clone()),
-        },
-        now,
-    )?);
+    // The asker hears the answer, unless the person gave it in the asker's own chat: it recorded it itself.
+    let from_asker =
+        decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
+    if !from_asker {
+        released.push(steering::record(
+            &tx,
+            SteerInput {
+                owner_session: decision.asked_by.clone(),
+                child_session: decision.asked_by.clone(),
+                delegation_id: None,
+                request_id: release_request(&decision.decision_key, "asker"),
+                text: owner_text(&decision, released_tasks.len()),
+                mode: Some("queue".into()),
+                source: Some("decision".into()),
+                decision_key: Some(decision.decision_key.clone()),
+            },
+            now,
+        )?);
+    }
     tx.commit().map_err(|e| e.to_string())?;
     move_questions(conn, &released_tasks, QUESTION_FOR_FIRST_MATE, now);
     Ok(AnswerOutcome {
