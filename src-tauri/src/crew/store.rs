@@ -648,7 +648,6 @@ pub fn on_failure(
 struct Hold {
     id: String,
     claim: i64,
-    child: String,
     cli: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -657,7 +656,7 @@ struct Hold {
 fn due_holds(conn: &Connection, now: i64) -> Result<Vec<Hold>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT delegation_id, claim, child_session, cli, model, effort FROM crew_holds
+            "SELECT delegation_id, claim, cli, model, effort FROM crew_holds
              WHERE resume_at <= ?1 AND hold IN ('paused', 'taken')
              ORDER BY resume_at, delegation_id",
         )
@@ -667,10 +666,9 @@ fn due_holds(conn: &Connection, now: i64) -> Result<Vec<Hold>, String> {
             Ok(Hold {
                 id: row.get(0)?,
                 claim: row.get(1)?,
-                child: row.get(2)?,
-                cli: row.get(3)?,
-                model: row.get(4)?,
-                effort: row.get(5)?,
+                cli: row.get(2)?,
+                model: row.get(3)?,
+                effort: row.get(4)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -736,7 +734,7 @@ pub(crate) fn resume_due(conn: &mut Connection, now: i64) -> Result<usize, Strin
             delete_hold(conn, &hold.id)?;
             continue;
         }
-        match crate::delegations::reattach(conn, &hold.child, true, Some("crew".into()), now) {
+        match crate::delegations::reopen(conn, &hold.id, Some("crew".into()), now) {
             Ok(Some(_)) => {
                 append_attempt(conn, &hold.id, &resumed_attempt(&hold, now))?;
                 delete_hold(conn, &hold.id)?;

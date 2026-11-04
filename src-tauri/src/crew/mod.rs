@@ -2,7 +2,8 @@
 //! account can't take it. The same rules live in `src/features/crew` for Settings. This side is the
 //! one the watcher tick runs, so a usage limit resumes without a person sitting here.
 //!
-//! Nothing here starts a CLI or makes a network call. Which CLIs are signed in is handed in.
+//! Nothing here starts a CLI or makes a network call. The store takes the signed-in list it is given.
+//! Settings and an empty route list read the account files the CLIs already wrote.
 
 mod budget;
 mod failure;
@@ -27,6 +28,8 @@ use resolve::Presence;
 use rules::Rule;
 use store::{FailureQuery, RouteQuery, RuleDraft, StoredRules};
 
+use crate::plugins::hivra::CREW_CLIS;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct RulesResponse {
@@ -34,18 +37,75 @@ pub(crate) struct RulesResponse {
     plugins: Vec<Rule>,
     revision: i64,
     budget: Option<serde_json::Value>,
-    /// Empty: a live sign-in check would use the network. The route command takes the list it is given.
+    /// Installed and signed-in CLIs, from the files the CLIs already wrote. Nothing is asked over the network.
     signed_in: Vec<Presence>,
 }
 
-fn response(stored: StoredRules, plugins: Vec<Rule>) -> RulesResponse {
+fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -> RulesResponse {
     RulesResponse {
         rules: stored.rules,
         plugins,
         revision: stored.revision,
         budget: stored.budget,
-        signed_in: Vec::new(),
+        signed_in,
     }
+}
+
+/// One row per crew CLI. `installed` and `signed_in` are handed in so a test does not depend on this machine.
+pub(crate) fn crew_presence(
+    installed: impl Fn(&str) -> bool,
+    signed_in: impl Fn(&str) -> bool,
+) -> Vec<Presence> {
+    CREW_CLIS
+        .iter()
+        .map(|cli| Presence {
+            cli: (*cli).to_string(),
+            installed: installed(cli),
+            signed_in: signed_in(cli),
+        })
+        .collect()
+}
+
+/// An empty list means "look it up". A caller that already named who is here is left as it said.
+pub(crate) fn fill_present(present: &mut Vec<Presence>, live: Vec<Presence>) {
+    if present.is_empty() {
+        *present = live;
+    }
+}
+
+fn cli_installed(cli: &str) -> bool {
+    match cli {
+        "claude" => crate::harness::harness_resolve_claude().is_ok(),
+        "codex" => crate::harness::harness_resolve_codex().is_ok(),
+        "cursor" => crate::harness::harness_resolve_cursor().is_ok(),
+        "opencode" => crate::harness::harness_resolve_opencode().is_ok(),
+        "pi" => crate::harness::harness_resolve_pi().is_ok(),
+        "omp" => crate::harness::harness_resolve_omp().is_ok(),
+        "fx" => crate::harness::harness_resolve_fx().is_ok(),
+        "grok" => crate::harness::harness_resolve_grok().is_ok(),
+        "hermes" => crate::harness::harness_resolve_hermes().is_ok(),
+        "devin" => crate::harness::harness_resolve_devin().is_ok(),
+        "antigravity" => crate::harness::harness_resolve_antigravity().is_ok(),
+        _ => false,
+    }
+}
+
+/// Claude in a dev copy is that copy's config folder. A failure to find it is "not signed in", never the daily file.
+fn claude_signed_in(app: &tauri::AppHandle) -> bool {
+    match crate::harness::provider_account_dir(app, "claude", None) {
+        Ok(dir) => crate::account_identity::cached_signed_in("claude", dir.as_deref()),
+        Err(_) => false,
+    }
+}
+
+fn live_presence(app: &tauri::AppHandle) -> Vec<Presence> {
+    crew_presence(cli_installed, |cli| {
+        if cli == "claude" {
+            claude_signed_in(app)
+        } else {
+            crate::account_identity::cached_signed_in(cli, None)
+        }
+    })
 }
 
 /// Enabled plugins' `hivra/crew-rules.json`, in registry name order. A missing registry or a broken file adds nothing.
@@ -92,7 +152,11 @@ pub fn crew_rules_get(
     project: Option<String>,
 ) -> Result<RulesResponse, String> {
     let stored = store::get_rules(&*store.lock_conn()?, &scope, &scope_id)?;
-    Ok(response(stored, plugin_rules(&app, project.as_deref())))
+    Ok(response(
+        stored,
+        plugin_rules(&app, project.as_deref()),
+        live_presence(&app),
+    ))
 }
 
 #[tauri::command(async)]
@@ -115,23 +179,30 @@ pub fn crew_rules_set(
         revision,
         budget.as_ref(),
     )?;
-    Ok(response(stored, plugin_rules(&app, project.as_deref())))
+    Ok(response(
+        stored,
+        plugin_rules(&app, project.as_deref()),
+        live_presence(&app),
+    ))
 }
 
 #[tauri::command(async)]
 pub fn crew_route(
     app: tauri::AppHandle,
     store: State<'_, SessionStore>,
-    query: RouteQuery,
+    mut query: RouteQuery,
 ) -> Result<resolve::Route, String> {
+    fill_present(&mut query.present, live_presence(&app));
     let plugins = plugin_rules(&app, query.project.as_deref());
     store::route(&*store.lock_conn()?, &query, &plugins)
 }
 
 #[tauri::command(async)]
 pub fn crew_on_failure(
+    app: tauri::AppHandle,
     store: State<'_, SessionStore>,
-    input: FailureQuery,
+    mut input: FailureQuery,
 ) -> Result<store::FailureResult, String> {
+    fill_present(&mut input.present, live_presence(&app));
     store::on_failure(&mut *store.lock_conn()?, &input, now_millis())
 }

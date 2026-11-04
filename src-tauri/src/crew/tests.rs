@@ -731,6 +731,168 @@ fn a_cancelled_or_disposed_row_is_not_reopened() {
     assert_eq!(hold_count(&conn, &failed.id), 0);
 }
 
+/// The hold names one delegation. A later task on the same child session is another row, and the timer must not touch it.
+#[test]
+fn a_due_hold_resumes_the_delegation_it_was_recorded_for() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let paused = fail_row(
+        &mut conn,
+        "shared-running",
+        Some("usage_limit"),
+        Some(5_000),
+    );
+    let decision = store::on_failure(
+        &mut conn,
+        &failure(
+            &paused.id,
+            None,
+            None,
+            "claude",
+            &[("claude", true, true)],
+            None,
+            None,
+        ),
+        1_200,
+    )
+    .unwrap();
+    assert_eq!(decision.action, "pause");
+    let running = delegations::record(
+        &mut conn,
+        RecordInput {
+            owner_session: "lead".into(),
+            request_id: "req-later-running".into(),
+            child_session: "shared-running".into(),
+            ..RecordInput::default()
+        },
+        2_000,
+    )
+    .unwrap();
+    store::resume_due(&mut conn, 5_000).unwrap();
+    let later = delegations::get(&conn, &running.id).unwrap().unwrap();
+    assert_eq!(later.state, "running");
+    assert_eq!(later.generation, running.generation);
+    let resumed = delegations::get(&conn, &paused.id).unwrap().unwrap();
+    assert_eq!(resumed.state, "running");
+    assert_eq!(resumed.generation, paused.generation + 1);
+    assert_eq!(hold_count(&conn, &paused.id), 0);
+    assert_eq!(
+        outcomes(&conn, &paused.id),
+        vec!["paused".to_string(), "resumed".to_string()]
+    );
+
+    let task = fail_row(&mut conn, "shared-task", Some("usage_limit"), Some(8_000));
+    store::on_failure(
+        &mut conn,
+        &failure(
+            &task.id,
+            None,
+            None,
+            "claude",
+            &[("claude", true, true)],
+            None,
+            None,
+        ),
+        2_100,
+    )
+    .unwrap();
+    let denied = delegations::record(
+        &mut conn,
+        RecordInput {
+            owner_session: "lead".into(),
+            request_id: "req-later-denied".into(),
+            child_session: "shared-task".into(),
+            ..RecordInput::default()
+        },
+        3_000,
+    )
+    .unwrap();
+    delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: denied.id.clone(),
+            generation: denied.generation,
+            state: "failed".into(),
+            error_class: Some("approval_denied".into()),
+            ..SettleInput::default()
+        },
+        3_100,
+    )
+    .unwrap();
+    store::resume_due(&mut conn, 8_000).unwrap();
+    let stayed = delegations::get(&conn, &denied.id).unwrap().unwrap();
+    assert_eq!(stayed.state, "failed");
+    assert_eq!(stayed.error_class.as_deref(), Some("approval_denied"));
+    assert_eq!(stayed.generation, denied.generation);
+    let own = delegations::get(&conn, &task.id).unwrap().unwrap();
+    assert_eq!(own.state, "running");
+    assert_eq!(own.generation, task.generation + 1);
+    assert_eq!(hold_count(&conn, &task.id), 0);
+}
+
+#[test]
+fn settings_reports_the_signed_in_list_it_is_given() {
+    let stored = store::StoredRules {
+        rules: vec![],
+        revision: 4,
+        budget: None,
+    };
+    let view = super::response(
+        stored,
+        vec![],
+        vec![Presence {
+            cli: "claude".into(),
+            installed: true,
+            signed_in: true,
+        }],
+    );
+    assert_eq!(view.revision, 4);
+    assert_eq!(view.signed_in.len(), 1);
+    assert_eq!(view.signed_in[0].cli, "claude");
+    assert!(view.signed_in[0].installed);
+    assert!(view.signed_in[0].signed_in);
+}
+
+#[test]
+fn presence_keeps_installed_and_signed_in_apart_and_only_lists_crew_clis() {
+    let rows = super::crew_presence(
+        |cli| cli == "claude" || cli == "cursor",
+        |cli| cli == "claude",
+    );
+    assert!(rows
+        .iter()
+        .all(|row| crate::plugins::hivra::CREW_CLIS.contains(&row.cli.as_str())));
+    assert!(!rows.iter().any(|row| row.cli == "not-a-cli"));
+    let claude = rows.iter().find(|row| row.cli == "claude").unwrap();
+    assert!(claude.installed && claude.signed_in);
+    let cursor = rows.iter().find(|row| row.cli == "cursor").unwrap();
+    assert!(cursor.installed && !cursor.signed_in);
+    let codex = rows.iter().find(|row| row.cli == "codex").unwrap();
+    assert!(!codex.installed && !codex.signed_in);
+}
+
+#[test]
+fn an_empty_presence_list_is_filled_and_a_given_one_is_kept() {
+    let live = vec![Presence {
+        cli: "claude".into(),
+        installed: true,
+        signed_in: true,
+    }];
+    let mut empty = Vec::new();
+    super::fill_present(&mut empty, live.clone());
+    assert_eq!(empty.len(), 1);
+    assert!(empty[0].signed_in);
+    let mut given = vec![Presence {
+        cli: "codex".into(),
+        installed: true,
+        signed_in: false,
+    }];
+    super::fill_present(&mut given, live);
+    assert_eq!(given.len(), 1);
+    assert_eq!(given[0].cli, "codex");
+    assert!(!given[0].signed_in);
+}
+
 #[test]
 fn the_row_class_wins_and_a_timeout_is_not_the_work_failing() {
     let store = memory();
