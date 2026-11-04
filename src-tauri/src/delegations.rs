@@ -159,6 +159,14 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN report TEXT;",
         )?;
     }
+    // WP-42: when this run started. The log only keeps 50 lines, so a resume time stored there can be trimmed
+    // before settle, and older proof would be attached as this run's.
+    let has_run_started = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'run_started_at'")?
+        .exists([])?;
+    if !has_run_started {
+        conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
+    }
     Ok(())
 }
 
@@ -190,6 +198,9 @@ pub struct Delegation {
     pub delivery: String,
     pub delivery_message: Option<String>,
     pub created_at: i64,
+    /// When this run started, epoch ms. Set when the row is recorded and again when it resumes. Evidence uses this,
+    /// not the log: `note` only keeps the newest 50 lines.
+    pub run_started_at: i64,
     pub updated_at: i64,
     pub settled_at: Option<i64>,
     pub log: Vec<Value>,
@@ -271,11 +282,14 @@ impl Delegation {
 const COLUMNS: &str = "id, owner_session, owner_mono, batch_id, parent_id, root_id, child_session, request_id, \
      generation, project, title, brief, goal, ask_ids, state, error_class, error, retryable, resets_at, result, \
      pending_question, delivery, delivery_message, created_at, updated_at, settled_at, log, version, \
-     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report";
+     mirrored_version, mirror_error, follow, stall_kind, stall_reason, stalled_at, review_required, self_review, question_owner, gate_verdict, report, \
+     run_started_at";
 
 fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
     let asks: String = row.get(13)?;
     let log: String = row.get(26)?;
+    let created_at: i64 = row.get(23)?;
+    let run_started_at: Option<i64> = row.get(39)?;
     Ok(Delegation {
         id: row.get(0)?,
         owner_session: row.get(1)?,
@@ -300,7 +314,8 @@ fn from_row(row: &Row) -> rusqlite::Result<Delegation> {
         pending_question: row.get(20)?,
         delivery: row.get(21)?,
         delivery_message: row.get(22)?,
-        created_at: row.get(23)?,
+        created_at,
+        run_started_at: run_started_at.unwrap_or(created_at),
         updated_at: row.get(24)?,
         settled_at: row.get(25)?,
         log: serde_json::from_str(&log).unwrap_or_default(),
@@ -353,7 +368,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
         &format!(
             "INSERT INTO delegations ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, \
              ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, \
-             ?35, ?36, ?37, ?38, ?39)"
+             ?35, ?36, ?37, ?38, ?39, ?40)"
         ),
         params![
             d.id,
@@ -395,6 +410,7 @@ fn insert(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.question_owner,
             d.gate_verdict,
             d.report,
+            d.run_started_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -417,7 +433,7 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
            resets_at = ?7, result = ?8, pending_question = ?9, delivery = ?10, delivery_message = ?11,
            updated_at = ?12, settled_at = ?13, log = ?14, version = ?15, stall_kind = ?16, stall_reason = ?17,
            stalled_at = ?18, review_required = ?19, self_review = ?20, question_owner = ?21, gate_verdict = ?22,
-           report = ?23
+           report = ?23, run_started_at = ?24
          WHERE id = ?1",
         params![
             d.id,
@@ -443,6 +459,7 @@ fn save(conn: &Connection, d: &Delegation) -> Result<(), String> {
             d.question_owner,
             d.gate_verdict,
             d.report,
+            d.run_started_at,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -702,6 +719,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         delivery: PENDING.into(),
         delivery_message: None,
         created_at: now,
+        run_started_at: now,
         updated_at: now,
         settled_at: None,
         log: Vec::new(),
@@ -838,21 +856,10 @@ struct StagedProof {
     files: Vec<String>,
 }
 
-/// When this run started: the row's `created_at`, or the latest `resumed` log time when that is later.
+/// When this run started. Stored on the row at create and again on resume, so a log that has been trimmed to its
+/// newest 50 lines cannot move the cutoff back to `created_at`.
 fn run_started_ms(row: &Delegation) -> i64 {
-    let mut since = row.created_at;
-    for entry in &row.log {
-        if entry.get("event").and_then(Value::as_str) != Some("resumed") {
-            continue;
-        }
-        let Some(at) = entry.get("at").and_then(Value::as_i64) else {
-            continue;
-        };
-        if at > since {
-            since = at;
-        }
-    }
-    since
+    row.run_started_at
 }
 
 /// Read this run's proof before `settle` takes its write transaction. A row that will not be written, or a session
@@ -935,6 +942,7 @@ pub fn reattach(
     }
     let was = row.state.clone();
     row.generation += 1;
+    row.run_started_at = now;
     row.unstall();
     if reopen {
         row.state = RUNNING.into();

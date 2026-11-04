@@ -18,7 +18,7 @@ use super::registry::{self, Host, Scope};
 use super::source::{InstallSource, Tools};
 use super::verify::{self, WHEN_TO_VERIFY};
 use super::wiring;
-use crate::delegations::{self, RecordInput, SettleInput};
+use crate::delegations::{self, RecordInput, SettleInput, StallInput};
 use crate::firstmate::report::WorkerReport;
 use crate::session_store::SessionStore;
 
@@ -1457,6 +1457,91 @@ fn only_e2e_files_from_this_run_are_attached() {
     assert!(
         evidence.iter().all(|item| item != ".e2e/report.json"),
         "proof from before the resume is an earlier run: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .iter()
+            .any(|item| item == ".e2e/results/home/trace.md"),
+        "proof from the resumed run is kept: {evidence:?}"
+    );
+}
+
+#[test]
+fn a_trimmed_resume_line_does_not_attach_the_earlier_runs_proof() {
+    let start = 1_700_000_000_000_i64;
+    let resume_at = start + 120_000;
+    let tmp = Tmp::new("trimmed resume");
+    let dir = tmp.path().join("shared project");
+    proof(&dir.join(".e2e"), "report.json", "{}\n");
+    proof(&dir.join(".e2e"), "results/home/trace.md", "trace\n");
+    set_mtime(&dir.join(".e2e/report.json"), start as u64);
+    set_mtime(&dir.join(".e2e/results/home/trace.md"), resume_at as u64);
+
+    let store = SessionStore::open_in_memory().unwrap();
+    let mut conn = store.lock_conn().unwrap();
+    insert_session(&conn, "trimmed-worker", &dir.display().to_string(), None);
+    let row = delegations::record(
+        &mut conn,
+        launch("owner", "trimmed", "trimmed-worker"),
+        start,
+    )
+    .unwrap();
+    let again = delegations::reattach(&mut conn, "trimmed-worker", true, None, resume_at)
+        .unwrap()
+        .unwrap();
+    assert_eq!(again.generation, 2);
+    for n in 0..30 {
+        let at = resume_at + n;
+        delegations::set_stall(
+            &mut conn,
+            StallInput {
+                id: row.id.clone(),
+                generation: 2,
+                kind: Some("quiet".into()),
+                reason: Some(format!("stuck {n}")),
+                since: Some(at),
+                by: None,
+            },
+            at,
+        )
+        .unwrap();
+        delegations::set_stall(
+            &mut conn,
+            StallInput {
+                id: row.id.clone(),
+                generation: 2,
+                kind: None,
+                reason: None,
+                since: None,
+                by: None,
+            },
+            at,
+        )
+        .unwrap();
+    }
+    let open = delegations::get(&conn, &row.id).unwrap().unwrap();
+    assert!(
+        open.log
+            .iter()
+            .all(|entry| entry.get("event").and_then(Value::as_str) != Some("resumed")),
+        "the resume line has been trimmed, so the cutoff cannot depend on it"
+    );
+    let settled = delegations::settle(
+        &mut conn,
+        SettleInput {
+            id: row.id,
+            generation: 2,
+            state: "completed".into(),
+            result: Some(PLAIN.into()),
+            ..SettleInput::default()
+        },
+        resume_at + 1,
+    )
+    .unwrap();
+    let evidence = evidence_of(&settled.row.unwrap().report);
+    assert!(
+        evidence.iter().all(|item| item != ".e2e/report.json"),
+        "proof from before the resume is an earlier run even after the log forgot it: {evidence:?}"
     );
     assert!(
         evidence
