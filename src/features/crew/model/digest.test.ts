@@ -5,6 +5,7 @@ import {
   EMPTY_DIGEST,
   planDigest,
   publish,
+  showDigest,
   readDigestStore,
   withDigestLock,
   writeDigestStore,
@@ -145,6 +146,66 @@ describe("quiet digest", () => {
     };
     expect(await publish(blocked, [failed], HOUR)).toBeNull();
     expect(store.current()).toEqual(EMPTY_DIGEST);
+  });
+
+  it("marks a digest sent only after it has been shown", async () => {
+    const store = memory();
+    const plan = await showDigest(store, [needs], 1_000, {
+      show() {
+        expect(store.current().version).toBe(0);
+        expect(store.current().sent).toEqual([]);
+      },
+      cancelled: () => false,
+    });
+    expect(plan?.immediate).toHaveLength(1);
+    expect(store.current().sent).toContain("decision:ship");
+    expect(store.current().version).toBe(1);
+  });
+
+  it("does not move the window when the show is cancelled, and the next show sends it", async () => {
+    const store = memory();
+    let cancelled = false;
+    const dropped = await showDigest(store, [needs], 1_000, {
+      show() {
+        cancelled = true;
+      },
+      cancelled: () => cancelled,
+    });
+    expect(dropped).toBeNull();
+    expect(store.current()).toEqual(EMPTY_DIGEST);
+    const sent = await showDigest(store, [needs], 1_000, {
+      show() {},
+      cancelled: () => false,
+    });
+    expect(sent?.immediate).toHaveLength(1);
+    expect(store.current().sent).toContain("decision:ship");
+  });
+
+  it("retries a lost compare-and-swap after the show, and still shows before it writes", async () => {
+    let fails = 1;
+    let state = EMPTY_DIGEST;
+    const store = {
+      read: () => state,
+      write(base: number, next: DigestState) {
+        if (fails > 0) {
+          fails -= 1;
+          return false;
+        }
+        if (state.version !== base) return false;
+        state = { ...next, version: base + 1 };
+        return true;
+      },
+    };
+    const seen: number[] = [];
+    const sent = await showDigest(store, [needs], 1_000, {
+      show() {
+        seen.push(state.version);
+      },
+      cancelled: () => false,
+    });
+    expect(seen[0]).toBe(0);
+    expect(sent?.immediate).toHaveLength(1);
+    expect(state.version).toBe(1);
   });
 });
 

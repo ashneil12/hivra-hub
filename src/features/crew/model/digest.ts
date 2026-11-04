@@ -121,10 +121,42 @@ export type DigestStore = {
   write(base: number, next: DigestState): boolean | Promise<boolean>;
 };
 
+export type DigestShow = {
+  show(plan: DigestPlan): void;
+  /** True once the show was dropped (a newer render, or the panel went away). */
+  cancelled(): boolean;
+};
+
+/**
+ * Plans, shows, then commits. A cancelled show does not move the window, so the
+ * next call can send the same notices. A lost compare-and-swap retries. If every
+ * try loses, nothing is sent and the store is left as it was.
+ */
+export async function showDigest(
+  store: DigestStore,
+  notices: readonly Notice[],
+  now: number,
+  hooks: DigestShow,
+  hour = HOUR,
+  attempts = 3,
+): Promise<DigestPlan | null> {
+  for (let i = 0; i < attempts; i++) {
+    const current = digestStateFrom(store.read());
+    const plan = planDigest(current, notices, now, hour);
+    if (hooks.cancelled()) return null;
+    hooks.show(plan);
+    // A render that started while this was planned gets to cancel before the commit.
+    await Promise.resolve();
+    if (hooks.cancelled()) return null;
+    if (plan.state.version === current.version) return plan;
+    if (await store.write(current.version, plan.state)) return plan;
+  }
+  return null;
+}
+
 /**
  * Plans, then commits. A lost compare-and-swap retries. If every try loses, nothing is sent
- * and the store is left as it was. The caller commits only after a send that succeeded;
- * this helper is that commit.
+ * and the store is left as it was.
  */
 export async function publish(
   store: DigestStore,
