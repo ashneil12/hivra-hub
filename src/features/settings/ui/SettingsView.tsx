@@ -8,6 +8,7 @@ import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
+import { TrashPage } from "../../trash/ui/TrashPage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
@@ -737,6 +738,10 @@ export function SettingsView({
                   onRestoreProject={onRestoreProject}
                   onDeleteProject={onDeleteProject}
                 />
+              ) : null}
+              {/* WP-76: deleted chats, Monos, projects, notes, docs and tasks. */}
+              {section === "trash" ? (
+                <TrashPage onRestoreProject={onRestoreProject} />
               ) : null}
             </div>
           </div>
