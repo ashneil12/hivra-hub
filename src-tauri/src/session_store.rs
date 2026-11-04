@@ -670,29 +670,67 @@ pub fn cancel_session_search(search_owner: String) {
 pub fn session_delete(
     app: AppHandle,
     store: State<'_, SessionStore>,
+    live: State<'_, crate::live_turns::LiveTurns>,
     session_id: String,
-    mut image_paths: Vec<String>,
+    image_paths: Vec<String>,
 ) -> Result<(), String> {
     validate_id(&session_id, "session")?;
+    // Images stay until the chat is purged or deleted forever. The argument stays so the
+    // existing invoke keeps working.
+    let _ = image_paths;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
-    let persisted_paths = get_session(&conn, &session_id)
+    // WP-76: a chat a Mono just moved is already in the ledger. Say so, and don't refuse it
+    // for a turn this window has already stopped.
+    if crate::trash::is_trashed(&conn, "chat", &session_id).map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    if live.list().iter().any(|id| id == &session_id) {
+        return Err(crate::trash::RUNNING_CHAT.to_string());
+    }
+    let Some(record) = get_session(&conn, &session_id).map_err(|error| error.to_string())? else {
+        return Ok(());
+    };
+    crate::trash::trash(
+        &conn,
+        &crate::trash::Item {
+            kind: "chat".into(),
+            id: session_id,
+            title: record.title,
+            parent_kind: Some("project".into()),
+            parent_id: Some(record.cwd),
+            payload: "{}".into(),
+        },
+        &[],
+        false,
+        now_millis(),
+    )
+    .map_err(|error| error.to_string())?;
+    drop(conn);
+    let _ = app.emit(crate::trash::CHANGED, ());
+    Ok(())
+}
+
+/// Hard-delete a chat and its generated images. Only the trash purge and delete-forever call this.
+pub(crate) fn purge_chat(
+    app: &AppHandle,
+    conn: &Connection,
+    session_id: &str,
+) -> Result<(), String> {
+    let mut image_paths = get_session(conn, session_id)
         .ok()
         .flatten()
         .map(|record| generated_image_paths(&record.blocks))
         .unwrap_or_default();
-    image_paths.extend(persisted_paths);
     image_paths.extend(
-        crate::mono_transcript::generated_image_paths(&conn, &session_id)
-            .map_err(|e| e.to_string())?,
+        crate::mono_transcript::generated_image_paths(conn, session_id)
+            .map_err(|error| error.to_string())?,
     );
-    delete_session(&conn, &session_id).map_err(|e| e.to_string())?;
-    drop(conn);
+    delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(&app, &image_paths) {
+        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
-    let _ = app.emit(crate::reminders::CHANGED, ());
     Ok(())
 }
 
@@ -1260,6 +1298,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
     crate::ship::ensure_acceptance_table(conn)?;
+    // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
+    crate::trash::ensure_table(conn)?;
     Ok(())
 }
 
@@ -1612,6 +1652,7 @@ fn search_sessions_sql(include_archived: bool, cwd_scoped: bool) -> String {
     }
     sql.push_str(
         " WHERE id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
+            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
             AND has_user_message = 1
             AND (LOWER(title) LIKE LOWER(?1) ESCAPE '\\'
                  OR CASE WHEN octet_length(blocks_json) <= ?2
@@ -1923,6 +1964,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
            AND has_user_message = 1
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
          ORDER BY updated_at DESC, id ASC",
     )?;
     let rows = statement.query_map(params![cwd], |row| {
@@ -1975,6 +2017,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
            AND linked_work_item_json IS NOT NULL
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
          ORDER BY updated_at DESC, id ASC",
     )?;
     let rows = statement.query_map([], |row| {
@@ -2208,7 +2251,8 @@ fn get_session_record(
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
                 goal_json, archived
          FROM sessions
-         WHERE id = ?1 AND inbox_ask IS NULL"
+         WHERE id = ?1 AND inbox_ask IS NULL
+           AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
         ),
         params![session_id],
         |row| {
@@ -2690,6 +2734,7 @@ mod tests {
                    AND has_user_message = 1
                    AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
                    AND id NOT IN (SELECT session_id FROM orchestration_workers)
+                   AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
                  ORDER BY updated_at DESC, id ASC",
                     params!["/tmp/a"],
                     |row| row.get(3),

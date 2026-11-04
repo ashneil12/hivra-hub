@@ -68,6 +68,8 @@ mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
 // WP-43: a browser profile per agent, and Stop.
@@ -414,6 +416,8 @@ pub fn run() {
             // A hub-change preview left on by a crash comes back out (self_build.rs).
             self_build::start(app.handle());
             session_store::init(app.handle())?;
+            // WP-76: drop anything that has been in the trash for 30 days, then again each day.
+            trash::start_daily_purge(app.handle().clone());
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
@@ -913,6 +917,13 @@ pub fn run() {
             page_http::page_source_token_exists,
             page_http::page_source_token_clear,
             notes::notes_delete,
+            // WP-76: trash screen.
+            trash::trash_list,
+            trash::trash_restore,
+            trash::trash_delete_forever,
+            trash::trash_empty,
+            trash::trash_project,
+            trash::trash_mono,
             notes::notes_save_image,
             notes::notes_image_path,
             mono::mono_load,

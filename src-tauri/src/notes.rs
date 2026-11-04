@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::fs::expand_home;
 use crate::session_store::{now_millis, validate_id, SessionStore};
@@ -170,11 +170,60 @@ pub fn notes_delete(
 ) -> Result<(), String> {
     validate_id(&id, "note")?;
     let conn = store.lock_conn()?;
-    delete_note(&conn, &id).map_err(|e| e.to_string())?;
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT content_kind FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    // Artifacts share this table and are not trash. A missing row is already gone.
+    if kind.as_deref() != Some("note") {
+        return Ok(());
+    }
+    if crate::trash::is_trashed(&conn, "note", &id).map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "Untitled".into());
+    let source_cwd: Option<String> = conn
+        .query_row(
+            "SELECT source_cwd FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
     drop(conn);
-    // The note deletion is authoritative. A cleanup failure should not leave a
-    // successfully deleted note visible in the UI.
-    let _ = remove_note_assets(&app, &id);
+    // WP-76: images move first. If the ledger insert fails, they come back.
+    crate::trash::park_note_assets(&app, &id).map_err(|error| error.to_string())?;
+    let conn = store.lock_conn()?;
+    let parked = crate::trash::trash(
+        &conn,
+        &crate::trash::Item {
+            kind: "note".into(),
+            id: id.clone(),
+            title,
+            parent_kind: source_cwd.as_ref().map(|_| "project".into()),
+            parent_id: source_cwd,
+            payload: "{}".into(),
+        },
+        &[],
+        false,
+        crate::session_store::now_millis(),
+    );
+    drop(conn);
+    if let Err(error) = parked {
+        let _ = crate::trash::unpark_note_assets(&app, &id);
+        return Err(error.to_string());
+    }
+    let _ = app.emit(crate::trash::CHANGED, ());
     Ok(())
 }
 
@@ -310,7 +359,7 @@ fn validate_note_asset_path(asset: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn remove_note_assets(app: &AppHandle, note_id: &str) -> Result<(), String> {
+pub(crate) fn remove_note_assets(app: &AppHandle, note_id: &str) -> Result<(), String> {
     let dir = note_assets_dir(app, note_id)?;
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
@@ -323,14 +372,28 @@ fn list_notes(conn: &Connection) -> rusqlite::Result<Vec<Note>> {
     list_content(conn, "note")
 }
 
+fn hidden_note_clause(conn: &Connection) -> &'static str {
+    // A notes database from before the trash ledger has no `trash_items` yet. Listing must
+    // still work; once the ledger exists, trashed notes stay out of the list and out of get.
+    match conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trash_items'",
+        [],
+        |_| Ok(1i64),
+    ) {
+        Ok(_) => crate::trash::HIDDEN_NOTE_CLAUSE,
+        Err(_) => "",
+    }
+}
+
 fn list_content(conn: &Connection, kind: &str) -> rusqlite::Result<Vec<Note>> {
-    let mut stmt = conn.prepare(
+    let hidden = hidden_note_clause(conn);
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
                 created_at, updated_at, slug_pending
          FROM notes
-         WHERE content_kind = ?1
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         WHERE content_kind = ?1{hidden}
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = stmt.query_map(params![kind], read_note)?;
     rows.collect()
 }
@@ -340,11 +403,14 @@ fn get_note(conn: &Connection, id: &str) -> rusqlite::Result<Option<Note>> {
 }
 
 fn get_content(conn: &Connection, id: &str, kind: &str) -> rusqlite::Result<Option<Note>> {
+    let hidden = hidden_note_clause(conn);
     conn.query_row(
-        "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
-                created_at, updated_at, slug_pending
-         FROM notes
-         WHERE id = ?1 AND content_kind = ?2",
+        &format!(
+            "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
+                    created_at, updated_at, slug_pending
+             FROM notes
+             WHERE id = ?1 AND content_kind = ?2{hidden}"
+        ),
         params![id, kind],
         read_note,
     )
@@ -486,6 +552,11 @@ fn delete_note(conn: &Connection, id: &str) -> rusqlite::Result<()> {
         params![id],
     )?;
     Ok(())
+}
+
+/// Hard-delete a note row. Assets are removed by the caller. Only purge and delete-forever use this.
+pub(crate) fn purge_note(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    delete_note(conn, id)
 }
 
 fn read_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
