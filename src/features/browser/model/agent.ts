@@ -17,9 +17,26 @@ export function agentKey(kind: (typeof KINDS)[number], raw: string): string {
     body += /^[A-Za-z0-9_-]$/.test(ch) ? ch : `_${(ch.codePointAt(0) ?? 0).toString(16)}`;
   }
   if (!body) body = "unknown";
-  const id = `${kind}-${body}`;
-  const capped = id.length > 120 ? id.slice(0, 120) : id;
-  return usable(capped) ? capped : "chat-unknown";
+  const mark = mix(`${kind}\0${raw}`);
+  let id = `${kind}-${body}`;
+  if (id.length > 120) {
+    const room = 120 - mark.length - 1;
+    id = `${id.slice(0, room)}_${mark}`;
+  }
+  return usable(id) ? id : "chat-unknown";
+}
+
+/** Two hashes of the whole id, so a cut at 120 characters can't collide. */
+function mix(text: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b1;
+  for (let i = 0; i < text.length; i += 1) {
+    const code = text.charCodeAt(i);
+    h1 = Math.imul(h1 ^ code, 0x01000193);
+    h2 = Math.imul(h2 ^ code, 0x85ebca6b);
+  }
+  const hex = (n: number) => (n >>> 0).toString(16).padStart(8, "0");
+  return `${hex(h1)}${hex(h2)}`;
 }
 
 function usable(id: string): boolean {
@@ -69,8 +86,8 @@ function monoName(mono: Mono): string {
 
 /** The agent this chat browses as. Never throws. */
 export function browserAgentFor(sessionId: string | undefined): BrowserAgent {
+  const id = (sessionId ?? "").trim();
   try {
-    const id = (sessionId ?? "").trim();
     const teamChat = codingTeamChatProject(id) ? id : startedByCodingTeamChat(id);
     if (teamChat) {
       const projectId = codingTeamChatProject(teamChat) || teamChat;
@@ -81,6 +98,6 @@ export function browserAgentFor(sessionId: string | undefined): BrowserAgent {
     if (mono) return { id: agentKey("mono", mono.id), name: monoName(mono) };
     return { id: agentKey("chat", id), name: "This chat" };
   } catch {
-    return { id: "chat-unknown", name: "This chat" };
+    return { id: agentKey("chat", id), name: "This chat" };
   }
 }

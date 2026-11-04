@@ -111,6 +111,35 @@ describe("browserAgentFor", () => {
     expect(browserAgentFor("   ").id).toBe("chat-unknown");
   });
 
+  it("does not give two long chats the same profile", () => {
+    const left = agentKey("chat", "a".repeat(200));
+    const right = agentKey("chat", `${"a".repeat(199)}b`);
+    expect(left).not.toBe(right);
+    expect(left.length).toBeLessThanOrEqual(120);
+    expect(right.length).toBeLessThanOrEqual(120);
+    expect(left).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(right).toMatch(/^[A-Za-z0-9_-]+$/);
+  });
+
+  it("does not share a profile when reading the roster throws", () => {
+    const original = Array.prototype.filter;
+    Array.prototype.filter = () => {
+      throw new Error("roster unavailable");
+    };
+    let left: { id: string; name: string };
+    let right: { id: string; name: string };
+    try {
+      left = browserAgentFor("chat-a");
+      right = browserAgentFor("chat-b");
+    } finally {
+      Array.prototype.filter = original;
+    }
+    expect(left.id).not.toBe(right.id);
+    expect(left.id).not.toBe("chat-unknown");
+    expect(right.id).not.toBe("chat-unknown");
+    expect(left.name).toBe("This chat");
+  });
+
   it("uses the Mono's stand-in name when it has none", () => {
     roster([{ id: "noname", sessionId: "sessnoname", mascot: "wisp", color: "c", projects: [] }]);
     expect(browserAgentFor("sessnoname").name).toBe(defaultMonoName("wisp"));
