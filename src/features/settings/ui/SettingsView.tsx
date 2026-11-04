@@ -10,6 +10,7 @@ import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
+import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -693,6 +694,10 @@ export function SettingsView({
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.
                 <PluginsPage />
+              ) : null}
+              {section === "crew" ? (
+                // WP-13: crew rules, the ordered list a person edits.
+                <CrewRulesPage cwd={cwd} />
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
               {section === "keybindings" ? <KeybindingsPage /> : null}

@@ -30,6 +30,11 @@ use tauri::Manager;
 pub use manifest::{load_plugin, LoadedPlugin, Report};
 pub use registry::{Host, Scope};
 pub use wiring::run_main;
+// WP-33: panels update a local folder through the existing install path.
+#[cfg(test)]
+pub(crate) use compat::Target;
+pub(crate) use install::{update as update_plugin, InstallResult, RequestedBy};
+pub(crate) use source::{InstallSource, Tools};
 
 static MANAGED_SKILLS: OnceLock<PathBuf> = OnceLock::new();
 

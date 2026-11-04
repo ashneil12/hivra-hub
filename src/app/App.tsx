@@ -58,6 +58,8 @@ import {
   type DelegationTracker,
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
+import { withCrewAdvice } from "../features/crew/model/advice";
+import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import {
   briefCancelled,
   briefSentAt,
@@ -1123,6 +1125,11 @@ const NotesView = lazySurface(
 const PagesView = lazySurface(async () => {
   const module = await import("../features/pages/ui/PagesView");
   return { default: module.PagesView };
+}, { suspense: false });
+// WP-33: plugin panels open as tabs beside Pages.
+const PanelTabsScreen = lazySurface(async () => {
+  const module = await import("../features/panels/ui/PanelTabs");
+  return { default: module.PanelTabsScreen };
 }, { suspense: false });
 const AutomationsView = lazySurface(
   async () => {
@@ -9900,6 +9907,15 @@ function Workspace({
       const landing = landingDue(result, sessionsRef.current.find((session) => session.id === result.sessionId));
       return landing ? withLanding(result, await landWorkerCopy(landing)) : result;
     },
+    // WP-13: a failed task is recorded from the CLI the child actually ran.
+    crewFailure: (row, result) => {
+      const child = sessionsRef.current.find((session) => session.id === row.childSession);
+      return recordCrewFailure(row, result, {
+        cli: child?.harness,
+        model: child?.model,
+        effort: child?.modelSettings?.effort,
+      });
+    },
   });
   delegationsRef.current = delegations;
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
@@ -13075,6 +13091,13 @@ function Workspace({
           const finish = (result: MonoSessionCompletionResult) => {
             if (settled) return;
             settled = true;
+            // WP-13: an account failure can name the next signed-in CLI. A timeout of that note still reports the failure.
+            if (result.status === "failed") {
+              void Promise.resolve(launch?.settle(result))
+                .then((note) => settle(withCrewAdvice(result, note)))
+                .catch(() => settle(result));
+              return;
+            }
             launch?.settle(result);
             settle(result);
           };
@@ -13095,9 +13118,18 @@ function Workspace({
               ...(latestTurn && firstReport ? { earlierReport: firstReport } : {}),
               ...(reviewRequired ? { reviewRequired: true } : {}),
             });
-            // Refused for a usage or rate limit, the task isn't failed (H8): its row stays open, E5 moves the
-            // chat to an account with room or it resumes at the reset, and that turn reports (resumeMonitor).
+            // WP-13: the row stays open. H8/E5 resumes it. The crew only notes the pause.
             if (holdForLimit(result)) {
+              if (settled) return;
+              settled = true;
+              if (row) {
+                const child = sessionsRef.current.find((session) => session.id === row.childSession);
+                void recordCrewPause(row, result, {
+                  cli: child?.harness,
+                  model: child?.model,
+                  effort: child?.modelSettings?.effort,
+                }).catch(() => undefined);
+              }
               settle.discard();
               return;
             }
@@ -13775,6 +13807,8 @@ function Workspace({
                     },
                   }
                 : {}),
+              // WP-13: the start of a delegated task asks which CLI, model and effort to use.
+              crewRoute: (query) => crewRouteFor(query),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
@@ -17057,6 +17091,8 @@ function Workspace({
                         }
                         compactRail={!insetLayout && compactRailActive}
                       />
+                      {/* WP-33: plugin panels open as tabs beside Pages. */}
+                      <PanelTabsScreen />
                     </AppViewSurface>
                   ) : automationsViewOpen ||
                     (insetLayout && openAppViews.includes("automations")) ? (
