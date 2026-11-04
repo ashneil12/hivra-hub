@@ -6,7 +6,7 @@
 // Copyright (c) 2026 Akua): a reconnect adopts the session that is already there.
 
 import { dirname, join } from "node:path";
-import { classify, type RowFacts } from "../../src/features/firstmate/watcher/classifier";
+import { classify, type Decision, type RowFacts, type Wake } from "../../src/features/firstmate/watcher/classifier";
 import {
   INITIATORS,
   type CatchUpEntry,
@@ -27,7 +27,7 @@ const LEASE_MS = 15_000;
 
 /** A dropped connection or a timeout is not a final failure: the same launch can be adopted. */
 export function retryableFailure(message: string): boolean {
-  return /timed?\s*out|timeout|econnrefused|enotfound|eai_again|ehostunreach|etimedout|unreachable|network error|socket hang up/i.test(
+  return /timed?\s*out|timeout|econnrefused|enotfound|eai_again|ehostunreach|etimedout|unreachable|network error|socket hang up|host restarted|host stopped|storage failed/i.test(
     message,
   );
 }
@@ -101,6 +101,13 @@ function lastText(session: HostSession, role: Session["blocks"][number]["role"])
 
 const turnStarted = (session: HostSession) => session.session.blocks.some((block) => block.role === "user");
 
+/** A report is the catch-up line. It is not left on the wake table. */
+function keptWakes(decisions: Decision[]): Wake[] {
+  return decisions.flatMap((decision) =>
+    decision.kind === "wake" && decision.wake.route !== "report" ? [decision.wake] : [],
+  );
+}
+
 export class HostFirstMate {
   private readonly records: FirstMateRecords;
   private readonly leaseRoot: string;
@@ -138,7 +145,7 @@ export class HostFirstMate {
       now: this.now(),
     });
     try {
-      const row = claim.start ? this.ensureWorker(claim.row) : claim.row;
+      const row = claim.start ? this.ensureWorker(claim.row, claim.restart) : claim.row;
       return { delegation: this.records.get(row.id) ?? row, created: claim.created };
     } finally {
       if (claim.start) this.records.releaseLaunchLease(claim.row.launchKey, claim.holder);
@@ -171,7 +178,7 @@ export class HostFirstMate {
    * launch has none. Sends the brief at most once, and settles a turn that
    * already finished while nobody was watching.
    */
-  private ensureWorker(row: HostDelegation): HostDelegation {
+  private ensureWorker(row: HostDelegation, restart: boolean): HostDelegation {
     let current = row;
     if (!current.childSession) {
       const created = this.engine.command({
@@ -194,7 +201,9 @@ export class HostFirstMate {
       return current;
     }
     if (session.status === "running" || current.state !== "running") return current;
-    if (session.status === "idle" && !turnStarted(session)) {
+    // A retryable failure is sent again. A first try is sent once. A turn that
+    // already finished is settled instead, never started a second time.
+    if ((restart || !turnStarted(session)) && (session.status === "idle" || session.status === "interrupted")) {
       this.sendBrief(current, session.session.id);
       return this.records.get(current.id) ?? current;
     }
@@ -204,13 +213,16 @@ export class HostFirstMate {
 
   private sendBrief(row: HostDelegation, sessionId: string): void {
     const lease = acquireSessionLease(sessionId, this.leaseRoot);
-    // Another live holder already drives this session. Leave it alone.
-    if (!lease) return;
+    // Another live holder already drives this session. Say so, and let the same launch try again.
+    if (!lease) {
+      this.failUnsent(row, "This session is in use, so the brief was not sent. Try the same launch again.");
+      return;
+    }
     this.sessionLeases.set(sessionId, lease);
     try {
       this.engine.command({
         type: "send",
-        commandId: `fm-${row.id}-send`,
+        commandId: `fm-${row.id}-g${row.generation}-send`,
         sessionId,
         text: row.brief,
       });
@@ -279,11 +291,30 @@ export class HostFirstMate {
       entry = { kind: "finished", text: said || `"${row.title}" is done.` };
     }
     const after: HostDelegation = { ...row, ...patch, updatedAt: now };
-    const wakes = classify({ kind: "row", before: facts(row), row: facts(after) }, now).flatMap((decision) =>
-      decision.kind === "wake" ? [decision.wake] : [],
-    );
+    const wakes = keptWakes(classify({ kind: "row", before: facts(row), row: facts(after) }, now));
     this.records.finish(row.id, patch, entry, wakes, now);
     this.releaseSession(session.session.id);
+  }
+
+  /** A brief that never left this machine. Retryable, and not left running. */
+  private failUnsent(row: HostDelegation, error: string): void {
+    const now = this.now();
+    const patch = {
+      state: "failed" as const,
+      status: "failed" as const,
+      result: null,
+      error,
+      errorClass: "unavailable",
+      retryable: true,
+    };
+    const after: HostDelegation = { ...row, ...patch, updatedAt: now };
+    this.records.finish(
+      row.id,
+      patch,
+      { kind: "failed", text: error },
+      keptWakes(classify({ kind: "row", before: facts(row), row: facts(after) }, now)),
+      now,
+    );
   }
 
   private releaseSession(sessionId: string): void {

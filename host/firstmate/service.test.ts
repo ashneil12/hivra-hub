@@ -8,9 +8,21 @@ import { HostStore } from "../store";
 import { createHostServer } from "../server";
 import type { SendTurnInput } from "../../src/integrations/harness/core/types";
 import type { CatchUpEntry } from "../../src/features/firstmate/host/types";
+import { retryableFailure } from "./service";
+
+const leaseGate = vi.hoisted(() => ({ refuse: false }));
+vi.mock("./lease", async () => {
+  const actual = await vi.importActual<typeof import("./lease")>("./lease");
+  return {
+    ...actual,
+    acquireSessionLease: (sessionId: string, root: string) =>
+      leaseGate.refuse ? null : actual.acquireSessionLease(sessionId, root),
+  };
+});
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  leaseGate.refuse = false;
   for (const cleanup of cleanups.splice(0)) await cleanup();
 });
 
@@ -129,9 +141,8 @@ describe("host first mate", () => {
     expect(host.store.summaries(host.project.id)).toHaveLength(1);
 
     const wakes = await host.call("firstmate.wakes", { projectId: host.project.id });
-    expect(wakes.value.result).toEqual([
-      expect.objectContaining({ text: `"Ship the fix" is done.`, kind: "worker-done", ownerSession: "owner-1" }),
-    ]);
+    // A finished brief is a report, carried by catch-up. It is not left on the wake table.
+    expect(wakes.value.result).toEqual([]);
   });
 
   it("stamps a schedule and a first mate on the runs they started", async () => {
@@ -155,7 +166,7 @@ describe("host first mate", () => {
     });
   });
 
-  it("records an unreachable provider as retryable and does not send the same launch again", async () => {
+  it("records an unreachable provider as retryable and sends that same launch again", async () => {
     const host = await setup("refuse");
     const params = brief(host.project.id, { launchKey: "unreachable" });
     const started = await host.call("firstmate.brief", params);
@@ -165,14 +176,50 @@ describe("host first mate", () => {
       const failed = (page.value.result.entries as CatchUpEntry[]).find((entry) => entry.kind === "failed");
       expect(failed?.text).toMatch(/ECONNREFUSED/);
       expect(failed?.startedBy).toBe("person");
+      expect(failed?.ownerSession).toBe("owner-1");
     });
     const row = (await host.call("firstmate.list", { projectId: host.project.id })).value.result[0];
     expect(row.retryable).toBe(true);
     expect(row.state).toBe("failed");
     const again = await host.call("firstmate.brief", params);
+    expect(again.status).toBe(200);
     expect(again.value.result.delegation.id).toBe(row.id);
     expect(again.value.result.created).toBe(false);
-    expect(host.send).toHaveBeenCalledTimes(1);
+    expect(again.value.result.delegation.state).toBe("running");
+    await vi.waitFor(() => expect(host.send).toHaveBeenCalledTimes(2));
+    expect(host.store.summaries(host.project.id)).toHaveLength(1);
+  });
+
+  it("treats a timeout, an unreachable provider and a host restart as retryable", () => {
+    expect(retryableFailure("The request timed out")).toBe(true);
+    expect(retryableFailure("connect ECONNREFUSED 127.0.0.1:9")).toBe(true);
+    expect(retryableFailure("Host restarted")).toBe(true);
+    expect(retryableFailure("Host stopped. This turn was interrupted.")).toBe(true);
+    expect(retryableFailure("Session storage failed during this turn.")).toBe(true);
+    expect(retryableFailure("The brief was refused.")).toBe(false);
+  });
+
+  it("fails a brief whose session lease is refused, and the same launch can be sent once the session is free", async () => {
+    leaseGate.refuse = true;
+    const host = await setup();
+    const params = brief(host.project.id, { launchKey: "leased" });
+    const started = await host.call("firstmate.brief", params);
+    expect(started.status).toBe(200);
+    const row = (await host.call("firstmate.list", { projectId: host.project.id })).value.result[0];
+    expect(row.state).toBe("failed");
+    expect(row.retryable).toBe(true);
+    expect(row.error).toMatch(/in use/);
+    expect(row.error).not.toMatch(/pid|EPERM|\//i);
+    expect(host.send).not.toHaveBeenCalled();
+    expect(host.store.summaries(host.project.id)).toHaveLength(1);
+
+    leaseGate.refuse = false;
+    const again = await host.call("firstmate.brief", params);
+    expect(again.status).toBe(200);
+    expect(again.value.result.delegation.id).toBe(row.id);
+    expect(again.value.result.created).toBe(false);
+    await vi.waitFor(() => expect(host.send).toHaveBeenCalledTimes(1));
+    expect(host.store.summaries(host.project.id)).toHaveLength(1);
   });
 
   it("rejects an empty brief, an unsafe launch key and an unknown project before starting a worker", async () => {
