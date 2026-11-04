@@ -7,9 +7,10 @@ test("the crew, a decision, a failure, and one digest an hour", async ({ page },
   await page.goto("/tests/browser/wp15-crew.html");
   const crew = page.getByRole("tab", { name: "Crew" });
   await expect(crew).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("tab", { name: "Sessions" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Explorer" })).toBeVisible();
   await expect(page.getByRole("tab", { name: "Changes" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "History" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "History" })).toHaveCount(0);
 
   const row = (id: string) => page.locator(`[data-crew-row='${id}']`);
   await expect(row("working")).toContainText("working");

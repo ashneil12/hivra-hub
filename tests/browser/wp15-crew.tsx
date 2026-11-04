@@ -3,8 +3,9 @@ import { createRoot } from "react-dom/client";
 import type { Decision } from "../../src/features/firstmate/model/steering";
 import type { Delegation } from "../../src/features/monos/model/delegations";
 import type { SessionSummary } from "../../src/features/sessions/data/sessionStore";
-import { CrewPanel } from "../../src/features/crew/ui/CrewPanel";
+import { Sidebar } from "../../src/app/shell/Sidebar";
 import { FirstMateInboxPanel } from "../../src/features/crew/ui/FirstMateInboxPanel";
+import type { SidebarTabId } from "../../src/features/settings/model/appearance";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
@@ -181,30 +182,37 @@ const bridge = installFakeTauri("crew", (command, args) => {
     });
     return outcome;
   }
-  return args;
+  // An unknown command is not a renderable value. Returning the args object
+  // crashes a child that paints the result.
+  return null;
 });
 
 Object.assign(window, { __crewCommands: commands });
 
 function Fixture() {
   const [, redraw] = useState(0);
+  const [tab, setTab] = useState<SidebarTabId>("crew");
   return (
-    <div>
-      <div role="tablist" aria-label="Project">
-        <button type="button" role="tab" aria-selected={false}>
-          Explorer
-        </button>
-        <button type="button" role="tab" aria-selected={false}>
-          Changes
-        </button>
-        <button type="button" role="tab" aria-selected={false}>
-          History
-        </button>
-        <button type="button" role="tab" aria-selected>
-          Crew
-        </button>
-      </div>
-      <CrewPanel project={PROJECT} sessions={sessions} onOpenSession={() => {}} />
+    <div style={{ display: "flex", height: 640 }}>
+      <Sidebar
+        cwd={PROJECT}
+        open
+        sessions={sessions}
+        busySessionIds={new Set()}
+        approvalSessionIds={new Set()}
+        activeSessionId="chat-working"
+        status="idle"
+        pending={false}
+        tab={tab}
+        filesSearchOpen={false}
+        projectRailOpen={false}
+        compactProjectRail={false}
+        onSelectSession={() => {}}
+        onOpenFile={() => {}}
+        onTabChange={setTab}
+        onFilesSearchOpenChange={() => {}}
+      />
+      <div style={{ minWidth: 0, flex: 1 }}>
       <FirstMateInboxPanel cwd={PROJECT} />
       <button
         type="button"
@@ -217,6 +225,7 @@ function Fixture() {
       >
         A quiet hour
       </button>
+      </div>
     </div>
   );
 }
