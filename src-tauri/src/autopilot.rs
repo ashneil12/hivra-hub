@@ -893,7 +893,8 @@ fn platform_wake() -> Box<dyn Wake> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        Box::new(NoWake)
+        // WP-09: Windows SetThreadExecutionState, Linux systemd-inhibit. Anything else stays NoWake.
+        crate::platform::wake::current()
     }
 }
 
@@ -1417,16 +1418,19 @@ fn plan_for(identity: &instance::Identity, data_dir: &Path) -> Result<AgentPlan,
     relaunch_support(
         identity.kind,
         instance::isolated_home().is_some(),
-        cfg!(target_os = "macos"),
+        // WP-09: the same decision on Windows and Linux. On macOS this is still true.
+        cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "linux"
+        )),
     )
     .map_err(str::to_string)?;
     let home = dirs::home_dir().ok_or("No home folder")?;
     let program = std::env::current_exe().map_err(|e| e.to_string())?;
     let label = agent_label(&identity.identifier);
     Ok(AgentPlan {
-        plist: home
-            .join("Library/LaunchAgents")
-            .join(format!("{label}.plist")),
+        plist: crate::platform::relaunch::agent_file(&home, &label),
         label,
         domain: launch_domain(),
         program,
@@ -1509,9 +1513,20 @@ fn sync(app: &AppHandle, what: &str) {
         }
     }
     if let (Ok(plan), Ok(mut installed)) = (&state.relaunch, state.installed.lock()) {
+        // WP-09: macOS keeps launchd. Windows and Linux install their own watcher.
+        #[cfg(target_os = "macos")]
         sync_agent(
             state.launchd.as_ref(),
             plan,
+            &mut installed,
+            last_end(&switches),
+        );
+        #[cfg(not(target_os = "macos"))]
+        crate::platform::relaunch::sync_watcher(
+            &plan.label,
+            &plan.program,
+            &plan.data_dir,
+            &plan.plist,
             &mut installed,
             last_end(&switches),
         );

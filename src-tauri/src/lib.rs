@@ -93,6 +93,8 @@ mod search;
 mod self_build;
 mod session_store;
 pub mod ship;
+// WP-09: Windows and Linux seams for ship, keep-awake, relaunch and secrets.
+mod platform;
 mod skills;
 pub mod ssh_askpass;
 // Hivra WP-14: steering messages to running workers.
