@@ -906,6 +906,28 @@ fn failure_backoff(failures: u32) -> i64 {
     step.min(FAILURE_BACKOFF_MAX)
 }
 
+/// A read that could not be stored is tried again after this, not on the poller's 5 s floor.
+const STORE_FAILURE_DELAY: i64 = 60_000;
+
+/// Push only this watch's next read out by [`STORE_FAILURE_DELAY`], in its own write. The failed
+/// transaction has already been dropped. If this write fails too, the sweep still goes on.
+fn delay_next_read(store: &SessionStore, id: &str, repo: &str, number: u64, now: i64) {
+    let due = now.saturating_add(STORE_FAILURE_DELAY);
+    let written = (|| -> Result<(), String> {
+        let conn = store.lock_conn()?;
+        conn.execute(
+            "UPDATE pr_watches SET next_read_at = ?1
+             WHERE id = ?2 AND state = 'watching' AND next_read_at <= ?3",
+            params![due, id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = written {
+        eprintln!("PR watch: {repo}#{number}: could not delay the next read: {error}");
+    }
+}
+
 /// Read every due pull request once and wake whoever it concerns. `paused_until` carries a rate-limit pause between
 /// sweeps. The database is held only between reads.
 pub fn sweep(
@@ -942,7 +964,16 @@ pub fn sweep(
                 }
                 Err(ReadError::Failed(message)) => {
                     for id in &ids {
-                        failed_read(store, id, &message, frame, now, &mut swept)?;
+                        // Same as apply: one watch's write must not drop the rest of the sweep.
+                        let at = (swept.wakes.len(), swept.changed.len());
+                        if let Err(error) = failed_read(store, id, &message, frame, now, &mut swept)
+                        {
+                            // Pushed before the commit, so a rollback must not emit them.
+                            swept.wakes.truncate(at.0);
+                            swept.changed.truncate(at.1);
+                            eprintln!("PR watch: {repo}#{number}: {error}");
+                            delay_next_read(store, id, &repo, number, now);
+                        }
                     }
                 }
                 Ok(read) => {
@@ -952,7 +983,16 @@ pub fn sweep(
                         }
                     }
                     for id in &ids {
-                        apply(store, id, &read, maker, frame, now, &mut swept)?;
+                        // The record runs inside this watch's transaction, so a failure rolls
+                        // that watch back and leaves every other pull request to be read.
+                        let at = (swept.wakes.len(), swept.changed.len());
+                        if let Err(error) = apply(store, id, &read, maker, frame, now, &mut swept) {
+                            // The wake id is pushed before the commit, so a rollback must not emit it.
+                            swept.wakes.truncate(at.0);
+                            swept.changed.truncate(at.1);
+                            eprintln!("PR watch: {repo}#{number}: {error}");
+                            delay_next_read(store, id, &repo, number, now);
+                        }
                     }
                 }
             }
@@ -1655,7 +1695,7 @@ mod tests {
             pr(v)["mergedAt"] = json!("2026-10-20T10:00:00Z");
         });
         let now = T0 + IN_FLIGHT_EVERY;
-        let err = sweep(
+        let swept = sweep(
             &store,
             &FakeGh::new(vec![Ok(merged.clone())]),
             &PlainMaker,
@@ -1663,34 +1703,186 @@ mod tests {
             now,
             &mut 0,
         )
-        .unwrap_err();
+        .unwrap();
         assert!(
-            err.contains("delivery_events"),
-            "the record failure is the reason, not a closed watch: {err}"
+            swept.wakes.is_empty() && swept.changed.is_empty(),
+            "a rolled-back read is not emitted: {swept:?}"
         );
         let w = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
             .unwrap()
             .remove(0);
         assert_eq!(w.state.as_str(), WATCHING);
         assert!(w.end_reason.is_none());
-        // The same read lands once the record can be written. A timeout was not final.
+        assert_eq!(
+            w.next_read_at,
+            now + 60_000,
+            "a failed record waits a minute instead of re-reading every poll"
+        );
+        // Inside the backoff GitHub is not asked again.
+        let gh = FakeGh::new(vec![Ok(merged.clone())]);
+        let held = sweep(&store, &gh, &PlainMaker, &frame, now + 60_000 - 1, &mut 0).unwrap();
+        assert!(
+            gh.calls.lock().unwrap().is_empty(),
+            "still inside the backoff"
+        );
+        assert!(held.wakes.is_empty());
+        // The same read lands once the table is back and the backoff has elapsed.
         crate::delivery::ensure_tables(&store.lock_conn().unwrap()).unwrap();
+        let later = now + 60_000;
         sweep(
             &store,
             &FakeGh::new(vec![Ok(merged)]),
             &PlainMaker,
             &frame,
-            now,
+            later,
             &mut 0,
         )
         .unwrap();
-        let w = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
+        let w = list(&store.lock_conn().unwrap(), Some("mono-a"), later)
             .unwrap()
             .remove(0);
         assert_eq!(
             (w.state.as_str(), w.end_reason.as_deref()),
             (ENDED, Some("merged"))
         );
+    }
+
+    #[test]
+    fn a_failed_record_on_one_pull_request_still_settles_the_other() {
+        let store = store();
+        // Due first: pending checks, so its next read is sooner than the quiet one below.
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(pending())]),
+            input("mono-a"),
+            T0,
+        )
+        .unwrap();
+        // Already green, so a conflict is the only change and delivery records nothing.
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(recorded(|_| {}))]),
+            AddInput {
+                number: 14717,
+                ..input("mono-b")
+            },
+            T0,
+        )
+        .unwrap();
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch("DROP TABLE delivery_events")
+            .unwrap();
+        let merged = recorded(|v| {
+            pr(v)["state"] = json!("MERGED");
+            pr(v)["mergeCommit"] = json!({ "oid": "feedface00000000000000000000000000000000" });
+            pr(v)["mergedAt"] = json!("2026-10-20T10:00:00Z");
+        });
+        let conflict = recorded(|v| pr(v)["mergeable"] = json!("CONFLICTING"));
+        let now = T0 + QUIET_EVERY;
+        let gh = FakeGh::new(vec![Ok(merged), Ok(conflict)]);
+        let swept = sweep(&store, &gh, &PlainMaker, &frame, now, &mut 0).unwrap();
+        let numbers: Vec<String> = gh
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|vars| {
+                vars.iter()
+                    .find(|(key, _)| key == "number")
+                    .map(|(_, value)| value.clone())
+            })
+            .collect();
+        assert_eq!(
+            numbers,
+            vec!["14716".to_string(), "14717".to_string()],
+            "the second pull request is still read after the first record fails"
+        );
+        let wake = open_wakes(&store);
+        assert_eq!(wake.len(), 1, "the rolled-back merge wake is not stored");
+        assert_eq!(wake[0].owner_session, "mono-b");
+        assert_eq!(wake[0].title, "PR #14717: merge conflict");
+        assert_eq!(swept.wakes, vec![wake[0].id.clone()]);
+        let failed = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
+            .unwrap()
+            .remove(0);
+        assert_eq!(failed.number, 14716);
+        assert_eq!(failed.state.as_str(), WATCHING);
+        assert!(failed.end_reason.is_none());
+        assert_eq!(failed.wakes_total, 0);
+        assert_eq!(failed.next_read_at, now + 60_000);
+        let settled = list(&store.lock_conn().unwrap(), Some("mono-b"), now)
+            .unwrap()
+            .remove(0);
+        assert_eq!(settled.number, 14717);
+        assert_eq!(settled.wakes_total, 1);
+        assert!(swept.changed.contains(&settled.id));
+        assert!(!swept.changed.contains(&failed.id));
+    }
+
+    #[test]
+    fn a_failed_delay_write_does_not_stop_the_sweep() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(pending())]),
+            input("mono-a"),
+            T0,
+        )
+        .unwrap();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(recorded(|_| {}))]),
+            AddInput {
+                number: 14717,
+                ..input("mono-b")
+            },
+            T0,
+        )
+        .unwrap();
+        let now = T0 + QUIET_EVERY;
+        store
+            .lock_conn()
+            .unwrap()
+            .execute_batch(&format!(
+                "DROP TABLE delivery_events;
+                 CREATE TRIGGER refuse_delay BEFORE UPDATE ON pr_watches
+                 WHEN NEW.next_read_at = {now} + 60000
+                 BEGIN
+                   SELECT RAISE(ABORT, 'delay refused');
+                 END;"
+            ))
+            .unwrap();
+        let merged = recorded(|v| {
+            pr(v)["state"] = json!("MERGED");
+            pr(v)["mergeCommit"] = json!({ "oid": "feedface00000000000000000000000000000000" });
+            pr(v)["mergedAt"] = json!("2026-10-20T10:00:00Z");
+        });
+        let conflict = recorded(|v| pr(v)["mergeable"] = json!("CONFLICTING"));
+        let swept = sweep(
+            &store,
+            &FakeGh::new(vec![Ok(merged), Ok(conflict)]),
+            &PlainMaker,
+            &frame,
+            now,
+            &mut 0,
+        )
+        .unwrap();
+        let failed = list(&store.lock_conn().unwrap(), Some("mono-a"), now)
+            .unwrap()
+            .remove(0);
+        assert_eq!(failed.state.as_str(), WATCHING);
+        assert!(failed.end_reason.is_none());
+        assert_eq!(
+            failed.next_read_at,
+            T0 + IN_FLIGHT_EVERY,
+            "the delay write was refused, so the old due time stays"
+        );
+        let wake = open_wakes(&store);
+        assert_eq!(wake.len(), 1);
+        assert_eq!(swept.wakes, vec![wake[0].id.clone()]);
+        assert_eq!(wake[0].owner_session, "mono-b");
     }
 
     #[test]
