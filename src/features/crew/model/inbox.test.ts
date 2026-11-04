@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { afterAnswer, failureWords, inboxItems, noticesFrom, type DecisionInput } from "./inbox";
+import { afterAnswer, failureWords, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, type DecisionInput } from "./inbox";
 import type { CrewWorkerInput } from "./rows";
 
 const PROJECT = "/work/proj";
@@ -147,7 +147,8 @@ describe("inbox items", () => {
     const shown = items();
     const notices = noticesFrom(shown, rows);
     expect(notices.find((notice) => notice.title === "Ship it now?")?.immediate).toBe(true);
-    expect(notices.find((notice) => notice.title === "Waiting for a usage limit")?.immediate).toBe(true);
+    expect(notices.find((notice) => notice.title === "Waiting for a usage limit")?.immediate).toBe(false);
+    expect(notices.find((notice) => notice.title === "Needs a sign-in")?.immediate).toBe(true);
     expect(notices.find((notice) => notice.id.startsWith("failure:"))?.immediate).toBe(false);
     expect(notices.find((notice) => notice.id.startsWith("review:"))?.immediate).toBe(false);
     expect(notices.some((notice) => notice.id.startsWith("needs:w-needs"))).toBe(false);
@@ -160,6 +161,32 @@ describe("inbox items", () => {
   it("shows nothing for an empty project", () => {
     expect(inboxItems({ project: "", decisions: [decision()], rows })).toEqual([]);
     expect(inboxItems({ project: "~", decisions: [decision()], rows })).toEqual([]);
+  });
+});
+
+describe("a timed-out answer", () => {
+  it("keeps the working row when a later load still shows the decision open", () => {
+    const held = [
+      { id: "w1", status: "working" },
+      { id: "w2", status: "working" },
+    ];
+    const loaded = [
+      { id: "w1", status: "needs-you" },
+      { id: "other", status: "done" },
+    ];
+    expect(preserveAnswer(held, loaded, true)).toEqual([
+      { id: "w1", status: "working" },
+      { id: "other", status: "done" },
+      { id: "w2", status: "working" },
+    ]);
+    expect(preserveAnswer(held, loaded, false)).toEqual(loaded);
+  });
+
+  it("does not put the click back over a newer load when the answer was refused", () => {
+    const snapshot = [{ id: "w1", status: "needs-you" }];
+    const newer = [{ id: "w1", status: "done" }];
+    expect(refuseAnswer(snapshot, newer, true)).toBe(newer);
+    expect(refuseAnswer(snapshot, newer, false)).toBe(snapshot);
   });
 });
 

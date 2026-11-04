@@ -2,7 +2,7 @@
 
 import { sameProjectPath } from "../../projects/model/recents";
 import type { Notice } from "./digest";
-import type { CrewDeliveryInput, CrewWorkerInput } from "./rows";
+import { firstPlainLine, type CrewDeliveryInput, type CrewWorkerInput } from "./rows";
 import { knownStatus, statusWord } from "./words";
 
 export type FirstMateInboxKind = "decision" | "review" | "failure" | "credential";
@@ -34,8 +34,6 @@ export type FirstMateItem = {
   updatedAt: number;
 };
 
-const SECRET = /sk-|api[_ -]?key|\btoken\b|bearer /i;
-const STACK = /^\s*at /;
 const CREDENTIAL_CLASS = new Set(["auth", "billing", "usage_limit"]);
 
 function cleanPath(value: string): string {
@@ -55,13 +53,7 @@ function firstLine(value: string | null | undefined, max: number): string {
 
 /** The first plain line of a failure. A stack frame or a secret is not shown. */
 export function failureWords(notice?: string | null, error?: string | null): string {
-  const raw = `${notice ?? ""}\n${error ?? ""}`.replace(/\r\n/g, "\n");
-  for (const line of raw.split("\n")) {
-    const text = line.trim();
-    if (!text || STACK.test(text) || SECRET.test(text)) continue;
-    return text.slice(0, 240);
-  }
-  return "This work failed.";
+  return firstPlainLine(`${notice ?? ""}\n${error ?? ""}`) ?? "This work failed.";
 }
 
 function credential(row: CrewWorkerInput): boolean {
@@ -266,12 +258,25 @@ export function afterAnswer<T extends Answerable>(
   };
 }
 
-/** Needs you goes out at once. A review or a failure waits for the hourly digest. */
+/** A credential needs the person now when they have to sign in, install a CLI, or pay. A usage limit waits. */
+function credentialNeedsPerson(item: FirstMateItem, rows: readonly CrewWorkerInput[]): boolean {
+  return item.workerIds.some((id) => {
+    const row = rows.find((entry) => entry.id === id);
+    if (!row) return false;
+    if (knownStatus(row.status) === "needs-you") return true;
+    const kind = (row.errorClass ?? "").trim();
+    if (kind === "auth" || kind === "billing") return true;
+    const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+    return /sign[- ]in|not signed in|missing cli|isn't installed|is not installed/.test(text);
+  });
+}
+
+/** Needs you goes out at once. A review, a failure, or a usage limit waits for the hourly digest. */
 export function noticesFrom(items: readonly FirstMateItem[], rows: readonly CrewWorkerInput[] = []): Notice[] {
   const covered = new Set(items.flatMap((item) => item.workerIds));
   const notices: Notice[] = items.map((item) => ({
     id: `${item.id}:${item.updatedAt}`,
-    immediate: item.kind === "decision" || item.kind === "credential",
+    immediate: item.kind === "decision" || (item.kind === "credential" && credentialNeedsPerson(item, rows)),
     title: item.title,
     at: item.updatedAt,
   }));
@@ -285,4 +290,35 @@ export function noticesFrom(items: readonly FirstMateItem[], rows: readonly Crew
     });
   }
   return notices;
+}
+
+/**
+ * A timed-out answer stays on screen. A load that still shows the decision open
+ * must not paint the waiter back to needs you. A load that dropped the waiter keeps them.
+ * Once the decision is no longer open, the load is the truth.
+ */
+export function preserveAnswer<T extends { id: string; status?: unknown }>(
+  heldRows: readonly T[],
+  loadedRows: readonly T[],
+  decisionOpen: boolean,
+): T[] {
+  if (!decisionOpen) return [...loadedRows];
+  const held = new Map(heldRows.map((row) => [row.id, row]));
+  const out = loadedRows.map((row) => {
+    const previous = held.get(row.id);
+    if (!previous) return row;
+    if (knownStatus(previous.status) === "working" && knownStatus(row.status) === "needs-you") return previous;
+    return row;
+  });
+  for (const previous of heldRows) {
+    if (knownStatus(previous.status) !== "working") continue;
+    if (out.some((row) => row.id === previous.id)) continue;
+    out.push(previous);
+  }
+  return out;
+}
+
+/** A refused answer puts the click back only when nothing newer has landed. */
+export function refuseAnswer<T>(snapshot: T, current: T, newer: boolean): T {
+  return newer ? current : snapshot;
 }
