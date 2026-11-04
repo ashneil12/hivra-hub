@@ -508,6 +508,81 @@ fn a_pr_mode_refuses_uncommitted_work_and_records_nothing() {
     ));
 }
 
+/// A worker copy checked out on the base, or on the remote's default, must not be pushed: `HEAD:refs/heads/<branch>`
+/// would move that branch on the remote and skip the merge path.
+#[test]
+fn pr_and_checked_pr_refuse_a_worker_on_the_base_or_the_default_branch() {
+    let f = fixture("protected");
+    let s = store();
+    git(&f.project, &["branch", "release"]);
+    git(&f.project, &["push", "-q", "origin", "release"]);
+    git(&f.copy, &["checkout", "-q", "release"]);
+    commit(&f.copy, "a.txt", "two\n");
+    let release_at = git(&f.bare, &["rev-parse", "refs/heads/release"]);
+    let main_at = git(&f.bare, &["rev-parse", "refs/heads/main"]);
+    let deliver_at = |base: &str| DeliverInput {
+        project: f.project.to_string_lossy().into(),
+        checkout: f.copy.to_string_lossy().into(),
+        base: Some(base.into()),
+        ..Default::default()
+    };
+
+    for mode in [Mode::Pr, Mode::CheckedPr] {
+        set_mode(&s, &f.project, Some(mode), false);
+        let gh = FakeGithub::new(vec![]);
+        let error = deliver::deliver(&s, &gh, deliver_at("release"), 10).unwrap_err();
+        assert!(
+            error.contains("release") && error.contains("base"),
+            "{mode:?}: {error}"
+        );
+        assert!(
+            gh.ran("pr", "create").is_empty(),
+            "{mode:?} opened a pull request"
+        );
+        // The same branch named as a full ref is still the base.
+        let prefixed = deliver::deliver(&s, &gh, deliver_at("refs/heads/release"), 11).unwrap_err();
+        assert!(
+            prefixed.contains("release") && prefixed.contains("base"),
+            "{prefixed}"
+        );
+    }
+    assert_eq!(
+        git(&f.bare, &["rev-parse", "refs/heads/release"]),
+        release_at
+    );
+    assert_eq!(git(&f.bare, &["rev-parse", "refs/heads/main"]), main_at);
+    assert!(deliver::list(&s.lock_conn().unwrap(), None)
+        .unwrap()
+        .is_empty());
+
+    // On the remote's default branch, even when the pull request's base is a different branch.
+    git(&f.project, &["checkout", "-q", "-b", "dev"]);
+    git(&f.copy, &["checkout", "-q", "main"]);
+    commit(&f.copy, "a.txt", "three\n");
+    for mode in [Mode::Pr, Mode::CheckedPr] {
+        set_mode(&s, &f.project, Some(mode), false);
+        let gh = FakeGithub::new(vec![]);
+        let error = deliver::deliver(&s, &gh, deliver_at("release"), 12).unwrap_err();
+        assert!(
+            error.contains("main") && error.contains("default"),
+            "{mode:?}: {error}"
+        );
+        assert!(gh.ran("pr", "create").is_empty(), "{mode:?}");
+    }
+    assert_eq!(
+        git(&f.bare, &["rev-parse", "refs/heads/main"]),
+        main_at,
+        "main on the bare repo did not move"
+    );
+    assert_eq!(
+        git(&f.bare, &["rev-parse", "refs/heads/release"]),
+        release_at
+    );
+    assert!(deliver::list(&s.lock_conn().unwrap(), None)
+        .unwrap()
+        .is_empty());
+}
+
 fn checked_delivery(s: &SessionStore, f: &Fixture) -> deliver::Delivery {
     set_mode(s, &f.project, Some(Mode::CheckedPr), false);
     commit(&f.copy, "a.txt", "two\n");

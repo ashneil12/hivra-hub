@@ -327,6 +327,13 @@ pub fn pr_from_output(text: &str) -> Option<(String, u64)> {
     })
 }
 
+/// `refs/heads/main` and `main` are the same branch. Anything else is kept, so a caller can't
+/// hide the base by spelling it as a full ref.
+fn short_ref(name: &str) -> &str {
+    let name = name.trim();
+    name.strip_prefix("refs/heads/").unwrap_or(name)
+}
+
 fn default_base(checkout: &Path, remote: &str) -> String {
     git(
         checkout,
@@ -435,11 +442,27 @@ pub fn deliver(
                     checkout.display()
                 ));
             }
+            let default_branch = default_base(&checkout, &remote);
             let base = input
                 .base
                 .clone()
                 .filter(|b| !b.trim().is_empty())
-                .unwrap_or_else(|| default_base(&checkout, &remote));
+                .unwrap_or_else(|| default_branch.clone());
+            // Pushing the base, or the remote's default, updates that branch directly and never
+            // goes through the merge path. A worker's own branch is the only thing a PR mode pushes.
+            let branch_name = short_ref(&branch);
+            let base_name = short_ref(&base);
+            let default_name = short_ref(&default_branch);
+            if branch_name == base_name || branch_name == default_name {
+                let which = if branch_name == base_name {
+                    format!("the base branch ({base_name})")
+                } else {
+                    format!("the remote's default branch ({default_name})")
+                };
+                return Err(format!(
+                    "{branch_name} is {which}, so delivering it would push onto {branch_name} and skip the merge path. Deliver from the worker's own branch."
+                ));
+            }
             let ahead = git(
                 &checkout,
                 &["rev-list", "--count", &format!("{remote}/{base}..HEAD")],
