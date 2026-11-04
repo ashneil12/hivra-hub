@@ -9,7 +9,9 @@ import {
   isEvaluateTool,
   launchPlan,
   mergeRows,
+  dropConfirmedGone,
   nextSeen,
+  pidsConfirmedGone,
   prepareTools,
   redact,
   rowState,
@@ -118,6 +120,62 @@ describe("passwords and cookies stay out of tool output", () => {
     expect(cookie).toContain("landed;");
     expect(cookie).toContain("[redacted]");
     expect(cookie).not.toContain("supersecretvalue");
+  });
+
+  it("redacts a cookie or password through every part after a semicolon", () => {
+    const cookie = redact("landed; cookie=supersecretvalue; Path=/; HttpOnly") as string;
+    expect(cookie.startsWith("landed;")).toBe(true);
+    expect(cookie).toContain("cookie=[redacted]");
+    expect(cookie).not.toContain("supersecretvalue");
+    expect(cookie).not.toContain("Path=/");
+    expect(cookie).not.toContain("HttpOnly");
+    const password = redact("password=swordfish; still=secret") as string;
+    expect(password).toBe("password=[redacted]");
+    expect(password).not.toContain("swordfish");
+    expect(password).not.toContain("still=secret");
+    const quoted = redact('cookie="a; b"; kept') as string;
+    expect(quoted).toContain("[redacted]");
+    expect(quoted).toContain("kept");
+    expect(quoted).not.toContain("a; b");
+  });
+
+  it("redacts cookies in a header list, a header array, a set-cookie array, and an object", () => {
+    const out = redact({
+      headers: [
+        { name: "Cookie", value: "session=secret" },
+        { name: "Accept", value: "text/html" },
+        ["set-cookie", "id=1; Path=/"],
+        ["accept", "text/html"],
+      ],
+      response: {
+        headers: {
+          "set-cookie": ["id=1; Path=/", "theme=dark"],
+          "content-type": "text/html",
+          cookie: { session: "secret", path: "/" },
+        },
+      },
+      "set-cookie": ["id=1; Path=/", "theme=dark"],
+    }) as {
+      headers: Array<{ name?: string; value?: string } | string[]>;
+      response: { headers: { "set-cookie": string[]; "content-type": string; cookie: string } };
+      "set-cookie": string[];
+    };
+    const list = out.headers[0] as { name?: string; value?: string };
+    const accept = out.headers[1] as { name?: string; value?: string };
+    const tuple = out.headers[2] as string[];
+    const plain = out.headers[3] as string[];
+    expect(list.name).toBe("Cookie");
+    expect(list.value).toBe("[redacted]");
+    expect(accept.value).toBe("text/html");
+    expect(tuple).toEqual(["set-cookie", "[redacted]"]);
+    expect(plain).toEqual(["accept", "text/html"]);
+    expect(out.response.headers["set-cookie"]).toEqual(["[redacted]", "[redacted]"]);
+    expect(out.response.headers["content-type"]).toBe("text/html");
+    expect(out.response.headers.cookie).toBe("[redacted]");
+    expect(out["set-cookie"]).toEqual(["[redacted]", "[redacted]"]);
+    expect(JSON.stringify(out)).not.toContain("session=secret");
+    expect(JSON.stringify(out)).not.toContain("id=1");
+    expect(JSON.stringify(out)).not.toContain("theme=dark");
   });
 
   it("redacts a password field with any number of bracket groups, and a tools/call error", () => {
@@ -333,7 +391,7 @@ function readPid(file: string): number {
 
 describe("the browser tree is only the process that was started", () => {
   it("does not treat an empty start time as the same process", () => {
-    expect(rowState({ pid: 5, started: "" }, { alive: true, started: "boot" })).toBe("foreign");
+    expect(rowState({ pid: 5, started: "" }, { alive: true, started: "boot" })).toBe("unknown");
     expect(mergeRows([{ pid: 5, started: "" }], [{ pid: 5, started: "boot" }])).toEqual([
       { pid: 5, started: "boot" },
     ]);
@@ -362,6 +420,56 @@ describe("the browser tree is only the process that was started", () => {
       pid: 11,
       started: "chrome",
     });
+  });
+
+  it("adds to the tracked tree and does not drop a pid a later list left out", () => {
+    const seen = [
+      { pid: 10, started: "engine" },
+      { pid: 11, started: "chrome" },
+    ];
+    const later = nextSeen(seen, [
+      { pid: 10, started: "engine" },
+      { pid: 12, started: "gpu" },
+    ]);
+    expect(later).toContainEqual({ pid: 11, started: "chrome" });
+    expect(later).toContainEqual({ pid: 10, started: "engine" });
+    expect(later).toContainEqual({ pid: 12, started: "gpu" });
+  });
+
+  it("does not finish while a start time is unknown", () => {
+    const missing = rowState({ pid: 5, started: "" }, { alive: true, started: "boot" });
+    const unread = rowState({ pid: 5, started: null }, { alive: true, started: "boot" });
+    expect(missing).toBe("unknown");
+    expect(unread).toBe("unknown");
+    expect(missing).not.toBe("foreign");
+    expect(settle(["gone", missing])).toBe("unknown");
+    expect(settle(["gone", missing])).not.toBe("clear");
+    expect(settle(["gone", unread])).not.toBe("clear");
+    expect(pidsConfirmedGone(["gone", "unknown"])).toBe(false);
+    expect(pidsConfirmedGone(["gone", "foreign"])).toBe(false);
+    expect(pidsConfirmedGone(["same"])).toBe(false);
+    expect(pidsConfirmedGone(["gone", "gone"])).toBe(true);
+    expect(pidsConfirmedGone([])).toBe(true);
+  });
+
+  it("drops a tracked pid only once that pid is confirmed gone", () => {
+    const seen = [
+      { pid: 10, started: "engine" },
+      { pid: 11, started: "chrome" },
+    ];
+    const probes = {
+      10: { alive: false, started: "" },
+      11: { alive: true, started: "chrome" },
+    };
+    expect(dropConfirmedGone(seen, (row: { pid: number }) => probes[row.pid as 10 | 11])).toEqual([
+      { pid: 11, started: "chrome" },
+    ]);
+    expect(
+      dropConfirmedGone([{ pid: 11, started: "" }], () => ({ alive: true, started: "boot" })),
+    ).toEqual([{ pid: 11, started: "" }]);
+    expect(
+      dropConfirmedGone([{ pid: 11, started: "chrome" }], () => ({ alive: true, started: null })),
+    ).toEqual([{ pid: 11, started: "chrome" }]);
   });
 });
 

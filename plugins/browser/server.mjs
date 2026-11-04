@@ -18,7 +18,7 @@ const HEADER_LINE =
 const FIELD_VALUE =
   /^(\s*(?:-\s*)?[A-Za-z][\w-]*\s+"([^"\n]*)"(?:\s+\[[^\]]*\])*\s*:\s*)(.*)$/;
 const INLINE_SECRET =
-  /(^|[^\w-])((?:set-cookie|cookie|password|passwd|pwd)\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^;\s]+)/gi;
+  /(^|[^\w-])((?:set-cookie|cookie|password|passwd|pwd)\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\n]*)/gi;
 const PAGE_TOOL = /snapshot|content|navigate|page|html|text|console|network|pdf/i;
 
 export function isEvaluateTool(name) {
@@ -62,8 +62,8 @@ function walk(value) {
       out[key] = "[redacted]";
       continue;
     }
-    if (typeof child === "string" && SECRET_KEY.test(key)) {
-      out[key] = "[redacted]";
+    if (SECRET_KEY.test(key)) {
+      out[key] = redactSecretValue(child);
       continue;
     }
     if (key.toLowerCase() === "headers" && child && typeof child === "object") {
@@ -75,11 +75,42 @@ function walk(value) {
   return out;
 }
 
+function redactSecretValue(value) {
+  if (typeof value === "string") return "[redacted]";
+  if (Array.isArray(value)) return value.map(redactSecretValue);
+  if (value && typeof value === "object") return "[redacted]";
+  return value;
+}
+
+function redactHeaderEntry(entry) {
+  if (Array.isArray(entry)) {
+    if (entry.length >= 2 && SECRET_KEY.test(String(entry[0] ?? ""))) {
+      const copy = entry.slice();
+      copy[1] = redactSecretValue(entry[1]);
+      return copy;
+    }
+    return entry.map(walk);
+  }
+  if (entry && typeof entry === "object") {
+    const name = entry.name ?? entry.key ?? entry.header;
+    if (SECRET_KEY.test(String(name ?? ""))) {
+      const out = { ...entry };
+      for (const [key, child] of Object.entries(out)) {
+        if (key === "name" || key === "key" || key === "header") continue;
+        out[key] = redactSecretValue(child);
+      }
+      return out;
+    }
+  }
+  return walk(entry);
+}
+
 function redactHeaders(headers) {
-  if (Array.isArray(headers)) return headers.map(walk);
+  if (Array.isArray(headers)) return headers.map(redactHeaderEntry);
+  if (!headers || typeof headers !== "object") return headers;
   const out = {};
   for (const [key, child] of Object.entries(headers)) {
-    out[key] = typeof child === "string" && SECRET_KEY.test(key) ? "[redacted]" : walk(child);
+    out[key] = SECRET_KEY.test(key) ? redactSecretValue(child) : walk(child);
   }
   return out;
 }
@@ -297,7 +328,7 @@ function probeProcess(pid) {
 function snapshotTree(root) {
   const pids = descendantPids(root);
   if (pids == null) return null;
-  return pids.map((pid) => ({ pid, started: readStart(pid) || "" }));
+  return pids.map((pid) => ({ pid, started: readStart(pid) }));
 }
 
 function signalRows(rows, signal) {
@@ -326,20 +357,31 @@ export function mergeRows(left, right) {
   return [...byPid.values()];
 }
 
-// "same" is signalled. "unknown" means ps failed, so the browser is not gone.
-// "foreign" is a live pid we never identified. It is not this browser.
+// "same" is signalled. "unknown" means the start time could not be read, so this
+// pid is not gone and is not signalled. A reused pid, whose start time changed, is gone.
 export function rowState(row, probe) {
   if (!row || row.pid === process.pid) return "gone";
   if (!probe || !probe.alive) return "gone";
-  if (probe.started == null) return "unknown";
-  if (!row.started) return "foreign";
+  if (probe.started == null || !row.started) return "unknown";
   if (probe.started !== row.started) return "gone";
   return "same";
 }
 
 export function nextSeen(previous, snapshot) {
-  if (snapshot == null) return previous;
-  return snapshot;
+  if (snapshot == null) return Array.isArray(previous) ? previous : [];
+  return mergeRows(previous, snapshot);
+}
+
+export function dropConfirmedGone(rows, probeOf) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((row) => {
+    const probe = typeof probeOf === "function" ? probeOf(row) : undefined;
+    return rowState(row, probe) !== "gone";
+  });
+}
+
+export function pidsConfirmedGone(states) {
+  return Array.isArray(states) && states.every((state) => state === "gone");
 }
 
 export function settle(states) {
@@ -348,14 +390,22 @@ export function settle(states) {
   return "clear";
 }
 
-function markTreeGone() {
+const TREE_TOKEN =
+  /^hivra-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function doneMarker() {
   const file = process.env.HIVRA_BROWSER_DONE || "";
-  if (!file) return true;
-  if (!isAbsolute(file) || file.split(/[\\/]/).includes("..")) return false;
+  if (!file) return "";
+  if (!isAbsolute(file) || file.split(/[\\/]/).includes("..")) return "";
   const base = file.split(/[\\/]/).pop() || "";
-  if (!/^hivra-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.gone$/.test(base)) {
-    return false;
-  }
+  if (!base.endsWith(".gone") || !TREE_TOKEN.test(base.slice(0, -".gone".length))) return "";
+  return file;
+}
+
+function markTreeGone() {
+  if (!process.env.HIVRA_BROWSER_DONE) return true;
+  const file = doneMarker();
+  if (!file) return false;
   try {
     writeFileSync(file, "gone\n");
     return true;
@@ -364,12 +414,31 @@ function markTreeGone() {
   }
 }
 
+let recordedTree = false;
+
+function publishTree(rows) {
+  if (!Array.isArray(rows) || (rows.length === 0 && !recordedTree)) return;
+  const gone = doneMarker();
+  if (!gone) return;
+  const file = `${gone.slice(0, -"gone".length)}tree`;
+  const base = file.split(/[\\/]/).pop() || "";
+  if (!base.endsWith(".tree") || !TREE_TOKEN.test(base.slice(0, -".tree".length))) return;
+  const body = rows
+    .filter((row) => row && Number.isInteger(row.pid))
+    .map((row) => ({ pid: row.pid, started: typeof row.started === "string" ? row.started : "" }));
+  try {
+    writeFileSync(file, `${JSON.stringify(body)}\n`);
+    if (body.length > 0) recordedTree = true;
+  } catch {
+    // A missing tree file means Stop cannot confirm the browser is gone.
+  }
+}
+
 function waitForRows(rows, code) {
   const started = Date.now();
   const timer = setInterval(() => {
     const states = rows.map((row) => rowState(row, probeProcess(row.pid)));
-    const outcome = settle(states);
-    if (outcome === "clear") {
+    if (pidsConfirmedGone(states)) {
       clearInterval(timer);
       const proved = markTreeGone();
       process.exit(!proved && code === 0 ? 1 : code);
@@ -377,7 +446,7 @@ function waitForRows(rows, code) {
     }
     if (Date.now() - started >= 1000) {
       signalRows(rows, "SIGKILL");
-      if (outcome === "unknown") {
+      if (settle(states) === "unknown") {
         clearInterval(timer);
         process.exit(code === 0 ? 1 : code);
       }
@@ -403,7 +472,10 @@ function main() {
   let seen = [];
   const parent = process.ppid;
   const treeWatch = setInterval(() => {
-    if (!stopping && child.pid) seen = nextSeen(seen, snapshotTree(child.pid));
+    if (stopping || !child.pid) return;
+    seen = nextSeen(seen, snapshotTree(child.pid));
+    seen = dropConfirmedGone(seen, (row) => probeProcess(row.pid));
+    publishTree(seen);
   }, 200);
   treeWatch.unref();
   // Snapshot the tree first, with each pid's start time. Signalling the engine reparents
@@ -417,9 +489,11 @@ function main() {
       process.exit(code === 0 ? 1 : code);
       return;
     }
-    const rows = mergeRows(seen, fresh == null ? [] : fresh);
-    signalRows(rows, "SIGTERM");
-    waitForRows(rows, code);
+    seen = nextSeen(seen, fresh == null ? null : fresh);
+    seen = dropConfirmedGone(seen, (row) => probeProcess(row.pid));
+    publishTree(seen);
+    signalRows(seen, "SIGTERM");
+    waitForRows(seen, code);
   }
   process.on("SIGTERM", () => shutdown(0));
   process.on("SIGINT", () => shutdown(0));
