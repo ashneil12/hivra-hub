@@ -2,9 +2,12 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { findMono, listMonos, removeMono, updateMono } from "./mono";
 import {
+  CONTACT_SAVE_LOST,
   contactRows,
+  contactWriteResult,
   duplicateContact,
   duplicateContactFiles,
+  duplicateContactWithFiles,
   editContactProfile,
   listContactRows,
   newContact,
@@ -145,4 +148,101 @@ it("adds a contact from a template or from scratch, and ignores an unknown templ
   const blank = newContact();
   expect(blank.sessionId).toBeUndefined();
   expect(listMonos().some((mono) => mono.id === blank.id)).toBe(true);
+});
+
+it("keeps the other window's roster change when this window read a stale copy", () => {
+  const ada = seed("Ada");
+  const milo = seed("Milo");
+  const stale = localStorage.getItem("monocode:mono-roster")!;
+  const live = JSON.parse(stale) as { id: string; muted?: boolean; pinned?: boolean; name?: string }[];
+  live.find((mono) => mono.id === milo.id)!.muted = true;
+  const liveText = JSON.stringify(live);
+  let servedStale = false;
+  const store = new Map<string, string>([["monocode:mono-roster", liveText]]);
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => {
+      if (key === "monocode:mono-roster" && !servedStale) {
+        servedStale = true;
+        return stale;
+      }
+      return store.get(key) ?? null;
+    },
+    setItem: (key: string, value: string) => store.set(key, value),
+    removeItem: (key: string) => store.delete(key),
+    clear: () => store.clear(),
+  });
+  expect(setContactPinned(ada.id, true)?.pinned).toBe(true);
+  expect(setContactMuted(ada.id, true)?.muted).toBe(true);
+  const renamed = editContactProfile(ada.id, { name: "Ada L", title: "Screens" });
+  expect(renamed?.name).toBe("Ada L");
+  expect(removeContact(ada.id)).toBe(true);
+  const rows = JSON.parse(store.get("monocode:mono-roster")!) as { id: string; muted?: boolean; name?: string }[];
+  expect(rows.some((mono) => mono.id === ada.id)).toBe(false);
+  expect(rows.find((mono) => mono.id === milo.id)?.muted).toBe(true);
+  expect(contactWriteResult()).toBe("saved");
+});
+
+it("reports a lost save when the roster write does not stick", () => {
+  const ada = seed("Ada");
+  const milo = seed("Milo");
+  const stuck = localStorage.getItem("monocode:mono-roster")!;
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => (key === "monocode:mono-roster" ? stuck : null),
+    setItem: () => undefined,
+    removeItem: () => undefined,
+    clear: () => undefined,
+  });
+  expect(setContactPinned(ada.id, true)).toBeUndefined();
+  expect(contactWriteResult()).toBe("lost");
+  expect(CONTACT_SAVE_LOST).toBe("That save didn't land. Try again.");
+  expect(setContactMuted(milo.id, true)).toBeUndefined();
+  expect(editContactProfile(ada.id, { name: "Nope" })).toBeUndefined();
+  expect(removeContact(milo.id)).toBe(false);
+  expect(contactWriteResult()).toBe("lost");
+  expect(JSON.parse(stuck).find((mono: { id: string }) => mono.id === milo.id).muted).toBeUndefined();
+});
+
+it("copies the soul, the memory and the skills onto the new contact only", async () => {
+  const ada = seed("Ada", { role: "Design review" });
+  const writes: [string, string, string][] = [];
+  const copy = await duplicateContactWithFiles(ada.id, {
+    read: async (id, name) => {
+      if (id !== ada.id) return null;
+      if (name === "SOUL.md") return "edited soul\r\n";
+      if (name === "MEMORY.md") return "edited memory\r\n";
+      if (name === "skills/review.md") return "how to review\n";
+      if (name === "skills/ok name.md") return "a note\n";
+      return null;
+    },
+    write: async (id, name, text) => {
+      writes.push([id, name, text]);
+      return true;
+    },
+    listSkills: async (id) => {
+      expect(id).toBe(ada.id);
+      return ["review", "ok name", "../etc", "bad/name", ".hidden", "a..b", "C:\\skills\\nope", ""];
+    },
+  });
+  expect(copy?.id).not.toBe(ada.id);
+  expect(copy?.name).toBe("Ada copy");
+  expect(writes.map((row) => row[1]).sort()).toEqual(["MEMORY.md", "SOUL.md", "skills/ok name.md", "skills/review.md"]);
+  expect(writes.every((row) => row[0] === copy?.id)).toBe(true);
+  expect(findMono(ada.id)?.role).toBe("Design review");
+
+  const late: string[] = [];
+  await duplicateContactWithFiles(ada.id, {
+    read: async (_id, name) => {
+      if (String(name).startsWith("skills/")) {
+        for (const mono of listMonos()) if (mono.id !== ada.id) removeMono(mono.id);
+      }
+      return "too late";
+    },
+    write: async (id, name) => {
+      late.push(`${id}/${name}`);
+      return true;
+    },
+    listSkills: async () => ["review"],
+  });
+  expect(late.some((path) => path.includes("skills/"))).toBe(false);
+  expect(findMono(ada.id)?.role).toBe("Design review");
 });

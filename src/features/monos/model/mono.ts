@@ -297,6 +297,26 @@ function saveRoster(roster: readonly Mono[]): void {
   window.dispatchEvent(new CustomEvent(MONOS_CHANGED));
 }
 
+export type RosterCommit = "saved" | "lost" | "missing";
+
+/**
+ * WP-21: write the roster only when it is still the one just read, then read it back.
+ * A change that landed in between is applied again. A write that does not stick is lost.
+ */
+export function commitRoster(change: (roster: Mono[]) => Mono[] | null): RosterCommit {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const before = listMonos();
+    const token = JSON.stringify(before);
+    const next = change(before);
+    if (next == null) return "missing";
+    if (JSON.stringify(listMonos()) !== token) continue;
+    saveRoster(next);
+    if (JSON.stringify(listMonos()) !== JSON.stringify(next)) continue;
+    return "saved";
+  }
+  return "lost";
+}
+
 export function findMono(id: string): Mono | undefined {
   return listMonos().find((mono) => mono.id === id);
 }
@@ -475,6 +495,17 @@ export function removeMono(id: string): void {
   markMonoRemovedByUser(id, findMono(id)?.name);
   removeMonoBackground(id);
   saveRoster(listMonos().filter((mono) => mono.id !== id));
+}
+
+/** WP-21: drop one roster entry only when the roster is still the one just read. */
+export function removeMonoIfCurrent(id: string): RosterCommit {
+  const current = findMono(id);
+  if (!current) return "missing";
+  const result = commitRoster((roster) => (roster.some((mono) => mono.id === id) ? roster.filter((mono) => mono.id !== id) : null));
+  if (result !== "saved") return result;
+  markMonoRemovedByUser(id, current.name);
+  removeMonoBackground(id);
+  return "saved";
 }
 
 /**

@@ -15,6 +15,8 @@ type Props = {
   onRemove: (id: string) => void;
   onNew: () => void;
   onNewFromTemplate: (templateId: string) => void;
+  /** A save that did not stay on the roster. */
+  notice?: string | null;
 };
 
 export function MonoContacts({
@@ -27,6 +29,7 @@ export function MonoContacts({
   onRemove,
   onNew,
   onNewFromTemplate,
+  notice,
 }: Props) {
   const [menuId, setMenuId] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -67,6 +70,7 @@ export function MonoContacts({
           {templates.length === 0 ? <p className="text-sm">No templates yet.</p> : null}
         </div>
       ) : null}
+      {notice ? <p className="mb-2 text-sm" data-contact-notice>{notice}</p> : null}
       {rows.length === 0 ? <p className="text-sm">No Monos yet.</p> : null}
       <ul className="flex flex-col gap-1">
         {rows.map((row) => (
