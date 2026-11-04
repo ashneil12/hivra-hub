@@ -56,9 +56,7 @@
         {
           "version": "1.0.0",
           "source": {
-            "type": "git",
-            "url": "https://github.com/ashneil12/monocode-hub",
-            "commit": "a9cd2fdbfc4343a2d1868bebd045e19f4b89bf93",
+            "type": "folder",
             "path": "plugins/browser"
           }
         }

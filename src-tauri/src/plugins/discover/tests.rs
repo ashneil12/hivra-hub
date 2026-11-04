@@ -9,7 +9,6 @@ use super::readers::{exact_version, CLAUDE_REASON, DSH_REASON};
 use super::*;
 
 const COMMIT: &str = "6ea74587e384e1a8035c09ae33a46fe3f881eb9b";
-const BROWSER: &str = "a9cd2fdbfc4343a2d1868bebd045e19f4b89bf93";
 
 fn fixture(name: &str) -> String {
     std::fs::read_to_string(
@@ -89,14 +88,26 @@ fn the_bundled_index_lists_the_five_default_plugins() {
     let browser = entry(&index, "browser");
     assert_eq!(browser.status, Status::Available);
     assert_eq!(browser.version.as_deref(), Some("1.0.0"));
-    assert_eq!(
-        browser.source,
-        Some(InstallSource::Git {
-            url: "https://github.com/ashneil12/monocode-hub".into(),
-            commit: BROWSER.into(),
-            path: Some("plugins/browser".into()),
-        })
+    let raw: serde_json::Value = serde_json::from_str(BUNDLED_INDEX).unwrap();
+    let pinned = &raw["plugins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["name"] == "browser")
+        .unwrap()["versions"][0]["source"];
+    assert_eq!(pinned["type"], "folder");
+    assert_eq!(pinned["path"], "plugins/browser");
+    assert!(
+        pinned.get("commit").is_none(),
+        "a commit of this repo is not the plugin source"
     );
+    match &browser.source {
+        Some(InstallSource::Local { path }) => {
+            assert!(path.ends_with("plugins/browser"), "{path}");
+            assert!(std::path::Path::new(path).join("plugin.json").is_file());
+        }
+        other => panic!("the browser plugin is pinned to its folder, not {other:?}"),
+    }
     let fixture_skills = std::fs::read_dir(
         Path::new(env!("CARGO_MANIFEST_DIR")).join("src/plugins/fixtures/pstack/skills"),
     )

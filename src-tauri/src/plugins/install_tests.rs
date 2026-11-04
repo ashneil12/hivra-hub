@@ -166,24 +166,24 @@ fn the_browser_plugin_installs_from_the_index_pin_without_the_network() {
         .find(|plugin| plugin["name"] == "browser")
         .unwrap();
     let pinned = &browser["versions"][0]["source"];
-    let url = pinned["url"].as_str().unwrap();
-    assert!(url.starts_with("https://"), "{url}");
-    let commit = pinned["commit"].as_str().unwrap();
-    assert_eq!(commit.len(), 40);
-    assert!(commit.chars().all(|ch| ch.is_ascii_hexdigit()));
+    assert_eq!(
+        pinned["type"], "folder",
+        "the pin is the plugin's own folder, not a commit of this repo: {pinned}"
+    );
     assert_eq!(pinned["path"], "plugins/browser");
+    assert!(pinned.get("commit").is_none(), "{pinned}");
+    assert!(pinned.get("url").is_none(), "{pinned}");
 
     let repo =
         fsutil::canonical(Path::new(env!("CARGO_MANIFEST_DIR")).join("..").as_path()).unwrap();
-    assert_eq!(git_cmd(&repo, &["cat-file", "-t", commit]), "commit");
+    let folder = fsutil::canonical(&repo.join("plugins/browser")).unwrap();
+    assert!(folder.starts_with(&repo), "{}", folder.display());
+    assert!(folder.join("plugin.json").is_file());
 
     let tmp = Tmp::new("browser-index");
     let host = host(&tmp);
-    let source = InstallSource::Git {
-        url: repo.display().to_string(),
-        commit: Some(commit.to_string()),
-        tag: None,
-        path: Some("plugins/browser".into()),
+    let source = InstallSource::Local {
+        path: folder.display().to_string(),
     };
     let result = install::install(&host, &git_tools(), &source, RequestedBy::person()).unwrap();
     let InstallResult::Installed { entry, .. } = result else {
@@ -191,7 +191,12 @@ fn the_browser_plugin_installs_from_the_index_pin_without_the_network() {
     };
     let entry = entry.expect("installed");
     assert_eq!(entry.name, "browser");
-    assert_eq!(entry.source.pin.as_deref(), Some(commit));
+    assert_eq!(entry.source.kind, "local");
+    assert!(
+        entry.source.pin.is_none(),
+        "a folder pin is not a commit of this repo: {:?}",
+        entry.source.pin
+    );
     let mcp: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(host.installed("browser").join("mcp.json")).unwrap(),
     )
