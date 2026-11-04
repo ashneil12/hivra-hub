@@ -9,7 +9,7 @@ import { botChangeRows, redoBotChange, undoBotChange } from "../../hub/model/bot
 import { buildPage } from "./buildPage";
 import { allPages, approvedPermissions, keepPage, pageFromSpec, pagesProblem, pinnedPages, setPagesBackend, setPinned } from "./pages";
 
-const roster = [{ id: "hivra-lead" }, { id: "projects-manager" }];
+const roster = [{ id: "hivra-lead" }, { id: "bo" }];
 const FAST = { coalesceMs: 5, minGapMs: 0, healthMs: 20, pollMs: 40, retryMs: [40], stopGraceMs: 5 };
 let t: TestHub;
 let store: HubStore;
@@ -85,7 +85,7 @@ describe("kept pages live in the app's own store", () => {
   it("pages kept on this Mac before go into the store once, with what Ash allowed, and a copy stays", async () => {
     const old = [
       { id: "page-old1", projectId: "hivra", title: "Example: old", request: "old", by: "Projects Manager", spec: { kind: "blocks", title: "Example: old", blocks: [{ kind: "note", title: "n", text: "Example: hi" }] }, permissions: [], keptAt: 5, pinned: true, pinnedBy: "you" },
-      { id: "page-gone", projectId: "hivra", title: "Example: undone", request: "u", by: "frank", spec: { kind: "blocks", title: "Example: undone", blocks: [{ kind: "note", title: "n", text: "Example: x" }] }, permissions: [], keptAt: 4, removed: true },
+      { id: "page-gone", projectId: "hivra", title: "Example: undone", request: "u", by: "ed", spec: { kind: "blocks", title: "Example: undone", blocks: [{ kind: "note", title: "n", text: "Example: x" }] }, permissions: [], keptAt: 4, removed: true },
     ];
     localStorage.setItem("monocode:pages", JSON.stringify(old));
     await start();

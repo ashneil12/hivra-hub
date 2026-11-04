@@ -11,7 +11,6 @@
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import type { Session } from "../../sessions/model/session";
 import { MONO_REPORT_PREFIX } from "../../monos/model/monoSessionCompletion";
-import { DEFAULT_TEAM_IDS } from "../../hub/model/builtInMonos";
 import { leadFor } from "../../hub/model/hubLeads";
 import { findMono, monoLook } from "../../monos/model/mono";
 import { pathKey } from "../../../shared/lib/paths";
@@ -98,7 +97,7 @@ export function defaultAutopilotDeps(): AutopilotAppDeps {
         return monoId;
       }
     },
-    isLeadership: (monoId) => DEFAULT_TEAM_IDS.includes(monoId),
+    isLeadership: () => false,
     leadProject: (monoId) => leadFor(monoId)?.projectId,
   };
 }

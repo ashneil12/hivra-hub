@@ -25,6 +25,6 @@ describe("r69 (b): the new-project card speaks to Ash", () => {
 
   it("tells Chief of Staff the line is printed on Ash's card, addressed to him, from what he said only", () => {
     const note = interviewNote("tip jar");
-    expect(note).toMatch(/oneLine: what it is, in a sentence\. It is printed on Ash's card, addressed to him \("you", "your"\), and holds only what he has said in this chat/);
+    expect(note).toMatch(/oneLine: what it is, in a sentence\. It is printed on their card, addressed to them \("you", "your"\), and holds only what they have said in this chat/);
   });
 });

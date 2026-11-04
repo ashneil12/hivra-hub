@@ -179,7 +179,7 @@ describe("Settings → Teams", () => {
     mono.saveMonoName(postie.id, "Postie");
     make.draftTeam(
       { name: "Marketing", brief: "Grow Hivra", projects: ["hivra"], members: ["Postie"] },
-      { monoId: "chief-of-staff", name: "Chief of Staff" },
+      { monoId: "ada", name: "Chief of Staff" },
       Date.now(),
     );
     await act(async () => root.render(createElement(TeamsPage)));

@@ -40,13 +40,13 @@ describe("the Autopilot screen's words", () => {
   it("one line per switch, with who turned it on and Ash's words", () => {
     const lines = switchLines(
       status([
-        { scope: "*", untilMs: new Date(2026, 9, 19, 9, 0).getTime(), setBy: "mono:chief-of-staff", setAt: NOW, chatId: "c", said: "go autopilot until monday 9" },
+        { scope: "*", untilMs: new Date(2026, 9, 19, 9, 0).getTime(), setBy: "mono:ada", setAt: NOW, chatId: "c", said: "go autopilot until monday 9" },
         { scope: "hivra", untilMs: NOW + 2 * H, setBy: "ash", setAt: NOW, chatId: null, said: null },
         { scope: "vg-game", untilMs: NOW - 1, setBy: "ash", setAt: NOW, chatId: null, said: null },
       ]),
       NOW,
       (id) => ({ hivra: "Hivra" })[id] ?? id,
-      (id) => (id === "chief-of-staff" ? "Chief of Staff" : id),
+      (id) => (id === "ada" ? "Chief of Staff" : id),
     );
     expect(lines).toEqual([
       { scope: "*", text: "On for everything until Mon 9:00", remaining: "42h left", setBy: "Chief of Staff turned it on when you said “go autopilot until monday 9”" },

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 import { ringContrast } from "./contrastProbe";
 
@@ -15,10 +16,11 @@ test("Delete mono… asks in the shared confirm; Cancel keeps the Mono", async (
   await page.setViewportSize({ width: 1512, height: 982 });
   let nativeAsk = false;
   page.on("dialog", (d) => { nativeAsk = true; void d.dismiss(); });
+  await seedExampleRoster(page);
   await openLocalHub(page);
   const notNow = page.getByRole("button", { name: "Not now" });
   await notNow.waitFor({ timeout: 20_000 }).then(() => notNow.click(), () => undefined);
-  const row = page.locator("[data-mono-status]", { hasText: "Alfred" }).first();
+  const row = page.locator("[data-mono-status]", { hasText: "Ada" }).first();
   await expect(row).toHaveCount(1, { timeout: 60_000 });
   await row.hover();
   await row.locator('button[title="Mono options"]').click();

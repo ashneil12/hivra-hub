@@ -23,7 +23,7 @@ afterEach(() => {
   container.remove();
 });
 
-const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: [] as string[] };
+const ME = { monoId: "ada", name: "Chief of Staff", projects: [] as string[] };
 const POSTIE = {
   name: "Example: Postie",
   role: "Drafts X posts",
@@ -48,7 +48,7 @@ it("the card sits in the group chat's conversation as a message after the messag
   const make = await import("../model/monoMake");
   const { GroupChatView } = await import("../../hub/ui/GroupChatView");
   const { ChangeBar } = await import("./ChangeBar");
-  const room = chat.createChat("hub", "Leadership team", ["chief-of-staff", "projects-manager"]);
+  const room = chat.createChat("hub", "Leadership team", ["ada", "bo"]);
   const conv = chat.startConversation(room.id, "Example: make a marketing chat, and a new Mono for X posts");
   make.draftMono(POSTIE, ME, Date.now(), new Set(POSTIE.skills), { room: room.id, conv });
   act(() => root.render(createElement("div", null, createElement(GroupChatView, { chatId: room.id, projectId: "hub" }), createElement(ChangeBar))));
@@ -63,7 +63,7 @@ it("the card sits in the group chat's conversation as a message after the messag
   expect(ash).toBeTruthy();
   expect(ash!.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   // Not in another room.
-  const other = chat.createChat("hub", "Example: Marketing", ["chief-of-staff"]);
+  const other = chat.createChat("hub", "Example: Marketing", ["ada"]);
   act(() => root.render(createElement(GroupChatView, { chatId: other.id, projectId: "hub" })));
   expect(container.querySelector("[data-mono-draft]")).toBeNull();
 });

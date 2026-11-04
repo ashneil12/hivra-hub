@@ -164,7 +164,7 @@ export function withoutCheckTurns(busy: Set<string>, sessions: readonly Session[
 
 /**
  * A Mono's chat answering a room (its last turn came in as a room wake, monoNote kind "room"): the reply is the room's,
- * not one Ash hasn't read in this chat (r52: frank's badge stayed at 1 after a room turn that posted nothing there).
+ * not one Ash hasn't read in this chat (r52: ed's badge stayed at 1 after a room turn that posted nothing there).
  */
 export function inRoomTurn(session: Pick<Session, "blocks">): boolean {
   for (let i = session.blocks.length - 1; i >= 0; i--) {

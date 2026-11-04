@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// r27b (frank, against Ash's words): red "Needs you" is any Lead problem only Ash can fix, not only a Lead giving up.
+// r27b (ed, against Ash's words): red "Needs you" is any Lead problem only Ash can fix, not only a Lead giving up.
 // A Lead's failed turn is classed by the error kind the app already has (the provider's error class, read by
 // plainFailure): billing and sign-in, and a request the model refuses, are the red Needs you with the plain reason and
 // "Open <Lead>'s chat", on the rail as on Today and Being built (MonoFailureCard); a usage limit, an overloaded model, a

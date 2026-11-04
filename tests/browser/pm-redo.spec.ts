@@ -1,5 +1,6 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs";
+import { seedExampleRoster } from "./exampleRoster";
 import { openLocalHub } from "./localHub";
 
 // PM redo proofs (B8, G4, F3, C6, PM-20, PM-21) in the real app in a browser: hub-dev.html reading the app's own local store.
@@ -17,9 +18,6 @@ const shot = async (page: Page, name: string) => {
 };
 
 test.use({ viewport: { width: 1440, height: 900 } });
-
-// Ash's saved look on Chief of Staff: the green crab, picked on purpose; the rest of the team is filled in as usual.
-const ASH_COS = { id: "chief-of-staff", name: "Chief of Staff", mascot: "crab", mascotPicked: true, color: "hsl(142 55% 50%)", projects: [] };
 
 /** For each rail row with a creature: its status dot touches none of the creature's pixels nor the row's text, and stays inside its row. */
 const dotsClear = (rail: Locator) =>
@@ -49,7 +47,7 @@ const dotsClear = (rail: Locator) =>
   );
 
 async function open(page: Page) {
-  await page.addInitScript((cos) => localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos])), ASH_COS);
+  await seedExampleRoster(page);
   await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   const notNow = page.getByRole("button", { name: "Not now" });
@@ -85,23 +83,23 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
   await open(page);
   await showAllMonos(page);
   const rail = page.locator("[data-mono-rail]").first();
-  const cos = rail.locator('button[aria-label^="Chief of Staff"]').first();
-  await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner/);
+  const ada = rail.locator('button[aria-label^="Ada"]').first();
+  await expect(ada).toHaveAttribute("title", /^Ada\nKeeps the week moving/);
   // Every Lead reads "Runs the coding team" (its name already says which project), uncut, the Hub's too.
   for (const p of ["EXO", "Hivra", "Nibbii", "MonoCode Hub"]) {
     const role = rail.locator(`button[aria-label^="${p} lead"] [data-mono-role]`);
     await expect(role).toHaveText("Runs the coding team");
     expect(await role.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
   }
-  await cos.click();
-  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner");
+  await ada.click();
+  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Keeps the week moving");
   await page.locator("[data-mono-title] [data-mono-role-edit]").click();
-  await page.locator("[data-mono-role-input]").fill("Business partner across every project");
+  await page.locator("[data-mono-role-input]").fill("Keeps the week moving everywhere");
   await page.locator("[data-mono-role-input]").press("Enter");
-  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Business partner across every project");
-  await expect(cos).toHaveAttribute("title", /^Chief of Staff\nBusiness partner across every project/);
+  await expect(page.locator("[data-mono-title] [data-mono-role-edit]")).toHaveText("Keeps the week moving everywhere");
+  await expect(ada).toHaveAttribute("title", /^Ada\nKeeps the week moving everywhere/);
   // At the default width every role shows on its own line under the name; the name keeps the first row.
-  for (const [name, role] of [["Chief of Staff", "Business partner across every project"], ["frank", "Memory and checks"], ["Alfred", "Team setup"]]) {
+  for (const [name, role] of [["Ada", "Keeps the week moving everywhere"], ["ed", "Checks what was said"], ["Cam", "One owner per job"]]) {
     const row = rail.locator(`button[aria-label^="${name}"]`).first();
     await expect(row.locator("[data-mono-role]")).toBeVisible();
     await expect(row.locator("[data-mono-role]")).toHaveText(role);
@@ -120,17 +118,17 @@ test("G4: each Mono's role is a small second line under its name on the rail, at
     (list.closest("aside") ?? list).style.width = "160px";
     list.style.width = "160px";
   });
-  await expect(cos.locator("[data-mono-role]")).toBeVisible();
-  await expect(rail.locator('button[aria-label^="Alfred"] [data-mono-role]')).toBeVisible();
-  await expect(cos).toHaveAttribute("title", /\nBusiness partner across every project/);
-  const pm = rail.locator('button[aria-label^="frank"] [data-mono-primary-name]').first();
+  await expect(ada.locator("[data-mono-role]")).toBeVisible();
+  await expect(rail.locator('button[aria-label^="Cam"] [data-mono-role]')).toBeVisible();
+  await expect(ada).toHaveAttribute("title", /\nKeeps the week moving everywhere/);
+  const pm = rail.locator('button[aria-label^="Bo"] [data-mono-primary-name]').first();
   const box = await pm.evaluate((el) => ({ scroll: el.scrollWidth, client: el.clientWidth }));
   expect(box.scroll).toBeLessThanOrEqual(box.client); // the name is not cut
   const railBox = await rail.boundingBox();
   await page.screenshot({ path: `${SHOTS}/g4-narrow-rail.png`, clip: { x: 0, y: 0, width: Math.ceil((railBox?.x ?? 0) + 200), height: 420 } });
 });
 
-test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps his picked green crab; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
+test("G4 tiles: creatures by default (robots for the team, Ada keeps the picked green crab; EXO invader, Hivra an orange dino not the ghost, Nibbii amber robot, Hub cat); letters are a choice, shown as typed", async ({ page }) => {
   await open(page);
   await showAllMonos(page);
   const rail = page.locator("[data-mono-rail]").first();
@@ -140,12 +138,12 @@ test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps h
   expect(await rail.locator("button[aria-label][title] svg text").count()).toBe(0);
   const fills = (name: string) => tile(name).evaluate((svg) => [...new Set([...svg.querySelectorAll("rect")].map((r) => r.getAttribute("fill")))].join(" "));
   // The robots are one drawing; the grey built-ins share a colour, the amber Nibbii lead has its own.
-  const robot = await tile("Projects Manager").innerHTML();
-  expect(await tile("frank").innerHTML()).toBe(robot);
-  expect(await tile("Alfred").innerHTML()).toBe(robot);
-  expect(await fills("Nibbii lead")).not.toBe(await fills("Projects Manager"));
-  // Chief of Staff and the Leads all look different (CoS wears Ash's picked green crab).
-  const faces = await Promise.all(["Chief of Staff", "EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
+  const robot = await tile("Bo").innerHTML();
+  expect(await tile("ed").innerHTML()).toBe(robot);
+  expect(await tile("Cam").innerHTML()).toBe(robot);
+  expect(await fills("Nibbii lead")).not.toBe(await fills("Bo"));
+  // Ada and the Leads all look different (Ada keeps the picked green crab).
+  const faces = await Promise.all(["Ada", "EXO lead", "Hivra lead", "Nibbii lead", "MonoCode Hub lead"].map((n) => tile(n).innerHTML()));
   expect(new Set(faces).size).toBe(5);
   // Each status dot sits just off its tile: it touches none of the creature's pixels and stays inside its row.
   const clear = await dotsClear(rail);
@@ -153,25 +151,25 @@ test("G4 tiles: Ash's old creatures by default (robots for the team, CoS keeps h
   expect(new Set(clear)).toEqual(new Set([true]));
   const looks = await page.evaluate(() => Object.fromEntries((JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; mascot: string; color: string }[]).map((m) => [m.id, `${m.mascot} ${m.color}`])));
   expect(looks).toMatchObject({
-    "chief-of-staff": "crab hsl(142 55% 50%)",
-    "projects-manager": "robot hsl(210 8% 58%)",
-    frank: "robot hsl(210 8% 58%)",
-    alfred: "robot hsl(210 8% 58%)",
+    ada: "crab hsl(142 55% 50%)",
+    bo: "robot hsl(210 8% 58%)",
+    ed: "robot hsl(210 8% 58%)",
+    cam: "robot hsl(210 8% 58%)",
     "vg-game-lead": "invader hsl(211 92% 62%)",
     "hivra-lead": "dino hsl(12 80% 58%)",
     "nibbii-lead": "robot hsl(45 90% 55%)",
     "hub-lead": "cat hsl(142 55% 50%)",
   });
-  const alfred = rail.locator('button[aria-label^="Alfred"]').first();
-  await alfred.click();
-  await page.getByRole("button", { name: "Alfred settings" }).click();
+  const cam = rail.locator('button[aria-label^="Cam"]').first();
+  await cam.click();
+  await page.getByRole("button", { name: "Cam settings" }).click();
   await page.getByRole("button", { name: "Change mascot and color" }).click();
   const look = page.getByRole("dialog", { name: "Mascot and color" });
   await expect(look).toBeVisible();
   expect(await look.locator("button svg").count()).toBeGreaterThan(5);
-  await look.locator("[data-mono-tile-letters]").fill("Af");
+  await look.locator("[data-mono-tile-letters]").fill("Ca");
   await look.locator("[data-mono-tile-letters]").press("Enter");
-  await expect(alfred.locator("svg text").first()).toHaveText("Af");
+  await expect(cam.locator("svg text").first()).toHaveText("Ca");
   await shot(page, "g4-tile-letters");
 });
 
@@ -207,7 +205,7 @@ test("G4 tiles: the Hivra lead appears once, and its tile stays inside its row a
 test("Reduced motion stops the bob and the blink", async ({ page }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await open(page);
-  await page.locator("[data-mono-rail]").first().locator('button[aria-label^="Chief of Staff"]').first().click();
+  await page.locator("[data-mono-rail]").first().locator('button[aria-label^="Ada"]').first().click();
   const moving = () =>
     page.evaluate(() =>
       [...document.querySelectorAll(".pixel-mascot .pixel-bob, .pixel-mascot .pixel-eyes-open, .pixel-mascot .pixel-eyes-closed, .pixel-mascot .pixel-hop")].map((el) => getComputedStyle(el).animationName),
@@ -242,11 +240,11 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
 });
 
 test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches neither the creature nor the name", async ({ page }) => {
-  await page.addInitScript((cos) => {
-    localStorage.setItem("monocode:dev-roster-seed", JSON.stringify([cos]));
+  await seedExampleRoster(page);
+  await page.addInitScript(() => {
     localStorage.setItem("monocode.lastModel", JSON.stringify({ harness: "claude", model: "claude:sonnet-5" }));
     localStorage.setItem("monocode.defaultModels", JSON.stringify({ claude: "claude:sonnet-5" }));
-  }, ASH_COS);
+  });
   await openLocalHub(page, "&fakeClaude");
   const rail = page.locator("[data-mono-rail]").first();
   await expect(rail).toBeVisible({ timeout: 60_000 });
@@ -255,8 +253,8 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
   await showAllMonos(page);
   const hold = () => page.evaluate(() => (window as unknown as { __fakeClaude: { next: string[] } }).__fakeClaude.next.push("hold"));
   const status = (name: string) => rail.locator("[data-mono-status]").filter({ has: page.locator(`button[aria-label^="${name},"]`) }).first();
-  // Two turns held open: Chief of Staff's and the EXO lead's.
-  for (const name of ["Chief of Staff", "EXO lead"]) {
+  // Two turns held open: Ada's and the EXO lead's.
+  for (const name of ["Ada", "EXO lead"]) {
     await rail.locator(`button[aria-label^="${name},"]`).first().click();
     await hold();
     const field = page.getByLabel(`Message ${name}`);

@@ -16,11 +16,11 @@ import {
 import type { Seat } from "./roomTurns";
 
 const SEATS: Seat[] = [
-  { id: "chief-of-staff", name: "Chief of Staff" },
-  { id: "projects-manager", name: "Projects Manager" },
-  { id: "frank", name: "frank" },
+  { id: "ada", name: "Chief of Staff" },
+  { id: "bo", name: "Projects Manager" },
+  { id: "ed", name: "ed" },
 ];
-const recent = [{ who: "Ash", text: "frank, did the decision about pricing make it into memory?" }];
+const recent = [{ who: "Ash", text: "ed, did the decision about pricing make it into memory?" }];
 
 describe("responder modes", () => {
   it("a room that never chose answers as before (everyone); only the four modes count", () => {
@@ -31,9 +31,9 @@ describe("responder modes", () => {
   });
 
   it("finds every seat Ash mentions, latest message first, each once", () => {
-    expect(mentionedSeats(["@frank and @Projects Manager, check this"], SEATS).map((s) => s.id)).toEqual(["frank", "projects-manager"]);
-    expect(mentionedSeats(["hey @frank", "@chief-of-staff what now"], SEATS).map((s) => s.id)).toEqual(["chief-of-staff", "frank"]);
-    expect(mentionedSeats(["frank, can you check?"], SEATS).map((s) => s.id)).toEqual(["frank"]);
+    expect(mentionedSeats(["@ed and @Projects Manager, check this"], SEATS).map((s) => s.id)).toEqual(["ed", "bo"]);
+    expect(mentionedSeats(["hey @ed", "@ada what now"], SEATS).map((s) => s.id)).toEqual(["ada", "ed"]);
+    expect(mentionedSeats(["ed, can you check?"], SEATS).map((s) => s.id)).toEqual(["ed"]);
     expect(mentionedSeats(["what's left this week?"], SEATS)).toEqual([]);
   });
 });
@@ -42,22 +42,22 @@ describe("auto pick", () => {
   it("asks with the members' ids and roles and the latest messages", () => {
     const { system, prompt } = autoPickPrompt(SEATS, recent);
     expect(system).toMatch(/JSON only/);
-    expect(prompt).toContain('id "frank"');
-    expect(prompt).toContain("Ash: frank, did the decision");
+    expect(prompt).toContain('id "ed"');
+    expect(prompt).toContain("Ash: ed, did the decision");
   });
 
   it("reads one seat or several, by id or name; anything unsure or low in confidence is unsure", () => {
-    expect(parseAutoPick('{"pick":["frank"],"confidence":0.9}', SEATS)).toEqual({ ids: ["frank"], confidence: 0.9 });
-    expect(parseAutoPick('Sure: {"pick":["Projects Manager","frank"],"confidence":0.8}', SEATS)).toEqual({ ids: ["projects-manager", "frank"], confidence: 0.8 });
+    expect(parseAutoPick('{"pick":["ed"],"confidence":0.9}', SEATS)).toEqual({ ids: ["ed"], confidence: 0.9 });
+    expect(parseAutoPick('Sure: {"pick":["Projects Manager","ed"],"confidence":0.8}', SEATS)).toEqual({ ids: ["bo", "ed"], confidence: 0.8 });
     expect(parseAutoPick('{"pick":[],"confidence":0}', SEATS)).toEqual({ unsure: "unsure" });
-    expect(parseAutoPick('{"pick":["frank"],"confidence":0.3}', SEATS)).toEqual({ unsure: "low confidence" });
+    expect(parseAutoPick('{"pick":["ed"],"confidence":0.3}', SEATS)).toEqual({ unsure: "low confidence" });
     expect(parseAutoPick('{"pick":["nobody-here"],"confidence":0.9}', SEATS)).toEqual({ unsure: "unsure" });
-    expect(parseAutoPick("frank should answer", SEATS)).toEqual({ unsure: "no answer" });
+    expect(parseAutoPick("ed should answer", SEATS)).toEqual({ unsure: "no answer" });
   });
 
   it("gives the decider's pick, marked as picked automatically", async () => {
-    const decider = vi.fn(async () => '{"pick":["frank"],"confidence":0.95}');
-    expect(await autoPick({ decider, seats: SEATS, recent })).toEqual({ ids: ["frank"], why: "picked automatically" });
+    const decider = vi.fn(async () => '{"pick":["ed"],"confidence":0.95}');
+    expect(await autoPick({ decider, seats: SEATS, recent })).toEqual({ ids: ["ed"], why: "picked automatically" });
     expect(decider.mock.calls[0][0]).toMatchObject({ timeoutMs: AUTO_PICK_TIMEOUT_MS });
   });
 
@@ -66,14 +66,14 @@ describe("auto pick", () => {
     expect(await autoPick({ decider: () => Promise.reject(new Error("401")), seats: SEATS, recent })).toEqual({ fallback: "the quick pick failed" });
     expect(await autoPick({ decider: () => { throw new Error("sync"); }, seats: SEATS, recent })).toEqual({ fallback: "the quick pick failed" });
     expect(await autoPick({ decider: async () => '{"pick":[],"confidence":0}', seats: SEATS, recent })).toEqual({ fallback: "the quick pick was unsure" });
-    expect(await autoPick({ decider: async () => '{"pick":["frank"],"confidence":0.2}', seats: SEATS, recent })).toEqual({ fallback: "the quick pick wasn't sure" });
+    expect(await autoPick({ decider: async () => '{"pick":["ed"],"confidence":0.2}', seats: SEATS, recent })).toEqual({ fallback: "the quick pick wasn't sure" });
     let aborted = false;
     const started = Date.now();
     const slow = await autoPick({
       decider: ({ signal }) =>
         new Promise((resolve) => {
           signal.addEventListener("abort", () => (aborted = true));
-          setTimeout(() => resolve('{"pick":["frank"],"confidence":1}'), 5_000);
+          setTimeout(() => resolve('{"pick":["ed"],"confidence":1}'), 5_000);
         }),
       seats: SEATS,
       recent,
@@ -91,10 +91,10 @@ describe("auto pick", () => {
 
 describe("goal mode", () => {
   it("reads the lead's control block, takes it out of the post, and refuses a seat that isn't in the room", () => {
-    const text = 'Plan agreed. PM owns the board.\n<room_control>{"status":"continue","next":"projects-manager","instruction":"Put the three cards on the board."}</room_control>';
+    const text = 'Plan agreed. PM owns the board.\n<room_control>{"status":"continue","next":"bo","instruction":"Put the three cards on the board."}</room_control>';
     expect(parseGoalControl(text, SEATS)).toEqual({
       post: "Plan agreed. PM owns the board.",
-      control: { status: "continue", next: "projects-manager", instruction: "Put the three cards on the board." },
+      control: { status: "continue", next: "bo", instruction: "Put the three cards on the board." },
     });
     expect(parseGoalControl('Done.\n<room_control>{"status":"needs input","reason":"Ash picks the price"}</room_control>', SEATS).control).toEqual({
       status: "needs_input",
@@ -114,7 +114,7 @@ describe("goal mode", () => {
     const leadTask = goalTask({ me: lead, lead, seats: SEATS, goal: "Ship the pricing page", turn: 3, max: GOAL_MAX_TURNS });
     expect(leadTask).toContain("turn 3 of at most 13");
     expect(leadTask).toContain("<room_control>");
-    expect(leadTask).toContain('"frank" (frank)');
+    expect(leadTask).toContain('"ed" (ed)');
     const member = goalTask({ me: SEATS[2], lead, seats: SEATS, goal: "Ship the pricing page", turn: 4, max: GOAL_MAX_TURNS, instruction: "Check memory" });
     expect(member).toContain('Chief of Staff asked you: "Check memory"');
     expect(member).not.toContain("<room_control>");

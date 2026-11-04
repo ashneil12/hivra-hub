@@ -1905,17 +1905,17 @@ mod tests {
     fn a_mono_switching_it_records_ashs_words_and_its_chat() {
         let c = conn();
         let input = SetInput {
-            by: "mono:chief-of-staff".into(),
+            by: "mono:ada".into(),
             chat_id: Some("s-cos".into()),
             said: Some("go autopilot until monday 9".into()),
             who: Some("Chief of Staff".into()),
             ..set(&["*"], T0 + 50 * HOUR)
         };
         let on = set_switches(&c, &input, T0).unwrap();
-        assert_eq!(on[0].set_by, "mono:chief-of-staff");
+        assert_eq!(on[0].set_by, "mono:ada");
         assert_eq!(on[0].said.as_deref(), Some("go autopilot until monday 9"));
         let log = &list_log(&c, 1, None).unwrap()[0];
-        assert_eq!(log.mono_id.as_deref(), Some("chief-of-staff"));
+        assert_eq!(log.mono_id.as_deref(), Some("ada"));
         assert_eq!(log.chat_id.as_deref(), Some("s-cos"));
         assert_eq!(log.who.as_deref(), Some("Chief of Staff"));
         assert_eq!(log.detail.as_deref(), Some("go autopilot until monday 9"));

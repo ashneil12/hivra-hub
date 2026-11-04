@@ -62,25 +62,25 @@ describe("the fake-Claude test bench's kickoff", () => {
   });
 
   it("carries an existing Mono's id through, and waits until that Mono works on the project", async () => {
-    const team = { ...kickoff, monoName: "Chief of Staff", monoId: "chief-of-staff" };
+    const team = { ...kickoff, monoName: "Chief of Staff", monoId: "ada" };
     const dev = readAppIdentity({
       ...base,
       kind: "dev",
       identifier: "com.ash.monocode-hub.dev.verify",
       verify: { runId: "run-3", kickoff: team },
     });
-    expect(pendingVerifyKickoff(dev, memory())?.monoId).toBe("chief-of-staff");
+    expect(pendingVerifyKickoff(dev, memory())?.monoId).toBe("ada");
 
     let clock = 0;
     let tiedAt = 2_000;
     const created: string[] = [];
     const host = {
       create: (project: string, name: string) => (created.push(`${name}@${project}`), "new-mono"),
-      ready: (id: string, project: string) => id === "chief-of-staff" && project === kickoff.project && clock >= tiedAt,
+      ready: (id: string, project: string) => id === "ada" && project === kickoff.project && clock >= tiedAt,
       sleep: async (ms: number) => void (clock += ms),
       now: () => clock,
     };
-    expect(await verifyKickoffMono(team, host)).toBe("chief-of-staff");
+    expect(await verifyKickoffMono(team, host)).toBe("ada");
     expect(clock).toBe(2_000);
     tiedAt = Infinity;
     clock = 0;

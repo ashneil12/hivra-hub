@@ -9,7 +9,7 @@ beforeEach(() => {
   vi.resetModules();
 });
 
-const ME = { monoId: "chief-of-staff", name: "Chief of Staff", projects: ["/Users/ash/Projects/monocode-hub"] };
+const ME = { monoId: "ada", name: "Chief of Staff", projects: ["/Users/ash/Projects/monocode-hub"] };
 const POSTIE = {
   name: "Postie",
   role: "Drafts X posts",
@@ -21,21 +21,21 @@ it("a turned-down card can't be made, and its Mono hears it was turned down, wit
   const make = await import("./monoMake");
   const at = new Date(2026, 9, 22, 14, 13).getTime();
   const draft = make.draftMono(POSTIE, ME, at, undefined, { room: "hub:leadership", conv: "conv-old" });
-  expect(make.draftStatusLines("chief-of-staff", { room: "hub:leadership", conv: "conv-old" }, at + 1000)).toEqual([
+  expect(make.draftStatusLines("ada", { room: "hub:leadership", conv: "conv-old" }, at + 1000)).toEqual([
     `"Postie": waiting on Ash's yes; its card shows in this chat.`,
   ]);
-  expect(make.draftStatusLines("chief-of-staff", { room: "hub:leadership", conv: "conv-new" }, at + 1000)[0]).toMatch(
+  expect(make.draftStatusLines("ada", { room: "hub:leadership", conv: "conv-new" }, at + 1000)[0]).toMatch(
     /in another chat, not this one/,
   );
 
   make.dismissDraft(draft.draftId, new Date(2026, 9, 22, 14, 16).getTime());
   expect(make.waitingDrafts()).toEqual([]);
-  expect(make.draftStatusLines("chief-of-staff", { room: "hub:leadership", conv: "conv-new" }, at + 60 * 60_000)).toEqual([
+  expect(make.draftStatusLines("ada", { room: "hub:leadership", conv: "conv-new" }, at + 60 * 60_000)).toEqual([
     `"Postie": turned down by Ash ("Not this one") at 14:16; nothing was made and no card shows.`,
   ]);
   // Another Mono's cards are not this one's news; three days on, nothing is said.
-  expect(make.draftStatusLines("projects-manager", undefined, at + 1000)).toEqual([]);
-  expect(make.draftStatusLines("chief-of-staff", undefined, at + 4 * 24 * 60 * 60_000)).toEqual([]);
+  expect(make.draftStatusLines("bo", undefined, at + 1000)).toEqual([]);
+  expect(make.draftStatusLines("ada", undefined, at + 4 * 24 * 60 * 60_000)).toEqual([]);
 
   const host = { ashSpokeSince: () => true, room: () => ({ id: "r", name: "r" }) };
   await expect(make.makeDrafted(draft.draftId, ME, host)).rejects.toThrow(/turned this card down/);

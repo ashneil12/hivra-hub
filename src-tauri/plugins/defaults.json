@@ -19,6 +19,17 @@
         "docs/guide/images",
         "skills/statechart/scripts/test"
       ]
+    },
+    {
+      "name": "starter-monos",
+      "folder": "starter-monos",
+      "repository": "https://github.com/hardbeat920/monocode",
+      "path": "src-tauri/plugins/starter-monos",
+      "commit": "0000000000000000000000000000000000000005",
+      "version": "1.0.0",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 Hivra",
+      "left_out": []
     }
   ]
 }

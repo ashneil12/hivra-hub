@@ -13,13 +13,13 @@ beforeEach(() => {
 
 it("an idle Mono on a room turn reads working, in that room; its own chat's state wins otherwise", () => {
   const states = new Map<string, MonoState>([
-    ["frank", { status: "idle" }],
+    ["ed", { status: "idle" }],
     ["hub-lead", { status: "working", activity: "Reading app.tsx" }],
   ]);
-  const turns = new Map([["frank", "c1"], ["hub-lead", "c1"], ["alfred", "c1"]]);
+  const turns = new Map([["ed", "c1"], ["hub-lead", "c1"], ["cam", "c1"]]);
   const out = withRoomTurns(states, turns, (id) => (id === "c1" ? "Leadership team" : undefined));
-  expect(out.get("frank")).toEqual({ status: "working", activity: "In Leadership team" });
-  expect(out.get("alfred")).toEqual({ status: "working", activity: "In Leadership team" });
+  expect(out.get("ed")).toEqual({ status: "working", activity: "In Leadership team" });
+  expect(out.get("cam")).toEqual({ status: "working", activity: "In Leadership team" });
   expect(out.get("hub-lead")).toEqual({ status: "working", activity: "Reading app.tsx" });
   expect(withRoomTurns(states, new Map(), () => "x")).toBe(states);
 });
@@ -28,7 +28,7 @@ it("the conductor lists the Monos writing a room turn, and nobody once it is don
   const team = await import("../../hub/model/builtInMonos");
   team.ensureBuiltInMonos();
   const chat = await import("../../hub/model/hubChats");
-  const c = chat.createChat("hub", "Leadership team", ["chief-of-staff", "frank"]);
+  const c = chat.createChat("hub", "Leadership team", ["ada", "ed"]);
   const during: string[][] = [];
   chat.setGroupChatRunner({
     run: async () => {
@@ -40,6 +40,6 @@ it("the conductor lists the Monos writing a room turn, and nobody once it is don
   });
   const conv = chat.startConversation(c.id, "hey team");
   await chat.requestReply(c.id, conv);
-  expect(during.flat()).toContain("chief-of-staff@room");
+  expect(during.flat()).toContain("ada@room");
   expect(chat.roomTurnsByMono().size).toBe(0);
 });

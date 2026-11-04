@@ -45,8 +45,8 @@ describe("agent notes from the delegation rows", () => {
   });
 
   it("names the owner as the Mono it is, not 'Lead' (Alfred's own team read 'Lead messaged Worker')", () => {
-    const names = { alfred: "Alfred", "hub-lead": "MonoCode Hub lead" } as Record<string, string>;
-    const own = row("o", { ownerMono: "alfred", title: "Write qa-a8 note" });
+    const names = { cam: "Alfred", "hub-lead": "MonoCode Hub lead" } as Record<string, string>;
+    const own = row("o", { ownerMono: "cam", title: "Write qa-a8 note" });
     const notes = agentNotesFor(own, NOW, all, defaultNoteNames(own, (id) => names[id]));
     expect(agentNoteText(notes[0])).toBe('Alfred handed a job to Worker "Write qa-a8 note": Write qa-a8 note');
     expect(defaultNoteNames(row("l", { ownerMono: "hub-lead" }), (id) => names[id]).owner).toBe("MonoCode Hub lead");

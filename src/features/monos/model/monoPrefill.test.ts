@@ -13,38 +13,38 @@ const { MONO_PREFILL_EVENT, openMonoChatWith, takeMonoPrefill } = await import("
 beforeEach(() => {
   roster.clear();
   opened.length = 0;
-  clearComposerDraft("s-alfred");
+  clearComposerDraft("s-cam");
 });
 
 it("types the ask into Alfred's chat and opens it on his own chat", () => {
-  roster.set("alfred", { id: "alfred", sessionId: "s-alfred" });
+  roster.set("cam", { id: "cam", sessionId: "s-cam" });
   const heard: unknown[] = [];
   const on = (e: Event) => heard.push((e as CustomEvent).detail);
   window.addEventListener(MONO_PREFILL_EVENT, on);
-  openMonoChatWith("alfred", "merge Nibbii lead's update");
+  openMonoChatWith("cam", "merge Nibbii lead's update");
   window.removeEventListener(MONO_PREFILL_EVENT, on);
-  expect(getComposerDraft("s-alfred")?.trim()).toBe("merge Nibbii lead's update");
-  expect(opened).toEqual([["alfred"]]);
-  expect(heard).toEqual([{ sessionId: "s-alfred", text: "merge Nibbii lead's update" }]);
+  expect(getComposerDraft("s-cam")?.trim()).toBe("merge Nibbii lead's update");
+  expect(opened).toEqual([["cam"]]);
+  expect(heard).toEqual([{ sessionId: "s-cam", text: "merge Nibbii lead's update" }]);
 });
 
 it("keeps what Ash had typed, and a second click doesn't type it twice", () => {
-  roster.set("alfred", { id: "alfred", sessionId: "s-alfred" });
-  setComposerDraft("s-alfred", "also check frank");
-  openMonoChatWith("alfred", "merge Nibbii lead's update");
-  openMonoChatWith("alfred", "merge Nibbii lead's update");
-  const draft = getComposerDraft("s-alfred")!;
-  expect(draft.startsWith("also check frank")).toBe(true);
+  roster.set("cam", { id: "cam", sessionId: "s-cam" });
+  setComposerDraft("s-cam", "also check ed");
+  openMonoChatWith("cam", "merge Nibbii lead's update");
+  openMonoChatWith("cam", "merge Nibbii lead's update");
+  const draft = getComposerDraft("s-cam")!;
+  expect(draft.startsWith("also check ed")).toBe(true);
   expect(draft.split("merge Nibbii lead's update").length).toBe(2);
 });
 
 it("Alfred with no chat yet: the ask waits for his chat, then is typed in once", () => {
-  roster.set("alfred", { id: "alfred" });
-  openMonoChatWith("alfred", "merge Hivra lead's update");
-  expect(opened).toEqual([["alfred"]]);
-  takeMonoPrefill("alfred", "s-alfred");
-  expect(getComposerDraft("s-alfred")?.trim()).toBe("merge Hivra lead's update");
-  clearComposerDraft("s-alfred");
-  takeMonoPrefill("alfred", "s-alfred");
-  expect(getComposerDraft("s-alfred")).toBeUndefined();
+  roster.set("cam", { id: "cam" });
+  openMonoChatWith("cam", "merge Hivra lead's update");
+  expect(opened).toEqual([["cam"]]);
+  takeMonoPrefill("cam", "s-cam");
+  expect(getComposerDraft("s-cam")?.trim()).toBe("merge Hivra lead's update");
+  clearComposerDraft("s-cam");
+  takeMonoPrefill("cam", "s-cam");
+  expect(getComposerDraft("s-cam")).toBeUndefined();
 });

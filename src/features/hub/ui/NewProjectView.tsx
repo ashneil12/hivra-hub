@@ -10,17 +10,12 @@ import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } fro
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
 import { askChiefOfStaff, NoInterviewRuntime, type InterviewLine, type InterviewReply } from "../model/projectInterview";
-import { plainName } from "../model/roleNames";
-import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
-import { addTeamAddon } from "../model/hubTeam";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES, StripButton } from "./ProjectStrip";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90 disabled:opacity-40";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
-const COS = "Chief of Staff";
-
 type Line = InterviewLine;
 
 /** A first shape from the template (Ash changes it on the card): never the ghost. */
@@ -38,8 +33,8 @@ async function pickFolder(): Promise<string | null> {
 }
 
 /**
- * New project is chat-first: Ash types a name, then Chief of Staff talks it through with him (projectInterview.ts: its
- * own Mono on its own engine, asking what it needs). It ends on a preview card from its proposal that says exactly what
+ * New project is chat-first: Ash types a name, then the interview talks it through (projectInterview.ts: the
+ * first mate contract, asking what it needs). It ends on a preview card from its proposal that says exactly what
  * Create makes; nothing exists until Create.
  * Create goes to Ash OS (`project-create`): the project, its own memory, and (by default) its code folder at
  * ~/Projects/<id> as a local git repo with a README. Then its Lead Mono is seeded and it joins the strip.
@@ -79,7 +74,7 @@ export function NewProjectView() {
     setStuck(undefined);
     askChiefOfStaff(forName, chat, controller.signal).then(
       (reply) => { if (!controller.signal.aborted) took(reply); },
-      (e: Error) => { if (!controller.signal.aborted) setStuck(e instanceof NoInterviewRuntime ? e.message : `Chief of Staff couldn't answer: ${e.message}`); },
+      (e: Error) => { if (!controller.signal.aborted) setStuck(e instanceof NoInterviewRuntime ? e.message : `The interview couldn't answer: ${e.message}`); },
     ).finally(() => { if (turn.current === controller) setTyping(false); });
   };
   const took = ({ text, proposal }: InterviewReply) => {
@@ -121,8 +116,6 @@ export function NewProjectView() {
     if (code === "existing" && !folder) return setProblem("Choose the folder first, or pick another option.");
     const finish = (project: HubProject) => {
       setTemplate(project.id, tpl);
-      // Ticking the add-on is Ash's yes: Critiquito joins with its soul and sits in this project's Leadership team.
-      if (addon) addTeamAddon(ADDON_OFFER.id, [project]);
       ended.current = true;
       clearProjectDraft();
       setHubSelection({ project: project.id, item: "inbox" });
@@ -175,7 +168,7 @@ export function NewProjectView() {
             <div className="mx-auto flex max-w-[640px] flex-col gap-4 px-8 py-8" data-hub-new-project-chat>
               {lines.map((l, i) => (
                 <div key={i} className="hub-fade-in">
-                  <div className="pb-0.5 text-xs text-content/60">{l.from === "cos" ? COS : "You"}</div>
+                  <div className="pb-0.5 text-xs text-content/60">{l.from === "cos" ? "Setup" : "You"}</div>
                   {l.from === "cos" ? (
                     // r65 (PM's r63 run): CoS writes markdown ("**A product families use**"); it renders, never shows raw.
                     <AgentMarkdown text={l.text} className="agent-chat-bubble-md text-[13px] text-content" />
@@ -242,16 +235,9 @@ export function NewProjectView() {
                   <div className="flex flex-col gap-1">
                     <span className="text-xs text-content/60">Team</span>
                     <div className="text-[13px] text-content" data-hub-new-project-team>
-                      {[...DEFAULT_TEAM, ...(addon ? [ADDON_OFFER.name] : [])].map((m) => plainName(m).primary).join(", ")}, and {leadSpecFor({ id, name: n, shortName: n.split(" ")[0] }).name}, its own Lead
+                      {leadSpecFor({ id, name: n, shortName: n.split(" ")[0] }).name}, its own lead
                     </div>
                   </div>
-                  <label className="flex cursor-default items-center gap-2 text-[13px] text-content/85" data-hub-addon>
-                    <button type="button" role="checkbox" aria-checked={addon} onClick={() => setAddon(!addon)}
-                      className="grid size-4 place-items-center rounded bg-content/10 text-content">
-                      {addon ? <Check className="size-3" strokeWidth={2} /> : null}
-                    </button>
-                    Also add {plainName(ADDON_OFFER.name).primary}: {ADDON_OFFER.what}
-                  </label>
                   <div className="flex items-center gap-2">
                     <button type="button" className={PRIMARY} onClick={create} disabled={creating} data-hub-create-project>{creating ? "Creating…" : "Create project"}</button>
                     <button type="button" className={QUIET} onClick={cancel} disabled={creating}>Cancel</button>
@@ -265,13 +251,13 @@ export function NewProjectView() {
                   <button type="button" className={QUIET} onClick={() => cosTurn(n, lines)}>Try again</button>
                 </div>
               ) : null}
-              <div className="h-5 text-xs text-content/60" aria-live="polite">{typing ? `${COS} is typing…` : null}</div>
+              <div className="h-5 text-xs text-content/60" aria-live="polite">{typing ? "Typing…" : null}</div>
               <div ref={end} />
             </div>
           </div>
           <div className="mx-auto w-full max-w-[640px] shrink-0 px-8 pb-4">
             <input data-hub-new-project-answer autoFocus value={draft} onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") answer(); }} placeholder={`Reply to ${COS}`}
+              onKeyDown={(e) => { if (e.key === "Enter") answer(); }} placeholder="Your reply"
               className="w-full rounded-lg bg-content/5 px-3 py-2.5 text-[13px] text-content outline-none placeholder:text-content/45" />
           </div>
         </>

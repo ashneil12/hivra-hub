@@ -43,22 +43,22 @@ let chats: GroupChat[] = examples([
     projectId: "exo-game",
     name: "Leadership team",
     isDefault: true,
-    memberIds: ["chief-of-staff", "projects-manager", "design-critic"],
+    memberIds: ["ada", "bo", "design-critic"],
     conversations: [
       {
         id: "c1",
         when: "Today",
         title: "Example: playtest plan",
         messages: [
-          m("1", "chief-of-staff", "Example: morning Ash. The new level is in and working. Two things need you today: play Areas 1 and 2, and skim the four new rules."),
-          m("2", "projects-manager", "Example: I've kept the list short. Air and dodge rules are next for the coding team, after your playtest."),
+          m("1", "ada", "Example: morning. The new level is in and working. Two things need you today: play Areas 1 and 2, and skim the four new rules."),
+          m("2", "bo", "Example: I've kept the list short. Air and dodge rules are next for the coding team, after your playtest."),
           m("3", "ash", "Example: ok playtest after lunch. can we move level 3 to next week?"),
-          m("4", "projects-manager", "Example: yes. Moved to next week. Nothing else shifts."),
+          m("4", "bo", "Example: yes. Moved to next week. Nothing else shifts."),
           m("5", "design-critic", "Example: I'll check the new HUD screens before they reach you."),
         ],
       },
-      { id: "c2", when: "Yesterday", title: "Example: level 3 scope", messages: [m("1", "projects-manager", "Example: level 3 is two weeks of work if we keep the boss fight.")] },
-      { id: "c3", when: "12 Oct", title: "Example: monthly goals", messages: [m("1", "chief-of-staff", "Example: three goals for October, parked until the playtest.")] },
+      { id: "c2", when: "Yesterday", title: "Example: level 3 scope", messages: [m("1", "bo", "Example: level 3 is two weeks of work if we keep the boss fight.")] },
+      { id: "c3", when: "12 Oct", title: "Example: monthly goals", messages: [m("1", "ada", "Example: three goals for October, parked until the playtest.")] },
     ],
   },
   {
@@ -66,16 +66,16 @@ let chats: GroupChat[] = examples([
     projectId: "hivra",
     name: "Leadership team",
     isDefault: true,
-    memberIds: ["chief-of-staff", "growth-lead"],
+    memberIds: ["ada", "growth-lead"],
     conversations: [
       {
         id: "c1",
         when: "Today",
         title: "Example: backups and waitlist",
         messages: [
-          m("1", "chief-of-staff", "Example: the nightly backup has failed 3 times since 2am. Nobody has picked it up yet.", "stuck", "s1"),
+          m("1", "ada", "Example: the nightly backup has failed 3 times since 2am. Nobody has picked it up yet.", "stuck", "s1"),
           m("2", "growth-lead", "Example: the waitlist headline test is a tie. That one is your taste call.", undefined, "n3"),
-          m("3", "chief-of-staff", "Example: the lead tried two fixes for the email sender. It's stuck and needs you.", "lead_gave_up", "s2"),
+          m("3", "ada", "Example: the lead tried two fixes for the email sender. It's stuck and needs you.", "lead_gave_up", "s2"),
         ],
       },
       { id: "c2", when: "Yesterday", title: "Example: launch timing", messages: [m("1", "growth-lead", "Example: launch looks best in the second week of November.")] },
@@ -387,7 +387,7 @@ export function ensureLeadership(projectId: string): GroupChat {
 }
 
 /**
- * A project's Leadership team gets the default team (Chief of Staff, Projects Manager, frank, Alfred, as far as they
+ * A project's Leadership team gets the default team (Chief of Staff, Projects Manager, ed, Alfred, as far as they
  * are on the roster) once, ahead of anyone already in it (Ash 14 Oct: every first project ships with them). Once per
  * chat: a Mono Ash takes out of the chat stays out, and one he removed from the roster is never added. Returns the chat.
  */

@@ -1,7 +1,9 @@
 // @vitest-environment happy-dom
 import { beforeEach, expect, it, vi } from "vitest";
 import { addMono, listMonos } from "../../monos/model/mono";
+import { seedTeamFiles } from "./hubTeam";
 import { dismissWaitingSoul, roleOf, seatWaitingSoul, skillsOf, waitingSouls, writeSoulFiles } from "./setupSouls";
+import { PLAIN_SOULS, TEAM_SOULS } from "./teamSouls";
 import { parseSetup } from "./setupFile";
 import { migrateV1 } from "../../portable/model/setupDoc";
 import { applyImport, defaultChoices, planImport } from "../../portable/model/importPlan";
@@ -15,10 +17,13 @@ async function importV1(file: unknown) {
   await applyImport(pending, plan, defaultChoices(plan));
 }
 
-it("reads role and skills from a Mono's SOUL.md", () => {
+it("reads role and skills from a Mono's SOUL.md, and writes no built-in team souls", () => {
   expect(roleOf("Ledger", SOUL)).toBe("Keeps the books");
-  expect(roleOf("frank", SOUL)).toBe("Memory and checks");
+  expect(roleOf("ed", SOUL)).toBe("Keeps the books");
+  expect(roleOf("mina", "# Soul\n")).toBe("");
   expect(skillsOf(SOUL)).toEqual(["receipts", "invoices"]);
+  expect(TEAM_SOULS).toEqual({});
+  expect(PLAIN_SOULS).toEqual({});
 });
 
 it("import never seats a Mono: it waits for Ash's OK, and OK seats it and writes its soul", async () => {
@@ -82,6 +87,8 @@ it("seating never overwrites files a Mono left here, unless asked", async () => 
   const write = async (id: string, path: string, text: string) => void disk.set(`${id}/${path}`, text);
   const files: [import("../../monos/model/monoFiles").AgentFilePath, string][] = [["SOUL.md", "# theirs"], ["MEMORY.md", "- m"], ["memory/clients.md", "c"]];
   expect(await writeSoulFiles("ledger", files, { read, write })).toEqual({ written: ["MEMORY.md", "memory/clients.md"], kept: ["SOUL.md"], problems: [] });
+  expect(disk.get("ledger/SOUL.md")).toBe("# mine");
+  expect(await seedTeamFiles(read, write)).toEqual([]);
   expect(disk.get("ledger/SOUL.md")).toBe("# mine");
   await writeSoulFiles("ledger", files, { read, write, replace: true });
   expect(disk.get("ledger/SOUL.md")).toBe("# theirs");

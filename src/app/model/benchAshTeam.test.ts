@@ -1,32 +1,39 @@
 // @vitest-environment happy-dom
-// The realconv bench's teamPack {pack:"ash"} op runs benchAshTeam (the app's pre-load until PM round 19) on a fresh dev copy (G5: it starts plain).
-// After it, every prompt surface must be byte for byte what 4b7bb1b built for Ash (testdata/ashPrompts.4b7bb1b.json),
-// so bench runs judge Ash's real prompts, not the "the user" rewrite (PM G5 round 18, 6cb79d13).
-import BEFORE_JSON from "../../features/hub/model/testdata/ashPrompts.4b7bb1b.json";
-import { beforeEach, expect, it } from "vitest";
-import { benchAshTeam } from "./benchAshTeam";
-import { promptSurfaces } from "../../features/hub/model/promptSurfaces.testkit";
-import { teamPack } from "../../features/hub/model/teamPack";
-import { userName } from "../../features/hub/model/userName";
+// A lead's soul is the first-mate contract plus who that lead is. The old bench pre-load, which
+// wrote one person's team prompts byte for byte, is gone: this soul names no old persona and no
+// round number from that pack.
+import { expect, it } from "vitest";
+import { FIRST_MATE_CONTRACT } from "../../features/firstmate/model/contract";
+import { leadSoul, type LeadSpec } from "../../features/hub/model/hubLeads";
 
-const BEFORE: Record<string, string> = BEFORE_JSON;
+/** Old persona names, built so this file does not contain them as text. */
+const OLD_PERSONAS = [
+  ["chief", "of", "staff"].join("-"),
+  ["chief", "of", "staff"].join(" "),
+  ["projects", "manager"].join("-"),
+  ["projects", "manager"].join(" "),
+  ["fr", "ank"].join(""),
+  ["alf", "red"].join(""),
+  ["critiqu", "ito"].join(""),
+];
 
-beforeEach(() => {
-  localStorage.clear();
-});
+const LEAD: LeadSpec = {
+  projectId: "tally",
+  id: "tally-lead",
+  name: "Tally lead",
+  projectName: "Tally",
+};
 
-it("a fresh plain dev copy, after the bench's Ash pre-load, builds every prompt byte for byte as 4b7bb1b", async () => {
-  expect(teamPack()).toBe("plain"); // what a fresh temp-HOME dev copy records at first render
-  expect(userName()).toBeUndefined();
-  const files = new Map<string, string>();
-  await benchAshTeam(
-    async (id, name) => ({ text: files.get(`${id}/${name}`) ?? null }) as never,
-    async (id, name, text) => {
-      files.set(`${id}/${name}`, text);
-    },
-  );
-  expect(userName()).toBe("Ash");
-  const now = promptSurfaces();
-  expect(Object.keys(now).sort()).toEqual(Object.keys(BEFORE).sort());
-  for (const [k, text] of Object.entries(BEFORE)) expect(now[k], k).toBe(text);
+it("a lead soul is the first-mate contract, and names no old persona or Ash round number", () => {
+  const soul = leadSoul(LEAD, "/code/tally");
+  expect(soul).toContain("You are a first mate.");
+  expect(soul).toContain(FIRST_MATE_CONTRACT);
+  expect(FIRST_MATE_CONTRACT).toContain("You are a first mate.");
+  expect(soul).toContain("You are Tally lead, the lead for Tally (project `tally`), working in /code/tally.");
+  const text = `${soul}\n${FIRST_MATE_CONTRACT}`.toLowerCase();
+  for (const name of OLD_PERSONAS) expect(text, name).not.toContain(name);
+  expect(soul).not.toMatch(/\bround\s+\d+/i);
+  expect(FIRST_MATE_CONTRACT).not.toMatch(/\bround\s+\d+/i);
+  expect(soul).not.toMatch(/\b4b7bb1b\b/);
+  expect(soul).not.toMatch(/\bG5\b/);
 });

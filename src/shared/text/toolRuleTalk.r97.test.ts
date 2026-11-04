@@ -1,4 +1,4 @@
-// r97 (frank e, c02 BLIND 242d +23s): the Lead's tool talk the r95 filter missed.
+// r97 (ed e, c02 BLIND 242d +23s): the Lead's tool talk the r95 filter missed.
 import { expect, it } from "vitest";
 import { withoutToolRuleTalk } from "./toolRuleTalk";
 

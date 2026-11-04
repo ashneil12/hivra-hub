@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { FIRST_MATE_CONTRACT } from "../../firstmate/model/contract";
 import { interviewPrompt, parseInterviewReply } from "./projectInterview";
 
 describe("New project's interview turn", () => {
-  it("is the Mono itself, a short note on what Create needs and the chat so far, ahead of Ash's latest line", () => {
-    const prompt = interviewPrompt("Moonrise", [{ from: "cos", text: "What's it about?" }, { from: "ash", text: "A farming game" }], "<soul>\nI am Chief of Staff.\n</soul>");
-    expect(prompt).toContain("<soul>\nI am Chief of Staff.\n</soul>");
+  it("is the first mate contract, a short note on what Create needs and the chat so far, ahead of the latest line", () => {
+    const prompt = interviewPrompt("Moonrise", [{ from: "cos", text: "What's it about?" }, { from: "ash", text: "A farming game" }], FIRST_MATE_CONTRACT);
+    expect(prompt).toContain("You are a first mate.");
     expect(prompt).toContain("game-studio (Game studio:");
-    expect(prompt).toContain('"existing" (a folder he already has');
+    expect(prompt).toContain('"existing" (a folder they already have');
     expect(prompt).toContain("You: What's it about?");
     expect(prompt.trimEnd().endsWith("A farming game")).toBe(true);
     // No script of questions and no tone rules: only what Create needs.

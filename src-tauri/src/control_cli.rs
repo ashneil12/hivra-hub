@@ -297,12 +297,12 @@ Actions:
                   Preserve the other instructions. If the file changed since
                   soul.read, read it again and reapply the requested changes.
                   Habit runs and other sessions cannot change a Mono's soul.
-  souls.read     {"mono":"hivra-lead"}  Alfred's own chat only. Another Mono's
+  souls.read     {"mono":"hivra-lead"}  A Mono's own chat only. Another Mono's
                   soul, its hash and the app's newer version, to merge.
   souls.merge    {"mono":"hivra-lead","text":"<complete merged soul>",
                   "expectedHash":"<hash from souls.read>"}
-                  Alfred's own chat only, when Ash asks. Take the app's new
-                  wording and keep every change Ash made (his wording wins);
+                  A Mono's own chat only, when the person asks. Take the app's new
+                  wording and keep every change they made (their wording wins);
                   add nothing new. The app checks it, refuses it if the soul
                   changed since souls.read, keeps the old soul and logs it in
                   Bot changes with Undo.
@@ -425,14 +425,15 @@ Actions:
   monos.message  {"to":"<Mono id or name>","text":"..."}
                   Mono only. A private message another Mono gets as a turn in its
                   own chat, shown as from you; it answers you the same way.
-  rooms.create   {"name":"Marketing","members":["CoS","PM"]}  Mono only. A group
+  rooms.create   {"name":"Marketing","members":["ada","bo"]}  Mono only. A group
                   chat Ash asked for, with you in it (MCP room_create).
   monos.create   {"name","role","who","watchFor","skills"} drafts one new
                   Mono (soul: templates/SOUL.md, Role/Who I am/What I watch
                   for/Skills only; only after it asked Ash a question and
                   he answered; skills must be installed ones); then
                   {"draftId"} makes it once Ash has said yes (MCP mono_create).
-  monos.retire   {"mono"} names a Mono to retire (Chief of Staff only); then
+  monos.retire   {"mono"} names a Mono to retire (any Mono's own chat, not
+                  itself); then
                   {"retireId"} retires it once Ash has said yes, with Undo in
                   Bot changes (MCP mono_retire).
   pages.build    {"project","spec"} previews a Page from blocks; then
@@ -932,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn app_mode_exposes_alfreds_soul_merge() {
+    fn app_mode_exposes_a_monos_soul_merge() {
         for (action, input) in [
             ("souls.read", r#"{"mono":"hivra-lead"}"#),
             (
@@ -947,7 +948,7 @@ mod tests {
             assert!(parse_args_for(&args(&[action]), false).is_err());
             assert!(app_help().contains(action));
         }
-        assert!(app_help().contains("Alfred's own chat only"));
+        assert!(app_help().contains("A Mono's own chat only"));
     }
 
     #[test]

@@ -283,7 +283,7 @@ export type MonoSessionCompletion = {
 
 /**
  * A hidden app turn from a group room or from another Mono (hub rooms, docs/leadership/ROOM.md): the chat shows it as
- * one quiet line ("Leadership team · Answered Ash", "From frank"), never as Ash's words.
+ * one quiet line ("Leadership team · Answered Ash", "From ed"), never as Ash's words.
  */
 export type MonoNote = {
   /** room: the room woke this Mono (its reply is a room post); message: another Mono's private message (mono_message). */

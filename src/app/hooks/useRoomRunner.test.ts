@@ -6,7 +6,7 @@ import { groupMonoChatTurns, groupTurns } from "../../features/sessions/model/tr
 import { sanitizeSessionForPersist } from "../../features/sessions/data/sessionStore";
 import { answerAfter, liveAnswer, liveRoomText, reportAnswer, wakeEnd } from "./useRoomRunner";
 
-const chat = (patch: Partial<Session> = {}): Session => ({ ...newSession("claude", "/code/hub"), id: "mono-frank", ...patch });
+const chat = (patch: Partial<Session> = {}): Session => ({ ...newSession("claude", "/code/hub"), id: "mono-ed", ...patch });
 const note = { kind: "room" as const, from: "Leadership team", ref: "hub:leadership", line: "Answered Projects Manager" };
 
 describe("a wake in a busy Mono's queue", () => {
@@ -93,7 +93,7 @@ describe("in the Mono's own chat", () => {
     text: "[MonoCode message from Chief of Staff] ...",
     internal: true,
     appRequestId: "app-mono-cos-q2",
-    monoNote: { kind: "message", from: "Chief of Staff", ref: "chief-of-staff", line: "Can you log the Friday rule?" },
+    monoNote: { kind: "message", from: "Chief of Staff", ref: "ada", line: "Can you log the Friday rule?" },
     startedAt: 4,
   };
 

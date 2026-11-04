@@ -114,7 +114,7 @@ describe("AutopilotView", () => {
   });
 
   it("shows each call with its pick, and the red-list calls waiting for Ash", async () => {
-    await backend.set({ scopes: ["*"], untilMs: Date.now() + 40 * 3_600_000, by: "mono:chief-of-staff", said: "go autopilot until monday", who: "Chief of Staff" });
+    await backend.set({ scopes: ["*"], untilMs: Date.now() + 40 * 3_600_000, by: "mono:ada", said: "go autopilot until monday", who: "Chief of Staff" });
     await backend.log({ kind: "decision", outcome: "taken", what: "Split the fix into two PRs?", recommendation: "Yes, two PRs", who: "Hivra lead", project: "hivra", chatId: "c1" });
     await backend.log({ kind: "decision", outcome: "held", what: "Refund the double charge?", recommendation: "Refund it", red: "money", who: "Hivra lead", chatId: "c1" });
     await act(async () => root.render(createElement(AutopilotView)));

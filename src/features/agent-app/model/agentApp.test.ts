@@ -226,30 +226,32 @@ describe("agent app commands", () => {
     expect(ship).toHaveBeenCalledTimes(2);
   });
 
-  it("ships only for a Lead or the leadership team from its own chat, and never forces a restart", async () => {
+  it("ships for any Mono from its own chat, and never forces a restart", async () => {
     const { source, host } = fixture();
     const ship = vi.fn(async () => ({ ok: true, scheduled: true, id: "20261019-210405-ccccccc" }));
     host.ship = ship;
-    const monos: Record<string, string> = { lead: "hub-lead", cos: "chief-of-staff", mkt: "marketing", habit: "hub-lead", checker: "checker" };
+    const monos: Record<string, string> = { lead: "hub-lead", cos: "ada", mkt: "marketing", habit: "hub-lead", checker: "checker" };
     host.isMono = (id) => id in monos && id !== "habit";
     host.isHabitRun = (id) => id === "habit";
     host.monoOf = (id) => (id in monos ? { id: monos[id], projects: [source.cwd] } : undefined);
     const from = (id: string) => ({ ...source, id });
-    // A delegated worker's chat, a habit run, a Mono that isn't a Lead or on the leadership team, the checker.
-    for (const id of ["worker", "habit", "mkt", "checker"])
-      await expect(handleAgentApp(from(id), `x-${id}`, "app.ship", {}, host)).rejects.toThrow();
-    await expect(handleAgentApp(from("worker"), "x1", "app.ship", {}, host)).rejects.toThrow(
-      "Only a project's Lead or the leadership team ships, from its own chat",
-    );
+    const refused = "Only a Mono ships, from its own chat. The checker does not. Report that it's ready to ship instead.";
+    // A delegated worker's chat, and a habit run, are not a Mono's own chat.
+    for (const id of ["worker", "habit"])
+      await expect(handleAgentApp(from(id), `x-${id}`, "app.ship", {}, host)).rejects.toThrow(refused);
+    // The checker is a Mono, and still does not ship. Its lane refuses before the ship check.
+    await expect(handleAgentApp(from("checker"), "x-checker", "app.ship", {}, host)).rejects.toThrow(/checker/i);
     expect(ship).not.toHaveBeenCalled();
     // "restart" quits over running chats: only Ash's Restart now tap does that.
     await expect(handleAgentApp(from("lead"), "x2", "app.ship", { whenBusy: "restart" }, host)).rejects.toThrow(
       "Only Ash's Restart now",
     );
     expect(ship).not.toHaveBeenCalled();
+    // An ordinary Mono (mkt) ships from its own chat, the same as a project lead.
     await handleAgentApp(from("lead"), "ok1", "app.ship", {}, host);
     await handleAgentApp(from("cos"), "ok2", "app.ship", {}, host);
-    expect(ship.mock.calls.map(([input]) => (input as { requestedBy: string }).requestedBy)).toEqual(["lead", "cos"]);
+    await handleAgentApp(from("mkt"), "ok3", "app.ship", {}, host);
+    expect(ship.mock.calls.map(([input]) => (input as { requestedBy: string }).requestedBy)).toEqual(["lead", "cos", "mkt"]);
   });
 
   it("reports the newest ship with the version when the app knows it", async () => {

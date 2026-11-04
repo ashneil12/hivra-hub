@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 const HIVRA = "/Users/ash/Projects/hivra";
-const ME = { monoId: "chief-of-staff", name: "Chief of Staff" };
+const ME = { monoId: "ada", name: "Chief of Staff" };
 
 async function setup() {
   const hub = await import("../../hub/model/hubData");
@@ -95,7 +95,7 @@ it("in a group chat it is a message in the conversation's scroll, after Ash's, n
   const a = await setup();
   const chat = await import("../../hub/model/hubChats");
   const { GroupChatView } = await import("../../hub/ui/GroupChatView");
-  const room = chat.createChat("hub", "Leadership team", ["chief-of-staff"]);
+  const room = chat.createChat("hub", "Leadership team", ["ada"]);
   const conv = chat.startConversation(room.id, "Let's make a marketing team");
   a.make.draftTeam({ name: "Marketing", brief: "Owns the launch.", projects: ["hivra"] }, ME, Date.now(), { room: room.id, conv });
   act(() => root.render(createElement(GroupChatView, { chatId: room.id, projectId: "hub" })));

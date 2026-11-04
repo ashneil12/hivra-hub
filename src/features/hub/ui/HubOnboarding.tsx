@@ -2,9 +2,8 @@ import { useRef, useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { pickExportForRestore, readImportText, setPendingImport } from "../../portable/model/portable";
 import type { PendingImport } from "../../portable/model/importPlan";
-import { ADDON_OFFER, DEFAULT_TEAM } from "../model/builtInMonos";
 import { showAppItem, showProjectToday } from "../model/hubNav";
-import { addTeamAddon } from "../model/hubTeam";
+import { addStarterMono, starterOffers } from "../model/starterMonos";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 import { setupProved, snoozeSetupCard } from "../model/setupProof";
@@ -33,8 +32,9 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [start, setStart] = useState<"fresh" | "restore">("fresh");
   const [restored, setRestored] = useState<string | null>(null);
   const [name, setName] = useState("");
-  // Critiquito is an add-on, offered unticked (Ash 14 Oct); the default team is the four.
-  const [addon, setAddon] = useState(false);
+  // WP-05: starter Monos are offered unticked. Ticking one makes an ordinary Mono. None are added otherwise.
+  const offers = starterOffers();
+  const [ticked, setTicked] = useState<string[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const picked = (p: PendingImport) => {
     setPendingImport(p);
@@ -61,7 +61,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const done = (next: "today" | "new-project" | "restore" = "today") => {
     finishOnboarding();
     if (name.trim()) setUserName(name);
-    if (addon && start === "fresh") addTeamAddon(ADDON_OFFER.id);
+    if (start === "fresh") for (const id of ticked) addStarterMono(id);
     // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
     // (New project, Restore) opens over it.
     if (next === "today") showProjectToday();
@@ -76,7 +76,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
       <div className="flex w-[520px] flex-col gap-6 rounded-2xl border border-content/7 dialog-glass p-8 shadow-2xl ring-0">
         <div className="flex items-center justify-between text-xs text-content/60">
-          {/* One step needs no count (Critiquito, 0.16.3: "Step 1 of 1"). */}
+          {/* One step needs no count. */}
           {steps.length > 1 ? <span data-hub-onboarding-count>Step {step + 1} of {steps.length}</span> : <span />}
           {!last && kind !== "setup" ? (
             <button type="button" data-hub-onboarding-skip onClick={() => done()} className="rounded px-1.5 py-0.5 hover:bg-content/8 hover:text-content">
@@ -115,8 +115,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
               onChange={(e) => void onFile(e.target.files?.[0])} />
             {start === "fresh" ? (
               <Group label="Your team">
-                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>{DEFAULT_TEAM.join(", ").replace(/, ([^,]*)$/, " and $1")}.</p>
-                <Check2 on={addon} onClick={() => setAddon(!addon)} title={`Also add ${ADDON_OFFER.name}`} sub="Design review, optional" />
+                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>Add any of these. Each one is an ordinary Mono. None are added unless you tick them.</p>
+                {offers.map((offer) => (
+                  <Check2 key={offer.id} id={offer.id} on={ticked.includes(offer.id)}
+                    onClick={() => setTicked((cur) => cur.includes(offer.id) ? cur.filter((x) => x !== offer.id) : [...cur, offer.id])}
+                    title={offer.name} sub={offer.role} />
+                ))}
               </Group>
             ) : null}
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
@@ -212,9 +216,9 @@ function Toggle({ on, onClick, title, sub }: { on: boolean; onClick: () => void;
 }
 
 /** A tick box for an optional extra (square, so it doesn't read as one of a set of choices). */
-function Check2({ on, onClick, title, sub }: { on: boolean; onClick: () => void; title: string; sub?: string }) {
+function Check2({ on, onClick, title, sub, id }: { on: boolean; onClick: () => void; title: string; sub?: string; id: string }) {
   return (
-    <button type="button" role="checkbox" aria-checked={on} onClick={onClick} data-hub-onboarding-addon
+    <button type="button" role="checkbox" aria-checked={on} onClick={onClick} data-hub-onboarding-starter={id}
       className="flex items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-content/5">
       <span className={`grid size-4 shrink-0 place-items-center rounded ${on ? "bg-content text-background-base" : "bg-content/10"}`}>
         {on ? <Check className="size-3" strokeWidth={2.5} /> : null}

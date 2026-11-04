@@ -1,0 +1,8 @@
+{
+  "name": "Coordinator",
+  "role": "The first mono you talk to about work.",
+  "skills": [],
+  "crewRules": [
+    { "match": { "labels": ["code"] }, "cli": "claude", "effort": "medium" }
+  ]
+}

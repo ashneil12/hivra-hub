@@ -1,15 +1,12 @@
-// r98 (B5 run 7b6d): the Lead's red-line ask (DKIM, refunds FAQ, privacy page, Stripe, the store reply) left Ash's
-// Inbox and rail when he wrote "wat happened to the stuff i dumped earlier": Today reads only the newest reply, and the
-// Lead had been told to ask once. Every Lead now repeats a still-open ask after a message that didn't settle it.
+// A lead used to be told to repeat a still-open ask at the end of the next reply. That script is gone.
 import { expect, it } from "vitest";
-import { leadFor, leadSoul } from "./hubLeads";
+import { leadSoul, type LeadSpec } from "./hubLeads";
 
-it("every Lead's soul says an ask still open after Ash's next message is asked again in that reply", () => {
-  const leads = ["hub-lead", "hivra-lead"].map((id) => leadFor(id));
-  expect(leads.every(Boolean)).toBe(true);
-  for (const lead of leads.filter((l) => !!l)) {
-    const soul = leadSoul(lead, "/code/x");
-    expect(soul).toContain("His Today reads only your newest reply");
-    expect(soul).toMatch(/didn't settle it .*end that reply with the same two lines again/);
-  }
+const LEAD: LeadSpec = { id: "hub-lead", name: "Hub lead", projectId: "hub", projectName: "MonoCode Hub" };
+
+it("a lead's soul does not script repeating an open ask", () => {
+  const soul = leadSoul(LEAD, "/code/x");
+  expect(soul).not.toContain("His Today reads only your newest reply");
+  expect(soul).not.toContain("end that reply with the same two lines again");
+  expect(soul).toContain("You lead this project's coding team.");
 });

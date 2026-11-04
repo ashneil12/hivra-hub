@@ -79,7 +79,7 @@ export function RoomText({ text: raw, className }: { text: string; className?: s
   );
 }
 
-/** "frank", "frank and PM", "frank, PM and Alfred". */
+/** "ed", "ed and PM", "ed, PM and Alfred". */
 export function namesList(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
   return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -228,7 +228,7 @@ export function RoomStatusLine({ chatId, convId, nameOf }: { chatId: string; con
   const now = useNow();
   // The first seat with a live step gets the live line itself, the MonoCode runner right after its timer (Critiquito,
   // 29 Oct: pinned to the status line, never floating mid-screen). A wake waiting in (or steered into) a Mono's own
-  // session says where it is: "frank · Queued behind its current reply · 12s".
+  // session says where it is: "ed · Queued behind its current reply · 12s".
   const lead = working.find((w) => w.activity && !(w.state === "writing" && showing.has(w.monoId)));
   const leadMono = lead ? findMono(lead.monoId) : undefined;
   const writing = working

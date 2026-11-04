@@ -8,7 +8,7 @@ vi.setConfig({ testTimeout: 30_000 });
 
 const HIVRA = "/Users/ash/Projects/hivra";
 const NIBBII = "/Users/ash/Projects/nibbii";
-const CALLER = { monoId: "chief-of-staff", name: "Chief of Staff" };
+const CALLER = { monoId: "ada", name: "Chief of Staff" };
 
 beforeEach(() => {
   localStorage.clear();

@@ -50,8 +50,8 @@ const load = async () => {
 };
 const tokens = () => document.documentElement.style;
 const seat = () => {
-  world.monos = [{ id: "critiquito", name: "Critiquito", mascot: "owl", color: "#8899aa", projects: [] }];
-  world.files = { critiquito: { harbour: HARBOUR } };
+  world.monos = [{ id: "dee", name: "Critiquito", mascot: "owl", color: "#8899aa", projects: [] }];
+  world.files = { dee: { harbour: HARBOUR } };
 };
 
 it("reads a scheme of several themes, dark and light, and the older single-theme shape", async () => {
@@ -172,7 +172,7 @@ it("doesn't ask twice about the same file, and asks again when the Mono changes 
   expect(f.themeOffers()).toEqual([]);
   expect(await f.scanMonoThemes()).toBe(1);
   expect(f.themeOffers()).toEqual([]);
-  world.files = { critiquito: { harbour: HARBOUR.replace("Harbour night", "Harbour dusk") } };
+  world.files = { dee: { harbour: HARBOUR.replace("Harbour night", "Harbour dusk") } };
   await f.scanMonoThemes();
   expect(f.themeOffers().map((o) => o.scheme.name)).toEqual(["Harbour"]);
 });

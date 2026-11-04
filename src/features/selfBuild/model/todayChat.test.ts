@@ -4,8 +4,8 @@
 import { beforeEach, expect, it } from "vitest";
 import { applyTodayFromChat, openTodayChatPreview, OPEN_EDIT_TODAY, todayChatPreview, todayFromChat, todayPreviewWaiting } from "./todayChat";
 
-const roster = [{ id: "alfred" }];
-const me = { monoId: "alfred", name: "Alfred" };
+const roster = [{ id: "cam" }];
+const me = { monoId: "cam", name: "Cam" };
 const ask = "on my Today board, move the MonoCode Hub card to the first spot";
 beforeEach(() => localStorage.clear());
 

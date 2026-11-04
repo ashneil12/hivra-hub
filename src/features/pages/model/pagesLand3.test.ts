@@ -26,7 +26,7 @@ async function render() {
 }
 
 it("the Mono picker lists seated Monos only and defaults to a seated Mono", async () => {
-  addMono({ id: "projects-manager", name: "Projects Manager", mascot: "robot", color: "x", projects: [] });
+  addMono({ id: "bo", name: "Bo", mascot: "robot", color: "x", projects: [] });
   addMono({ id: "hivra-lead", name: "Hivra lead", mascot: "robot", color: "x", projects: [] });
   const host = await render();
   const picker = host.querySelector("[data-pages-mono-picker]") as HTMLSelectElement;
@@ -39,17 +39,17 @@ it("the Mono picker lists seated Monos only and defaults to a seated Mono", asyn
 it("the project's lead is the default builder when it's seated and works on that project", async () => {
   const { defaultBuilder } = await import("../ui/PagesView");
   const { hubData } = await import("../../hub/model/hubData");
+  const { ensureProjectLeads } = await import("../../hub/model/hubLeads");
   const project = hubData().listProjects()[0];
-  addMono({ id: "projects-manager", name: "Projects Manager", mascot: "robot", color: "x", projects: [] });
-  const leadId = ["vg-game-lead", "hivra-lead", "nibbii-lead", "ash-lead"][0];
-  addMono({ id: leadId, name: "Lead", mascot: "robot", color: "x", projects: [project.folder ?? "/x"] });
-  expect(defaultBuilder(project.id, [{ id: "projects-manager" }, { id: leadId }])).toBe(leadId);
-  expect(defaultBuilder(project.id, [{ id: "projects-manager" }])).toBe("projects-manager");
+  addMono({ id: "bo", name: "Bo", mascot: "robot", color: "x", projects: [] });
+  ensureProjectLeads([project]);
+  expect(defaultBuilder(project.id, [{ id: "bo" }, { id: "hivra-lead" }])).toBe("hivra-lead");
+  expect(defaultBuilder(project.id, [{ id: "bo" }])).toBe("bo");
 });
 
 it("every project has a tab; one with no pages says No pages yet; cross-project pages are 'Not tied to a project'", async () => {
   keepPage(buildPreview("hivra sign-ups", "Hivra lead", 1, "hivra"));
-  keepPage(buildPreview("my week", "Chief of Staff", 2, "today"));
+  keepPage(buildPreview("my week", "Ada", 2, "today"));
   const host = await render();
   const tabs = [...host.querySelectorAll('[aria-label="Filter by project"] [role=tab]')].map((t) => t.textContent);
   expect(tabs).toContain("Nibbii");

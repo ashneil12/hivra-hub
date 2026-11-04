@@ -8,9 +8,9 @@ it("the sidebar avatar is a neutral letter tile, not a mascot", () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const el = document.createElement("div");
   const root = createRoot(el);
-  act(() => root.render(createElement(MonoRailMascot, { name: "ghost", color: "red", letter: "frank" })));
+  act(() => root.render(createElement(MonoRailMascot, { name: "ghost", color: "red", letter: "ed" })));
   const tile = el.querySelector("[data-mono-letter]")!;
-  expect(tile.textContent).toBe("FR");
+  expect(tile.textContent).toBe("ed");
   expect(tile.className).toContain("bg-content/12");
   expect(el.querySelector("svg, canvas")).toBeNull();
   act(() => root.unmount());
