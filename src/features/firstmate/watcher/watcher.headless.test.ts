@@ -1,7 +1,7 @@
 // Hivra WP-11's "Don't": the classifier runs without a window (WP-60 runs it on a remote host) and never calls a model,
 // starts a CLI or spends a token. This walks every module the classifier loads, from its source, and checks it.
 import { readFileSync, existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ROOTS = ["classifier.ts", "stall.ts", "hourly.ts"].map((file) => resolve(__dirname, file));
@@ -46,7 +46,7 @@ describe("the classifier is headless and spends nothing", () => {
   const files = [...modules.entries()].filter(([key]) => !key.startsWith("package:"));
 
   it("loads no React, DOM, Tauri, process or network package", () => {
-    expect(files.map(([file]) => file.split("/").pop())).toEqual(expect.arrayContaining(["classifier.ts", "stall.ts", "hourly.ts"]));
+    expect(files.map(([file]) => basename(file))).toEqual(expect.arrayContaining(["classifier.ts", "stall.ts", "hourly.ts"]));
     for (const name of packages) expect(name).not.toMatch(/^(react|react-dom|@tauri-apps\/|node:child_process|child_process|node:net|undici|@anthropic-ai\/)/);
   });
 
@@ -59,6 +59,6 @@ describe("the classifier is headless and spends nothing", () => {
   });
 
   it("no module it loads reaches the harness or a provider", () => {
-    for (const [file] of files) expect(file).not.toMatch(/integrations\/harness|src-tauri|\/hooks\/|\/ui\//);
+    for (const [file] of files) expect(file.replaceAll("\\", "/")).not.toMatch(/integrations\/harness|src-tauri|\/hooks\/|\/ui\//);
   });
 });
