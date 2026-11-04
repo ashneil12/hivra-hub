@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -79,18 +80,18 @@ function gate(
   argv: string[],
   opts?: { binary?: boolean; env?: NodeJS.ProcessEnv; project?: string },
 ) {
-  const flags = [
-    "--project",
-    opts?.project ?? ctx.project,
-    "--registry",
-    ctx.registry,
-    "--consent",
-    ctx.consent,
-  ];
-  if (opts?.binary !== false) flags.push("--binary", ctx.binary);
+  const env: NodeJS.ProcessEnv = { ...(opts?.env ?? {}) };
+  env.HIVRA_DESKTOP_REGISTRY ??= ctx.registry;
+  env.HIVRA_DESKTOP_CONSENT ??= ctx.consent;
+  if (opts?.binary !== false) {
+    env.HIVRA_DESKTOP_BINARY ??= ctx.binary;
+    if (env.HIVRA_DESKTOP_SHA256 === undefined && existsSync(ctx.binary)) {
+      env.HIVRA_DESKTOP_SHA256 = createHash("sha256").update(readFileSync(ctx.binary)).digest("hex");
+    }
+  }
   return runGate({
-    argv: [...flags, ...argv],
-    env: opts?.env,
+    argv: ["--project", opts?.project ?? ctx.project, ...argv],
+    env,
     spawnImpl: (binary: string, args: string[], options: Call["options"]) => {
       ctx.calls.push({ binary, args, options });
       return { status: 0, stdout: "child\n", stderr: "" };
@@ -256,6 +257,8 @@ describe("desktop gate", () => {
     expect(ctx.calls[0].options.env).not.toHaveProperty("MONOCODE_SECRET");
     expect(ctx.calls[0].options.env).not.toHaveProperty("SECRET_TOKEN");
     expect(ctx.calls[0].options.env).not.toHaveProperty("LC_PAPER");
+    expect(ctx.calls[0].options.env).not.toHaveProperty("HIVRA_DESKTOP_SHA256");
+    expect(ctx.calls[0].options.env).not.toHaveProperty("HIVRA_DESKTOP_BINARY");
   });
 
   it("refuses visible control unless this project allows it, and does not strip the flag", () => {
@@ -320,7 +323,12 @@ describe("desktop gate", () => {
     const ctx = setup();
     on(ctx);
     const relative = runGate({
-      argv: ["--project", "proj", "--registry", ctx.registry, "--consent", ctx.consent, "status"],
+      argv: ["--project", "proj", "status"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: ctx.registry,
+        HIVRA_DESKTOP_CONSENT: ctx.consent,
+        HIVRA_DESKTOP_BINARY: ctx.binary,
+      },
       spawnImpl: () => {
         ctx.calls.push({ binary: "", args: [], options: {} });
         return { status: 0, stdout: "", stderr: "" };
@@ -435,7 +443,11 @@ describe("desktop gate", () => {
     expect(existsSync(bundled)).toBe(false);
 
     const relative = runGate({
-      argv: ["--project", ctx.project, "--registry", ctx.registry, "--consent", ctx.consent, "--binary", "agent-desktop", "status"],
+      argv: ["--project", ctx.project, "--binary", "agent-desktop", "status"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: ctx.registry,
+        HIVRA_DESKTOP_CONSENT: ctx.consent,
+      },
       spawnImpl: () => {
         ctx.calls.push({ binary: "", args: [], options: {} });
         return { status: 0, stdout: "", stderr: "" };
@@ -474,7 +486,7 @@ describe("desktop gate", () => {
     writeFileSync(
       stub,
       `#!/usr/bin/env node
-const names = ["ANTHROPIC_AUTH_TOKEN", "MONOCODE_SECRET", "SECRET_TOKEN"];
+const names = ["ANTHROPIC_AUTH_TOKEN", "MONOCODE_SECRET", "SECRET_TOKEN", "HIVRA_DESKTOP_SHA256", "HIVRA_DESKTOP_BINARY"];
 process.stdout.write(JSON.stringify({
   argv: process.argv.slice(2),
   leaked: names.filter((name) => process.env[name] !== undefined),
@@ -484,14 +496,19 @@ process.stdout.write(JSON.stringify({
 `,
     );
     chmodSync(stub, 0o755);
+    const pin = createHash("sha256").update(readFileSync(stub)).digest("hex");
     const result = runGate({
-      argv: ["--project", ctx.project, "--registry", ctx.registry, "--consent", ctx.consent, "--binary", stub, "status"],
+      argv: ["--project", ctx.project, "status"],
       env: {
         PATH: process.env.PATH,
         LC_ALL: "en_US.UTF-8",
         ANTHROPIC_AUTH_TOKEN: "sek",
         MONOCODE_SECRET: "sek",
         SECRET_TOKEN: "sek",
+        HIVRA_DESKTOP_REGISTRY: ctx.registry,
+        HIVRA_DESKTOP_CONSENT: ctx.consent,
+        HIVRA_DESKTOP_BINARY: stub,
+        HIVRA_DESKTOP_SHA256: pin,
       },
     });
     expect(result.code).toBe(0);
@@ -501,6 +518,97 @@ process.stdout.write(JSON.stringify({
       lc: "en_US.UTF-8",
       path: true,
     });
+  });
+
+  it("does not trust a worker's registry, consent file, binary, or unknown flag", () => {
+    const real = setup();
+    off(real);
+    const fake = setup();
+    on(fake);
+    allow(fake, "Notes");
+    const shown = setVisible(JSON.parse(readFileSync(fake.consent, "utf8")) as ConsentState, fake.project, true);
+    saveConsent(fake.consent, 1, shown);
+    writeFileSync(fake.binary, "not-the-pin");
+    const attacked = runGate({
+      argv: [
+        "--project",
+        real.project,
+        "--registry",
+        fake.registry,
+        "--consent",
+        fake.consent,
+        "--binary",
+        fake.binary,
+        "--hivra-app",
+        "Notes",
+        "--headed",
+        "click",
+      ],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: real.registry,
+        HIVRA_DESKTOP_CONSENT: real.consent,
+        HIVRA_DESKTOP_BINARY: real.binary,
+        HIVRA_DESKTOP_SHA256: createHash("sha256").update("").digest("hex"),
+      },
+      spawnImpl: () => {
+        real.calls.push({ binary: "", args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(attacked, "INVALID_ARGS", "unsafe");
+    expect(real.calls).toEqual([]);
+    expect(existsSync(real.consent)).toBe(false);
+
+    const afterDash = runGate({
+      argv: ["--project", real.project, "--", "--registry", fake.registry, "click", "--hivra-app", "Notes"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: real.registry,
+        HIVRA_DESKTOP_CONSENT: real.consent,
+      },
+      spawnImpl: () => {
+        real.calls.push({ binary: "", args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(afterDash, "INVALID_ARGS", "unsafe");
+    expect(real.calls).toEqual([]);
+
+    const unknown = runGate({
+      argv: ["--project", real.project, "--plugin-root", "/tmp", "status"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: real.registry,
+        HIVRA_DESKTOP_CONSENT: real.consent,
+      },
+      spawnImpl: () => {
+        real.calls.push({ binary: "", args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(unknown, "INVALID_ARGS", "unsafe");
+    expect(real.calls).toEqual([]);
+  });
+
+  it("refuses a binary that does not match the pinned sha256", () => {
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    const wrong = runGate({
+      argv: ["--project", ctx.project, "--hivra-app", "Notes", "click"],
+      env: {
+        HIVRA_DESKTOP_REGISTRY: ctx.registry,
+        HIVRA_DESKTOP_CONSENT: ctx.consent,
+        HIVRA_DESKTOP_BINARY: ctx.binary,
+        HIVRA_DESKTOP_SHA256: "0".repeat(64),
+      },
+      spawnImpl: () => {
+        ctx.calls.push({ binary: "", args: [], options: {} });
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+    refusal(wrong, "BINARY_UNTRUSTED", "unsafe");
+    expect(ctx.calls).toEqual([]);
+    expect(wrong.stdout).not.toContain(ctx.binary);
   });
 
   it("treats a folder named ..foo as inside the enabled project", () => {

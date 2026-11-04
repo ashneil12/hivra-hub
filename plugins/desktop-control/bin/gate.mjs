@@ -5,6 +5,7 @@
 // per-app consent, and the visible-control check. It does not search PATH and it does not keep secrets.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -23,7 +24,33 @@ import { askApp, parseConsent } from "./consent.mjs";
 
 const binDir = path.dirname(fileURLToPath(import.meta.url));
 
-const GATE_FLAGS = new Set(["--project", "--consent", "--registry", "--binary", "--hivra-app"]);
+// A worker can pass --project and --hivra-app. Paths and the pin come from the environment the app set,
+// never from flags. --registry, --consent, --binary and a hash flag are refused, including after --.
+const GATE_FLAGS = new Set(["--project", "--hivra-app"]);
+const OVERRIDE_FLAGS = new Set(["--registry", "--consent", "--binary", "--sha256", "--sha-256"]);
+const FORWARDED_FLAGS = new Set([
+  "--timeout",
+  "--arg",
+  "--env",
+  "--cwd",
+  "--cdp",
+  "--window-id",
+  "--timeout-ms",
+  "--title",
+  "--app",
+  "--name",
+  "--role",
+  "--text",
+  "--root",
+  "--session",
+  "--headed",
+  "--screenshots",
+  "--screen",
+  "--help",
+  "--skeleton",
+  "--compact",
+  "--surface",
+]);
 const VALUE_FLAGS = new Set([
   "--timeout",
   "--arg",
@@ -39,6 +66,7 @@ const VALUE_FLAGS = new Set([
   "--text",
   "--root",
   "--session",
+  "--surface",
 ]);
 const SAFE = new Set(["status", "version", "permissions", "skills", "list-apps", "list-displays", "list-windows", "help"]);
 const APP_COMMANDS = new Set(["launch", "close-app"]);
@@ -84,6 +112,10 @@ function defaultRegistry() {
 
 function defaultConsent() {
   return path.resolve(binDir, "../../../data/desktop-control/consent.json");
+}
+
+function defaultBinary() {
+  return path.resolve(binDir, "../../../data/desktop-control/agent-desktop");
 }
 
 function exitCode(code) {
@@ -220,6 +252,12 @@ export function saveConsent(file, expectedRevision, next) {
   });
 }
 
+function flagKey(token) {
+  if (typeof token !== "string" || !token.startsWith("-") || token === "--") return null;
+  const eq = token.indexOf("=");
+  return eq === -1 ? token : token.slice(0, eq);
+}
+
 function splitArgs(argv) {
   /** @type {Record<string, string>} */
   const gate = {};
@@ -234,37 +272,50 @@ function splitArgs(argv) {
       passthrough = true;
       continue;
     }
-    if (!passthrough) {
-      let name = null;
-      let value = null;
+    const key = flagKey(token);
+    if (key && (OVERRIDE_FLAGS.has(key) || (key.startsWith("--hivra-") && key !== "--hivra-app"))) {
+      return { error: "That flag isn't allowed." };
+    }
+    if (key && passthrough && (key === "--project" || key === "--hivra-app")) {
+      return { error: "That flag isn't allowed." };
+    }
+    if (!passthrough && key && GATE_FLAGS.has(key)) {
+      let value;
       let consumed = 1;
-      if (token.startsWith("--") && token.includes("=")) {
-        const eq = token.indexOf("=");
-        const key = token.slice(0, eq);
-        if (GATE_FLAGS.has(key)) {
-          name = key;
-          value = token.slice(eq + 1);
-        }
-      } else if (GATE_FLAGS.has(token)) {
+      if (token.includes("=")) {
+        value = token.slice(token.indexOf("=") + 1);
+      } else {
         const next = argv[i + 1];
         if (next === undefined || next === "--" || next.startsWith("-")) {
           return { error: `Missing a value for ${token}.` };
         }
-        name = token;
         value = next;
         consumed = 2;
       }
-      if (name) {
-        if (seen[name] !== undefined && seen[name] !== value) {
-          return { error: `${name} was given twice with different values.` };
-        }
-        seen[name] = value;
-        gate[name] = value;
-        i += consumed - 1;
-        continue;
+      if (seen[key] !== undefined && seen[key] !== value) {
+        return { error: `${key} was given twice with different values.` };
       }
+      seen[key] = value;
+      gate[key] = value;
+      i += consumed - 1;
+      continue;
+    }
+    // agent-desktop's short flags (`-i`) are forwarded. A long flag has to be on the list.
+    if (key && /^-[a-zA-Z]$/.test(key)) {
+      rest.push(token);
+      continue;
+    }
+    if (key && !FORWARDED_FLAGS.has(key)) {
+      return { error: "That flag isn't allowed." };
     }
     rest.push(token);
+    if (key && !token.includes("=") && VALUE_FLAGS.has(key)) {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        rest.push(next);
+        i += 1;
+      }
+    }
   }
   return { gate, rest };
 }
@@ -434,17 +485,55 @@ function allowEnv(source) {
   for (const [key, value] of Object.entries(source)) {
     if (typeof value !== "string" || value.includes("\0")) continue;
     const upper = key.toUpperCase();
+    // The pin and the paths stay with the gate. The desktop program does not see them.
+    if (upper.startsWith("HIVRA_")) continue;
     if (PASSED.has(upper) || upper.startsWith("LC_")) out[key] = value;
   }
   return out;
+}
+
+function envPath(env, key, fallback) {
+  const value = env && env[key];
+  if (value == null || value === "") return { path: fallback() };
+  if (typeof value !== "string" || value.includes("\0") || !path.isAbsolute(value)) {
+    return { error: "INVALID_ARGS", message: "The desktop paths need full paths.", retry: "unsafe" };
+  }
+  return { path: value };
 }
 
 function defaultSpawn(binary, args, options) {
   return spawnSync(binary, args, { ...options, encoding: "utf8", shell: false, windowsHide: true });
 }
 
-function spawnDesktop(command, binaryFlag, forwarded, spawnImpl, env) {
-  const binary = binaryFlag ?? path.join(binDir, "agent-desktop");
+function pinProblem(binary, expected) {
+  if (typeof expected !== "string" || !/^[0-9a-fA-F]{64}$/.test(expected)) {
+    return {
+      code: "BINARY_MISSING",
+      message: "The desktop program's pin isn't set (agent-desktop 1.1.0). Try again once it is.",
+      retry: "safe",
+    };
+  }
+  let digest;
+  try {
+    digest = createHash("sha256").update(readFileSync(binary)).digest("hex");
+  } catch {
+    return {
+      code: "BINARY_MISSING",
+      message: "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+      retry: "safe",
+    };
+  }
+  if (digest.toLowerCase() !== expected.toLowerCase()) {
+    return {
+      code: "BINARY_UNTRUSTED",
+      message: "The desktop program doesn't match the pin. It was not started.",
+      retry: "unsafe",
+    };
+  }
+  return null;
+}
+
+function spawnDesktop(command, binary, expectedHash, forwarded, spawnImpl, env) {
   if (!path.isAbsolute(binary) || binary.includes("\0")) {
     return refuse(command, "INVALID_ARGS", "The desktop program needs a full path.", "unsafe");
   }
@@ -467,6 +556,8 @@ function spawnDesktop(command, binaryFlag, forwarded, spawnImpl, env) {
       "safe",
     );
   }
+  const pinned = pinProblem(binary, expectedHash);
+  if (pinned) return refuse(command, pinned.code, pinned.message, pinned.retry);
   const run = spawnImpl ?? defaultSpawn;
   let result;
   try {
@@ -537,6 +628,7 @@ function collectApp(rest, hivraApp, command) {
  */
 export function runGate(options) {
   const argv = options.argv ?? [];
+  const env = options.env ?? process.env;
   const split = splitArgs(argv);
   if (split.error) return refuse("", "INVALID_ARGS", split.error, "unsafe");
   const command = commandOf(split.rest);
@@ -544,11 +636,15 @@ export function runGate(options) {
   const projectResult = resolveProject(split.gate["--project"]);
   if (projectResult.error) return refuse(command, projectResult.error, projectResult.message, projectResult.retry);
   const project = projectResult.path;
-  const registryPath = split.gate["--registry"] ?? defaultRegistry();
-  const consentPath = split.gate["--consent"] ?? defaultConsent();
-  const on = pluginOn(registryPath, project);
+  const registryPath = envPath(env, "HIVRA_DESKTOP_REGISTRY", defaultRegistry);
+  if (registryPath.error) return refuse(command, registryPath.error, registryPath.message, registryPath.retry);
+  const consentPath = envPath(env, "HIVRA_DESKTOP_CONSENT", defaultConsent);
+  if (consentPath.error) return refuse(command, consentPath.error, consentPath.message, consentPath.retry);
+  const binaryPath = envPath(env, "HIVRA_DESKTOP_BINARY", defaultBinary);
+  if (binaryPath.error) return refuse(command, binaryPath.error, binaryPath.message, binaryPath.retry);
+  const on = pluginOn(registryPath.path, project);
   if (on.error) return refuse(command, on.error, on.message, on.retry);
-  // Off wins over an allow list, over --headed, and over commands that would otherwise be safe.
+  // Off wins over an allow list, over --headed, and over a command that would otherwise be allowed.
   if (!on.on) {
     return refuse(command || "desktop", "DESKTOP_CONTROL_OFF", "Desktop control is off. The person has to turn it on.", "unsafe");
   }
@@ -556,10 +652,12 @@ export function runGate(options) {
   if (appResult.error) return refuse(command, "INVALID_ARGS", appResult.error, "unsafe");
   if (!command) return refuse("", "INVALID_ARGS", "Say which command.", "unsafe");
   if (!appResult.app) {
-    if (SAFE.has(command)) return spawnDesktop(command, split.gate["--binary"], split.rest, options.spawnImpl, options.env);
+    if (SAFE.has(command)) {
+      return spawnDesktop(command, binaryPath.path, env.HIVRA_DESKTOP_SHA256, split.rest, options.spawnImpl, env);
+    }
     return refuse(command, "INVALID_ARGS", "Say which app.", "unsafe");
   }
-  const decision = decide(consentPath, project, appResult.app);
+  const decision = decide(consentPath.path, project, appResult.app);
   if (decision.busy) return refuse(command, "CONSENT_BUSY", "Desktop consent is busy. Try again.", "safe");
   if (decision.error) return refuse(command, decision.error, decision.message, decision.retry ?? "safe");
   if (decision.refused) {
@@ -578,11 +676,11 @@ export function runGate(options) {
       "unsafe",
     );
   }
-  // A new app asks for consent before headed is even considered. Don't strip --headed and continue.
+  // A new app asks for consent before visible control is considered. Don't strip the flag and continue.
   if (isHeaded(split.rest) && !decision.visible) {
     return refuse(command, "VISIBLE_NOT_ALLOWED", "Visible control is off for this project. Don't add --headed.", "unsafe");
   }
-  return spawnDesktop(command, split.gate["--binary"], split.rest, options.spawnImpl, options.env);
+  return spawnDesktop(command, binaryPath.path, env.HIVRA_DESKTOP_SHA256, split.rest, options.spawnImpl, env);
 }
 
 function isDirectRun() {
