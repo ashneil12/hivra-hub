@@ -83,6 +83,7 @@ import {
 } from "../model/githubTasks";
 import {
   applyInboxFilters,
+  connectionFromStatus,
   connectableInboxSources,
   hasActiveInboxFilters,
   loadInboxConnections,
@@ -617,23 +618,11 @@ export function InboxView({
       ]).then(([github, linear, jira, gitlab, azuredevops]) => {
         if (cancelled || generation !== latest) return;
         setConnections((prev) => ({
-          github:
-            github.status === "fulfilled"
-              ? github.value.connected
-              : prev.github,
-          linear:
-            linear.status === "fulfilled"
-              ? linear.value.connected
-              : prev.linear,
-          jira: jira.status === "fulfilled" ? jira.value.connected : prev.jira,
-          gitlab:
-            gitlab.status === "fulfilled"
-              ? gitlab.value.connected
-              : prev.gitlab,
-          azuredevops:
-            azuredevops.status === "fulfilled"
-              ? azuredevops.value.connected
-              : prev.azuredevops,
+          github: connectionFromStatus(github, prev.github),
+          linear: connectionFromStatus(linear, prev.linear),
+          jira: connectionFromStatus(jira, prev.jira),
+          gitlab: connectionFromStatus(gitlab, prev.gitlab),
+          azuredevops: connectionFromStatus(azuredevops, prev.azuredevops),
         }));
       });
     };

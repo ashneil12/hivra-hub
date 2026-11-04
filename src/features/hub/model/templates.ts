@@ -122,14 +122,6 @@ export function sectionsForCards(cards: readonly string[]): TodaySection[] {
   return out.length ? out : TODAY_DEFAULT.filter((s) => s.kind !== "being-built").map((s) => ({ ...s }));
 }
 
-/**
- * A project's live Today: the cards its template names, in order, then the app's own Being built (that project's live
- * jobs, in Today's usual place at the end). No project gets Ash OS's own board.
- */
-export function projectTodaySections(projectId: string): TodaySection[] {
-  return [...sectionsForCards(templateOf(projectId).todayCards).filter((s) => s.kind !== "being-built"), { id: "being-built", kind: "being-built", title: "Being built" }];
-}
-
 /** True when the project's dashboard was changed from its template (an applied proposal or Ash's own choice). */
 export function isCustomised(projectId: string): boolean {
   return saved[projectId]?.customised ?? false;

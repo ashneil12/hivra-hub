@@ -1,72 +1,7 @@
 // @vitest-environment happy-dom
-// Today's long "things waiting" list, like with like (Board 22 Oct: it read as one unsorted list), and Ash OS's
-// internal tags ("Autofix: health:") never on a row.
-import { act, createElement } from "react";
-import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
-import { mockHubData } from "../model/mockData";
-import { setHubDataSource } from "../model/hubData";
+// Ash OS's internal tags ("Autofix: health:") never reach a row the store hands on.
+import { describe, expect, it } from "vitest";
 import { mapJob, mapNeed, plainWorkText } from "../model/hubStore";
-import { HubSurface, needKind } from "./HubSurface";
-import type { Need } from "../model/types";
-
-const project = { id: "exo", name: "EXO", shortName: "EXO", iconShape: "folder" as const, folder: "/exo" };
-const need = (id: string, patch: Partial<Need>): Need => ({ id, projectId: "exo", title: `Ask ${id}`, why: "", actionType: "open", actionLabel: "Open", ...patch });
-
-describe("a project's Needs on Today", () => {
-  it("sit in groups when mixed: to decide, to check, to look at, each with its count", () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const needs = [
-      need("a", { actionTarget: "question:q1", actionLabel: "See options" }),
-      need("b", {}),
-      need("c", { id: "s:c", actionType: "accept", actionLabel: "Looks right", canMarkSeen: true }),
-      need("d", { actionTarget: "job:j1", jobId: "j1", actionLabel: "See options" }),
-    ];
-    setHubDataSource({ ...mockHubData, listProjects: () => [project], listNeeds: () => needs, listOlder: () => [], listStuck: () => [], listSetup: () => [] });
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    try {
-      act(() => root.render(createElement(HubSurface, { selection: { project: "exo", item: "inbox" } })));
-      const groups = [...container.querySelectorAll<HTMLElement>("[data-hub-need-group]")];
-      expect(groups.map((g) => g.dataset.hubNeedGroup)).toEqual(["decide", "check", "read"]);
-      expect(groups.map((g) => g.querySelector("h3")!.textContent)).toEqual(["To decide · 2", "To check · 1", "To look at · 1"]);
-      expect(groups[0].querySelectorAll("[data-hub-need]")).toHaveLength(2);
-      expect(container.querySelectorAll("[data-hub-need]")).toHaveLength(4);
-    } finally {
-      act(() => root.unmount());
-      container.remove();
-      setHubDataSource(undefined);
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("need no headings when they are all one kind", () => {
-    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-    const needs = [need("a", {}), need("b", {})];
-    setHubDataSource({ ...mockHubData, listProjects: () => [project], listNeeds: () => needs, listOlder: () => [], listStuck: () => [], listSetup: () => [] });
-    const container = document.createElement("div");
-    document.body.append(container);
-    const root = createRoot(container);
-    try {
-      act(() => root.render(createElement(HubSurface, { selection: { project: "exo", item: "inbox" } })));
-      expect(container.querySelector("[data-hub-need-group]")).toBeNull();
-      expect(container.querySelectorAll("[data-hub-need]")).toHaveLength(2);
-    } finally {
-      act(() => root.unmount());
-      container.remove();
-      setHubDataSource(undefined);
-      vi.unstubAllGlobals();
-    }
-  });
-
-  it("kind: a question or a job's options is to decide; Looks right is to check; the rest is to look at", () => {
-    expect(needKind(need("a", { actionTarget: "question:q" }))).toBe("decide");
-    expect(needKind(need("a", { jobId: "j" }))).toBe("decide");
-    expect(needKind(need("a", { actionType: "accept" }))).toBe("check");
-    expect(needKind(need("a", {}))).toBe("read");
-  });
-});
 
 describe("Ash OS's internal tags never reach a row", () => {
   it("a job about a job loses the inner 'Autofix: health:' tags mid-sentence, keeping the words", () => {

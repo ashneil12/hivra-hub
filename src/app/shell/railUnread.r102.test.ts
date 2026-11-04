@@ -1,19 +1,13 @@
-// r102 (12, Critiquito): small fixes. Rail unread counts are grey and smaller than the red badge; two picks say "both";
-// an untitled chat is named by its first ask, not "New session".
+// r102 (12, Critiquito): small fixes. Rail unread counts are grey and smaller than the red badge; an untitled chat is
+// named by its first ask, not "New session". WP-06 removed the Waiting on you "Take both picks" button with that screen.
 import { expect, it } from "vitest";
 import { RAIL_UNREAD_CLASS } from "./MonoRailSection";
-import { takeAllLabel } from "../../features/hub/ui/WaitingOnYou";
 import { firstAskOf, sessionDisplayTitle, shortAskTitle } from "../../features/sessions/model/session";
 
 it("rail unread count is grey and small, never red or accent", () => {
   expect(RAIL_UNREAD_CLASS).toMatch(/text-\[9px\]/);
   expect(RAIL_UNREAD_CLASS).toMatch(/text-content\/70/);
   expect(RAIL_UNREAD_CLASS).not.toMatch(/bg-accent|bg-red|text-white/);
-});
-
-it("says 'Take both picks' for two", () => {
-  expect(takeAllLabel(2)).toBe("Take both picks");
-  expect(takeAllLabel(3)).toBe("Take all 3 picks");
 });
 
 it("names an untitled chat by its first ask", () => {

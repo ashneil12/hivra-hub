@@ -144,7 +144,8 @@ test("Leadership team: New conversation and back leaves nothing; named, attached
   // 8. Reload (the window rebuilt from what was saved): both names, and the attachments, are still there.
   await page.reload();
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-  await page.evaluate(() => (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "vg-game", item: "leadership-team" }));
+  // A fresh load opens the coding team. Leadership team is a real leave: it closes that Lead.
+  await page.getByRole("button", { name: "Leadership team", exact: true }).click();
   await expect(page.locator("[data-hub-conversation]")).toHaveCount(2, { timeout: 15_000 });
   await expect(page.locator("[data-hub-conversation]").nth(0)).toContainText("HUD crispness");
   await expect(page.locator("[data-hub-conversation]").nth(1)).toContainText("Pages plan");

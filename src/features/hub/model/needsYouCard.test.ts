@@ -81,11 +81,4 @@ describe("on screen", () => {
     expect(line).toContain("Today: Since you were last here, Needs you, Latest build to try");
     expect(line).not.toMatch(/up to 5|Stuck: needs you/);
   });
-
-  it("a project's Today shows one Needs you section, from its template", async () => {
-    const { HubSurface } = await import("../ui/HubSurface");
-    const host = await mount(createElement(HubSurface, { selection: { project: PROJECT.id, item: "inbox" } }));
-    expect(host.querySelectorAll('[data-hub-today-section="needs"]')).toHaveLength(1);
-    expect(host.textContent).not.toMatch(/up to 5|Stuck: needs you/);
-  });
 });

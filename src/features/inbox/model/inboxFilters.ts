@@ -148,6 +148,18 @@ function connectFlag(value: unknown): boolean | null {
 }
 
 /**
+ * A status read that comes back empty or fails is not an answer (the browser
+ * stand-in returns null). Keep the last flag rather than throwing on it.
+ */
+export function connectionFromStatus(
+  result: PromiseSettledResult<{ connected: boolean } | null>,
+  previous: boolean | null,
+): boolean | null {
+  if (result.status !== "fulfilled" || result.value == null) return previous;
+  return result.value.connected;
+}
+
+/**
  * Seeded from the last known answer so a returning user does not watch every
  * tab paint and then drop two. A wrong guess corrects itself on the read.
  */

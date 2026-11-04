@@ -22,18 +22,19 @@ function useAppVersion(): string | undefined {
 }
 
 /**
- * Ship on Today (src-tauri/src/ship.rs): the new build's trial, an update waiting for a quiet moment (with Restart now),
- * the last ship's receipt until it's read, or the question Ash answers himself once it has committed (does the build
- * work?). Plain words, no badge. A button the app couldn't carry out says so.
+ * Ship on the main pane (src-tauri/src/ship.rs): a slim bar, or nothing when there is no ship news. The new build's
+ * trial, an update waiting for a quiet moment (with Restart now), the last ship's receipt until it's read, or the
+ * question Ash answers himself once it has committed (does the build work?). Plain words, no badge. A button the app
+ * couldn't carry out says so.
  */
 export function ShipNotice({ inBody = false, appAsk = true }: { inBody?: boolean; appAsk?: boolean } = {}) {
   const appVersion = useAppVersion();
   const card = shipCardView(useShipStatus(), appVersion);
-  // r63 (PM's G2 on 0.16.3): "Is everything working?" is about the app, not a project, so a project's Today asks it only
-  // where appAsk says (the first project in the rail), never in a project Ash has just made.
+  // r63 (PM's G2 on 0.16.3): "Is everything working?" is about the app, not a project, so a caller that is not the
+  // app-wide bar (appAsk off) leaves that question out.
   const live = card?.accept && !appAsk ? null : card;
-  // A card shown once (a committed update) is marked read the moment it is on screen and stays put until Today goes
-  // away, so it never comes back and never needs a Done (Critiquito/Ash, 22 Oct: "show once").
+  // A card shown once (a committed update) is marked read the moment it is on screen and stays put until the bar
+  // leaves, so it never comes back and never needs a Done (Critiquito/Ash, 22 Oct: "show once").
   const [held, setHeld] = useState<typeof live>(null);
   const view = live ?? (held && held.once ? held : null);
   const onceId = live?.once ? live.id : undefined;
@@ -57,13 +58,13 @@ export function ShipNotice({ inBody = false, appAsk = true }: { inBody?: boolean
       .finally(() => setBusy(false));
   };
   return (
-    // In Today's body (r28) it sits below the Since paragraph, in the body's own column; on its own it keeps its margins.
-    <div className={inBody ? "" : "mx-auto max-w-[720px] px-8 pt-8"} data-hub-ship={view.id}>
-      <section aria-label="Update" className="rounded-lg border border-stroke px-3 py-2.5 hub-fade-in">
+    // inBody: sit in the caller's column. On its own it is a slim bar across the top of the main pane.
+    <div className={inBody ? "" : "shrink-0 border-b border-stroke px-3 py-1.5"} data-hub-ship={view.id}>
+      <section aria-label="Update" className={inBody ? "rounded-lg border border-stroke px-3 py-2.5 hub-fade-in" : "flex flex-wrap items-center gap-x-3 gap-y-1"}>
         <p className="text-[13px] leading-5 text-content">{view.text}</p>
-        {view.detail ? <p className="mt-0.5 text-[12px] leading-5 text-content/60">{view.detail}</p> : null}
+        {view.detail ? <p className="text-[12px] leading-5 text-content/60">{view.detail}</p> : null}
         {view.restartNow || view.log || view.dismiss || view.accept ? (
-          <div className="mt-2 flex flex-wrap gap-2 text-[12px]">
+          <div className={`${inBody ? "mt-2 " : ""}flex flex-wrap gap-2 text-[12px]`}>
             {view.accept ? (
               <>
                 <button type="button" disabled={busy} onClick={() => act("record the answer", () => acceptShip(view.id, "yes"))} className="rounded-md bg-content/8 px-2.5 py-1 text-content hover:bg-content/12 disabled:opacity-50">
