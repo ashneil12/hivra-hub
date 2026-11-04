@@ -32,6 +32,7 @@ import {
   appCommand,
   copyBundle,
   spawnBundleSync,
+  spawnFailure,
   defaultLauncher,
   detachPath,
   homePathsFor,
@@ -267,11 +268,22 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
         return null;
       }
     })();
-    facts.healthcheck = report ?? { exit: result.status, stderr: result.stderr?.slice(-400) };
+    const failure = spawnFailure(result);
+    facts.healthcheck = report ?? {
+      exit: result.status,
+      stderr: typeof result.stderr === "string" ? result.stderr.slice(-400) : "",
+      ...(failure ? { error: failure } : {}),
+      ...(result.startRefusal ? { refusal: result.startRefusal } : {}),
+    };
     if (result.status === 65)
       refusals.push(`The live database is newer than this build (schema ${report?.schemaFound}; the build knows ${report?.buildSchema}).`);
-    else if (result.status !== 0)
-      refusals.push(`The healthcheck failed on a copy of the live database: ${report?.error ?? result.stderr?.trim().split("\n").pop() ?? (result.error?.code ? `${result.error.code} exit ${result.status}` : `exit ${result.status}`)}`);
+    else if (result.startRefusal)
+      refusals.push(`The healthcheck couldn't start: ${result.startRefusal}.`);
+    else if (result.status !== 0) {
+      const stderrLine = typeof result.stderr === "string" ? result.stderr.trim().split("\n").pop() : "";
+      const why = report?.error ?? failure ?? (stderrLine || null) ?? `exit ${result.status}`;
+      refusals.push(`The healthcheck failed on a copy of the live database: ${why}`);
+    }
   }
   // One ship at a time.
   const busy = shipInProgress(paths);
@@ -423,6 +435,24 @@ function serviceFor(launcher, { id, node, dir, home }) {
   return null;
 }
 
+function spawnStartFailure(result) {
+  if (result?.startRefusal) return result.startRefusal;
+  if (result?.status == null && !result?.signal) return spawnFailure(result) ?? "couldn't start (unknown)";
+  const text = `${result?.stderr ?? ""}`.trim() || `${result?.stdout ?? ""}`.trim();
+  return text || `exit ${result?.status}`;
+}
+
+function noteSpawnError(child, file) {
+  child.on("error", (error) => {
+    const line = spawnFailure(error) ?? "couldn't start (unknown)";
+    try {
+      fs.appendFileSync(file, `${line}\n`);
+    } catch {
+      process.stderr.write(`${line}\n`);
+    }
+  });
+}
+
 function startServiceRunner(ship, dir, launcher) {
   if (launcher === "task") return runPowerShell(ship.service.script);
   const unitPath = path.join(dir, ship.service.unitName);
@@ -455,6 +485,7 @@ function startRunner(ship, dir, launcher) {
       stdio: "ignore",
       env: { ...process.env, HOME: ship.home },
     });
+    noteSpawnError(child, path.join(dir, "runner.log"));
     child.unref();
     return { launcher, pid: child.pid };
   }
@@ -466,6 +497,7 @@ function startRunner(ship, dir, launcher) {
         ["--disable-warning=ExperimentalWarning", path.join(dir, "runner.mjs"), dir],
         runnerDetachOptions({ home: ship.home, logFd }),
       );
+      noteSpawnError(child, path.join(dir, "runner.log"));
       child.unref();
       return { launcher, pid: child.pid, detached: true };
     } finally {
@@ -475,13 +507,13 @@ function startRunner(ship, dir, launcher) {
   if (launcher === "task" || launcher === "systemd") {
     const started = startServiceRunner(ship, dir, launcher);
     if (started.status !== 0) {
-      throw new Error(`the ${launcher} runner didn't start: ${(started.stderr || started.stdout || "").trim() || started.status}`);
+      throw new Error(`the ${launcher} runner didn't start: ${spawnStartFailure(started)}`);
     }
     return { launcher, submitted: true };
   }
   const { label, domain } = ship.launchd;
   const result = launchctl(runnerSubmitArgs({ label, node, dir, home: ship.home }));
-  if (result.status !== 0) throw new Error(`launchctl submit ${label} failed: ${result.stderr.trim() || result.status}`);
+  if (result.status !== 0) throw new Error(`launchctl submit ${label} failed: ${spawnStartFailure(result)}`);
   return { launcher, label, domain, submitted: true };
 }
 

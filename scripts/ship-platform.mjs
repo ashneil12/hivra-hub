@@ -196,13 +196,19 @@ function winArg(value) {
 }
 
 /**
- * One argument for `cmd.exe /c`. `%` is expanded even inside quotes, so it is
- * doubled. A space or `&|<>^"` is quoted; cmd does not use backslash escapes.
+ * One argument for `cmd /d /s /c`. That form does not turn `%%` back into `%`
+ * (only a batch file does). A bare `%` is escaped as `^%`, which works only
+ * outside quotes. A `%` that would have to be quoted is refused (null): inside
+ * quotes `^` is literal and `%` still expands. A space or `&|<>^"` is quoted;
+ * cmd does not use backslash escapes.
  */
 export function cmdArg(value) {
-  const text = String(value).replaceAll("%", "%%");
-  if (text.length === 0) return '""';
-  if (!/[\s"&|<>^]/.test(text)) return text;
+  const raw = String(value);
+  if (raw.length === 0) return '""';
+  const quote = /[\s"&|<>^]/.test(raw);
+  if (raw.includes("%") && quote) return null;
+  const text = raw.replaceAll("%", "^%");
+  if (!quote) return text;
   return `"${text.replaceAll('"', '""')}"`;
 }
 
@@ -214,33 +220,69 @@ export function cmdArg(value) {
 export function windowsShellArgs(command, args, env = process.env) {
   const root = env.SystemRoot || "C:\\Windows";
   const cmd = path.win32.join(root, "System32", "cmd.exe");
-  const line = [command, ...args].map(cmdArg).join(" ");
+  const parts = [command, ...args].map(cmdArg);
+  if (parts.some((part) => part == null)) return null;
+  const line = parts.join(" ");
   return { command: cmd, args: ["/d", "/s", "/c", `"${line}"`], windowsVerbatimArguments: true };
 }
 
 /**
- * spawnSync lost the process: no exit code and no signal. A timeout is not that
- * (it must not be run twice). Windows does this for an executable path that
- * contains a space; cmd.exe has no space in its path and can start the same argv.
+ * spawnSync never started the process. Retry through cmd.exe only for a start
+ * failure its quoting can fix: EINVAL, where CreateProcess was not given a
+ * usable application path (the usual cause is a space in that path). A missing
+ * file (ENOENT), a file Windows will not run (EFTYPE), a timeout, or any real
+ * exit is reported instead, and never run twice.
  */
+const WINDOWS_SPAWN_RETRY = new Set(["EINVAL"]);
+
 export function shouldRetryWindowsSpawn(result, platform = process.platform) {
   if (platform !== "win32" || result == null || result.status != null || result.signal) return false;
-  if (result.error?.code === "ETIMEDOUT") return false;
-  return true;
+  return WINDOWS_SPAWN_RETRY.has(result.error?.code);
 }
 
 /**
- * Run a command and wait. On Windows, a failed CreateProcess (the usual cause is
- * a bundle path with a space, which `spawn` can start and `spawnSync` cannot) is
- * tried once through System32 cmd.exe. A real exit code is never retried.
+ * What to do with a spawnSync that did not start. null means report `result`
+ * as it is. `startRefusal` means the command line cannot be passed to cmd.exe,
+ * so cmd is not started. Otherwise the returned spec is the one cmd.exe retry.
+ */
+export function windowsSpawnRetry(result, command, args, env = process.env, platform = process.platform) {
+  if (!shouldRetryWindowsSpawn(result, platform)) return null;
+  const via = windowsShellArgs(command, args, env);
+  if (!via) return { startRefusal: "the command line contains %" };
+  return via;
+}
+
+/**
+ * Why a process never started, or null when it did (it has an exit code or a
+ * signal). `result` is a spawnSync result or the Error from a spawn `error` event.
+ */
+export function spawnFailure(result) {
+  if (result instanceof Error) {
+    const code = result.code || "unknown";
+    const message = typeof result.message === "string" ? result.message : "";
+    return message ? `couldn't start (${code}: ${message})` : `couldn't start (${code})`;
+  }
+  if (result == null || result.status != null || result.signal) return null;
+  const code = result.error?.code || "unknown";
+  const message = typeof result.error?.message === "string" ? result.error.message : "";
+  return message ? `couldn't start (${code}: ${message})` : `couldn't start (${code})`;
+}
+
+/**
+ * Run a command and wait. On Windows, a CreateProcess that fails with EINVAL
+ * (a bundle path with a space, which `spawn` can start and `spawnSync` cannot)
+ * is tried once through System32 cmd.exe. ENOENT, EFTYPE, a timeout and a real
+ * exit code are not retried. A command line cmd cannot quote comes back with
+ * `startRefusal` and is not started.
  */
 export function spawnBundleSync(spec, extraArgs = [], options = {}) {
   const args = [...(spec?.args ?? []), ...extraArgs];
   const command = spec?.command;
   const result = spawnSync(command, args, options);
-  if (!shouldRetryWindowsSpawn(result)) return result;
-  const via = windowsShellArgs(command, args, options.env ?? process.env);
-  return spawnSync(via.command, via.args, { ...options, windowsVerbatimArguments: true });
+  const plan = windowsSpawnRetry(result, command, args, options.env ?? process.env);
+  if (!plan) return result;
+  if (plan.startRefusal) return { ...result, startRefusal: plan.startRefusal };
+  return spawnSync(plan.command, plan.args, { ...options, windowsVerbatimArguments: true });
 }
 
 function assertTaskName(taskName) {

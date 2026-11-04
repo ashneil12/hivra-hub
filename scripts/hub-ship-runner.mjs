@@ -28,7 +28,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 // WP-09: Windows process start, bundle spawn and copy. macOS still uses ps, ditto and the binary path.
-import { appCommand, copyBundle, processStartWindows, trialAppEnv } from "./ship-platform.mjs";
+import { appCommand, copyBundle, processStartWindows, spawnFailure, trialAppEnv } from "./ship-platform.mjs";
 
 export const STATE = "state.json";
 export const RUNNER_LOCK = "runner.lock";
@@ -627,6 +627,7 @@ function launch(ctx, ship, purpose) {
       stdio: ["ignore", out, out],
       env,
     });
+    child.on("error", (error) => ctx.log(spawnFailure(error) ?? "couldn't start (unknown)"));
     child.unref();
     fs.closeSync(out);
     ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
@@ -643,6 +644,7 @@ function launch(ctx, ship, purpose) {
       stdio: ["ignore", out, out],
       env: trialAppEnv(process.env, ship.launch?.env),
     });
+    child.on("error", (error) => ctx.log(spawnFailure(error) ?? "couldn't start (unknown)"));
     child.unref();
     fs.closeSync(out);
     ctx.child = { pid: child.pid, startTime: processStart(child.pid) };
