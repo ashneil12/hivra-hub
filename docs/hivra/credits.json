@@ -64,7 +64,7 @@
       "name": "Puppetmaster",
       "url": "https://github.com/professorpalmer/Puppetmaster",
       "licence": "MIT",
-      "gave": "completion gates, typed artifacts with evidence, failure reroutes"
+      "gave": "completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys"
     },
     {
       "name": "Raven",
@@ -88,7 +88,7 @@
       "name": "AgentOS",
       "url": "https://github.com/akua-dev/agentos",
       "licence": "MIT",
-      "gave": "assignments as the unit of accountability and decision gates"
+      "gave": "assignments as the unit of accountability, decision gates and native-session custody"
     },
     {
       "name": "UniiChat",
@@ -185,6 +185,14 @@
       "copyright": "Copyright (c) 2026 Cary",
       "where": "src/features/crew/model/failure.ts, src/features/crew/model/budget.ts, src-tauri/src/crew/failure.rs, src-tauri/src/crew/budget.rs",
       "how": "failure.py and failure_policy.py translated to TypeScript and Rust (WP-13). The checks and their order are the original's. A boolean is not a retry count."
+    },
+    {
+      "name": "Puppetmaster's session lease and idempotent launch key",
+      "url": "https://github.com/professorpalmer/Puppetmaster",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Cary",
+      "where": "host/firstmate/lease.ts, host/firstmate/records.ts",
+      "how": "session_lease.py and create_or_get_job translated to TypeScript (WP-60). The same launch key returns the same worker; the same key with a different request is a conflict. A live holder is not replaced, and a dead one counts as released."
     },
     {
       "name": "pstack (default plugin)",

@@ -118,6 +118,8 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+// Hivra WP-60: a remote project's report, shown in the chat that started it.
+import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
 import { OPEN_CREW } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
@@ -9978,6 +9980,25 @@ function Workspace({
   );
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
+  // WP-60: a remote project's result lands in the chat that started it, once.
+  useEffect(
+    () =>
+      bindRemoteReports({
+        isOrchestrator: isOrchestratorChat,
+        isRemoving: (id) => removingSessionIds.current.has(id),
+        ensureOpen: (id) => ensureOpenSession(id),
+        place: (entry) => {
+          let placed = false;
+          updateSessionState(sessionsRef, setSessions, (current) => {
+            const next = placeRemoteReport(current, entry);
+            placed = next.placed;
+            return next.sessions;
+          });
+          return placed;
+        },
+      }),
+    [ensureOpenSession],
+  );
   const monoCompletionBatches = useRef<MonoSessionCompletionBatches | null>(
     null,
   );

@@ -35,6 +35,13 @@ import { parseRemoteAttachments, resolveAttachments } from "./attachments";
 
 // Streamed output is written in batches. Anything a user may need to act on
 // (approvals, questions, errors, completion) is written immediately.
+/** WP-60: why a turn stopped, for the host first mate. A timeout is not a final failure. */
+export type TurnSettlement = {
+  error?: string;
+  cancelled: boolean;
+  interrupted: boolean;
+};
+
 const FLUSH_MS = 120;
 const BATCHED = new Set<string>([
   "message.delta",
@@ -260,6 +267,10 @@ export class HostEngine {
   >();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private closing = false;
+  /** WP-60: listeners told when a turn finishes, including while the desktop is away. */
+  private settledListeners: Array<
+    (session: HostSession, info: TurnSettlement) => void
+  > = [];
 
   constructor(
     readonly store: HostStore,
@@ -286,6 +297,13 @@ export class HostEngine {
           value.session.cwd,
         );
     }
+  }
+
+  /** WP-60: the host first mate settles its own brief when this turn finishes. */
+  onSettled(
+    listener: (session: HostSession, info: TurnSettlement) => void,
+  ): void {
+    this.settledListeners.push(listener);
   }
 
   async openProject(path: string) {
@@ -380,8 +398,8 @@ export class HostEngine {
           await provider.stop(id);
           this.flush(id);
           const latest = this.store.session(id);
-          if (latest.runId === runId && latest.status === "running")
-            this.save(
+          if (latest.runId === runId && latest.status === "running") {
+            const saved = this.save(
               this.settled(
                 latest,
                 "interrupted",
@@ -390,6 +408,14 @@ export class HostEngine {
               ),
               { type: "interrupted", reason: "persistence failure" },
             );
+            // WP-60: storage failing is retryable. It does not start another worker.
+            this.noteSettled(saved, {
+              error:
+                "Session storage failed during this turn. Inspect its work before continuing.",
+              cancelled: false,
+              interrupted: true,
+            });
+          }
           this.live.delete(id);
           this.running.delete(id);
           if (latest.session.providerSessionId)
@@ -834,7 +860,7 @@ export class HostEngine {
               : active.cancelled
               ? "Stopped by you."
               : error;
-          this.save(
+          const saved = this.save(
             this.settled(
               latest,
               this.closing || active.persistenceFailed ? "interrupted" : "idle",
@@ -842,6 +868,12 @@ export class HostEngine {
             ),
             { type: "settled", error, cancelled: active.cancelled },
           );
+          // WP-60: settle the brief here. The desktop may already be gone.
+          this.noteSettled(saved, {
+            error: message,
+            cancelled: active.cancelled,
+            interrupted: this.closing || active.persistenceFailed,
+          });
         }
         this.running.delete(session.id);
         // stop/forget releases callbacks and native resources; bind only retained
@@ -876,6 +908,19 @@ export class HostEngine {
         () => this.scheduledFlush(id, this.provider(session.harness)),
         FLUSH_MS,
       );
+  }
+
+  private noteSettled(session: HostSession, info: TurnSettlement): void {
+    for (const listener of this.settledListeners) {
+      try {
+        listener(session, info);
+      } catch (error) {
+        console.error(
+          "Turn settlement listener failed:",
+          error instanceof Error ? error.message : "unknown error",
+        );
+      }
+    }
   }
 
   private settled(
