@@ -566,6 +566,67 @@ fn the_recorded_pid_is_the_child_that_carries_the_token() {
 }
 
 #[cfg(unix)]
+fn wait_pid_file(path: &Path) -> u32 {
+    let start = std::time::Instant::now();
+    loop {
+        if let Ok(text) = fs::read_to_string(path) {
+            if let Ok(pid) = text.trim().parse::<u32>() {
+                if alive(pid) {
+                    return pid;
+                }
+            }
+        }
+        if start.elapsed() > std::time::Duration::from_secs(3) {
+            panic!("the late child never wrote its pid");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_waits_for_a_child_that_exits_late() {
+    let tmp = Tmp::new();
+    let plan = launch_env(tmp.data(), "ada", "Ada").unwrap();
+    let server = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/browser/server.mjs");
+    let late = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../src/features/browser/model/lateChild.mjs");
+    let pid_file = tmp.data().join("late.pid");
+    let mut command = std::process::Command::new("node");
+    command.arg(&server).arg(&plan.token);
+    command.stdout(std::process::Stdio::null());
+    command.stderr(std::process::Stdio::null());
+    allow_path(&mut command);
+    command.stdin(std::process::Stdio::piped());
+    command.env("HIVRA_BROWSER_PROFILE", &plan.profile);
+    command.env("HIVRA_BROWSER_HEADLESS", "1");
+    command.env("HIVRA_BROWSER_OWN_PROFILE", "0");
+    command.env("HIVRA_BROWSER_SESSION", &plan.token);
+    command.env("HIVRA_BROWSER_COMMAND", "node");
+    command.env(
+        "HIVRA_BROWSER_COMMAND_ARGS",
+        serde_json::json!([late.to_string_lossy(), "late"]).to_string(),
+    );
+    command.env("HIVRA_LATE_PID", &pid_file);
+    command.env("HIVRA_LATE_MS", "700");
+    let (mut child, path) = spawn_recorded(&mut command, tmp.data(), "ada", &plan).unwrap();
+    let drive = load_drive(&path).unwrap();
+    let late_pid = wait_pid_file(&pid_file);
+    let started = std::time::Instant::now();
+    stop(tmp.data(), &drive.id).unwrap();
+    assert!(
+        !alive(late_pid),
+        "Stop returns only after the child that exits late is gone"
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_millis(500),
+        "Stop waited for the child instead of returning as soon as the wrapper exited"
+    );
+    assert!(!alive(child.id()));
+    let _ = child.wait();
+}
+
+#[cfg(unix)]
 #[test]
 fn stop_all_stops_only_the_sessions_the_bar_shows() {
     let tmp = Tmp::new();

@@ -1171,6 +1171,40 @@ pub fn run(args: &[String]) -> i32 {
     finish_run(&mut command, &data, &agent, &plan)
 }
 
+#[cfg(unix)]
+static FORWARD_PID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+#[cfg(unix)]
+extern "C" fn forward_stop(sig: libc::c_int) {
+    let pid = FORWARD_PID.load(std::sync::atomic::Ordering::Relaxed);
+    if pid > 1 {
+        unsafe {
+            libc::kill(pid, sig);
+        }
+    }
+}
+
+/// SIGTERM to this process must reach the wrapper. The handler only records a pid and
+/// signals it: both are safe to do from a signal. The wait in `finish_run` then returns
+/// and the drive record is removed.
+#[cfg(unix)]
+fn arm_forward(pid: u32) {
+    let Ok(pid) = i32::try_from(pid) else {
+        return;
+    };
+    if pid < 2 {
+        return;
+    }
+    FORWARD_PID.store(pid, std::sync::atomic::Ordering::Relaxed);
+    unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = forward_stop as *const () as usize;
+        libc::sigemptyset(&mut action.sa_mask);
+        let _ = libc::sigaction(libc::SIGTERM, &action, std::ptr::null_mut());
+        let _ = libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+    }
+}
+
 fn end_child(mut child: std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
@@ -1262,8 +1296,11 @@ fn finish_run(command: &mut Command, data: &Path, agent: &str, plan: &LaunchEnv)
     match spawn_recorded(command, data, agent, plan) {
         Ok((mut child, path)) => {
             // The child inherited stdin. Drop ours so we don't keep the pipe open after it exits.
+            // A signal here is forwarded, not handled by dying, so the wrapper can take its
+            // browser with it before this wait returns.
             #[cfg(unix)]
             {
+                arm_forward(child.id());
                 let _ = unsafe { libc::close(0) };
             }
             let code = child
