@@ -2,6 +2,7 @@
 // (none since Ash OS is retired, WP-04) for the chat's own project only, cached briefly, never holding a send up for long, and worded for what the chat can do next (read
 // more from its files: no chat has memory tools since Ash OS is retired).
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetAgentMemoryForTests, setAgentMemoryRoot } from "./agentMemoryPath";
 import { setHubMcpServers, type HubChatLookups } from "./hubMcp";
 import {
   fetchMemoryPrimer,
@@ -33,6 +34,7 @@ const lookups: HubChatLookups = {
 afterEach(() => {
   forgetMemoryPrimers();
   setHubMcpServers(undefined);
+  resetAgentMemoryForTests();
   vi.useRealTimers();
 });
 
@@ -93,9 +95,11 @@ describe("the block a session reads", () => {
   });
 
   it("says how to read the memory when none was loaded", () => {
+    setAgentMemoryRoot("/Users/ada/agent-memory");
     for (const worker of [false, true]) {
       const block = memoryPrimerBlock("hivra", undefined, { worker });
-      expect(block).toContain("~/agent-memory/hivra/MEMORY.md");
+      expect(block).toContain("/Users/ada/agent-memory/hivra/MEMORY.md");
+      expect(block).not.toContain("~/agent-memory");
       expect(block).not.toMatch(/ash_\w+/);
     }
   });

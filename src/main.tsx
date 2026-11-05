@@ -20,7 +20,10 @@ import {
   reportQuitPoll,
 } from "./app/model/appLifecycle";
 import { homeDir } from "./platform/tauri/fs";
-import { setHomeDir } from "./shared/lib/paths";
+import { joinPath, knownHomeDir, setHomeDir } from "./shared/lib/paths";
+import { appIdentity } from "./app/model/appIdentity";
+import { agentMemoryRoot, setAgentMemoryRoot, setMemoryTools } from "./features/hub/model/agentMemoryPath";
+import { portableInfo } from "./features/portable/model/portable";
 import { installNativeContextMenuGuard } from "./shared/lib/nativeContextMenu";
 import { installTitleTips } from "./shared/lib/titleTips";
 import { consumeInstalledUpdate } from "./app/model/updateNotice";
@@ -48,11 +51,14 @@ if (isTauri()) {
 // The Monos' roster and chat ids live in their home (~/agent-memory/monos for the daily app); the WebView keeps a cache.
 if (isTauri()) {
   enableTauriHome();
-  // Where this copy's Monos live, so its chats are fenced out of it too (hubMcp.ts monoHomeDeniedTools).
-  void invoke<{ root: string }>("mono_home_info")
-    .then((info) => setMonoHomeRoot(info.root))
-    .catch(() => undefined);
 }
+// Where this copy's Monos live, so its chats are fenced out of it too (hubMcp.ts). Waited on before the first
+// brief, so the fence names that folder and never "~/agent-memory".
+const monoHomePrimed = isTauri()
+  ? invoke<{ root: string }>("mono_home_info")
+      .then((info) => setMonoHomeRoot(info.root))
+      .catch(() => undefined)
+  : Promise.resolve();
 const rosterReconciled = hydrateRosterFromHome().catch((error: unknown) => {
   console.error("Couldn't read the Monos' roster file; using the WebView's copy", error);
 });
@@ -72,6 +78,20 @@ installTitleTips();
 const homeDirPrimed = homeDir()
   .then(setHomeDir)
   .catch(() => {});
+// Prompts name this copy's memory folder, never "~/agent-memory" (a model expands that to the real user).
+if (appIdentity()?.verify?.driver) setMemoryTools(true);
+const memoryRootPrimed = homeDirPrimed.then(async () => {
+  if (!isTauri()) return;
+  try {
+    const info = await portableInfo();
+    setAgentMemoryRoot(info.memoryRoot);
+  } catch {
+    /* a daily copy falls back below; a dev copy does not guess the daily folder */
+  }
+  if (agentMemoryRoot() || appIdentity()?.kind === "dev") return;
+  const home = knownHomeDir();
+  if (home) setAgentMemoryRoot(joinPath(home, "agent-memory"));
+});
 const providerBinaryPathsPrimed = initializeProviderBinaryPaths().catch(
   () => undefined,
 );
@@ -131,6 +151,8 @@ void Promise.all([
   loadBootWorkspace(),
   appLoaded,
   rosterReconciled,
+  memoryRootPrimed,
+  monoHomePrimed,
 ]).then(
   ([
     ,
