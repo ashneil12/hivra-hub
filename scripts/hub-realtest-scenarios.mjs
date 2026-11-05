@@ -22,7 +22,7 @@ const textOf = (value) => (Array.isArray(value) ? value.join("\n") : String(valu
 
 /**
  * r98 (B5): Ash quits the dev copy and opens it again. The quit is the app's own (the driver's `quit`, the path the app
- * menu's Quit MonoCode takes: windows save first); nothing is ever killed. If the old copy is still up after `waitMs`
+ * menu's Quit Hivra takes: windows save first); nothing is ever killed. If the old copy is still up after `waitMs`
  * (a busy chat asked, a save failed) it is left alone and nothing new is opened. The reopen is `launch` (the run's own
  * background launch: an accessory app that never comes forward).
  */

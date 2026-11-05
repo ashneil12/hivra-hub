@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, CircleAlert, Loader } from "../../../shared/ui/icons";
 import { pickFolders } from "../../../platform/tauri/fs";
 import { hubData } from "../model/hubData";
+import { DISPLAY_NAME } from "../../../app/model/displayName";
 import {
   checkHubSetup,
   defaultWorkFolders,
@@ -21,7 +22,7 @@ const LABELS: Record<SetupFactId, string> = {
 };
 
 const WHAT_IF: Record<SetupFactId, string> = {
-  installed: "MonoCode runs on Claude Code, which lives on your Mac like any other app.",
+  installed: `${DISPLAY_NAME} runs on Claude Code, which lives on your Mac like any other app.`,
   signedIn: "Claude Code needs an account before it can answer.",
   folder: "This is where your projects' files will live.",
   roundTrip: "One real message, sent and answered, proves the whole chain works.",
@@ -109,7 +110,7 @@ export function HubOnboardingSetup({
       <div className="flex flex-col gap-1">
         <h1 className="text-[18px] text-content">Let's make sure it works</h1>
         <p className="text-[13px] leading-5 text-content/75">
-          MonoCode checks the four things a chat needs, for real, before you start. It only asks again next launch for
+          {DISPLAY_NAME} checks the four things a chat needs, for real, before you start. It only asks again next launch for
           anything that did not pass.
         </p>
       </div>

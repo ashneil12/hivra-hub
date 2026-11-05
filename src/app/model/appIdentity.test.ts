@@ -62,7 +62,7 @@ describe("app identity", () => {
     expect(isDevCopy()).toBe(false);
     expect(appPolicy().habits).toBe(true);
     expect(appPolicy().autoResume).toBe(true);
-    expect(windowTitleSuffix()).toBe("MonoCode");
+    expect(windowTitleSuffix()).toBe("Hivra");
   });
 
   it("ignores anything that isn't the shape the app writes", () => {
@@ -91,18 +91,27 @@ describe("app identity", () => {
 
   it("titles a dev copy's window with its branch and commit, and leaves the daily app's alone", () => {
     expect(windowTitleSuffix(readAppIdentity(injected("dev")))).toBe(
-      "MonoCode Hub Dev - hub/1b-identity @ 09141d8",
+      "Hivra Dev - hub/1b-identity @ 09141d8",
     );
-    expect(windowTitleSuffix(readAppIdentity(injected("daily")))).toBe("MonoCode");
+    expect(windowTitleSuffix(readAppIdentity(injected("daily")))).toBe("Hivra");
   });
 
   it("writes the Settings footer line", () => {
     const daily = buildLine(readAppIdentity(injected("daily"))!);
     // r65: the daily app shows only its version, no branch, hash or "daily app".
-    expect(daily).toBe("MonoCode Hub 0.16.0");
+    // The injected product stays the bundle name. The footer does not repeat it.
+    expect(readAppIdentity(injected("daily"))?.product).toBe("MonoCode Hub");
+    expect(daily).toBe("Hivra 0.16.0");
+    expect(daily).not.toContain("MonoCode");
     const dev = buildLine(readAppIdentity(injected("dev"))!);
+    expect(dev.startsWith("Hivra 0.16.0")).toBe(true);
+    expect(dev).not.toContain("MonoCode");
     expect(dev).toContain(" @ ");
     expect(dev).toContain("2026");
-    expect(buildLine(readAppIdentity(injected("dev"))!)).toContain("dev copy hub-1b-identity");
+    expect(dev).toContain("dev copy hub-1b-identity");
+    expect(buildLine(readAppIdentity(injected("daily", { version: "" }))!)).toBe("Hivra");
+    expect(buildLine(readAppIdentity(injected("daily", { version: "  " }))!)).toBe("Hivra");
+    expect(buildLine(readAppIdentity(injected("dev", { slot: "  " }))!)).toContain("dev copy");
+    expect(buildLine(readAppIdentity(injected("dev", { slot: "  " }))!)).not.toContain("dev copy  ");
   });
 });
