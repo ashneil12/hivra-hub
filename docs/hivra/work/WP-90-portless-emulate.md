@@ -15,8 +15,8 @@ touched.
 ## Why
 
 Ash, 5 Nov: he found [portless](https://github.com/vercel-labs/portless) and
-[emulate](https://github.com/vercel-labs/emulate) (both Apache-2.0), read them at commits `7461383` and `1566b8e`,
-and asked whether they would let parallel agents run apps and browser-test without colliding on ports, cookies,
+[emulate](https://github.com/vercel-labs/emulate) (both Apache-2.0; read at commits `7461383` and `1566b8e`), and
+asked whether they would let parallel agents run apps and browser-test without colliding on ports, cookies,
 hostnames or shared outside accounts.
 
 **Ports: yes, and WP-87 already covers it.** A worktree's stack gets a block of free ports, and no two stacks share
@@ -37,6 +37,15 @@ with real OAuth code flows, signed Stripe and Slack webhooks, seeds, reset and s
 traffic: the app must be configured with its base URLs. That is exactly why this package belongs next to WP-87: Hivra
 owns the stack's environment block, so it can write the stand-in's URLs in, and then the safety rule is enforceable
 rather than advisory. A crew's stack either names an emulated service or does not start.
+
+**Taken from portless:** the registry with its lock and its owner-only removal, the label rules, port allocation and
+the free-port probe, the blocked-port list, the `Host`-routing proxy with its upgrade path, and the unprivileged mode's
+habit of leaving the machine alone (no hosts file, no CA, no root). Not taken: TLS, the hosts-file sync, the CLI's app
+launcher, and its worktree-prefix guess (Hivra always knows its stack id).
+
+**Taken from emulate:** the 14 services as a pinned package, seeds, reset and snapshots, the base-URL precedence with
+`{service}`, and the atomic 0600 store. Not taken: `--portless`'s global aliases, its default consecutive ports (the
+stack block owns ports), and the example config's hard-coded `localhost:3000` redirect URI.
 
 **What it replaces in WP-87:**
 
@@ -78,15 +87,16 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
 1. **Names and their registry, translated from portless.** Port `routes.ts` line by line to
    `src-tauri/src/proxy/routes.rs`, keeping the mkdir lock (10 s stale, 15 s wait), `addRoute` with its optional
    force for a name a dead process left behind, `removeRoute(hostname, owner_pid)` that only removes a name its own
-   process added, and `pruneStaleRoutes()`. Port its tests. One registry per copy, in `<data>/proxy/routes.json`, with a lock file and
-   the writer's pid; a second window sees the proxy already running and uses it instead of starting another.
+   process added, and `pruneStaleRoutes()`. Port its tests. One registry per copy, in `<data>/proxy/routes.json`, with
+   a lock file and the writer's pid; a second window sees the proxy already running and uses it instead of starting
+   another.
    Why a translation and not the package: the proxy has to outlive the window and the registry is written by WP-87's
    Rust, and portless's TypeScript cannot run inside Rust's process. Those five files total about 3,000 lines; only
    the registry, the label and port helpers and the routing core are taken, roughly 1,200, and the rest (TLS, the
    hosts file, the CLI's app launcher) is left out.
 2. **Labels.** `sanitizeForHostname` and `truncateLabel` (63 characters, a `-` and six hex digits of the SHA-256 when
    shortened) carried over as they are. The label comes from the **stack id** (WP-87), not from the branch, so a pool
-   slot keeps its name when re-leased; a stack outside the pool falls back to its worktree's branch. Portless's
+   slot keeps its name when re-leased; a stack outside the pool falls back to its worktree's branch. portless's
    "only prefix when the repo has more than one worktree" rule is dropped on purpose: Hivra always knows which
    worktree it is. Names are lowercase, no `..`, no path separators, no wildcard, and a name that fails the check is
    refused rather than repaired. Spaces, unicode and Windows paths therefore cannot reach the registry as a name.
