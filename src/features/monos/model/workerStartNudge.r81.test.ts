@@ -24,7 +24,8 @@ it("a standing rule not saved once the turn is over: one app message to save it 
   expect(nudge?.id).toBe("save-rule-u1");
   expect(nudge?.text.startsWith(SAVE_RULE_PREFIX)).toBe(true);
   expect(nudge?.text).toContain("from now on always run npm test before you call something done");
-  expect(nudge?.text).toContain("~/agent-memory/<project>/decisions.md");
+  expect(nudge?.text).toContain("in the project's decisions.md");
+  expect(nudge?.text).not.toContain("~/agent-memory");
   expect(nudge?.text).not.toContain("ash_remember");
 });
 

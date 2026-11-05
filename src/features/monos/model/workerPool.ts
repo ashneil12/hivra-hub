@@ -22,6 +22,8 @@ import type { Delegation } from "./delegations";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
+import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 
 export type WorkerLimits = {
   workers: number;
@@ -30,6 +32,8 @@ export type WorkerLimits = {
   model?: string;
   /** The effort saved with that model (its own setting's value). */
   effort?: string;
+  /** WP-89: the CLI that model belongs to. Absent on a row from before, which reads as Claude. */
+  cli?: string;
 };
 /** A sensible start; Ash raises it per project when he wants more at once. */
 export const DEFAULT_LIMITS: WorkerLimits = { workers: 6, heavy: 2 };
@@ -66,7 +70,45 @@ export function useWorkerPoolVersion(): number {
 // Kept in the app database with the queue (worker_queue.rs): every window reads the same ones, and they survive a
 // restart. This window keeps a copy for the synchronous reads and reloads it on every change.
 
-let settingsCopy: { limits: Record<string, Partial<WorkerLimits>>; heavy: Set<string> } = { limits: {}, heavy: new Set() };
+let settingsCopy: {
+  limits: Record<string, Partial<WorkerLimits>>;
+  heavy: Set<string>;
+  /** WP-89: the worker default for every project, when one is set. */
+  workerDefault?: WorkerPick;
+} = { limits: {}, heavy: new Set() };
+/**
+ * Bumped on every local settings write. A refresh that started earlier read the old
+ * copy; it must not put that copy back over a write that landed while it was reading.
+ */
+let settingsGeneration = 0;
+/**
+ * The settings writes this window has started and not finished. A refresh waits for
+ * these before it reads, so a save that has not reached the store yet is not put back.
+ */
+let settingsEpoch: Promise<void> = Promise.resolve();
+/**
+ * Bumped when this window changes its own queue. A refresh that already read the
+ * store must not put that list back over a job this window added or removed.
+ */
+let queueRevision = 0;
+function wroteSettings(): void {
+  settingsGeneration += 1;
+}
+function noteQueueEdit(): void {
+  queueRevision += 1;
+}
+function noteSettingsWrite(work: Promise<unknown>): void {
+  const tracked = settingsEpoch.then(() => work.then(() => undefined, () => undefined));
+  settingsEpoch = tracked;
+}
+async function whenSettingsSettled(): Promise<void> {
+  let epoch = settingsEpoch;
+  await epoch;
+  while (epoch !== settingsEpoch) {
+    epoch = settingsEpoch;
+    await epoch;
+  }
+}
 
 const clampCount = (n: unknown, fallback: number) =>
   typeof n === "number" && Number.isFinite(n) ? Math.min(MAX_WORKERS, Math.max(1, Math.round(n))) : fallback;
@@ -79,6 +121,7 @@ export function workerLimits(project: string): WorkerLimits {
     heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
     ...(saved?.model ? { model: saved.model } : {}),
     ...(saved?.model && saved?.effort ? { effort: saved.effort } : {}),
+    ...(saved?.model && saved?.cli ? { cli: saved.cli } : {}),
   };
 }
 
@@ -87,15 +130,24 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
   const now = workerLimits(project);
   const workers = next.workers === undefined ? now.workers : clampCount(next.workers, now.workers);
   const heavy = Math.min(workers, next.heavy === undefined ? now.heavy : clampCount(next.heavy, now.heavy));
+  wroteSettings();
   settingsCopy = {
     ...settingsCopy,
     limits: { ...settingsCopy.limits, [project]: { ...settingsCopy.limits[project], workers, heavy } },
   };
   changed();
-  void backend
-    .setLimits(project, { workers, heavy })
-    .catch((error: unknown) => console.warn("Could not save the project's worker limits", error));
-  return { workers, heavy, ...(now.model ? { model: now.model } : {}), ...(now.model && now.effort ? { effort: now.effort } : {}) };
+  noteSettingsWrite(
+    backend
+      .setLimits(project, { workers, heavy })
+      .catch((error: unknown) => console.warn("Could not save the project's worker limits", error)),
+  );
+  return {
+    workers,
+    heavy,
+    ...(now.model ? { model: now.model } : {}),
+    ...(now.model && now.effort ? { effort: now.effort } : {}),
+    ...(now.model && now.cli ? { cli: now.cli } : {}),
+  };
 }
 
 /**
@@ -105,26 +157,56 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
 export function projectWorkerModel(project: string): { model: string; effort?: string } | undefined {
   const saved = settingsCopy.limits[project];
   if (!saved?.model) return undefined;
+  // A model for another CLI is not a Claude ladder choice. The full default is projectWorkerDefault.
+  if (saved.cli && saved.cli !== "claude") return undefined;
   return { model: saved.model, ...(saved.effort ? { effort: saved.effort } : {}) };
+}
+
+/** WP-89: the project's worker default, including a CLI. An old row with no CLI reads as Claude. */
+export function projectWorkerDefault(project: string): WorkerPick | undefined {
+  return readProjectWorkerDefault(settingsCopy.limits[project]);
+}
+
+/** WP-89: the worker default for every project, when one is set. */
+export function systemWorkerDefault(): WorkerPick | undefined {
+  return cleanStoredDefault(settingsCopy.workerDefault);
+}
+
+/** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
+export function setSystemWorkerDefault(choice: WorkerPick | undefined): void {
+  const clean = cleanStoredDefault(choice);
+  wroteSettings();
+  settingsCopy = { ...settingsCopy, workerDefault: clean };
+  changed();
+  noteSettingsWrite(
+    backend
+      .setWorkerDefault(clean)
+      .catch((error: unknown) => console.warn("Could not save the worker default", error)),
+  );
 }
 
 /** Saves (or clears, with undefined) one project's own worker model; its limits are left as they are. */
 export function setProjectWorkerModel(
   project: string,
-  choice: { model: string; effort?: string } | undefined,
+  choice: { cli?: string; model: string; effort?: string } | undefined,
 ): void {
   const saved = settingsCopy.limits[project] ?? {};
+  wroteSettings();
   settingsCopy = {
     ...settingsCopy,
     limits: {
       ...settingsCopy.limits,
-      [project]: { ...saved, model: choice?.model, effort: choice?.effort },
+      [project]: choice
+        ? { ...saved, model: choice.model, effort: choice.effort, cli: choice.cli }
+        : { ...saved, model: undefined, effort: undefined, cli: undefined },
     },
   };
   changed();
-  void backend
-    .setModel(project, choice)
-    .catch((error: unknown) => console.warn("Could not save the project's worker model", error));
+  noteSettingsWrite(
+    backend
+      .setModel(project, choice)
+      .catch((error: unknown) => console.warn("Could not save the project's worker model", error)),
+  );
 }
 
 /**
@@ -146,9 +228,12 @@ export function limitsLine(projectName: string, limits: WorkerLimits): string {
 /** The Lead said this worker's job is heavy (it runs full test suites, e2e or builds). */
 export function markHeavy(childSession: string): void {
   if (settingsCopy.heavy.has(childSession)) return;
+  wroteSettings();
   settingsCopy = { ...settingsCopy, heavy: new Set([...settingsCopy.heavy, childSession]) };
   changed();
-  void backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error));
+  noteSettingsWrite(
+    backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error)),
+  );
 }
 export function isHeavy(childSession: string): boolean {
   return settingsCopy.heavy.has(childSession);
@@ -211,11 +296,20 @@ export type WorkerQueueBackend = {
   claim(id: string, by: string): Promise<boolean>;
   /** The claimed job started: out of the queue (only the claimant's finish counts). */
   finish(id: string, by: string): Promise<boolean>;
-  /** Each project's limits, and the workers marked heavy. */
-  settings(): Promise<{ limits: Record<string, Partial<WorkerLimits>>; heavy: string[] }>;
+  /** Each project's limits, the workers marked heavy, and the system worker default when one is set. */
+  settings(): Promise<{
+    limits: Record<string, Partial<WorkerLimits>>;
+    heavy: string[];
+    workerDefault?: WorkerPick;
+  }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
-  /** The project's own worker model (E7); undefined clears it. */
-  setModel(project: string, choice: { model: string; effort?: string } | undefined): Promise<unknown>;
+  /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
+  setModel(
+    project: string,
+    choice: { cli?: string; model: string; effort?: string } | undefined,
+  ): Promise<unknown>;
+  /** WP-89: the worker default for every project. Undefined clears it. */
+  setWorkerDefault(choice: WorkerPick | undefined): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -235,7 +329,13 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
   setLimits: (project, limits) =>
     invoke<WorkerLimits>("worker_limits_set", { project, workers: limits.workers, heavy: limits.heavy }),
   setModel: (project, choice) =>
-    invoke("worker_model_set", { project, model: choice?.model ?? null, effort: choice?.effort ?? null }),
+    invoke("worker_model_set", {
+      project,
+      model: choice?.model ?? null,
+      effort: choice?.effort ?? null,
+      cli: choice?.cli ?? null,
+    }),
+  setWorkerDefault: (choice) => invoke("worker_default_set", { value: choice ?? null }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -277,6 +377,7 @@ export function memoryWorkerQueue(
     imported: false,
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
+    workerDefault: undefined as WorkerPick | undefined,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -327,7 +428,11 @@ export function memoryWorkerQueue(
         if (job && typeof job.id === "string" && job.id && (await store.add(job))) added++;
       return added;
     },
-    settings: async () => ({ limits: { ...store.limits }, heavy: [...store.heavy] }),
+    settings: async () => ({
+      limits: { ...store.limits },
+      heavy: [...store.heavy],
+      ...(store.workerDefault ? { workerDefault: store.workerDefault } : {}),
+    }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
       store.limits[project] = {
@@ -338,10 +443,21 @@ export function memoryWorkerQueue(
       notify();
       return store.limits[project];
     },
-    setModel: async (project: string, choice: { model: string; effort?: string } | undefined) => {
-      store.limits[project] = { ...store.limits[project], model: choice?.model, effort: choice?.effort };
+    setModel: async (project: string, choice: { cli?: string; model: string; effort?: string } | undefined) => {
+      const prev = store.limits[project];
+      store.limits[project] = {
+        ...prev,
+        model: choice?.model,
+        effort: choice?.effort,
+        cli: choice?.cli,
+      };
       notify();
       return store.limits[project];
+    },
+    setWorkerDefault: async (choice: WorkerPick | undefined) => {
+      store.workerDefault = choice;
+      notify();
+      return choice ?? null;
     },
     markHeavy: async (child: string) => {
       if (store.heavy.includes(child)) return false;
@@ -378,7 +494,9 @@ let loading: Promise<void> | undefined;
 export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   unsubscribe?.();
   backend = next;
+  noteQueueEdit();
   copy = [];
+  wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
@@ -427,10 +545,29 @@ export function loadWorkerQueue(): Promise<void> {
 
 /** Read the store again (another window changed it). */
 export async function refreshWorkerQueue(): Promise<void> {
+  const seen = settingsGeneration;
   try {
+    // A save bumps the generation before the store has it. Wait, then read both together.
+    await whenSettingsSettled();
+    const revision = queueRevision;
     const [jobs, settings] = await Promise.all([backend.list(), backend.settings()]);
+    // This window added or removed a job while that list was being read. The list is
+    // already behind the local queue, so keep the local one. The edit's own refresh reads again.
+    if (revision !== queueRevision) {
+      changed();
+      return;
+    }
     copy = jobs;
-    settingsCopy = { limits: settings.limits ?? {}, heavy: new Set(settings.heavy ?? []) };
+    // A save landed while this read was in flight. Keep that save; this copy is older.
+    if (seen !== settingsGeneration) {
+      changed();
+      return;
+    }
+    settingsCopy = {
+      limits: settings.limits ?? {},
+      heavy: new Set(settings.heavy ?? []),
+      ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
+    };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
     return;
@@ -445,6 +582,7 @@ export function claimWorker(id: string): Promise<boolean> {
 /** It started (or its start was refused): out of the queue, if this window still holds it. */
 export function finishWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
+    noteQueueEdit();
     copy = copy.filter((q) => q.id !== id);
     changed();
   }
@@ -464,6 +602,7 @@ export function queuedWorker(id: string): QueuedWorker | undefined {
 /** Waits in order; asking again with the same request keeps its place. */
 export function enqueueWorker(job: QueuedWorker): Promise<void> {
   if (!copy.some((q) => q.id === job.id)) {
+    noteQueueEdit();
     copy = [...copy, job];
     changed();
   }
@@ -475,6 +614,7 @@ export function enqueueWorker(job: QueuedWorker): Promise<void> {
 /** Out of the queue (it started, or was taken back). Resolves true when this call removed it from the store. */
 export function dequeueWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
+    noteQueueEdit();
     copy = copy.filter((q) => q.id !== id);
     changed();
   }
@@ -740,7 +880,10 @@ export function resetWorkerPool(): void {
   unsubscribe?.();
   unsubscribe = undefined;
   backend = memoryWorkerQueue();
+  noteQueueEdit();
   copy = [];
+  settingsEpoch = Promise.resolve();
+  wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   changed();
@@ -759,7 +902,10 @@ export function workerPoolHost(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
   /** Put the waiting worker's card in its chat (it shows "Waiting for a free worker" until it starts). */
-  card?(job: QueuedWorker, launch: { cwd: string; harness: string; model?: string }): void;
+  card?(
+    job: QueuedWorker,
+    launch: { cwd: string; harness: string; model?: string; ranFrom?: string; ranEffort?: string },
+  ): void;
 }): WorkerPoolHost {
   const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room });
   return {
@@ -789,6 +935,8 @@ export function workerPoolHost(deps: {
     limits: workerLimits,
     setLimits: setWorkerLimits,
     model: projectWorkerModel,
+    projectDefault: projectWorkerDefault,
+    systemDefault: systemWorkerDefault,
   };
 }
 

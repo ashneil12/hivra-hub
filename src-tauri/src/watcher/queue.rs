@@ -29,7 +29,7 @@ pub const MESSAGE_PREFIX: &str = "fm-wake-";
 /// What a wake is about. Reports, questions and PR events keep their own roads; these are the rest.
 pub const KINDS: [&str; 4] = ["stall", "blocked", "timer", "note"];
 
-const TEXT_MAX: usize = 2_000;
+pub(crate) const TEXT_MAX: usize = 2_000;
 const TITLE_MAX: usize = 300;
 const KEY_MAX: usize = 300;
 /// A drained turn lists at most this many wakes; the rest wait for the next one.

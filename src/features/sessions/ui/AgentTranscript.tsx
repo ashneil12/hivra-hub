@@ -29,6 +29,7 @@ import { withCountLineChecked } from "../../../shared/text/countLine";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { WorkerDefaultUndo } from "../../crew/ui/WorkerDefaultUndo";
 import { noteRuns } from "../../monos/model/agentNoteView";
 import {
   memo,
@@ -2744,6 +2745,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
         onOpenFile={onOpenFile}
         localMedia={localMedia}
       />
+      {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
+      {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
     </div>
   );
 });

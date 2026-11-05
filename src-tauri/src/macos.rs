@@ -1311,6 +1311,25 @@ mod tests {
             "the app identifier must stay the Hub's own"
         );
         assert_eq!(value["productName"], "MonoCode Hub");
+        assert_eq!(
+            value["app"]["windows"][0]["title"],
+            crate::display_name::DISPLAY_NAME,
+            "the window title is the display name, not the bundle name"
+        );
+        for overlay in ["tauri.windows.conf.json", "tauri.linux.conf.json"] {
+            let text =
+                std::fs::read_to_string(format!("{}/{}", env!("CARGO_MANIFEST_DIR"), overlay))
+                    .unwrap_or_else(|_| panic!("{overlay} must exist"));
+            let overlay_value: serde_json::Value = serde_json::from_str(&text)
+                .unwrap_or_else(|_| panic!("{overlay} must be valid JSON"));
+            assert_eq!(
+                overlay_value["app"]["windows"][0]["title"],
+                crate::display_name::DISPLAY_NAME,
+                "{overlay} window title"
+            );
+            assert!(overlay_value.get("productName").is_none(), "{overlay}");
+            assert!(overlay_value.get("identifier").is_none(), "{overlay}");
+        }
 
         let hub_conf =
             std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.hub.conf.json"))

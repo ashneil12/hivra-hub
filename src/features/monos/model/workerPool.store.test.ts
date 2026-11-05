@@ -125,4 +125,85 @@ describe("the waiting queue in the app's store", () => {
     await again.setWorkerQueueBackend(store);
     expect(ids(again)).toEqual(["q1"]);
   });
+
+  it("a refresh that started earlier does not put back a worker default set while it was reading", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const read = store.settings.bind(store);
+    let reads = 0;
+    store.settings = async () => {
+      const value = await read();
+      reads += 1;
+      if (reads === 1) await gate;
+      return value;
+    };
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "low" });
+    await Promise.resolve();
+    await Promise.resolve();
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.systemWorkerDefault()).toEqual({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+  });
+
+  it("a refresh that starts after a save does not put the old worker default back", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "low" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = store.setWorkerDefault.bind(store);
+    store.setWorkerDefault = async (choice) => {
+      await gate;
+      return write(choice);
+    };
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+    const refresh = pool.refreshWorkerQueue();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.systemWorkerDefault()).toEqual({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+    release();
+    await refresh;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.systemWorkerDefault()?.effort).toBe("medium");
+  });
+
+  it("a refresh that starts after a project model save does not put the old model back", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    pool.setProjectWorkerModel("hivra", { model: "claude:sonnet-5", effort: "low" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = store.setModel.bind(store);
+    store.setModel = async (project, choice) => {
+      await gate;
+      return write(project, choice);
+    };
+    pool.setProjectWorkerModel("hivra", { model: "claude:opus-4-7", effort: "high" });
+    const refresh = pool.refreshWorkerQueue();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.projectWorkerDefault("hivra")).toEqual({
+      cli: "claude",
+      model: "claude:opus-4-7",
+      effort: "high",
+    });
+    release();
+    await refresh;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.projectWorkerDefault("hivra")?.model).toBe("claude:opus-4-7");
+  });
 });

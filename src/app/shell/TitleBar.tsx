@@ -946,7 +946,7 @@ function TitleBarComponent({
             ? basename(activeTab.files[0])
             : activeTab.project
       : "";
-    // A dev copy's windows end in "MonoCode Hub Dev - <branch> @ <sha>".
+    // A dev copy's windows end in "Hivra Dev - <branch> @ <sha>".
     return systemWindowTitle(activeName, cwd, windowTitleSuffix(), viewTitle);
   }, [activeTab, cwd, viewTitle]);
 

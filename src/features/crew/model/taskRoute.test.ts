@@ -64,6 +64,19 @@ describe("applyCrewLaunch", () => {
     expect(applyCrewLaunch({ cli: "not-a-cli", model: "nope" }, claude)).toEqual(claude);
   });
 
+  it("uses a Mono, project or system default, and still leaves the app's usual rule alone", () => {
+    withEffort();
+    expect(
+      applyCrewLaunch(
+        { cli: "codex", model: "codex:gpt-5", effort: "medium", cliFrom: "mono", modelFrom: "project", effortFrom: "system" },
+        claude,
+      ),
+    ).toEqual({ harness: "codex", model: "codex:gpt-5", effort: "medium" });
+    expect(
+      applyCrewLaunch({ cli: "codex", cliFrom: "default", modelFrom: "none", effortFrom: "none" }, claude),
+    ).toEqual(claude);
+  });
+
   it("leaves the launch alone when the CLI came only from the default", () => {
     withEffort();
     const codex: CrewLaunch = { harness: "codex", model: "codex:gpt-5", effort: "medium" };
