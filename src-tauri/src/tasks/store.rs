@@ -85,6 +85,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     // unit test that never opened the rest of the app can still write them.
     crate::steering::ensure_tables(conn)?;
     crate::watcher::ensure_tables(conn)?;
+    // WP-71: saved views live in the same database as the tasks they show.
+    super::views::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -180,6 +182,14 @@ pub struct Task {
     pub trashed_at: Option<i64>,
     pub comments: Vec<Comment>,
     pub activity: Vec<Activity>,
+    /// The worker's CLI (`sessions.harness`). Empty when this task is not an agent's.
+    pub cli: Option<String>,
+    /// When the delegation started, while it is still going.
+    pub working_since: Option<i64>,
+    /// `settled_at` once the delegation is completed, cancelled or failed.
+    pub finished_at: Option<i64>,
+    /// The worker's own chat (`delegations.child_session`).
+    pub chat_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -298,7 +308,7 @@ fn new_id(prefix: &str) -> String {
     format!("{prefix}-{id}")
 }
 
-fn actor_ok(actor: &Actor, creating: bool) -> Result<(), String> {
+pub(crate) fn actor_ok(actor: &Actor, creating: bool) -> Result<(), String> {
     if actor.id.trim().is_empty() {
         return Err("Say who is asking.".into());
     }
@@ -606,7 +616,64 @@ fn activity_of(conn: &Connection, row: &Row) -> Result<Vec<Activity>, String> {
     Ok(out)
 }
 
+struct Work {
+    cli: Option<String>,
+    working_since: Option<i64>,
+    finished_at: Option<i64>,
+    chat_id: Option<String>,
+}
+
+/// CLI, working time and the worker chat. A missing delegations table, or no row, is empty rather than a failure.
+fn work_of(conn: &Connection, delegation_id: Option<&str>) -> Result<Work, String> {
+    let empty = Work {
+        cli: None,
+        working_since: None,
+        finished_at: None,
+        chat_id: None,
+    };
+    let Some(id) = delegation_id.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(empty);
+    };
+    let raw = conn.query_row(
+        "SELECT d.state, d.created_at, d.settled_at, d.child_session, s.harness
+         FROM delegations d LEFT JOIN sessions s ON s.id = d.child_session
+         WHERE d.id = ?1",
+        [id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+            ))
+        },
+    );
+    let (state, created_at, settled_at, child, harness) = match raw {
+        Ok(row) => row,
+        Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(empty),
+        Err(error) if missing_table(&error) => return Ok(empty),
+        Err(error) => return Err(error.to_string()),
+    };
+    let finished = matches!(state.as_str(), "completed" | "cancelled" | "failed");
+    let cli = harness
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let chat = child.trim();
+    Ok(Work {
+        cli,
+        working_since: if finished { None } else { Some(created_at) },
+        finished_at: if finished { settled_at } else { None },
+        chat_id: if chat.is_empty() {
+            None
+        } else {
+            Some(chat.to_string())
+        },
+    })
+}
+
 fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
+    let work = work_of(conn, row.delegation_id.as_deref())?;
     Ok(Task {
         id: row.id.clone(),
         project_id: row.project_id.clone(),
@@ -639,7 +706,49 @@ fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
         } else {
             Vec::new()
         },
+        cli: work.cli,
+        working_since: work.working_since,
+        finished_at: work.finished_at,
+        chat_id: work.chat_id,
     })
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusRow {
+    /// The status name. `tasks_update` looks a status up by name, so the board sends this back as `status`.
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub category: String,
+    pub position: i64,
+    pub color: String,
+}
+
+pub fn statuses(conn: &Connection, actor: &Actor) -> Result<Vec<StatusRow>, String> {
+    actor_ok(actor, false)?;
+    ensure_workflow(conn, actor.project.trim())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT project_id, name, category, position, color FROM task_statuses ORDER BY project_id, position, name",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let name: String = row.get(1)?;
+            Ok(StatusRow {
+                id: name.clone(),
+                project_id: row.get(0)?,
+                name,
+                category: row.get(2)?,
+                position: row.get(3)?,
+                color: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+            })
+        })
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())?;
+    Ok(rows)
 }
 
 fn note_change(
