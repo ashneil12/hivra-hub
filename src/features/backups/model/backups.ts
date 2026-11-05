@@ -42,6 +42,37 @@ export function restoredTitle(title: string): string {
   return `${title} (restored)`;
 }
 
+export type SettingsGeneration = {
+  generation: number;
+  busy: boolean;
+};
+
+/** A second click while one settings change is in flight does not start. */
+export function claimSettingsChange(state: SettingsGeneration): SettingsGeneration | null {
+  if (state.busy) return null;
+  return { generation: state.generation + 1, busy: true };
+}
+
+/**
+ * Paint a settings result only when it is still the latest click. A late result returns null
+ * and leaves the newer schedule or folder alone.
+ */
+export function applySettingsResult<T>(
+  state: SettingsGeneration,
+  mine: number,
+  status: T,
+  patch: Partial<T>,
+): { state: SettingsGeneration; status: T } | null {
+  if (state.generation !== mine) return null;
+  return { state: { ...state, busy: false }, status: { ...status, ...patch } };
+}
+
+/** Clear the in-flight flag only for the click that set it. */
+export function finishSettingsChange(state: SettingsGeneration, mine: number): SettingsGeneration {
+  if (state.generation !== mine) return state;
+  return { ...state, busy: false };
+}
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /** A UTC date, so Chromium and WebKit show the same backup time. */

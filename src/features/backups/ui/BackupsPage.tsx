@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
   backupItems,
+  applySettingsResult,
   backupsStatus,
   backupWhen,
+  claimSettingsChange,
   createBackup,
+  finishSettingsChange,
   listBackups,
   pickBackupFolder,
   restoreBackupAll,
@@ -55,6 +58,7 @@ export function BackupsPage({ fixture }: { fixture?: BackupsFixture }) {
   const [selected, setSelected] = useState(fixture?.backups[0]?.id ?? "");
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const settingsRef = useRef({ generation: 0, busy: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [restored, setRestored] = useState<string | null>(null);
@@ -103,52 +107,90 @@ export function BackupsPage({ fixture }: { fixture?: BackupsFixture }) {
     }
   }
 
+  function claimSettings(): number | null {
+    const next = claimSettingsChange(settingsRef.current);
+    if (!next) return null;
+    settingsRef.current = next;
+    return next.generation;
+  }
+
+  function releaseSettings(mine: number) {
+    settingsRef.current = finishSettingsChange(settingsRef.current, mine);
+    if (settingsRef.current.generation === mine) setBusy(null);
+  }
+
+  function paintSettings(mine: number, patch: Partial<BackupsStatus>) {
+    setLoad((current) => {
+      if (!current) return current;
+      const applied = applySettingsResult(settingsRef.current, mine, current.status, patch);
+      if (!applied) return current;
+      settingsRef.current = applied.state;
+      return { ...current, status: applied.status };
+    });
+  }
+
+  async function reloadSettings(mine: number) {
+    const status = await backupsStatus();
+    paintSettings(mine, status);
+  }
+
   async function changeSchedule(schedule: BackupSchedule) {
     if (!load) return;
+    const mine = claimSettings();
+    if (mine === null) return;
     setProblem(null);
-    if (fixture) {
-      setLoad({ ...load, status: { ...load.status, schedule } });
-      return;
-    }
     setBusy("schedule");
     try {
-      await setBackupSchedule(schedule);
-      setLoad({ ...load, status: { ...load.status, schedule } });
+      if (!fixture) await setBackupSchedule(schedule);
+      paintSettings(mine, { schedule });
     } catch (error) {
+      try {
+        if (!fixture) await reloadSettings(mine);
+      } catch {
+        // The schedule on screen stays what the last successful read said.
+      }
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(null);
+      releaseSettings(mine);
     }
   }
 
   async function chooseFolder() {
     if (!load || fixture) return;
+    const mine = claimSettings();
+    if (mine === null) return;
     setProblem(null);
+    setBusy("folder");
     try {
       const folder = await pickBackupFolder();
       if (!folder) return;
-      setBusy("folder");
       await setBackupFolder(folder);
-      setLoad({ ...load, status: { ...load.status, folder, folderIsDefault: false } });
+      paintSettings(mine, { folder, folderIsDefault: false });
     } catch (error) {
+      try {
+        await reloadSettings(mine);
+      } catch {
+        // The folder on screen stays what the last successful read said.
+      }
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(null);
+      releaseSettings(mine);
     }
   }
 
   async function useDefaultFolder() {
     if (!load || fixture) return;
+    const mine = claimSettings();
+    if (mine === null) return;
     setBusy("folder");
     setProblem(null);
     try {
       await setBackupFolder(null);
-      const status = await backupsStatus();
-      setLoad({ ...load, status });
+      await reloadSettings(mine);
     } catch (error) {
       setProblem(error instanceof Error ? error.message : String(error));
     } finally {
-      setBusy(null);
+      releaseSettings(mine);
     }
   }
 
