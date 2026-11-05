@@ -75,6 +75,7 @@ import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { phaseBeforeCrew, phaseHint } from "../../phases/model/gate";
+import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phaseCrew";
 import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
@@ -753,16 +754,21 @@ async function delegate(
   if (sharedTask) await sharedTaskInThisProject(source, sharedTask, host);
   // WP-84: a costly task finishes its phase documents before anyone writes code. A usual task does not wait.
   if (sharedTask) {
-    const gate = await phaseBeforeCrew(sharedTask, phaseHint(input), source.cwd, commentId);
-    if (gate.hold) {
-      return {
-        taskId: null,
-        childSessionId: `phase-${sharedTask}`,
-        status: "working",
-        title,
-        phased: true,
-        note: gate.why,
-      };
+    bindPhaseLauncher(sharedTask, { source, host, helpers, requestId });
+    try {
+      const gate = await phaseBeforeCrew(sharedTask, phaseHint(input), source.cwd, commentId);
+      if (gate.hold) {
+        return {
+          taskId: null,
+          childSessionId: `phase-${sharedTask}`,
+          status: "working",
+          title,
+          phased: true,
+          note: gate.why,
+        };
+      }
+    } finally {
+      unbindPhaseLauncher(sharedTask);
     }
   }
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.

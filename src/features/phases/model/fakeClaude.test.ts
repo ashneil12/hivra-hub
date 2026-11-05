@@ -63,13 +63,13 @@ it("gives the fake Claude only the scenario and the state directory", () => {
 
 it("puts the iterate skill's own text in the prompt", () => {
   const text = skillText("iterate-design");
-  expect(text).toContain("Edit the design document");
+  expect(text).toContain("You are iterating on an existing design discussion document based on user feedback.");
   const ids = counter();
   const work = begin("task-4", { weight: "costly" }, {}, ids);
   const run = running(work);
   if (!run) throw new Error("no run");
   const prompt = phasePrompt(work, { ...run, skill: "iterate-design", steering: ["use the queue"] }, text);
-  expect(prompt).toContain("Edit the design document");
+  expect(prompt).toContain("You are iterating on an existing design discussion document based on user feedback.");
   expect(prompt).toContain("use the queue");
   expect(prompt).toContain("Skill: iterate-design");
 });

@@ -3,8 +3,11 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { finishRun, phaseBrief, type FinishResult, type Run, type Work } from "./machine";
+import { finishRun, type FinishResult, type Run, type Work } from "./machine";
+import { phasePrompt } from "./phasePrompt";
 import { skillText } from "./skillText";
+
+export { phasePrompt } from "./phasePrompt";
 
 /** The child gets the scenario and its state directory, and nothing else from this process. */
 export function fakeClaudeLaunch(scenarioFile: string, stateDir: string, sessionId: string): { command: string; args: string[]; env: NodeJS.ProcessEnv } {
@@ -16,19 +19,6 @@ export function fakeClaudeLaunch(scenarioFile: string, stateDir: string, session
       FAKE_CLAUDE_STATE: stateDir,
     },
   };
-}
-
-/** The prompt for one phase run. The skill file is included when it is on disk. */
-export function phasePrompt(work: Work, run: Run, text?: string): string {
-  const parts = [
-    `Skill: ${run.skill}`,
-    text?.trim() || undefined,
-    `Task: ${work.taskId}`,
-    run.steering.length > 0 ? `The person's words:\n${run.steering.join("\n")}` : undefined,
-    phaseBrief(work),
-    run.docNumber != null ? `Edit document ${run.docNumber}. Do not start a new one.` : undefined,
-  ];
-  return parts.filter((part): part is string => Boolean(part)).join("\n\n");
 }
 
 /** The fake's reply, or a timeout. A timeout is not a finished phase. */
