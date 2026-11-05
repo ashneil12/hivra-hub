@@ -876,13 +876,10 @@ impl StandIn for EmulateStandIn {
     }
 
     fn stop(&self, stack_dir: &Path) -> Result<(), String> {
-        match emulate::installed(&self.data_dir) {
-            Some(tool) => emulate::stop(stack_dir, &tool),
-            None => {
-                let _ = std::fs::remove_file(stack_dir.join("emulate.pid"));
-                Ok(())
-            }
-        }
+        // The tool folder is not consulted: a stand-in from a previous version, or from a
+        // data folder whose tools were removed, is ours by its command line and still has to
+        // be stopped rather than forgotten.
+        emulate::stop(stack_dir)
     }
 }
 

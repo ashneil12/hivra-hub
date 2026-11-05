@@ -702,9 +702,35 @@ pub fn child_env(path_env: Option<&str>) -> Vec<(String, String)> {
     env
 }
 
-/// Stop the stand-in recorded for this stack. A pid whose command does not name this copy's
-/// emulate program is left alone: a recycled pid is never killed.
-pub fn stop(stack_dir: &Path, tool: &Path) -> Result<(), String> {
+/// What can be proved about the process named by `emulate.pid`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Probe {
+    /// The command line names the stand-in and this stack's own folder.
+    Ours,
+    /// The pid is alive and is plainly another program: a recycled pid.
+    NotOurs,
+    /// No such process.
+    Gone,
+    /// The pid exists but its command line could not be read.
+    Unknown,
+}
+
+/// Said when a stand-in cannot be proved this app's own to stop. The pid file is kept.
+pub const STILL_RUNNING_NOTE: &str =
+    "The old stand-in is still running; stop it from Activity Monitor or restart the app.";
+
+/// Stop the stand-in recorded for this stack. A pid that cannot be proved to be this stack's
+/// stand-in is never killed, and never forgotten either: the pid file stays so the next stop
+/// can try again, and the message says how to end it by hand.
+pub fn stop(stack_dir: &Path) -> Result<(), String> {
+    stop_with(stack_dir, |pid| probe_stand_in(pid, stack_dir), kill_tree)
+}
+
+fn stop_with(
+    stack_dir: &Path,
+    probe: impl Fn(u32) -> Probe,
+    kill: impl Fn(u32),
+) -> Result<(), String> {
     let path = stack_dir.join("emulate.pid");
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -715,56 +741,137 @@ pub fn stop(stack_dir: &Path, tool: &Path) -> Result<(), String> {
         let _ = std::fs::remove_file(&path);
         return Ok(());
     };
-    if !process_names_tool(pid, tool) {
-        let _ = std::fs::remove_file(&path);
-        return Ok(());
-    }
-    #[cfg(unix)]
-    {
-        if let Ok(pid) = i32::try_from(pid) {
-            // SAFETY: the pid was checked against this copy's program above.
-            unsafe {
-                libc::kill(-pid, libc::SIGTERM);
-            }
-            std::thread::sleep(std::time::Duration::from_millis(400));
-            unsafe {
-                libc::kill(-pid, libc::SIGKILL);
-            }
+    match probe(pid) {
+        // The pid now names another program, or nothing: a stale entry, not a stand-in.
+        Probe::NotOurs | Probe::Gone => {
+            let _ = std::fs::remove_file(&path);
+            Ok(())
+        }
+        // The process may still hold this stack's ports. Keep the pid file so the next stop
+        // can try again, and say in plain words how to end it now.
+        Probe::Unknown => Err(STILL_RUNNING_NOTE.to_string()),
+        Probe::Ours => {
+            kill(pid);
+            let _ = std::fs::remove_file(&path);
+            Ok(())
         }
     }
-    #[cfg(windows)]
-    {
-        let _ = Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-    }
-    let _ = std::fs::remove_file(&path);
-    Ok(())
 }
 
 #[cfg(unix)]
-fn process_names_tool(pid: u32, tool: &Path) -> bool {
-    let Ok(output) = Command::new("ps")
-        .args(["-o", "command=", "-p", &pid.to_string()])
-        .output()
-    else {
-        return false;
-    };
-    if !output.status.success() {
-        return false;
+fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
+    match command_of(pid) {
+        Some(command) => {
+            let ours = command.contains("emulate")
+                && command.contains(stack_dir.to_string_lossy().as_ref());
+            if ours {
+                Probe::Ours
+            } else {
+                Probe::NotOurs
+            }
+        }
+        None => {
+            if crate::proxy::routes::process_alive(pid) {
+                Probe::Unknown
+            } else {
+                Probe::Gone
+            }
+        }
     }
-    let command = String::from_utf8_lossy(&output.stdout);
-    let wanted = tool.to_string_lossy();
-    command.contains(wanted.as_ref())
 }
 
-#[cfg(not(unix))]
-fn process_names_tool(_pid: u32, _tool: &Path) -> bool {
-    // Windows has no cheap, race-free command-line check here; the recorded pid is ours.
-    true
+#[cfg(unix)]
+fn command_of(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let command = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!command.is_empty()).then_some(command)
+}
+
+#[cfg(unix)]
+fn kill_tree(pid: u32) {
+    if let Ok(pid) = i32::try_from(pid) {
+        // SAFETY: the probe above proved this pid is this stack's own stand-in.
+        unsafe {
+            libc::kill(-pid, libc::SIGTERM);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn kill_tree(pid: u32) {
+    let _ = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(windows)]
+fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
+    if process_names_tool(pid, stack_dir) {
+        return Probe::Ours;
+    }
+    if !crate::proxy::routes::process_alive(pid) {
+        return Probe::Gone;
+    }
+    match tasklist_image(pid) {
+        // The pid is alive and names another program: a recycled pid.
+        Some(_) => Probe::NotOurs,
+        None => Probe::Unknown,
+    }
+}
+
+/// Whether the pid's image is `node.exe`. Windows has no cheap command line here, so the
+/// image is the proof; a pid that names anything else is never passed to `taskkill`.
+#[cfg(windows)]
+fn process_names_tool(pid: u32, _stack_dir: &Path) -> bool {
+    tasklist_image(pid).is_some_and(|image| image.eq_ignore_ascii_case("node.exe"))
+}
+
+#[cfg(windows)]
+fn tasklist_image(pid: u32) -> Option<String> {
+    let output = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    tasklist_image_name(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// The first CSV field of `tasklist /FO CSV /NH`: `"node.exe","4321",...` gives `node.exe`,
+/// and an empty answer (the pid is gone) gives nothing. Pure, so every platform tests it.
+#[cfg_attr(not(any(windows, test)), allow(dead_code))]
+fn tasklist_image_name(output: &str) -> Option<String> {
+    for line in output.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // tasklist's "no task matches" line names no process.
+        if line.starts_with("INFO:") {
+            return None;
+        }
+        let field = match line.strip_prefix('"') {
+            Some(rest) => rest.split('"').next().unwrap_or("").to_string(),
+            None => line.split(',').next().unwrap_or("").to_string(),
+        };
+        return (!field.is_empty()).then_some(field);
+    }
+    None
 }
 
 /// A stable map from a service to its env name: `GITHUB_BASE_URL`, `MONGODBATLAS_BASE_URL`.
@@ -1276,7 +1383,7 @@ pub(crate) mod tests {
         };
         // Whatever happens next, the process this test started is stopped before it ends.
         let answered = wait_for_status(port, Duration::from_secs(60));
-        let stopped = stop(&stack_dir, &tool);
+        let stopped = stop(&stack_dir);
         let line = match answered {
             Some(line) => line,
             None => panic!("nothing answered on 127.0.0.1:{port}"),
@@ -1460,6 +1567,124 @@ pub(crate) mod tests {
         assert!(
             !keys.contains(&"ANTHROPIC_API_KEY"),
             "a model key reached the stand-in: {text}"
+        );
+    }
+
+    fn pid_file(stack: &Path, pid: u32) {
+        std::fs::create_dir_all(stack).unwrap();
+        std::fs::write(stack.join("emulate.pid"), format!("{pid}\n")).unwrap();
+    }
+
+    #[test]
+    fn a_stand_in_whose_command_names_this_stack_is_stopped() {
+        let temp = Temp::new("stop-ours");
+        let stack = temp.0.join("stack");
+        pid_file(&stack, 4242);
+        let killed = Mutex::new(Vec::new());
+        stop_with(
+            &stack,
+            |_| Probe::Ours,
+            |pid| killed.lock().unwrap().push(pid),
+        )
+        .unwrap();
+        assert_eq!(*killed.lock().unwrap(), vec![4242]);
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    #[test]
+    fn a_pid_that_cannot_be_proved_is_kept_and_the_error_says_what_to_do() {
+        let temp = Temp::new("stop-unknown");
+        let stack = temp.0.join("stack");
+        pid_file(&stack, 4242);
+        let killed = Mutex::new(Vec::new());
+        let error = stop_with(
+            &stack,
+            |_| Probe::Unknown,
+            |pid| killed.lock().unwrap().push(pid),
+        )
+        .unwrap_err();
+        assert!(error.contains("still running"), "{error}");
+        // Not forgotten: the next stop, or the person, can still find it.
+        assert!(stack.join("emulate.pid").exists());
+        assert!(killed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_recycled_pid_is_neither_killed_nor_kept() {
+        let temp = Temp::new("stop-recycled");
+        let stack = temp.0.join("stack");
+        pid_file(&stack, 4242);
+        let killed = Mutex::new(Vec::new());
+        stop_with(
+            &stack,
+            |_| Probe::NotOurs,
+            |pid| killed.lock().unwrap().push(pid),
+        )
+        .unwrap();
+        assert!(killed.lock().unwrap().is_empty());
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    #[test]
+    fn a_pid_that_is_gone_is_forgotten() {
+        let temp = Temp::new("stop-gone");
+        let stack = temp.0.join("stack");
+        pid_file(&stack, 4242);
+        let killed = Mutex::new(Vec::new());
+        stop_with(
+            &stack,
+            |_| Probe::Gone,
+            |pid| killed.lock().unwrap().push(pid),
+        )
+        .unwrap();
+        assert!(killed.lock().unwrap().is_empty());
+        assert!(!stack.join("emulate.pid").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_line_is_ours_only_with_emulate_and_this_stack_folder() {
+        let temp = Temp::new("probe");
+        let stack = temp.0.join("stack");
+        std::fs::create_dir_all(&stack).unwrap();
+        // An old-version stand-in whose folder is not the installed tool folder still counts.
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(format!("sleep 30; : emulate {}", stack.display()))
+            .spawn()
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(probe_stand_in(child.id(), &stack), Probe::Ours);
+        assert_eq!(
+            probe_stand_in(child.id(), &temp.0.join("other")),
+            Probe::NotOurs
+        );
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn tasklist_output_names_the_image_or_nothing() {
+        // A live pid that is ours.
+        assert_eq!(
+            tasklist_image_name("\"node.exe\",\"4321\",\"Console\",\"1\",\"32,456 K\"\n").as_deref(),
+            Some("node.exe")
+        );
+        assert_eq!(
+            tasklist_image_name("\"NODE.EXE\",\"4321\",\"Console\",\"1\",\"32 K\"\r\n").as_deref(),
+            Some("NODE.EXE")
+        );
+        // A recycled pid that now names another program.
+        assert_eq!(
+            tasklist_image_name("\"Finder.exe\",\"4321\",\"Console\",\"1\",\"32 K\"\n").as_deref(),
+            Some("Finder.exe")
+        );
+        // No task matches: the pid is gone, and nothing may be killed.
+        assert_eq!(tasklist_image_name(""), None);
+        assert_eq!(tasklist_image_name("\n \r\n"), None);
+        assert_eq!(
+            tasklist_image_name("INFO: No tasks are running which match the specified criteria."),
+            None
         );
     }
 
