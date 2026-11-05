@@ -223,16 +223,56 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// Point this crew's git at the hooks folder. A bad config count sets nothing.
-/// Failure to install does not stop the crew: the caller ignores the result.
-pub fn apply_crew_env(cmd: &mut Command, data_dir: &Path, session_id: &str, task_id: Option<&str>) {
-    let Ok(hooks) = hooks::install_hooks(data_dir) else {
+/// What the crew's own git config lookup depends on: where the user's config
+/// files are. Other variables are not passed on.
+const CREW_CONFIG_ENV: &[&str] = &[
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
+];
+
+/// A variable on the crew command, else on this process. A key the crew
+/// removes stays unset, so the lookup sees what the crew's git will see.
+fn crew_env(cmd: &Command, key: &str) -> Option<String> {
+    let mut found = None;
+    let mut seen = false;
+    for (name, value) in cmd.get_envs() {
+        if name.to_str() == Some(key) {
+            seen = true;
+            found = value.and_then(|value| value.to_str()).map(str::to_string);
+        }
+    }
+    if seen {
+        found
+    } else {
+        std::env::var(key).ok()
+    }
+}
+
+/// Point this crew's git at this repository's hooks folder. The repository's
+/// own hooks are resolved once here, and each forwarder carries its path, so a
+/// hook-time call never runs git. A bad config count sets nothing. Failure to
+/// install does not stop the crew: the caller ignores the result.
+pub fn apply_crew_env(
+    cmd: &mut Command,
+    data_dir: &Path,
+    workdir: &Path,
+    session_id: &str,
+    task_id: Option<&str>,
+) {
+    let env: Vec<(String, String)> = CREW_CONFIG_ENV
+        .iter()
+        .filter_map(|key| crew_env(cmd, key).map(|value| ((*key).to_string(), value)))
+        .collect();
+    let Ok(hooks) = hooks::install_for_repo(data_dir, workdir, &env) else {
         return;
     };
     let Some(hooks_path) = hooks.to_str() else {
         return;
     };
-    let existing = std::env::var("GIT_CONFIG_COUNT").ok();
+    let existing = crew_env(cmd, "GIT_CONFIG_COUNT");
     let Some((count, key, value_name)) = logic::git_config_env(existing.as_deref(), hooks_path)
     else {
         return;

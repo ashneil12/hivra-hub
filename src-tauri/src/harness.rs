@@ -1086,7 +1086,13 @@ pub fn harness_spawn(
                     .ok()
                     .flatten()
             });
-        crate::attribution::apply_crew_env(&mut cmd, &data_dir, &session_id, task.as_deref());
+        crate::attribution::apply_crew_env(
+            &mut cmd,
+            &data_dir,
+            &workdir,
+            &session_id,
+            task.as_deref(),
+        );
     }
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;

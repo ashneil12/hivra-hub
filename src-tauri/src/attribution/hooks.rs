@@ -1,50 +1,45 @@
 // SPDX-License-Identifier: Apache-2.0
-// Hivra WP-86. The hooks folder lives in this copy's data folder. A dev copy
-// has its own data folder, so it never writes the daily app's hooks.
+// Hivra WP-86. One hooks folder per repository, kept in this copy's data
+// folder. A dev copy has its own data folder, so it never writes the daily
+// app's hooks.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
+
 const SCRIPT: &str = include_str!("hook.sh");
 const REFUSAL: &str = "The hooks folder isn't inside this copy's data.";
+const GIT_REFUSAL: &str = "git didn't answer";
+/// The line in hook.sh where the repository's own prepare-commit-msg path is
+/// baked in. The frontend mirror replaces the same line.
+const REAL_HOOK_LINE: &str = "real_hook=''";
 
-/// Every name githooks(5) documents, except three that must not be files here.
-/// One missing name from this list is a repository hook that never runs while
-/// a crew's git is pointed at this folder.
+const PREPARE: &str = "prepare-commit-msg";
+
+/// These three must never be files in the crew folder.
 /// push-to-checkout: its presence makes receive-pack hand over the worktree
 /// update, so a forwarder that exits 0 moves the ref and leaves the files stale
 /// when receive.denyCurrentBranch is updateInstead.
 /// proc-receive: git runs it only when that feature is configured, and it must
 /// speak the pkt-line protocol. Exiting 0 does not.
 /// fsmonitor-watchman: git never runs that name from the hooks directory.
-const HOOK_NAMES: &[&str] = &[
-    "applypatch-msg",
-    "commit-msg",
-    "p4-changelist",
-    "p4-post-changelist",
-    "p4-pre-submit",
-    "p4-prepare-changelist",
-    "post-applypatch",
-    "post-checkout",
-    "post-commit",
-    "post-index-change",
-    "post-merge",
-    "post-receive",
-    "post-rewrite",
-    "post-update",
-    "pre-applypatch",
-    "pre-auto-gc",
-    "pre-commit",
-    "pre-merge-commit",
-    "pre-push",
-    "pre-rebase",
-    "pre-receive",
-    "prepare-commit-msg",
-    "reference-transaction",
-    "sendemail-validate",
-    "update",
+const NEVER_FORWARD: &[&str] = &["fsmonitor-watchman", "proc-receive", "push-to-checkout"];
+
+/// What `git config` reads to find the repository's own hooks. These are the
+/// only variables handed to the lookup, so the crew's GIT_CONFIG_* entries
+/// (which point at this folder) never hide the real value.
+const CONFIG_ENV: &[&str] = &[
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_NOSYSTEM",
 ];
+
+const GIT_TIMEOUT: Duration = Duration::from_secs(8);
 
 fn hook_name_ok(name: &str) -> bool {
     let mut chars = name.chars();
@@ -185,23 +180,316 @@ fn install_one(root: &Path, dir: &Path, name: &str, script: &str) -> Result<(), 
     Ok(())
 }
 
-/// Install a forwarder for every git hook under `data_dir/attribution/hooks`.
-/// The path is refused unless it stays inside the data directory. A symlink is
-/// refused rather than followed. Matching bytes are not rewritten. One failed
-/// file fails the install, so git is not pointed at a half-written folder.
-pub fn install_hooks(data_dir: &Path) -> Result<PathBuf, String> {
+/// The value a config variable has for the crew: its own override first, then
+/// this process. The crew's GIT_CONFIG_* entries are never read here.
+fn config_value(env: &[(String, String)], key: &str) -> Option<String> {
+    if let Some((_, value)) = env.iter().rev().find(|(name, _)| name == key) {
+        return Some(value.clone());
+    }
+    std::env::var(key).ok()
+}
+
+fn git(
+    workdir: &Path,
+    env: &[(String, String)],
+    args: &[&str],
+) -> Result<String, super::git::GitFail> {
+    let mut cmd = crate::delivery::child("git");
+    cmd.arg("--no-pager").arg("-C").arg(workdir).args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    for key in CONFIG_ENV {
+        if let Some(value) = config_value(env, key) {
+            cmd.env(key, value);
+        }
+    }
+    super::git::run_limited(cmd, GIT_TIMEOUT)
+}
+
+fn first_line(raw: &str) -> String {
+    raw.lines().next().unwrap_or("").trim().to_string()
+}
+
+/// The two paths rev-parse prints, made absolute. A relative common dir is
+/// relative to the directory git ran in.
+fn two_paths(out: &str, workdir: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let mut lines = out.lines().map(str::trim).filter(|line| !line.is_empty());
+    let common = lines.next().ok_or_else(|| GIT_REFUSAL.to_string())?;
+    let top = lines.next().ok_or_else(|| GIT_REFUSAL.to_string())?;
+    let absolute = |text: &str| {
+        let path = Path::new(text);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            workdir.join(path)
+        }
+    };
+    Ok((absolute(common), absolute(top)))
+}
+
+fn expand_tilde(value: &str, home: Option<&str>) -> Option<String> {
+    if value == "~" {
+        return home.map(str::to_string);
+    }
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        return home.map(|home| format!("{home}/{rest}"));
+    }
+    Some(value.to_string())
+}
+
+fn windows_slash(text: &str) -> String {
+    #[cfg(windows)]
+    {
+        text.replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        text.to_string()
+    }
+}
+
+/// A POSIX shell word for a path. Git runs hooks with sh on every platform.
+fn shell_quote(text: &str) -> Option<String> {
+    if text.contains('\0') {
+        return None;
+    }
+    Some(format!("'{}'", windows_slash(text).replace('\'', "'\\''")))
+}
+
+fn hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0xf) as usize] as char);
+    }
+    out
+}
+
+fn folder_key(common: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(common.as_bytes());
+    hex(&hasher.finalize())
+}
+
+struct Resolved {
+    common: PathBuf,
+    real_hooks: PathBuf,
+}
+
+/// Resolve the repository's own hooks once, at crew spawn. The crew's own
+/// core.hooksPath override is not in the environment here, so a husky-style
+/// path in local, global or system config is what the lookup returns.
+fn resolve(workdir: &Path, env: &[(String, String)]) -> Result<Resolved, String> {
+    let (common, toplevel) = match git(
+        workdir,
+        env,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+            "--show-toplevel",
+        ],
+    ) {
+        Ok(out) => two_paths(&out, workdir)?,
+        Err(super::git::GitFail::Rejected) => {
+            // A git older than 2.31 has no --path-format.
+            let out = git(
+                workdir,
+                env,
+                &["rev-parse", "--git-common-dir", "--show-toplevel"],
+            )
+            .map_err(|_| GIT_REFUSAL.to_string())?;
+            two_paths(&out, workdir)?
+        }
+        Err(super::git::GitFail::Unavailable) => return Err(GIT_REFUSAL.into()),
+    };
+    let common = crate::fs::canonical(&common).map_err(|_| GIT_REFUSAL.to_string())?;
+    let toplevel = crate::fs::canonical(&toplevel).map_err(|_| GIT_REFUSAL.to_string())?;
+    let configured = match git(workdir, env, &["config", "--get", "core.hooksPath"]) {
+        Ok(out) => Some(first_line(&out)),
+        Err(super::git::GitFail::Rejected) => None,
+        // A timeout is not "nothing is set": guessing would skip the
+        // repository's own hooks, so the crew runs without an override instead.
+        Err(super::git::GitFail::Unavailable) => return Err(GIT_REFUSAL.into()),
+    };
+    let real_hooks = match configured.filter(|value| !value.is_empty()) {
+        Some(value) => {
+            let home = config_value(env, "HOME");
+            let expanded =
+                expand_tilde(&value, home.as_deref()).ok_or_else(|| GIT_REFUSAL.to_string())?;
+            let path = PathBuf::from(expanded);
+            if path.is_absolute() {
+                path
+            } else {
+                toplevel.join(path)
+            }
+        }
+        None => common.join("hooks"),
+    };
+    let real_hooks = crate::fs::canonical(&real_hooks).unwrap_or(real_hooks);
+    Ok(Resolved { common, real_hooks })
+}
+
+#[cfg(unix)]
+fn hook_runnable(meta: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    meta.is_file() && meta.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn hook_runnable(meta: &std::fs::Metadata) -> bool {
+    meta.is_file()
+}
+
+struct RealHook {
+    name: String,
+    path: String,
+}
+
+/// The hooks the repository itself would run right now. Symlinks are followed,
+/// as git follows them. A name that cannot be baked into a shell word is not
+/// guessed at: the whole install fails, so the crew runs with its own config.
+fn real_hooks(dir: &Path) -> Result<Vec<RealHook>, String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        // No hooks folder, or one that cannot be read: the repository has no hooks.
+        Err(_) => return Ok(Vec::new()),
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !hook_name_ok(name) || NEVER_FORWARD.contains(&name) {
+            continue;
+        }
+        let path = dir.join(name);
+        match std::fs::metadata(&path) {
+            Ok(meta) if hook_runnable(&meta) => {}
+            _ => continue,
+        }
+        let path = crate::fs::canonical(&path)
+            .unwrap_or(path)
+            .to_str()
+            .map(str::to_string)
+            .ok_or_else(|| REFUSAL.to_string())?;
+        found.push(RealHook {
+            name: name.to_string(),
+            path,
+        });
+    }
+    Ok(found)
+}
+
+fn prepare_script(real: Option<&str>) -> Result<String, String> {
+    let template = SCRIPT.replace("\r\n", "\n");
+    if !template.contains(REAL_HOOK_LINE) {
+        return Err(REFUSAL.into());
+    }
+    let Some(real) = real else {
+        return Ok(template);
+    };
+    let quoted = shell_quote(real).ok_or_else(|| REFUSAL.to_string())?;
+    Ok(template.replacen(REAL_HOOK_LINE, &format!("real_hook={quoted}"), 1))
+}
+
+fn forwarder_script(real: &str) -> Result<String, String> {
+    let quoted = shell_quote(real).ok_or_else(|| REFUSAL.to_string())?;
+    Ok(format!(
+        "#!/bin/sh\n\
+         # SPDX-License-Identifier: Apache-2.0\n\
+         # Hivra WP-86. Runs the repository's own hook, whose path was resolved when\n\
+         # the crew started. A hook added or changed during the run is picked up on\n\
+         # the next run.\n\
+         real_hook={quoted}\n\
+         if [ -x \"$real_hook\" ]; then\n\
+         \texec \"$real_hook\" \"$@\"\n\
+         fi\n\
+         exit 0\n"
+    ))
+}
+
+/// Remove forwarders for hooks the repository no longer has, and temp files a
+/// failed publish left behind. Only regular files and links inside the folder
+/// are touched; removing a link removes the link, never what it points at.
+fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|_| REFUSAL.to_string())?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !contained(root, &path) {
+            return Err(REFUSAL.into());
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if keep.contains(name) {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.is_dir() {
+            continue;
+        }
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            // The other crew renamed or removed it since the listing.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(REFUSAL.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Regenerate the folder for this repository: prepare-commit-msg, plus a
+/// forwarder for each executable hook the repository has at spawn. Every file
+/// is published atomically, one at a time, and the path is refused unless it
+/// stays inside the data directory. One failed file fails the install, so git
+/// is not pointed at a half-written folder; the crew then runs with no
+/// override and the repository's own hooks still apply.
+pub fn install_for_repo(
+    data_dir: &Path,
+    workdir: &Path,
+    env: &[(String, String)],
+) -> Result<PathBuf, String> {
     let root = crate::fs::canonical(data_dir).map_err(|_| REFUSAL.to_string())?;
     if !root.is_dir() {
         return Err(REFUSAL.into());
     }
+    let resolved = super::read_with_retry(|| resolve(workdir, env))?;
+    let common = resolved
+        .common
+        .to_str()
+        .ok_or_else(|| REFUSAL.to_string())?;
     let attribution = ensure_child(&root, "attribution")?;
-    let dir = ensure_child(&attribution, "hooks")?;
+    let hooks_root = ensure_child(&attribution, "hooks")?;
+    let dir = ensure_child(&hooks_root, &folder_key(common))?;
     if !contained(&root, &dir) {
         return Err(REFUSAL.into());
     }
-    let script = SCRIPT.replace("\r\n", "\n");
-    for name in HOOK_NAMES {
-        install_one(&root, &dir, name, &script)?;
+    let found = real_hooks(&resolved.real_hooks)?;
+    let prepare = found.iter().find(|hook| hook.name == PREPARE);
+    install_one(
+        &root,
+        &dir,
+        PREPARE,
+        &prepare_script(prepare.map(|hook| hook.path.as_str()))?,
+    )?;
+    let mut keep = BTreeSet::new();
+    keep.insert(PREPARE.to_string());
+    for hook in &found {
+        if hook.name == PREPARE {
+            continue;
+        }
+        install_one(&root, &dir, &hook.name, &forwarder_script(&hook.path)?)?;
+        keep.insert(hook.name.clone());
     }
+    prune(&root, &dir, &keep)?;
     Ok(dir)
 }

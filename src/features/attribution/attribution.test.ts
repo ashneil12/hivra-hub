@@ -261,20 +261,19 @@ function snapshot(repo: string, env: NodeJS.ProcessEnv): string {
 }
 
 describe("the prepare-commit-msg hook", () => {
-  it("reads hooksPath and does not write git config", () => {
+  it("runs the baked hook, makes no git calls, and leaves git config alone", () => {
     const code = hookScript()
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
-    const calls = code.match(/\bgit[ \t]+config\b[^\n]*/g) ?? [];
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatch(/^git[ \t]+config[ \t]+--get[ \t]+core\.hooksPath\b/);
-    const readAt = code.indexOf(calls[0]);
-    expect(code.indexOf('unset "GIT_CONFIG_KEY_$i"')).toBeGreaterThanOrEqual(0);
-    expect(code.indexOf('unset "GIT_CONFIG_KEY_$i"')).toBeLessThan(readAt);
-    expect(code.indexOf('unset "GIT_CONFIG_VALUE_$i"')).toBeLessThan(readAt);
-    expect(code.indexOf("unset GIT_CONFIG_COUNT")).toBeLessThan(readAt);
-    expect(code).not.toMatch(/\bgit[ \t]+config\b[^\n]*--(unset|add|replace-all|unset-all)\b/);
+    expect(code).not.toMatch(/\bgit[ \t]+(config|rev-parse|--)\b/);
+    expect(code).toContain("real_hook=''");
+    expect(code.indexOf('"$real_hook" "$@"')).toBeGreaterThanOrEqual(0);
+    expect(code.indexOf('"$real_hook" "$@"')).toBeLessThan(code.indexOf("Hivra-Chat: "));
+    expect(hookScript("/repo/.git/hooks/prepare-commit-msg")).toContain(
+      "real_hook='/repo/.git/hooks/prepare-commit-msg'",
+    );
+    expect(hookScript("/tmp/it's a repo/hook")).toContain("real_hook='/tmp/it'\\''s a repo/hook'");
     expect(hookScript()).toContain("Hivra-Chat:");
     expect(hookScript()).toContain("Hivra-Task:");
   });
@@ -291,7 +290,7 @@ describe("the prepare-commit-msg hook", () => {
     const data = path.join(root, "data dir");
     const hooks = hooksDir(data);
     expect(hooks).not.toBeNull();
-    const installed = installHookScript(hooks as string);
+    const installed = installHookScript(hooks as string, hook);
     const pairs = gitConfigEnv(undefined, hooks as string);
     expect(pairs).not.toBeNull();
     const crew = gitEnv({
@@ -324,7 +323,7 @@ describe("the prepare-commit-msg hook", () => {
     writeFileSync(hook, "#!/bin/sh\nprintf '\\nSample-Ran: yes\\n' >> \"$1\"\n");
     chmodSync(hook, 0o644);
     const hooks = hooksDir(path.join(root, "data")) as string;
-    installHookScript(hooks);
+    installHookScript(hooks, hook);
     const pairs = gitConfigEnv(undefined, hooks) as NonNullable<ReturnType<typeof gitConfigEnv>>;
     const crew = gitEnv({
       HIVRA_CHAT: "bad id",
@@ -395,7 +394,7 @@ describe("the prepare-commit-msg hook", () => {
     chmodSync(hook, 0o755);
     run(repo, ["worktree", "add", "-b", "side", wt], env);
     const hooks = hooksDir(path.join(root, "data")) as string;
-    installHookScript(hooks);
+    installHookScript(hooks, hook);
     const pairs = gitConfigEnv(undefined, hooks) as NonNullable<ReturnType<typeof gitConfigEnv>>;
     const crew = gitEnv({
       HIVRA_CHAT: "chat-wt",
@@ -413,6 +412,34 @@ describe("the prepare-commit-msg hook", () => {
     expect(body).toContain("Hivra-Task: task-wt");
     expect(body).toContain("Common-Ran: yes");
     expect(readFileSync(hook)).toEqual(hookBytes);
+  });
+
+  it("bakes a repo hook path that has a space and a quote", () => {
+    const root = tempRoot();
+    const repo = path.join(root, "it's a repo");
+    mkdirSync(repo);
+    const env = gitEnv();
+    run(repo, ["init", "-b", "main"], env);
+    const hook = path.join(repo, ".git", "hooks", "prepare-commit-msg");
+    writeFileSync(hook, "#!/bin/sh\nprintf '\\nQuote-Ran: yes\\n' >> \"$1\"\n");
+    chmodSync(hook, 0o755);
+    const hooks = hooksDir(path.join(root, "data")) as string;
+    installHookScript(hooks, hook);
+    const pairs = gitConfigEnv(undefined, hooks) as NonNullable<ReturnType<typeof gitConfigEnv>>;
+    const crew = gitEnv({
+      HIVRA_CHAT: "chat-1",
+      HIVRA_TASK: "task-1",
+      GIT_CONFIG_COUNT: pairs.GIT_CONFIG_COUNT,
+      [pairs.key]: "core.hooksPath",
+      [pairs.valueName]: pairs.hooksPath,
+    });
+    writeFileSync(path.join(repo, "note.txt"), `${WIDGET}\n`);
+    run(repo, ["add", "note.txt"], crew);
+    run(repo, ["commit", "-m", "quoted path"], crew);
+    const body = run(repo, ["log", "-1", "--format=%B"], crew);
+    expect(body).toContain("Quote-Ran: yes");
+    expect(body).toContain("Hivra-Chat: chat-1");
+    expect(body).toContain("Hivra-Task: task-1");
   });
 
   it("credits the person's later commit of an agent's lines, and not boilerplate or a plain commit", () => {
