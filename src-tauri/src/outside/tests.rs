@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::instance::Kind;
@@ -1717,25 +1717,17 @@ impl Drop for Scratch {
     }
 }
 
-/// Ports a test owns. Above the dev range (ends at 27400) and below Linux's
-/// ephemeral floor (32768), so a `bind(0)` in another test cannot be handed one
-/// of them. Each call takes the next port and holds a listener on it.
-const OWNED_PORTS: std::ops::Range<u16> = 27400..30000;
-
-fn next_owned_port() -> u16 {
-    static NEXT: AtomicU16 = AtomicU16::new(OWNED_PORTS.start);
-    let port = NEXT.fetch_add(1, Ordering::Relaxed);
-    assert!(
-        OWNED_PORTS.contains(&port),
-        "ran out of ports this process owns"
-    );
-    assert!(!super::DAILY_PORTS.contains(&port) && !super::DEV_PORTS.contains(&port));
-    port
-}
-
-/// One port this test owns. The listener stays bound until `release`, so the
-/// port is taken for that whole time. Nothing in the process asks the OS for
-/// "any free port" and then hopes this one is still free.
+/// One port the OS picks for this test. The listener stays bound until
+/// `release`, so the port is taken for that whole time.
+///
+/// The number comes from binding port 0 and reading it back, never from a
+/// range the test walks. A range walked from its first number hands the same
+/// port to two copies of this module at once — two overlapping `cargo test`
+/// runs — and the copy that loses the race to bind it fails with "already in
+/// use". Asking the OS, separately in each process, cannot do that. Ports
+/// picked this way are ephemeral (49152 and up on macOS, 32768 and up on
+/// Linux), above both the daily and dev ranges; an OS configured lower gets
+/// asked again.
 struct HeldPort {
     port: u16,
     listener: Option<TcpListener>,
@@ -1743,20 +1735,23 @@ struct HeldPort {
 
 impl HeldPort {
     fn reserve() -> Self {
-        for _ in 0..32 {
-            let port = next_owned_port();
-            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
-                Ok(listener) => {
-                    return Self {
-                        port,
-                        listener: Some(listener),
-                    };
-                }
-                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
-                Err(err) => panic!("reserve {port}: {err}"),
+        for _ in 0..16 {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .unwrap_or_else(|err| panic!("ask the OS for a port: {err}"));
+            let port = listener
+                .local_addr()
+                .unwrap_or_else(|err| panic!("read back the port: {err}"))
+                .port();
+            if super::DAILY_PORTS.contains(&port) || super::DEV_PORTS.contains(&port) {
+                drop(listener);
+                continue;
             }
+            return Self {
+                port,
+                listener: Some(listener),
+            };
         }
-        panic!("could not reserve a port");
+        panic!("the OS kept handing out ports inside this app's ranges");
     }
 
     fn release(&mut self) {
