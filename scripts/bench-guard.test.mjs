@@ -1,15 +1,20 @@
 // The bench fence: process control, the real home, a missing real app, and the scene book.
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { benchSandboxProfile } from "./bench-sandbox.mjs";
 
 import {
+  applyCanary,
   appTouchResult,
   appsFromPs,
+  benchBroken,
   benchDenyRules,
+  canaryReport,
+  canaryTable,
   callBlocked,
   commandBlocked,
   dummyStoppedOk,
@@ -17,7 +22,10 @@ import {
   finishSceneAgents,
   finishSceneApps,
   isHardStop,
+  benchShellProbe,
   sceneAgents,
+  startSceneAgentPoll,
+  underProfile,
   unsandboxedAgents,
   hookDecision,
   readDummy,
@@ -181,19 +189,23 @@ test("a missing real app fails the scene and stops the round; a ps failure does 
 test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a sandboxed CLI do not", () => {
   const profile = "/private/var/bench/state/sandbox.sb";
   const wrapper = "/private/var/bench/bin/claude";
-  const watch = { rootPid: 100, profile, wrapper };
+  const denied = (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, false])) });
+  const watch = { rootPid: 100, profile, wrapper, sandboxOf: denied };
   const row = (pid, ppid, command) => `  ${pid} ${ppid} ${command}`;
   const hit = (lines) => unsandboxedAgents(lines.join("\n"), watch);
   assert.equal(hit([row(200, 100, "/opt/homebrew/bin/codex")]).reason, "unsandboxed agent: codex");
+  // The command line is not the sandbox. sandbox-exec replaces itself, and a profile name in the command can be typed by anyone.
   assert.equal(
     hit([
       row(210, 100, "/usr/bin/sandbox-exec -f /private/var/bench/state/sandbox.sb /opt/homebrew/bin/claude"),
       row(211, 210, "/opt/homebrew/bin/claude"),
-    ]),
-    null,
+    ]).reason,
+    "unsandboxed agent: claude",
   );
-  assert.equal(hit([row(220, 100, "/opt/homebrew/bin/claude REALTEST_SANDBOX_PROFILE=/private/var/bench/state/sandbox.sb")]), null);
+  assert.equal(hit([row(220, 100, "/opt/homebrew/bin/claude REALTEST_SANDBOX_PROFILE=/private/var/bench/state/sandbox.sb")]).reason, "unsandboxed agent: claude");
   assert.equal(hit([row(221, 100, "/opt/homebrew/bin/claude REALTEST_SANDBOX_PROFILE=/private/var/bench/state/sandbox.sb-evil")]).reason, "unsandboxed agent: claude");
+  const allowed = { ...watch, sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, true])) }) };
+  assert.equal(unsandboxedAgents(row(240, 100, "/usr/bin/claude"), allowed), null);
   assert.equal(hit([row(300, 1, "/opt/homebrew/bin/codex")]), null);
   assert.equal(hit([row(230, 100, "/private/var/bench/bin/claude")]), null);
   assert.equal(hit([row(231, 100, "/bin/sh /private/var/bench/bin/../bin/claude")]), null);
@@ -227,6 +239,431 @@ test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a 
   assert.deepEqual(stopped, ["unsandboxed agent: codex", "unsandboxed agent: hermes"]);
 });
 
+test("a hosted agent is checked: an interpreter's script, or node running a known package", () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const row = (pid, ppid, command) => `  ${pid} ${ppid} ${command}`;
+  const denied = (command) =>
+    unsandboxedAgents(row(240, 100, command), {
+      rootPid: 100,
+      wrapper,
+      sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, 0])) }),
+    });
+  const allowed = (command) => unsandboxedAgents(row(240, 100, command), { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) });
+  const hosted = [
+    ["/usr/local/bin/node /opt/homebrew/bin/gemini", "gemini"],
+    ["/usr/local/bin/node /Users/ash/.npm/_npx/x/node_modules/@anthropic-ai/claude-code/cli.js", "claude"],
+    ["/usr/local/bin/node /Users/ash/.npm/_npx/x/node_modules/@openai/codex/bin/codex.js", "codex"],
+    ["/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js", "gemini"],
+    ["/usr/bin/python3 /opt/homebrew/bin/hermes", "hermes"],
+    ["/usr/bin/python3.11 /opt/homebrew/bin/hermes", "hermes"],
+    ["/usr/bin/python3.12.1 /opt/homebrew/bin/grok", "grok"],
+    ["/usr/local/bin/bun /opt/homebrew/bin/grok", "grok"],
+    ["/usr/local/bin/deno /opt/homebrew/bin/pi", "pi"],
+    ["/bin/zsh /opt/homebrew/bin/codex", "codex"],
+    ["/bin/bash /opt/homebrew/bin/opencode", "opencode"],
+    ["/bin/sh /opt/homebrew/bin/codex", "codex"],
+    ["FOO=1 /usr/local/bin/node --experimental-vm-modules /opt/homebrew/bin/gemini --prompt hi", "gemini"],
+  ];
+  for (const [command, name] of hosted) {
+    assert.equal(denied(command)?.reason, `unsandboxed agent: ${name}`, command);
+    assert.equal(allowed(command), null, command);
+  }
+  assert.equal(denied("/usr/local/bin/node /tmp/not-an-agent.js"), null);
+  assert.equal(denied("/usr/bin/python2 /opt/homebrew/bin/hermes"), null);
+  assert.equal(denied("/usr/local/bin/node"), null);
+  assert.equal(denied("/usr/bin/python3 /x/node_modules/@anthropic-ai/claude-code/cli.js"), null);
+  assert.equal(denied("/usr/local/bin/node -r /tmp/preload.js /opt/homebrew/bin/gemini"), null);
+  // The plan's wrapper stays skipped when an interpreter's first real argument is that exact path.
+  assert.equal(denied("/usr/local/bin/node --check /private/var/bench/bin/claude"), null);
+  assert.equal(denied("/bin/zsh /private/var/bench/bin/claude"), null);
+  assert.equal(denied("node /private/var/bench/bin/claude"), null);
+  assert.equal(denied("/usr/local/bin/node /private/var/bench/bin/../bin/claude"), null);
+});
+
+test("a sandbox helper that can't answer is its own stop, and a real answer of not-1 stays unsandboxed", () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const row = "  240 100 /usr/bin/claude";
+  const stopped = [];
+  const hit = finishSceneAgents(row, { rootPid: 100, wrapper, execFile: () => { throw new Error("no python"); } }, (why) => stopped.push(why));
+  assert.equal(hit.reason, "can't verify the sandbox: claude");
+  assert.equal(isHardStop(hit.reason), true);
+  assert.equal(exitCodeForStop(hit.reason), 1);
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude"]);
+  assert.equal(isHardStop("can't verify the sandbox"), true);
+  assert.equal(isHardStop("can't verify the sandbox: claude"), true);
+  assert.equal(
+    sceneAgents({
+      listAgents: () => row,
+      agentWatch: () => ({ rootPid: 100, wrapper, execFile: () => "not-json" }),
+      stopRun: (why) => stopped.push(why),
+    }).reason,
+    "can't verify the sandbox: claude",
+  );
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude", "can't verify the sandbox: claude"]);
+  let calls = 0;
+  const retried = unsandboxedAgents(row, {
+    rootPid: 100,
+    wrapper,
+    execFile: () => {
+      calls += 1;
+      if (calls === 1) throw new Error("timeout");
+      return JSON.stringify({ 240: false });
+    },
+  });
+  assert.equal(calls, 2);
+  assert.equal(retried.reason, "unsandboxed agent: claude");
+  calls = 0;
+  let seen = [];
+  const once = unsandboxedAgents(["  241 100 /opt/homebrew/bin/codex", "  242 100 /opt/homebrew/bin/gemini"].join("\n"), {
+    rootPid: 100,
+    wrapper,
+    execFile: (_cmd, args) => {
+      calls += 1;
+      seen = args.filter((arg) => /^\d+$/.test(arg));
+      return JSON.stringify({ 241: 0, 242: 1 });
+    },
+  });
+  assert.equal(calls, 1);
+  assert.deepEqual(seen, ["241", "242"]);
+  assert.equal(once.reason, "unsandboxed agent: codex");
+  calls = 0;
+  assert.equal(unsandboxedAgents("  243 100 /bin/sleep 1", { rootPid: 100, wrapper, execFile: () => { calls += 1; throw new Error("no"); } }), null);
+  assert.equal(calls, 0);
+  assert.equal(underProfile([], { execFile: () => { throw new Error("no"); } }).ok, true);
+  assert.equal(underProfile([0]).ok, false);
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) }), null);
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: true }) }).reason, "unsandboxed agent: claude");
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, sandboxOf: () => { throw new Error("down"); } }).reason, "can't verify the sandbox: claude");
+});
+
+test("a helper that is missing or errors can't be verified, and any answer but 1 is unsandboxed; both stop the round", () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const row = "  240 100 /usr/bin/claude";
+  const watch = (execFile) => ({ rootPid: 100, wrapper, execFile });
+  const stop = (execFile, reason = "unsandboxed agent: claude") => {
+    const stopped = [];
+    const hit = finishSceneAgents(row, watch(execFile), (why) => stopped.push(why));
+    assert.equal(hit.reason, reason);
+    assert.equal(isHardStop(hit.reason), true);
+    assert.equal(exitCodeForStop(hit.reason), 1);
+    assert.deepEqual(stopped, [reason]);
+    const status = underProfile([240], { execFile });
+    assert.notEqual(status.byPid?.get(240), true);
+    assert.equal(status.byPid.get(240), false);
+  };
+  const missing = () => {
+    const error = new Error("spawn python3 ENOENT");
+    error.code = "ENOENT";
+    throw error;
+  };
+  let missingCalls = 0;
+  const missed = underProfile([240], {
+    execFile: () => {
+      missingCalls += 1;
+      missing();
+    },
+  });
+  assert.equal(missingCalls, 2);
+  assert.equal(missed.ok, false);
+  assert.equal(missed.byPid.get(240), false);
+  const unverified = "can't verify the sandbox: claude";
+  stop(missing, unverified);
+  const timedOut = Object.assign(new Error("spawnSync python3 ETIMEDOUT"), { code: "ETIMEDOUT" });
+  stop(() => {
+    throw timedOut;
+  }, unverified);
+  stop(() => {
+    throw new Error("dyld: Library not loaded");
+  }, unverified);
+  stop(() => "not-json", unverified);
+  stop(() => "", unverified);
+  for (const value of [2, -1, null, "1", "0", false, 0]) {
+    stop(() => JSON.stringify({ 240: value }));
+  }
+  stop(() => JSON.stringify({ 999: 1 }));
+  const mixed = underProfile([240, 241], { execFile: () => JSON.stringify({ 240: 1, 241: 2 }) });
+  assert.equal(mixed.ok, true);
+  assert.equal(mixed.byPid.get(240), true);
+  assert.equal(mixed.byPid.get(241), false);
+  const named = unsandboxedAgents(["  240 100 /usr/bin/claude", "  241 100 /opt/homebrew/bin/codex"].join("\n"), {
+    rootPid: 100,
+    wrapper,
+    execFile: () => JSON.stringify({ 240: 1, 241: 2 }),
+  });
+  assert.equal(named.reason, "unsandboxed agent: codex");
+  const sandboxed = underProfile([240], { execFile: () => JSON.stringify({ 240: 1 }) });
+  assert.equal(sandboxed.ok, true);
+  assert.equal(sandboxed.byPid.get(240), true);
+});
+
+test("polling catches an unsandboxed agent that only the middle sample can see", async () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const clean = "  100 1 /bin/sleep 1\n";
+  const dirty = "  100 1 /bin/sleep 1\n  240 100 /opt/homebrew/bin/codex\n";
+  const frames = [clean, dirty, clean];
+  const watch = {
+    rootPid: 100,
+    wrapper,
+    sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, 0])) }),
+  };
+  // The old start and end checks both miss it. Only the sample between them has the agent.
+  assert.equal(unsandboxedAgents(frames[0], watch), null);
+  assert.equal(unsandboxedAgents(frames[2], watch), null);
+  assert.equal(unsandboxedAgents(frames[1], watch).reason, "unsandboxed agent: codex");
+  let n = 0;
+  const stopped = [];
+  let release = () => {};
+  const poll = startSceneAgentPoll(
+    {
+      listAgents: () => frames[Math.min(n++, frames.length - 1)],
+      agentWatch: () => watch,
+      stopRun: (why) => stopped.push(why),
+    },
+    {
+      now: () => 1_700_000_000_000,
+      sleep: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    },
+  );
+  assert.equal(n, 1);
+  assert.deepEqual(stopped, []);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
+  const watched = await poll.stop();
+  assert.equal(n, 2, "the end frame was never needed");
+  assert.equal(watched.hit.reason, "unsandboxed agent: codex");
+  assert.deepEqual(watched.agents.map(({ pid, command, name, firstSeen, kernel }) => ({ pid, command, name, firstSeen, kernel })), [
+    { pid: 240, command: "/opt/homebrew/bin/codex", name: "codex", firstSeen: 1_700_000_000_000, kernel: 0 },
+  ]);
+  assert.equal(await poll.stop(), watched);
+});
+
+test("a sandboxed agent is recorded with the kernel's 1, and a helper that can't answer is recorded as null", async () => {
+  const stopped = [];
+  const sandboxed = startSceneAgentPoll(
+    {
+      listAgents: () => "  241 100 /usr/local/bin/node /opt/homebrew/bin/gemini\n",
+      agentWatch: () => ({ rootPid: 100, wrapper: "/private/var/bench/bin/claude", execFile: () => JSON.stringify({ 241: 1 }) }),
+      stopRun: (why) => stopped.push(why),
+    },
+    { intervalMs: 60_000, now: () => 50 },
+  );
+  const kept = await sandboxed.stop();
+  assert.deepEqual(stopped, []);
+  assert.equal(kept.hit, null);
+  assert.equal(kept.agents[0].name, "gemini");
+  assert.equal(kept.agents[0].kernel, 1);
+  assert.equal(kept.agents[0].firstSeen, 50);
+  assert.equal(kept.agents[0].answered, true);
+  const broken = startSceneAgentPoll(
+    {
+      listAgents: () => "  240 100 /usr/bin/claude\n",
+      agentWatch: () => ({ rootPid: 100, wrapper: "/private/var/bench/bin/claude", execFile: () => { throw new Error("no python"); } }),
+      stopRun: (why) => stopped.push(why),
+    },
+    { now: () => 9 },
+  );
+  const failed = await broken.stop();
+  assert.equal(failed.hit.reason, "can't verify the sandbox: claude");
+  assert.equal(isHardStop(failed.hit.reason), true);
+  assert.equal(failed.agents[0].kernel, null);
+  assert.equal(failed.agents[0].answered, false);
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude"]);
+  assert.deepEqual(await startSceneAgentPoll({}).stop(), { hit: null, agents: [] });
+});
+
+test("the kernel reports a sandboxed process, a plain claude child fails the scene, and the wrapper node is skipped", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing");
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-sbx-")));
+  const realHome = path.join(rootDir, "real");
+  const home = path.join(rootDir, "home");
+  fs.mkdirSync(realHome);
+  fs.mkdirSync(path.join(home, "bin"), { recursive: true });
+  const profile = path.join(home, "sandbox.sb");
+  fs.writeFileSync(profile, benchSandboxProfile({ realHome, home }));
+  const started = spawnSync("/usr/bin/sandbox-exec", ["-f", profile, "/usr/bin/true"], { encoding: "utf8", timeout: 15000 });
+  assert.equal(started.status, 0, `${started.stderr}\n${started.stdout}`);
+  const wrapper = path.join(home, "claude");
+  const agent = path.join(home, "bin", "claude");
+  fs.writeFileSync(wrapper, "setInterval(() => {}, 1e9);\n");
+  const kids = [];
+  try {
+    const boxed = spawn("/usr/bin/sandbox-exec", ["-f", profile, "/bin/sleep", "30"], { stdio: ["ignore", "ignore", "pipe"] });
+    kids.push(boxed);
+    const plain = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
+    kids.push(plain);
+    const nodeChild = spawn(process.execPath, [wrapper], { stdio: "ignore" });
+    kids.push(nodeChild);
+    let err = "";
+    boxed.stderr.on("data", (buf) => {
+      err += buf.toString();
+    });
+    const pause = () => spawnSync("/bin/sleep", ["0.05"]);
+    let status = null;
+    for (let i = 0; i < 25; i += 1) {
+      status = underProfile([boxed.pid, plain.pid]);
+      if (status.ok && status.byPid.get(boxed.pid) === true && status.byPid.get(plain.pid) === false) break;
+      pause();
+    }
+    assert.equal(status?.ok, true, JSON.stringify({ status, err, boxed: boxed.pid, plain: plain.pid, exit: boxed.exitCode }));
+    assert.equal(status.byPid.get(boxed.pid), true, err);
+    assert.equal(status.byPid.get(plain.pid), false);
+    const line = (pid) => `  ${pid} ${process.pid} ${agent}`;
+    assert.match(line(boxed.pid), /claude/);
+    assert.equal(unsandboxedAgents(line(boxed.pid), { rootPid: process.pid, wrapper }), null);
+    const stopped = [];
+    const plainHit = finishSceneAgents(line(plain.pid), { rootPid: process.pid, wrapper }, (why) => stopped.push(why));
+    assert.equal(plainHit.reason, "unsandboxed agent: claude");
+    assert.deepEqual(stopped, ["unsandboxed agent: claude"]);
+    let nodeText = "";
+    for (let i = 0; i < 20; i += 1) {
+      try {
+        nodeText = execFileSync("ps", ["-p", String(nodeChild.pid), "-ww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+      } catch {
+        nodeText = "";
+      }
+      if (nodeText.includes(wrapper)) break;
+      pause();
+    }
+    assert.ok(nodeText.includes(wrapper), nodeText);
+    const ppid = Number(nodeText.match(/^\s*\d+\s+(\d+)/)[1]);
+    const nodeStatus = underProfile([nodeChild.pid]);
+    assert.equal(nodeStatus.ok, true, nodeText);
+    assert.equal(nodeStatus.byPid.get(nodeChild.pid), false);
+    assert.equal(unsandboxedAgents(nodeText, { rootPid: ppid, wrapper }), null);
+    assert.equal(unsandboxedAgents(`  ${nodeChild.pid} ${ppid} ${wrapper}`, { rootPid: ppid, wrapper }), null);
+  } finally {
+    for (const child of kids) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("the wrapper's haiku helper runs sandboxed under the profile it generates", { skip: process.platform === "darwin" ? false : "sandbox-exec and sandbox_check are macOS only", timeout: 30_000 }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing");
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-helper-")));
+  const realHome = path.join(rootDir, "real");
+  const home = path.join(rootDir, "home");
+  const state = path.join(rootDir, "state");
+  const config = path.join(rootDir, "config");
+  fs.mkdirSync(realHome);
+  fs.mkdirSync(path.join(home, "tmp"), { recursive: true });
+  fs.mkdirSync(state);
+  fs.mkdirSync(config);
+  const settings = path.join(state, "bench-settings.json");
+  fs.writeFileSync(settings, "{}\n");
+  const stub = path.join(home, "claude-stub");
+  fs.writeFileSync(stub, "#!/bin/sh\nsleep 30\n", { mode: 0o755 });
+  const helperArgs = [
+    "--output-format", "stream-json",
+    "--verbose",
+    "--input-format", "stream-json",
+    "--include-partial-messages",
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--mcp-config", JSON.stringify({ mcpServers: {} }),
+    "--model", "claude-haiku-4-5",
+    "--settings", JSON.stringify({ disableAllHooks: true }),
+  ];
+  const wrapperProc = spawn(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), ...helperArgs], {
+    cwd: home,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      HOME: home,
+      TMPDIR: path.join(home, "tmp"),
+      REALTEST_STATE: state,
+      REALTEST_REAL_CLAUDE: stub,
+      REALTEST_CLAUDE_CONFIG: config,
+      REALTEST_REAL_HOME: realHome,
+      REALTEST_BENCH_SETTINGS: settings,
+      REALTEST_MODEL: "sonnet",
+    },
+  });
+  let stderr = "";
+  wrapperProc.stderr.on("data", (buf) => {
+    stderr += buf.toString();
+  });
+  wrapperProc.stdout.on("data", () => {});
+  const kill = (pid) => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
+  try {
+    let child = null;
+    for (let i = 0; i < 80 && wrapperProc.exitCode == null; i += 1) {
+      let text = "";
+      try {
+        text = execFileSync("ps", ["-axww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+      } catch {
+        text = "";
+      }
+      const rows = [];
+      for (const line of text.split("\n")) {
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+        if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
+      }
+      const pending = [wrapperProc.pid];
+      const seen = new Set();
+      while (pending.length) {
+        const pid = pending.pop();
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        for (const row of rows) {
+          if (row.ppid !== pid) continue;
+          pending.push(row.pid);
+          if (row.command.includes(stub)) child = row;
+        }
+      }
+      if (child) break;
+      spawnSync("/bin/sleep", ["0.1"]);
+    }
+    const logDir = path.join(state, "claude");
+    let logged = "";
+    if (fs.existsSync(logDir)) {
+      for (const name of fs.readdirSync(logDir)) logged += fs.readFileSync(path.join(logDir, name), "utf8");
+    }
+    assert.ok(child, `the wrapper did not start the helper\n${stderr}\n${logged}\nexit ${wrapperProc.exitCode}`);
+    assert.match(child.command, /--no-session-persistence/);
+    assert.match(child.command, /claude-haiku-4-5/);
+    const status = underProfile([child.pid]);
+    assert.equal(status.ok, true, JSON.stringify({ status, command: child.command, stderr }));
+    assert.equal(status.byPid.get(child.pid), true, child.command);
+  } finally {
+    let text = "";
+    try {
+      text = execFileSync("ps", ["-axww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+    } catch {
+      text = "";
+    }
+    const rows = [];
+    for (const line of text.split("\n")) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]) });
+    }
+    const pending = [wrapperProc.pid];
+    const seen = new Set();
+    while (pending.length) {
+      const pid = pending.pop();
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      for (const row of rows) if (row.ppid === pid) pending.push(row.pid);
+    }
+    for (const pid of seen) kill(pid);
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
 test("the bench tool stops only the dummy it recorded", () => {
   const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-dummy-"));
   const other = spawn(process.execPath, ["-e", "setInterval(()=>{},1e9)", "not-the-dummy"], { stdio: "ignore", detached: true });
@@ -244,12 +681,159 @@ test("the bench tool stops only the dummy it recorded", () => {
   fs.rmSync(state, { recursive: true, force: true });
 });
 
+test("a canary row passes only for a refusal or a kernel 1, and anything else is not a pass", () => {
+  const clis = ["codex", "grok", "hermes", "claude"];
+  const refusal = "This bench only starts the run's own Claude wrapper. It won't start codex.";
+  const agent = (name, kernel, answered = true) => ({ pid: 240, command: `/opt/homebrew/bin/${name}`, name, firstSeen: 10, kernel, answered });
+  const refused = canaryReport(clis, { agents: [], evidence: { texts: [{ text: refusal }], notes: ["It won't start grok"] } });
+  assert.deepEqual(refused.rows.map((row) => [row.cli, row.verdict]), [
+    ["codex", "PASS"],
+    ["grok", "NOT PROVEN"],
+    ["hermes", "NOT PROVEN"],
+    ["claude", "NOT PROVEN"],
+  ]);
+  assert.equal(refused.rows[0].why, "the plan gate refused the start");
+  assert.equal(refused.hardStop, null);
+  assert.match(refused.unproven, /grok, hermes, claude/);
+  const sandboxed = canaryReport(["codex"], { agents: [agent("codex", 1)], evidence: "" });
+  assert.equal(sandboxed.rows[0].verdict, "PASS");
+  assert.equal(sandboxed.rows[0].why, "seen alive, kernel answered 1");
+  assert.equal(sandboxed.unproven, null);
+  const loose = canaryReport(["codex"], {
+    agents: [agent("codex", 0)],
+    evidence: refusal,
+    hit: { reason: "unsandboxed agent: codex" },
+  });
+  assert.equal(loose.rows[0].verdict, "FAIL");
+  assert.equal(loose.rows[0].why, "unsandboxed agent: codex");
+  assert.equal(loose.hardStop, "unsandboxed agent: codex");
+  assert.equal(isHardStop(loose.hardStop), true);
+  const unverified = canaryReport(["hermes"], { agents: [agent("hermes", null, false)] });
+  assert.equal(unverified.rows[0].why, "can't verify the sandbox: hermes");
+  assert.equal(unverified.hardStop, "can't verify the sandbox: hermes");
+  const neither = canaryReport(["claude"], { agents: [], evidence: "the wrapper ran" });
+  assert.equal(neither.rows[0].verdict, "NOT PROVEN");
+  assert.equal(neither.hardStop, null);
+  const passed = applyCanary({ verdict: "PASS", reasons: [] }, refused);
+  assert.equal(passed.verdict, "NOT PROVEN");
+  assert.match(passed.reasons[0], /not proven/);
+  assert.equal(applyCanary({ verdict: "PASS", reasons: ["fine"] }, sandboxed).verdict, "PASS");
+  const fake = applyCanary({ verdict: "NOT-REAL", wouldBe: "PASS", reasons: ["not a real run"] }, neither);
+  assert.equal(fake.verdict, "NOT-REAL");
+  assert.equal(fake.wouldBe, "NOT PROVEN");
+  const stopped = applyCanary({ verdict: "PASS", wouldBe: "PASS", reasons: [] }, loose);
+  assert.equal(stopped.verdict, "FAIL");
+  assert.equal(stopped.wouldBe, "FAIL");
+  assert.equal(stopped.reasons[0], "unsandboxed agent: codex");
+  const already = applyCanary({ verdict: "FAIL", reasons: ["automatic fail: ack-only"] }, neither);
+  assert.equal(already.verdict, "FAIL");
+  assert.match(already.reasons.at(-1), /not proven/);
+  assert.equal(applyCanary({ verdict: "PASS" }, canaryReport([], {})).verdict, "PASS");
+  assert.equal(canaryReport(null), null);
+  assert.match(canaryTable(refused.rows), /\| codex \| PASS \| the plan gate refused the start \|/);
+  assert.match(canaryTable(refused.rows), /\| hermes \| NOT PROVEN \|/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bench-canary-"));
+  const file = path.join(dir, "scenes.json");
+  fs.writeFileSync(file, JSON.stringify({ card: "Prove each named CLI is sandboxed or was refused by the plan.", canaryClis: ["hermes", "codex"] }));
+  assert.deepEqual(scanSceneBook([file]), []);
+  fs.writeFileSync(file, JSON.stringify({ card: "also hermes should be shut down", canaryClis: ["codex"] }));
+  assert.ok(scanSceneBook([file]).some((hit) => hit.why === "hermes"));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("the scene book names no real app, and the scanner catches one", () => {
   assert.equal(scanSceneText("Grok: 9 s median").length, 0);
   assert.ok(scanSceneText("also hermes should be shut down").length);
   assert.ok(scanSceneText("grok bot transcripts").some((hit) => hit.why === "Grok Bot"));
   const hits = scanSceneBook(sceneBookFiles(path.join(HERE, "..")));
   assert.deepEqual(hits, [], hits.map((hit) => `${hit.file}: ${hit.why}`).join("; "));
+});
+
+test("a scene probe stops the round when the shell or the dev binary fails", () => {
+  const dev = { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.slot" })}\n`, stderr: "" };
+  const echoOk = { status: 0, stdout: "probe\n", stderr: "" };
+  const calls = [];
+  const run = (script) => (command) => {
+    calls.push(command);
+    return script(command, calls.length);
+  };
+  assert.equal(benchShellProbe(run((command) => (command === "monocode version --json" ? dev : echoOk))), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json"]);
+  calls.length = 0;
+  assert.equal(benchShellProbe(run(() => ({ status: 1, stdout: "", stderr: "EPERM" }))), "bench broken: echo probe");
+  assert.deepEqual(calls, ["echo probe"]);
+  assert.equal(benchShellProbe(() => { throw new Error("timed out"); }), "bench broken: echo probe");
+  assert.equal(benchShellProbe(run((command) => (command === "echo probe" ? { status: 0, stdout: "\n", stderr: "" } : dev))), "bench broken: echo probe");
+  assert.equal(benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 127, stdout: "", stderr: "not found" }))), "bench broken: monocode version");
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub" })}\n`, stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: "not json", stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev." })}\n`, stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(isHardStop("bench broken: echo probe"), true);
+  assert.equal(isHardStop("bench broken: monocode version"), true);
+  assert.equal(exitCodeForStop("bench broken: echo probe"), 1);
+  assert.equal(isHardStop("bench brokenish"), false);
+});
+
+test("the scene probe also proves the agent's shell reaches the copy's control port", () => {
+  const dev = { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.slot" })}\n`, stderr: "" };
+  const echoOk = { status: 0, stdout: "probe\n", stderr: "" };
+  const appOk = { status: 0, stdout: `${JSON.stringify({ ok: true, version: "0.0.0" })}\n`, stderr: "" };
+  const calls = [];
+  const run = (script) => (command) => {
+    calls.push(command);
+    return script(command);
+  };
+  const base = (command) => (command === "echo probe" ? echoOk : command === "monocode app app.version" ? appOk : dev);
+
+  // Without a control endpoint in the spawn env the third command is not run at all.
+  assert.equal(benchShellProbe(run(base)), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json"]);
+
+  // With one, the control call must answer `ok: true` from the last JSON line.
+  calls.length = 0;
+  assert.equal(benchShellProbe(run(base), { control: true }), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json", "monocode app app.version"]);
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: 'noise\n{"ok":true}\n', stderr: "" } : base(command))), { control: true }),
+    null,
+  );
+
+  // The canary's failure: the call can't connect (EPERM over the dev copy's control port), exits non-zero, or says no.
+  const refused = { status: 1, stdout: `${JSON.stringify({ ok: false, error: "Cannot connect to MonoCode at 127.0.0.1:57965: Operation not permitted (os error 1)" })}\n`, stderr: "" };
+  assert.equal(benchShellProbe(run((command) => (command === "monocode app app.version" ? refused : base(command))), { control: true }), "bench broken: control port");
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: '{"ok":false}\n', stderr: "" } : base(command))), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: "not json\n", stderr: "" } : base(command))), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => {
+      if (command === "monocode app app.version") throw new Error("timed out");
+      return base(command);
+    }), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(isHardStop("bench broken: control port"), true);
+  assert.equal(exitCodeForStop("bench broken: control port"), 1);
+
+  // The wrapper's word, once written, is the run's stop reason.
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-broken-"));
+  assert.equal(benchBroken(state), null);
+  fs.writeFileSync(path.join(state, "bench-broken"), "bench broken: control port\n");
+  assert.equal(benchBroken(state), "bench broken: control port");
+  fs.rmSync(state, { recursive: true, force: true });
 });
 
 test("a relative path after cd resolves against that directory", () => {
