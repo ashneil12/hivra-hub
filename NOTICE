@@ -174,6 +174,13 @@ Third-party components Hivra adds:
   Used in: src/features/attribution, src-tauri/src/attribution
   The session trailer, forwarded prepare-commit-msg hook, line-hash journal and boilerplate gate are HumanLayer's packages/git-attribution design. The source tree was not in the local sources checkout, so this is a rewrite, not a byte copy (WP-86).
 
+- HumanLayer's terminal session mirror
+  Source: https://github.com/humanlayer/humanlayer
+  License: Apache-2.0
+  The upstream files were not in the checkout; Apache-2.0
+  Used in: plugins/hivra-mirror
+  The local half (plugin hooks, the event map, parent-process discovery, the session-variable skip and transcript backfill) is reimplemented from the described behaviour. The HumanLayer checkout was not in the sources tree and this build had no network, so the files were not copied byte for byte. The cloud transport (login and a token) is replaced by a loopback port on this Mac (WP-85).
+
 - Hivra research, plan and build skills
   Source: https://github.com/humanlayer/humanlayer
   License: Apache-2.0

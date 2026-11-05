@@ -1,0 +1,15 @@
+Hivra mirror
+============
+
+The local half of HumanLayer's Claude Code plugin (mod, protocol, mapper,
+parent-pid discovery, the session-variable skip, and transcript backfill).
+
+Source: https://github.com/humanlayer/humanlayer
+License: Apache-2.0
+Copyright: The upstream files were not in the checkout; Apache-2.0
+
+The HumanLayer checkout was not in the sources tree, and this adaptation had
+no network, so that local half is reimplemented from the behaviour WP-85
+describes rather than copied byte for byte. HumanLayer's cloud transport
+(login, personal access token, session-sdk-auth) is not included. This plugin
+talks only to Hivra's loopback port on this Mac.

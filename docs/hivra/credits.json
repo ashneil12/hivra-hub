@@ -411,6 +411,14 @@
       "how": "The session trailer, forwarded prepare-commit-msg hook, line-hash journal and boilerplate gate are HumanLayer's packages/git-attribution design. The source tree was not in the local sources checkout, so this is a rewrite, not a byte copy (WP-86)."
     },
     {
+      "name": "HumanLayer's terminal session mirror",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files were not in the checkout; Apache-2.0",
+      "where": "plugins/hivra-mirror",
+      "how": "The local half (plugin hooks, the event map, parent-process discovery, the session-variable skip and transcript backfill) is reimplemented from the described behaviour. The HumanLayer checkout was not in the sources tree and this build had no network, so the files were not copied byte for byte. The cloud transport (login and a token) is replaced by a loopback port on this Mac (WP-85)."
+    },
+    {
       "name": "Hivra research, plan and build skills",
       "url": "https://github.com/humanlayer/humanlayer",
       "licence": "Apache-2.0",
