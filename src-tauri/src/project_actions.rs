@@ -543,6 +543,19 @@ pub(crate) fn run_action(
     let action = file.action(action_id).ok_or_else(|| {
         format!("No action {action_id:?} in this project's imported project file")
     })?;
+    // WP-87: only a long-running action with a declared stack prepares ports and Compose.
+    // Check and ship pass an empty env and do not start Docker.
+    let stack_env = if action.long_running && file.stack.is_some() {
+        crate::stacks::maybe_start(
+            &crate::stacks::env_from_app(app)?,
+            &main,
+            &checkout,
+            true,
+            file.stack.as_ref(),
+        )?
+    } else {
+        Vec::new()
+    };
     start_command(
         runs,
         &main,
@@ -551,7 +564,7 @@ pub(crate) fn run_action(
         trigger,
         &log_dir(app)?,
         Some(crate::harness::cached_gui_search_path()),
-        Vec::new(),
+        stack_env,
         Some(emitter(app)),
     )
 }
