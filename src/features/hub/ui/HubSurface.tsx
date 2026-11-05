@@ -14,6 +14,7 @@ import { useTemplatesVersion } from "../model/templates";
 import { ProposalView } from "./ProposalView";
 import { ProjectPagesView } from "./ProjectPagesView";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
+import { TasksScreen } from "../../tasks/ui/TasksScreen";
 
 /**
  * Main area for the hub views that are not a project's workspace: rooms, Pages, a new project, restore, autopilot.
@@ -58,6 +59,10 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   const section = data.listProjectItems(project.id).find((i) => i.id === selection.item);
   if (section?.sectionType === "project-pages")
     return <ProjectPagesView key={project.id} projectId={project.id} title={section.title} />;
+  // WP-71: tasks are a project page, not the coding team.
+  if (selection.item === "tasks" || selection.item === "all-tasks") {
+    return <TasksScreen cwd={project.folder || project.id} scope={selection.item === "all-tasks" ? "all" : "project"} rail />;
+  }
   // WP-06: Today, Being built, Decisions and Builds. A stored one opens the coding team.
   return <LeaveForCodingTeam projectId={project.id} />;
 }

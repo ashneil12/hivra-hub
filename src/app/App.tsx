@@ -5769,6 +5769,16 @@ function Workspace({
     ],
   );
 
+  // WP-71: an agent card opens that worker's own chat.
+  useEffect(() => {
+    const onChat = (event: Event) => {
+      const id = (event as CustomEvent<unknown>).detail;
+      if (typeof id === "string" && id.trim()) void onSelectHistorySession(id.trim());
+    };
+    window.addEventListener("hivra:open-task-chat", onChat);
+    return () => window.removeEventListener("hivra:open-task-chat", onChat);
+  }, [onSelectHistorySession]);
+
   const onOpenMonoLaunchedSession = useCallback(
     async (sessionId: string) => {
       const session = await ensureOpenSession(sessionId);
