@@ -1,5 +1,6 @@
 // WP-70: one task. A status list is not a board. WP-71 adds the rest of the task, still in this panel.
 
+import { appLink } from "../../stacks/model/link";
 import { PRIORITY_LABEL, PRIORITY_ORDER } from "../vendor/taskMeta";
 import type { TaskPriority } from "../vendor/models";
 import { workingLabel } from "../model/working";
@@ -37,6 +38,7 @@ export function TaskDetail({
   onPriority,
   onAssign,
   onOpenChat,
+  appUrl,
 }: {
   task: TaskDetailTask;
   note?: string | null;
@@ -48,8 +50,11 @@ export function TaskDetail({
   onPriority?: (priority: string) => void;
   onAssign?: (assignee: string) => void;
   onOpenChat?: (chatId: string) => void;
+  /** Local URL of this checkout's stack. Anything else is not shown. */
+  appUrl?: string | null;
 }) {
   const followsWork = Boolean(task.delegationId);
+  const link = appLink(appUrl);
   const priority = (PRIORITY_ORDER as readonly string[]).includes(task.priority ?? "") ? task.priority ?? "none" : "none";
   return (
     <article aria-label={`Task ${task.number}`}>
@@ -105,6 +110,21 @@ export function TaskDetail({
             </li>
           ))}
         </ul>
+      ) : null}
+      {link ? (
+        <a
+          className="mt-1 inline-block text-[12px] text-content"
+          href={link}
+          onClick={(event) => {
+            if (!("__TAURI_INTERNALS__" in window)) return;
+            event.preventDefault();
+            void import("@tauri-apps/plugin-opener")
+              .then((mod) => mod.openUrl(link))
+              .catch(() => undefined);
+          }}
+        >
+          Open the running app
+        </a>
       ) : null}
       {task.chatId && onOpenChat ? (
         <button type="button" className="mt-2 text-[12px] text-content/80" onClick={() => onOpenChat(task.chatId ?? "")}>

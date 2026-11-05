@@ -34,6 +34,7 @@ import { TaskBoard } from "./TaskBoard";
 import { TaskDetail } from "./TaskDetail";
 import { TaskList } from "./TaskList";
 import { TaskTimeline } from "./TaskTimeline";
+import { stackUrlFor } from "../../stacks/model/link";
 
 type Scope = "all" | "project";
 
@@ -193,6 +194,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [naming, setNaming] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
+  const [appUrl, setAppUrl] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const generation = useRef(0);
   const detailGeneration = useRef(0);
@@ -214,6 +216,17 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   openRef.current = open;
   viewRef.current = current;
   viewsRef.current = views;
+
+  useEffect(() => {
+    let live = true;
+    setAppUrl(null);
+    void stackUrlFor(cwd).then((url) => {
+      if (live) setAppUrl(url);
+    });
+    return () => {
+      live = false;
+    };
+  }, [cwd]);
 
   const load = useCallback(async () => {
     const gen = ++generation.current;
@@ -688,6 +701,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onPriority={(priority) => void write(open, { priority })}
               onAssign={(assignee) => void write(open, { assignee: assignee || null })}
               onOpenChat={(id) => window.dispatchEvent(new CustomEvent("hivra:open-task-chat", { detail: id }))}
+              appUrl={appUrl}
             />
           </div>
         ) : null}
