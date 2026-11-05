@@ -628,6 +628,38 @@ pub fn local_url(url: &str) -> Option<String> {
     (!label.is_empty()).then(|| url.to_string())
 }
 
+/// WP-90: a stack that was still running when the app last quit keeps its names. The proxy is
+/// in-process, so the previous owner pid is gone and the new proxy has pruned every name;
+/// this puts them back under this process, before anything lists a stack.
+pub fn resume_names(env: &StackEnv) -> Result<(), String> {
+    let dir = registry_dir(&env.data_dir);
+    let store = load(&dir)?;
+    if !store.stacks.iter().any(|entry| entry.running) {
+        return Ok(());
+    }
+    let own = std::process::id();
+    if let Some(names) = &env.names {
+        for entry in store.stacks.iter().filter(|entry| entry.running) {
+            for name in &entry.names {
+                // A name another live process holds is not this stack's to take.
+                let _ = names.add(&name.hostname, name.port, own);
+            }
+        }
+    }
+    update(&dir, |store| {
+        for entry in store.stacks.iter_mut().filter(|entry| entry.running) {
+            entry.owner_pid = own;
+            if let Some(proxy_port) = env.proxy_port {
+                entry.proxy_port = Some(proxy_port);
+                if let Some(app) = entry.names.iter().find(|name| name.service.is_none()) {
+                    entry.url = Some(format!("http://{}:{proxy_port}", app.hostname));
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
     // WP-90: the stand-in and this stack's names go first, whatever runs in Compose.
     let mut failure = None;
@@ -4141,6 +4173,113 @@ mod tests {
         let store = load(&registry_dir(&env.data_dir)).unwrap();
         assert!(store.stacks[0].reaches_real);
         assert_eq!(store.stacks[0].mode(), "Reaches the real internet");
+    }
+
+    #[test]
+    fn a_running_stack_gets_its_names_back_after_a_restart() {
+        let fix = Fix::new();
+        let base = fix.env();
+        let routes = crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(
+            &base.data_dir,
+        ));
+        // The previous app process published every name and is now gone.
+        let dead = u32::MAX;
+        routes
+            .add_route("main-a.localhost", 22010, dead, false)
+            .unwrap();
+        routes
+            .add_route("github-a.localhost", 22011, dead, false)
+            .unwrap();
+        routes
+            .add_route("main-b.localhost", 22020, dead, false)
+            .unwrap();
+        let entry = |id: &str, tree: &Path, running: bool, names: Vec<Published>| Entry {
+            id: id.into(),
+            key: path_key(tree),
+            worktree: crate::fs::path_to_js(tree),
+            project: path_key(&fix.main),
+            compose_project: format!("hivra-{id}"),
+            compose_file: None,
+            has_compose: true,
+            block: 22010,
+            ports: Vec::new(),
+            env: BTreeMap::new(),
+            url: names
+                .first()
+                .map(|name| format!("http://{}:7400", name.hostname)),
+            running,
+            label: "a".into(),
+            names,
+            emulated: Vec::new(),
+            owner_pid: dead,
+            proxy_port: Some(7400),
+            reaches_real: false,
+            note: None,
+        };
+        update(&registry_dir(&base.data_dir), |store| {
+            store.stacks.push(entry(
+                "s0001",
+                &fix.first,
+                true,
+                vec![
+                    Published {
+                        hostname: "main-a.localhost".into(),
+                        port: 22010,
+                        service: None,
+                    },
+                    Published {
+                        hostname: "github-a.localhost".into(),
+                        port: 22011,
+                        service: Some("github".into()),
+                    },
+                ],
+            ));
+            store.stacks.push(entry(
+                "s0002",
+                &fix.second,
+                false,
+                vec![Published {
+                    hostname: "main-b.localhost".into(),
+                    port: 22020,
+                    service: None,
+                }],
+            ));
+            Ok(())
+        })
+        .unwrap();
+        // The start of the new proxy removes the dead owner's names first.
+        assert_eq!(routes.prune_stale_routes().unwrap().len(), 3);
+
+        let env = StackEnv {
+            names: Some(Arc::new(RouteNames {
+                store: routes.clone(),
+            })),
+            proxy_port: Some(7500),
+            ..fix.env()
+        };
+        resume_names(&env).unwrap();
+
+        let live = routes.load_routes_raw().unwrap();
+        assert_eq!(live.len(), 2, "{live:?}");
+        let own = std::process::id();
+        for (name, port) in [("main-a.localhost", 22010u16), ("github-a.localhost", 22011)] {
+            let route = routes
+                .route_for_host(name)
+                .unwrap_or_else(|| panic!("{name} is not routed"));
+            assert_eq!(route.pid, own, "{name}");
+            assert_eq!(route.port, port, "{name}");
+        }
+        // A stack that was stopped before the restart is not brought back.
+        assert!(routes.route_for_host("main-b.localhost").is_none());
+        let store = load(&registry_dir(&base.data_dir)).unwrap();
+        let running = store.stacks.iter().find(|entry| entry.running).unwrap();
+        assert_eq!(running.owner_pid, own);
+        assert_eq!(running.proxy_port, Some(7500));
+        // The app URL follows the proxy's new port too.
+        assert_eq!(
+            running.url.as_deref(),
+            Some("http://main-a.localhost:7500")
+        );
     }
 
     #[test]

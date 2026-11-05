@@ -448,6 +448,18 @@ pub fn run() {
             ) {
                 eprintln!("WP-90: the named-app proxy did not start: {error}");
             }
+            // WP-90: a stack still marked running from the last launch keeps its names on
+            // this process; the new proxy has just pruned the previous owner's.
+            match stacks::env_from_app(app.handle()) {
+                Ok(env) => {
+                    if let Err(error) = stacks::resume_names(&env) {
+                        eprintln!("WP-90: the running stacks' names were not put back: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("WP-90: the running stacks' names were not put back: {error}");
+                }
+            }
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
             // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
