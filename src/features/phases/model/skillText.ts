@@ -7,7 +7,7 @@ import { resolve } from "node:path";
 export function skillText(name: string): string | undefined {
   if (!/^[a-z0-9-]+$/.test(name)) return undefined;
   try {
-    return readFileSync(resolve("plugins/hivra-rpi/skills", name, "SKILL.md"), "utf8");
+    return readFileSync(resolve("src-tauri/plugins/hivra-rpi/skills", name, "SKILL.md"), "utf8");
   } catch {
     return undefined;
   }

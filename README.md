@@ -60,8 +60,8 @@ in Settings, under About.
 - [backpass](https://github.com/kunchenguid/backpass): evidence-gated edits to agent instructions learned from past chats, planned for Wave F.
 - [kun](https://github.com/kunchenguid/kun): a person's opinions and voice kept as files agents read (ideas only).
 - [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
-- [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building (the phase idea; the skill text is Hivra's because the checkout was not available). Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G.
-- [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd and grill-me, called by name only. The text is Hivra's because the LICENSE file was not in the checkout.
+- [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building. The skills were copied from apps/riptide-rpi-claude-plugin at f9bd73534a9fb7099a274f951b698b1297122fd9. Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G.
+- [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd and grill-me, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).

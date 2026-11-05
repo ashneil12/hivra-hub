@@ -1,0 +1,17 @@
+HumanLayer
+Copyright 2025-2026 QueryTale, Inc. d/b/a HumanLayer
+
+This product includes skills from HumanLayer
+(apps/riptide-rpi-claude-plugin @ f9bd73534a9fb7099a274f951b698b1297122fd9),
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The HumanLayer NOTICE also names MIT code under vendor/effect-orpc,
+packages/y-durable-streams and tools/oxlint/anti-slop. Those folders are not
+part of this plugin, so their notices are not repeated here.
+
+ci-commit, configure-workspaces and setup-worktree are left out: Hivra has its own.
+
+Matt Pocock's skills (diagnosing-bugs, rpi-tdd and grill-me) are MIT.
+Copyright (c) 2026 Matt Pocock
+Source: https://github.com/mattpocock/skills @ 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
+Each of those skill folders keeps his LICENSE.

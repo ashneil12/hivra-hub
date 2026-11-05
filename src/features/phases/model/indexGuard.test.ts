@@ -5,7 +5,7 @@ import { sessionInstruction } from "../../plugins/model/pstackAutopilot";
 import generated from "../../plugins/model/pstackIndex.generated.json";
 import { LEFT_OUT_SKILLS, RPI_SKILL_NAMES, alwaysOnNames } from "./indexGuard";
 
-const root = resolve("plugins/hivra-rpi/skills");
+const root = resolve("src-tauri/plugins/hivra-rpi/skills");
 
 it("keeps every research skill out of the always-on index", () => {
   const dirs = readdirSync(root).sort();
@@ -20,7 +20,6 @@ it("keeps every research skill out of the always-on index", () => {
 
   const indexed = new Set(generated.map((entry) => entry.name));
   for (const name of RPI_SKILL_NAMES) {
-    if (name === "tdd") continue;
     expect(indexed.has(name), name).toBe(false);
   }
   const tdd = generated.find((entry) => entry.name === "tdd");
@@ -30,7 +29,6 @@ it("keeps every research skill out of the always-on index", () => {
   const instruction = sessionInstruction({ pstackRoot: "/tmp/plugins/claude/pstack", plainEnglish: false });
   const firstColumn = instruction.split("\n").map((line) => line.split(" | ")[0]);
   for (const name of RPI_SKILL_NAMES) {
-    if (name === "tdd") continue;
     expect(firstColumn).not.toContain(name);
   }
   expect(instruction).not.toContain("hivra-rpi");
