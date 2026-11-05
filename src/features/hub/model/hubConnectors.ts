@@ -242,6 +242,10 @@ export function forgetGoogleClient(): Promise<ConnectorsView> {
 export function signOutConnector(id: string): Promise<ConnectorsView> {
   return apply("connector_sign_out", { id });
 }
+/** WP-92: move a saved key into the vault, leaving a reference. The page asks once first. */
+export function moveLoginToVault(id: string): Promise<ConnectorsView> {
+  return apply("connector_move_login_to_vault", { id });
+}
 export function setConnectorAllow(id: string, allow: string[]): Promise<ConnectorsView> {
   return apply("connector_set_allow", { id, allow });
 }
