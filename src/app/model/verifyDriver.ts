@@ -574,7 +574,7 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       setTimeout(() => window.location.reload(), Number(action.afterMs ?? 300));
       return { ok: true, at: Date.now() };
     case "quit": {
-      // r98 (B5): Ash quits the way the app menu's Quit MonoCode does (verify_live_quit -> window::request_quit), once
+      // r98 (B5): Ash quits the way the app menu's Quit Hivra does (verify_live_quit -> window::request_quit), once
       // this answer is written. Never a kill: the windows save their work first. A busy chat would make that Quit ask
       // in a Mac dialog (run df53 left one up for 90s), and the bench never puts a dialog in front of Ash: refuse.
       const busy = host.sessions().filter(isRunningWork).length;

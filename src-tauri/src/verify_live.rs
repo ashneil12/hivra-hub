@@ -341,7 +341,7 @@ pub fn verify_live_done(id: String, result: Value) -> Result<(), String> {
     done_into(&driver_dir()?, &id, &result)
 }
 
-/// The real-Claude bench (r98, B5): Ash's Quit, the very path the app menu's "Quit MonoCode" takes
+/// The real-Claude bench (r98, B5): Ash's Quit, the very path the app menu's "Quit Hivra" takes
 /// ([`crate::window::request_quit`]: the windows save, a busy chat still asks). Only a copy with a driver.
 #[tauri::command]
 pub fn verify_live_quit(app: tauri::AppHandle) -> Result<(), String> {
