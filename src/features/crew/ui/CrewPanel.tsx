@@ -24,7 +24,7 @@ import {
 } from "../model/rows";
 import { GateCards } from "../../delivery-gate/ui/GateCards";
 import { phaseDocLinks } from "../../phases/model/pr";
-import { workFor } from "../../phases/model/store";
+import { taskForCrew, workFor } from "../../phases/model/store";
 import { CrewTab } from "./CrewTab";
 import { TaskPane } from "../../tasks/ui/TaskPane";
 
@@ -217,7 +217,8 @@ export function CrewPanel({
     if (!row.checkout) return;
     try {
       // WP-84: link this task's phase documents. A straight build, or a crew with no task, adds none.
-      const taskId = workers.find((item) => item.id === row.id)?.taskId ?? "";
+      const named = workers.find((item) => item.id === row.id)?.taskId;
+      const taskId = taskForCrew(row.id, named);
       const phaseDocs = taskId ? phaseDocLinks(workFor(taskId)?.docs ?? []) : [];
       await invoke("delivery_deliver", {
         input: { project, checkout: row.checkout, delegationId: row.id, title: row.title, phaseDocs },

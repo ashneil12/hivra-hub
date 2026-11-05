@@ -8,6 +8,8 @@ import {
   setHarnessModels,
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
+import { begin, counter } from "../../phases/model/machine";
+import { seedWork, taskForCrew } from "../../phases/model/store";
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
 import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
@@ -421,6 +423,43 @@ describe("tasks.delegate", () => {
     same.host.taskStore = vi.fn(async () => ({ projectId: PROJECT }));
     await handleAgentApp(same.source, "r-same", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-abc" }, same.host);
     expect(same.started[0]?.[4]).toMatchObject({ taskId: "task-abc" });
+  });
+
+  it("holds a hard task until the phase documents are accepted, and still starts a usual one", async () => {
+    const hard = fixture();
+    const held = await handleAgentApp(
+      hard.source,
+      "r-hard",
+      "tasks.delegate",
+      { brief: "Rework how saving works.", taskId: "task-hard", hard: true },
+      hard.host,
+    );
+    expect(hard.started).toEqual([]);
+    expect(held).toMatchObject({ phased: true, taskId: null });
+    const usual = fixture();
+    await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-usual" }, usual.host);
+    expect(usual.started[0]?.[4]).toMatchObject({ taskId: "task-usual" });
+  });
+
+  it("starts the coding worker once the phases have reached building", async () => {
+    const ready = fixture();
+    const phase = begin("task-ready", { weight: "costly" }, {}, counter());
+    seedWork({
+      ...phase,
+      building: true,
+      waiting: null,
+      cursor: "done",
+      runs: phase.runs.map((run) => ({ ...run, status: "done" as const })),
+    });
+    const result = (await handleAgentApp(
+      ready.source,
+      "r-ready",
+      "tasks.delegate",
+      { brief: "Pick up the save bug.", taskId: "task-ready", hard: true },
+      ready.host,
+    )) as { taskId?: string | null };
+    expect(ready.started[0]?.[4]).toMatchObject({ taskId: "task-ready" });
+    expect(taskForCrew(String(result.taskId))).toBe("task-ready");
   });
 
   it("starts a worker nested under the Mono, monitored, with a signed brief and a row that carries the job", async () => {

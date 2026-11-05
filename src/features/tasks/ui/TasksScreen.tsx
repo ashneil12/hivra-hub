@@ -33,8 +33,7 @@ import { BulkBar } from "./BulkBar";
 import { TaskBoard } from "./TaskBoard";
 import { TaskDetail } from "./TaskDetail";
 // WP-84: phase documents and the review decision live on the open task.
-import { answerWork, changePath, noteDocComment, noteTaskComment, phaseFor, subscribePhase } from "../../phases/model/store";
-import { counter } from "../../phases/model/machine";
+import { answerWork, changePath, commentId, noteDocComment, noteTaskComment, phaseFor, subscribePhase } from "../../phases/model/store";
 import { TaskList } from "./TaskList";
 import { TaskTimeline } from "./TaskTimeline";
 
@@ -197,7 +196,6 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
   const [phaseTick, setPhaseTick] = useState(0);
-  const phaseIds = useRef(counter("phase"));
   const [now, setNow] = useState(() => Date.now());
   const generation = useRef(0);
   const detailGeneration = useRef(0);
@@ -692,12 +690,16 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onComment={(text) => {
                 void write(open, { comment: text });
                 // WP-84: a comment on the task reaches the next phase run.
-                noteTaskComment(open.id, text, phaseIds.current());
+                noteTaskComment(open.id, text, commentId());
               }}
               phase={phaseTick >= 0 ? phaseFor(open.id) : undefined}
-              onPhaseAnswer={(choice, words) => answerWork(open.id, choice, words, phaseIds.current)}
-              onPhasePath={(path) => changePath(open.id, path, phaseIds.current)}
-              onPhaseDocComment={(docNumber, text) => noteDocComment(open.id, docNumber, text, phaseIds.current())}
+              onPhaseAnswer={(choice, words) => {
+                void answerWork(open.id, choice, words, commentId);
+              }}
+              onPhasePath={(path) => {
+                void changePath(open.id, path, commentId);
+              }}
+              onPhaseDocComment={(docNumber, text) => noteDocComment(open.id, docNumber, text, commentId())}
               onStatus={(status) => void write(open, { status })}
               onPriority={(priority) => void write(open, { priority })}
               onAssign={(assignee) => void write(open, { assignee: assignee || null })}

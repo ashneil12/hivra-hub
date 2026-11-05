@@ -59,6 +59,8 @@ import {
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
+import { phaseBeforeCrew, phaseHint } from "../../phases/model/gate";
+import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
@@ -714,6 +716,20 @@ async function delegate(
   // WP-70: the shared task this work moves. Checked before a worker starts.
   const sharedTask = sharedTaskId(input.taskId);
   if (sharedTask) await sharedTaskInThisProject(source, sharedTask, host);
+  // WP-84: a costly task finishes its phase documents before anyone writes code. A usual task does not wait.
+  if (sharedTask) {
+    const gate = await phaseBeforeCrew(sharedTask, phaseHint(input), source.cwd, commentId);
+    if (gate.hold) {
+      return {
+        taskId: null,
+        childSessionId: `phase-${sharedTask}`,
+        status: "working",
+        title,
+        phased: true,
+        note: gate.why,
+      };
+    }
+  }
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
@@ -885,6 +901,7 @@ async function delegate(
   // asked again after a window died mid-start (its claim ran out) or a retried call only reads it back.
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
+    if (sharedTask) bindCrew(already.id, sharedTask);
     tasks.pool?.started({ id, heavy, files });
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
@@ -1023,6 +1040,8 @@ async function delegate(
   tasks.pool?.started({ id, heavy, files });
   helpers.fileStarted(source, launch, id, host);
   const [row] = await tasks.owned(source.id, { requestIds: [id] });
+  // WP-84: the pull request for this crew can name the task's phase documents.
+  if (sharedTask && row?.id) bindCrew(row.id, sharedTask);
   // WP-40: the plan is kept once the row exists. A waiting worker stores `input` and this runs when it starts.
   await keepGates(tasks, row?.id, gates, folder);
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
