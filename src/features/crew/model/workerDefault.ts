@@ -2,7 +2,7 @@
 // (a Claude model and effort, no CLI) stays that Claude choice. Nothing here rewrites the row.
 
 import { isCli } from "./clis";
-import type { Pick } from "./resolve";
+import type { Pick, RouteDefaults } from "./resolve";
 
 export type StoredProjectDefault = {
   cli?: string | null;
@@ -35,5 +35,45 @@ export function readProjectWorkerDefault(stored: StoredProjectDefault | null | u
     ...(use ? { cli: use } : {}),
     ...(model ? { model } : {}),
     ...(effort ? { effort } : {}),
+  };
+}
+
+/**
+ * A default as it was stored, without the old project row's Claude assumption.
+ * A CLI that isn't one is dropped. A blank or broken field is dropped.
+ */
+export function cleanStoredDefault(stored: StoredProjectDefault | null | undefined): Pick | undefined {
+  if (!stored) return undefined;
+  const model = clean(stored.model);
+  const effort = clean(stored.effort);
+  const rawCli = clean(stored.cli);
+  const cli = rawCli && isCli(rawCli) ? rawCli : undefined;
+  if (!cli && !model && !effort) return undefined;
+  return {
+    ...(cli ? { cli } : {}),
+    ...(model ? { model } : {}),
+    ...(effort ? { effort } : {}),
+  };
+}
+
+function setPick(pick: Pick | undefined): Pick | undefined {
+  if (!pick || (!pick.cli && !pick.model && !pick.effort)) return undefined;
+  return pick;
+}
+
+/** The defaults a launch sends with the crew route. An empty scope is left out. */
+export function routeDefaults(input: {
+  mono?: Pick;
+  project?: Pick;
+  system?: Pick;
+}): RouteDefaults | undefined {
+  const mono = setPick(input.mono);
+  const project = setPick(input.project);
+  const system = setPick(input.system);
+  if (!mono && !project && !system) return undefined;
+  return {
+    ...(mono ? { mono } : {}),
+    ...(project ? { project } : {}),
+    ...(system ? { system } : {}),
   };
 }

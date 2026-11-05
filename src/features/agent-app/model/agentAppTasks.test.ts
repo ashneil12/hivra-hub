@@ -29,6 +29,7 @@ import {
   setWorkerQueueBackend,
   resetWorkerPool,
   setProjectWorkerModel,
+  setSystemWorkerDefault,
   setWorkerLimits,
   workerLimits,
   workerPoolHost,
@@ -677,6 +678,39 @@ describe("tasks.delegate", () => {
         monoRules: [expect.objectContaining({ cli: "codex", labels: ["screen"] })],
       }),
     );
+  });
+
+  it("sends the Mono, project and system defaults, and a default changes the launch", async () => {
+    setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+    resetWorkerPool();
+    setProjectWorkerModel("vg-game", { cli: "cursor", model: "composer", effort: "medium" });
+    setSystemWorkerDefault({ effort: "high" });
+    const { source, host, api, started } = fixture();
+    api.pool = workerPoolHost({ openRows: () => [], room: () => ({ room: true }) });
+    host.monoOf = () => ({
+      id: "vg-game-lead",
+      name: "EXO lead",
+      projects: [PROJECT],
+      workerDefault: { cli: "codex", model: "codex:gpt-5" },
+    });
+    api.crewRoute = vi.fn(async () => ({
+      cli: "codex",
+      model: "codex:gpt-5",
+      cliFrom: "mono",
+      modelFrom: "mono",
+      effortFrom: "none",
+    }));
+    await handleAgentApp(source, "r-worker-default", "tasks.delegate", { brief: "Review the screen." }, host);
+    expect(api.crewRoute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaults: {
+          mono: { cli: "codex", model: "codex:gpt-5" },
+          project: { cli: "cursor", model: "composer", effort: "medium" },
+          system: { effort: "high" },
+        },
+      }),
+    );
+    expect(started[0][0]).toMatchObject({ harness: "codex", model: "codex:gpt-5" });
   });
 
   it("asks the crew which CLI to start, and uses that CLI, model and effort", async () => {

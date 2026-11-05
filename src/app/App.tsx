@@ -14065,6 +14065,8 @@ function Workspace({
                     : {}),
                   // WP-21: this Mono's crew rules go with the route.
                   ...(mono.crewRules?.length ? { crewRules: mono.crewRules } : {}),
+                  // WP-89: this Mono's worker default goes with the route.
+                  ...(mono.workerDefault ? { workerDefault: mono.workerDefault } : {}),
                 }
               );
             },

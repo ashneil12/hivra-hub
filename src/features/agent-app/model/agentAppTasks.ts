@@ -47,7 +47,10 @@ import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
+import { launchCatalog } from "../../crew/model/launchCatalog";
+import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
+import { routeDefaults } from "../../crew/model/workerDefault";
 import type { AgentAppHost } from "./agentApp";
 import {
   limitsLine,
@@ -95,6 +98,10 @@ export type WorkerPoolHost = {
   setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
   /** The project's own worker model (E7), when Ash chose one; else undefined for the usual Sonnet. */
   model(project: string): WorkerModel | undefined;
+  /** WP-89: the project's worker default, CLI included. Absent on a host that only knows the Claude ladder. */
+  projectDefault?(project: string): { cli?: string; model?: string; effort?: string } | undefined;
+  /** WP-89: the worker default for every project. */
+  systemDefault?(): { cli?: string; model?: string; effort?: string } | undefined;
 };
 
 /** The FIELDS entries of the task actions (agentApp.ts). */
@@ -233,7 +240,17 @@ export type AgentAppTasksHost = {
     override?: { cli?: string; model?: string; effort?: string };
     project?: string;
     mono?: string;
-  }): Promise<{ cli?: string | null; model?: string | null; effort?: string | null } | null | undefined>;
+    /** WP-89: the Mono, project and system defaults, and the catalog that judges them. */
+    defaults?: RouteDefaults;
+    catalog?: Catalog;
+  }): Promise<{
+    cli?: string | null;
+    model?: string | null;
+    effort?: string | null;
+    cliFrom?: string | null;
+    modelFrom?: string | null;
+    effortFrom?: string | null;
+  } | null | undefined>;
   /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
@@ -483,7 +500,13 @@ function withOffBridgeWhy(route: WorkerRoute | undefined, asked: string | undefi
 /** Who delegates: a Mono's own chat (signed with its name), or a coding-team chat (signed "<Project> coding team"). */
 type TaskOwner = {
   name: string;
-  mono?: { id: string; name?: string; crewRules?: unknown };
+  mono?: {
+    id: string;
+    name?: string;
+    crewRules?: unknown;
+    /** WP-89: this Mono's worker default, when it set one. */
+    workerDefault?: { cli?: string; model?: string; effort?: string };
+  };
   team?: { project: string; folder: string };
 };
 
@@ -851,6 +874,12 @@ async function delegate(
     try {
       const override = callerOverride(namedModel, input.effort);
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
+      const defaults = routeDefaults({
+        mono: owner.mono?.workerDefault,
+        project: tasks.pool?.projectDefault?.(projectKey),
+        system: tasks.pool?.systemDefault?.(),
+      });
+      const catalog = launchCatalog();
       const answer = await tasks.crewRoute({
         labels: crewLabels(areasNamed(title, brief)),
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
@@ -858,6 +887,8 @@ async function delegate(
         ...(folder ? { project: folder } : {}),
         ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
         ...(monoRules.length ? { monoRules } : {}),
+        ...(defaults ? { defaults } : {}),
+        ...(Object.keys(catalog).length ? { catalog } : {}),
       });
       const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
       if (next.harness && isHarnessAvailable(next.harness)) {

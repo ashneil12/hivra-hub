@@ -24,6 +24,7 @@ import {
 } from "../../sessions/model/models";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import type { CrewRule } from "../../crew/model/rules";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -245,6 +246,8 @@ export type AgentAppHost = {
     team?: string;
     /** WP-21: crew rules stored on this Mono. */
     crewRules?: CrewRule[];
+    /** WP-89: the worker default stored on this Mono. */
+    workerDefault?: WorkerPick;
   } | undefined;
   /**
    * The Mono a session belongs to, workers included (hub/model/hubMcp.ts chatMonoOwner): a worker works as the Mono

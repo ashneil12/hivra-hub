@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readProjectWorkerDefault } from "./workerDefault";
+import { cleanStoredDefault, readProjectWorkerDefault } from "./workerDefault";
 import { resolveRoute, type Catalog, type Presence, type RouteDefaults } from "./resolve";
 import type { CrewRule } from "./rules";
 
@@ -231,5 +231,10 @@ describe("old project settings", () => {
     expect(readProjectWorkerDefault(undefined)).toBeUndefined();
     expect(readProjectWorkerDefault({ cli: "nope", model: "grok-4" })).toEqual({ model: "grok-4" });
     expect(readProjectWorkerDefault({ cli: "claude", model: "bad\nid" })).toEqual({ cli: "claude" });
+  });
+
+  it("a system default does not invent Claude when only the effort is set", () => {
+    expect(cleanStoredDefault({ effort: "high" })).toEqual({ effort: "high" });
+    expect(cleanStoredDefault({ cli: "nope", model: "bad\nid" })).toBeUndefined();
   });
 });

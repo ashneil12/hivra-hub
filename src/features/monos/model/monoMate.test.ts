@@ -79,6 +79,26 @@ it("a design Mono's stored rule picks Codex when the project's rule picks Claude
   expect(routeForMono({ labels: ["screen"], paths: [] }, [], [project], [], present).cli).toBe("claude");
 });
 
+it("keeps a Mono's worker default, and drops one that isn't usable", () => {
+  const mono = createMono(["/work/design"]);
+  updateMono(mono.id, (current) => ({
+    ...current,
+    workerDefault: { cli: "grok", model: "grok-4", effort: "low" },
+  }));
+  expect(findMono(mono.id)?.workerDefault).toEqual({ cli: "grok", model: "grok-4", effort: "low" });
+  updateMono(mono.id, (current) => ({
+    ...current,
+    workerDefault: { cli: "nope", model: "bad\nid", effort: "  high  " },
+  }));
+  expect(findMono(mono.id)?.workerDefault).toEqual({ effort: "high" });
+  updateMono(mono.id, (current) => {
+    const next = { ...current };
+    delete next.workerDefault;
+    return next;
+  });
+  expect(findMono(mono.id)?.workerDefault).toBeUndefined();
+});
+
 it("a design Mono's crew rule beats the coding team's and a plugin's", () => {
   const design: CrewRule = { labels: ["screen"], paths: [], cli: "codex", source: "person" };
   const project: CrewRule = { labels: ["screen"], paths: [], cli: "claude", source: "person" };

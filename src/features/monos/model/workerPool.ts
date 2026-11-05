@@ -22,7 +22,7 @@ import type { Delegation } from "./delegations";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
-import { readProjectWorkerDefault } from "../../crew/model/workerDefault";
+import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
 import type { Pick } from "../../crew/model/resolve";
 
 export type WorkerLimits = {
@@ -133,12 +133,12 @@ export function projectWorkerDefault(project: string): Pick | undefined {
 
 /** WP-89: the worker default for every project, when one is set. */
 export function systemWorkerDefault(): Pick | undefined {
-  return readProjectWorkerDefault(settingsCopy.workerDefault);
+  return cleanStoredDefault(settingsCopy.workerDefault);
 }
 
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
 export function setSystemWorkerDefault(choice: Pick | undefined): void {
-  const clean = readProjectWorkerDefault(choice);
+  const clean = cleanStoredDefault(choice);
   settingsCopy = { ...settingsCopy, workerDefault: clean };
   changed();
   void backend
@@ -864,6 +864,8 @@ export function workerPoolHost(deps: {
     limits: workerLimits,
     setLimits: setWorkerLimits,
     model: projectWorkerModel,
+    projectDefault: projectWorkerDefault,
+    systemDefault: systemWorkerDefault,
   };
 }
 
