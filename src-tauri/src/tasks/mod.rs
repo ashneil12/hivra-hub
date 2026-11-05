@@ -7,6 +7,8 @@ mod store;
 pub(crate) mod sync;
 
 pub(crate) use store::ensure_tables;
+// WP-79: the outside door reads and writes tasks through the store.
+pub(crate) use store::{create, get, list, update, Actor, CreateInput, Task, UpdateInput};
 
 use tauri::{AppHandle, Emitter, Manager};
 
