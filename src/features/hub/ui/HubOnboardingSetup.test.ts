@@ -69,6 +69,14 @@ describe("the setup card", () => {
     expect(proved[proved.length - 1]).toBe(true);
   });
 
+  it("names Hivra, not the bundle, in the words a person reads", async () => {
+    answerWith(rows(["installed"], ""));
+    await render();
+    expect(container.textContent).toContain("Hivra checks the four things a chat needs");
+    expect(container.textContent).toContain("Hivra runs on Claude Code, which lives on your Mac like any other app.");
+    expect(container.textContent).not.toContain("MonoCode");
+  });
+
   it("shows what is missing in plain words and does not claim the setup works", async () => {
     answerWith(rows(["roundTrip"], "No answer: Claude Code did not answer."));
     await render();

@@ -3,6 +3,7 @@ import {
   stampLabel,
   type AppIdentity,
 } from "../model/appIdentity";
+import { DISPLAY_NAME } from "../model/displayName";
 
 /**
  * A corner ribbon on every window of a dev copy, so it can never be mistaken for the daily app. It takes no clicks:
@@ -14,7 +15,9 @@ export function DevRibbon({
   identity?: AppIdentity | null;
 }) {
   if (!identity || identity.kind !== "dev") return null;
-  const label = `Dev copy ${identity.slot ?? ""}: ${stampLabel(identity.stamp)}`;
+  const slot = identity.slot?.trim();
+  const where = slot ? `dev copy ${slot}` : "dev copy";
+  const label = `${DISPLAY_NAME} ${where}: ${stampLabel(identity.stamp)}`;
   return (
     <div
       role="status"
