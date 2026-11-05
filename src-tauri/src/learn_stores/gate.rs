@@ -1,0 +1,530 @@
+//! Which transcripts a copy may read.
+//!
+//! A dev copy reads only stand-ins a test names, never the real stores.
+//! A symlink is not followed. A file over WP-50's cap is not read.
+//! Claude, Codex and Hermes bytes go through WP-50's reader after that check.
+
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use serde::Serialize;
+
+use super::cursor::{self, ide_user_dir};
+use super::events::LearnEvent;
+use super::grok;
+use super::opencode;
+use super::pi;
+use crate::history_import::{self, MAX_FILES, MAX_READ_BYTES};
+
+#[derive(Clone, Copy)]
+pub struct Limits {
+    pub max_read: u64,
+    pub max_files: usize,
+}
+
+impl Limits {
+    pub fn production() -> Self {
+        Self {
+            max_read: MAX_READ_BYTES,
+            max_files: MAX_FILES,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StandIn {
+    pub source: String,
+    pub root: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListedChat {
+    pub source: String,
+    pub id: String,
+    pub root: String,
+    pub rel: String,
+    pub cwd: Option<String>,
+    pub title: Option<String>,
+    pub mtime_ms: i64,
+    /// Size of the backing file. OpenCode rows share one database, so a cost
+    /// estimate has to count that file once.
+    pub bytes: u64,
+}
+
+pub fn list_stores(
+    home: &Path,
+    stand_ins: Option<&[StandIn]>,
+    include_cursor_ide: bool,
+    dev: bool,
+    limits: Limits,
+) -> Result<Vec<ListedChat>, String> {
+    if dev {
+        let Some(stand_ins) = stand_ins.filter(|items| !items.is_empty()) else {
+            return Ok(Vec::new());
+        };
+        let mut out = Vec::new();
+        for stand_in in stand_ins {
+            let root = PathBuf::from(&stand_in.root);
+            if refuses_stand_in(home, &root) {
+                return Err("A dev copy only reads transcript stand-ins a test names.".into());
+            }
+            if is_symlink(&root) {
+                return Err("That folder is a link, so it was not read.".into());
+            }
+            if root
+                .components()
+                .any(|component| matches!(component, Component::ParentDir))
+            {
+                return Err("That path is not inside the named folder.".into());
+            }
+            list_one(
+                &stand_in.source,
+                &root,
+                include_cursor_ide || stand_in.source == "cursor-ide",
+                limits,
+                &mut out,
+            )?;
+        }
+        return Ok(out);
+    }
+    let mut out = Vec::new();
+    for (source, root) in daily_roots(home, include_cursor_ide) {
+        if is_symlink(&root) || !root.exists() {
+            continue;
+        }
+        list_one(&source, &root, include_cursor_ide, limits, &mut out)?;
+    }
+    Ok(out)
+}
+
+pub fn read_store(source: &str, root: &Path, rel: &str, limits: Limits) -> Result<String, String> {
+    if rel.contains('\0')
+        || Path::new(rel).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+        || Path::new(rel).is_absolute()
+    {
+        return Err("That file isn't in the folder.".into());
+    }
+    if is_symlink(root) {
+        return Err("That folder is a link, so it was not read.".into());
+    }
+    match source {
+        "opencode" => {
+            let db = if root.is_file() {
+                root.to_path_buf()
+            } else {
+                root.join(rel)
+            };
+            let session = if root.is_file() { rel } else { "" };
+            ensure_inside(root, &db)?;
+            ensure_size(&db, limits.max_read)?;
+            let read = if session.is_empty() {
+                return Err("That chat wasn't found.".into());
+            } else {
+                opencode::read(&db, session, None)?
+            };
+            let mut text = render(&read.events);
+            if let Some(model) = read
+                .model
+                .as_deref()
+                .filter(|model| !model.is_empty() && !model.contains('\0'))
+            {
+                text.insert_str(0, &format!("model: {model}\n"));
+            }
+            Ok(text)
+        }
+        "cursor-ide" => {
+            if !include_cursor_rel(rel) {
+                return Err("That chat wasn't found.".into());
+            }
+            let events = cursor::read_ide(root, rel)?;
+            Ok(render(&events))
+        }
+        "cursor" => {
+            let path = joined(root, rel)?;
+            ensure_size(&path, limits.max_read)?;
+            Ok(render(&cursor::read_db(&path)?))
+        }
+        "grok" | "pi" => {
+            let path = joined(root, rel)?;
+            let text = read_bytes(&path, limits.max_read)?;
+            let (events, _) = if source == "grok" {
+                grok::read_text(&text)
+            } else {
+                pi::read_text(&text)
+            };
+            Ok(render(&events))
+        }
+        "claude" | "codex" | "hermes" => {
+            let path = joined(root, rel)?;
+            ensure_size(&path, limits.max_read)?;
+            history_import::read_transcript(root, rel, limits.max_read)
+        }
+        _ => Err("That store isn't one Hivra reads.".into()),
+    }
+}
+
+fn include_cursor_rel(rel: &str) -> bool {
+    !rel.is_empty() && !rel.contains('/') && !rel.contains('\\')
+}
+
+fn list_one(
+    source: &str,
+    root: &Path,
+    include_cursor_ide: bool,
+    limits: Limits,
+    out: &mut Vec<ListedChat>,
+) -> Result<(), String> {
+    if out.len() >= limits.max_files {
+        return Ok(());
+    }
+    match source {
+        "opencode" => {
+            let db = if root.is_file() {
+                root.to_path_buf()
+            } else {
+                root.join("opencode.db")
+            };
+            if !db.is_file() || is_symlink(&db) {
+                return Ok(());
+            }
+            let meta =
+                fs::symlink_metadata(&db).map_err(|_| "Couldn't read this store.".to_string())?;
+            if meta.len() > limits.max_read {
+                return Err("That chat is too big to read in one go.".into());
+            }
+            let bytes = meta.len();
+            for session in opencode::discover(&db, None)? {
+                if out.len() >= limits.max_files {
+                    break;
+                }
+                out.push(ListedChat {
+                    source: "opencode".into(),
+                    id: session.id.clone(),
+                    root: crate::fs::path_to_js(&db),
+                    rel: session.id,
+                    cwd: Some(session.cwd),
+                    title: session.title,
+                    mtime_ms: session.mtime_ms,
+                    bytes,
+                });
+            }
+        }
+        "cursor-ide" => {
+            if !include_cursor_ide {
+                return Ok(());
+            }
+            for session in cursor::discover_ide(root, None)? {
+                if out.len() >= limits.max_files {
+                    break;
+                }
+                out.push(ListedChat {
+                    source: "cursor-ide".into(),
+                    id: session.id.clone(),
+                    root: crate::fs::path_to_js(root),
+                    rel: session.id,
+                    cwd: Some(session.cwd),
+                    title: None,
+                    mtime_ms: session.mtime_ms,
+                    bytes: 0,
+                });
+            }
+        }
+        "grok" => {
+            for file in walk_named(root, "chat_history.jsonl", limits.max_files) {
+                let dir = file.parent().unwrap_or(root);
+                let descriptor = grok::classify_dir(dir);
+                push_file(
+                    out,
+                    "grok",
+                    root,
+                    &file,
+                    descriptor.as_ref().map(|item| item.id.clone()),
+                    descriptor.as_ref().map(|item| item.cwd.clone()),
+                    None,
+                );
+            }
+        }
+        "cursor" => {
+            for file in walk_named(root, "meta.json", limits.max_files) {
+                let dir = file.parent().unwrap_or(root);
+                let Some(descriptor) = cursor::classify_dir(dir) else {
+                    continue;
+                };
+                let hash = cursor::cwd_hash(&descriptor.cwd);
+                let folder = dir
+                    .parent()
+                    .and_then(|parent| parent.file_name())
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("");
+                if folder.len() == hash.len()
+                    && folder.chars().all(|ch| ch.is_ascii_hexdigit())
+                    && folder != hash
+                {
+                    continue;
+                }
+                let db = dir.join("store.db");
+                if !db.is_file() || is_symlink(&db) {
+                    continue;
+                }
+                push_file(
+                    out,
+                    "cursor",
+                    root,
+                    &db,
+                    Some(descriptor.id),
+                    Some(descriptor.cwd),
+                    descriptor.title,
+                );
+            }
+        }
+        "pi" | "claude" | "codex" | "hermes" => {
+            for file in walk_suffix(root, ".jsonl", limits.max_files) {
+                let id = file
+                    .file_stem()
+                    .map(|stem| stem.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let (cwd, title) = if source == "pi" {
+                    let text = fs::read_to_string(&file).unwrap_or_default();
+                    let descriptor = pi::classify_text(&text, false, &id);
+                    (descriptor.as_ref().map(|item| item.cwd.clone()), None)
+                } else {
+                    (None, None)
+                };
+                push_file(out, source, root, &file, Some(id), cwd, title);
+            }
+        }
+        _ => return Err("That store isn't one Hivra reads.".into()),
+    }
+    Ok(())
+}
+
+fn push_file(
+    out: &mut Vec<ListedChat>,
+    source: &str,
+    root: &Path,
+    file: &Path,
+    id: Option<String>,
+    cwd: Option<String>,
+    title: Option<String>,
+) {
+    let rel = file.strip_prefix(root).unwrap_or(file);
+    let meta = fs::symlink_metadata(file).ok();
+    let bytes = meta.as_ref().map(|item| item.len()).unwrap_or(0);
+    let mtime_ms = meta
+        .as_ref()
+        .and_then(|item| item.modified().ok())
+        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as i64)
+        .unwrap_or(0);
+    out.push(ListedChat {
+        source: source.to_string(),
+        id: id.unwrap_or_default(),
+        root: crate::fs::path_to_js(root),
+        rel: crate::fs::path_to_js(rel),
+        cwd,
+        title,
+        mtime_ms,
+        bytes,
+    });
+}
+
+fn walk_suffix(root: &Path, suffix: &str, max_files: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk(root, max_files, &mut out, &|path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(suffix))
+    });
+    out
+}
+
+fn walk_named(root: &Path, name: &str, max_files: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    walk(root, max_files, &mut out, &|path| {
+        path.file_name().and_then(|file| file.to_str()) == Some(name)
+    });
+    out
+}
+
+fn walk(dir: &Path, max_files: usize, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool) {
+    if out.len() >= max_files || is_symlink(dir) {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if out.len() >= max_files {
+            return;
+        }
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        let path = entry.path();
+        if kind.is_dir() {
+            walk(&path, max_files, out, keep);
+        } else if kind.is_file() && keep(&path) {
+            out.push(path);
+        }
+    }
+}
+
+fn daily_roots(home: &Path, include_cursor_ide: bool) -> Vec<(String, PathBuf)> {
+    let mut roots = vec![
+        ("claude".into(), home.join(".claude").join("projects")),
+        ("codex".into(), home.join(".codex").join("sessions")),
+        (
+            "codex".into(),
+            home.join(".codex").join("archived_sessions"),
+        ),
+        ("hermes".into(), home.join(".hermes")),
+        ("pi".into(), home.join(".pi").join("agent").join("sessions")),
+        ("grok".into(), home.join(".grok").join("sessions")),
+        (
+            "opencode".into(),
+            home.join(".local")
+                .join("share")
+                .join("opencode")
+                .join("opencode.db"),
+        ),
+        ("cursor".into(), home.join(".cursor").join("chats")),
+    ];
+    if include_cursor_ide {
+        roots.push(("cursor-ide".into(), ide_user_dir(home)));
+    }
+    roots
+}
+
+fn real_prefixes(home: &Path) -> Vec<PathBuf> {
+    vec![
+        home.join(".claude"),
+        home.join(".grok"),
+        home.join(".codex"),
+        home.join(".pi"),
+        home.join(".omp"),
+        home.join(".cursor"),
+        home.join(".hermes"),
+        home.join(".local").join("share").join("opencode"),
+        home.join("Library")
+            .join("Application Support")
+            .join("Cursor"),
+        home.join("AppData").join("Roaming").join("Cursor"),
+    ]
+}
+
+/// A stand-in inside a real store, or a parent of one (including the home), is refused.
+fn refuses_stand_in(home: &Path, root: &Path) -> bool {
+    let root = absolute(root);
+    let home = absolute(home);
+    if root == home {
+        return true;
+    }
+    for store in real_prefixes(&home) {
+        if root.starts_with(&store) || store.starts_with(&root) {
+            return true;
+        }
+    }
+    false
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
+fn joined(root: &Path, rel: &str) -> Result<PathBuf, String> {
+    let path = root.join(rel);
+    ensure_inside(root, &path)?;
+    Ok(path)
+}
+
+fn ensure_inside(root: &Path, path: &Path) -> Result<(), String> {
+    if is_symlink(path) {
+        return Err("That file isn't in the folder.".into());
+    }
+    let mut cursor = root.to_path_buf();
+    if is_symlink(&cursor) {
+        return Err("That folder is a link, so it was not read.".into());
+    }
+    let rel = path
+        .strip_prefix(root)
+        .map_err(|_| "That file isn't in the folder.".to_string())?;
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => {
+                cursor.push(part);
+                if is_symlink(&cursor) {
+                    return Err("That file isn't in the folder.".into());
+                }
+            }
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err("That file isn't in the folder.".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn ensure_size(path: &Path, max_read: u64) -> Result<(), String> {
+    let meta = fs::symlink_metadata(path).map_err(|_| "Could not read this chat.".to_string())?;
+    if meta.file_type().is_symlink() {
+        return Err("That file isn't in the folder.".into());
+    }
+    if !meta.is_file() {
+        return Err("That isn't a chat file.".into());
+    }
+    if meta.len() > max_read {
+        return Err("That chat is too big to read in one go.".into());
+    }
+    Ok(())
+}
+
+fn read_bytes(path: &Path, max_read: u64) -> Result<String, String> {
+    ensure_size(path, max_read)?;
+    let bytes = fs::read(path).map_err(|_| "Could not read this chat.".to_string())?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn is_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+pub fn render(events: &[LearnEvent]) -> String {
+    let mut out = String::new();
+    for event in events {
+        if event.kind == "message" {
+            out.push_str(event.role.as_deref().unwrap_or(""));
+            out.push_str(": ");
+            out.push_str(event.text.as_deref().unwrap_or(""));
+            out.push('\n');
+        } else if event.kind == "tool" {
+            out.push_str("tool ");
+            out.push_str(event.name.as_deref().unwrap_or(""));
+            if let Some(result) = &event.result {
+                out.push_str(" -> ");
+                out.push_str(result);
+            }
+            out.push('\n');
+        }
+    }
+    out
+}
