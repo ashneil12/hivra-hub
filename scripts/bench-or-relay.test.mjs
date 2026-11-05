@@ -29,7 +29,7 @@ function upstream(handler) {
     req.on("data", (chunk) => chunks.push(chunk));
     req.on("end", () => {
       const body = Buffer.concat(chunks);
-      seen.push({ method: req.method, url: req.url, headers: req.headers, body: body.toString("utf8") });
+      seen.push({ method: req.method, url: req.url, host: req.headers.host, headers: req.headers, body: body.toString("utf8") });
       handler(req, res, body, seen.length);
     });
   });
@@ -46,12 +46,17 @@ function upstream(handler) {
   });
 }
 
-/** One call to a relay, with the pieces a test cares about: status, headers, the whole body and the read boundaries. */
-function ask(url, { token, body, method = "POST", headers = {} } = {}) {
+/**
+ * One call to a relay, with the pieces a test cares about: status, headers, the whole body and the read boundaries.
+ * `rawPath` puts those exact bytes in the request line, which a caller could do and `new URL` would otherwise rewrite.
+ */
+function ask(url, { token, body, method = "POST", headers = {}, rawPath = null } = {}) {
   return new Promise((resolve, reject) => {
     const sent = { "content-type": "application/json", ...headers };
     if (token !== undefined) sent.authorization = `Bearer ${token}`;
-    const req = http.request(url, { method, headers: sent }, (res) => {
+    const target = new URL(url);
+    const path = rawPath ?? `${target.pathname}${target.search}`;
+    const req = http.request({ host: target.hostname, port: Number(target.port), path, method, headers: sent }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () =>
@@ -143,7 +148,15 @@ test("the right token is swapped for the key, and the model is rewritten", async
     res.writeHead(200, { "content-type": "application/json" });
     res.end('{"ok":true}');
   });
-  const relay = await startOpenRouterRelay({ readKey: () => FAKE_KEY, upstream: up.url, model: "relay/one" });
+  const keyReads = [];
+  const relay = await startOpenRouterRelay({
+    readKey: () => {
+      keyReads.push(1);
+      return FAKE_KEY;
+    },
+    upstream: up.url,
+    model: "relay/one",
+  });
   try {
     const answer = await ask(`${relay.url}/v1/messages?beta=true`, { token: relay.token, body: { model: "claude-sonnet-5", messages: [{ role: "user", content: "hi" }] } });
     assert.equal(answer.status, 200);
@@ -164,6 +177,19 @@ test("the right token is swapped for the key, and the model is rewritten", async
     const notJson = await ask(`${relay.url}/v1/messages`, { token: relay.token, headers: { "content-type": "text/plain" }, body: undefined });
     assert.equal(up.seen.length, 2);
     assert.equal(up.seen[1].body, "");
+    // A caller writes the request line itself, so it is untrusted. `..` cannot climb out of the upstream's path, and a
+    // path that names another host outright is refused rather than followed: nothing carries the key to a stranger.
+    const climbed = await ask(relay.url, { token: relay.token, rawPath: "/../../v1/messages", body: { model: "x" } });
+    assert.equal(climbed.status, 200);
+    assert.equal(up.seen.length, 3);
+    assert.equal(up.seen[2].host, up.url.replace("http://", ""));
+    assert.equal(up.seen[2].url, "/v1/messages");
+    const escaped = await ask(relay.url, { token: relay.token, rawPath: "http://elsewhere.example/v1/messages", body: { model: "x" } });
+    assert.equal(escaped.status, 502);
+    assert.equal(escaped.text.includes("elsewhere.example"), false);
+    assert.equal(up.seen.length, 3);
+    // The key is read once, at start, and never again: five calls did not touch the Keychain five times.
+    assert.equal(keyReads.length, 1);
   } finally {
     await relay.close();
     await up.close();

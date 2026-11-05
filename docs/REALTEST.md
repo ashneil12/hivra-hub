@@ -302,5 +302,7 @@ denies every outbound connection except named loopback ports (`scripts/bench-san
 script hands the launcher only the relay's URL and one random token for that run
 (`CLAUDE_OPENROUTER_RELAY_URL`, `CLAUDE_OPENROUTER_RELAY_TOKEN`; the launcher's own documented path). The profile then
 opens exactly that one port: the gateway's ports stay shut for this run. The key lives in the relay's closure and nowhere
-else — never in an environment, a file, a log line, a response or a thrown error. A missing Keychain item stops the run
-before anything starts, with the line to add it. The relay is closed on every exit path, including a throw and a signal.
+else: never in an environment, a file or a log line, never in an error message, and never in the headers of an answer it
+hands back. The one thing it can't inspect is the answer's body, which is streamed through byte for byte because
+buffering it would break a streamed (SSE) answer. A missing Keychain item stops the run before anything starts, with the
+line to add it. The relay is closed on every exit path, including a throw and a signal.
