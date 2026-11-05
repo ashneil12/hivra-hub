@@ -69,6 +69,9 @@ pub struct ProjectFile {
     /// this file, and only the imported text is ever run.
     #[serde(default)]
     pub verify: VerifySettings,
+    /// Services, ports and env names for one stack per worktree (WP-87). Absent means this project is left alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<crate::stack_decl::StackDecl>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -392,6 +395,9 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
         }
     }
     validate_verify(&file.verify)?;
+    if let Some(stack) = &file.stack {
+        crate::stack_decl::validate(stack)?;
+    }
     Ok(())
 }
 
@@ -849,6 +855,7 @@ pub(crate) mod tests {
         assert_eq!(file.action("dev").unwrap().timeout_seconds(), None);
         assert_eq!(file.action("check").unwrap().timeout_seconds(), Some(3600));
         assert_eq!(file.build_output(), vec!["target", "node_modules"]);
+        assert!(file.stack.is_none());
         let minimal = parse(r#"{"version":1}"#).unwrap();
         assert!(minimal.actions.is_empty());
         assert_eq!(minimal.build_output(), default_build_output());
