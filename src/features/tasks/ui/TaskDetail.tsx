@@ -12,6 +12,9 @@ export type TaskDetailTask = {
   assignee: string | null;
   comments: readonly { id: string; body: string }[];
   activity: readonly { id: string; text: string }[];
+  githubUrl?: string | null;
+  githubPaused?: boolean;
+  githubPulls?: readonly { title: string; url: string; state: string }[];
 };
 
 export function TaskDetail({
@@ -36,6 +39,35 @@ export function TaskDetail({
       {task.needsYou ? <p className="text-[12px] text-content">Needs you</p> : null}
       {task.failed ? <p className="text-[12px] text-content">Failed</p> : null}
       {task.description ? <p className="mt-1 whitespace-pre-wrap text-[12px] text-content/80">{task.description}</p> : null}
+      {task.githubUrl ? (
+        <>
+          <a href={task.githubUrl} className="mt-1 block text-[12px] text-content">
+            {task.githubUrl}
+          </a>
+          <p className="mt-1 text-[12px] text-content/70">
+            This task's title and description are read-only while it is linked to GitHub.
+          </p>
+        </>
+      ) : null}
+      {task.githubPaused ? (
+        <>
+          <p className="mt-1 text-[12px] text-content">GitHub sync paused</p>
+          <p className="text-[12px] text-content/70">
+            Add the project label to the GitHub issue or pull request again to resume updates.
+          </p>
+        </>
+      ) : null}
+      {(task.githubPulls ?? []).some((pull) => pull.url !== task.githubUrl) ? (
+        <section aria-label="GitHub links" className="mt-2">
+          {(task.githubPulls ?? [])
+            .filter((pull) => pull.url !== task.githubUrl)
+            .map((pull) => (
+              <a key={pull.url} href={pull.url} className="block text-[12px] text-content">
+                {pull.title || pull.url}
+              </a>
+            ))}
+        </section>
+      ) : null}
       <p className="mt-1 text-[12px] text-content/70">{task.assignee ? `Assigned to ${task.assignee}` : "Unassigned"}</p>
       {note ? <p className="mt-1 text-[12px] text-content/70">{note}</p> : null}
       <label className="mt-2 block text-[12px] text-content/70">
