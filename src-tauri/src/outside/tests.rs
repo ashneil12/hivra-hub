@@ -1,5 +1,7 @@
 // Port of Orbit's oauth_api and mcp_api checks (Apache-2.0). Hivra has no
-// session cookie, chat tool or delete_task, so those cases are not here.
+// login cookie, chat tool or delete_task. Consent without the app is 401
+// login_required, which is Orbit's "consent without a session" case: the app
+// command is the session.
 
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpStream};
@@ -240,47 +242,6 @@ fn authorize(port: u16, client: &str, challenge: &str) -> String {
         .to_string()
 }
 
-fn csrf_of(port: u16, request: &str) -> String {
-    let res = send(
-        port,
-        "GET",
-        &format!("/oauth/consent/{request}"),
-        &[("accept", "application/json")],
-        &[],
-        None,
-        None,
-    );
-    assert_eq!(res.status, 200, "{}", text_of(&res));
-    json_of(&res)["csrf_token"].as_str().unwrap().to_string()
-}
-
-fn consent(
-    port: u16,
-    request: &str,
-    csrf: &str,
-    projects: &[&str],
-    write: bool,
-    approved: bool,
-) -> Res {
-    let origin = format!("http://127.0.0.1:{port}");
-    let body = serde_json::to_vec(&json!({
-        "approved": approved,
-        "csrf_token": csrf,
-        "project_ids": projects,
-        "write": write
-    }))
-    .unwrap();
-    send(
-        port,
-        "POST",
-        &format!("/oauth/consent/{request}"),
-        &[("content-type", "application/json"), ("origin", &origin)],
-        &body,
-        None,
-        None,
-    )
-}
-
 fn code_from(redirect: &str) -> String {
     url::Url::parse(redirect)
         .unwrap()
@@ -330,17 +291,14 @@ fn tokens_from(res: &Res) -> Tokens {
     }
 }
 
-fn login(port: u16, projects: &[&str], write: bool) -> (String, Tokens) {
+fn login(door: &Outside, port: u16, projects: &[&str], write: bool) -> (String, Tokens) {
     let (verifier, challenge) = challenge();
     let client = client_id(port);
     let request = authorize(port, &client, &challenge);
-    let csrf = csrf_of(port, &request);
-    let agreed = consent(port, &request, &csrf, projects, write, true);
-    assert_eq!(agreed.status, 200, "{}", text_of(&agreed));
-    let redirect = json_of(&agreed)["redirect_uri"]
-        .as_str()
+    let chosen: Vec<String> = projects.iter().map(|id| (*id).to_string()).collect();
+    let redirect = super::decide_local(door, &request, true, &chosen, write)
         .unwrap()
-        .to_string();
+        .redirect_uri;
     let query = |name: &str| -> String {
         url::Url::parse(&redirect)
             .unwrap()
@@ -503,7 +461,7 @@ fn discovery_and_a_full_pkce_grant_store_only_hashes() {
     assert_eq!(meta["issuer"], format!("http://127.0.0.1:{port}"));
     assert_eq!(meta["code_challenge_methods_supported"], json!(["S256"]));
 
-    let (_client, tokens) = login(port, &["hivra"], false);
+    let (_client, tokens) = login(&door, port, &["hivra"], false);
     assert_eq!(tokens.scope, "hivra:read");
     door.with_conn(|conn| {
         let hash: Vec<u8> = conn
@@ -542,9 +500,8 @@ fn a_wrong_proof_does_not_spend_the_code_and_reuse_revokes() {
     let (verifier, challenge) = challenge();
     let client = client_id(port);
     let request = authorize(port, &client, &challenge);
-    let csrf = csrf_of(port, &request);
-    let agreed = consent(port, &request, &csrf, &["hivra"], false, true);
-    let code = code_from(json_of(&agreed)["redirect_uri"].as_str().unwrap());
+    let agreed = super::decide_local(&door, &request, true, &["hivra".to_string()], false).unwrap();
+    let code = code_from(&agreed.redirect_uri);
     let resource = format!("http://127.0.0.1:{port}/mcp");
 
     let wrong_verifier = exchange(port, &client, &code, &"z".repeat(64), Some(&resource));
@@ -614,9 +571,9 @@ fn a_wrong_proof_does_not_spend_the_code_and_reuse_revokes() {
 
 #[test]
 fn refresh_tokens_rotate_and_reuse_revokes() {
-    let (_door, port) = door();
-    seed(&_door);
-    let (client, tokens) = login(port, &["hivra"], false);
+    let (door, port) = door();
+    seed(&door);
+    let (client, tokens) = login(&door, port, &["hivra"], false);
     let next = tokens_from(&refresh(port, &client, &tokens.refresh, None));
     assert_ne!(next.refresh, tokens.refresh);
     let still = mcp(
@@ -636,7 +593,7 @@ fn refresh_tokens_rotate_and_reuse_revokes() {
     );
     assert_eq!(dead.status, 401);
 
-    let (_client2, write_tokens) = login(port, &["hivra"], false);
+    let (_client2, write_tokens) = login(&door, port, &["hivra"], false);
     let widened = refresh(
         port,
         &_client2,
@@ -651,33 +608,67 @@ fn refresh_tokens_rotate_and_reuse_revokes() {
 
 #[test]
 fn a_bad_consent_does_not_spend_the_request() {
-    let (_door, port) = door();
-    seed(&_door);
+    let (door, port) = door();
+    seed(&door);
     let (_verifier, challenge) = challenge();
     let client = client_id(port);
     let request = authorize(port, &client, &challenge);
-    let csrf = csrf_of(port, &request);
-    let bad = consent(port, &request, "hivra-csrf-nope", &["hivra"], false, true);
-    assert_eq!(bad.status, 400);
-    let missing = consent(port, &request, &csrf, &["not-a-project"], false, true);
-    assert_eq!(missing.status, 400);
-    let folder = consent(port, &request, &csrf, &["/work/hivra"], false, true);
-    assert_eq!(folder.status, 400);
-    let denied = consent(port, &request, &csrf, &[], false, false);
-    assert_eq!(denied.status, 200, "{}", text_of(&denied));
-    assert!(json_of(&denied)["redirect_uri"]
-        .as_str()
+    let origin = format!("http://127.0.0.1:{port}");
+    let posted = serde_json::to_vec(&json!({
+        "approved": true,
+        "csrf_token": "hivra-csrf-nope",
+        "project_ids": ["hivra"],
+        "write": false
+    }))
+    .unwrap();
+    let bad = send(
+        port,
+        "POST",
+        &format!("/oauth/consent/{request}"),
+        &[("content-type", "application/json"), ("origin", &origin)],
+        &posted,
+        None,
+        None,
+    );
+    assert_eq!(bad.status, 401, "{}", text_of(&bad));
+    let missing = super::decide_local(&door, &request, true, &["not-a-project".to_string()], false);
+    assert!(missing.is_err(), "{missing:?}");
+    let folder = super::decide_local(&door, &request, true, &["/work/hivra".to_string()], false);
+    assert!(folder.is_err(), "{folder:?}");
+    let pending = door
+        .with_conn(|conn| super::pending_page(conn, super::now_ms()))
         .unwrap()
-        .contains("error=access_denied"));
-    let again = consent(port, &request, &csrf, &[], false, false);
-    assert_eq!(again.status, 400);
+        .unwrap();
+    assert_eq!(pending.requests.len(), 1);
+
+    let denied = super::decide_local(&door, &request, false, &[], false).unwrap();
+    assert!(
+        denied.redirect_uri.contains("error=access_denied"),
+        "{}",
+        denied.redirect_uri
+    );
+    let browser = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "text/html")],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(browser.status, 302, "{}", text_of(&browser));
+    let location = header(&browser, "location");
+    assert!(location.contains("error=access_denied"), "{location}");
+    assert!(!location.contains("code="), "{location}");
+    let again = super::decide_local(&door, &request, false, &[], false);
+    assert!(again.is_err(), "{again:?}");
 }
 
 #[test]
 fn an_expired_access_token_refreshes_and_disconnect_kills_both() {
     let (door, port) = door();
     seed(&door);
-    let (client, tokens) = login(port, &["hivra"], false);
+    let (client, tokens) = login(&door, port, &["hivra"], false);
     door.with_conn(|conn| {
         conn.execute("UPDATE outside_tokens SET access_expires_at = 1", [])
             .unwrap();
@@ -859,8 +850,8 @@ fn granted_tools_hide_everything_outside_the_grant() {
         .unwrap();
     })
     .unwrap();
-    let (_client, tokens) = login(port, &["hivra"], false);
-    let (_other_client, other) = login(port, &["secret"], false);
+    let (_client, tokens) = login(&door, port, &["hivra"], false);
+    let (_other_client, other) = login(&door, port, &["secret"], false);
 
     let projects = tool_body(&call_tool(port, &tokens.access, "list_projects", json!({})));
     assert_eq!(
@@ -1030,7 +1021,7 @@ fn granted_tools_hide_everything_outside_the_grant() {
 fn the_door_checks_origin_host_and_body_size() {
     let (door, port) = door();
     seed(&door);
-    let (_client, tokens) = login(port, &["hivra"], false);
+    let (_client, tokens) = login(&door, port, &["hivra"], false);
     let init = mcp(
         port,
         Some(&tokens.access),
@@ -1164,8 +1155,8 @@ fn writes_use_the_version_that_was_read_and_stay_inside_the_grant() {
     let (door, port) = door();
     seed(&door);
     let approved = add_task(&door, "/work/hivra", "Approved task");
-    let (_client, read) = login(port, &["hivra"], false);
-    let (_writer, write) = login(port, &["hivra"], true);
+    let (_client, read) = login(&door, port, &["hivra"], false);
+    let (_writer, write) = login(&door, port, &["hivra"], true);
     assert_eq!(write.scope, "hivra:read tasks:write");
     let listed = mcp(
         port,
@@ -1294,7 +1285,7 @@ fn docs_and_current_work_stay_inside_the_grant() {
         .unwrap();
     })
     .unwrap();
-    let (_client, tokens) = login(port, &["hivra"], false);
+    let (_client, tokens) = login(&door, port, &["hivra"], false);
     let docs = tool_body(&call_tool(port, &tokens.access, "list_docs", json!({})));
     let titles: Vec<_> = docs["result"]["structuredContent"]["items"]
         .as_array()
@@ -1343,7 +1334,7 @@ fn one_granted_task_has_no_next_page_when_a_secret_task_exists() {
     seed(&door);
     add_task(&door, "/work/hivra", "Approved task");
     add_task(&door, "/work/secret", "Secret task");
-    let (_client, tokens) = login(port, &["hivra"], false);
+    let (_client, tokens) = login(&door, port, &["hivra"], false);
     let page = tool_body(&call_tool(
         port,
         &tokens.access,
@@ -1391,4 +1382,294 @@ fn the_app_can_approve_without_the_browser_token() {
     assert_eq!(grants[0].projects, vec!["Hivra".to_string()]);
     assert!(!grants[0].write);
     assert!(grants[0].last_used_at.is_none());
+}
+
+/// The steps a program on this computer would take: read the request id from
+/// the authorize redirect, ask the consent page for JSON, and post an approval.
+/// Orbit answers that with 401 because there is no logged-in session.
+#[test]
+fn a_program_cannot_approve_its_own_grant() {
+    let (door, port) = door();
+    seed(&door);
+    let (_verifier, challenge) = challenge();
+    let client = client_id(port);
+    let request = authorize(port, &client, &challenge);
+    let origin = format!("http://127.0.0.1:{port}");
+
+    let api = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "application/json")],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(api.status, 401, "{}", text_of(&api));
+    assert_eq!(json_of(&api)["error"], "login_required");
+    let api_body = text_of(&api);
+    assert!(!api_body.contains("csrf"), "{api_body}");
+    assert!(!api_body.contains("secret"), "{api_body}");
+    assert!(!api_body.contains("hivra"), "{api_body}");
+
+    let page = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "text/html")],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(page.status, 200, "{}", text_of(&page));
+    let html = text_of(&page);
+    assert!(!html.contains("secret"), "{html}");
+    assert!(!html.contains("csrf"), "{html}");
+    assert!(!html.contains("project_id"), "{html}");
+    assert!(!html.to_ascii_lowercase().contains("<form"), "{html}");
+
+    let posted = serde_json::to_vec(&json!({
+        "approved": true,
+        "csrf_token": "hivra-csrf-stolen",
+        "project_ids": ["hivra", "secret"],
+        "write": true
+    }))
+    .unwrap();
+    let post = send(
+        port,
+        "POST",
+        &format!("/oauth/consent/{request}"),
+        &[
+            ("content-type", "application/json"),
+            ("origin", &origin),
+            ("accept", "application/json"),
+        ],
+        &posted,
+        None,
+        None,
+    );
+    assert_eq!(post.status, 401, "{}", text_of(&post));
+    assert_eq!(json_of(&post)["error"], "login_required");
+
+    let form_post = send(
+        port,
+        "POST",
+        &format!("/oauth/consent/{request}"),
+        &[
+            ("content-type", "application/x-www-form-urlencoded"),
+            ("origin", &origin),
+        ],
+        b"approved=true&csrf_token=x&project_id=hivra&project_id=secret&write=1",
+        None,
+        None,
+    );
+    assert_eq!(form_post.status, 401, "{}", text_of(&form_post));
+
+    door.with_conn(|conn| {
+        let grants: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outside_grants", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(grants, 0);
+        let codes: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outside_requests WHERE code_hash IS NOT NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(codes, 0);
+    })
+    .unwrap();
+
+    // The person's later Allow in the app still works. The program did not spend it.
+    let redirect =
+        super::decide_local(&door, &request, true, &["hivra".to_string()], false).unwrap();
+    assert!(
+        redirect.redirect_uri.contains("code="),
+        "{}",
+        redirect.redirect_uri
+    );
+}
+
+/// Allow in the app must send the browser Claude opened to the client's callback.
+/// A JSON poll must not be able to take that redirect first, and a second load
+/// must not hand the code out again.
+#[test]
+fn allow_sends_the_open_browser_to_the_callback() {
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let callback_port = listener.local_addr().unwrap().port();
+    let redirect_uri = format!("http://127.0.0.1:{callback_port}/cb");
+
+    let (door, port) = door();
+    seed(&door);
+    let (verifier, challenge) = challenge();
+    let registered = register(port, "Desk", &redirect_uri);
+    assert_eq!(registered.status, 201, "{}", text_of(&registered));
+    let client = json_of(&registered)["client_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resource = format!("http://127.0.0.1:{port}/mcp");
+    let query = form(&[
+        ("response_type", "code"),
+        ("client_id", &client),
+        ("redirect_uri", &redirect_uri),
+        ("state", "s1"),
+        ("code_challenge", &challenge),
+        ("code_challenge_method", "S256"),
+        ("scope", "hivra:read"),
+        ("resource", &resource),
+    ]);
+    let started = send(
+        port,
+        "GET",
+        &format!("/oauth/authorize?{query}"),
+        &[],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(started.status, 302, "{}", text_of(&started));
+    let request = url::Url::parse(header(&started, "location"))
+        .unwrap()
+        .query_pairs()
+        .find(|(key, _)| key == "request")
+        .unwrap()
+        .1
+        .to_string();
+
+    let result = super::decide_local(&door, &request, true, &["hivra".to_string()], false).unwrap();
+    let code = code_from(&result.redirect_uri);
+
+    // The program's JSON poll neither reveals the code nor uses up the redirect.
+    let polled = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "application/json")],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(polled.status, 401, "{}", text_of(&polled));
+    assert!(!text_of(&polled).contains(&code));
+
+    let browser = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "text/html")],
+        &[],
+        None,
+        None,
+    );
+    assert_eq!(browser.status, 302, "{}", text_of(&browser));
+    let location = header(&browser, "location").to_string();
+    assert!(location.starts_with(&redirect_uri), "{location}");
+    let query = |name: &str| -> String {
+        url::Url::parse(&location)
+            .unwrap()
+            .query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_default()
+    };
+    assert_eq!(query("code"), code, "{location}");
+    assert_eq!(query("state"), "s1", "{location}");
+    assert_eq!(
+        query("iss"),
+        format!("http://127.0.0.1:{port}"),
+        "{location}"
+    );
+
+    let seen = follow_redirect(&listener, &location);
+    assert!(seen.contains(&format!("code={code}")), "{seen}");
+    assert!(seen.contains("state=s1"), "{seen}");
+
+    let again = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "text/html")],
+        &[],
+        None,
+        None,
+    );
+    assert_ne!(again.status, 302, "{}", text_of(&again));
+    assert!(!text_of(&again).contains(&code), "{}", text_of(&again));
+    assert!(!header(&again, "location").contains(&code));
+
+    let body = form(&[
+        ("grant_type", "authorization_code"),
+        ("code", &code),
+        ("redirect_uri", &redirect_uri),
+        ("client_id", &client),
+        ("code_verifier", &verifier),
+        ("resource", &resource),
+    ]);
+    let traded = send(
+        port,
+        "POST",
+        "/oauth/token",
+        &[("content-type", "application/x-www-form-urlencoded")],
+        body.as_bytes(),
+        None,
+        None,
+    );
+    let tokens = tokens_from(&traded);
+    assert_eq!(tokens.scope, "hivra:read");
+}
+
+/// A redirect older than the code is not sent, and the code is not left on the page.
+#[test]
+fn an_expired_approval_is_not_sent_to_the_browser() {
+    let (door, port) = door();
+    seed(&door);
+    let (_verifier, challenge) = challenge();
+    let client = client_id(port);
+    let request = authorize(port, &client, &challenge);
+    let result = super::decide_local(&door, &request, true, &["hivra".to_string()], false).unwrap();
+    let code = code_from(&result.redirect_uri);
+    {
+        let mut waiting = super::lock_redirects(&door.redirects);
+        waiting.get_mut(&request).unwrap().until = 0;
+    }
+    let browser = send(
+        port,
+        "GET",
+        &format!("/oauth/consent/{request}"),
+        &[("accept", "text/html")],
+        &[],
+        None,
+        None,
+    );
+    assert_ne!(browser.status, 302, "{}", text_of(&browser));
+    assert!(!text_of(&browser).contains(&code), "{}", text_of(&browser));
+    assert!(!header(&browser, "location").contains(&code));
+}
+
+/// One browser follows the callback. A second load must not be able to present
+/// the same code to the client's listener and trip reuse-revoke.
+fn follow_redirect(listener: &std::net::TcpListener, location: &str) -> String {
+    let url = url::Url::parse(location).unwrap();
+    let port = url.port().unwrap();
+    let path = match url.query() {
+        Some(query) => format!("{}?{query}", url.path()),
+        None => url.path().to_string(),
+    };
+    let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    client.write_all(request.as_bytes()).unwrap();
+    let (mut incoming, _) = listener.accept().unwrap();
+    let mut buf = [0u8; 4096];
+    let n = incoming.read(&mut buf).unwrap();
+    let seen = String::from_utf8_lossy(&buf[..n]).to_string();
+    let _ =
+        incoming.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    let _ = client.read(&mut buf);
+    seen
 }

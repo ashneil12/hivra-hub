@@ -10,6 +10,7 @@ mod oauth;
 mod security;
 mod store;
 
+use std::collections::HashMap;
 #[cfg(test)]
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::PathBuf;
@@ -63,9 +64,19 @@ struct Run {
     thread: JoinHandle<()>,
 }
 
+pub(crate) struct PendingRedirect {
+    location: String,
+    until: i64,
+}
+
+/// The code is not written to the database. It lives here until the browser
+/// Claude opened follows it once, or until the code would have expired.
+pub(crate) type Redirects = Arc<Mutex<HashMap<String, PendingRedirect>>>;
+
 pub struct Outside {
     db: Arc<DbInner>,
     run: Mutex<Option<Run>>,
+    redirects: Redirects,
 }
 
 impl Outside {
@@ -76,6 +87,7 @@ impl Outside {
         let door = Self {
             db: Arc::new(DbInner::File(path)),
             run: Mutex::new(None),
+            redirects: Arc::new(Mutex::new(HashMap::new())),
         };
         door.with_conn(|conn| store::ensure(conn))??;
         Ok(door)
@@ -90,6 +102,7 @@ impl Outside {
         Ok(Self {
             db: Arc::new(DbInner::Memory(Mutex::new(conn))),
             run: Mutex::new(None),
+            redirects: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -117,8 +130,12 @@ impl Outside {
             return Ok(existing.port);
         }
         let stop = Arc::new(AtomicBool::new(false));
-        let (port, thread) =
-            http::serve(Arc::clone(&self.db), Arc::clone(&stop)).map_err(|e| e.to_string())?;
+        let (port, thread) = http::serve(
+            Arc::clone(&self.db),
+            Arc::clone(&stop),
+            Arc::clone(&self.redirects),
+        )
+        .map_err(|e| e.to_string())?;
         *run = Some(Run { port, stop, thread });
         Ok(port)
     }
@@ -333,6 +350,29 @@ fn reply_message(reply: &Reply) -> String {
     }
 }
 
+pub(crate) fn lock_redirects(
+    redirects: &Redirects,
+) -> std::sync::MutexGuard<'_, HashMap<String, PendingRedirect>> {
+    match redirects.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+/// Drop a redirect whose code would already be refused. One caller gets it.
+pub(crate) fn take_ready(
+    waiting: &mut HashMap<String, PendingRedirect>,
+    id: &str,
+    now: i64,
+) -> Option<String> {
+    let until = waiting.get(id)?.until;
+    if until < now {
+        waiting.remove(id);
+        return None;
+    }
+    waiting.remove(id).map(|pending| pending.location)
+}
+
 fn decide_local(
     door: &Outside,
     id: &str,
@@ -342,6 +382,9 @@ fn decide_local(
 ) -> Result<ConsentResult, String> {
     let origin = door.origin()?;
     let now = now_ms();
+    // Hold this lock across the write, so a browser poll cannot see the code
+    // in the database and also miss the redirect.
+    let mut waiting = lock_redirects(&door.redirects);
     let reply = door.with_conn(|conn| {
         oauth::decide(
             conn,
@@ -356,7 +399,17 @@ fn decide_local(
             },
         )
     })?;
-    consent_result(reply)
+    let result = consent_result(reply)?;
+    if !result.redirect_uri.is_empty() {
+        waiting.insert(
+            id.to_string(),
+            PendingRedirect {
+                location: result.redirect_uri.clone(),
+                until: now.saturating_add(security::CODE_MILLIS),
+            },
+        );
+    }
+    Ok(result)
 }
 
 #[tauri::command]

@@ -422,7 +422,7 @@ pub fn live_projects(conn: &Connection) -> Result<Vec<LiveProject>, String> {
     Ok(out)
 }
 
-pub fn consent_get(conn: &Connection, id: &str, now: i64, json_body: bool) -> Reply {
+pub fn consent_page(conn: &Connection, id: &str, now: i64, redirect_waiting: bool) -> Reply {
     if let Err(err) = store::ensure(conn) {
         return server_error(err);
     }
@@ -431,41 +431,27 @@ pub fn consent_get(conn: &Connection, id: &str, now: i64, json_body: bool) -> Re
         Ok(None) => return fail(400, "invalid_request"),
         Err(err) => return server_error(err),
     };
-    if row.code_hash.is_some() || row.expires_at < now {
-        return fail(400, "invalid_request");
-    }
-    let csrf = random_token("hivra-csrf-");
-    let hash = hash_secret(&csrf);
-    if let Err(err) = conn.execute(
-        "UPDATE outside_requests SET csrf_hash = ?1 WHERE id = ?2 AND code_hash IS NULL",
-        params![hash.as_slice(), id],
-    ) {
-        return server_error(err.to_string());
-    }
     let client_name = load_client(conn, &row.client_id)
         .ok()
         .flatten()
         .map(|c| c.name)
-        .unwrap_or_else(|| "MCP client".into());
-    let projects = match live_projects(conn) {
-        Ok(projects) => projects,
-        Err(err) => return server_error(err),
-    };
-    if json_body {
-        return Reply::json(
-            200,
-            json!({
-                "csrf_token": csrf,
-                "client_name": client_name,
-                "projects": projects.iter().map(|p| json!({"id": p.id, "name": p.name})).collect::<Vec<_>>()
-            }),
-        );
+        .unwrap_or_else(|| "An app".into());
+    if row.code_hash.is_some() {
+        if redirect_waiting {
+            return waiting_page(&client_name);
+        }
+        return html_page("You can close this window.");
     }
-    Reply {
-        status: 200,
-        headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
-        body: consent_html(&client_name, &csrf, &projects, id).into_bytes(),
+    if row.expires_at < now {
+        return html_page("This request has expired. Start the connection again.");
     }
+    waiting_page(&client_name)
+}
+
+/// Orbit's consent routes return 401 login_required when no one is logged in.
+/// Hivra has no login cookie. The app command is that session.
+pub fn login_required() -> Reply {
+    fail(401, "login_required")
 }
 
 fn escape(text: &str) -> String {
@@ -475,30 +461,34 @@ fn escape(text: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn consent_html(client: &str, csrf: &str, projects: &[LiveProject], id: &str) -> String {
-    let mut boxes = String::new();
-    for project in projects {
-        boxes.push_str(&format!(
-            "<label><input type=\"checkbox\" name=\"project_id\" value=\"{}\"> {}</label>\n",
-            escape(&project.id),
-            escape(&project.name)
-        ));
-    }
-    format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Connect</title></head><body>\
-<form method=\"post\" action=\"/oauth/consent/{id}\">\
-<p>{client} wants to read Hivra.</p>\
-<input type=\"hidden\" name=\"csrf_token\" value=\"{csrf}\">\
-{boxes}\
-<label><input type=\"checkbox\" name=\"write\" value=\"1\"> Also allow task writes</label>\
-<button type=\"submit\" name=\"approved\" value=\"true\">Allow</button>\
-<button type=\"submit\" name=\"approved\" value=\"false\">Don't allow</button>\
-</form></body></html>",
-        id = escape(id),
-        client = escape(client),
-        csrf = escape(csrf),
-        boxes = boxes,
+fn html_page(text: &str) -> Reply {
+    page(&format!("<p>{}</p>", escape(text)), false)
+}
+
+fn waiting_page(client: &str) -> Reply {
+    page(
+        &format!(
+            "<p>{} wants to read Hivra. Allow it in Hivra. This page continues when you do.</p>",
+            escape(client)
+        ),
+        true,
     )
+}
+
+fn page(body: &str, refresh: bool) -> Reply {
+    let refresh = if refresh {
+        "<meta http-equiv=\"refresh\" content=\"1\">"
+    } else {
+        ""
+    };
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\">{refresh}<title>Connect</title></head><body>{body}</body></html>"
+    );
+    Reply {
+        status: 200,
+        headers: vec![("content-type".into(), "text/html; charset=utf-8".into())],
+        body: html.into_bytes(),
+    }
 }
 
 pub struct Decision<'a> {

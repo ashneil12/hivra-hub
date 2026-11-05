@@ -39,17 +39,24 @@ enum ReadStop {
 pub(crate) fn serve(
     db: Arc<DbInner>,
     stop: Arc<AtomicBool>,
+    redirects: super::Redirects,
 ) -> std::io::Result<(u16, JoinHandle<()>)> {
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
     listener.set_nonblocking(true)?;
     let port = listener.local_addr()?.port();
     let handle = thread::Builder::new()
         .name("hivra-outside".into())
-        .spawn(move || accept_loop(listener, db, stop, port))?;
+        .spawn(move || accept_loop(listener, db, stop, redirects, port))?;
     Ok((port, handle))
 }
 
-fn accept_loop(listener: TcpListener, db: Arc<DbInner>, stop: Arc<AtomicBool>, port: u16) {
+fn accept_loop(
+    listener: TcpListener,
+    db: Arc<DbInner>,
+    stop: Arc<AtomicBool>,
+    redirects: super::Redirects,
+    port: u16,
+) {
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, addr)) => {
@@ -63,8 +70,9 @@ fn accept_loop(listener: TcpListener, db: Arc<DbInner>, stop: Arc<AtomicBool>, p
                     continue;
                 }
                 let db = Arc::clone(&db);
+                let redirects = Arc::clone(&redirects);
                 thread::spawn(move || {
-                    let _ = handle_client(stream, addr, &db, port);
+                    let _ = handle_client(stream, addr, &db, &redirects, port);
                 });
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
@@ -80,6 +88,7 @@ fn handle_client(
     mut stream: TcpStream,
     addr: SocketAddr,
     db: &DbInner,
+    redirects: &super::Redirects,
     port: u16,
 ) -> std::io::Result<()> {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -93,7 +102,7 @@ fn handle_client(
     let reply = match read_request(&mut stream) {
         Err(ReadStop::TooLarge) => Reply::json(413, json!({ "error": "request_too_large" })),
         Err(ReadStop::Bad) => Reply::empty(400),
-        Ok(asked) => dispatch(db, &asked, &origin, &host, &ip),
+        Ok(asked) => dispatch(db, redirects, &asked, &origin, &host, &ip),
     };
     write_reply(&mut stream, &reply)
 }
@@ -195,7 +204,14 @@ fn is_public(path: &str) -> bool {
         || path.starts_with("/.well-known/")
 }
 
-fn dispatch(db: &DbInner, asked: &Asked, origin: &str, host: &str, ip: &str) -> Reply {
+fn dispatch(
+    db: &DbInner,
+    redirects: &super::Redirects,
+    asked: &Asked,
+    origin: &str,
+    host: &str,
+    ip: &str,
+) -> Reply {
     let hosts = header_values(&asked.headers, "host");
     if hosts.len() != 1 || hosts[0] != host {
         return Reply::empty(403);
@@ -210,6 +226,9 @@ fn dispatch(db: &DbInner, asked: &Asked, origin: &str, host: &str, ip: &str) -> 
         .collect();
     if !security::origin_allowed(&asked.path, &asked.method, &origins, origin) {
         return Reply::empty(403);
+    }
+    if asked.path.starts_with("/oauth/consent") {
+        return finish(consent(db, redirects, asked), false);
     }
     match with_db(db, |conn| route(conn, asked, origin, ip, now_ms())) {
         Ok(reply) => finish(reply, public),
@@ -249,16 +268,6 @@ fn route(conn: &mut Connection, asked: &Asked, origin: &str, ip: &str, now: i64)
         ("GET", "/oauth/authorize") => oauth::authorize(conn, &asked.query, origin, now),
         ("POST", "/oauth/token") => oauth::token(conn, &form_body(&asked.body), now),
         ("POST", "/oauth/revoke") => oauth::revoke_token(conn, &form_body(&asked.body), now),
-        ("GET", path) if path.starts_with("/oauth/consent") => {
-            let id = consent_id(path, &asked.query);
-            let wants_json = one_header(&asked.headers, "accept")
-                .unwrap_or_default()
-                .contains("application/json");
-            oauth::consent_get(conn, &id, now, wants_json)
-        }
-        ("POST", path) if path.starts_with("/oauth/consent") => {
-            consent_post(conn, path, asked, origin, now)
-        }
         ("DELETE", path) if path.starts_with("/oauth/grants/") => {
             let id = &path["/oauth/grants/".len()..];
             if id.is_empty() || id.contains('/') {
@@ -304,68 +313,33 @@ fn consent_id(path: &str, query: &[(String, String)]) -> String {
         .unwrap_or_default()
 }
 
-fn consent_post(conn: &mut Connection, path: &str, asked: &Asked, origin: &str, now: i64) -> Reply {
-    let id = consent_id(path, &asked.query);
-    let content_type = one_header(&asked.headers, "content-type").unwrap_or_default();
-    let (csrf, approved, write, projects) =
-        if content_type.contains("json") || asked.body.first() == Some(&b'{') {
-            let value = json_body(&asked.body);
-            let csrf = value
-                .get("csrf_token")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let approved = value
-                .get("approved")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let write = value
-                .get("write")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            let projects: Vec<String> = value
-                .get("project_ids")
-                .and_then(|v| v.as_array())
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(|v| v.as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default();
-            (csrf, approved, write, projects)
-        } else {
-            let fields = form_body(&asked.body);
-            let csrf = fields
-                .iter()
-                .find(|(key, _)| key == "csrf_token")
-                .map(|(_, value)| value.clone())
-                .unwrap_or_default();
-            let approved = fields
-                .iter()
-                .any(|(key, value)| key == "approved" && value == "true");
-            let write = fields
-                .iter()
-                .any(|(key, value)| key == "write" && value == "1");
-            let projects: Vec<String> = fields
-                .iter()
-                .filter(|(key, _)| key == "project_id")
-                .map(|(_, value)| value.clone())
-                .collect();
-            (csrf, approved, write, projects)
-        };
-    oauth::decide(
-        conn,
-        oauth::Decision {
-            id: &id,
-            csrf: Some(&csrf),
-            approved,
-            project_ids: &projects,
-            write,
-            now,
-            origin,
-        },
-    )
+/// JSON and POST are the program's path. They are 401, and they do not take
+/// the redirect the browser is waiting on. The browser holds the redirect lock
+/// across the database read so it cannot miss a decision that just landed.
+fn consent(db: &DbInner, redirects: &super::Redirects, asked: &Asked) -> Reply {
+    if asked.method != "GET" {
+        return oauth::login_required();
+    }
+    let wants_json = one_header(&asked.headers, "accept")
+        .unwrap_or_default()
+        .contains("application/json");
+    if wants_json {
+        return oauth::login_required();
+    }
+    let id = consent_id(&asked.path, &asked.query);
+    let now = now_ms();
+    let mut waiting = super::lock_redirects(redirects);
+    if let Some(location) = super::take_ready(&mut waiting, &id, now) {
+        return Reply::redirect(&location);
+    }
+    let still_there = waiting.get(&id).is_some();
+    match with_db(db, |conn| oauth::consent_page(conn, &id, now, still_there)) {
+        Ok(reply) => reply,
+        Err(err) => Reply::json(
+            500,
+            json!({"error": "server_error", "error_description": err}),
+        ),
+    }
 }
 
 fn mcp_post(conn: &mut Connection, asked: &Asked, origin: &str, now: i64) -> Reply {
