@@ -273,6 +273,43 @@ test("an unsandboxed agent before a scenario is not played, and it stops the rou
   assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
 });
 
+test("a scenario that names clis does not pass while one was neither refused nor seen", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-canary-"));
+  const refusal = "This bench only starts the run's own Claude wrapper. It won't start codex.";
+  const result = await runScenario({
+    id: "canary",
+    title: "canary",
+    minutes: 1,
+    canaryClis: ["codex", "grok", "hermes", "claude"],
+    steps: [{ send: { room: "room" }, text: "echo hi" }],
+  }, {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind) => (kind === "send" ? { ok: true, at: Date.now(), session: "chat-1" } : { sessions: [], rooms: [] }),
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [],
+    claudeTexts: async () => [{ session: "chat-1", text: refusal, t: Date.now() }],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  });
+  assert.equal(result.verdict, "NOT PROVEN");
+  assert.match(result.fail, /not proven: grok, hermes, claude/);
+  assert.deepEqual(result.canary.map((row) => [row.cli, row.verdict]), [
+    ["codex", "PASS"],
+    ["grok", "NOT PROVEN"],
+    ["hermes", "NOT PROVEN"],
+    ["claude", "NOT PROVEN"],
+  ]);
+  const written = JSON.parse(fs.readFileSync(path.join(evidence, "scenarios", "canary", "evidence.json"), "utf8"));
+  assert.equal(written.verdict, "NOT PROVEN");
+  assert.equal(written.canary[0].why, "the plan gate refused the start");
+  const transcript = fs.readFileSync(path.join(evidence, "scenarios", "canary", "transcript.md"), "utf8");
+  assert.match(transcript, /## Canary/);
+  assert.match(transcript, /\| claude \| NOT PROVEN \|/);
+  fs.rmSync(evidence, { recursive: true, force: true });
+});
+
 test("a coding-team step can start in Full access, and an approve step taps Allow in that chat", async () => {
   const { runScenario } = await import("./hub-realtest-scenarios.mjs");
   const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-ap-"));

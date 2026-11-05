@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { dummyStoppedOk, finishSceneApps, sceneAgents, startSceneAgentPoll } from "../bench-guard.mjs";
+import { applyCanary, canaryReport, canaryTable, dummyStoppedOk, finishSceneApps, sceneAgents, startSceneAgentPoll } from "../bench-guard.mjs";
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
 import { hardChecks } from "./checks.mjs";
@@ -473,8 +473,12 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && !hardStops.includes(item));
       scored.reasons = [...hardStops, dummyReason, ...rest];
     }
-    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scored, hard, judged, notes, agents: watched.agents };
-    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes, agents: watched.agents }, null, 2));
+    const evidenceBody = { ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes, agents: watched.agents };
+    const canary = canaryReport(scene.canaryClis, { agents: watched.agents, evidence: evidenceBody, hit: agentsAfter });
+    const scoredCanary = applyCanary(scored, canary);
+    if (canary?.rows?.length) fs.appendFileSync(path.join(dir, "transcript.md"), `\n## Canary\n\n${canaryTable(canary.rows)}\n`);
+    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scoredCanary, hard, judged, notes, agents: watched.agents };
+    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ...evidenceBody, ...(canary ? { canary: canary.rows } : {}) }, null, 2));
     fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
     log(`  ${scene.id}: ${result.verdict}${result.wouldBe ? ` (would be ${result.wouldBe})` : ""}${result.reasons?.length ? `: ${result.reasons.slice(0, 2).join("; ")}` : ""}`);
     return result;

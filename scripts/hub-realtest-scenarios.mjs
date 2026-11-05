@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { finishSceneApps, sceneAgents, startSceneAgentPoll } from "./bench-guard.mjs";
+import { canaryReport, canaryTable, finishSceneApps, sceneAgents, startSceneAgentPoll } from "./bench-guard.mjs";
 import { isTeamSeat, monoIdFor, speakerName } from "./realconv/seats.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -527,15 +527,22 @@ export async function runScenario(scenario, ctx) {
   const watched = await agentPoll.stop();
   const agentsAfter = watched.hit;
   const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
+  result.agents = watched.agents;
+  const canary = canaryReport(scenario.canaryClis, { agents: watched.agents, evidence: result, hit: agentsAfter });
+  if (canary?.hardStop && !hardStops.includes(canary.hardStop)) hardStops.push(canary.hardStop);
   if (hardStops.length) {
     result.verdict = "FAIL";
     result.fail = hardStops.join("; ");
+  } else if (canary?.unproven) {
+    result.verdict = "NOT PROVEN";
+    result.fail = canary.unproven;
   }
-  result.agents = watched.agents;
+  if (canary) result.canary = canary.rows;
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
-  fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
+  const written = transcript(scenario, result, t0);
+  fs.writeFileSync(path.join(dir, "transcript.md"), canary?.rows?.length ? `${written}\n## Canary\n\n${canaryTable(canary.rows)}\n` : written);
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
-  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), agents: watched.agents, ...(hardStops.length ? { verdict: "FAIL", fail: hardStops.join("; ") } : {}) };
+  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), agents: watched.agents, ...(canary ? { canary: canary.rows } : {}), ...(result.verdict ? { verdict: result.verdict, fail: result.fail } : {}) };
   } finally {
     await agentPoll.stop();
   }

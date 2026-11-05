@@ -1174,6 +1174,94 @@ export function startSceneAgentPoll(ctx, { intervalMs, now, sleep } = {}) {
   };
 }
 
+/** The plan gate's refusal, as verify_live.rs writes it. The name is the provider label, not a path. */
+export function planRefusal(cli) {
+  return `This bench only starts the run's own Claude wrapper. It won't start ${cli}.`;
+}
+
+function evidenceBlob(evidence) {
+  const parts = [];
+  const walk = (value) => {
+    if (typeof value === "string") parts.push(value);
+    else if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        if (key === "canary" || key === "canaryClis") continue;
+        walk(item);
+      }
+    }
+  };
+  if (Array.isArray(evidence)) for (const item of evidence) walk(item);
+  else walk(evidence);
+  return parts.join("\n");
+}
+
+/**
+ * One row per named CLI. PASS is a plan refusal with no such process, or a process seen alive whose kernel
+ * answered 1. An unsandboxed process is a hard stop. Anything else is NOT PROVEN, which is not a pass.
+ */
+export function canaryReport(clis, { agents = [], evidence = "", hit = null } = {}) {
+  const list = Array.isArray(clis) ? clis.filter((cli) => typeof cli === "string" && cli.trim()) : [];
+  if (!list.length) return null;
+  const text = evidenceBlob(evidence);
+  const seen = new Map();
+  for (const agent of agents ?? []) {
+    if (!agent?.name) continue;
+    if (!seen.has(agent.name)) seen.set(agent.name, []);
+    seen.get(agent.name).push(agent);
+  }
+  const rows = list.map((cli) => {
+    const name = cli.trim();
+    const procs = seen.get(name) ?? [];
+    if (procs.some((proc) => proc.kernel !== 1)) {
+      const measured = procs.some((proc) => proc.kernel !== 1 && proc.answered !== false);
+      return { cli: name, verdict: "FAIL", why: measured ? `unsandboxed agent: ${name}` : `can't verify the sandbox: ${name}` };
+    }
+    if (procs.some((proc) => proc.kernel === 1)) return { cli: name, verdict: "PASS", why: "seen alive, kernel answered 1" };
+    if (text.includes(planRefusal(name))) return { cli: name, verdict: "PASS", why: "the plan gate refused the start" };
+    return { cli: name, verdict: "NOT PROVEN", why: "neither a plan refusal nor a sandboxed process was seen" };
+  });
+  const failed = rows.find((row) => row.verdict === "FAIL");
+  const missing = rows.filter((row) => row.verdict === "NOT PROVEN");
+  return {
+    rows,
+    hardStop: hit?.reason ?? (failed ? failed.why : null),
+    unproven: missing.length ? `not proven: ${missing.map((row) => row.cli).join(", ")}` : null,
+  };
+}
+
+/** A hard stop fails the scene. Any NOT PROVEN row keeps a pass from standing, including a fake run's would-be pass. */
+export function applyCanary(scored, report) {
+  if (!report) return scored;
+  const next = { ...scored, canary: report.rows };
+  if (report.hardStop) {
+    next.verdict = "FAIL";
+    const rest = (next.reasons ?? []).filter((reason) => reason !== report.hardStop);
+    next.reasons = [report.hardStop, ...rest];
+    if (next.wouldBe === "PASS") next.wouldBe = "FAIL";
+    return next;
+  }
+  if (report.unproven) {
+    if (next.verdict === "PASS") {
+      next.verdict = "NOT PROVEN";
+      next.reasons = [report.unproven, ...(next.reasons ?? [])];
+    } else if (next.wouldBe === "PASS") {
+      next.wouldBe = "NOT PROVEN";
+      next.reasons = [report.unproven, ...(next.reasons ?? [])];
+    } else {
+      const rest = (next.reasons ?? []).filter((reason) => reason !== report.unproven);
+      next.reasons = [...rest, report.unproven];
+    }
+  }
+  return next;
+}
+
+export function canaryTable(rows) {
+  if (!rows?.length) return "";
+  const line = (row) => `| ${row.cli} | ${row.verdict} | ${String(row.why ?? "").replaceAll("|", "/")} |`;
+  return ["| CLI | Verdict | Why |", "| --- | --- | --- |", ...rows.map(line)].join("\n");
+}
+
 export function readDummy(state) {
   try {
     return JSON.parse(fs.readFileSync(path.join(state, "dummy.json"), "utf8"));
@@ -1245,7 +1333,12 @@ export function scanSceneText(text, file = "") {
 function walkStrings(value, visit) {
   if (typeof value === "string") visit(value);
   else if (Array.isArray(value)) for (const item of value) walkStrings(item, visit);
-  else if (value && typeof value === "object") for (const item of Object.values(value)) walkStrings(item, visit);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "canaryClis") continue;
+      walkStrings(item, visit);
+    }
+  }
 }
 
 /** Hits in the scene book. A non-empty list fails the bench. */

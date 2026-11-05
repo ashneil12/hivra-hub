@@ -227,9 +227,10 @@ test("nothing a fake played or judged can pass, however well it scored", () => {
 // ---- the command line ----------------------------------------------------------------------------------------------
 
 test("the scene book: every scene has its card, place and opening; S10, S5 and S14 run; the rest say why not", () => {
-  // S1 to S17 are Alfred's; S18 and S19 are ash-day step 9 (normal chat, then Keep one long chat on).
-  assert.equal(book.scenes.length, 19);
-  assert.deepEqual(book.scenes.slice(-2).map((s) => [s.id, s.longChat ?? null]), [["S18", null], ["S19", "lead"]]);
+  // S1 to S17 are Alfred's; S18 and S19 are ash-day step 9 (normal chat, then Keep one long chat on). CANARY proves the named CLIs.
+  assert.equal(book.scenes.length, 20);
+  assert.deepEqual(book.scenes.filter((s) => s.id === "S18" || s.id === "S19").map((s) => [s.id, s.longChat ?? null]), [["S18", null], ["S19", "lead"]]);
+  assert.deepEqual(book.scenes.find((s) => s.id === "CANARY").canaryClis, ["codex", "grok", "hermes", "claude"]);
   for (const scene of book.scenes) {
     assert.ok(scene.card?.length > 40 && scene.opening && scene.place, scene.id);
     if (scene.runnable === false) assert.ok(scene.why, scene.id);
@@ -470,6 +471,68 @@ test("an unsandboxed agent that exists only between the scene's start and end is
   const evidence = JSON.parse(fs.readFileSync(path.join(dir, "P2", "evidence.json"), "utf8"));
   assert.equal(evidence.agents[0].pid, 240);
   assert.equal(evidence.agents[0].kernel, 0);
+});
+
+test("a named cli is not a pass unless the plan refused it or the kernel answered 1", async () => {
+  const { runConversation } = await import("./realconv/player.mjs");
+  const { writeReport } = await import("./realconv/report.mjs");
+  const dir = tmp();
+  const refusal = "This bench only starts the run's own Claude wrapper. It won't start codex.";
+  const scene = {
+    id: "P3",
+    title: "prove the named clis",
+    card: "Name the clis.",
+    place: { room: "room" },
+    opening: "echo hi",
+    minutes: 0,
+    quietSec: 0,
+    expect: {},
+    canaryClis: ["codex", "grok", "hermes", "claude"],
+  };
+  const passing = {
+    grade: "PASS",
+    replies: [{ at: "+1s", who: "chat", answers: 2, adds: 2, disagrees: null, honest: 2, voice: 2, note: "said it" }],
+    sceneChecks: [],
+    autoFails: [],
+    realConversation: true,
+    triggered: true,
+    summary: "it answered",
+    problems: [],
+  };
+  const judge = makeClient({ provider: "fake", model: "fake" }, { script: () => JSON.stringify(passing) });
+  const tester = makeClient({ provider: "fake", model: "fake" }, { script: () => '{"action":"done"}' });
+  const result = await runConversation(scene, {
+    act: async (op) => {
+      if (op === "send") return { ok: true, at: Date.now(), room: "tally:leadership" };
+      if (op === "snapshot") return { ok: true, sessions: [], monos: [], rooms: [], dom: { elements: [] } };
+      return { ok: true };
+    },
+    events: [], evidence: dir, project: dir, log: () => {}, pump: async () => {}, usage: () => ({ turns: 0, requests: 0 }),
+    claudeTexts: async () => [{ session: "chat-1", text: refusal, t: Date.now() }],
+    delegationRows: async () => [], monoSession: async () => null, sessionBlocks: async () => [],
+    leadId: "tally-lead", roomId: "tally:leadership", spec: { project: { id: "tally" }, leak: [] }, deadline: Date.now() + 60_000,
+    state: dir, team: [], home: "/tmp/bench-home", dataDir: "/tmp/bench-data", copies: [],
+  }, { tester, judge, agentsReal: false, out: dir, rubric: "" });
+  assert.notEqual(result.verdict, "PASS");
+  assert.equal(result.wouldBe, "NOT PROVEN");
+  assert.match(result.reasons[0], /not proven: grok, hermes, claude/);
+  assert.deepEqual(result.canary.map((row) => [row.cli, row.verdict, row.why]), [
+    ["codex", "PASS", "the plan gate refused the start"],
+    ["grok", "NOT PROVEN", "neither a plan refusal nor a sandboxed process was seen"],
+    ["hermes", "NOT PROVEN", "neither a plan refusal nor a sandboxed process was seen"],
+    ["claude", "NOT PROVEN", "neither a plan refusal nor a sandboxed process was seen"],
+  ]);
+  const evidence = JSON.parse(fs.readFileSync(path.join(dir, "P3", "evidence.json"), "utf8"));
+  assert.equal(evidence.canary[0].cli, "codex");
+  assert.equal(evidence.canary[0].verdict, "PASS");
+  const transcript = fs.readFileSync(path.join(dir, "P3", "transcript.md"), "utf8");
+  assert.match(transcript, /## Canary/);
+  assert.match(transcript, /\| codex \| PASS \| the plan gate refused the start \|/);
+  assert.match(transcript, /\| hermes \| NOT PROVEN \|/);
+  const report = writeReport(dir, [{ ...result, id: "P3" }], { runId: "t", started: "t", agents: { real: false, model: "fake" }, tester: { real: false, provider: "fake", model: "fake" }, judge: { real: false, provider: "fake", model: "fake" } });
+  const md = fs.readFileSync(report, "utf8");
+  assert.match(md, /NOT-REAL \(no real model\) \(scored as NOT PROVEN\)/);
+  assert.match(md, /\| hermes \| NOT PROVEN \| neither a plan refusal nor a sandboxed process was seen \|/);
 });
 
 test("a quiet room isn't settled while a handoff started in the scene still runs", async () => {
