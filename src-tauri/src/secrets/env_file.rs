@@ -99,7 +99,7 @@ pub fn check(project: &str, worktree: &str) -> Result<Target, String> {
     let ignored = crate::fs::git_ignored_names(&root, &[".env"])
         .ok_or_else(|| "Couldn't check that git ignores `.env` here.".to_string())?;
     if !ignored.iter().any(|name| name == ".env") {
-        return Err("Git would commit this .env. Add `.env` to .gitignore first.".into());
+        return Err("Git would commit this .env. Add `.env` to `.gitignore` first.".into());
     }
     // 4. it is not tracked: an ignored file already in the index still commits.
     if crate::fs::git_output_capped(
@@ -568,6 +568,53 @@ mod tests {
     }
 
     #[test]
+    fn an_unignored_env_is_refused_and_left_alone() {
+        let tmp = Tmp::new();
+        fs::write(tmp.env(), "KEEP=1\n").unwrap();
+        let err = check(
+            &crate::fs::path_to_js(tmp.path()),
+            &crate::fs::path_to_js(tmp.path()),
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            "Git would commit this .env. Add `.env` to `.gitignore` first."
+        );
+        assert_eq!(fs::read_to_string(tmp.env()).unwrap(), "KEEP=1\n");
+    }
+
+    #[test]
+    fn a_tracked_env_is_refused_even_when_ignored() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::write(tmp.env(), "KEEP=1\n").unwrap();
+        tmp.git(&["add", "-f", ".env"]);
+        let err = check(
+            &crate::fs::path_to_js(tmp.path()),
+            &crate::fs::path_to_js(tmp.path()),
+        )
+        .unwrap_err();
+        // `git check-ignore` doesn't call a tracked path ignored, so in practice the ignore rule refuses it first;
+        // the tracked check behind it stays as the spec's second guard. Either way nothing is read or written.
+        assert!(err.contains("Git would commit"), "{err}");
+        assert!(!err.contains("KEEP=1"), "{err}");
+        assert_eq!(fs::read_to_string(tmp.env()).unwrap(), "KEEP=1\n");
+    }
+
+    #[test]
+    fn a_directory_named_env_is_refused() {
+        let tmp = Tmp::new();
+        ignore_env(&tmp);
+        fs::create_dir(tmp.env()).unwrap();
+        let err = check(
+            &crate::fs::path_to_js(tmp.path()),
+            &crate::fs::path_to_js(tmp.path()),
+        )
+        .unwrap_err();
+        assert!(err.contains("isn't a plain file"), "{err}");
+    }
+
+    #[test]
     fn a_symlink_target_is_not_followed() {
         let tmp = Tmp::new();
         ignore_env(&tmp);
@@ -588,7 +635,7 @@ mod tests {
         #[cfg(windows)]
         {
             // A file symlink needs a privilege Windows may not grant; the plain-file rule is covered there by
-            // `a_directory_named_env_is_refused` in the command tests.
+            // `a_directory_named_env_is_refused` above.
             let _ = outside;
         }
     }
@@ -608,6 +655,13 @@ mod tests {
         assert!(inside_project(
             &crate::fs::path_to_js(&inner),
             &crate::fs::path_to_js(&outside)
+        )
+        .is_err());
+        // A `..` that leaves the project is refused after canonicalizing, not by string prefix.
+        let parent = inner.join("..");
+        assert!(inside_project(
+            &crate::fs::path_to_js(&inner),
+            &crate::fs::path_to_js(&parent)
         )
         .is_err());
         let _ = fs::remove_dir_all(&outside);
