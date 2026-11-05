@@ -637,6 +637,8 @@ pub fn run() {
             worker_queue::worker_settings,
             worker_queue::worker_limits_set,
             worker_queue::worker_model_set,
+            // WP-89: the system-wide worker default, beside a project's own.
+            worker_queue::worker_default_set,
             worker_queue::worker_heavy_mark,
             worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,

@@ -10,7 +10,8 @@ use super::budget::normalize_failure_policy;
 use super::failure::is_account_class;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
 use super::resolve::{
-    default_cli_except, resolve_route, role_model, CatalogModel, Pick, Presence, Route, RouteDefaults,
+    default_cli_except, resolve_route, role_model, CatalogModel, Pick, Presence, Route,
+    RouteDefaults,
 };
 use super::rules::{self, Rule};
 

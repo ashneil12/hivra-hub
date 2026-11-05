@@ -22,6 +22,8 @@ import type { Delegation } from "./delegations";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
+import { readProjectWorkerDefault } from "../../crew/model/workerDefault";
+import type { Pick } from "../../crew/model/resolve";
 
 export type WorkerLimits = {
   workers: number;
@@ -30,6 +32,8 @@ export type WorkerLimits = {
   model?: string;
   /** The effort saved with that model (its own setting's value). */
   effort?: string;
+  /** WP-89: the CLI that model belongs to. Absent on a row from before, which reads as Claude. */
+  cli?: string;
 };
 /** A sensible start; Ash raises it per project when he wants more at once. */
 export const DEFAULT_LIMITS: WorkerLimits = { workers: 6, heavy: 2 };
@@ -66,7 +70,12 @@ export function useWorkerPoolVersion(): number {
 // Kept in the app database with the queue (worker_queue.rs): every window reads the same ones, and they survive a
 // restart. This window keeps a copy for the synchronous reads and reloads it on every change.
 
-let settingsCopy: { limits: Record<string, Partial<WorkerLimits>>; heavy: Set<string> } = { limits: {}, heavy: new Set() };
+let settingsCopy: {
+  limits: Record<string, Partial<WorkerLimits>>;
+  heavy: Set<string>;
+  /** WP-89: the worker default for every project, when one is set. */
+  workerDefault?: Pick;
+} = { limits: {}, heavy: new Set() };
 
 const clampCount = (n: unknown, fallback: number) =>
   typeof n === "number" && Number.isFinite(n) ? Math.min(MAX_WORKERS, Math.max(1, Math.round(n))) : fallback;
@@ -79,6 +88,7 @@ export function workerLimits(project: string): WorkerLimits {
     heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
     ...(saved?.model ? { model: saved.model } : {}),
     ...(saved?.model && saved?.effort ? { effort: saved.effort } : {}),
+    ...(saved?.model && saved?.cli ? { cli: saved.cli } : {}),
   };
 }
 
@@ -95,7 +105,13 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
   void backend
     .setLimits(project, { workers, heavy })
     .catch((error: unknown) => console.warn("Could not save the project's worker limits", error));
-  return { workers, heavy, ...(now.model ? { model: now.model } : {}), ...(now.model && now.effort ? { effort: now.effort } : {}) };
+  return {
+    workers,
+    heavy,
+    ...(now.model ? { model: now.model } : {}),
+    ...(now.model && now.effort ? { effort: now.effort } : {}),
+    ...(now.model && now.cli ? { cli: now.cli } : {}),
+  };
 }
 
 /**
@@ -105,20 +121,44 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
 export function projectWorkerModel(project: string): { model: string; effort?: string } | undefined {
   const saved = settingsCopy.limits[project];
   if (!saved?.model) return undefined;
+  // A model for another CLI is not a Claude ladder choice. The full default is projectWorkerDefault.
+  if (saved.cli && saved.cli !== "claude") return undefined;
   return { model: saved.model, ...(saved.effort ? { effort: saved.effort } : {}) };
+}
+
+/** WP-89: the project's worker default, including a CLI. An old row with no CLI reads as Claude. */
+export function projectWorkerDefault(project: string): Pick | undefined {
+  return readProjectWorkerDefault(settingsCopy.limits[project]);
+}
+
+/** WP-89: the worker default for every project, when one is set. */
+export function systemWorkerDefault(): Pick | undefined {
+  return readProjectWorkerDefault(settingsCopy.workerDefault);
+}
+
+/** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
+export function setSystemWorkerDefault(choice: Pick | undefined): void {
+  const clean = readProjectWorkerDefault(choice);
+  settingsCopy = { ...settingsCopy, workerDefault: clean };
+  changed();
+  void backend
+    .setWorkerDefault(clean)
+    .catch((error: unknown) => console.warn("Could not save the worker default", error));
 }
 
 /** Saves (or clears, with undefined) one project's own worker model; its limits are left as they are. */
 export function setProjectWorkerModel(
   project: string,
-  choice: { model: string; effort?: string } | undefined,
+  choice: { cli?: string; model: string; effort?: string } | undefined,
 ): void {
   const saved = settingsCopy.limits[project] ?? {};
   settingsCopy = {
     ...settingsCopy,
     limits: {
       ...settingsCopy.limits,
-      [project]: { ...saved, model: choice?.model, effort: choice?.effort },
+      [project]: choice
+        ? { ...saved, model: choice.model, effort: choice.effort, cli: choice.cli }
+        : { ...saved, model: undefined, effort: undefined, cli: undefined },
     },
   };
   changed();
@@ -211,11 +251,20 @@ export type WorkerQueueBackend = {
   claim(id: string, by: string): Promise<boolean>;
   /** The claimed job started: out of the queue (only the claimant's finish counts). */
   finish(id: string, by: string): Promise<boolean>;
-  /** Each project's limits, and the workers marked heavy. */
-  settings(): Promise<{ limits: Record<string, Partial<WorkerLimits>>; heavy: string[] }>;
+  /** Each project's limits, the workers marked heavy, and the system worker default when one is set. */
+  settings(): Promise<{
+    limits: Record<string, Partial<WorkerLimits>>;
+    heavy: string[];
+    workerDefault?: Pick;
+  }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
-  /** The project's own worker model (E7); undefined clears it. */
-  setModel(project: string, choice: { model: string; effort?: string } | undefined): Promise<unknown>;
+  /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
+  setModel(
+    project: string,
+    choice: { cli?: string; model: string; effort?: string } | undefined,
+  ): Promise<unknown>;
+  /** WP-89: the worker default for every project. Undefined clears it. */
+  setWorkerDefault(choice: Pick | undefined): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -235,7 +284,13 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
   setLimits: (project, limits) =>
     invoke<WorkerLimits>("worker_limits_set", { project, workers: limits.workers, heavy: limits.heavy }),
   setModel: (project, choice) =>
-    invoke("worker_model_set", { project, model: choice?.model ?? null, effort: choice?.effort ?? null }),
+    invoke("worker_model_set", {
+      project,
+      model: choice?.model ?? null,
+      effort: choice?.effort ?? null,
+      cli: choice?.cli ?? null,
+    }),
+  setWorkerDefault: (choice) => invoke("worker_default_set", { value: choice ?? null }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -277,6 +332,7 @@ export function memoryWorkerQueue(
     imported: false,
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
+    workerDefault: undefined as Pick | undefined,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -327,7 +383,11 @@ export function memoryWorkerQueue(
         if (job && typeof job.id === "string" && job.id && (await store.add(job))) added++;
       return added;
     },
-    settings: async () => ({ limits: { ...store.limits }, heavy: [...store.heavy] }),
+    settings: async () => ({
+      limits: { ...store.limits },
+      heavy: [...store.heavy],
+      ...(store.workerDefault ? { workerDefault: store.workerDefault } : {}),
+    }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
       store.limits[project] = {
@@ -338,10 +398,21 @@ export function memoryWorkerQueue(
       notify();
       return store.limits[project];
     },
-    setModel: async (project: string, choice: { model: string; effort?: string } | undefined) => {
-      store.limits[project] = { ...store.limits[project], model: choice?.model, effort: choice?.effort };
+    setModel: async (project: string, choice: { cli?: string; model: string; effort?: string } | undefined) => {
+      const prev = store.limits[project];
+      store.limits[project] = {
+        ...prev,
+        model: choice?.model,
+        effort: choice?.effort,
+        cli: choice?.cli,
+      };
       notify();
       return store.limits[project];
+    },
+    setWorkerDefault: async (choice: Pick | undefined) => {
+      store.workerDefault = choice;
+      notify();
+      return choice ?? null;
     },
     markHeavy: async (child: string) => {
       if (store.heavy.includes(child)) return false;
@@ -430,7 +501,11 @@ export async function refreshWorkerQueue(): Promise<void> {
   try {
     const [jobs, settings] = await Promise.all([backend.list(), backend.settings()]);
     copy = jobs;
-    settingsCopy = { limits: settings.limits ?? {}, heavy: new Set(settings.heavy ?? []) };
+    settingsCopy = {
+      limits: settings.limits ?? {},
+      heavy: new Set(settings.heavy ?? []),
+      ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
+    };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
     return;
