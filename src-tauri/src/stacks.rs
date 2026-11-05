@@ -322,14 +322,15 @@ pub fn maybe_start(
     let compose_file = compose_file(stack, &worktree)?;
     ignore_env_file(&project, &worktree)?;
     let dir = registry_dir(&env.data_dir);
+    let previous = load(&dir)?
+        .stacks
+        .into_iter()
+        .find(|item| keys_eq(&item.key, &path_key(&worktree)));
+    let mut stopped = false;
     if compose_file.is_none() {
-        if let Some(previous) = load(&dir)?
-            .stacks
-            .into_iter()
-            .find(|item| keys_eq(&item.key, &path_key(&worktree)))
-            .filter(|item| item.has_compose)
-        {
-            stop_entry(env, &previous)?;
+        if let Some(previous) = previous.as_ref().filter(|item| item.has_compose) {
+            stop_entry(env, previous)?;
+            stopped = true;
         }
     }
     let entry = update(&dir, |store| {
@@ -344,6 +345,13 @@ pub fn maybe_start(
         )
     })?;
     write_env_file(&worktree, &entry)?;
+    // A name the old declaration published and the new one does not goes before the new set:
+    // a branch change or a removed service never leaves a stale address behind.
+    if !stopped {
+        if let Some(previous) = &previous {
+            retire_names(env, previous, &entry);
+        }
+    }
     // A name is published before anything starts: a clash is a refusal, not a wrong address.
     publish_names(env, &entry)?;
     let note = start_stand_in(env, &entry)?;
@@ -674,6 +682,23 @@ fn compose_file_for_stop(entry: &Entry) -> Option<PathBuf> {
     let root = crate::fs::canonical(Path::new(&entry.worktree)).ok()?;
     let file = crate::fs::canonical(Path::new(raw)).ok()?;
     path_inside(&root, &file).then_some(file)
+}
+
+/// Names the previous declaration published that this one does not. Only this stack's own.
+fn retire_names(env: &StackEnv, previous: &Entry, entry: &Entry) {
+    let Some(names) = &env.names else {
+        return;
+    };
+    let owner = if previous.owner_pid == 0 {
+        std::process::id()
+    } else {
+        previous.owner_pid
+    };
+    for old in &previous.names {
+        if !entry.names.iter().any(|name| name.hostname == old.hostname) {
+            let _ = names.remove(&old.hostname, owner);
+        }
+    }
 }
 
 /// WP-90: publish every name for this stack, and take back the ones already added if one clashes.
@@ -3946,6 +3971,53 @@ mod tests {
             .unwrap()
             .iter()
             .any(|dir| dir.contains('s')));
+    }
+
+    #[test]
+    fn a_branch_change_moves_the_name_and_leaves_no_stale_one() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, stand_in);
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+        assert!(names
+            .routes
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(host, _, _)| host == "main-a.localhost"));
+        git(&fix.first, &["switch", "-c", "renamed"]);
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            pair(&pairs, "PUBLIC_URL"),
+            "http://main-renamed.localhost:7400"
+        );
+        let routes = names.routes.lock().unwrap();
+        assert!(
+            routes.iter().all(|(host, _, _)| host != "main-a.localhost"),
+            "{routes:?}"
+        );
+        assert!(routes
+            .iter()
+            .any(|(host, _, _)| host == "main-renamed.localhost"));
     }
 
     #[test]
