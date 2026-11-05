@@ -30,7 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { benchDenyRules, benchShellProbe } from "./bench-guard.mjs";
+import { benchDenyRules, benchShellProbe, hasControlEndpoint } from "./bench-guard.mjs";
 import { agentCommand, appCliRead, isolatedHome, privateTempDir, privateTempEnv, sandboxCwd, worktreeDevBin } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
@@ -307,24 +307,62 @@ function foreignMonocodeEntry(entry) {
 
 /**
  * Before any scene: `echo probe` through the same seatbelt and PATH the agent's Bash tool gets,
- * then `monocode version --json` must be a dev build. A string is the round's stop reason.
+ * then `monocode version --json` must be a dev build, then (when the spawn env hands the agent this copy's control
+ * endpoint) `monocode app app.version` must answer over it. A string is the round's stop reason.
  */
 export function probeBenchAgent(ctx, deps = {}) {
   const state = ctx?.state;
   const env = benchFenceEnv(
     {
-      PATH: ctx?.path ?? "",
-      HOME: ctx?.home,
-      REALTEST_REAL_HOME: ctx?.realHome,
-      REALTEST_APP_BIN: ctx?.appBin,
-      REALTEST_WORKTREE: ctx?.worktree,
+      ...(ctx?.env ?? {}),
+      PATH: ctx?.path ?? ctx?.env?.PATH ?? "",
+      HOME: ctx?.home ?? ctx?.env?.HOME,
+      REALTEST_REAL_HOME: ctx?.realHome ?? ctx?.env?.REALTEST_REAL_HOME,
+      REALTEST_APP_BIN: ctx?.appBin ?? ctx?.env?.REALTEST_APP_BIN,
+      REALTEST_WORKTREE: ctx?.worktree ?? ctx?.env?.REALTEST_WORKTREE,
       REALTEST_STATE: state,
       REALTEST_ALLOWED: "[]",
     },
     state,
   );
   const exec = deps.exec ?? ((command) => probeExec(command, env));
-  return benchShellProbe(exec);
+  return benchShellProbe(exec, { control: hasControlEndpoint(env) });
+}
+
+/**
+ * The control-port probe, once per run: the first chat's spawn asks the agent's shell (under the same seatbelt and
+ * PATH) whether it can reach this copy's control port. A failure is written to `bench-broken` and `stop`, so the
+ * run's round stops as `bench broken: control port`, and is returned. The app hands a chat its control endpoint and
+ * token at spawn, so this is the first place the check can run at all; a later chat sees the marker and does nothing.
+ */
+export function benchProbeOnce(env, state, deps = {}) {
+  if (!state || !hasControlEndpoint(env)) return null;
+  const exists = deps.existsSync ?? fs.existsSync;
+  const write = deps.writeFileSync ?? fs.writeFileSync.bind(fs);
+  const marker = path.join(state, "bench-probed");
+  try {
+    // Written only after a probe passed, so a chat cut mid-probe leaves the next one to prove it again.
+    if (exists(marker)) return null;
+  } catch {
+    // not there yet
+  }
+  const run = deps.run ?? ((command) => probeExec(command, env));
+  const reason = benchShellProbe(run, { control: true });
+  if (!reason) {
+    try {
+      write(marker, `${process.pid}\n`);
+    } catch {
+      // the run's folder went away: the next chat probes again
+    }
+    return null;
+  }
+  try {
+    write(path.join(state, "bench-broken"), `${reason}\n`);
+    write(path.join(state, "stop"), `${reason}\n`);
+  } catch {
+    // the run's folder went away: the refusal still stands
+  }
+  return reason;
 }
 
 function probeExec(command, env) {
@@ -527,6 +565,14 @@ function main() {
     const resumed = args.indexOf("--resume") >= 0 ? args[args.indexOf("--resume") + 1] : null;
     const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
     if (from) log({ dir: "carry", session: resumed, from, to: account.config });
+  }
+  // This spawn is where the app handed the chat a control endpoint and token: prove the agent's shell can reach it
+  // before a turn goes to the model. A failure is the run's hard stop, `bench broken: control port`.
+  const broken = benchProbeOnce(env, STATE);
+  if (broken) {
+    log({ dir: "refused", reason: broken });
+    usage({ kind: "refused" });
+    refuseStart(broken, { json: true });
   }
   const launched = launchReal(realArgs, env, ["pipe", "pipe", "pipe"]);
   if (!launched.ok) {

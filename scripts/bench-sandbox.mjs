@@ -6,7 +6,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { lexicalPosix } from "./bench-guard.mjs";
+import { CONTROL_ENDPOINT_KEYS, lexicalPosix } from "./bench-guard.mjs";
 
 /** Directories a process may read so it can start. Not the user's files. `/Users` is named only as itself, never as a tree. */
 const SYSTEM_READS = ["/usr", "/bin", "/sbin", "/opt", "/System", "/Library", "/private", "/dev", "/etc", "/var", "/tmp", "/usr/local", "/opt/homebrew", "/System/Volumes", "/Applications"];
@@ -24,8 +24,20 @@ export const SANDBOX_BAD_LIST = "The bench can't start the agent: its folder lis
 /** The daily app's hub bridge. A bench never reaches it, even when a run names this port. */
 export const DAILY_HUB_PORT = 18767;
 
+/** The daily app's own control ports, when this bench was started from one of its chats (`hub-realtest.mjs`). Never opened. */
+export const DAILY_CONTROL_PORTS = "REALTEST_DAILY_CONTROL_PORTS";
+
+/** A spawn env named this copy's control endpoint, but not as a loopback host:port. No agent is started with it. */
+export const SANDBOX_BAD_CONTROL = "The bench can't start the agent: the control endpoint it was handed is not a loopback host:port, so it is not opened.";
+
+/** A spawn env named the daily app's port as the control endpoint. No agent is started with it. */
+export const SANDBOX_DAILY_CONTROL = "The bench can't start the agent: the control endpoint names the daily app's port, so it is not opened.";
+
+/** A control endpoint a bench refuses to open. Its message is the whole refusal, already in `The bench can't start…` form. */
+export class ControlEndpointRefused extends Error {}
+
 const GATEWAY_REASON = "the local model gateway the launcher uses";
-const CONTROL_REASON = "this dev copy's own control port";
+const CONTROL_REASON = "this dev copy's control port";
 const HUB_REASON = "this run's stub hub port";
 
 function clean(value) {
@@ -253,24 +265,24 @@ function loopbackHost(host) {
   return null;
 }
 
-function portNumber(value) {
+function portNumber(value, { daily = false } = {}) {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > 65535 || n === DAILY_HUB_PORT) return null;
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return null;
+  if (!daily && n === DAILY_HUB_PORT) return null;
   return n;
 }
 
-/** A loopback host:port, or a bare port meaning 127.0.0.1. The daily hub port and anything else is null. */
-export function parseLoopbackEndpoint(value) {
+function loopbackEndpoint(value, { daily = false } = {}) {
   if (value == null) return null;
   const text = String(value).trim();
   if (!text) return null;
   if (/^\d+$/.test(text)) {
-    const port = portNumber(text);
+    const port = portNumber(text, { daily });
     return port ? { host: "127.0.0.1", port } : null;
   }
   const v6 = text.match(/^\[?::1\]?:(\d+)$/);
   if (v6) {
-    const port = portNumber(v6[1]);
+    const port = portNumber(v6[1], { daily });
     return port ? { host: "::1", port } : null;
   }
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`;
@@ -281,9 +293,14 @@ export function parseLoopbackEndpoint(value) {
     return null;
   }
   const host = loopbackHost(url.hostname);
-  const port = portNumber(url.port);
+  const port = portNumber(url.port, { daily });
   if (!host || !port) return null;
   return { host, port };
+}
+
+/** A loopback host:port, or a bare port meaning 127.0.0.1. The daily hub port and anything else is null. */
+export function parseLoopbackEndpoint(value) {
+  return loopbackEndpoint(value);
 }
 
 function acceptedPorts(network) {
@@ -341,11 +358,42 @@ export function resetGatewayCache() {
   gatewayCache = null;
 }
 
+/** The daily app's control ports this bench's own entry env named (`REALTEST_DAILY_CONTROL_PORTS`). Empty when none. */
+export function dailyControlPorts(env = {}) {
+  const text = typeof env[DAILY_CONTROL_PORTS] === "string" ? env[DAILY_CONTROL_PORTS].trim() : "";
+  if (!text) return [];
+  const out = [];
+  for (const item of text.split(/[,\s]+/)) {
+    const parsed = loopbackEndpoint(item, { daily: true });
+    if (parsed && !out.includes(parsed.port)) out.push(parsed.port);
+  }
+  return out;
+}
+
+/**
+ * The control endpoints this spawn env hands the agent, from `MONOCODE_APP_ENDPOINT` and/or
+ * `MONOCODE_CONTROL_ENDPOINT`. A set value that isn't a loopback host:port is `ControlEndpointRefused`, and so is
+ * the daily app's hub port or one of its control ports. Nothing else is refused; what is returned is all that opens.
+ */
+export function controlEndpoints(env = {}) {
+  const daily = new Set(dailyControlPorts(env));
+  const out = [];
+  for (const key of CONTROL_ENDPOINT_KEYS) {
+    const raw = typeof env[key] === "string" ? env[key].trim() : "";
+    if (!raw) continue;
+    const parsed = loopbackEndpoint(raw, { daily: true });
+    if (!parsed) throw new ControlEndpointRefused(SANDBOX_BAD_CONTROL);
+    if (parsed.port === DAILY_HUB_PORT || daily.has(parsed.port)) throw new ControlEndpointRefused(SANDBOX_DAILY_CONTROL);
+    if (!out.some((item) => item.port === parsed.port)) out.push(parsed);
+  }
+  return out;
+}
+
 /** The only loopback ports a bench model call may dial. Port 18767 is never among them. */
 export function namedLoopbackPorts(env = {}, deps = {}) {
   const out = [];
   const add = (value, reason) => {
-    const parsed = parseLoopbackEndpoint(value);
+    const parsed = typeof value === "object" && value ? value : parseLoopbackEndpoint(value);
     if (!parsed || out.some((item) => item.port === parsed.port)) return;
     out.push({ host: parsed.host, port: parsed.port, reason });
   };
@@ -357,7 +405,14 @@ export function namedLoopbackPorts(env = {}, deps = {}) {
       for (const item of seen?.ports ?? []) add(`${item.host}:${item.port}`, GATEWAY_REASON);
     }
   }
-  add(env.MONOCODE_CONTROL_ENDPOINT, CONTROL_REASON);
+  // An in-process model call has no agent to refuse, so a bad control endpoint only leaves that port unopened.
+  let control = [];
+  try {
+    control = controlEndpoints(env);
+  } catch (error) {
+    if (!(error instanceof ControlEndpointRefused) || deps.strict !== false) throw error;
+  }
+  for (const parsed of control) add(parsed, CONTROL_REASON);
   const hub = env.REALTEST_HUB_PORT != null && String(env.REALTEST_HUB_PORT).trim() !== "" ? env.REALTEST_HUB_PORT : env.MONOCODE_HUB_PORT;
   add(hub, HUB_REASON);
   return out;
@@ -374,10 +429,11 @@ export function modelUrlAllowed(url, env = {}) {
   const host = loopbackHost(parsed.hostname);
   const port = portNumber(parsed.port);
   if (!host || !port) return false;
-  return namedLoopbackPorts(env, { observe: false }).some((item) => item.port === port);
+  return namedLoopbackPorts(env, { observe: false, strict: false }).some((item) => item.port === port);
 }
 
 function plainFailure(error) {
+  if (error instanceof ControlEndpointRefused) return error.message;
   const text = String(error?.message ?? "");
   if (/real home isn't set/.test(text)) return SANDBOX_NO_HOME;
   if (text.startsWith("the ")) return `The bench can't start the agent: ${text}.`;
@@ -407,6 +463,8 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
   if (!state || state === "/") return { ok: false, reason: SANDBOX_DIDNT_LOAD };
   let profile;
   try {
+    // A control endpoint this profile must not open stops the run here, whether or not a test supplies its own ports.
+    controlEndpoints(env);
     const readOnly = deps.readOnly ?? cliReadOnlyPaths({ realHome: env.REALTEST_REAL_HOME, cli: bin, devConfig: env.REALTEST_CLAUDE_CONFIG });
     const uid = Number.isInteger(deps.uid) ? deps.uid : process.getuid?.() ?? 0;
     const shellTemp = env.REALTEST_CLAUDE_HONOURS_TMPDIR === "0" ? shellTempAllow(deps.cwd ?? process.cwd(), { honours: false, uid }) : null;

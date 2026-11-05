@@ -7,8 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
-import { benchFenceEnv, probeBenchAgent } from "./hub-realtest-claude.mjs";
+import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, ControlEndpointRefused, controlEndpoints, DAILY_CONTROL_PORTS, dailyControlPorts, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_BAD_CONTROL, SANDBOX_DAILY_CONTROL, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { benchFenceEnv, benchProbeOnce, probeBenchAgent } from "./hub-realtest-claude.mjs";
+import { benchDenyRules, writeBenchSettings } from "./bench-guard.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
@@ -209,13 +210,13 @@ test("outbound is only the named loopback ports, and the daily hub port is never
       { host: "127.0.0.1", port: 8317, reason: "the local model gateway the launcher uses" },
       { host: "127.0.0.1", port: 18767, reason: "the daily hub bridge" },
       { host: "10.0.0.1", port: 80, reason: "not loopback" },
-      { host: "127.0.0.1", port: 43111, reason: "this dev copy's own control port" },
+      { host: "127.0.0.1", port: 43111, reason: "this dev copy's control port" },
       { host: "127.0.0.1", port: 44000, reason: "this run's stub hub port" },
     ],
   });
   assert.match(profile, /the local model gateway the launcher uses/);
   assert.match(profile, /remote ip "localhost:8317"/);
-  assert.match(profile, /this dev copy's own control port/);
+  assert.match(profile, /this dev copy's control port/);
   assert.match(profile, /this run's stub hub port/);
   assert.match(profile, /remote ip "localhost:43111"/);
   assert.match(profile, /remote ip "localhost:44000"/);
@@ -252,6 +253,190 @@ test("the named ports come from the gateway, the control endpoint and the stub h
   assert.equal(modelUrlAllowed("http://127.0.0.1:9/v1/chat/completions", { REALTEST_GATEWAY: "127.0.0.1:8317" }), false);
   assert.equal(modelUrlAllowed("http://203.0.113.1:8317/v1/chat/completions", { REALTEST_GATEWAY: "127.0.0.1:8317" }), false);
   assert.equal(modelUrlAllowed("http://127.0.0.1:18767/v1/chat/completions", { MONOCODE_HUB_PORT: "18767" }), false);
+});
+
+test("the control endpoint the app hands the agent is the one port that opens; the daily app's ports are refused", () => {
+  // The canary's bug (PR #77): a chat holding only an app grant got no control port, so every `monocode app` said
+  // "Operation not permitted".
+  assert.deepEqual(namedLoopbackPorts({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, { observe: false }), [
+    { host: "127.0.0.1", port: 57965, reason: "this dev copy's control port" },
+  ]);
+  // Both names, the same port: one rule. Two ports: both open, nothing else does.
+  assert.deepEqual(
+    namedLoopbackPorts({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965", MONOCODE_CONTROL_ENDPOINT: "http://127.0.0.1:57965/" }, { observe: false }).map((item) => item.port),
+    [57965],
+  );
+  assert.deepEqual(
+    controlEndpoints({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965", MONOCODE_CONTROL_ENDPOINT: "[::1]:57966" }),
+    [{ host: "127.0.0.1", port: 57965 }, { host: "::1", port: 57966 }],
+  );
+  assert.deepEqual(controlEndpoints({ MONOCODE_APP_ENDPOINT: "  ", MONOCODE_CONTROL_ENDPOINT: "" }), []);
+
+  // Not a loopback host:port: no agent is started with it.
+  for (const value of ["10.0.0.5:57965", "0.0.0.0:57965", "http://example.com:57965/", "not a port", "127.0.0.1"]) {
+    assert.throws(
+      () => controlEndpoints({ MONOCODE_APP_ENDPOINT: value }),
+      (error) => error instanceof ControlEndpointRefused && error.message === SANDBOX_BAD_CONTROL,
+      value,
+    );
+  }
+  // The daily app's fixed hub port is never opened, whichever name carries it.
+  for (const key of ["MONOCODE_APP_ENDPOINT", "MONOCODE_CONTROL_ENDPOINT"]) {
+    assert.throws(() => controlEndpoints({ [key]: "127.0.0.1:18767" }), (error) => error.message === SANDBOX_DAILY_CONTROL);
+  }
+  // The daily app's control port is chosen at start, so the bench's own entry env names it. Refused too.
+  assert.deepEqual(dailyControlPorts({ [DAILY_CONTROL_PORTS]: "57965, 127.0.0.1:57966" }), [57965, 57966]);
+  assert.deepEqual(dailyControlPorts({}), []);
+  assert.throws(
+    () => controlEndpoints({ [DAILY_CONTROL_PORTS]: "57965", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }),
+    (error) => error instanceof ControlEndpointRefused && error.message === SANDBOX_DAILY_CONTROL,
+  );
+  assert.throws(
+    () => controlEndpoints({ [DAILY_CONTROL_PORTS]: "57966", MONOCODE_CONTROL_ENDPOINT: "localhost:57966" }),
+    (error) => error.message === SANDBOX_DAILY_CONTROL,
+  );
+  // A daily port named, a dev endpoint on another port: the dev one opens and the daily one is not in the list.
+  assert.deepEqual(controlEndpoints({ [DAILY_CONTROL_PORTS]: "57966", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }), [{ host: "127.0.0.1", port: 57965 }]);
+
+  // An in-process model call has no agent to refuse: a bad control env only keeps its ports out.
+  const env = { REALTEST_GATEWAY: "127.0.0.1:8317", MONOCODE_APP_ENDPOINT: "10.0.0.5:1" };
+  assert.equal(modelUrlAllowed("http://127.0.0.1:8317/v1/chat/completions", env), true);
+  assert.equal(modelUrlAllowed("http://127.0.0.1:57965/v1/chat/completions", { MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }), true);
+});
+
+test("the agent is not started when its control endpoint is not loopback or names the daily app", () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-sandbox-control-"));
+  const stub = path.join(state, "stub-sandbox");
+  fs.writeFileSync(stub, "#!/bin/sh\nshift 2\nexec \"$@\"\n", { mode: 0o755 });
+  const base = { REALTEST_REAL_HOME: REAL, HOME: state, REALTEST_STATE: state, REALTEST_ALLOWED: "[]", REALTEST_SANDBOX_EXEC: stub };
+  const bad = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_APP_ENDPOINT: "10.0.0.5:57965" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, SANDBOX_BAD_CONTROL);
+  const daily = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_CONTROL_ENDPOINT: "127.0.0.1:18767" });
+  assert.equal(daily.ok, false);
+  assert.equal(daily.reason, SANDBOX_DAILY_CONTROL);
+  const dailyPort = agentCommand("/bin/echo", ["hi"], { ...base, [DAILY_CONTROL_PORTS]: "57965", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" });
+  assert.equal(dailyPort.ok, false);
+  assert.equal(dailyPort.reason, SANDBOX_DAILY_CONTROL);
+  // No profile was written for any refusal: nothing could start with one.
+  assert.equal(fs.existsSync(path.join(state, "sandbox.sb")), false);
+
+  // The dev copy's own app endpoint is written into the profile, and nothing else is opened for it.
+  const ok = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, { observe: false });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.match(ok.profile, /this dev copy's control port \(127\.0\.0\.1:57965\)/);
+  assert.match(ok.profile, /remote ip "localhost:57965"/);
+  assert.equal((ok.profile.match(/remote ip "localhost:/g) ?? []).length, 1);
+  assert.equal(ok.profile.includes(":18767"), false);
+  fs.rmSync(state, { recursive: true, force: true });
+});
+
+test("the wrapper probes the control port once per run and writes the round's stop", () => {
+  const good = (command) =>
+    command === "echo probe"
+      ? { status: 0, stdout: "probe\n", stderr: "" }
+      : command === "monocode app app.version"
+        ? { status: 0, stdout: '{"ok":true}\n', stderr: "" }
+        : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.probe" })}\n`, stderr: "" };
+  const bad = (command) =>
+    command === "monocode app app.version" ? { status: 1, stdout: "", stderr: "EPERM" } : good(command);
+
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-once-"));
+  try {
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, state, { run: good }), null);
+    assert.equal(fs.existsSync(path.join(state, "bench-broken")), false);
+    // The second chat does not probe again, so a different answer cannot change the run.
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, state, { run: bad }), null);
+    assert.equal(fs.existsSync(path.join(state, "bench-broken")), false);
+
+    // A spawn with no control endpoint (a helper call, or the scene probe) has nothing to prove.
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-none-"));
+    let ran = false;
+    assert.equal(
+      benchProbeOnce({}, other, {
+        run: () => {
+          ran = true;
+          return good("");
+        },
+      }),
+      null,
+    );
+    assert.equal(ran, false);
+    fs.rmSync(other, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(state, { recursive: true, force: true });
+  }
+
+  const failing = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-broken-"));
+  try {
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, failing, { run: bad }), "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(failing, "bench-broken"), "utf8").trim(), "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(failing, "stop"), "utf8").trim(), "bench broken: control port");
+  } finally {
+    fs.rmSync(failing, { recursive: true, force: true });
+  }
+});
+
+test("a chat whose shell cannot reach the control port refuses to start, and the run reads why", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bench-control-refusal-"));
+  const realHome = path.join(root, "real-home");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const appBin = path.join(worktree, "target", "debug", "monocode");
+  fs.mkdirSync(path.dirname(appBin), { recursive: true });
+  fs.mkdirSync(path.join(realHome, "Applications", "MonoCode Hub.app", "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(
+    appBin,
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      `  version) echo '{"identifier":"com.ash.monocode-hub.dev.probe"}'; exit 0 ;;`,
+      `  app) echo '{"ok":false,"error":"Cannot connect to MonoCode at 127.0.0.1:57965: Operation not permitted (os error 1)"}'; exit 1 ;;`,
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const sandbox = path.join(state, "stub-sandbox-exec");
+  fs.mkdirSync(state, { recursive: true });
+  fs.writeFileSync(sandbox, "#!/bin/sh\nshift 2\nexec \"$@\"\n", { mode: 0o755 });
+  const marker = path.join(state, "real-claude-ran");
+  const fakeClaude = path.join(state, "real-claude");
+  fs.writeFileSync(fakeClaude, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const settings = path.join(state, "settings.json");
+  fs.writeFileSync(settings, "{}\n");
+  const env = {
+    PATH: process.env.PATH,
+    HOME: home,
+    REALTEST_STATE: state,
+    REALTEST_REAL_CLAUDE: fakeClaude,
+    REALTEST_CLAUDE_CONFIG: state,
+    REALTEST_REAL_HOME: realHome,
+    REALTEST_ALLOWED: "[]",
+    REALTEST_BENCH_SETTINGS: settings,
+    REALTEST_SANDBOX_EXEC: sandbox,
+    REALTEST_APP_BIN: appBin,
+    REALTEST_WORKTREE: worktree,
+    MONOCODE_APP_ENDPOINT: "127.0.0.1:57965",
+  };
+  try {
+    const out = spawnSync(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), "--input-format", "stream-json", "-p"], { env, encoding: "utf8", timeout: 30_000 });
+    assert.equal(out.status, 2, `${out.stderr}`);
+    assert.match(`${out.stderr}`, /bench broken: control port/);
+    const answer = JSON.parse(String(out.stdout).trim().split("\n").pop());
+    assert.equal(answer.is_error, true);
+    assert.equal(answer.result, "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(state, "bench-broken"), "utf8").trim(), "bench broken: control port");
+    assert.equal(fs.existsSync(path.join(state, "stop")), true);
+    // The real CLI was never started: the chat did not reach the model.
+    assert.equal(fs.existsSync(marker), false);
+    // The profile the probe ran under names the one control port.
+    assert.match(fs.readFileSync(path.join(state, "sandbox.sb"), "utf8"), /remote ip "localhost:57965"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a shared temp dir is not this run's TMPDIR", () => {

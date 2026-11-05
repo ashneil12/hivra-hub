@@ -11,6 +11,7 @@ import {
   applyCanary,
   appTouchResult,
   appsFromPs,
+  benchBroken,
   benchDenyRules,
   canaryReport,
   canaryTable,
@@ -780,6 +781,59 @@ test("a scene probe stops the round when the shell or the dev binary fails", () 
   assert.equal(isHardStop("bench broken: monocode version"), true);
   assert.equal(exitCodeForStop("bench broken: echo probe"), 1);
   assert.equal(isHardStop("bench brokenish"), false);
+});
+
+test("the scene probe also proves the agent's shell reaches the copy's control port", () => {
+  const dev = { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.slot" })}\n`, stderr: "" };
+  const echoOk = { status: 0, stdout: "probe\n", stderr: "" };
+  const appOk = { status: 0, stdout: `${JSON.stringify({ ok: true, version: "0.0.0" })}\n`, stderr: "" };
+  const calls = [];
+  const run = (script) => (command) => {
+    calls.push(command);
+    return script(command);
+  };
+  const base = (command) => (command === "echo probe" ? echoOk : command === "monocode app app.version" ? appOk : dev);
+
+  // Without a control endpoint in the spawn env the third command is not run at all.
+  assert.equal(benchShellProbe(run(base)), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json"]);
+
+  // With one, the control call must answer `ok: true` from the last JSON line.
+  calls.length = 0;
+  assert.equal(benchShellProbe(run(base), { control: true }), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json", "monocode app app.version"]);
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: 'noise\n{"ok":true}\n', stderr: "" } : base(command))), { control: true }),
+    null,
+  );
+
+  // The canary's failure: the call can't connect (EPERM over the dev copy's control port), exits non-zero, or says no.
+  const refused = { status: 1, stdout: `${JSON.stringify({ ok: false, error: "Cannot connect to MonoCode at 127.0.0.1:57965: Operation not permitted (os error 1)" })}\n`, stderr: "" };
+  assert.equal(benchShellProbe(run((command) => (command === "monocode app app.version" ? refused : base(command))), { control: true }), "bench broken: control port");
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: '{"ok":false}\n', stderr: "" } : base(command))), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "monocode app app.version" ? { status: 0, stdout: "not json\n", stderr: "" } : base(command))), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => {
+      if (command === "monocode app app.version") throw new Error("timed out");
+      return base(command);
+    }), { control: true }),
+    "bench broken: control port",
+  );
+  assert.equal(isHardStop("bench broken: control port"), true);
+  assert.equal(exitCodeForStop("bench broken: control port"), 1);
+
+  // The wrapper's word, once written, is the run's stop reason.
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-broken-"));
+  assert.equal(benchBroken(state), null);
+  fs.writeFileSync(path.join(state, "bench-broken"), "bench broken: control port\n");
+  assert.equal(benchBroken(state), "bench broken: control port");
+  fs.rmSync(state, { recursive: true, force: true });
 });
 
 test("a relative path after cd resolves against that directory", () => {

@@ -735,8 +735,20 @@ export function isHardStop(reason) {
   return typeof reason === "string" && /^(touched a real app|unsandboxed agent|can't verify the sandbox|bench broken)(:|$)/.test(reason);
 }
 
-/** `echo probe` must print that one line, then `monocode version --json` must be this run's dev build. */
-export function benchShellProbe(run) {
+/** The env names the app hands an agent its control endpoint in (control.rs `configure_child`). */
+export const CONTROL_ENDPOINT_KEYS = ["MONOCODE_APP_ENDPOINT", "MONOCODE_CONTROL_ENDPOINT"];
+
+/** True when this spawn env hands the agent a control endpoint, so the agent's shell has to be able to reach it. */
+export function hasControlEndpoint(env = {}) {
+  return CONTROL_ENDPOINT_KEYS.some((key) => typeof env[key] === "string" && env[key].trim() !== "");
+}
+
+/**
+ * `echo probe` must print that one line, then `monocode version --json` must be this run's dev build, then (when the
+ * agent was handed this copy's control endpoint) `monocode app app.version` must answer over it. A string is the
+ * round's stop reason.
+ */
+export function benchShellProbe(run, { control = false } = {}) {
   let echo;
   try {
     echo = run("echo probe");
@@ -751,7 +763,39 @@ export function benchShellProbe(run) {
     return "bench broken: monocode version";
   }
   if (!probeDevVersion(version)) return "bench broken: monocode version";
+  if (!control) return null;
+  let app;
+  try {
+    app = run("monocode app app.version");
+  } catch {
+    return "bench broken: control port";
+  }
+  if (!probeAppVersion(app)) return "bench broken: control port";
   return null;
+}
+
+function probeAppVersion(result) {
+  if (!result || result.status !== 0) return false;
+  const lines = String(result.stdout ?? "").split(/\r?\n/).filter((line) => line.length > 0);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (parsed && typeof parsed === "object") return parsed.ok === true;
+    } catch {
+      // not the answer line
+    }
+  }
+  return false;
+}
+
+/** The wrapper's word that the agent's shell can't reach this copy's control port, or null. Written once per run. */
+export function benchBroken(state) {
+  try {
+    const text = fs.readFileSync(path.join(state, "bench-broken"), "utf8").trim();
+    return text || null;
+  } catch {
+    return null;
+  }
 }
 
 function probeEcho(result) {
