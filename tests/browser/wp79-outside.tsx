@@ -102,7 +102,9 @@ const ask: OutsideApi = {
   approve: (_requestId, projectIds, write) => {
     document.getElementById("done")!.textContent = `${projectIds.join(",")} write=${write}`;
     asked = false;
-    return Promise.resolve({ redirectUri: "http://127.0.0.1:9/cb" });
+    return Promise.resolve({
+      redirectUri: "http://127.0.0.1:9/cb?code=secret-code&state=s1",
+    });
   },
   deny: () => {
     document.getElementById("done")!.textContent = "denied";
@@ -111,3 +113,26 @@ const ask: OutsideApi = {
   },
 };
 mount("ask", ask);
+
+let missed = true;
+const miss: OutsideApi = {
+  status: off,
+  setEnabled: off,
+  grants: () => Promise.resolve([]),
+  disconnect: () => Promise.resolve(false),
+  pending: () =>
+    Promise.resolve(
+      missed
+        ? {
+            requests: [{ id: "r2", clientName: "Claude" }],
+            projects: [{ id: "hivra", name: "Hivra" }],
+          }
+        : emptyPending,
+    ),
+  approve: () => {
+    missed = false;
+    return Promise.resolve({ redirectUri: "" });
+  },
+  deny: () => Promise.resolve({ redirectUri: "" }),
+};
+mount("miss", miss);

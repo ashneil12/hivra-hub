@@ -3,6 +3,7 @@ import {
   accessLabel,
   appApi,
   lastUsedLabel,
+  type ConsentResult,
   type DoorStatus,
   type GrantView,
   type OutsideApi,
@@ -29,23 +30,27 @@ export function ConnectedApps({ api = appApi }: Props) {
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [needProject, setNeedProject] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [sent, setSent] = useState(false);
   const generation = useRef(0);
 
-  async function load(gen: number) {
+  async function load(gen: number): Promise<boolean> {
     try {
       const [nextStatus, nextGrants, nextPending] = await Promise.all([
         api.status(),
         api.grants(),
         api.pending(),
       ]);
-      if (gen !== generation.current) return;
+      if (gen !== generation.current) return false;
       setStatus(nextStatus);
       setGrants(nextGrants);
       setPending(nextPending);
       setProblem(null);
+      setSent(false);
+      return true;
     } catch (error) {
-      if (gen !== generation.current) return;
+      if (gen !== generation.current) return false;
       setProblem(problemText(error));
+      return false;
     }
   }
 
@@ -60,6 +65,24 @@ export function ConnectedApps({ api = appApi }: Props) {
     try {
       await work();
       await load(gen);
+    } catch (error) {
+      if (gen !== generation.current) return;
+      setProblem(problemText(error));
+    }
+  }
+
+  // The redirect holds the code. Say it was handed to the browser, and never show it.
+  async function finishInBrowser(gen: number, work: () => Promise<ConsentResult>) {
+    try {
+      const result = await work();
+      const loaded = await load(gen);
+      if (!loaded || gen !== generation.current) return;
+      const uri = typeof result.redirectUri === "string" ? result.redirectUri.trim() : "";
+      if (uri === "") {
+        setProblem("The browser was not sent on.");
+        return;
+      }
+      setSent(true);
     } catch (error) {
       if (gen !== generation.current) return;
       setProblem(problemText(error));
@@ -92,6 +115,7 @@ export function ConnectedApps({ api = appApi }: Props) {
         Let AI tools on this computer read Hivra
       </label>
       {status.enabled && status.url ? <p className="text-content/60">{status.url}</p> : null}
+      {sent ? <p>Finish in the browser window.</p> : null}
       {problem ? (
         <p role="alert" className="text-content/70">
           {problem}
@@ -123,7 +147,7 @@ export function ConnectedApps({ api = appApi }: Props) {
                   return;
                 }
                 const gen = ++generation.current;
-                void reloadAfter(gen, () => api.approve(request.id, projectIds, false));
+                void finishInBrowser(gen, () => api.approve(request.id, projectIds, false));
               }}
             >
               Allow read access
@@ -138,7 +162,7 @@ export function ConnectedApps({ api = appApi }: Props) {
                   return;
                 }
                 const gen = ++generation.current;
-                void reloadAfter(gen, () => api.approve(request.id, projectIds, true));
+                void finishInBrowser(gen, () => api.approve(request.id, projectIds, true));
               }}
             >
               Allow read and task writes
@@ -148,7 +172,7 @@ export function ConnectedApps({ api = appApi }: Props) {
               className={BTN}
               onClick={() => {
                 const gen = ++generation.current;
-                void reloadAfter(gen, () => api.deny(request.id));
+                void finishInBrowser(gen, () => api.deny(request.id));
               }}
             >
               Don't allow

@@ -42,4 +42,16 @@ test("asks for a project before it allows a tool to read", async ({ page }) => {
   await ask.getByRole("button", { name: "Allow read and task writes" }).click();
   await expect(page.locator("#done")).toHaveText("hivra write=true");
   await expect(ask.getByText("Claude wants to read Hivra.")).toHaveCount(0);
+  await expect(ask.getByText("Finish in the browser window.")).toBeVisible();
+  await expect(page.getByText("secret-code")).toHaveCount(0);
+  await expect(page.getByText("code=")).toHaveCount(0);
+});
+
+test("says the browser was not sent on when there is no redirect", async ({ page }) => {
+  await page.goto(pageUrl);
+  const miss = page.locator("#miss");
+  await miss.getByRole("checkbox", { name: "Hivra", exact: true }).check();
+  await miss.getByRole("button", { name: "Allow read access" }).click();
+  await expect(miss.getByRole("alert")).toHaveText("The browser was not sent on.");
+  await expect(miss.getByText("Finish in the browser window.")).toHaveCount(0);
 });
