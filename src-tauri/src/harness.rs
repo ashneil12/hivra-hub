@@ -1038,6 +1038,18 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
+    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain.
+    {
+        let store = app.state::<crate::session_store::SessionStore>();
+        let conn = store.lock_conn()?;
+        crate::secrets::worker::apply_to_child(
+            &session_id,
+            crate::secrets::store::active(),
+            &mut cmd,
+            &conn,
+            crate::session_store::now_millis(),
+        )?;
+    }
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
@@ -1130,9 +1142,12 @@ pub fn harness_spawn(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     let stdout_run = run.clone();
+    // WP-92: a worker given a secret has every line of its output scrubbed before the app stores or shows it.
+    let scrub_stdout = session_id.clone();
     thread::spawn(move || {
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
+            let line = crate::secrets::worker::scrub_line(&scrub_stdout, line);
             if crate::harness_runs::ends_turn(&line) {
                 stdout_run
                     .lock()
@@ -1158,6 +1173,7 @@ pub fn harness_spawn(
     thread::spawn(move || {
         for line in BufReader::new(stderr).lines() {
             let Ok(line) = line else { break };
+            let line = crate::secrets::worker::scrub_line(&stderr_id, line);
             let _ = stderr_app.emit(
                 STDERR_EVENT,
                 HarnessLine {
@@ -1189,11 +1205,12 @@ pub fn harness_spawn(
         let _ = wait_app.emit(
             EXIT_EVENT,
             HarnessExit {
-                session_id: wait_id,
+                session_id: wait_id.clone(),
                 code,
                 pid: wait_pid,
             },
         );
+        crate::secrets::worker::forget(&wait_id);
     });
 
     Ok(pid)
