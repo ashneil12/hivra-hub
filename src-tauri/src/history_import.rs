@@ -2216,13 +2216,6 @@ mod tests {
         assert!(list_proposals(&tmp.path).unwrap().is_empty());
     }
 
-    #[cfg(windows)]
-    #[test]
-    fn a_symlink_proposal_is_not_listed() {
-        // Creating a symlink needs extra rights here. The unix test covers it.
-        assert!(cfg!(windows));
-    }
-
     #[cfg(unix)]
     #[test]
     fn a_symlink_temp_file_is_not_followed() {
@@ -2249,12 +2242,5 @@ mod tests {
         let meta: Value = serde_json::from_str(&fs::read_to_string(&meta_path).unwrap()).unwrap();
         assert_eq!(meta["status"], "confirmed");
         assert_eq!(meta["applied"], false);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_symlink_temp_file_is_not_followed() {
-        // Creating a symlink needs extra rights here. The unix test covers it.
-        assert!(cfg!(windows));
     }
 }

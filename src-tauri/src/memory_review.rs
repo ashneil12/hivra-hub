@@ -341,25 +341,4 @@ mod tests {
             .unwrap()
             .contains("\"revision\": 1"));
     }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_symlink_temp_file_is_not_followed() {
-        // Creating a symlink needs extra rights here. The unix test covers it.
-        assert!(cfg!(windows));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_symlink_is_not_read_or_replaced() {
-        // Creating a symlink needs extra rights here. The unix test covers it.
-        assert!(cfg!(windows));
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn a_symlink_directory_is_not_read_or_written() {
-        // Creating a symlink needs extra rights here. The unix test covers it.
-        assert!(cfg!(windows));
-    }
 }
