@@ -19,7 +19,7 @@ export function useTerminalMirror() {
       setSessions(sessionsFromWire(got));
     } catch {
       if (mine !== gen.current) return;
-      setSessions([]);
+      // A missed read is not a reason to drop the sessions already on screen.
     }
   }, []);
 
@@ -103,7 +103,8 @@ export function useTerminalMirror() {
     openSession,
     close,
     reply: (text: string) => void steer("reply", { text }),
-    stop: () => void steer("stop"),
+    // A stock hook does not own the terminal's stdin, so it cannot interrupt the running turn.
+    stop: () => setNote("Stopping the turn isn't available from here."),
     allow: () => void steer("permission", { allow: true }),
     deny: () => void steer("permission", { allow: false }),
     attach,
