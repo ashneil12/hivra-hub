@@ -259,7 +259,12 @@ test("an unsandboxed agent before a scenario is not played, and it stops the rou
       return { sessions: [], rooms: [] };
     },
     listAgents: () => "  200 100 /opt/homebrew/bin/codex\n",
-    agentWatch: () => ({ rootPid: 100, profile: "/private/var/bench/state/sandbox.sb", wrapper: "/private/var/bench/bin/claude" }),
+    agentWatch: () => ({
+      rootPid: 100,
+      profile: "/private/var/bench/state/sandbox.sb",
+      wrapper: "/private/var/bench/bin/claude",
+      sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, false])) }),
+    }),
     stopRun: (why) => stopped.push(why),
   });
   assert.equal(result.verdict, "FAIL");

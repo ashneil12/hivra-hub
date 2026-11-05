@@ -731,7 +731,7 @@ export function finishSceneApps(before, after, stopRun) {
 
 /** A stop that ends the round, including a run-wide look. Anything else can still run. */
 export function isHardStop(reason) {
-  return typeof reason === "string" && /^(touched a real app|unsandboxed agent)(:|$)/.test(reason);
+  return typeof reason === "string" && /^(touched a real app|unsandboxed agent|can't verify the sandbox)(:|$)/.test(reason);
 }
 
 export function exitCodeForStop(stopReason) {
@@ -793,37 +793,133 @@ function agentCommandName(command) {
   return null;
 }
 
-/** The run's own wrapper: the plan path itself, or sh, bash or node running that path. */
+/**
+ * The plan's wrapper, not an agent CLI.
+ * The executable path is the wrapper script, or it is sh, bash or node and the next argument is that script.
+ * Matched by path. A program merely named claude is not this.
+ */
 function isPlanWrapper(command, wrapper) {
   if (!wrapper) return false;
   const argv = argvOf(command);
   if (!argv.length) return false;
   if (samePath(argv[0], wrapper)) return true;
-  if (!WRAPPER_HOSTS.has(baseName(argv[0]))) return false;
-  return argv.slice(1).some((arg) => samePath(arg, wrapper));
+  const exe = argv[0];
+  if (!exe.startsWith("/")) return false;
+  if (!WRAPPER_HOSTS.has(baseName(exe))) return false;
+  return samePath(argv[1], wrapper);
 }
 
-/** `REALTEST_SANDBOX_PROFILE=<profile>` with a boundary, so a longer name (`profile-evil`) does not count. */
-function envMarksProfile(command, profile) {
-  const needle = `REALTEST_SANDBOX_PROFILE=${profile}`;
-  let from = 0;
-  while (from <= command.length) {
-    const at = command.indexOf(needle, from);
-    if (at < 0) return false;
-    const next = command[at + needle.length];
-    if (next === undefined || next === " " || next === "\t" || next === "'" || next === '"') return true;
-    from = at + needle.length;
+/** `sandbox_check(pid, NULL, SANDBOX_FILTER_NONE)`. 1 sandboxed, 0 not. Anything else is not an answer. */
+const SANDBOX_CHECK_PY = [
+  "import sys",
+  "sys.path = [p for p in sys.path if p not in ('', '.')]",
+  "import ctypes, json",
+  "lib = ctypes.CDLL('/usr/lib/libSystem.dylib')",
+  "fn = lib.sandbox_check",
+  "fn.restype = ctypes.c_int",
+  "fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]",
+  "out = {}",
+  "for raw in sys.argv[1:]:",
+  "    pid = int(raw)",
+  "    rc = int(fn(pid, None, 0))",
+  "    out[str(pid)] = True if rc == 1 else False if rc == 0 else None",
+  "json.dump(out, sys.stdout)",
+].join("\n");
+
+const SANDBOX_HELPER_ENV = {
+  PATH: "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+  PYTHONNOUSERSITE: "1",
+  PYTHONDONTWRITEBYTECODE: "1",
+  PYTHONSAFEPATH: "1",
+  LC_ALL: "C",
+  LANG: "C",
+};
+
+const SANDBOX_UNVERIFIED = "can't verify the sandbox";
+
+function checkPids(pids) {
+  if (!Array.isArray(pids)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const pid of pids) {
+    if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return null;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
   }
-  return false;
+  return out;
 }
 
-/** This command is sandbox-exec with the profile as its own argument, or it carries the profile marker. */
-function commandShowsProfile(command, profile) {
-  if (!profile || !command) return false;
-  if (envMarksProfile(command, profile)) return true;
-  const argv = argvOf(command);
-  if (!argv.some((token) => baseName(token) === "sandbox-exec")) return false;
-  return argv.some((token) => samePath(token, profile));
+function answerFromMap(pids, byPid) {
+  if (!(byPid instanceof Map)) return { ok: false };
+  const out = new Map();
+  for (const pid of pids) {
+    const value = byPid.get(pid);
+    if (typeof value !== "boolean") return { ok: false };
+    out.set(pid, value);
+  }
+  return { ok: true, byPid: out };
+}
+
+function answerFromJson(pids, text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text ?? ""));
+  } catch {
+    return { ok: false };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
+  const byPid = new Map();
+  for (const pid of pids) {
+    if (!Object.prototype.hasOwnProperty.call(parsed, String(pid))) return { ok: false };
+    const value = parsed[String(pid)];
+    if (typeof value !== "boolean") return { ok: false };
+    byPid.set(pid, value);
+  }
+  return { ok: true, byPid };
+}
+
+function kernelSandbox(pids, execFile) {
+  const run = () =>
+    execFile("python3", ["-I", "-c", SANDBOX_CHECK_PY, ...pids.map((pid) => String(pid))], {
+      encoding: "utf8",
+      timeout: 10000,
+      cwd: "/",
+      env: SANDBOX_HELPER_ENV,
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024,
+    });
+  let last = { ok: false };
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      last = answerFromJson(pids, run());
+    } catch {
+      last = { ok: false };
+    }
+    if (last.ok) return last;
+  }
+  return last;
+}
+
+/**
+ * One question to the kernel for every pid: is that process sandboxed?
+ * `{ ok: false }` when it can't be asked, or a pid has no true/false answer. Never a silent yes.
+ * A caller may pass `sandboxOf` or `execFile` in tests. A scene does not.
+ */
+export function underProfile(pids, { execFile = execFileSync, sandboxOf } = {}) {
+  const list = checkPids(pids);
+  if (!list) return { ok: false };
+  if (!list.length) return { ok: true, byPid: new Map() };
+  if (typeof sandboxOf === "function") {
+    try {
+      const answer = sandboxOf(list);
+      if (!answer || answer.ok === false) return { ok: false };
+      return answerFromMap(list, answer.byPid);
+    } catch {
+      return { ok: false };
+    }
+  }
+  return kernelSandbox(list, execFile);
 }
 
 function parsePs(text) {
@@ -852,37 +948,31 @@ function descendedFrom(pid, rootPid, byPid) {
   return false;
 }
 
-function underProfile(pid, byPid, profile) {
-  if (!profile) return false;
-  const seen = new Set();
-  let cur = pid;
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    const row = byPid.get(cur);
-    if (!row) return false;
-    if (commandShowsProfile(row.command, profile)) return true;
-    if (!row.ppid || row.ppid === cur) return false;
-    cur = row.ppid;
-  }
-  return false;
-}
-
 /**
- * An agent CLI descended from the dev app that is not under this run's sandbox profile.
- * Null when ps can't be read, the app pid isn't known, or every agent is the wrapper or sandboxed.
- * The reason is `unsandboxed agent: <cmd>`.
+ * An agent CLI descended from the dev app that the kernel does not have in a sandbox.
+ * The wrapper's sh, bash and node launchers are not agents. Null when ps can't be read, the app pid
+ * isn't known, or every such agent is sandboxed. `can't verify the sandbox` when the kernel can't be asked.
  */
-export function unsandboxedAgents(text, { rootPid, profile, wrapper } = {}) {
+export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile } = {}) {
   if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
   const rows = parsePs(text);
   const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const candidates = [];
   for (const row of rows) {
     if (!descendedFrom(row.pid, rootPid, byPid)) continue;
     if (isPlanWrapper(row.command, wrapper)) continue;
     const name = agentCommandName(row.command);
     if (!name) continue;
-    if (underProfile(row.pid, byPid, profile)) continue;
-    return { fail: true, reason: `unsandboxed agent: ${name}` };
+    candidates.push({ pid: row.pid, name });
+  }
+  if (!candidates.length) return null;
+  const status = underProfile(
+    candidates.map((item) => item.pid),
+    { execFile, sandboxOf },
+  );
+  if (!status.ok) return { fail: true, reason: SANDBOX_UNVERIFIED };
+  for (const item of candidates) {
+    if (status.byPid.get(item.pid) !== true) return { fail: true, reason: `unsandboxed agent: ${item.name}` };
   }
   return null;
 }
