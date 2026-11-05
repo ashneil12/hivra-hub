@@ -160,6 +160,29 @@ describe("preview tabs", () => {
     tabs = open(tabs, "/r/e.ts", "/r");
     expect(files()).toEqual([["/r/e.ts"], ["/other/c.ts"], ["/r/d.ts"]]);
   });
+
+  it("beside leaves the preview and opens another tab", () => {
+    const append = (tabs: WorkspaceTab[], tab: WorkspaceTab) => [...tabs, tab];
+    const open = (
+      tabs: WorkspaceTab[],
+      path: string,
+      cwd: string,
+      beside = false,
+    ) => {
+      const file = newFileTab(path, cwd);
+      const created = newEditorWorkspaceTab(
+        beside ? file : { ...file, preview: true },
+      );
+      return openWorkspaceFile(tabs, file, created, append, false, beside).tabs;
+    };
+    let tabs = open([newTab("s")], "/r/a.ts", "/r");
+    tabs = open(tabs, "/r/b.ts", "/r", true);
+    const files = tabs
+      .slice(1)
+      .map((tab) => tab.editorPanes[0]?.files.map((file) => file.path));
+    expect(files).toEqual([["/r/a.ts"], ["/r/b.ts"]]);
+    expect(tabs[2]?.editorPanes[0]?.files[0]?.preview).toBe(false);
+  });
 });
 
 describe("splitSizesAtBoundary", () => {
@@ -573,6 +596,23 @@ describe("resetTabToSession", () => {
 });
 
 describe("openEditorTab", () => {
+  it("opens a file in a new pane beside the current one", () => {
+    const first = newFileTab("/repo/a.ts", "/repo");
+    let tab = openEditorTab(newTab("session-a"), first, { pin: true });
+    tab = openEditorTab(tab, newFileTab("/repo/b.ts", "/repo"), { beside: true });
+    expect(tab.editorPanes).toHaveLength(2);
+    expect(tab.editorPanes[0]?.files.map((file) => file.path)).toEqual([
+      "/repo/a.ts",
+    ]);
+    expect(tab.editorPanes[1]?.files.map((file) => [file.path, !!file.preview])).toEqual([
+      ["/repo/b.ts", true],
+    ]);
+    const leaves = layoutLeaves(tab.layout);
+    const left = leaves.find((pane) => pane.id === tab.editorPanes[0]?.id);
+    const right = leaves.find((pane) => pane.id === tab.editorPanes[1]?.id);
+    expect(right && left && right.rect.x).toBeGreaterThan(left.rect.x);
+  });
+
   it("can put the first file before a focused session", () => {
     const file = newFileTab("/repo/App.tsx", "/repo");
     const next = openEditorTab(newTab("session-a"), file, { split: "left" });

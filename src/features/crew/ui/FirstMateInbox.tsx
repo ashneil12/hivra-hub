@@ -1,6 +1,7 @@
 // Hivra WP-15: decisions, results, failures and credential needs, answered where they sit.
 
 import type { FirstMateItem } from "../model/inbox";
+import { useEffect, useRef } from "react";
 
 export function FirstMateInbox({
   items,
@@ -8,19 +9,34 @@ export function FirstMateInbox({
   onAnswer,
   onOpenChat,
   onOpenWorker,
+  selectedKey = null,
 }: {
   items: readonly FirstMateItem[];
   stale?: boolean;
   onAnswer?: (item: FirstMateItem, answer: string) => void;
   onOpenChat?: (sessionId: string) => void;
   onOpenWorker?: (workerId: string) => void;
+  selectedKey?: string | null;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const node = root.current?.querySelector("[data-selected='true']");
+    if (node instanceof HTMLElement && typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest" });
+  }, [selectedKey, items]);
   if (items.length === 0 && !stale) return null;
   return (
-    <div aria-label="First mate" className="flex flex-col gap-2 px-3 py-2">
+    <div ref={root} aria-label="First mate" className="flex flex-col gap-2 px-3 py-2">
       {stale ? <p className="text-[12px] text-content/60">Couldn't refresh. Trying again.</p> : null}
       {items.map((item) => (
-        <article key={item.id} data-inbox-kind={item.kind} data-inbox-id={item.id} className="rounded-md border border-stroke px-3 py-2">
+        <article
+          key={item.id}
+          data-inbox-kind={item.kind}
+          data-inbox-id={item.id}
+          data-decision-key={item.key ?? undefined}
+          data-selected={item.key != null && item.key === selectedKey ? "true" : undefined}
+          aria-current={item.key != null && item.key === selectedKey ? "true" : undefined}
+          className="rounded-md border border-stroke px-3 py-2"
+        >
           <h3 className="text-[13px] text-content">{item.title}</h3>
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
           {item.body ? (

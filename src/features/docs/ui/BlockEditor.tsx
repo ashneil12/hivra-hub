@@ -11,6 +11,8 @@ type Props = {
   blocks: Block[];
   onChange: (blocks: Block[]) => void;
   catalog: readonly MentionTarget[];
+  /** WP-74: the finder opens the doc on this block. */
+  focusBlockId?: string | null;
   onSubpage?: () => void;
   onSaveFiles?: (files: File[]) => Promise<{ name: string; markdownPath: string }[]>;
 };
@@ -39,17 +41,30 @@ function nextBlockId(): string {
   return `b-${crypto.randomUUID()}`;
 }
 
-export function BlockEditor({ blocks, onChange, catalog, onSubpage, onSaveFiles }: Props) {
+export function BlockEditor({ blocks, onChange, catalog, focusBlockId, onSubpage, onSaveFiles }: Props) {
   const [focusId, setFocusId] = useState<string | null>(blocks[0]?.id ?? null);
   const [slashQuery, setSlashQuery] = useState<string | null>(null);
   const [mentionQuery, setMentionQuery] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(blocks[0]?.id ?? null);
   const refs = useRef(new Map<string, HTMLTextAreaElement>());
+  const appliedFocus = useRef<string | null>(null);
 
   useEffect(() => {
     if (!focusId) return;
     refs.current.get(focusId)?.focus();
   }, [focusId]);
+
+  // WP-74: focus the block the finder matched, once it is on the page.
+  useEffect(() => {
+    if (!focusBlockId) return;
+    if (!blocks.some((block) => block.id === focusBlockId)) return;
+    if (appliedFocus.current === focusBlockId) return;
+    appliedFocus.current = focusBlockId;
+    setFocusId(focusBlockId);
+    const node = refs.current.get(focusBlockId);
+    node?.focus();
+    node?.scrollIntoView({ block: "nearest" });
+  }, [blocks, focusBlockId]);
 
   function commit(next: Block[], focus?: string) {
     onChange(toStoredContent(next.length ? next : [emptyParagraph(nextBlockId())]));
@@ -224,7 +239,7 @@ function BlockRow({
   const heading = block.type === "heading";
   const level = heading ? Number(block.props.level ?? 1) : 0;
   return (
-    <div className={rowClass(block, level)}>
+    <div className={rowClass(block, level)} data-block-id={block.id}>
       {block.type === "checkListItem" ? (
         <input
           type="checkbox"

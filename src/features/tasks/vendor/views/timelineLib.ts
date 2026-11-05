@@ -1,0 +1,237 @@
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Source: https://github.com/coollabsio/orbit
+// Original path: apps/web/src/features/tasks/timeline/timelineLib.ts
+// The upstream file has no file-level copyright line. See ../LICENSE.
+
+import { addDays, addMonths, differenceInCalendarDays, eachMonthOfInterval, format, max, min, startOfDay, startOfMonth } from '../dates'
+import type { StatusCategory, Task, TaskStatusDef } from '../models'
+import { isClosedCategory } from '../taskMeta'
+import type { TaskGroup } from './grouping'
+
+export type ZoomPreset = 'week' | 'month' | 'quarter'
+export const ZOOM_PRESETS: Record<ZoomPreset, number> = { week: 44, month: 16, quarter: 5 }
+export const MIN_ZOOM = 3
+export const MAX_ZOOM = 64
+
+export function clampZoom(px: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, px))
+}
+
+export function presetOf(px: number): ZoomPreset | null {
+  return (Object.keys(ZOOM_PRESETS) as ZoomPreset[]).find((key) => ZOOM_PRESETS[key] === px) ?? null
+}
+
+/** Ctrl+wheel and trackpad pinch (browsers send pinch as ctrlKey wheel events). Negative deltaY zooms in. */
+export function zoomFromWheel(px: number, deltaY: number): number {
+  return clampZoom(px * Math.exp(-deltaY * 0.01))
+}
+
+/** New scrollLeft that keeps the day under `anchorX` (px from the track's visible left edge) in place. */
+export function anchoredScrollLeft(scrollLeft: number, anchorX: number, oldPx: number, newPx: number): number {
+  const day = (scrollLeft + anchorX) / oldPx
+  return Math.max(0, day * newPx - anchorX)
+}
+
+/** Timeline window: `start` is local midnight of the first day; `days` columns follow. */
+export interface TimeRange {
+  start: Date
+  days: number
+}
+
+export function dayIndex(range: TimeRange, date: Date): number {
+  return differenceInCalendarDays(date, range.start)
+}
+
+export function dayAt(range: TimeRange, index: number): Date {
+  return addDays(range.start, index)
+}
+
+export function xOf(range: TimeRange, date: Date, px: number): number {
+  return dayIndex(range, date) * px
+}
+
+export function dayIndexAtX(x: number, px: number): number {
+  return Math.floor(x / px)
+}
+
+/** Data bounds ± 3 months, never less than today ± 6 months; starts on a month start. */
+export function computeRange(dates: Date[], today: Date): TimeRange {
+  const earliest = min([today, ...dates])
+  const latest = max([today, ...dates])
+  const start = startOfMonth(min([addMonths(earliest, -3), addMonths(today, -6)]))
+  const end = startOfDay(max([addMonths(latest, 3), addMonths(today, 6)]))
+  return { start, days: differenceInCalendarDays(end, start) + 1 }
+}
+
+export interface MonthMark {
+  x: number
+  width: number
+  label: string
+}
+
+/** One mark per month; January and the first mark also show the year. */
+export function monthMarks(range: TimeRange, px: number): MonthMark[] {
+  const last = dayAt(range, range.days - 1)
+  return eachMonthOfInterval({ start: range.start, end: last }).map((month, index) => {
+    const from = Math.max(0, dayIndex(range, month))
+    const to = Math.min(range.days, dayIndex(range, addMonths(month, 1)))
+    const label = index === 0 || month.getMonth() === 0 ? format(month, 'MMMM yyyy') : format(month, 'MMMM')
+    return { x: from * px, width: (to - from) * px, label }
+  })
+}
+
+export interface TickMark {
+  x: number
+  label: string
+}
+
+export const showsDailyTicks = (px: number) => px >= 28
+export const showsWeeklyLines = (px: number) => px >= 5
+
+/** Day-of-month labels: every day when wide, Mondays when medium, none when narrow. */
+export function tickMarks(range: TimeRange, px: number): TickMark[] {
+  if (!showsWeeklyLines(px)) return []
+  const ticks: TickMark[] = []
+  for (let index = 0; index < range.days; index++) {
+    const day = dayAt(range, index)
+    if (showsDailyTicks(px) || day.getDay() === 1) ticks.push({ x: index * px, label: String(day.getDate()) })
+  }
+  return ticks
+}
+
+export const DEFAULT_DUE_HOUR = 9
+
+export interface TaskSpan {
+  start: Date
+  end: Date
+  /** Due date only (or legacy start after end): drawn as a diamond. */
+  point: boolean
+}
+
+type TaskDates = Pick<Task, 'dueStartAt' | 'dueAt'>
+
+export function taskSpan(task: TaskDates): TaskSpan | null {
+  if (!task.dueAt) return null
+  const end = startOfDay(new Date(task.dueAt))
+  const start = task.dueStartAt ? startOfDay(new Date(task.dueStartAt)) : null
+  if (!start || start > end) return { start: end, end, point: true }
+  return { start, end, point: false }
+}
+
+export function isOverdue(task: Task, category: StatusCategory | undefined, today: Date): boolean {
+  if (!task.dueAt || isClosedCategory(category)) return false
+  return startOfDay(new Date(task.dueAt)) < startOfDay(today)
+}
+
+export type TimelineRow =
+  | { kind: 'group'; key: string; group: TaskGroup; done: number; total: number; span: { start: Date; end: Date } | null; open: boolean }
+  | { kind: 'task'; key: string; task: Task; span: TaskSpan | null }
+  | { kind: 'undated'; key: string; count: number; open: boolean }
+
+/** Groups start open; "No dates" sections start collapsed. */
+const isOpen = (overrides: Record<string, boolean>, key: string) => overrides[key] ?? !key.startsWith('undated:')
+
+/** `taskKeyPrefix` keeps rows unique when one task sits in several groups (labels, assignees). */
+function sectionRows(tasks: Task[], undatedKey: string, taskKeyPrefix: string, overrides: Record<string, boolean>): TimelineRow[] {
+  const withSpan = tasks.map((task) => ({ task, span: taskSpan(task) }))
+  const dated = withSpan
+    .filter((item): item is { task: Task; span: TaskSpan } => item.span !== null)
+    .sort((a, b) => a.span.start.getTime() - b.span.start.getTime() || a.span.end.getTime() - b.span.end.getTime() || a.task.position - b.task.position)
+  const undated = withSpan.filter((item) => item.span === null).sort((a, b) => a.task.position - b.task.position)
+  const rows: TimelineRow[] = dated.map(({ task, span }) => ({ kind: 'task', key: `${taskKeyPrefix}${task.id}`, task, span }))
+  if (undated.length > 0) {
+    const open = isOpen(overrides, undatedKey)
+    rows.push({ kind: 'undated', key: undatedKey, count: undated.length, open })
+    if (open) rows.push(...undated.map(({ task }) => ({ kind: 'task' as const, key: `${taskKeyPrefix}${task.id}`, task, span: null })))
+  }
+  return rows
+}
+
+/** One section per group from the view's grouping (`groups`), or flat rows when `groups` is null. */
+export function buildTimelineRows(input: {
+  tasks: Task[]
+  groups: TaskGroup[] | null
+  statuses: TaskStatusDef[]
+  overrides: Record<string, boolean>
+}): TimelineRow[] {
+  const { tasks, groups, statuses, overrides } = input
+  if (!groups) return sectionRows(tasks, 'undated:all', 'task:', overrides)
+  const categoryOf = new Map(statuses.map((status) => [status.id, status.category]))
+  return groups.flatMap((group) => {
+    const own = group.tasks
+    if (own.length === 0) return []
+    const key = `group:${group.key}`
+    const open = isOpen(overrides, key)
+    const spans = own.map(taskSpan).filter((span): span is TaskSpan => span !== null)
+    const header: TimelineRow = {
+      kind: 'group', key, group, open,
+      done: own.filter((task) => categoryOf.get(task.statusId) === 'completed').length,
+      total: own.filter((task) => {
+        const category = categoryOf.get(task.statusId)
+        return category !== 'cancelled' && category !== 'duplicate'
+      }).length,
+      span: spans.length > 0 ? { start: min(spans.map((s) => s.start)), end: max(spans.map((s) => s.end)) } : null,
+    }
+    return open ? [header, ...sectionRows(own, `undated:${group.key}`, `task:${group.key}:`, overrides)] : [header]
+  })
+}
+
+export function rowDates(tasks: Task[]): Date[] {
+  return tasks.flatMap((task) => {
+    const span = taskSpan(task)
+    return span ? [span.start, span.end] : []
+  })
+}
+
+export type DragMode = 'move' | 'start' | 'end'
+
+export interface DateEdit {
+  dueStartAt: string | null
+  dueAt: string
+}
+
+function atTime(day: Date, hours: number, minutes: number): Date {
+  const next = startOfDay(day)
+  next.setHours(hours, minutes, 0, 0)
+  return next
+}
+
+/** New dates after dragging by whole days. Start stays local midnight; the end keeps its time of day. */
+export function applyDrag(task: TaskDates, mode: DragMode, deltaDays: number): DateEdit | null {
+  const span = taskSpan(task)
+  if (!span || !task.dueAt) return null
+  const due = new Date(task.dueAt)
+  const endAt = (day: Date) => atTime(day, due.getHours(), due.getMinutes()).toISOString()
+  if (span.point) {
+    // the start grip only means something when pulled earlier; a nudge or a pull right is a no-op
+    if (mode === 'start') return { dueStartAt: deltaDays < 0 ? addDays(span.end, deltaDays).toISOString() : null, dueAt: task.dueAt }
+    return { dueStartAt: null, dueAt: endAt(addDays(span.end, deltaDays)) }
+  }
+  if (mode === 'move') return { dueStartAt: addDays(span.start, deltaDays).toISOString(), dueAt: endAt(addDays(span.end, deltaDays)) }
+  if (mode === 'start') return { dueStartAt: min([addDays(span.start, deltaDays), span.end]).toISOString(), dueAt: task.dueAt }
+  return { dueStartAt: span.start.toISOString(), dueAt: endAt(max([addDays(span.end, deltaDays), span.start])) }
+}
+
+/** Click (one day) or press-drag (range) on an undated row. A click still sets a start, so the result is a bar with both resize handles. */
+export function drawRange(a: Date, b: Date): DateEdit {
+  const [lo, hi] = a <= b ? [a, b] : [b, a]
+  return { dueStartAt: startOfDay(lo).toISOString(), dueAt: atTime(hi, DEFAULT_DUE_HOUR, 0).toISOString() }
+}
+
+const instant = (value: string | null | undefined) => (value ? new Date(value).getTime() : null)
+
+export function isSameEdit(task: TaskDates, edit: DateEdit): boolean {
+  return instant(task.dueStartAt) === instant(edit.dueStartAt) && instant(task.dueAt) === instant(edit.dueAt)
+}
+
+export function spanLabel(span: { start: Date; end: Date }): string {
+  const days = differenceInCalendarDays(span.end, span.start) + 1
+  const dayText = `${days} ${days === 1 ? 'day' : 'days'}`
+  if (days === 1) return `${format(span.start, 'MMM d')} · ${dayText}`
+  return `${format(span.start, 'MMM d')} → ${format(span.end, 'MMM d')} · ${dayText}`
+}

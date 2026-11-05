@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { monoTeamItem, openMonoChat, setHubSelection, setMonoChatOpener } from "./hubNav";
+import { monoTeamItem, openMonoChat, selectionLeavingOwnTeam, setHubSelection, setMonoChatOpener } from "./hubNav";
 
 let off: (() => void) | undefined;
 afterEach(() => off?.());
@@ -20,6 +20,13 @@ it("without the app (a browse-only page) it still selects the Mono's team, over 
   setHubSelection({ project: "vg-game", item: "inbox" });
   openMonoChat("cam");
   expect(JSON.parse(localStorage.getItem("monocode:hub-nav")!)).toEqual({ project: "vg-game", item: monoTeamItem("cam") });
+});
+
+it("opening a Mono on its own leaves that Mono's team selected, and nothing else", () => {
+  expect(selectionLeavingOwnTeam({ project: "vg-game", item: monoTeamItem("alfred") }, "alfred")).toEqual({ project: "vg-game", item: "coding-team" });
+  expect(selectionLeavingOwnTeam({ project: "vg-game", item: monoTeamItem("alfred") }, "exo")).toBeUndefined();
+  expect(selectionLeavingOwnTeam({ project: "vg-game", item: "coding-team" }, "alfred")).toBeUndefined();
+  expect(selectionLeavingOwnTeam({ project: "", item: monoTeamItem("alfred") }, "alfred")).toBeUndefined();
 });
 
 it("the app's opener leaves Settings when the Mono's chat arrives", () => {
