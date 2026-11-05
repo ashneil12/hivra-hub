@@ -11,7 +11,13 @@ export interface Inspiration {
   gave: string;
 }
 
-/** Third-party code Hivra adds (vendored, ported or a package), with its NOTICE entry. */
+/**
+ * Third-party code Hivra adds (vendored, ported or a package), with its NOTICE entry.
+ *
+ * A component whose code is not in the tree yet starts `how` with
+ * "Planned for WP-NN, code not copied yet:" and has no NOTICE entry until the PR that copies the
+ * code adds it.
+ */
 export interface CreditedComponent {
   name: string;
   url: string;
