@@ -7,6 +7,7 @@ import {
   isProseBlock,
   type TurnItem,
 } from "../../sessions/model/transcriptActivity";
+import { cleanCliFallback } from "../../crew/model/cliFallback";
 import { cleanRanFrom } from "../../crew/model/workerChoice";
 import {
   HARNESSES,
@@ -41,6 +42,7 @@ export function sanitizeMonoSpawnedSessions(
         ? item.effort.trim()
         : undefined;
     const from = cleanRanFrom(item.from);
+    const cliFallback = cleanCliFallback(item.cliFallback);
     if (!result.has(item.sessionId))
       result.set(item.sessionId, {
         sessionId: item.sessionId,
@@ -50,6 +52,7 @@ export function sanitizeMonoSpawnedSessions(
         model: item.model,
         ...(effort ? { effort } : {}),
         ...(from ? { from } : {}),
+        ...(cliFallback ? { cliFallback } : {}),
       });
   }
   return [...result.values()];
@@ -86,10 +89,10 @@ export function recordMonoSpawnedSession(
  */
 export function waitingCardAfterStart(
   card: MonoSpawnedSession,
-  start: Pick<MonoSpawnedSession, "model" | "harness" | "effort" | "from">,
+  start: Pick<MonoSpawnedSession, "model" | "harness" | "effort" | "from" | "cliFallback">,
 ): MonoSpawnedSession | undefined {
-  const named = !!(card.from || card.effort);
-  const startNames = !!(start.from || start.effort);
+  const named = !!(card.from || card.effort || card.cliFallback);
+  const startNames = !!(start.from || start.effort || start.cliFallback);
   // A start that names no source does not rewrite a card that named none.
   if (!named && !startNames) return undefined;
   const next: MonoSpawnedSession = {
@@ -101,11 +104,14 @@ export function waitingCardAfterStart(
   else delete next.effort;
   if (start.from) next.from = start.from;
   else delete next.from;
+  if (start.cliFallback) next.cliFallback = start.cliFallback;
+  else delete next.cliFallback;
   if (
     next.model === card.model &&
     next.harness === card.harness &&
     next.effort === card.effort &&
-    next.from === card.from
+    next.from === card.from &&
+    next.cliFallback === card.cliFallback
   )
     return undefined;
   return next;

@@ -21,6 +21,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { isHardStop } from "./bench-guard.mjs";
 import { ROOT, isMain, readJson } from "./hub-dev.mjs";
 import { claudeConfigArgs } from "./hub-realtest-accounts.mjs";
 import { makeClient, providerSpec } from "./realconv/llm.mjs";
@@ -226,7 +227,13 @@ export async function runRealconv(options, { bench, clients } = {}) {
     judge: { provider: judge.provider, model: judge.model, real: judge.real },
   });
   console.log(`report: ${path.relative(process.cwd(), report)}`);
-  return { code: results.every((r) => r.verdict === "PASS" || r.verdict === "SKIPPED") ? 0 : 1, report, results };
+  return { code: realconvExitCode(results, outcome.stopReason), report, results };
+}
+
+/** A hard stop is a failed round even when every scene was only skipped. */
+export function realconvExitCode(results, stopReason) {
+  if (isHardStop(stopReason)) return 1;
+  return results.every((r) => r.verdict === "PASS" || r.verdict === "SKIPPED") ? 0 : 1;
 }
 
 if (isMain(import.meta.url)) {

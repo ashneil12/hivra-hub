@@ -36,6 +36,7 @@ import { TaskDetail } from "./TaskDetail";
 import { answerWork, changePath, commentId, noteDocComment, noteTaskComment, phaseFor, subscribePhase } from "../../phases/model/store";
 import { TaskList } from "./TaskList";
 import { TaskTimeline } from "./TaskTimeline";
+import { stackUrlFor } from "../../stacks/model/link";
 
 type Scope = "all" | "project";
 
@@ -196,6 +197,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
   const [phaseTick, setPhaseTick] = useState(0);
+  const [appUrl, setAppUrl] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const generation = useRef(0);
   const detailGeneration = useRef(0);
@@ -218,6 +220,25 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   openRef.current = open;
   viewRef.current = current;
   viewsRef.current = views;
+
+  useEffect(() => {
+    let live = true;
+    const requested = cwd;
+    setAppUrl(null);
+    const pull = () => {
+      void stackUrlFor(requested).then((url) => {
+        if (live) setAppUrl(url);
+      });
+    };
+    pull();
+    const pending = listen("stacks://changed", () => {
+      if (live) pull();
+    });
+    return () => {
+      live = false;
+      void pending.then((done) => done());
+    };
+  }, [cwd]);
 
   const load = useCallback(async () => {
     const gen = ++generation.current;
@@ -704,6 +725,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onPriority={(priority) => void write(open, { priority })}
               onAssign={(assignee) => void write(open, { assignee: assignee || null })}
               onOpenChat={(id) => window.dispatchEvent(new CustomEvent("hivra:open-task-chat", { detail: id }))}
+              appUrl={appUrl}
             />
           </div>
         ) : null}

@@ -181,6 +181,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/plugins/hivra-rpi/skills/diagnosing-bugs, src-tauri/plugins/hivra-rpi/skills/rpi-tdd, src-tauri/plugins/hivra-rpi/skills/grill-me, src-tauri/plugins/hivra-rpi/skills/grilling
   Copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d. Hivra's copy of tdd is named rpi-tdd so pstack's tdd stays. grill-me only points at grilling, so that skill is copied too. Called by name only (WP-84).
 
+- HumanLayer's worktree stacks
+  Source: https://github.com/humanlayer/humanlayer
+  License: Apache-2.0
+  Copyright HumanLayer and the HumanLayer contributors
+  Used in: src-tauri/src/stacks.rs, src-tauri/src/stack_decl.rs, src/features/stacks
+  Translated to Rust from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included (WP-87).
+
 - backpass
   Source: https://github.com/kunchenguid/backpass
   License: MIT
