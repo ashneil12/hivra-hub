@@ -6,6 +6,7 @@ import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegati
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
 import { readDigestStore, showDigest, writeDigestStore, type DigestPlan } from "../model/digest";
 import { afterAnswer, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, type FirstMateItem } from "../model/inbox";
+import { takeHomeDecision } from "../../home/model/pending";
 import { loadCrewDelegations } from "../model/load";
 import type { CrewDeliveryInput, CrewWorkerInput } from "../model/rows";
 import { settleLoad } from "../model/rows";
@@ -38,6 +39,7 @@ export function FirstMateInboxPanel({
   const [deliveries, setDeliveries] = useState<CrewDeliveryInput[]>([]);
   const [stale, setStale] = useState(false);
   const [shown, setShown] = useState<DigestPlan | null>(null);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [clock, setClock] = useState(() => Date.now());
   const generation = useRef(0);
   const mounted = useRef(true);
@@ -123,6 +125,10 @@ export function FirstMateInboxPanel({
   }, [load]);
 
   const items = inboxItems({ project, decisions, rows, deliveries });
+  useEffect(() => {
+    const key = takeHomeDecision(items.filter((item) => item.kind === "decision").map((item) => ({ key: item.key, project: item.project })));
+    if (key) setSelectedKey(key);
+  }, [items]);
   const notices = noticesFrom(items, rows);
   const noticeKey = notices.map((notice) => `${notice.id}:${notice.immediate}`).join("|");
   const noticesRef = useRef(notices);
@@ -225,6 +231,7 @@ export function FirstMateInboxPanel({
       <FirstMateInbox
         items={items}
         stale={stale}
+        selectedKey={selectedKey}
         onAnswer={(item, answer) => void onAnswer(item, answer)}
         onOpenChat={onOpenSession}
         onOpenWorker={(id) => {

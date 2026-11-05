@@ -40,10 +40,9 @@ const blocks: Block[] = [
 const row: Delegation = {
   id: "t-save", ownerSession: "lead-chat", ownerMono: "vg-game-lead", batchId: "turn-1", parentId: null, rootId: "t-save",
   childSession: "w-save", requestId: "w-save", generation: 1, project: "vg-game", title: "Example: fix the save bug",
-  brief: null, goal: null, askIds: [], state: "running", errorClass: null, error: null, retryable: null, resetsAt: null,
+  brief: null, goal: null, askIds: [], state: "failed", errorClass: "billing", error: "402", retryable: null, resetsAt: null,
   result: null, pendingQuestion: null, delivery: "pending", deliveryMessage: null, createdAt: now - 30 * 60_000,
-  updatedAt: now - 30 * 60_000, settledAt: null, log: [], version: 1, mirroredVersion: 0, mirrorError: null,
-  stallKind: "quiet", stallReason: "Example: the test save file is missing", stalledAt: now - 4 * 60_000,
+  updatedAt: now - 4 * 60_000, settledAt: now - 4 * 60_000, log: [], version: 1, mirroredVersion: 0, mirrorError: null,
 } as Delegation;
 
 function Fixture() {
@@ -64,7 +63,7 @@ function Fixture() {
       {shown === "today" ? (
         <div className="p-6" data-fixture-today>
           <h1 className="mb-4 text-[15px]">Today</h1>
-          <StuckList heading="Stuck" stuck={stuck ? [stuck] : []} now={now} variant="row" where={() => "EXO · EXO lead"} />
+          <StuckList heading="Needs you" stuck={stuck ? [stuck] : []} now={now} variant="row" where={() => "EXO · EXO lead"} />
         </div>
       ) : (
         <>

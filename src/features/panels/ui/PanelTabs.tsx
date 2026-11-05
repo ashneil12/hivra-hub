@@ -17,7 +17,8 @@ import { applyCatalog, openTab, readCatalog, type CatalogPanel, type PanelBoard 
 
 export type { CatalogPanel };
 
-function PanelFrame({ plugin, panelId, spec }: { plugin: string; panelId: string; spec: CatalogPanel["spec"] }) {
+// WP-73: Home pins the same frame a tab uses.
+export function PanelFrame({ plugin, panelId, spec }: { plugin: string; panelId: string; spec: CatalogPanel["spec"] }) {
   const ref = useRef<HTMLIFrameElement>(null);
   const doc = panelDocument(spec);
   const scheme = loadActiveSchemeId();

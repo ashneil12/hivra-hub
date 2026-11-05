@@ -131,6 +131,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.diffViewer",
   "monocode.showExcludedFiles",
   "monocode.sidebarTabOrder",
+  // WP-73: how Home is arranged. The app's own store is the record; this mirror is what an export carries.
+  "monocode:home",
   "monocode.rightPanelTabOrder",
   "monocode:hub-strip-backdrop",
   "monocode:hub-role-names",

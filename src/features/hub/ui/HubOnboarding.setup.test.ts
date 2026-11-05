@@ -80,7 +80,7 @@ describe("setup before the welcome choices", () => {
     expect(container.querySelector("[data-hub-onboarding]")!.getAttribute("data-step")).toBe("setup");
     expect(container.textContent).not.toContain("Step 1 of 1");
     act(() => (container.querySelector("[data-test-setup-pass]") as HTMLButtonElement).click());
-    expect(next().textContent).toBe("Start using MonoCode");
+    expect(next().textContent).toBe("Start using Hivra");
     act(() => next().click());
     expect(closed).toBe(1);
   });

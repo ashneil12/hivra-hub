@@ -66,6 +66,16 @@ export function ProjectStrip({
     >
       {/* Room for the macOS traffic lights. */}
       {titleBarAbove ? <div className="h-1.5 w-full shrink-0" /> : <div className="h-10 w-full shrink-0" data-tauri-drag-region />}
+      {/* WP-73: Home, above the projects. A letter, not a chart. */}
+      <div data-hub-home>
+        <StripButton
+          label="Home"
+          title="Home"
+          selected={selection.item === "home"}
+          onClick={() => { onLeaveCovers?.(); showAppItem("home"); }}
+          glyph={<span className="text-[13px] font-medium">H</span>}
+        />
+      </div>
       <StripButton
         label="Autopilot"
         title={autopilot.title}

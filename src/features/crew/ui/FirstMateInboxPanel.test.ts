@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { queueHomeDecision, resetHomePending } from "../../home/model/pending";
 import { FirstMateInboxPanel } from "./FirstMateInboxPanel";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -60,6 +61,7 @@ describe("first mate inbox panel", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    resetHomePending();
     vi.unstubAllGlobals();
   });
 
@@ -69,6 +71,24 @@ describe("first mate inbox panel", () => {
     });
     await vi.waitFor(() => expect(shipButton(container)).toBeTruthy());
   }
+
+  it("selects the decision opened from home, and not the one beside it", async () => {
+    queueHomeDecision(PROJECT, "ship");
+    vi.mocked(invoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "decisions_list") {
+        return [openDecision(), { ...openDecision(), decisionKey: "font", question: "Which font?" }];
+      }
+      return [];
+    });
+    await act(async () => {
+      root.render(createElement(FirstMateInboxPanel, { cwd: PROJECT }));
+    });
+    await vi.waitFor(() => expect(container.querySelector("[data-selected='true']")).toBeTruthy());
+    const selected = container.querySelectorAll("[data-selected='true']");
+    expect(selected).toHaveLength(1);
+    expect(selected[0]?.textContent).toContain("Ship it now?");
+    expect(selected[0]?.getAttribute("aria-current")).toBe("true");
+  });
 
   it("keeps a timed-out decision open and tries the answer again", async () => {
     let answers = 0;

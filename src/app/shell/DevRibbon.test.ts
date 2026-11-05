@@ -30,7 +30,19 @@ describe("DevRibbon", () => {
     expect(markup).toContain(">DEV<");
     expect(markup).toContain("pointer-events-none");
     expect(markup).toContain('role="status"');
-    expect(markup).toContain("Dev copy wt-a: hub/x @ 0123456-dirty");
+    expect(markup).toContain("Hivra dev copy wt-a: hub/x @ 0123456-dirty");
+    expect(markup).not.toContain("MonoCode");
+  });
+
+  it("names Hivra when the slot is missing or blank", () => {
+    for (const slot of [null, "  "]) {
+      const dev = identity("dev");
+      if (!dev) throw new Error("dev identity");
+      dev.slot = slot;
+      const markup = renderToStaticMarkup(createElement(DevRibbon, { identity: dev }));
+      expect(markup).toContain("Hivra dev copy: hub/x @ 0123456-dirty");
+      expect(markup).not.toContain("MonoCode");
+    }
   });
 
   it("shows nothing in the daily app or outside the app", () => {

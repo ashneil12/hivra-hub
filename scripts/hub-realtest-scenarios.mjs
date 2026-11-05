@@ -10,6 +10,8 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { isTeamSeat, monoIdFor, speakerName } from "./realconv/seats.mjs";
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
 const rel = (t, t0) => `+${Math.round((t - t0) / 1000)}s`;
@@ -20,7 +22,7 @@ const textOf = (value) => (Array.isArray(value) ? value.join("\n") : String(valu
 
 /**
  * r98 (B5): Ash quits the dev copy and opens it again. The quit is the app's own (the driver's `quit`, the path the app
- * menu's Quit MonoCode takes: windows save first); nothing is ever killed. If the old copy is still up after `waitMs`
+ * menu's Quit Hivra takes: windows save first); nothing is ever killed. If the old copy is still up after `waitMs`
  * (a busy chat asked, a save failed) it is left alone and nothing new is opened. The reopen is `launch` (the run's own
  * background launch: an accessory app that never comes forward).
  */
@@ -80,7 +82,7 @@ export async function runScenario(scenario, ctx) {
   const chatSession = (name) => chats.get(name) ?? null;
   const overBudget = () => usage(t0).turns >= turnsCap;
   const expired = () => Date.now() > stop;
-  const resolveMono = (name) => (name === "lead" ? leadId : name);
+  const resolveMono = (name) => monoIdFor(name, ctx.team ?? [], leadId);
   const resolveRoom = (name) => (name === "room" || name === "leadership" ? roomId : name.includes(":") ? name : `${name}:leadership`);
 
   const target = async (to) => {
@@ -504,13 +506,14 @@ export async function runScenario(scenario, ctx) {
     // Parallel workers (baseline, 20 Oct: two shared port 4317 and one killed the other's server): each brief's port,
     // and which workers had a checkout of their own.
     workers: workerSpread(rows, snap?.sessions ?? []),
-    workersInRoom: room.filter((m) => m.from && !["ash", "chief-of-staff", "projects-manager", "frank", "alfred", "critiquito"].includes(m.from)).map((m) => m.from),
+    workersInRoom: room.filter((m) => m.from && !isTeamSeat(m.from, ctx.team)).map((m) => m.from),
     replies: record.sends.filter((s) => s.firstReply).map((s) => ({ label: s.label, to: s.to.room ?? s.to.mono ?? (s.to.codingTeam ? `coding team (${s.answer?.session})` : s.to.session), firstReplySec: s.firstReply.afterSec, from: s.firstReply.from ?? null, turnEndSec: s.turnEnd?.afterSec ?? null, firstWordsSec: s.firstWords?.afterSec ?? null })),
     // Room posts' length (Ash: short, a few lines).
     postChars: room.filter((m) => m.from !== ASH && m.text).map((m) => m.text.length),
   };
   if (scenario.checks) metrics.checks = runChecks(scenario.checks, { room, texts, saved: await savedChatTexts(ctx, texts, t0), events: events.filter((e) => e.t >= t0), memoryCalls: ctx.memoryCalls?.() ?? [] });
-  const result = { ...record, ended, metrics, room, otherRooms, texts, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "", ...(scenario.asks ? { asks: scenario.asks } : {}) };
+  const names = Object.fromEntries([...(ctx.team ?? []), ...(snap?.monos ?? [])].filter((mono) => mono?.id && mono?.name).map((mono) => [mono.id, mono.name]));
+  const result = { ...record, ended, metrics, room, otherRooms, texts, names, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "", ...(scenario.asks ? { asks: scenario.asks } : {}) };
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
@@ -683,6 +686,7 @@ export function withoutRepeatedAsks(text, seen) {
 
 export function transcript(scenario, result, t0) {
   const lines = [`# ${scenario.id}: ${scenario.title}`, "", `Benchmark: ${(scenario.bench ?? []).join(", ")}`, "", "## What this checks", "", scenario.criteria ?? "", ""];
+  const who = (id) => speakerName(id, Object.entries(result.names ?? {}).map(([monoId, name]) => ({ id: monoId, name })));
   const timeline = [];
   for (const send of result.sends) {
     if (send.stop) timeline.push({ t: send.t, line: `**Ash pressed Stop** on ${JSON.stringify(send.stop)}` });
@@ -693,11 +697,11 @@ export function transcript(scenario, result, t0) {
     else
       timeline.push({
         t: send.t,
-        line: `**Ash -> ${send.to.room ? `room ${send.to.room}` : send.to.mono ? `${send.to.mono} (1:1)` : send.to.codingTeam ? `a new chat in ${send.to.codingTeam}'s coding team` : `chat ${send.to.session}`}**${send.answer?.ok === false ? ` (NOT accepted: ${send.answer.error ?? ""})` : ""}: ${send.text}`,
+        line: `**Ash -> ${send.to.room ? `room ${send.to.room}` : send.to.mono ? `${who(send.to.mono)} (1:1)` : send.to.codingTeam ? `a new chat in ${send.to.codingTeam}'s coding team` : `chat ${send.to.session}`}**${send.answer?.ok === false ? ` (NOT accepted: ${send.answer.error ?? ""})` : ""}: ${send.text}`,
       });
   }
-  for (const m of result.room) if (m.from !== ASH) timeline.push({ t: m.t, line: `[room] **${m.from}**${m.quiet ? " (quiet)" : ""}: ${m.text}` });
-  for (const m of result.otherRooms) timeline.push({ t: m.t, line: `[room ${m.room}] **${m.from}**: ${m.text}` });
+  for (const m of result.room) if (m.from !== ASH) timeline.push({ t: m.t, line: `[room] **${who(m.from)}**${m.quiet ? " (quiet)" : ""}: ${m.text}` });
+  for (const m of result.otherRooms) timeline.push({ t: m.t, line: `[room ${m.room}] **${who(m.from)}**: ${m.text}` });
   const askedBy = new Map();
   for (const raw of result.texts) {
     let line = raw;
@@ -706,13 +710,13 @@ export function transcript(scenario, result, t0) {
       line = { ...line, text: withoutRepeatedAsks(line.text, askedBy.get(line.who)) };
     }
     if (line.result) {
-      if (line.isError) timeline.push({ t: line.t, line: `[${line.who}] turn ended with an ERROR: ${line.text}` });
+      if (line.isError) timeline.push({ t: line.t, line: `[${who(line.who)}] turn ended with an ERROR: ${line.text}` });
       continue;
     }
     const asked = (line.tools ?? []).filter((tool) => String(tool).startsWith("AskUserQuestion:"));
-    if (asked.length) timeline.push({ t: line.t, line: `[${line.who} chat] asks with buttons: ${asked.join(" ; ").replace("AskUserQuestion: ", "")}` });
+    if (asked.length) timeline.push({ t: line.t, line: `[${who(line.who)} chat] asks with buttons: ${asked.join(" ; ").replace("AskUserQuestion: ", "")}` });
     if (!line.text) continue;
-    timeline.push({ t: line.t, line: `[${line.who} chat] ${chatLine(line.text)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
+    timeline.push({ t: line.t, line: `[${who(line.who)} chat] ${chatLine(line.text)}${line.tools?.length ? ` (tools: ${line.tools.filter((tool) => !String(tool).startsWith("AskUserQuestion:")).join(", ")})` : ""}` });
   }
   for (const a of result.answers ?? [])
     timeline.push({ t: a.t, line: a.answers ? `(the app answered the question in Claude: ${JSON.stringify(a.answers).slice(0, 400)})` : `(the app declined the question in Claude: ${a.message ?? a.behavior})` });

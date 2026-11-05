@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu } from "./ProjectMenu";
 import { confirmDelete } from "../../../shared/ui/ConfirmDelete";
@@ -116,6 +116,26 @@ export function HubProjectItems({
               <span className="min-w-0 flex-1 truncate">{item.title}</span>
             </button>
           );
+          // WP-71: Tasks sits next to the coding team. It is not a stored project item, so it is not data-hub-item.
+          if (item.kind === "coding-team") {
+            const tasksOpen = !monoOpen && selection.item === "tasks";
+            return (
+              <Fragment key={item.id}>
+                {row}
+                <button
+                  type="button"
+                  data-hub-tasks
+                  aria-current={tasksOpen ? "page" : undefined}
+                  onClick={() => setHubSelection({ project: project.id, item: "tasks" })}
+                  className={`flex h-7 items-center gap-2 rounded-md px-2 text-left text-[13px] ${
+                    tasksOpen ? "bg-selection text-content" : "text-content/80 hover:bg-content/6 hover:text-content"
+                  }`}
+                >
+                  <span className="min-w-0 flex-1 truncate">Tasks</span>
+                </button>
+              </Fragment>
+            );
+          }
           // A room Ash made can be deleted (r30d), after the shared confirm; the Leadership team and the rest can't.
           if (item.kind !== "group-chat") return row;
           return (

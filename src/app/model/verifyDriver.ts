@@ -454,11 +454,13 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok: !!saved, added, skipped, model: saved ? { id: saved.id, name: saved.name, provider: saved.provider, modelId: saved.modelId, efforts: customModelEfforts(saved.reasoningEfforts) } : null };
     }
     case "teamPack": {
-      // A bench run that plays Ash's own Monos puts his team on the fresh dev copy first (benchAshTeam: the app has no
-      // pre-load since PM round 19; his team arrives by import). Only "ash"; the plain team is what a fresh copy has.
+      // A bench run puts the starter Monos on the fresh dev copy and seats them in this project's leadership room
+      // (benchAshTeam). A real fresh copy still offers them unticked. Only "ash", and only for one project.
       if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
-      const wrote = await benchAshTeam();
-      return { ok: teamPack() === "ash", pack: teamPack(), wrote };
+      const project = typeof action.project === "string" ? action.project.trim() : "";
+      if (!project) return { ok: false, error: "teamPack: no project" };
+      const { monos, wrote } = await benchAshTeam({ project });
+      return { ok: teamPack() === "ash" && monos.length > 0, pack: teamPack(), wrote, monos };
     }
     case "userName": {
       // r91: the bench names the owner as his own app does (onboarding's "What should your team call you?").
@@ -574,7 +576,7 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       setTimeout(() => window.location.reload(), Number(action.afterMs ?? 300));
       return { ok: true, at: Date.now() };
     case "quit": {
-      // r98 (B5): Ash quits the way the app menu's Quit MonoCode does (verify_live_quit -> window::request_quit), once
+      // r98 (B5): Ash quits the way the app menu's Quit Hivra does (verify_live_quit -> window::request_quit), once
       // this answer is written. Never a kill: the windows save their work first. A busy chat would make that Quit ask
       // in a Mac dialog (run df53 left one up for 90s), and the bench never puts a dialog in front of Ash: refuse.
       const busy = host.sessions().filter(isRunningWork).length;
