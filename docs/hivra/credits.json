@@ -369,6 +369,14 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/memory/vendor/agentZeroMemories.ts",
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
+    },
+    {
+      "name": "HumanLayer's commit attribution",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src/features/attribution, src-tauri/src/attribution",
+      "how": "The session trailer, forwarded prepare-commit-msg hook, line-hash journal and boilerplate gate are HumanLayer's packages/git-attribution design. The source tree was not in the local sources checkout, so this is a rewrite, not a byte copy (WP-86)."
     }
   ]
 }
