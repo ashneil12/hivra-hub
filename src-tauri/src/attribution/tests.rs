@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::process::Command;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use rusqlite::Connection;
 
@@ -44,6 +45,7 @@ fn row(sha: &str, tier: Tier, chat: Option<&str>, task: Option<&str>) -> LedgerR
         agent: Some("Ada".into()),
         file_count: 2,
         line_count: 10,
+        overlap: 0,
         subject: Some("by hand".into()),
     }
 }
@@ -478,4 +480,325 @@ fn a_person_committing_agent_lines_is_inferred_and_a_plain_commit_keeps_counts()
     assert!(!dumped.contains("SECRETVALUE"), "{dumped}");
     assert!(!activity.contains("SECRETVALUE"), "{activity}");
     assert!(activity.contains("commit by Ada for Fix the gate"));
+}
+
+struct GitRepo {
+    repo: PathBuf,
+    home: PathBuf,
+    global: PathBuf,
+}
+
+impl GitRepo {
+    fn new(scratch: &Scratch) -> Self {
+        let repo = scratch.path().join("repo");
+        let home = scratch.path().join("home");
+        let global = scratch.path().join("gitconfig");
+        fs::create_dir_all(&repo).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        fs::write(
+            &global,
+            "[user]\n\tname = Dev\n\temail = dev@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n",
+        )
+        .unwrap();
+        Self { repo, home, global }
+    }
+
+    fn env(&self) -> [(&str, &str); 2] {
+        [
+            ("HOME", self.home.to_str().unwrap()),
+            ("GIT_CONFIG_GLOBAL", self.global.to_str().unwrap()),
+        ]
+    }
+}
+
+#[test]
+fn opening_a_task_keeps_a_commit_outside_the_newest_page() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &made.env(), &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &made.env(), &["commit", "-m", "base"]).unwrap();
+    let store = SessionStore::open(scratch.path().join("ledger.db")).unwrap();
+    let top = super::git::toplevel(&made.repo).unwrap();
+    let key = top.to_str().unwrap();
+    let old = "0123456789abcdef0123456789abcdef01234567";
+    store_credit(
+        &store,
+        key,
+        row(old, Tier::Confirmed, Some("chat-1"), Some("task-1")),
+    )
+    .unwrap();
+    let shown = super::credits_for_task(&store, "task-1", made.repo.to_str()).unwrap();
+    assert!(
+        shown.iter().any(|credit| credit.sha == old
+            && credit.task_id.as_deref() == Some("task-1")
+            && credit.tier == "confirmed"),
+        "{shown:?}"
+    );
+    let missing = scratch.path().join("missing");
+    fs::write(&missing, "nope").unwrap();
+    let kept = super::credits_for_task(&store, "task-1", missing.to_str()).unwrap();
+    assert!(kept.iter().any(|credit| credit.sha == old));
+}
+
+#[test]
+fn two_crews_do_not_share_one_hook_temp_file() {
+    let dir = Path::new("hooks");
+    assert_ne!(super::hooks::hook_temp(dir), super::hooks::hook_temp(dir));
+}
+
+#[test]
+fn two_crews_installing_together_both_get_the_hook() {
+    let scratch = Scratch::new();
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    for _ in 0..8 {
+        let dest = data
+            .join("attribution")
+            .join("hooks")
+            .join("prepare-commit-msg");
+        let _ = fs::remove_file(&dest);
+        let left = data.clone();
+        let right = data.clone();
+        let a = std::thread::spawn(move || {
+            let mut cmd = Command::new("git");
+            super::apply_crew_env(&mut cmd, &left, "chat-1", Some("task-1"));
+            cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT")
+        });
+        let b = std::thread::spawn(move || {
+            let mut cmd = Command::new("git");
+            super::apply_crew_env(&mut cmd, &right, "chat-2", Some("task-2"));
+            cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT")
+        });
+        assert!(a.join().unwrap());
+        assert!(b.join().unwrap());
+    }
+    let script = fs::read_to_string(
+        data.join("attribution")
+            .join("hooks")
+            .join("prepare-commit-msg"),
+    )
+    .unwrap();
+    assert!(script.contains("Hivra-Chat:"));
+}
+
+#[test]
+fn a_repo_with_no_commit_still_hashes_new_lines() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let line = "export function uniqueWidgetName42()";
+    fs::write(made.repo.join("note.txt"), format!("{line}\n")).unwrap();
+    let dirty = super::git::dirty_hashes(&made.repo).unwrap();
+    let hashed = super::logic::hash_line(line);
+    assert!(dirty.hashes.contains(&hashed));
+    let again = super::lines_before_run(&made.repo).unwrap();
+    assert!(again.contains(&hashed));
+}
+
+#[test]
+fn a_timed_out_snapshot_is_read_again() {
+    let hits = AtomicUsize::new(0);
+    let got = super::read_with_retry(|| {
+        if hits.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err("git didn't answer".into())
+        } else {
+            Ok(5)
+        }
+    })
+    .unwrap();
+    assert_eq!(got, 5);
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_failed_activity_insert_is_retried_on_the_next_write() {
+    let scratch = Scratch::new();
+    let store = SessionStore::open(scratch.path().join("ledger.db")).unwrap();
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "CREATE TRIGGER fail_git_commit BEFORE INSERT ON activity
+         WHEN NEW.kind = 'git.commit'
+         BEGIN
+           SELECT RAISE(ABORT, 'busy');
+         END",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let inferred = row("abc1234", Tier::Inferred, Some("chat-1"), Some("task-1"));
+    store_credit(&store, "repo-a", inferred.clone()).unwrap();
+    assert_eq!(activity_count(&store), 0);
+    let conn = store.lock_conn().unwrap();
+    conn.execute("DROP TRIGGER fail_git_commit", []).unwrap();
+    drop(conn);
+    store_credit(&store, "repo-a", inferred).unwrap();
+    assert_eq!(activity_count(&store), 1);
+}
+
+#[test]
+fn a_later_stronger_journal_replaces_the_inferred_chat() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &made.env(), &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &made.env(), &["commit", "-m", "base"]).unwrap();
+    let lines = [
+        "export function uniqueWidgetName42()",
+        "return the unique widget now",
+        "compute the western azimuth today",
+        "hold the final lattice open",
+    ];
+    fs::write(
+        made.repo.join("agent.txt"),
+        format!("{}\n", lines.join("\n")),
+    )
+    .unwrap();
+    git(&made.repo, &made.env(), &["add", "agent.txt"]).unwrap();
+    git(&made.repo, &made.env(), &["commit", "-m", "by hand"]).unwrap();
+    let sha = git(&made.repo, &made.env(), &["rev-parse", "HEAD"])
+        .unwrap()
+        .trim()
+        .to_string();
+    let store = SessionStore::open(scratch.path().join("ledger.db")).unwrap();
+    let top = super::git::toplevel(&made.repo).unwrap();
+    let key = top.to_str().unwrap().to_string();
+    let hashes: Vec<String> = lines
+        .iter()
+        .map(|line| super::logic::hash_line(line))
+        .collect();
+    let conn = store.lock_conn().unwrap();
+    for (index, hash) in hashes.iter().enumerate() {
+        if index < 2 {
+            conn.execute(
+                "INSERT INTO attribution_journal (line_hash, chat_id, task_id, agent, repo, run_id, at)
+                 VALUES (?1, 'chat-a', 'task-a', 'Ada', ?2, 'run-a', 1)",
+                [hash, &key],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO attribution_journal (line_hash, chat_id, task_id, agent, repo, run_id, at)
+             VALUES (?1, 'chat-b', 'task-b', 'Nia', ?2, 'run-b', 2)",
+            [hash, &key],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    // Only A's lines are visible for the first pass. Hide B, then put it back.
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "DELETE FROM attribution_journal WHERE chat_id = 'chat-b'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    let first = super::refresh(&store, &made.repo, None).unwrap();
+    let found = first.iter().find(|credit| credit.sha == sha).unwrap();
+    assert_eq!(found.tier, "inferred");
+    assert_eq!(found.chat_id.as_deref(), Some("chat-a"));
+    let conn = store.lock_conn().unwrap();
+    for hash in &hashes {
+        conn.execute(
+            "INSERT INTO attribution_journal (line_hash, chat_id, task_id, agent, repo, run_id, at)
+             VALUES (?1, 'chat-b', 'task-b', 'Nia', ?2, 'run-b', 2)",
+            [hash, &key],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    let second = super::refresh(&store, &made.repo, None).unwrap();
+    let found = second.iter().find(|credit| credit.sha == sha).unwrap();
+    assert_eq!(found.chat_id.as_deref(), Some("chat-b"), "{found:?}");
+    let mut stale = row(&sha, Tier::Inferred, Some("chat-a"), Some("task-a"));
+    stale.overlap = 2;
+    stale.agent = Some("Ada".into());
+    store_credit(&store, &key, stale).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let chat: String = conn
+        .query_row(
+            "SELECT chat_id FROM attribution_commits WHERE sha = ?1",
+            [&sha],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(chat, "chat-b");
+    let latest: String = conn
+        .query_row(
+            "SELECT summary FROM activity WHERE kind = 'git.commit' ORDER BY seq DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(latest.contains("Nia"), "{latest}");
+}
+
+#[test]
+fn an_older_ledger_gains_its_columns_in_place() {
+    let scratch = Scratch::new();
+    let store = SessionStore::open(scratch.path().join("ledger.db")).unwrap();
+    let conn = store.lock_conn().unwrap();
+    conn.execute_batch(
+        "DROP TABLE attribution_commits;
+         CREATE TABLE attribution_commits (
+           sha TEXT NOT NULL,
+           repo TEXT NOT NULL,
+           tier TEXT NOT NULL CHECK (tier IN ('confirmed', 'inferred', 'person')),
+           chat_id TEXT,
+           task_id TEXT,
+           agent TEXT,
+           file_count INTEGER NOT NULL,
+           line_count INTEGER NOT NULL,
+           subject TEXT,
+           at INTEGER NOT NULL,
+           PRIMARY KEY (repo, sha)
+         );
+         INSERT INTO attribution_commits
+           (sha, repo, tier, chat_id, task_id, agent, file_count, line_count, subject, at)
+         VALUES ('person1', 'repo-a', 'person', NULL, NULL, NULL, 1, 1, NULL, 1);
+         INSERT INTO attribution_commits
+           (sha, repo, tier, chat_id, task_id, agent, file_count, line_count, subject, at)
+         VALUES ('infer1', 'repo-a', 'inferred', 'chat-1', 'task-1', 'Ada', 1, 1, 's', 1);
+         INSERT INTO attribution_commits
+           (sha, repo, tier, chat_id, task_id, agent, file_count, line_count, subject, at)
+         VALUES ('infer2', 'repo-a', 'inferred', 'chat-2', 'task-2', 'Nia', 1, 1, 's', 1);
+         INSERT INTO activity (
+           id, kind, actor_role, actor_id, actor_name,
+           initiator_role, initiator_id, initiator_name,
+           project, target, summary, link, at
+         ) VALUES (
+           'id-infer1', 'git.commit', 'worker', 'chat-1', 'Ada',
+           'worker', 'chat-1', 'Ada',
+           'repo-a', 'infer1', 'commit by Ada', 'session:chat-1', 1
+         );",
+    )
+    .unwrap();
+    super::ensure_tables(&conn).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT sha, logged, overlap FROM attribution_commits ORDER BY sha")
+        .unwrap();
+    let rows: Vec<(String, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    drop(stmt);
+    assert_eq!(
+        rows,
+        vec![
+            ("infer1".into(), 1, 0),
+            ("infer2".into(), 0, 0),
+            ("person1".into(), 1, 0),
+        ]
+    );
+    assert_eq!(crate::session_store::schema_version(&conn).unwrap(), 19);
+    assert_eq!(crate::session_store::SCHEMA_VERSION, 19);
 }

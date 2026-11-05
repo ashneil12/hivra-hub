@@ -75,6 +75,9 @@ pub struct LedgerRow {
     pub agent: Option<String>,
     pub file_count: i64,
     pub line_count: i64,
+    /// Distinctive journal lines that matched. A later inferred credit replaces
+    /// this row only when it matches more. Confirmed and person rows leave it at 0.
+    pub overlap: i64,
     pub subject: Option<String>,
 }
 
@@ -167,9 +170,14 @@ const MARKERS: [&str; 5] = [
     "code generated",
 ];
 
+/// UTF-16 code units, the same count as JavaScript `string.length`.
+fn utf16_len(text: &str) -> usize {
+    text.chars().map(char::len_utf16).sum()
+}
+
 pub fn is_boilerplate(line: &str) -> bool {
     let text = normalize_line(line);
-    if text.len() < 8 {
+    if utf16_len(&text) < 8 {
         return true;
     }
     if !letter().is_match(&text) {
@@ -357,6 +365,7 @@ pub fn attribute_commit(
                 .or_else(|| agent_hint.map(str::to_string)),
             file_count: commit.file_count,
             line_count: commit.line_count,
+            overlap: 0,
             subject: subject_of(&commit.message),
         };
     }
@@ -374,6 +383,7 @@ pub fn attribute_commit(
             agent: run.agent.or_else(|| agent_hint.map(str::to_string)),
             file_count: commit.file_count,
             line_count: commit.line_count,
+            overlap: i64::try_from(run.matches).unwrap_or(i64::MAX),
             subject: subject_of(&commit.message),
         };
     }
@@ -385,11 +395,14 @@ pub fn attribute_commit(
         agent: None,
         file_count: commit.file_count,
         line_count: commit.line_count,
+        overlap: 0,
         subject: None,
     }
 }
 
 /// Keep the stronger credit. Equal confirmed rows keep the stored identity when the ids differ.
+/// An inferred row is replaced only when the new pass matches more distinctive lines, so a
+/// stale refresh cannot overwrite a better one.
 pub fn merge_ledger(existing: Option<&LedgerRow>, incoming: &LedgerRow) -> LedgerRow {
     let Some(existing) = existing else {
         return incoming.clone();
@@ -397,18 +410,21 @@ pub fn merge_ledger(existing: Option<&LedgerRow>, incoming: &LedgerRow) -> Ledge
     if incoming.tier.rank() < existing.tier.rank() {
         return existing.clone();
     }
-    if incoming.tier.rank() == existing.tier.rank() {
-        if existing.tier == Tier::Confirmed
-            && (existing.chat_id != incoming.chat_id || existing.task_id != incoming.task_id)
-        {
-            return existing.clone();
-        }
-        let mut kept = existing.clone();
-        kept.file_count = incoming.file_count;
-        kept.line_count = incoming.line_count;
-        return kept;
+    if incoming.tier.rank() > existing.tier.rank() {
+        return incoming.clone();
     }
-    incoming.clone()
+    if existing.tier == Tier::Confirmed
+        && (existing.chat_id != incoming.chat_id || existing.task_id != incoming.task_id)
+    {
+        return existing.clone();
+    }
+    if existing.tier == Tier::Inferred && incoming.overlap > existing.overlap {
+        return incoming.clone();
+    }
+    let mut kept = existing.clone();
+    kept.file_count = incoming.file_count;
+    kept.line_count = incoming.line_count;
+    kept
 }
 
 pub fn commit_line(agent: Option<&str>, task: Option<&str>) -> String {
@@ -590,6 +606,7 @@ mod tests {
             agent: None,
             file_count: 1,
             line_count: 1,
+            overlap: 0,
             subject: None,
         };
         let inferred = LedgerRow {
@@ -654,6 +671,7 @@ mod tests {
             agent: agent.map(str::to_string),
             file_count: 1,
             line_count: 1,
+            overlap: 0,
             subject: None,
         };
         let rows = vec![
@@ -672,5 +690,57 @@ mod tests {
         assert_eq!(credit.tasks[0].title, "Fix the gate");
         assert_eq!(credit.tasks[1].title, "task-2");
         assert_eq!(credit.tasks[2].title, "missing");
+    }
+
+    #[test]
+    fn a_short_line_of_letters_is_boilerplate_by_character_length() {
+        // Three CJK letters are 9 bytes and 3 UTF-16 units. The TypeScript gate
+        // uses string length, so this line is boilerplate.
+        assert!(is_boilerplate("函数名"));
+        assert!(!is_boilerplate("独特句子很好看啊"));
+    }
+
+    #[test]
+    fn a_stronger_inferred_match_replaces_the_first() {
+        let first = LedgerRow {
+            sha: "abc".into(),
+            tier: Tier::Inferred,
+            chat_id: Some("chat-a".into()),
+            task_id: Some("task-a".into()),
+            agent: Some("Ada".into()),
+            file_count: 1,
+            line_count: 4,
+            overlap: 2,
+            subject: Some("by hand".into()),
+        };
+        let better = LedgerRow {
+            chat_id: Some("chat-b".into()),
+            task_id: Some("task-b".into()),
+            agent: Some("Nia".into()),
+            overlap: 4,
+            ..first.clone()
+        };
+        assert_eq!(
+            merge_ledger(Some(&first), &better).chat_id.as_deref(),
+            Some("chat-b")
+        );
+        let weaker = LedgerRow {
+            chat_id: Some("chat-c".into()),
+            overlap: 3,
+            ..better.clone()
+        };
+        assert_eq!(
+            merge_ledger(Some(&better), &weaker).chat_id.as_deref(),
+            Some("chat-b")
+        );
+        let tied = LedgerRow {
+            chat_id: Some("chat-d".into()),
+            overlap: 4,
+            file_count: 9,
+            ..better.clone()
+        };
+        let kept = merge_ledger(Some(&better), &tied);
+        assert_eq!(kept.chat_id.as_deref(), Some("chat-b"));
+        assert_eq!(kept.file_count, 9);
     }
 }

@@ -34,6 +34,22 @@ pub use git::dirty_hashes;
 
 const REFUSAL: &str = "git didn't answer";
 
+/// A timeout is not a final answer. One more try, then the last error stands.
+/// Two attempts, not more: each one can wait out git's own timeout, and a crew is waiting.
+pub(crate) fn read_with_retry<T>(mut read: impl FnMut() -> Result<T, String>) -> Result<T, String> {
+    match read() {
+        Ok(value) => Ok(value),
+        Err(first) => {
+            std::thread::sleep(Duration::from_millis(20));
+            read().map_err(|_| first)
+        }
+    }
+}
+
+pub fn lines_before_run(workdir: &Path) -> Result<HashSet<String>, String> {
+    read_with_retry(|| dirty_hashes(workdir).map(|lines| lines.hashes))
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitCredit {
@@ -75,6 +91,18 @@ struct Event {
     sha: String,
 }
 
+fn has_column(conn: &Connection, column: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(attribution_commits)")?;
+    let mut rows = stmt.query([])?;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        if name == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS attribution_commits (
@@ -86,6 +114,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            agent TEXT,
            file_count INTEGER NOT NULL,
            line_count INTEGER NOT NULL,
+           overlap INTEGER NOT NULL DEFAULT 0,
+           logged INTEGER NOT NULL DEFAULT 0,
            subject TEXT,
            at INTEGER NOT NULL,
            PRIMARY KEY (repo, sha)
@@ -101,7 +131,41 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            at INTEGER NOT NULL,
            PRIMARY KEY (repo, line_hash, chat_id, task_id)
          );",
-    )
+    )?;
+    // CREATE TABLE IF NOT EXISTS does not add columns to a table that is already there.
+    if !has_column(conn, "overlap")? {
+        conn.execute(
+            "ALTER TABLE attribution_commits ADD COLUMN overlap INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+    if !has_column(conn, "logged")? {
+        conn.execute(
+            "ALTER TABLE attribution_commits ADD COLUMN logged INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        // A person's row is never an activity line. A row already in the log must not be
+        // written again. Anything still owed stays at 0 so the next write tries once more.
+        conn.execute(
+            "UPDATE attribution_commits SET logged = 1 WHERE tier = 'person'",
+            [],
+        )?;
+        let activity: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'activity'",
+            [],
+            |row| row.get(0),
+        )?;
+        if activity > 0 {
+            conn.execute(
+                "UPDATE attribution_commits SET logged = 1
+                 WHERE logged = 0 AND sha IN (
+                   SELECT target FROM activity WHERE kind = 'git.commit'
+                 )",
+                [],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Point this crew's git at the hooks folder. A bad config count sets nothing.
@@ -151,7 +215,7 @@ pub fn note_run(
     if logic::valid_id(session_id).is_none() {
         return Ok(());
     }
-    let after = dirty_hashes(workdir)?;
+    let after = read_with_retry(|| dirty_hashes(workdir))?;
     let mut fresh: Vec<String> = after.hashes.difference(before).cloned().collect();
     if fresh.is_empty() {
         return Ok(());
@@ -281,10 +345,15 @@ fn activity_task(title: &Option<String>) -> String {
         .unwrap_or_else(|| "a task".into())
 }
 
-fn load_row(conn: &Connection, repo: &str, sha: &str) -> Result<Option<LedgerRow>, String> {
+struct StoredCredit {
+    row: LedgerRow,
+    logged: i64,
+}
+
+fn load_row(conn: &Connection, repo: &str, sha: &str) -> Result<Option<StoredCredit>, String> {
     let raw = conn
         .query_row(
-            "SELECT tier, chat_id, task_id, agent, file_count, line_count, subject
+            "SELECT tier, chat_id, task_id, agent, file_count, line_count, subject, overlap, logged
              FROM attribution_commits WHERE repo = ?1 AND sha = ?2",
             params![repo, sha],
             |row| {
@@ -296,26 +365,32 @@ fn load_row(conn: &Connection, repo: &str, sha: &str) -> Result<Option<LedgerRow
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
                     row.get::<_, Option<String>>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
                 ))
             },
         )
         .optional()
         .map_err(|e| e.to_string())?;
-    let Some((tier, chat, task, agent, files, lines, subject)) = raw else {
+    let Some((tier, chat, task, agent, files, lines, subject, overlap, logged)) = raw else {
         return Ok(None);
     };
     let Some(tier) = Tier::parse(&tier) else {
         return Err("The stored credit was not readable.".into());
     };
-    Ok(Some(LedgerRow {
-        sha: sha.to_string(),
-        tier,
-        chat_id: clean_text(chat),
-        task_id: clean_text(task),
-        agent: clean_text(agent),
-        file_count: files.max(0),
-        line_count: lines.max(0),
-        subject: clean_subject(tier, subject),
+    Ok(Some(StoredCredit {
+        row: LedgerRow {
+            sha: sha.to_string(),
+            tier,
+            chat_id: clean_text(chat),
+            task_id: clean_text(task),
+            agent: clean_text(agent),
+            file_count: files.max(0),
+            line_count: lines.max(0),
+            overlap: overlap.max(0),
+            subject: clean_subject(tier, subject),
+        },
+        logged: if logged == 0 { 0 } else { 1 },
     }))
 }
 
@@ -325,11 +400,25 @@ fn save_row(
     incoming: &LedgerRow,
 ) -> Result<(LedgerRow, Option<Event>), String> {
     let existing = load_row(conn, repo, &incoming.sha)?;
-    let merged = logic::merge_ledger(existing.as_ref(), incoming);
-    let record = match &existing {
-        None => merged.tier != Tier::Person,
-        Some(prev) => merged.tier.rank() > prev.tier.rank(),
-    };
+    let merged = logic::merge_ledger(existing.as_ref().map(|stored| &stored.row), incoming);
+    // A new person's row is already settled: nothing is owed to the activity log.
+    let previous_logged = existing.as_ref().map(|stored| stored.logged).unwrap_or(1);
+    let owes_log =
+        merged.tier != Tier::Person && merged.chat_id.as_ref().is_some_and(|chat| !chat.is_empty());
+    let rank_rose = existing
+        .as_ref()
+        .is_some_and(|prev| merged.tier.rank() > prev.row.tier.rank());
+    // A stronger inferred match names a different chat. The log should say so,
+    // and a line that never landed (logged = 0) is tried again.
+    let replaced_inference = existing.as_ref().is_some_and(|prev| {
+        prev.row.tier == Tier::Inferred
+            && merged.tier == Tier::Inferred
+            && merged.overlap > prev.row.overlap
+            && (merged.chat_id != prev.row.chat_id || merged.task_id != prev.row.task_id)
+    });
+    let record =
+        owes_log && (existing.is_none() || rank_rose || previous_logged == 0 || replaced_inference);
+    let logged = if record { 0 } else { previous_logged };
     let (chat, task, agent, subject) = if merged.tier == Tier::Person {
         (None, None, None, None)
     } else {
@@ -342,8 +431,8 @@ fn save_row(
     };
     conn.execute(
         "INSERT INTO attribution_commits
-           (sha, repo, tier, chat_id, task_id, agent, file_count, line_count, subject, at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+           (sha, repo, tier, chat_id, task_id, agent, file_count, line_count, overlap, logged, subject, at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(repo, sha) DO UPDATE SET
            tier = excluded.tier,
            chat_id = excluded.chat_id,
@@ -351,6 +440,8 @@ fn save_row(
            agent = excluded.agent,
            file_count = excluded.file_count,
            line_count = excluded.line_count,
+           overlap = excluded.overlap,
+           logged = excluded.logged,
            subject = excluded.subject",
         params![
             merged.sha,
@@ -361,6 +452,8 @@ fn save_row(
             agent,
             merged.file_count.max(0),
             merged.line_count.max(0),
+            merged.overlap.max(0),
+            logged,
             subject,
             now_millis(),
         ],
@@ -501,30 +594,67 @@ fn finish_write(
     }
 }
 
+/// Mark the credit logged only when the activity row lands. Two windows can both
+/// try; the compare-and-swap keeps a single line. A failed insert rolls back, so
+/// the next write of the same credit tries again.
+fn record_one(conn: &Connection, repo: &str, event: &Event) -> Result<(), String> {
+    conn.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|e| e.to_string())?;
+    let changed = conn
+        .execute(
+            "UPDATE attribution_commits SET logged = 1
+             WHERE repo = ?1 AND sha = ?2 AND logged = 0",
+            params![repo, event.sha],
+        )
+        .map_err(|e| {
+            let _ = conn.execute_batch("ROLLBACK");
+            e.to_string()
+        })?;
+    if changed == 0 {
+        if conn.execute_batch("COMMIT").is_err() {
+            let _ = conn.execute_batch("ROLLBACK");
+        }
+        return Ok(());
+    }
+    let actor = Who::worker(&event.chat, &event.agent);
+    let initiator = if event.tier == Tier::Confirmed {
+        Who::worker(&event.chat, &event.agent)
+    } else {
+        Who::person()
+    };
+    let summary = logic::commit_line(Some(&event.agent), Some(&event.task_label));
+    let link = format!("session:{}", event.chat);
+    match activity::record(
+        conn,
+        "git.commit",
+        &actor,
+        &initiator,
+        repo,
+        &event.sha,
+        &summary,
+        &link,
+        now_millis(),
+    ) {
+        Ok(_) => conn.execute_batch("COMMIT").map_err(|err| {
+            let _ = conn.execute_batch("ROLLBACK");
+            err.to_string()
+        }),
+        Err(err) => {
+            let _ = conn.execute_batch("ROLLBACK");
+            Err(err)
+        }
+    }
+}
+
 fn record_events(store: &SessionStore, repo: &str, events: &[Event]) {
+    if events.is_empty() {
+        return;
+    }
     let Ok(conn) = store.lock_conn() else {
         return;
     };
     for event in events {
-        let actor = Who::worker(&event.chat, &event.agent);
-        let initiator = if event.tier == Tier::Confirmed {
-            Who::worker(&event.chat, &event.agent)
-        } else {
-            Who::person()
-        };
-        let summary = logic::commit_line(Some(&event.agent), Some(&event.task_label));
-        let link = format!("session:{}", event.chat);
-        let _ = activity::record(
-            &conn,
-            "git.commit",
-            &actor,
-            &initiator,
-            repo,
-            &event.sha,
-            &summary,
-            &link,
-            now_millis(),
-        );
+        let _ = record_one(&conn, repo, event);
     }
 }
 
@@ -646,15 +776,15 @@ fn load_any(conn: &Connection, sha: &str) -> Result<Option<LedgerRow>, String> {
         let Some(tier) = Tier::parse(&tier_text) else {
             continue;
         };
-        let Some(row) = load_row(conn, &repo, sha)? else {
+        let Some(stored) = load_row(conn, &repo, sha)? else {
             continue;
         };
         let replace = match &best {
             None => true,
-            Some(current) => row.tier.rank() > current.tier.rank(),
+            Some(current) => stored.row.tier.rank() > current.tier.rank(),
         };
-        if replace && tier == row.tier {
-            best = Some(row);
+        if replace && tier == stored.row.tier {
+            best = Some(stored.row);
         }
     }
     Ok(best)
@@ -720,26 +850,33 @@ fn task_token(task_id: &str) -> Option<&str> {
     }
 }
 
+pub(crate) fn credits_for_task(
+    store: &SessionStore,
+    task_id: &str,
+    repo: Option<&str>,
+) -> Result<Vec<CommitCredit>, String> {
+    let Some(task_id) = task_token(task_id) else {
+        return Ok(Vec::new());
+    };
+    let current = rows_for_task(store, task_id)?;
+    let Some(repo) = repo.filter(|path| usable_repo(path)) else {
+        return Ok(current);
+    };
+    match refresh(store, Path::new(repo), None) {
+        // The refresh writes the newest page. The task's own rows, including a
+        // commit older than that page, are what the panel shows.
+        Ok(_) => rows_for_task(store, task_id).or(Ok(current)),
+        Err(_) => Ok(current),
+    }
+}
+
 #[tauri::command(async)]
 pub fn attribution_for_task(
     store: State<'_, SessionStore>,
     task_id: String,
     repo: Option<String>,
 ) -> Result<Vec<CommitCredit>, String> {
-    let Some(task_id) = task_token(&task_id) else {
-        return Ok(Vec::new());
-    };
-    let current = rows_for_task(&store, task_id)?;
-    let Some(repo) = repo.filter(|path| usable_repo(path)) else {
-        return Ok(current);
-    };
-    match refresh(&store, Path::new(&repo), None) {
-        Ok(rows) => Ok(rows
-            .into_iter()
-            .filter(|row| row.task_id.as_deref() == Some(task_id))
-            .collect()),
-        Err(_) => Ok(current),
-    }
+    credits_for_task(&store, &task_id, repo.as_deref())
 }
 
 #[tauri::command(async)]

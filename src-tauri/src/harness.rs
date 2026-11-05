@@ -1040,9 +1040,9 @@ pub fn harness_spawn(
     crate::control::configure_child(&app, &session_id, &mut cmd);
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
-    let journal_before = crate::attribution::dirty_hashes(&workdir)
-        .ok()
-        .map(|lines| lines.hashes);
+    // A timeout is tried once more. If both reads fail, the run is not journaled:
+    // guessing the lines that were already dirty would credit the wrong author.
+    let journal_before = crate::attribution::lines_before_run(&workdir).ok();
     if let Ok(data_dir) = app.path().app_data_dir() {
         let task = app
             .try_state::<crate::session_store::SessionStore>()
