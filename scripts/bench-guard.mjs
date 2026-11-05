@@ -881,9 +881,25 @@ function doubleSandboxed(value) {
   return value === true || value === 1;
 }
 
+/** The kernel's numeric code, or null when the answer wasn't a number. */
+function kernelCode(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A test double's code: boolean true is 1, boolean false is 0, a number is itself. */
+function doubleCode(value) {
+  if (value === true) return 1;
+  if (value === false) return 0;
+  return kernelCode(value);
+}
+
 /** No reading. Every pid is unsandboxed. `ok: false` is never a pass. */
 function noneSandboxed(pids) {
-  return { ok: false, byPid: new Map(pids.map((pid) => [pid, false])) };
+  return {
+    ok: false,
+    byPid: new Map(pids.map((pid) => [pid, false])),
+    codeByPid: new Map(pids.map((pid) => [pid, null])),
+  };
 }
 
 function checkPids(pids) {
@@ -902,8 +918,13 @@ function checkPids(pids) {
 function answerFromMap(pids, byPid) {
   if (!(byPid instanceof Map)) return noneSandboxed(pids);
   const out = new Map();
-  for (const pid of pids) out.set(pid, doubleSandboxed(byPid.get(pid)));
-  return { ok: true, byPid: out };
+  const codeByPid = new Map();
+  for (const pid of pids) {
+    const value = byPid.get(pid);
+    out.set(pid, doubleSandboxed(value));
+    codeByPid.set(pid, doubleCode(value));
+  }
+  return { ok: true, byPid: out, codeByPid };
 }
 
 function answerFromJson(pids, text) {
@@ -915,11 +936,13 @@ function answerFromJson(pids, text) {
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
   const byPid = new Map();
+  const codeByPid = new Map();
   for (const pid of pids) {
     const value = Object.prototype.hasOwnProperty.call(parsed, String(pid)) ? parsed[String(pid)] : undefined;
     byPid.set(pid, kernelSandboxed(value));
+    codeByPid.set(pid, kernelCode(value));
   }
-  return { ok: true, byPid };
+  return { ok: true, byPid, codeByPid };
 }
 
 function kernelSandbox(pids, execFile) {
@@ -992,34 +1015,51 @@ function descendedFrom(pid, rootPid, byPid) {
 }
 
 /**
+ * One sample. Every agent CLI under the dev app, plus a hit when one isn't sandboxed.
+ * `kernel` is the kernel's number, or null when the helper can't answer or the answer wasn't a number.
+ * `answered` is false only when the helper can't answer.
+ */
+function readAgentSample(text, watch, at) {
+  if (typeof text !== "string" || watch?.rootPid == null || watch.rootPid === "") return { hit: null, agents: [] };
+  const rows = parsePs(text);
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const candidates = [];
+  for (const row of rows) {
+    if (!descendedFrom(row.pid, watch.rootPid, byPid)) continue;
+    if (isPlanWrapper(row.command, watch.wrapper)) continue;
+    const name = agentCommandName(row.command);
+    if (!name) continue;
+    candidates.push({ pid: row.pid, name, command: row.command });
+  }
+  if (!candidates.length) return { hit: null, agents: [] };
+  const status = underProfile(
+    candidates.map((item) => item.pid),
+    { execFile: watch.execFile, sandboxOf: watch.sandboxOf },
+  );
+  const agents = candidates.map((item) => ({
+    pid: item.pid,
+    command: item.command,
+    name: item.name,
+    firstSeen: at,
+    kernel: status.ok ? (status.codeByPid?.get(item.pid) ?? null) : null,
+    answered: status.ok === true,
+  }));
+  if (!status.ok) return { hit: { fail: true, reason: `can't verify the sandbox: ${candidates[0].name}` }, agents };
+  for (const item of candidates) {
+    if (status.byPid?.get(item.pid) !== true) return { hit: { fail: true, reason: `unsandboxed agent: ${item.name}` }, agents };
+  }
+  return { hit: null, agents };
+}
+
+/**
  * An agent CLI descended from the dev app that the kernel does not have in a sandbox.
  * The wrapper's sh, bash and node launchers are not agents. Null when ps can't be read, the app pid
  * isn't known, or every such agent is sandboxed. A helper that can't run stops the round as
  * `can't verify the sandbox`. A pid whose answer isn't 1 stops it as an unsandboxed agent.
  * Nothing passes because the check was skipped.
  */
-export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile } = {}) {
-  if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
-  const rows = parsePs(text);
-  const byPid = new Map(rows.map((row) => [row.pid, row]));
-  const candidates = [];
-  for (const row of rows) {
-    if (!descendedFrom(row.pid, rootPid, byPid)) continue;
-    if (isPlanWrapper(row.command, wrapper)) continue;
-    const name = agentCommandName(row.command);
-    if (!name) continue;
-    candidates.push({ pid: row.pid, name });
-  }
-  if (!candidates.length) return null;
-  const status = underProfile(
-    candidates.map((item) => item.pid),
-    { execFile, sandboxOf },
-  );
-  if (!status.ok) return { fail: true, reason: `can't verify the sandbox: ${candidates[0].name}` };
-  for (const item of candidates) {
-    if (status.byPid?.get(item.pid) !== true) return { fail: true, reason: `unsandboxed agent: ${item.name}` };
-  }
-  return null;
+export function unsandboxedAgents(text, watch = {}) {
+  return readAgentSample(text, watch, null).hit;
 }
 
 export function finishSceneAgents(text, watch, stopRun) {
@@ -1045,6 +1085,93 @@ export function sceneAgents(ctx) {
     return null;
   }
   return finishSceneAgents(text, watch, ctx.stopRun);
+}
+
+function pollInterval(ms) {
+  const n = Number(ms);
+  return Number.isFinite(n) && n >= 0 ? n : 1000;
+}
+
+/**
+ * Sample ps and the kernel about once a second while a scene runs.
+ * The first unsandboxed hit stops the round. `stop` takes one last sample if nothing has failed yet,
+ * and returns every agent pid seen, with its command, the time it was first seen, and the kernel's answer.
+ * No lister: a no-op. `stop` is safe to call twice.
+ */
+export function startSceneAgentPoll(ctx, { intervalMs, now, sleep } = {}) {
+  const interval = pollInterval(intervalMs ?? ctx?.agentPollMs);
+  const clock = now ?? ctx?.agentPollNow ?? Date.now;
+  if (!ctx || typeof ctx.listAgents !== "function") {
+    return { stop: async () => ({ hit: null, agents: [] }) };
+  }
+  const seen = new Map();
+  let hit = null;
+  let halt = false;
+  let cached = null;
+  let wake = () => {};
+  let abort = () => {};
+  const untilAbort = new Promise((resolve) => {
+    abort = resolve;
+  });
+  const defaultSleep = (ms) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+  const pause = (ms) => Promise.race([untilAbort, (sleep ?? ctx.agentPollSleep ?? defaultSleep)(ms)]);
+  const sample = () => {
+    if (hit) return;
+    let text = null;
+    try {
+      text = ctx.listAgents();
+    } catch {
+      return;
+    }
+    let watch = {};
+    try {
+      watch = typeof ctx.agentWatch === "function" ? ctx.agentWatch() ?? {} : {};
+    } catch {
+      return;
+    }
+    const found = readAgentSample(text, watch, clock());
+    for (const agent of found.agents) {
+      const prior = seen.get(agent.pid);
+      if (!prior) seen.set(agent.pid, agent);
+      else if (prior.kernel === 1 && agent.kernel !== 1) seen.set(agent.pid, { ...prior, kernel: agent.kernel, answered: agent.answered });
+    }
+    if (found.hit && !hit) {
+      hit = found.hit;
+      try {
+        ctx.stopRun?.(hit.reason);
+      } catch {
+        // the stop file is best-effort
+      }
+    }
+  };
+  const task = (async () => {
+    sample();
+    while (!halt && !hit) {
+      await pause(interval);
+      if (halt || hit) break;
+      sample();
+    }
+    if (!hit && halt) sample();
+  })();
+  return {
+    async stop() {
+      if (cached) return cached;
+      halt = true;
+      wake();
+      abort();
+      await task;
+      cached = { hit, agents: [...seen.values()] };
+      return cached;
+    },
+  };
 }
 
 export function readDummy(state) {

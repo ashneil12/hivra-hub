@@ -19,6 +19,7 @@ import {
   finishSceneApps,
   isHardStop,
   sceneAgents,
+  startSceneAgentPoll,
   underProfile,
   unsandboxedAgents,
   hookDecision,
@@ -388,6 +389,84 @@ test("a helper that is missing or errors can't be verified, and any answer but 1
   const sandboxed = underProfile([240], { execFile: () => JSON.stringify({ 240: 1 }) });
   assert.equal(sandboxed.ok, true);
   assert.equal(sandboxed.byPid.get(240), true);
+});
+
+test("polling catches an unsandboxed agent that only the middle sample can see", async () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const clean = "  100 1 /bin/sleep 1\n";
+  const dirty = "  100 1 /bin/sleep 1\n  240 100 /opt/homebrew/bin/codex\n";
+  const frames = [clean, dirty, clean];
+  const watch = {
+    rootPid: 100,
+    wrapper,
+    sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, 0])) }),
+  };
+  // The old start and end checks both miss it. Only the sample between them has the agent.
+  assert.equal(unsandboxedAgents(frames[0], watch), null);
+  assert.equal(unsandboxedAgents(frames[2], watch), null);
+  assert.equal(unsandboxedAgents(frames[1], watch).reason, "unsandboxed agent: codex");
+  let n = 0;
+  const stopped = [];
+  let release = () => {};
+  const poll = startSceneAgentPoll(
+    {
+      listAgents: () => frames[Math.min(n++, frames.length - 1)],
+      agentWatch: () => watch,
+      stopRun: (why) => stopped.push(why),
+    },
+    {
+      now: () => 1_700_000_000_000,
+      sleep: () => new Promise((resolve) => {
+        release = resolve;
+      }),
+    },
+  );
+  assert.equal(n, 1);
+  assert.deepEqual(stopped, []);
+  release();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
+  const watched = await poll.stop();
+  assert.equal(n, 2, "the end frame was never needed");
+  assert.equal(watched.hit.reason, "unsandboxed agent: codex");
+  assert.deepEqual(watched.agents.map(({ pid, command, name, firstSeen, kernel }) => ({ pid, command, name, firstSeen, kernel })), [
+    { pid: 240, command: "/opt/homebrew/bin/codex", name: "codex", firstSeen: 1_700_000_000_000, kernel: 0 },
+  ]);
+  assert.equal(await poll.stop(), watched);
+});
+
+test("a sandboxed agent is recorded with the kernel's 1, and a helper that can't answer is recorded as null", async () => {
+  const stopped = [];
+  const sandboxed = startSceneAgentPoll(
+    {
+      listAgents: () => "  241 100 /usr/local/bin/node /opt/homebrew/bin/gemini\n",
+      agentWatch: () => ({ rootPid: 100, wrapper: "/private/var/bench/bin/claude", execFile: () => JSON.stringify({ 241: 1 }) }),
+      stopRun: (why) => stopped.push(why),
+    },
+    { intervalMs: 60_000, now: () => 50 },
+  );
+  const kept = await sandboxed.stop();
+  assert.deepEqual(stopped, []);
+  assert.equal(kept.hit, null);
+  assert.equal(kept.agents[0].name, "gemini");
+  assert.equal(kept.agents[0].kernel, 1);
+  assert.equal(kept.agents[0].firstSeen, 50);
+  assert.equal(kept.agents[0].answered, true);
+  const broken = startSceneAgentPoll(
+    {
+      listAgents: () => "  240 100 /usr/bin/claude\n",
+      agentWatch: () => ({ rootPid: 100, wrapper: "/private/var/bench/bin/claude", execFile: () => { throw new Error("no python"); } }),
+      stopRun: (why) => stopped.push(why),
+    },
+    { now: () => 9 },
+  );
+  const failed = await broken.stop();
+  assert.equal(failed.hit.reason, "can't verify the sandbox: claude");
+  assert.equal(isHardStop(failed.hit.reason), true);
+  assert.equal(failed.agents[0].kernel, null);
+  assert.equal(failed.agents[0].answered, false);
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude"]);
+  assert.deepEqual(await startSceneAgentPoll({}).stop(), { hit: null, agents: [] });
 });
 
 test("the kernel reports a sandboxed process, a plain claude child fails the scene, and the wrapper node is skipped", { skip: process.platform !== "darwin" }, () => {
