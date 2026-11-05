@@ -167,9 +167,9 @@ it("one line under a Mono says what it has out, the row's label too", () => {
   expect(work(other.id)).toBeNull();
 });
 
-// r30, the red rule: the line counts only what Ash must act on ("1 needs you", red), never "stuck". A stalled or failed
-// worker its Lead is handling isn't counted; the row keeps its quiet grey mark.
-it("counts a stalled or failed worker its Lead has nowhere on the line, and only a refusal Ash must sort as red Needs you", () => {
+// A stall or a failure its Lead still has shows as "N stuck". Only a refusal Ash must sort is the red Needs you, and
+// that stays in front of the stuck count. The row keeps its quiet grey mark.
+it("shows a stalled or failed worker its Lead has as stuck, and only a refusal Ash must sort as red Needs you", () => {
   const mono = lead();
   const rows = [
     row("t-1", "w1", mono.id, "lead-chat", "running"),
@@ -177,23 +177,25 @@ it("counts a stalled or failed worker its Lead has nowhere on the line, and only
   ];
   setDelegationRows(rows);
   mount();
-  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working");
-  expect(work(mono.id)?.dataset.monoWorkKind).toBe("working");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("stuck");
   expect(container.querySelector("[data-mono-stuck]")?.getAttribute("data-mono-stuck-kind")).toBe("stalled");
   act(() => setDelegationRows([...rows, row("t-3", "w3", mono.id, "lead-chat", "failed", { settledAt: Date.now(), error: "Disk full." })]));
-  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 2 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("failed");
   act(() => setDelegationRows([...rows, row("t-4", "w4", mono.id, "lead-chat", "failed", { settledAt: Date.now(), errorClass: "billing", error: "402" })]));
-  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 needs you");
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 working · 1 needs you · 1 stuck");
   expect(work(mono.id)?.dataset.monoWorkKind).toBe("needs-you");
   expect(work(mono.id)?.querySelector("[data-mono-work-split] .text-red-400")?.textContent).toBe("1 needs you");
-  expect(container.textContent).not.toMatch(/\bstuck\b/i);
 });
 
 it("says a working Mono needs Ash only when it does", () => {
   const mono = lead();
   setDelegationRows([row("t-1", "w1", mono.id, "lead-chat", "failed", { settledAt: Date.now(), errorClass: "usage_limit" })]);
   mount(new Map([[mono.id, { status: "working" }]]));
-  expect(container.querySelector('[aria-label*="stuck"]')).toBeNull();
+  expect(work(mono.id)?.querySelector("[data-mono-work-split]")?.textContent).toBe("1 stuck");
+  expect(work(mono.id)?.dataset.monoWorkKind).toBe("failed");
+  expect(container.querySelector('[aria-label*="needs you"]')).toBeNull();
   expect(container.querySelector('[data-mono-stuck="1"]')?.getAttribute("data-mono-stuck-kind")).toBe("failed");
   act(() => setDelegationRows([row("t-2", "w2", mono.id, "lead-chat", "failed", { settledAt: Date.now(), errorClass: "auth" })]));
   expect(container.querySelector('[aria-label*="Working · 1 needs you"]')).not.toBeNull();

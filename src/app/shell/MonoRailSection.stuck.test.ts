@@ -105,8 +105,7 @@ const typeInto = (input: HTMLInputElement, text: string) =>
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 
-// r30, the red rule: the rail counts only what Ash must act on ("1 needs you", red), never "stuck"; a worker its Lead is
-// handling (stalled, or failed in a way the Lead or a retry can sort) isn't counted on the rail.
+// Red "needs you" is only what Ash must act on. A stall or a failure its Lead still has is counted too, as "N stuck".
 function needsYouSetup() {
   const ctx = setup();
   setDelegationRows([
@@ -137,11 +136,10 @@ function needsYouSetup() {
 }
 
 describe("'1 needs you' on a Mono's line leads somewhere (B6, r30)", () => {
-  it("counts only what Ash must act on, in red, never 'stuck'; a stalled worker its Lead has isn't counted", () => {
+  it("counts what Ash must act on in red, and a stalled worker its Lead has as stuck", () => {
     const { exo } = needsYouSetup();
     const line = container.querySelector<HTMLElement>(`[data-mono-work="${exo.id}"]`)!;
-    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working · 1 needs you");
-    expect(line.textContent).not.toMatch(/stuck/i);
+    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working · 1 needs you · 1 stuck");
     expect(line.dataset.monoWorkKind).toBe("needs-you");
     expect(line.querySelector("[data-stuck-trigger]")!.className).toContain("text-red-400");
     act(() => line.querySelector<HTMLButtonElement>("[data-stuck-trigger]")!.click());
@@ -156,12 +154,12 @@ describe("'1 needs you' on a Mono's line leads somewhere (B6, r30)", () => {
     expect(cards[0].querySelector("[data-hub-open-lead]")!.textContent).toBe("Open EXO lead's chat");
   });
 
-  it("a Mono with only a stalled worker shows no count at all", () => {
+  it("a stalled worker shows as stuck, and is not a Needs you button", () => {
     const { exo } = setup();
     const line = container.querySelector<HTMLElement>(`[data-mono-work="${exo.id}"]`)!;
-    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working");
+    expect(line.querySelector("[data-mono-work-split]")!.textContent).toBe("1 working · 1 stuck");
+    expect(line.dataset.monoWorkKind).toBe("stuck");
     expect(line.querySelector("[data-stuck-trigger]")).toBeNull();
-    expect(container.textContent).not.toMatch(/\bstuck\b/i);
   });
 
   it("Open <Lead>'s chat jumps into the Lead's chat (Ash answers the Lead, D5) and closes the panel", () => {
@@ -198,11 +196,10 @@ describe("the Monos section folds (A9)", () => {
     mount();
     expect(toggle().getAttribute("aria-expanded")).toBe("false");
     const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
-    // In words, as a Mono's own line reads.
-    // r30: only what Ash must act on is counted; the stalled and the plain failure are their Leads'.
-    expect(summary.textContent).toBe("1 working");
-    expect(summary.getAttribute("title")).toBe("1 working");
-    expect(summary.dataset.monoWorkKind).toBe("working");
+    // In words, as a Mono's own line reads. The stall and the plain failure are stuck; the failure sets the kind.
+    expect(summary.textContent).toBe("1 working·2 stuck");
+    expect(summary.getAttribute("title")).toBe("1 working · 2 stuck");
+    expect(summary.dataset.monoWorkKind).toBe("failed");
     // Open again, and that sticks too.
     act(() => toggle().click());
     expect(loadMonoRailCollapsed()).toBe(false);
@@ -213,7 +210,7 @@ describe("the Monos section folds (A9)", () => {
     needsYouSetup();
     act(() => toggle().click());
     const summary = container.querySelector<HTMLElement>("[data-mono-rail-summary]")!;
-    expect(summary.textContent).toBe("1 working·2 needs you");
+    expect(summary.textContent).toBe("1 working·2 needs you·1 stuck");
     act(() => summary.querySelector<HTMLButtonElement>("[data-stuck-trigger]")!.click());
     const cards = [...panel()!.querySelectorAll<HTMLElement>("[data-stuck-worker]")];
     expect(cards.map((c) => c.dataset.stuckWorker)).toEqual(["w4", "w3"]);
