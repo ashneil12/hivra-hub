@@ -81,6 +81,10 @@ fn port_range(kind: crate::instance::Kind) -> Range<u16> {
     }
 }
 
+fn ports_for(kind: crate::instance::Kind) -> Vec<u16> {
+    port_range(kind).collect()
+}
+
 struct DoorFault {
     message: String,
     port_taken: bool,
@@ -278,7 +282,8 @@ impl Outside {
         if self.is_memory() {
             self.start_ephemeral()?;
         } else {
-            self.ensure_running(port_range(crate::instance::kind()))?;
+            let ports = ports_for(crate::instance::kind());
+            self.ensure_running(&ports)?;
         }
         self.port()
             .ok_or_else(|| "The door didn't start.".to_string())
@@ -303,9 +308,10 @@ impl Outside {
         Ok(())
     }
 
-    /// Bind the saved port, or pick one in `range` and store it when none is saved.
-    /// A saved port that is taken is left where it is.
-    fn ensure_running(&self, range: Range<u16>) -> Result<(), String> {
+    /// Bind the saved port, or pick one of `ports` and store it when none is saved.
+    /// A saved port that is taken is left where it is. `ports` is this copy's range,
+    /// or the ports a test reserved for itself.
+    fn ensure_running(&self, ports: &[u16]) -> Result<(), String> {
         if self.is_memory() {
             self.start_ephemeral()?;
             self.clear_fault();
@@ -322,7 +328,7 @@ impl Outside {
         }
         let saved = self.with_conn(|conn| store::raw_setting(conn, "port"))??;
         let choice = match saved.as_deref() {
-            Some(raw) => match parse_saved_port(raw).filter(|port| range.contains(port)) {
+            Some(raw) => match parse_saved_port(raw).filter(|port| ports.contains(port)) {
                 Some(port) => Choice::Exact(port),
                 None => {
                     note(&self.place, "the saved port is outside this copy's range");
@@ -333,8 +339,8 @@ impl Outside {
         };
         match choice {
             Choice::Exact(port) => self.bind_exact(&mut run, port),
-            Choice::Insert => self.bind_first(&mut run, range, None),
-            Choice::Replace(raw) => self.bind_first(&mut run, range, Some(raw)),
+            Choice::Insert => self.bind_first(&mut run, ports, None),
+            Choice::Replace(raw) => self.bind_first(&mut run, ports, Some(raw)),
         }
     }
 
@@ -368,10 +374,10 @@ impl Outside {
     fn bind_first(
         &self,
         run: &mut Option<Run>,
-        range: Range<u16>,
+        ports: &[u16],
         replace: Option<String>,
     ) -> Result<(), String> {
-        let started = match self.spawn(http::Listen::FirstFree(range.clone())) {
+        let started = match self.spawn(http::Listen::FirstFree(ports.to_vec())) {
             Ok(started) => started,
             Err(err) => return self.listen_failed(err),
         };
@@ -394,7 +400,7 @@ impl Outside {
         // isn't one this copy is allowed to use. Don't keep a listener the
         // settings don't name.
         shutdown(started);
-        if !range.contains(&stored) {
+        if !ports.contains(&stored) {
             let message = format!("couldn't start: port {stored} is not in this copy's range");
             self.remember(&message, false);
             return Err(message);
@@ -486,11 +492,17 @@ impl Outside {
         on: bool,
         kind: crate::instance::Kind,
     ) -> Result<DoorStatus, String> {
+        let ports = ports_for(kind);
+        self.set_enabled_ports(on, &ports)
+    }
+
+    /// `ports` is the copy's range, or the ports a test reserved.
+    fn set_enabled_ports(&self, on: bool, ports: &[u16]) -> Result<DoorStatus, String> {
         if !self.has_db() {
             return self.status();
         }
         if on {
-            if self.ensure_running(port_range(kind)).is_err() {
+            if self.ensure_running(ports).is_err() {
                 // The person asked for the door. Remember that, and show why it isn't up.
                 self.with_conn(|conn| store::set_enabled(conn, true))??;
                 return self.status();
@@ -511,14 +523,20 @@ impl Outside {
     /// Bind a different port in this copy's range. Does nothing unless the saved
     /// port is the one that failed, so a working address never moves on its own.
     pub(crate) fn pick_new_port(&self, kind: crate::instance::Kind) -> Result<DoorStatus, String> {
+        let ports = ports_for(kind);
+        self.pick_new_ports(&ports)
+    }
+
+    /// Bind a different one of `ports`. Does nothing unless the saved port is the
+    /// one that failed, so a working address never moves on its own.
+    fn pick_new_ports(&self, ports: &[u16]) -> Result<DoorStatus, String> {
         if !self.fault_view().1 {
             return self.status();
         }
         let Some(raw) = self.with_conn(|conn| store::raw_setting(conn, "port"))?? else {
             return self.status();
         };
-        let range = port_range(kind);
-        let previous = parse_saved_port(&raw).filter(|port| range.contains(port));
+        let previous = parse_saved_port(&raw).filter(|port| ports.contains(port));
         let mut run = self
             .run
             .lock()
@@ -528,7 +546,7 @@ impl Outside {
             self.clear_fault();
             return self.status();
         }
-        let started = match self.spawn(http::Listen::FirstFree(range.clone())) {
+        let started = match self.spawn(http::Listen::FirstFree(ports.to_vec())) {
             Ok(started) => started,
             Err(_) => {
                 drop(run);
@@ -554,7 +572,7 @@ impl Outside {
         if !wrote {
             shutdown(started);
             drop(run);
-            let _ = self.ensure_running(range);
+            let _ = self.ensure_running(ports);
             return self.status();
         }
         *run = Some(started);
@@ -580,6 +598,13 @@ impl Drop for Outside {
 /// Open the door and start it when the person left it on. A failure is logged
 /// and kept on the door. This always returns a door, so startup can carry on.
 pub(crate) fn init_at(path: PathBuf, kind: crate::instance::Kind) -> Result<Outside, String> {
+    let ports = ports_for(kind);
+    init_ports(path, &ports)
+}
+
+/// Open the door and start it on `ports` when the person left it on.
+/// `ports` is the copy's range, or the ports a test reserved.
+fn init_ports(path: PathBuf, ports: &[u16]) -> Result<Outside, String> {
     let place = path.display().to_string();
     let door = match Outside::open(path) {
         Ok(door) => door,
@@ -593,7 +618,7 @@ pub(crate) fn init_at(path: PathBuf, kind: crate::instance::Kind) -> Result<Outs
     };
     match door.enabled_flag() {
         Ok(true) => {
-            let _ = door.ensure_running(port_range(kind));
+            let _ = door.ensure_running(ports);
         }
         Ok(false) => {}
         Err(err) => door.remember(&format!("couldn't start: {err}"), false),

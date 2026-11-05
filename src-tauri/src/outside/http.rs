@@ -8,7 +8,6 @@
 
 use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -42,8 +41,10 @@ pub(crate) enum Listen {
     Ephemeral,
     /// The saved port. Never try another one.
     Exact(u16),
-    /// The first free port in the range. Used only when nothing valid is saved yet.
-    FirstFree(Range<u16>),
+    /// The first free port in this list, in order. Used only when nothing valid
+    /// is saved yet. Production passes the copy's range. A test passes the ports
+    /// it reserved, and no others.
+    FirstFree(Vec<u16>),
 }
 
 pub(crate) enum ListenError {
@@ -85,8 +86,8 @@ fn bind_listener(listen: Listen) -> Result<(TcpListener, u16), ListenError> {
             Err(err) if err.kind() == ErrorKind::AddrInUse => Err(ListenError::Taken(port)),
             Err(err) => Err(ListenError::Other(err.to_string())),
         },
-        Listen::FirstFree(range) => {
-            for port in range {
+        Listen::FirstFree(ports) => {
+            for port in ports {
                 match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
                     Ok(listener) => return Ok((listener, port)),
                     Err(err) if err.kind() == ErrorKind::AddrInUse => continue,
