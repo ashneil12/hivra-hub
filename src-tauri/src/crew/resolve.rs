@@ -301,6 +301,9 @@ fn cheap_model(cli: &str) -> Option<&'static str> {
 }
 
 /// An empty catalog means no catalog: a model stays a free string, as before.
+// The query, the rules, who is signed in, the defaults and the catalog stay separate arguments.
+// Folding them would hide which one a caller passed.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_route(
     labels: &[String],
     paths: &[String],
