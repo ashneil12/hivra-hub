@@ -160,6 +160,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/vendor/agentZeroMemories.ts
   The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51).
 
+- HumanLayer's worktree stacks
+  Source: https://github.com/humanlayer/humanlayer
+  License: Apache-2.0
+  Copyright HumanLayer and the HumanLayer contributors
+  Used in: src-tauri/src/stacks.rs, src-tauri/src/stack_decl.rs, src/features/stacks
+  Rewritten from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included, because the upstream tree was not in the local sources checkout (WP-87).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

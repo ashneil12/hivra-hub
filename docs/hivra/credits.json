@@ -369,6 +369,14 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/memory/vendor/agentZeroMemories.ts",
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
+    },
+    {
+      "name": "HumanLayer's worktree stacks",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright HumanLayer and the HumanLayer contributors",
+      "where": "src-tauri/src/stacks.rs, src-tauri/src/stack_decl.rs, src/features/stacks",
+      "how": "Rewritten from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included, because the upstream tree was not in the local sources checkout (WP-87)"
     }
   ]
 }
