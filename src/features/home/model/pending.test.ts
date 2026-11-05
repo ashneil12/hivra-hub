@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { queueHomeDoc, queueHomeTask, resetHomePending, takeHomeDoc, takeHomeTask } from "./pending";
+import { queueHomeDecision, queueHomeDoc, queueHomeTask, resetHomePending, takeHomeDecision, takeHomeDoc, takeHomeTask } from "./pending";
 
 afterEach(resetHomePending);
 
@@ -15,6 +15,18 @@ it("holds a task until the list that has it takes it", () => {
   queueHomeTask("t3");
   expect(takeHomeTask(["t2"])).toBeNull();
   expect(takeHomeTask(["t3"])).toBe("t3");
+});
+
+it("holds a decision until the inbox list that has it takes it", () => {
+  queueHomeDecision("crew", "  ");
+  expect(takeHomeDecision([{ key: "ship", project: "crew" }])).toBeNull();
+  queueHomeDecision("crew", " ship ");
+  expect(takeHomeDecision([{ key: "other", project: "crew" }])).toBeNull();
+  expect(takeHomeDecision([])).toBeNull();
+  expect(takeHomeDecision([{ key: "ship", project: "crew" }])).toBe("ship");
+  expect(takeHomeDecision([{ key: "ship", project: "crew" }])).toBeNull();
+  queueHomeDecision("C:\\work\\Crew", "font");
+  expect(takeHomeDecision([{ key: "font", project: "c:/work/crew" }])).toBe("font");
 });
 
 it("holds a doc on its own, so a task pane cannot take it", () => {
