@@ -33,7 +33,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { appsFromPs, benchDenyRules, exitCodeForStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
+import { appsFromPs, benchDenyRules, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
+import { privateTempDir } from "./bench-sandbox.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
@@ -377,7 +378,7 @@ export async function runBench(options, hooks = {}) {
     clearInterval(pumpTimer);
     // No new turns from here on: the wrapper refuses them once this file exists.
     try {
-      if (!String(stopReason ?? "").startsWith("touched a real app")) fs.writeFileSync(path.join(state, "stop"), "run ended\n");
+      if (!isHardStop(stopReason)) fs.writeFileSync(path.join(state, "stop"), "run ended\n");
     } catch {
       // gone
     }
@@ -651,6 +652,8 @@ export async function runBench(options, hooks = {}) {
     const appEnv = Object.fromEntries(
       Object.entries(process.env).filter(([key]) => !key.startsWith("TAURI_") && !key.startsWith("MONOCODE_") && !key.startsWith("REALTEST_") && key !== "CFFIXED_USER_HOME"),
     );
+    const runTmp = privateTempDir({ HOME: home, REALTEST_REAL_HOME: REAL_HOME, TMPDIR: process.env.TMPDIR });
+    if (runTmp) fs.mkdirSync(runTmp, { recursive: true });
     Object.assign(appEnv, {
       HOME: home,
       MONOCODE_NO_ALERT: "1",
@@ -658,6 +661,7 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_VERIFY_LIVE: planFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       ...BENCH_GIT_ENV,
+      ...(runTmp ? { TMPDIR: runTmp, TMP: runTmp, TEMP: runTmp, CLAUDE_TMPDIR: runTmp } : {}),
     });
     // The run's own launch, and (r98, B5) its reopen after Ash's Quit: the same binary, HOME and data, in the background
     // (MONOCODE_HUB_BACKGROUND: an accessory app that never activates or comes forward, like `open -g`).
@@ -780,7 +784,7 @@ export async function runBench(options, hooks = {}) {
         watched.stop && !(unmetered && !Object.keys(limitedNow).length) ? watched.stop
         : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
         : Date.now() > deadline ? "time budget spent" : null;
-      if (why && !fs.existsSync(path.join(state, "stop")) && !String(stopReason ?? "").startsWith("touched a real app")) {
+      if (why && !fs.existsSync(path.join(state, "stop")) && !isHardStop(stopReason)) {
         fs.writeFileSync(path.join(state, "stop"), `${why}\n`);
         stopReason = why;
         log(`STOP: ${why}: the claude wrapper now refuses new turns and the remaining scenarios are skipped`);
@@ -907,7 +911,7 @@ export async function runBench(options, hooks = {}) {
     };
     const stopRun = (why) => {
       const text = String(why ?? "").trim();
-      if (!text || String(stopReason ?? "").startsWith("touched a real app")) return;
+      if (!text || isHardStop(stopReason)) return;
       stopReason = text;
       try {
         fs.writeFileSync(path.join(state, "stop"), `${text}\n`);
@@ -922,7 +926,15 @@ export async function runBench(options, hooks = {}) {
         return null;
       }
     };
-    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, home, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate, stopRun, listApps, readDummy: () => readDummy(state), realHome: REAL_HOME, allowed: allowedRoots };
+    const listAgents = () => {
+      try {
+        return execFileSync("ps", ["-axeww", "-o", "pid=,ppid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+      } catch {
+        return null;
+      }
+    };
+    const agentWatch = () => ({ rootPid: app?.pid ?? null, profile: path.join(state, "sandbox.sb"), wrapper: claude });
+    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, home, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate, stopRun, listApps, listAgents, agentWatch, readDummy: () => readDummy(state), realHome: REAL_HOME, allowed: allowedRoots };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
@@ -932,7 +944,7 @@ export async function runBench(options, hooks = {}) {
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
     }
     for (const scenario of scenarios) {
-      if (stopReason && (scenario.since !== "run" || String(stopReason).startsWith("touched a real app"))) {
+      if (stopReason && (scenario.since !== "run" || isHardStop(stopReason))) {
         results.push({ id: scenario.id, title: scenario.title, skipped: stopReason });
         continue;
       }
@@ -955,7 +967,7 @@ export async function runBench(options, hooks = {}) {
         results.push({ id: scenario.id, title: scenario.title, error: error.message });
       }
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
-      if ((usage().turns >= budget.maxTurns || usage().requests >= budget.maxRequests) && !String(stopReason ?? "").startsWith("touched a real app")) fs.writeFileSync(path.join(state, "stop"), "budget spent\n");
+      if ((usage().turns >= budget.maxTurns || usage().requests >= budget.maxRequests) && !isHardStop(stopReason)) fs.writeFileSync(path.join(state, "stop"), "budget spent\n");
     }
 
     // -- the end ------------------------------------------------------------------------------------------------------------------

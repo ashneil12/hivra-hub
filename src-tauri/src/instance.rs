@@ -402,6 +402,8 @@ pub fn apply_dev_environment(identity: &Identity) -> Result<(), String> {
     };
     std::env::set_var("CLAUDE_CONFIG_DIR", &dir);
     std::env::set_var("CLAUDE_SECURESTORAGE_CONFIG_DIR", &dir);
+    // A bench's children write under the isolated home, not the shared temp dirs.
+    crate::verify_live::install_run_tmpdir();
     Ok(())
 }
 

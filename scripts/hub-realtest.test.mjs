@@ -245,6 +245,29 @@ test("a coding-team send goes to the test project's hub id, not to the project's
   fs.rmSync(evidence, { recursive: true, force: true });
 });
 
+test("an unsandboxed agent before a scenario is not played, and it stops the round", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const calls = [];
+  const stopped = [];
+  const result = await runScenario({ id: "agent", title: "agent", minutes: 1, steps: [{ send: { room: "room" }, text: "hi" }] }, {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence: os.tmpdir(), state: os.tmpdir(),
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0 }),
+    act: async (kind) => {
+      calls.push(kind);
+      return { sessions: [], rooms: [] };
+    },
+    listAgents: () => "  200 100 /opt/homebrew/bin/codex\n",
+    agentWatch: () => ({ rootPid: 100, profile: "/private/var/bench/state/sandbox.sb", wrapper: "/private/var/bench/bin/claude" }),
+    stopRun: (why) => stopped.push(why),
+  });
+  assert.equal(result.verdict, "FAIL");
+  assert.equal(result.fail, "unsandboxed agent: codex");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
+});
+
 test("a coding-team step can start in Full access, and an approve step taps Allow in that chat", async () => {
   const { runScenario } = await import("./hub-realtest-scenarios.mjs");
   const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-ap-"));

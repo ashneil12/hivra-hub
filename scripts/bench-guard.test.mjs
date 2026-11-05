@@ -14,7 +14,11 @@ import {
   commandBlocked,
   dummyStoppedOk,
   exitCodeForStop,
+  finishSceneAgents,
   finishSceneApps,
+  isHardStop,
+  sceneAgents,
+  unsandboxedAgents,
   hookDecision,
   readDummy,
   rulesBlock,
@@ -167,8 +171,60 @@ test("a missing real app fails the scene and stops the round; a ps failure does 
   assert.equal(appTouchResult(before, ["Grok Bot", "Notes"]), null);
   assert.equal(appTouchResult(null, ["Notes"]), null);
   assert.equal(exitCodeForStop(touch.reason), 1);
+  assert.equal(exitCodeForStop("unsandboxed agent: codex"), 1);
+  assert.equal(isHardStop("unsandboxed agent: codex"), true);
+  assert.equal(isHardStop("unsandboxed agent"), true);
   assert.equal(exitCodeForStop("budget spent"), 0);
   assert.equal(exitCodeForStop(null), 0);
+});
+
+test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a sandboxed CLI do not", () => {
+  const profile = "/private/var/bench/state/sandbox.sb";
+  const wrapper = "/private/var/bench/bin/claude";
+  const watch = { rootPid: 100, profile, wrapper };
+  const row = (pid, ppid, command) => `  ${pid} ${ppid} ${command}`;
+  const hit = (lines) => unsandboxedAgents(lines.join("\n"), watch);
+  assert.equal(hit([row(200, 100, "/opt/homebrew/bin/codex")]).reason, "unsandboxed agent: codex");
+  assert.equal(
+    hit([
+      row(210, 100, "/usr/bin/sandbox-exec -f /private/var/bench/state/sandbox.sb /opt/homebrew/bin/claude"),
+      row(211, 210, "/opt/homebrew/bin/claude"),
+    ]),
+    null,
+  );
+  assert.equal(hit([row(220, 100, "/opt/homebrew/bin/claude REALTEST_SANDBOX_PROFILE=/private/var/bench/state/sandbox.sb")]), null);
+  assert.equal(hit([row(221, 100, "/opt/homebrew/bin/claude REALTEST_SANDBOX_PROFILE=/private/var/bench/state/sandbox.sb-evil")]).reason, "unsandboxed agent: claude");
+  assert.equal(hit([row(300, 1, "/opt/homebrew/bin/codex")]), null);
+  assert.equal(hit([row(230, 100, "/private/var/bench/bin/claude")]), null);
+  assert.equal(hit([row(231, 100, "/bin/sh /private/var/bench/bin/../bin/claude")]), null);
+  assert.equal(hit([row(232, 100, "/usr/local/bin/node /private/var/bench/bin/claude")]), null);
+  assert.equal(hit([row(240, 100, "/usr/bin/claude")]).reason, "unsandboxed agent: claude");
+  assert.equal(unsandboxedAgents(null, watch), null);
+  assert.equal(unsandboxedAgents(row(200, 100, "/opt/homebrew/bin/codex"), {}), null);
+  assert.equal(hit([row(250, 100, "/usr/local/bin/agent")]), null);
+  assert.equal(hit([row(251, 100, "/Users/ash/.local/bin/cursor-agent")]).reason, "unsandboxed agent: cursor-agent");
+  assert.equal(hit([row(252, 100, "/opt/homebrew/bin/gemini")]).reason, "unsandboxed agent: gemini");
+  assert.equal(hit([row(100, 1, "/opt/homebrew/bin/codex")]), null);
+  assert.equal(hit([row(270, 100, "/usr/local/bin/node /scripts/hub-realtest-claude.mjs REALTEST_REAL_CLAUDE=/Users/ash/.local/bin/claude")]), null);
+  assert.equal(hit([row(10, 11, "/opt/homebrew/bin/codex"), row(11, 10, "/bin/sleep 1")]), null);
+  for (const name of ["opencode", "grok", "hermes", "pi", "omp", "fx", "devin", "claude-deepseek", "pi-coding-agent"]) {
+    assert.equal(hit([row(280, 100, `/opt/homebrew/bin/${name}`)]).reason, `unsandboxed agent: ${name}`, name);
+  }
+  const stopped = [];
+  assert.equal(finishSceneAgents(row(200, 100, "/opt/homebrew/bin/codex"), watch, (why) => stopped.push(why)).reason, "unsandboxed agent: codex");
+  assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
+  assert.equal(finishSceneAgents(null, watch, (why) => stopped.push(why)), null);
+  assert.equal(
+    sceneAgents({
+      listAgents: () => row(200, 100, "/opt/homebrew/bin/hermes"),
+      agentWatch: () => watch,
+      stopRun: (why) => stopped.push(why),
+    }).reason,
+    "unsandboxed agent: hermes",
+  );
+  assert.equal(sceneAgents({ listAgents: () => { throw new Error("ps failed"); }, agentWatch: () => watch, stopRun: (why) => stopped.push(`late ${why}`) }), null);
+  assert.equal(sceneAgents({}), null);
+  assert.deepEqual(stopped, ["unsandboxed agent: codex", "unsandboxed agent: hermes"]);
 });
 
 test("the bench tool stops only the dummy it recorded", () => {

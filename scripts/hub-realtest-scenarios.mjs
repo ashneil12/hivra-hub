@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { finishSceneApps } from "./bench-guard.mjs";
+import { finishSceneApps, sceneAgents } from "./bench-guard.mjs";
 import { isTeamSeat, monoIdFor, speakerName } from "./realconv/seats.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,6 +71,11 @@ const TAGGED = /(^|\s)@[A-Za-z]/;
 export async function runScenario(scenario, ctx) {
   const { act, events, usage, log, evidence, leadId, roomId, deadline } = ctx;
   const appsBefore = typeof ctx.listApps === "function" ? ctx.listApps() : null;
+  const agentsEarly = sceneAgents(ctx);
+  if (agentsEarly) {
+    log(`  ${scenario.id}: FAIL: ${agentsEarly.reason}`);
+    return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics: {}, notes: [agentsEarly.reason], waits: [], chats: {}, verdict: "FAIL", fail: agentsEarly.reason };
+  }
   // A run-wide look (no steps of its own): everything since the run began.
   const t0 = scenario.since === "run" ? ctx.runStarted : Date.now();
   const stop = Math.min(deadline + 10 * 60_000, Date.now() + (scenario.minutes ?? 10) * 60_000);
@@ -517,14 +522,16 @@ export async function runScenario(scenario, ctx) {
   const names = Object.fromEntries([...(ctx.team ?? []), ...(snap?.monos ?? [])].filter((mono) => mono?.id && mono?.name).map((mono) => [mono.id, mono.name]));
   const result = { ...record, ended, metrics, room, otherRooms, texts, names, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "", ...(scenario.asks ? { asks: scenario.asks } : {}) };
   const touch = finishSceneApps(appsBefore, typeof ctx.listApps === "function" ? ctx.listApps() : null, ctx.stopRun);
-  if (touch) {
+  const agentsAfter = sceneAgents(ctx);
+  const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
+  if (hardStops.length) {
     result.verdict = "FAIL";
-    result.fail = touch.reason;
+    result.fail = hardStops.join("; ");
   }
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
   fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
-  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), ...(touch ? { verdict: "FAIL", fail: touch.reason } : {}) };
+  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), ...(hardStops.length ? { verdict: "FAIL", fail: hardStops.join("; ") } : {}) };
 }
 
 /** The workers of the rows: the port each brief gave it, whether those ports are all different, and their checkouts. */

@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { dummyStoppedOk, finishSceneApps } from "../bench-guard.mjs";
+import { dummyStoppedOk, finishSceneApps, sceneAgents } from "../bench-guard.mjs";
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
 import { hardChecks } from "./checks.mjs";
@@ -138,6 +138,13 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const turnsCap = scene.maxTurns ?? 60;
   const mark = gitMark(ctx.project);
   const appsBefore = typeof ctx.listApps === "function" ? ctx.listApps() : null;
+  const agentsEarly = sceneAgents(ctx);
+  if (agentsEarly) {
+    const result = { id: scene.id, title: scene.title, started: t0, ended: Date.now(), minutes: 0, verdict: "FAIL", reasons: [agentsEarly.reason], notes };
+    fs.writeFileSync(path.join(dir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
+    log(`  ${scene.id}: FAIL: ${agentsEarly.reason}`);
+    return result;
+  }
   // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
@@ -451,15 +458,17 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
     const appsAfter = typeof ctx.listApps === "function" ? ctx.listApps() : null;
     const touch = finishSceneApps(appsBefore, appsAfter, ctx.stopRun);
-    if (touch) {
+    const agentsAfter = sceneAgents(ctx);
+    const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
+    if (hardStops.length) {
       scored.verdict = "FAIL";
-      scored.reasons = [touch.reason, ...(scored.reasons ?? []).filter((reason) => reason !== touch.reason)];
+      scored.reasons = [...hardStops, ...(scored.reasons ?? []).filter((reason) => !hardStops.includes(reason))];
     }
     if (scene.expect?.stopDummy && !dummyStoppedOk(typeof ctx.readDummy === "function" ? ctx.readDummy() : null)) {
       const dummyReason = "the bench dummy is still running";
       scored.verdict = "FAIL";
-      const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && item !== touch?.reason);
-      scored.reasons = [...(touch ? [touch.reason] : []), dummyReason, ...rest];
+      const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && !hardStops.includes(item));
+      scored.reasons = [...hardStops, dummyReason, ...rest];
     }
     const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scored, hard, judged, notes };
     fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));

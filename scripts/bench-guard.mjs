@@ -729,8 +729,187 @@ export function finishSceneApps(before, after, stopRun) {
   return touch;
 }
 
+/** A stop that ends the round, including a run-wide look. Anything else can still run. */
+export function isHardStop(reason) {
+  return typeof reason === "string" && /^(touched a real app|unsandboxed agent)(:|$)/.test(reason);
+}
+
 export function exitCodeForStop(stopReason) {
-  return typeof stopReason === "string" && stopReason.startsWith("touched a real app") ? 1 : 0;
+  return isHardStop(stopReason) ? 1 : 0;
+}
+
+/** Agent CLIs a bench may start only under the run's sandbox profile. `agent` alone is not one. */
+const AGENT_BASENAMES = new Set([
+  "claude",
+  "claude-deepseek",
+  "claude-grok",
+  "codex",
+  "opencode",
+  "cursor-agent",
+  "grok",
+  "hermes",
+  "gemini",
+  "pi",
+  "pi-coding-agent",
+  "omp",
+  "fx",
+  "devin",
+  "agy_acp_server.par",
+]);
+const WRAPPER_HOSTS = new Set(["sh", "bash", "node"]);
+
+function commandTokens(command) {
+  return String(command ?? "").match(/[^\s]+/g) ?? [];
+}
+
+function baseName(token) {
+  const text = String(token ?? "");
+  const slash = Math.max(text.lastIndexOf("/"), text.lastIndexOf("\\"));
+  return slash >= 0 ? text.slice(slash + 1) : text;
+}
+
+/** The program, after any leading `NAME=value` assignments `ps -e` prints. */
+function argvOf(command) {
+  const tokens = commandTokens(command);
+  let index = 0;
+  while (index < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[index])) index += 1;
+  return tokens.slice(index);
+}
+
+function samePath(left, right) {
+  if (typeof left !== "string" || typeof right !== "string" || !left || !right) return false;
+  if (left === right) return true;
+  const a = lexicalPosix(left);
+  const b = lexicalPosix(right);
+  return !!a && a === b;
+}
+
+function agentCommandName(command) {
+  const exe = argvOf(command)[0];
+  if (!exe) return null;
+  const name = baseName(exe);
+  if (AGENT_BASENAMES.has(name)) return name;
+  if (name === "agent" && String(command).includes("cursor-agent")) return "cursor-agent";
+  return null;
+}
+
+/** The run's own wrapper: the plan path itself, or sh, bash or node running that path. */
+function isPlanWrapper(command, wrapper) {
+  if (!wrapper) return false;
+  const argv = argvOf(command);
+  if (!argv.length) return false;
+  if (samePath(argv[0], wrapper)) return true;
+  if (!WRAPPER_HOSTS.has(baseName(argv[0]))) return false;
+  return argv.slice(1).some((arg) => samePath(arg, wrapper));
+}
+
+/** `REALTEST_SANDBOX_PROFILE=<profile>` with a boundary, so a longer name (`profile-evil`) does not count. */
+function envMarksProfile(command, profile) {
+  const needle = `REALTEST_SANDBOX_PROFILE=${profile}`;
+  let from = 0;
+  while (from <= command.length) {
+    const at = command.indexOf(needle, from);
+    if (at < 0) return false;
+    const next = command[at + needle.length];
+    if (next === undefined || next === " " || next === "\t" || next === "'" || next === '"') return true;
+    from = at + needle.length;
+  }
+  return false;
+}
+
+/** This command is sandbox-exec with the profile as its own argument, or it carries the profile marker. */
+function commandShowsProfile(command, profile) {
+  if (!profile || !command) return false;
+  if (envMarksProfile(command, profile)) return true;
+  const argv = argvOf(command);
+  if (!argv.some((token) => baseName(token) === "sandbox-exec")) return false;
+  return argv.some((token) => samePath(token, profile));
+}
+
+function parsePs(text) {
+  const rows = [];
+  for (const line of text.split("\n")) {
+    const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S.*?)\s*$/);
+    if (!match) continue;
+    rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
+  }
+  return rows;
+}
+
+function descendedFrom(pid, rootPid, byPid) {
+  const root = Number(rootPid);
+  if (!Number.isFinite(root) || pid === root) return false;
+  const seen = new Set();
+  let cur = pid;
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    const row = byPid.get(cur);
+    if (!row) return false;
+    if (row.ppid === root) return true;
+    if (!row.ppid || row.ppid === cur) return false;
+    cur = row.ppid;
+  }
+  return false;
+}
+
+function underProfile(pid, byPid, profile) {
+  if (!profile) return false;
+  const seen = new Set();
+  let cur = pid;
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    const row = byPid.get(cur);
+    if (!row) return false;
+    if (commandShowsProfile(row.command, profile)) return true;
+    if (!row.ppid || row.ppid === cur) return false;
+    cur = row.ppid;
+  }
+  return false;
+}
+
+/**
+ * An agent CLI descended from the dev app that is not under this run's sandbox profile.
+ * Null when ps can't be read, the app pid isn't known, or every agent is the wrapper or sandboxed.
+ * The reason is `unsandboxed agent: <cmd>`.
+ */
+export function unsandboxedAgents(text, { rootPid, profile, wrapper } = {}) {
+  if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
+  const rows = parsePs(text);
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  for (const row of rows) {
+    if (!descendedFrom(row.pid, rootPid, byPid)) continue;
+    if (isPlanWrapper(row.command, wrapper)) continue;
+    const name = agentCommandName(row.command);
+    if (!name) continue;
+    if (underProfile(row.pid, byPid, profile)) continue;
+    return { fail: true, reason: `unsandboxed agent: ${name}` };
+  }
+  return null;
+}
+
+export function finishSceneAgents(text, watch, stopRun) {
+  const hit = unsandboxedAgents(text, watch ?? {});
+  if (!hit) return null;
+  if (typeof stopRun === "function") stopRun(hit.reason);
+  return hit;
+}
+
+/** The scene's process list. A ps failure, or no lister, does not fail the scene. */
+export function sceneAgents(ctx) {
+  if (!ctx || typeof ctx.listAgents !== "function") return null;
+  let text = null;
+  try {
+    text = ctx.listAgents();
+  } catch {
+    return null;
+  }
+  let watch = {};
+  try {
+    watch = typeof ctx.agentWatch === "function" ? ctx.agentWatch() ?? {} : {};
+  } catch {
+    return null;
+  }
+  return finishSceneAgents(text, watch, ctx.stopRun);
 }
 
 export function readDummy(state) {

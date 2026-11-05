@@ -218,6 +218,96 @@ pub fn plan() -> Option<&'static Plan> {
     .as_ref()
 }
 
+/// Collapse `.` and `..` without touching the filesystem. A relative path, or one that climbs past the root, is none:
+/// it is not the plan's wrapper, whatever PATH would make of it.
+fn lexical_absolute(path: &str) -> Option<PathBuf> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    if out.as_os_str().is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn provider_label(provider: Option<&str>, command: &str) -> String {
+    if let Some(name) = provider.map(str::trim).filter(|name| !name.is_empty()) {
+        return name.to_string();
+    }
+    Path::new(command)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("that CLI")
+        .to_string()
+}
+
+/// A bench starts no agent CLI except the wrapper path the plan names. No plan: unchanged. The decision is the path
+/// itself, not PATH and not the file's name.
+pub fn provider_start_allowed(
+    plan: Option<&Plan>,
+    provider: Option<&str>,
+    command: &str,
+) -> Result<(), String> {
+    let Some(plan) = plan else {
+        return Ok(());
+    };
+    let allowed = plan.claude_binary.as_deref().and_then(lexical_absolute);
+    if allowed.is_some() && lexical_absolute(command) == allowed {
+        return Ok(());
+    }
+    Err(format!(
+        "This bench only starts the run's own Claude wrapper. It won't start {}.",
+        provider_label(provider, command)
+    ))
+}
+
+/// `<isolated home>/tmp`. Never the real home, and never `/`. A missing real home is still refused when `home` is
+/// inside it; the caller only uses this once the process is already on an isolated home.
+pub fn run_temp_dir(home: &Path, real_home: Option<&Path>) -> Option<PathBuf> {
+    if home.as_os_str().is_empty() || home == Path::new("/") {
+        return None;
+    }
+    if real_home.is_some_and(|real| home == real || home.starts_with(real)) {
+        return None;
+    }
+    Some(home.join("tmp"))
+}
+
+/// Point this bench's process at [`run_temp_dir`]. A failed create leaves the variables alone, so they are not aimed
+/// at a directory that isn't there. No plan, or the daily app: nothing changes.
+pub fn install_run_tmpdir() {
+    if plan().is_none() {
+        return;
+    }
+    let Some(home) = crate::instance::isolated_home() else {
+        return;
+    };
+    let Some(dir) = run_temp_dir(home, crate::instance::real_home().as_deref()) else {
+        return;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    for key in ["TMPDIR", "TMP", "TEMP", "CLAUDE_TMPDIR"] {
+        std::env::set_var(key, &dir);
+    }
+}
+
 /// The plan as the window sees it (`window.__MONOCODE_APP__.verify`).
 pub fn window_info(plan: &Plan) -> Value {
     let mut info = serde_json::json!({
@@ -601,5 +691,90 @@ mod tests {
         std::fs::write(&file, "{}").unwrap();
         assert!(messages_from(&file).is_err());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn plan_naming(binary: &str) -> Plan {
+        parse(
+            &serde_json::json!({
+                "version": 1,
+                "runId": "a",
+                "claudeBinary": binary,
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    fn foreign(provider: &str) -> String {
+        std::env::temp_dir()
+            .join("not-the-wrapper")
+            .join(provider)
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    macro_rules! refuses_provider {
+        ($name:ident, $provider:literal) => {
+            #[test]
+            fn $name() {
+                let plan = plan_naming(&claude_path());
+                let command = foreign($provider);
+                let refused =
+                    provider_start_allowed(Some(&plan), Some($provider), &command).unwrap_err();
+                assert!(refused.contains($provider), "{refused}");
+                assert!(refused.contains("Claude wrapper"), "{refused}");
+                assert!(provider_start_allowed(None, Some($provider), &command).is_ok());
+            }
+        };
+    }
+
+    refuses_provider!(a_bench_refuses_to_start_claude_except_the_wrapper, "claude");
+    refuses_provider!(a_bench_refuses_to_start_codex, "codex");
+    refuses_provider!(a_bench_refuses_to_start_cursor, "cursor");
+    refuses_provider!(a_bench_refuses_to_start_grok, "grok");
+    refuses_provider!(a_bench_refuses_to_start_opencode, "opencode");
+    refuses_provider!(a_bench_refuses_to_start_pi, "pi");
+    refuses_provider!(a_bench_refuses_to_start_omp, "omp");
+    refuses_provider!(a_bench_refuses_to_start_fx, "fx");
+    refuses_provider!(a_bench_refuses_to_start_hermes, "hermes");
+    refuses_provider!(a_bench_refuses_to_start_antigravity, "antigravity");
+    refuses_provider!(a_bench_refuses_to_start_devin, "devin");
+
+    #[test]
+    fn a_bench_allows_only_the_plans_wrapper_path() {
+        let wrapper = claude_path();
+        let plan = plan_naming(&wrapper);
+        assert!(provider_start_allowed(Some(&plan), Some("claude"), &wrapper).is_ok());
+        let other = std::env::temp_dir().join("other").join("claude");
+        assert!(
+            provider_start_allowed(Some(&plan), Some("claude"), &other.to_string_lossy()).is_err()
+        );
+        let path = PathBuf::from(&wrapper);
+        let run = path.parent().unwrap().parent().unwrap();
+        let dotted = run.join("bin").join("..").join("bin").join("claude");
+        assert!(
+            provider_start_allowed(Some(&plan), Some("claude"), &dotted.to_string_lossy()).is_ok()
+        );
+        let escaped = run.join("..").join("elsewhere").join("claude");
+        assert!(
+            provider_start_allowed(Some(&plan), Some("claude"), &escaped.to_string_lossy())
+                .is_err()
+        );
+        assert!(provider_start_allowed(Some(&plan), Some("codex"), "codex").is_err());
+        assert!(provider_start_allowed(None, Some("codex"), "codex").is_ok());
+        let bare = parse(r#"{"version":1,"runId":"a"}"#).unwrap();
+        assert!(provider_start_allowed(Some(&bare), Some("claude"), &wrapper).is_err());
+    }
+
+    #[test]
+    fn a_bench_temp_dir_stays_inside_the_isolated_home() {
+        let home = Path::new("/tmp/bench/home");
+        let real = Path::new("/Users/ash");
+        assert_eq!(run_temp_dir(home, Some(real)), Some(home.join("tmp")));
+        assert!(run_temp_dir(real, Some(real)).is_none());
+        assert!(run_temp_dir(Path::new("/Users/ash/Library"), Some(real)).is_none());
+        assert!(run_temp_dir(Path::new("/"), Some(real)).is_none());
+        assert!(run_temp_dir(Path::new(""), Some(real)).is_none());
+        assert!(run_temp_dir(Path::new("/Users/ash-evil/home"), Some(real)).is_some());
     }
 }

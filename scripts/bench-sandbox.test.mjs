@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { agentCommand, benchSandboxProfile, cliReadOnlyPaths, forbiddenHomeRead, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, sandboxCwd, sandboxedCliSync, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { agentCommand, benchSandboxProfile, cliReadOnlyPaths, cliSandboxEnv, forbiddenHomeRead, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, sandboxCwd, sandboxedCliSync, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
@@ -60,7 +60,11 @@ test("the profile closes the real home, signals, writes and the outbound network
   assert.equal(allows(profile, "file-write*", PROJECT), true);
   assert.equal(allows(profile, "file-read*", DEV), true);
   assert.equal(allows(profile, "file-write*", DEV), true);
-  assert.equal(allows(profile, "file-write*", "/private/var/folders"), true);
+  assert.equal(allows(profile, "file-write*", "/private/var/folders"), false);
+  assert.equal(allows(profile, "file-write*", "/private/tmp"), false);
+  assert.equal(allows(profile, "file-write*", "/tmp"), false);
+  assert.equal(allows(profile, "file-write*", "/var/folders"), false);
+  assert.equal(allows(profile, "file-write*", "/private/var/tmp"), false);
   assert.match(profile, /\(deny file-write\*\n {4}\(literal "\/Users\/example"\)/);
   assert.match(profile, /\(deny network-outbound\)/);
   assert.doesNotMatch(profile, /remote ip "[^"]+:\*"/);
@@ -249,6 +253,27 @@ test("the named ports come from the gateway, the control endpoint and the stub h
   assert.equal(modelUrlAllowed("http://127.0.0.1:18767/v1/chat/completions", { MONOCODE_HUB_PORT: "18767" }), false);
 });
 
+test("a shared temp dir is not this run's TMPDIR", () => {
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-own-tmp-")));
+  const shared = fs.realpathSync(os.tmpdir());
+  try {
+    assert.equal(isSharedTemp(shared), true);
+    assert.equal(isSharedTemp("/private/tmp"), true);
+    assert.equal(isSharedTemp("/private/tmp-other"), false);
+    const env = cliSandboxEnv({ HOME: home, TMPDIR: shared, REALTEST_REAL_HOME: os.homedir() });
+    assert.equal(env.TMPDIR, path.join(home, "tmp"));
+    assert.equal(env.TMP, env.TMPDIR);
+    assert.equal(env.TEMP, env.TMPDIR);
+    assert.equal(env.CLAUDE_TMPDIR, env.TMPDIR);
+    assert.equal(fs.existsSync(env.TMPDIR), true);
+    assert.equal(privateTempDir({ HOME: "/private/var/bench/home", TMPDIR: "/private/var/bench/home/work", REALTEST_REAL_HOME: "/Users/example" }), "/private/var/bench/home/work");
+    assert.equal(privateTempDir({ HOME: "/private/var/bench/home", TMPDIR: "/private/tmp", REALTEST_REAL_HOME: "/Users/example" }), "/private/var/bench/home/tmp");
+    assert.equal(privateTempDir({ HOME: "/private/var/bench/home", TMPDIR: "/private/var/folders/ab/T", REALTEST_REAL_HOME: "/Users/example" }), "/private/var/bench/home/tmp");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test("a sandboxed process does not start inside the real home", () => {
   const env = { HOME: "/private/var/bench/home", REALTEST_REAL_HOME: "/Users/example" };
   assert.equal(sandboxCwd("/Users/example/Worktrees/hivra", env), "/private/var/bench/home");
@@ -428,6 +453,78 @@ echo ext_status=$?
     }
     gateway.close();
     denied.close();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a child can write its own TMPDIR and cannot write or delete the shared temps", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing on macOS");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-private-tmp-")));
+  const home = path.join(root, "home");
+  const runTmp = path.join(home, "tmp");
+  fs.mkdirSync(runTmp, { recursive: true });
+  const id = path.basename(root);
+  const realT = fs.realpathSync(os.tmpdir());
+  const preTmp = path.join("/private/tmp", `monocode-bench-${id}`);
+  const preT = path.join(realT, `monocode-bench-${id}`);
+  const newTmp = path.join("/private/tmp", `monocode-bench-new-${id}`);
+  const newT = path.join(realT, `monocode-bench-new-${id}`);
+  const ours = [preTmp, preT, newTmp, newT];
+  fs.writeFileSync(preTmp, "keep\n");
+  fs.writeFileSync(preT, "keep\n");
+  const profile = benchSandboxProfile({ realHome: os.homedir(), home, project: home });
+  const file = path.join(home, "sandbox.sb");
+  fs.writeFileSync(file, profile);
+  const script = path.join(home, "run.sh");
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh
+set +e
+if echo ok > "$TMPDIR/mine.txt" && rm "$TMPDIR/mine.txt"; then echo tmp_rw=ok; else echo tmp_rw=fail; fi
+if echo x > "$NEW_TMP"; then echo tmp_write=ok; else echo tmp_write=fail; fi
+if rm "$PRE_TMP"; then echo tmp_del=ok; else echo tmp_del=fail; fi
+if echo x > "$NEW_T"; then echo t_write=ok; else echo t_write=fail; fi
+if rm "$PRE_T"; then echo t_del=ok; else echo t_del=fail; fi
+`,
+    { mode: 0o755 },
+  );
+  try {
+    const out = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", script], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: {
+        HOME: home,
+        TMPDIR: runTmp,
+        TMP: runTmp,
+        TEMP: runTmp,
+        CLAUDE_TMPDIR: runTmp,
+        PATH: "/usr/bin:/bin",
+        PRE_TMP: preTmp,
+        PRE_T: preT,
+        NEW_TMP: newTmp,
+        NEW_T: newT,
+      },
+    });
+    assert.equal(out.status, 0, `${out.stderr}\n${out.stdout}`);
+    const report = Object.fromEntries(out.stdout.trim().split("\n").filter(Boolean).map((line) => line.split("=")));
+    assert.equal(report.tmp_rw, "ok", out.stdout);
+    assert.equal(report.tmp_write, "fail", out.stdout);
+    assert.equal(report.tmp_del, "fail", out.stdout);
+    assert.equal(report.t_write, "fail", out.stdout);
+    assert.equal(report.t_del, "fail", out.stdout);
+    assert.equal(fs.readFileSync(preTmp, "utf8"), "keep\n");
+    assert.equal(fs.readFileSync(preT, "utf8"), "keep\n");
+    assert.equal(fs.existsSync(newTmp), false);
+    assert.equal(fs.existsSync(newT), false);
+    assert.equal(fs.existsSync(path.join(runTmp, "mine.txt")), false);
+  } finally {
+    for (const file of ours) {
+      try {
+        fs.unlinkSync(file);
+      } catch {
+        // already gone, or we never created it
+      }
+    }
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

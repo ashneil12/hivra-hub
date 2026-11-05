@@ -11,7 +11,7 @@ import { lexicalPosix } from "./bench-guard.mjs";
 /** Directories a process may read so it can start. Not the user's files. `/Users` is named only as itself, never as a tree. */
 const SYSTEM_READS = ["/usr", "/bin", "/sbin", "/opt", "/System", "/Library", "/private", "/dev", "/etc", "/var", "/tmp", "/usr/local", "/opt/homebrew", "/System/Volumes", "/Applications"];
 
-/** System temp dirs a CLI writes while it starts. `/tmp` and `/var` are the symlink forms of the `/private` ones. */
+/** Shared temp dirs a bench must not write. `/tmp` and `/var` are the symlink forms of the `/private` ones. The profile does not allow them; a run sets TMPDIR inside its own folder. */
 export const SANDBOX_SYSTEM_TEMPS = ["/private/tmp", "/private/var/folders", "/private/var/tmp", "/tmp", "/var/folders"];
 
 const FORBIDDEN_TOP = new Set(["agent-memory", ".ssh", ".claude", "Projects", "Worktrees"]);
@@ -142,9 +142,10 @@ function block(head, paths, extras = []) {
 
 /**
  * The profile for this run. realHome is closed for reads except the run folders and the listed read-only files.
- * Writes are the run folders and the system temp dirs. Outbound network is the named loopback ports only.
+ * Writes are the run folders only. Shared temp dirs stay closed; the run sets TMPDIR inside its own folder.
+ * Outbound network is the named loopback ports only.
  */
-export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, network = [], systemTemps = SANDBOX_SYSTEM_TEMPS } = {}) {
+export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, network = [], systemTemps = [] } = {}) {
   const real = clean(realHome);
   if (!real || real === "/") throw new Error("the real home isn't a path the sandbox can close");
   const tempHome = clean(home);
@@ -152,7 +153,20 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
   const ctx = { realHome: real, devData, builtApp, cli };
   if (forbiddenHomeRead(tempHome, ctx) || ancestorOf(tempHome, real)) throw new Error("the temporary home is inside a folder the sandbox keeps closed");
   if (project != null && project !== "" && !clean(project)) throw new Error("the project path can't go in the sandbox profile");
-  const runRoots = unique([tempHome, clean(project), clean(devData), ...allowed.map((item) => clean(item))].filter((abs) => keepRoot(abs, ctx)));
+  const namedRoots = unique([tempHome, clean(project), clean(devData), ...allowed.map((item) => clean(item))].filter((abs) => keepRoot(abs, ctx)));
+  // `/tmp` is `/private/tmp`. The kernel checks the real path, so a run folder is named both ways. Only that folder, never the shared temp itself.
+  const runRoots = unique(
+    namedRoots.flatMap((abs) => {
+      const both = [abs];
+      try {
+        const real = clean(fs.realpathSync(abs));
+        if (real && real !== abs && keepRoot(real, ctx) && !SANDBOX_SYSTEM_TEMPS.includes(real)) both.push(real);
+      } catch {
+        // not there yet: the name above is the one the run asked for
+      }
+      return both;
+    }),
+  );
   const extras = [];
   for (const item of readOnly) {
     const abs = clean(item?.path ?? item);
@@ -201,7 +215,7 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
     lines.push(`;; ${item.reason}`);
     lines.push(block("allow file-read*", [item.path]));
   }
-  lines.push(";; Writes: this run's folders and the system temp dirs a CLI uses. The real home stays closed even where a temp dir overlaps it.");
+  lines.push(";; Writes: this run's folders only, including the real path when /tmp or /var/folders is a symlink. The shared temp dirs themselves stay closed. The run sets TMPDIR inside its own folder. No other path there is allowed: no CLI spawn has shown it needs one.");
   const firstWrite = unique([...runRoots, ...temps]);
   if (firstWrite.length) lines.push(block("allow file-write*", firstWrite, ['(literal "/dev/null")', '(literal "/dev/tty")', '(literal "/dev/dtracehelper")']));
   lines.push(block("deny file-write*", [real]));
@@ -423,6 +437,28 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
   return { ok: true, command: execPath, args: ["-f", file, bin, ...(args ?? [])], profile, file };
 }
 
+/** A path inside a shared temp dir (`/private/tmp`, `/private/var/folders`, or a symlink form of those). */
+export function isSharedTemp(abs) {
+  const file = clean(abs);
+  if (!file || file === "/") return false;
+  return SANDBOX_SYSTEM_TEMPS.some((root) => file === root || file.startsWith(`${root}/`));
+}
+
+/**
+ * This run's temp dir. A TMPDIR already inside the run and outside the shared temps is kept. Anything else,
+ * including `/private/tmp` and the per-user dir under `/private/var/folders`, becomes `<home>/tmp`.
+ */
+export function privateTempDir(env = {}) {
+  const real = clean(env.REALTEST_REAL_HOME) || "";
+  const home = clean(env.HOME);
+  const tmp = clean(env.TMPDIR);
+  const inHome = home && home !== "/" && tmp && (tmp === home || inside(tmp, home));
+  const outsideReal = !real || (tmp !== real && !inside(tmp, real));
+  if (inHome && outsideReal && !isSharedTemp(tmp)) return tmp;
+  if (home && home !== "/" && (!real || (home !== real && !inside(home, real)))) return `${home}/tmp`;
+  return "";
+}
+
 /** A home and a state dir that are not the real home, so a grader or tester can use the same profile. */
 export function cliSandboxEnv(env = {}) {
   const real = clean(env.REALTEST_REAL_HOME) || clean(os.homedir());
@@ -431,12 +467,21 @@ export function cliSandboxEnv(env = {}) {
   const home = homeIsReal ? fs.mkdtempSync(path.join(os.tmpdir(), "bench-cli-")) : givenHome;
   let state = clean(env.REALTEST_STATE);
   if (!state || state === "/" || state === real || inside(state, real)) state = home;
-  const tmp = clean(env.TMPDIR);
-  const tmpOk = tmp && tmp !== "/" && tmp !== real && !inside(tmp, real);
+  const temp = privateTempDir({ ...env, HOME: home, REALTEST_REAL_HOME: real });
+  if (temp && fs.existsSync(home)) {
+    try {
+      fs.mkdirSync(temp, { recursive: true });
+    } catch {
+      // a missing dir fails the child's write; it is not pointed back at a shared temp
+    }
+  }
   return {
     ...env,
     HOME: home,
-    TMPDIR: tmpOk ? env.TMPDIR : home,
+    TMPDIR: temp,
+    TMP: temp,
+    TEMP: temp,
+    CLAUDE_TMPDIR: temp,
     REALTEST_REAL_HOME: real,
     REALTEST_STATE: state,
     REALTEST_CLAUDE_CONFIG: env.REALTEST_CLAUDE_CONFIG || env.CLAUDE_CONFIG_DIR || "",

@@ -31,7 +31,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { benchDenyRules } from "./bench-guard.mjs";
-import { agentCommand, sandboxCwd } from "./bench-sandbox.mjs";
+import { agentCommand, privateTempDir, sandboxCwd } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -353,7 +353,20 @@ function promptOf(message) {
 function launchReal(args, env, stdio) {
   const launch = agentCommand(REAL, args, env);
   if (!launch.ok) return launch;
-  return { ok: true, child: spawn(launch.command, launch.args, { env, stdio, cwd: sandboxCwd(process.cwd(), env) }) };
+  const temp = privateTempDir(env);
+  const spawned = { ...env, REALTEST_SANDBOX_PROFILE: launch.file };
+  if (temp) {
+    try {
+      fs.mkdirSync(temp, { recursive: true });
+      spawned.TMPDIR = temp;
+      spawned.TMP = temp;
+      spawned.TEMP = temp;
+      spawned.CLAUDE_TMPDIR = temp;
+    } catch {
+      // a directory that isn't there is not where the CLI writes
+    }
+  }
+  return { ok: true, child: spawn(launch.command, launch.args, { env: spawned, stdio, cwd: sandboxCwd(process.cwd(), env) }) };
 }
 
 function refuseStart(reason, { json = false } = {}) {
