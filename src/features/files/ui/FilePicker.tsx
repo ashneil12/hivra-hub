@@ -22,7 +22,12 @@ import {
   looksLikeProject,
 } from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
-import { finderKeyAction, type FinderHit, type FinderScope } from "../../search/model/finder";
+import {
+  finderActiveIndex,
+  finderKeyAction,
+  type FinderHit,
+  type FinderScope,
+} from "../../search/model/finder";
 import { FinderList } from "../../search/ui/FinderList";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
@@ -81,6 +86,10 @@ export function FilePicker({
   onFinderQuery.current = finder?.onQuery;
   const [query, setQuery] = useState(initialQuery);
   const [active, setActive] = useState(0);
+  const activeHitId = useRef<string | null>(null);
+  const finderHitsRef = useRef(finder?.hits);
+  finderHitsRef.current = finder?.hits;
+  const finderHitKey = finder?.hits.map((hit) => hit.id).join("\0") ?? "";
   const [files, setFiles] = useState(() => peekFiles() ?? []);
   const [loading, setLoading] = useState(() => peekFiles() == null);
   const [error, setError] = useState<string | null>(null);
@@ -128,6 +137,7 @@ export function FilePicker({
     setQuery(initialQuery);
     onFinderQuery.current?.(initialQuery);
     setActive(0);
+    activeHitId.current = null;
     setError(null);
     const searchable = looksLikeProject(cwd);
     const cached = peekFiles();
@@ -164,6 +174,12 @@ export function FilePicker({
       optionCount === 0 ? 0 : Math.min(index, optionCount - 1),
     );
   }, [optionCount]);
+
+  useEffect(() => {
+    const hits = finderHitsRef.current;
+    if (!hits) return;
+    setActive((index) => finderActiveIndex(hits, activeHitId.current, index));
+  }, [finderHitKey]);
 
   useEffect(() => {
     if (!open) return;
@@ -205,7 +221,11 @@ export function FilePicker({
       if (action?.type === "move") {
         e.preventDefault();
         if (optionCount === 0) return;
-        setActive((index) => (index + action.delta + optionCount) % optionCount);
+        setActive((index) => {
+          const next = (index + action.delta + optionCount) % optionCount;
+          activeHitId.current = finder.hits[next]?.id ?? null;
+          return next;
+        });
         return;
       }
       if (action?.type === "open") {
@@ -288,6 +308,7 @@ export function FilePicker({
               onChange={(e) => {
                 setQuery(e.target.value);
                 setActive(0);
+                activeHitId.current = null;
                 onFinderQuery.current?.(e.target.value);
               }}
               onKeyDown={onSearchKey}
@@ -313,7 +334,10 @@ export function FilePicker({
           <FinderList
             hits={finder.hits}
             active={active}
-            onActive={setActive}
+            onActive={(index) => {
+              activeHitId.current = finder.hits[index]?.id ?? null;
+              setActive(index);
+            }}
             onOpen={finder.onOpen}
           />
         ) : (
