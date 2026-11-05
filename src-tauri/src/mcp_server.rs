@@ -519,6 +519,8 @@ fn tools() -> Value {
         added.extend(steering_tools());
         list.splice(after_answer..after_answer, added);
         list.extend(crate::pr_watch::mcp::tools());
+        // WP-70
+        list.extend(crate::tasks::mcp::tools());
         // WP-34: creator.draft and creator.state. Kept out of the literal above (json!'s recursion limit).
         list.extend(creator_tools());
     }
@@ -796,11 +798,13 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         name if crate::pr_watch::mcp::NAMES.contains(&name) => {
             crate::pr_watch::mcp::call(call.app, name, args)
         }
+        // WP-70: task_list, task_get, task_create, task_update.
+        name if crate::tasks::mcp::NAMES.contains(&name) => crate::tasks::mcp::call(call.app, name, args),
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
-             skills_learn, pr_watch, pr_unwatch or pr_watches."
+             skills_learn, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
         )),
     }
 }
@@ -1375,6 +1379,11 @@ mod tests {
                 "pr_watch",
                 "pr_unwatch",
                 "pr_watches",
+                // WP-70
+                "task_list",
+                "task_get",
+                "task_create",
+                "task_update",
                 "creator_draft",
                 "creator_state"
             ]

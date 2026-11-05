@@ -257,6 +257,27 @@ fn repo_key(repo: &str) -> Result<String, String> {
     Ok(format!("{owner}/{name}").to_ascii_lowercase())
 }
 
+/// Who did the merge, and who asked. A person's tap is both. An agent who merged
+/// after the person allowed this head was asked by the person. The project's
+/// switch is a setting that agent already had, so they asked themselves.
+fn activity_who(caller: &Caller, allowed_by: &str) -> (crate::activity::Who, crate::activity::Who) {
+    match caller {
+        Caller::Person { .. } => (
+            crate::activity::Who::person(),
+            crate::activity::Who::person(),
+        ),
+        Caller::Agent { session } => {
+            let actor = crate::activity::Who::first_mate(session.clone(), "");
+            let initiator = if allowed_by.starts_with("person") || allowed_by.contains("approved") {
+                crate::activity::Who::person()
+            } else {
+                actor.clone()
+            };
+            (actor, initiator)
+        }
+    }
+}
+
 /// The person allows this pull request to merge at exactly this head.
 pub fn approve(
     conn: &Connection,
@@ -276,6 +297,18 @@ pub fn approve(
         params![repo, number as i64, head_sha.trim(), by, now],
     )
     .map_err(|e| e.to_string())?;
+    // WP-78: the person allowed this head. Their name and the commit stay out of the line.
+    crate::activity::note(
+        conn,
+        crate::activity::PERMISSION_GRANT,
+        &crate::activity::Who::person(),
+        &crate::activity::Who::person(),
+        "",
+        &format!("{repo}#{number}"),
+        &format!("Allowed merge of {repo}#{number} at this head."),
+        &format!("https://github.com/{repo}/pull/{number}"),
+        now,
+    );
     Ok(())
 }
 
@@ -481,6 +514,19 @@ pub fn merge(
                 None,
                 now,
             )?;
+            // WP-78: one row for a merge that landed. An ask or a refusal stays in the delivery log only.
+            let (actor, initiator) = activity_who(&request.caller, &allowed_by);
+            crate::activity::note(
+                &conn,
+                crate::activity::MERGE,
+                &actor,
+                &initiator,
+                project.as_deref().unwrap_or(""),
+                &format!("{repo}#{number}"),
+                &format!("Merged {repo}#{number}."),
+                &format!("https://github.com/{repo}/pull/{number}"),
+                now,
+            );
             Ok(MergeOutcome::Merged {
                 head_sha: head,
                 allowed_by,

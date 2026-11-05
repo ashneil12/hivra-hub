@@ -23,6 +23,9 @@ pub struct Worktree {
     /// The project's setup action, started right after `git worktree add` (src/project_actions.rs).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub setup: Option<crate::project_actions::WorktreeSetup>,
+    /// WP-82: said once, when this checkout was a plain git worktree because the pool was off or not installed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -106,9 +109,19 @@ pub(crate) fn contains_working_dir(root: &Path, cwd: &Path) -> bool {
 }
 
 fn session_ids(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<String>, String> {
-    let mut query = conn
-        .prepare("SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0")
-        .map_err(|e| e.to_string())?;
+    let trash_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'trash_items'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let sql = if trash_table == 0 {
+        "SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0"
+    } else {
+        "SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0 AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+    };
+    let mut query = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -248,6 +261,56 @@ pub(crate) fn with_setup(app: &AppHandle, mut tree: Worktree, run_setup: Option<
     tree
 }
 
+/// WP-82: a slot from the pool, or a reason to keep today's plain `git worktree`.
+enum Pooled {
+    Ready(Box<Worktree>),
+    /// The person is waiting. Crews get this with the `pool-full:` prefix.
+    Full(String),
+    Plain(Option<String>),
+}
+
+fn pooled_error(error: String, for_crew: bool) -> String {
+    if for_crew {
+        return error;
+    }
+    error
+        .strip_prefix(crate::worktree_pool::POOL_FULL_PREFIX)
+        .unwrap_or(&error)
+        .to_string()
+}
+
+fn take_pool_slot(
+    app: &AppHandle,
+    root: &Path,
+    branch: &str,
+    holder: &str,
+    run_setup: Option<bool>,
+) -> Result<Pooled, String> {
+    let env = crate::worktree_pool::env_from_app(app);
+    match crate::worktree_pool::acquire(&env, root, branch, holder) {
+        Ok(crate::worktree_pool::Checkout::Slot { path, fresh, .. }) => {
+            let tree = list(root)?
+                .into_iter()
+                .find(|tree| same_path(Path::new(&tree.path), &path))
+                .ok_or_else(|| {
+                    "The pool handed out a checkout, but git can't see it.".to_string()
+                })?;
+            if fresh {
+                if let Err(error) = copy_checkout_state(root, Path::new(&tree.path)) {
+                    let _ = crate::worktree_pool::give_back(&env, root, &path);
+                    return Err(error);
+                }
+                Ok(Pooled::Ready(Box::new(with_setup(app, tree, run_setup))))
+            } else {
+                Ok(Pooled::Ready(Box::new(tree)))
+            }
+        }
+        Ok(crate::worktree_pool::Checkout::Full { note }) => Ok(Pooled::Full(note)),
+        Ok(crate::worktree_pool::Checkout::Fallback { notice }) => Ok(Pooled::Plain(notice)),
+        Err(error) => Err(error),
+    }
+}
+
 #[tauri::command(async)]
 pub async fn git_worktree_create(
     app: AppHandle,
@@ -258,7 +321,24 @@ pub async fn git_worktree_create(
     run_setup: Option<bool>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let tree = create(&expand_home(&cwd), &branch, &base, existing)?;
+        let root = expand_home(&cwd);
+        // WP-82: "New worktree" uses the pool only when that switch is on. It stays off.
+        let use_pool = !existing
+            && crate::worktree_pool::settings_for(&crate::worktree_pool::env_from_app(&app), &root)
+                .is_ok_and(|settings| settings.enabled && settings.interactive);
+        if use_pool {
+            match take_pool_slot(&app, &root, branch.trim(), "interactive", run_setup) {
+                Ok(Pooled::Ready(tree)) => return Ok(*tree),
+                Ok(Pooled::Full(note)) => return Err(note),
+                Ok(Pooled::Plain(notice)) => {
+                    let mut tree = create(&root, &branch, &base, existing)?;
+                    tree.pool_notice = notice;
+                    return Ok(with_setup(&app, tree, run_setup));
+                }
+                Err(error) => return Err(pooled_error(error, false)),
+            }
+        }
+        let tree = create(&root, &branch, &base, existing)?;
         Ok(with_setup(&app, tree, run_setup))
     })
     .await
@@ -416,19 +496,37 @@ pub async fn git_orchestration_worktree_create(
     cwd: String,
     branch: String,
     run_setup: Option<bool>,
+    lease_holder: Option<String>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = expand_home(&cwd);
-        let known = list(&root)?
-            .into_iter()
-            .any(|tree| tree.branch.as_deref() == Some(branch.trim()));
-        let tree = create_seeded(&root, branch.trim())?;
-        // A recovered worker checkout was set up when it was first made.
-        Ok(if known {
-            tree
-        } else {
-            with_setup(&app, tree, run_setup)
-        })
+        let branch = branch.trim();
+        let holder = lease_holder
+            .as_deref()
+            .map(str::trim)
+            .filter(|holder| !holder.is_empty())
+            .unwrap_or(branch);
+        // WP-82: a leased pool slot when the tool is available. Otherwise the same plain worktree as before.
+        match take_pool_slot(&app, &root, branch, holder, run_setup) {
+            Ok(Pooled::Ready(tree)) => Ok(*tree),
+            Ok(Pooled::Full(note)) => {
+                Err(format!("{}{note}", crate::worktree_pool::POOL_FULL_PREFIX))
+            }
+            Ok(Pooled::Plain(notice)) => {
+                let known = list(&root)?
+                    .into_iter()
+                    .any(|tree| tree.branch.as_deref() == Some(branch));
+                let mut tree = create_seeded(&root, branch)?;
+                tree.pool_notice = notice;
+                // A recovered worker checkout was set up when it was first made.
+                Ok(if known {
+                    tree
+                } else {
+                    with_setup(&app, tree, run_setup)
+                })
+            }
+            Err(error) => Err(pooled_error(error, true)),
+        }
     })
     .await
     .map_err(|error| error.to_string())?
@@ -756,8 +854,33 @@ pub fn git_worktree_remove(
     )
 }
 
+fn release_leased_checkout(
+    conn: &rusqlite::Connection,
+    root: &Path,
+    path: &Path,
+) -> Result<WorktreeRemoval, String> {
+    let tree = removal_target(root, path)?;
+    let worktrees = list(root)?;
+    let main = worktrees
+        .iter()
+        .find(|tree| tree.is_main)
+        .ok_or("No main working copy found")?;
+    let ids = session_ids(conn, path)?;
+    let _saved = prepare_removal(conn, Path::new(&tree.path), &main.path, &ids)?;
+    if let Err(error) = finish_removal(conn, &tree.path, &[]) {
+        eprintln!(
+            "Worktree returned to the pool; recovery journal cleanup will retry on restart: {error}"
+        );
+    }
+    Ok(WorktreeRemoval {
+        session_ids: ids,
+        project_cwd: main.path.clone(),
+    })
+}
+
 #[tauri::command(async)]
 pub fn git_orchestration_worktree_remove(
+    app: AppHandle,
     cwd: String,
     path: String,
     store: State<'_, SessionStore>,
@@ -774,12 +897,26 @@ pub fn git_orchestration_worktree_remove(
     // Hivra WP-12: never remove a worker's copy whose work hasn't landed or merged.
     crate::delivery::teardown::guard(&root, &path)?;
     let branch = tree.branch.clone();
+    // WP-82: a leased slot is returned, never force-removed. Dirty or busy stays leased.
+    let handed =
+        crate::worktree_pool::give_back(&crate::worktree_pool::env_from_app(&app), &root, &path)?;
     let conn = store.lock_conn()?;
-    let removed = remove_with_sessions(&conn, &root, &path, true, true)?;
+    let removed = match handed {
+        crate::worktree_pool::HandBack::Returned => release_leased_checkout(&conn, &root, &path)?,
+        crate::worktree_pool::HandBack::NotLeased => {
+            remove_with_sessions(&conn, &root, &path, true, true)?
+        }
+    };
     if let Some(branch) = branch {
-        if branch.starts_with("mc/orch-") {
+        if branch.starts_with("mc/orch-")
+            && !list(&root)?
+                .iter()
+                .any(|entry| entry.branch.as_deref() == Some(branch.as_str()))
+        {
             if let Err(error) = git(Path::new(&removed.project_cwd), &["branch", "-D", &branch]) {
-                eprintln!("Orchestration worktree removed; temporary branch cleanup will need a retry: {error}");
+                eprintln!(
+                    "Orchestration worktree removed; temporary branch cleanup will need a retry: {error}"
+                );
             }
         }
     }
@@ -1031,6 +1168,71 @@ mod tests {
             &root,
             &PathBuf::from(format!("{}-other", root.display()))
         ));
+    }
+
+    #[test]
+    fn a_trashed_chat_does_not_keep_its_worktree() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let tree = create(&root, "feature", "main", false).unwrap();
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        for (id, cwd, worktree) in [
+            ("gone", path_to_js(&root), Some(tree.path.clone())),
+            ("stays", path_to_js(&root), Some(tree.path.clone())),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd, archived) VALUES (?1, ?2, 'codex', 'test', 'supervised', 'Test', '[]', 0, 0, ?3, 0)",
+                rusqlite::params![id, cwd, worktree],
+            )
+            .unwrap();
+        }
+        crate::trash::trash(
+            &conn,
+            &crate::trash::Item {
+                kind: "chat".into(),
+                id: "gone".into(),
+                title: "Gone".into(),
+                parent_kind: None,
+                parent_id: None,
+                payload: "{}".into(),
+            },
+            &[],
+            false,
+            1,
+        )
+        .unwrap();
+        let mut ids = session_ids(&conn, Path::new(&tree.path)).unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["stays".to_string()]);
+        crate::trash::trash(
+            &conn,
+            &crate::trash::Item {
+                kind: "chat".into(),
+                id: "stays".into(),
+                title: "Stays".into(),
+                parent_kind: None,
+                parent_id: None,
+                payload: "{}".into(),
+            },
+            &[],
+            false,
+            2,
+        )
+        .unwrap();
+        assert!(
+            session_ids(&conn, Path::new(&tree.path))
+                .unwrap()
+                .is_empty(),
+            "a worktree whose chats are all trashed is not held"
+        );
+        let removed = remove_with_sessions(&conn, &root, Path::new(&tree.path), true, false);
+        if let Err(message) = &removed {
+            assert!(
+                !message.contains("Sessions still use this worktree"),
+                "{message}"
+            );
+        }
     }
 
     #[test]

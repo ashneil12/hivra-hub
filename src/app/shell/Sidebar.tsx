@@ -53,6 +53,7 @@ import {
   DashboardSquare,
   type IconComponent,
 } from "../../shared/ui/icons";
+import { closeDocsMode, getDocsMode, openDocsMode, subscribeDocsMode } from "../../features/docs/docsMode";
 import { createPortal } from "react-dom";
 import { useProjectSwipe } from "./useProjectSwipe";
 import {
@@ -472,6 +473,20 @@ export type CodingTeamList = {
   };
 };
 
+function openNotesFromSidebar(notesActive: boolean, docsMode: boolean, open?: () => void) {
+  if (notesActive && docsMode) {
+    closeDocsMode();
+    return;
+  }
+  closeDocsMode();
+  open?.();
+}
+
+function openDocsFromSidebar(notesActive: boolean, open?: () => void) {
+  openDocsMode();
+  if (!notesActive) open?.();
+}
+
 function SidebarComponent({
   cwd,
   gitCwd,
@@ -571,6 +586,7 @@ function SidebarComponent({
   monoViewActive = false,
   codingTeam,
 }: Props) {
+  const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const trafficLightsVisible = useTrafficLightsVisible();
   const remoteProject = isRemoteProjectPath(cwd);
   const tab: SidebarTabId = requestedTab;
@@ -2626,8 +2642,15 @@ function SidebarComponent({
           onOpenNotes && {
             label: "Notes",
             icon: StickyNote,
-            active: notesActive,
-            onClick: onOpenNotes,
+            active: notesActive && !docsMode,
+            onClick: () => openNotesFromSidebar(notesActive, docsMode, onOpenNotes),
+          },
+        notesEnabled &&
+          onOpenNotes && {
+            label: "Docs",
+            icon: FileScript,
+            active: notesActive && docsMode,
+            onClick: () => openDocsFromSidebar(notesActive, onOpenNotes),
           },
         onOpenAutomations && {
           label: "Automations",
@@ -3651,6 +3674,7 @@ function SidebarProjectPicker({
   automationsActive?: boolean;
   inboxUnseen?: boolean;
 }) {
+  const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -3710,8 +3734,21 @@ function SidebarProjectPicker({
           </IconButton>
         ) : null}
         {onOpenNotes ? (
-          <IconButton label="Notes" active={notesActive} onClick={onOpenNotes}>
+          <IconButton
+            label="Notes"
+            active={notesActive && !docsMode}
+            onClick={() => openNotesFromSidebar(notesActive, docsMode, onOpenNotes)}
+          >
             <StickyNote className="size-3.5" strokeWidth={1.75} />
+          </IconButton>
+        ) : null}
+        {onOpenNotes ? (
+          <IconButton
+            label="Docs"
+            active={notesActive && docsMode}
+            onClick={() => openDocsFromSidebar(notesActive, onOpenNotes)}
+          >
+            <FileScript className="size-3.5" strokeWidth={1.75} />
           </IconButton>
         ) : null}
         {onOpenAutomations ? (
@@ -3816,6 +3853,7 @@ function CompactProjectRail({
   /** A Mono fills the main area: no workspace tab is the current one. */
   monoViewActive?: boolean;
 }) {
+  const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const monosSnap = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monosPinned = useRailMonosPinned();
   const monoItems = useMemo(() => {
@@ -3989,8 +4027,16 @@ function CompactProjectRail({
           <CompactRailAction
             label="Notes"
             icon={StickyNote}
-            active={notesActive}
-            onClick={action(notesActive, onOpenNotes)}
+            active={notesActive && !docsMode}
+            onClick={() => openNotesFromSidebar(notesActive, docsMode, () => action(notesActive, onOpenNotes)?.())}
+          />
+        ) : null}
+        {onOpenNotes ? (
+          <CompactRailAction
+            label="Docs"
+            icon={FileScript}
+            active={notesActive && docsMode}
+            onClick={() => openDocsFromSidebar(notesActive, onOpenNotes)}
           />
         ) : null}
         <CompactRailAction

@@ -549,6 +549,7 @@ fn announce(app: &AppHandle, decision: Option<&Decision>, released: &[SteerMessa
     }
     steering::changed(app, &released.iter().collect::<Vec<_>>());
     let _ = app.emit(delegations::CHANGED, json!({ "ids": [] }));
+    crate::tasks::emit_for_delegations(app); // WP-70
 }
 
 #[tauri::command(async)]

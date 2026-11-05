@@ -172,6 +172,61 @@ fn consent_write_is_compare_and_swap() {
 }
 
 #[test]
+fn a_new_allow_is_one_grant_and_a_refusal_or_a_repeat_is_not() {
+    let tmp = Tmp::new("activity");
+    let db = tmp.path().join("monocode.db");
+    drop(crate::session_store::SessionStore::open(db.clone()).unwrap());
+    let project = tmp.path().join("Work folder");
+    std::fs::create_dir_all(&project).unwrap();
+    let key = project.display().to_string();
+    let path = tmp.path().join("plugins/data/desktop-control/consent.json");
+    let mut consent = doc(1);
+    consent.projects.insert(
+        key.clone(),
+        ProjectConsent {
+            apps: vec!["Notes".into()],
+            refused: vec!["Mail".into()],
+            visible: false,
+        },
+    );
+    desktop::write_consent(&path, 0, consent.clone()).unwrap();
+    consent.revision = 2;
+    desktop::write_consent(&path, 1, consent).unwrap();
+    let mut cleared = doc(3);
+    cleared.projects.insert(
+        key.clone(),
+        ProjectConsent {
+            apps: Vec::new(),
+            refused: vec!["Mail".into()],
+            visible: false,
+        },
+    );
+    desktop::write_consent(&path, 2, cleared).unwrap();
+    // Not this app's consent file: no database is inferred, and nothing is logged.
+    desktop::write_consent(&tmp.path().join("consent.json"), 0, doc(1)).unwrap();
+    let store = crate::session_store::SessionStore::open(db).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let rows = crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        },
+        crate::session_store::now_millis(),
+    )
+    .unwrap()
+    .entries;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::PERMISSION_GRANT);
+    assert_eq!(rows[0].actor, crate::activity::Who::person());
+    assert_eq!(rows[0].initiator, crate::activity::Who::person());
+    assert_eq!(rows[0].project, key);
+    assert_eq!(rows[0].target, "Notes");
+    assert_eq!(rows[0].summary, "Allowed Notes.");
+    assert!(!rows[0].summary.contains("Mail"));
+}
+
+#[test]
 fn a_corrupt_consent_file_is_not_overwritten() {
     let tmp = Tmp::new("corrupt");
     let path = tmp.path().join("consent.json");

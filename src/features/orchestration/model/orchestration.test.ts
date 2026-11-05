@@ -256,6 +256,41 @@ describe("local orchestration", () => {
       vi.mocked(f.host.submit).mock.calls.find(([id]) => id === "lead")?.[1],
     ).toContain('"modelSettings":{"reasoningEffort":"xhigh"}');
   });
+  it("keeps a crew queued when the worktree pool is full", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    vi.mocked(f.host.createWorker).mockRejectedValue(
+      new Error(
+        "pool-full: Waiting for a free worktree. The pool for this project is full.",
+      ),
+    );
+    const card = proposal();
+    card.tasks = card.tasks.filter((task) => task.id === "types");
+    await f.manager.startApproved("lead", "card", card);
+    await vi.waitFor(() => {
+      expect(f.host.createWorker).toHaveBeenCalledTimes(1);
+      expect(f.tasks()[0].status).toBe("queued");
+      expect(f.tasks()[0].poolNote).toContain("Waiting for a free worktree");
+    });
+    const task = f.tasks()[0];
+    expect(task.status).not.toBe("failed");
+    expect(f.manager.waitingFor(f.manager.run("lead")!, task)).toBe(
+      task.poolNote,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(f.host.createWorker).toHaveBeenCalledTimes(1);
+  });
+  it("still fails a task when creating its worker fails for another reason", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    vi.mocked(f.host.createWorker).mockRejectedValue(new Error("disk full"));
+    const card = proposal();
+    card.tasks = card.tasks.filter((task) => task.id === "types");
+    await f.manager.startApproved("lead", "card", card);
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("failed"));
+    expect(f.tasks()[0].error).toBe("disk full");
+    expect(f.tasks()[0].poolNote).toBeUndefined();
+  });
   it("names the conversation that blocks a paused run from resuming", async () => {
     const f = setup();
     f.lead.busy = false;

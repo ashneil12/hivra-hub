@@ -1,0 +1,137 @@
+// WP-51: the memory a person reviews. Disk is untrusted: a bad file becomes an empty doc.
+
+import { sha256Hex } from "../../historyImport/model/hash";
+import { hasSecretText } from "../../portable/model/secrets";
+
+export type MemoryAction = "add" | "update" | "remove" | "skill";
+export type MemoryState = "unreviewed" | "confirmed" | "edited";
+
+export type MemorySource = {
+  kind: "turn" | "import";
+  ref: string;
+  label: string;
+};
+
+export type MemorySkill = { name: string; lesson: string };
+
+export type MemoryItem = {
+  id: string;
+  mateId: string;
+  action: MemoryAction;
+  text: string;
+  skill?: MemorySkill;
+  targetId?: string;
+  state: MemoryState;
+  source: MemorySource;
+  evidence: string;
+  support: number;
+  against: number;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type MemoryDoc = {
+  revision: number;
+  generation: number;
+  items: MemoryItem[];
+  doneTurns: string[];
+  imports: Record<string, "confirmed" | "rejected">;
+};
+
+const ITEM_ID = /^mem-[a-f0-9]{16}$/;
+const MATE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
+const IMPORT_ID = /^[a-z0-9-]{1,80}$/;
+
+export function emptyDoc(revision = 0): MemoryDoc {
+  return { revision, generation: 0, items: [], doneTurns: [], imports: {} };
+}
+
+/** A secret, including one hiding behind a path separator. */
+export function mentionsSecret(text: string): boolean {
+  if (hasSecretText(text)) return true;
+  if (!text.includes("/") && !text.includes("\\") && !text.includes(":")) return false;
+  return hasSecretText(text.replace(/[/\\:]/g, " "));
+}
+
+/** One line, LF, trimmed. A fact is one sentence, not a pasted transcript. */
+export function normalizeFact(text: string): string {
+  const line = text.replace(/\r\n/g, "\n").replace(/\s+/g, " ").trim();
+  return line.length > 400 ? `${line.slice(0, 397).trimEnd()}…` : line;
+}
+
+export function memoryId(parts: readonly string[]): string {
+  return `mem-${sha256Hex(parts.join("\n")).slice(0, 16)}`;
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isSource(value: unknown): value is MemorySource {
+  if (!value || typeof value !== "object") return false;
+  const source = value as MemorySource;
+  return (
+    (source.kind === "turn" || source.kind === "import") &&
+    typeof source.ref === "string" &&
+    source.ref.length > 0 &&
+    source.ref.length <= 200 &&
+    typeof source.label === "string" &&
+    source.label.length > 0 &&
+    source.label.length <= 200 &&
+    !mentionsSecret(source.ref) &&
+    !mentionsSecret(source.label)
+  );
+}
+
+function isItem(value: unknown): value is MemoryItem {
+  if (!value || typeof value !== "object") return false;
+  const item = value as MemoryItem;
+  if (typeof item.id !== "string" || !ITEM_ID.test(item.id)) return false;
+  if (typeof item.mateId !== "string" || !MATE_ID.test(item.mateId)) return false;
+  if (item.action !== "add" && item.action !== "update" && item.action !== "remove" && item.action !== "skill") return false;
+  if (typeof item.text !== "string" || !item.text.trim() || item.text.length > 500) return false;
+  if (item.state !== "unreviewed" && item.state !== "confirmed" && item.state !== "edited") return false;
+  if (!isSource(item.source)) return false;
+  if (typeof item.evidence !== "string" || item.evidence.length > 500) return false;
+  if (mentionsSecret(item.text) || mentionsSecret(item.evidence)) return false;
+  if (!finite(item.support) || !finite(item.against) || !finite(item.createdAt) || !finite(item.updatedAt)) return false;
+  if (item.targetId !== undefined && (typeof item.targetId !== "string" || !ITEM_ID.test(item.targetId))) return false;
+  if (item.action === "skill") {
+    if (!item.skill || typeof item.skill.name !== "string" || typeof item.skill.lesson !== "string") return false;
+    if (!item.skill.name || !item.skill.lesson || mentionsSecret(item.skill.name) || mentionsSecret(item.skill.lesson)) return false;
+  }
+  return true;
+}
+
+/** Anything that is not a memory doc, or a doc with secrets in it, comes back empty of those parts. */
+export function parseDoc(value: unknown): MemoryDoc {
+  if (!value || typeof value !== "object") return emptyDoc();
+  const raw = value as Partial<MemoryDoc>;
+  const seen = new Set<string>();
+  const items = (Array.isArray(raw.items) ? raw.items : []).filter(isItem).filter((item) => {
+    if (seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+  const doneTurns = (Array.isArray(raw.doneTurns) ? raw.doneTurns : [])
+    .filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 200 && !mentionsSecret(id))
+    .slice(-2000);
+  const imports: Record<string, "confirmed" | "rejected"> = {};
+  if (raw.imports && typeof raw.imports === "object") {
+    for (const [key, status] of Object.entries(raw.imports)) {
+      if (!IMPORT_ID.test(key)) continue;
+      if (status === "confirmed" || status === "rejected") imports[key] = status;
+    }
+  }
+  return {
+    revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
+    generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
+    items,
+    doneTurns,
+    imports,
+  };
+}
+
+export function bump(doc: MemoryDoc): MemoryDoc {
+  return { ...doc, generation: doc.generation + 1 };
+}

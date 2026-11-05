@@ -129,7 +129,7 @@ describe("the shared confirm", () => {
   it("App's Delete mono… uses it, not the native sheet", () => {
     const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
     const body = app.slice(app.indexOf("const onDeleteMono = useCallback("), app.indexOf("const onDeleteMonoChat = useCallback("));
-    expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\)\)/);
+    expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\), \{ undoable: true \}\)/);
     expect(body).not.toMatch(/\bask\(/);
   });
 

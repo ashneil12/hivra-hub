@@ -2,11 +2,25 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { useMemo } from "react";
+import { askCrew } from "../../memory/model/crewBrief";
+import type { CuratorAsk } from "../../memory/model/curator";
 import { listCustomModels } from "../../sessions/model/customModels";
+import { importModelAsk } from "../model/askRoute";
 import type { AskResult, ImportStateFile, ListReport, ProposalMeta, SourceId } from "../model/types";
 import { HistoryImportPage, type HistoryPorts, type HistoryRoots, type ModelChoice } from "./HistoryImportPage";
 
 type AskOutcome = { ok: boolean; text: string; kind: string; reason: string };
+
+/** A timeout stays retryable, so the chat is tried again. A refusal is final. */
+function fromCrew(result: CuratorAsk): AskResult {
+  if (result.ok) return { ok: true, text: result.text };
+  if (result.kind === "refused") return { ok: false, kind: "refused", reason: result.reason };
+  return {
+    ok: false,
+    kind: "retryable",
+    reason: result.reason || "The model didn't answer this time. It can be run again.",
+  };
+}
 
 function realPorts(): HistoryPorts {
   return {
@@ -27,27 +41,32 @@ function realPorts(): HistoryPorts {
           applied: false,
         },
       }),
-    ask: async (model: ModelChoice, prompt: string): Promise<AskResult> => {
-      try {
-        const outcome = await invoke<AskOutcome>("history_import_ask", {
-          route: {
-            provider: model.provider,
-            baseUrl: model.baseUrl,
-            modelId: model.modelId,
-            customModelId: model.id,
-          },
-          prompt,
-        });
-        if (outcome.ok && typeof outcome.text === "string") return { ok: true, text: outcome.text };
-        return {
-          ok: false,
-          kind: outcome.kind === "retryable" ? "retryable" : "refused",
-          reason: "The model didn't answer this time. It can be run again.",
-        };
-      } catch {
-        return { ok: false, kind: "retryable", reason: "The model didn't answer this time. It can be run again." };
-      }
-    },
+    // WP-51: a signed-in CLI, unless the person picked a model. A secret never reaches either.
+    ask: (model: ModelChoice | null, prompt: string) =>
+      importModelAsk(model, prompt, {
+        brief: async (text) => fromCrew(await askCrew(text)),
+        keyed: async (chosen, text) => {
+          try {
+            const outcome = await invoke<AskOutcome>("history_import_ask", {
+              route: {
+                provider: chosen.provider,
+                baseUrl: chosen.baseUrl,
+                modelId: chosen.modelId,
+                customModelId: chosen.id,
+              },
+              prompt: text,
+            });
+            if (outcome.ok && typeof outcome.text === "string") return { ok: true, text: outcome.text };
+            return {
+              ok: false,
+              kind: outcome.kind === "retryable" ? "retryable" : "refused",
+              reason: "The model didn't answer this time. It can be run again.",
+            };
+          } catch {
+            return { ok: false, kind: "retryable", reason: "The model didn't answer this time. It can be run again." };
+          }
+        },
+      }),
     models: async () =>
       listCustomModels()
         .filter((model) => typeof model.provider === "string" && typeof model.baseUrl === "string")

@@ -152,5 +152,6 @@ test("light theme: both confirms show Cancel's ring at 3:1 or more and a Delete 
     expect(r.againstGlass).toBeGreaterThanOrEqual(3);
     expect(r.againstGap).toBeGreaterThanOrEqual(3);
   }
-  expect(monoText).toContain("Its current chat will be deleted and its habits stop. Its soul and memory are kept. This can't be undone.");
+  expect(monoText).toContain("Its current chat is stopped and moved to the trash with it, and its habits stop. Its files go to the trash for 30 days, and you can put them back.");
+  expect(monoText).not.toContain("can't be undone");
 });

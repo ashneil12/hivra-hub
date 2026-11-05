@@ -188,6 +188,21 @@ fn store() -> SessionStore {
     SessionStore::open_in_memory().unwrap()
 }
 
+/// Rows still inside the test clock. The real clock would treat a test's `now` of 10 as years ago.
+fn activity_at(store: &SessionStore, now: i64) -> Vec<crate::activity::Entry> {
+    let conn = store.lock_conn().unwrap();
+    crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(50),
+            ..Default::default()
+        },
+        now,
+    )
+    .unwrap()
+    .entries
+}
+
 fn set_mode(store: &SessionStore, project: &Path, mode: Option<Mode>, yolo: bool) {
     let conn = store.lock_conn().unwrap();
     let current = settings::get(&conn, project.to_str().unwrap()).unwrap();
@@ -454,6 +469,71 @@ fn pr_pushes_the_branch_and_opens_a_pull_request_with_the_brief_and_evidence() {
         std::fs::read_to_string(f.project.join("a.txt")).unwrap(),
         "one\n"
     );
+    let rows = activity_at(&s, 10);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.kind == crate::activity::PUSH)
+            .count(),
+        1
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row.kind == crate::activity::PULL_REQUEST)
+            .count(),
+        1
+    );
+    assert!(rows
+        .iter()
+        .all(|row| row.actor == crate::activity::Who::app()));
+    assert!(rows
+        .iter()
+        .all(|row| row.initiator == crate::activity::Who::person()));
+    assert!(rows
+        .iter()
+        .all(|row| !row.summary.contains("Saving drops") && !row.summary.contains("Brief")));
+}
+
+#[test]
+fn a_delegated_push_names_the_worker_and_keeps_the_brief_out() {
+    let f = fixture("worker-pr");
+    let s = store();
+    set_mode(&s, &f.project, Some(Mode::Pr), false);
+    let id = {
+        let mut conn = s.lock_conn().unwrap();
+        task(&mut conn, "lead-1", "r-worker", "worker-9")
+    };
+    commit(&f.copy, "a.txt", "two\n");
+    let gh = FakeGithub::new(vec![]);
+    let planted = "ghp_PLANTED0123456789abcdefghijklmnopqrstu";
+    deliver::deliver(
+        &s,
+        &gh,
+        DeliverInput {
+            project: f.project.to_string_lossy().into(),
+            checkout: f.copy.to_string_lossy().into(),
+            delegation_id: Some(id),
+            brief: Some(format!("Saving drops the last line. {planted}")),
+            ..Default::default()
+        },
+        10,
+    )
+    .unwrap();
+    let rows = activity_at(&s, 10);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(rows
+        .iter()
+        .all(|row| row.actor == crate::activity::Who::worker("worker-9", "")));
+    assert!(rows
+        .iter()
+        .all(|row| row.initiator == crate::activity::Who::person()));
+    let pushed = rows
+        .iter()
+        .find(|row| row.kind == crate::activity::PUSH)
+        .unwrap();
+    assert_eq!(pushed.summary, "Pushed work.");
+    assert!(rows.iter().all(|row| !format!("{row:?}").contains(planted)));
+    assert!(rows.iter().all(|row| !row.summary.contains("Saving drops")));
 }
 
 #[test]
@@ -949,6 +1029,7 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
         gh.ran("pr", "merge").is_empty(),
         "nothing merges without the person's word"
     );
+    assert!(activity_at(&s, 10).is_empty(), "asking is not a merge");
 
     // The person allows h1; a push since (h2) needs their word again.
     merge::approve(&s.lock_conn().unwrap(), "Acme/Web", 7, "h1", "person", 20).unwrap();
@@ -989,6 +1070,26 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
         Some("person (approved this head)")
     );
     assert_eq!(log[2].caller, "agent lead-1");
+
+    let rows = activity_at(&s, 40);
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    let grant = rows
+        .iter()
+        .find(|row| row.kind == crate::activity::PERMISSION_GRANT)
+        .unwrap();
+    assert_eq!(grant.actor, crate::activity::Who::person());
+    assert_eq!(grant.initiator, crate::activity::Who::person());
+    assert!(!grant.summary.contains("h1"), "{}", grant.summary);
+    let merged_row = rows
+        .iter()
+        .find(|row| row.kind == crate::activity::MERGE)
+        .unwrap();
+    assert_eq!(
+        merged_row.actor,
+        crate::activity::Who::first_mate("lead-1", "")
+    );
+    assert_eq!(merged_row.initiator, crate::activity::Who::person());
+    assert_eq!(merged_row.summary, "Merged acme/web#7.");
 }
 
 fn remember_delivery(
@@ -1121,6 +1222,7 @@ fn the_switch_merges_green_without_asking_and_never_red() {
         matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Red is never merged"))
     );
     assert!(red.ran("pr", "merge").is_empty());
+    assert!(activity_at(&s, 10).is_empty(), "a red check merges nothing");
 
     let gh = FakeGithub::new(vec![green("h1")]);
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
@@ -1137,6 +1239,17 @@ fn the_switch_merges_green_without_asking_and_never_red() {
         merge::merge(&s, &gh, again, 30).unwrap(),
         MergeOutcome::NeedsYou { .. }
     ));
+    let rows = activity_at(&s, 30);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::MERGE);
+    assert_eq!(
+        rows[0].actor,
+        crate::activity::Who::first_mate("lead-1", "")
+    );
+    assert_eq!(
+        rows[0].initiator,
+        crate::activity::Who::first_mate("lead-1", "")
+    );
 }
 
 #[test]
@@ -1264,12 +1377,21 @@ fn the_inbox_merge_button_goes_through_the_same_path() {
     let error = merge::by_person(&s, &red, "acme/web", 7, Method::Squash, "Inbox", 10).unwrap_err();
     assert!(error.contains("Red is never merged"), "{error}");
     assert!(red.ran("pr", "merge").is_empty());
+    assert!(
+        activity_at(&s, 10).is_empty(),
+        "a refused tap is not a merge"
+    );
     let gh = FakeGithub::new(vec![green("h1")]);
     merge::by_person(&s, &gh, "acme/web", 7, Method::Squash, "Inbox", 20).unwrap();
     assert!(gh.ran("pr", "merge")[0].contains(&"--squash".to_string()));
     let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
     assert_eq!(log[1].allowed_by.as_deref(), Some("person (Inbox)"));
     assert_eq!(Method::from_action("close"), None);
+    let rows = activity_at(&s, 20);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::MERGE);
+    assert_eq!(rows[0].actor, crate::activity::Who::person());
+    assert_eq!(rows[0].initiator, crate::activity::Who::person());
 }
 
 // ---- teardown ----------------------------------------------------------------------------------------------------------

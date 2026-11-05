@@ -60,6 +60,15 @@ impl Host {
     }
 }
 
+/// The app database beside the plugin folder (`<data>/plugins` → `<data>/monocode.db`).
+/// Missing is fine: the activity note does not create it.
+pub(crate) fn activity_db(host: &Host) -> PathBuf {
+    match host.root.parent() {
+        Some(data) => data.join("monocode.db"),
+        None => PathBuf::new(),
+    }
+}
+
 /// Where a plugin came from: a local folder (WP-30), or a git commit or npm version (WP-31, source.rs).
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -465,7 +474,23 @@ pub fn install_local(host: &Host, source_dir: &Path, source: Source) -> Result<O
         let _ = fsutil::remove_tree(&staging);
         return Err(why);
     }
-    install_staged(host, &staging, source)
+    match install_staged(host, &staging, source) {
+        Ok(outcome) => {
+            // WP-78: the files are in place. The person asked; the app put them there.
+            crate::activity::note_db(
+                &activity_db(host),
+                crate::activity::PLUGIN_INSTALL,
+                &crate::activity::Who::app(),
+                &crate::activity::Who::person(),
+                "",
+                &name,
+                &format!("Installed {name}."),
+                "",
+            );
+            Ok(outcome)
+        }
+        Err(why) => Err(why),
+    }
 }
 
 /// Move a staged copy (already validated, inside the plugin folder) into place and register it, switched off. The
@@ -814,6 +839,17 @@ pub fn uninstall(host: &Host, name: &str) -> Result<Outcome, String> {
     }
     if failures.is_empty() {
         write(host, &mut registry)?;
+        // WP-78: only when everything came out. A leftover keeps the plugin listed and writes nothing.
+        crate::activity::note_db(
+            &activity_db(host),
+            crate::activity::PLUGIN_REMOVE,
+            &crate::activity::Who::app(),
+            &crate::activity::Who::person(),
+            "",
+            name,
+            &format!("Removed {name}."),
+            "",
+        );
         return Ok(Outcome {
             entry: None,
             reports: Vec::new(),

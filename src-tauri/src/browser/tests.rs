@@ -1181,3 +1181,69 @@ fn wiring_passes_the_agent_and_leaves_the_browser_out_without_one() {
     assert_eq!(code, 78);
     assert_eq!(fs::read_to_string(keep).unwrap(), "stay");
 }
+
+#[test]
+fn a_recorded_drive_starts_once_and_stops_once() {
+    let tmp = Tmp::new();
+    let db = tmp.data().join("monocode.db");
+    drop(crate::session_store::SessionStore::open(db.clone()).unwrap());
+    let drive = StoredDrive {
+        id: uuid::Uuid::new_v4().to_string(),
+        agent_id: "lead-1".into(),
+        name: "Ada".into(),
+        pid: 0,
+        token: format!("hivra-{}", uuid::Uuid::new_v4()),
+        visible: false,
+        started_at_ms: 1,
+        process_start: String::new(),
+        done_path: String::new(),
+    };
+    let path = record_drive(tmp.data(), &drive).unwrap();
+    assert!(
+        record_drive(tmp.data(), &drive).is_err(),
+        "a second record is not a second start"
+    );
+    finish_gone(tmp.data(), &path, &drive).unwrap();
+    finish_gone(tmp.data(), &path, &drive).unwrap();
+    let empty = StoredDrive {
+        id: uuid::Uuid::new_v4().to_string(),
+        agent_id: "  ".into(),
+        name: String::new(),
+        pid: 0,
+        token: format!("hivra-{}", uuid::Uuid::new_v4()),
+        visible: false,
+        started_at_ms: 1,
+        process_start: String::new(),
+        done_path: String::new(),
+    };
+    record_drive(tmp.data(), &empty).unwrap();
+    let store = crate::session_store::SessionStore::open(db).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let rows = crate::activity::list(
+        &conn,
+        &crate::activity::ListQuery {
+            limit: Some(20),
+            ..Default::default()
+        },
+        crate::session_store::now_millis(),
+    )
+    .unwrap()
+    .entries;
+    assert_eq!(rows.len(), 3, "{rows:?}");
+    assert_eq!(rows[0].kind, crate::activity::BROWSER_START);
+    assert_eq!(rows[0].actor, crate::activity::Who::app());
+    assert_eq!(rows[0].link, "");
+    assert_eq!(rows[1].kind, crate::activity::BROWSER_STOP);
+    assert_eq!(
+        rows[1].actor,
+        crate::activity::Who::first_mate("lead-1", "Ada")
+    );
+    assert_eq!(rows[1].initiator, rows[1].actor);
+    assert_eq!(rows[1].link, "session:lead-1");
+    assert_eq!(rows[1].target, drive.id);
+    assert_eq!(rows[2].kind, crate::activity::BROWSER_START);
+    assert_eq!(rows[2].summary, "Started a browser.");
+    let shown = format!("{rows:?}");
+    assert!(!shown.contains(&drive.token), "{shown}");
+    assert!(!shown.contains(&empty.token), "{shown}");
+}

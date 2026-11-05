@@ -12,3 +12,25 @@ it("feeds only an idle long-chat Mono's own chat, once per new last block", () =
   expect(treeFeeds([chat("hivra-chat", "b2", true)], fed, monoOf)).toEqual([]);
   expect(treeFeeds([chat("hivra-chat", "b2")], fed, monoOf).length).toBe(1);
 });
+
+it("feeds a first mate past the size, and not a short chat or a room", () => {
+  const fed = new Map<string, string | undefined>();
+  const big = "x".repeat(16_000);
+  const monoOf = (id: string) => {
+    if (id === "own" || id === "tiny") return { id: "notes-lead", sessionId: id };
+    if (id === "room") return { id: "notes-lead", sessionId: "other" };
+    return undefined;
+  };
+  const leadOf = (id: string) => (id === "team" ? "proj-lead" : undefined);
+  const chat = (id: string, text: string) => ({ id, busy: false, blocks: [{ id: "b", role: "user" as const, text }] });
+  const feeds = treeFeeds(
+    [chat("own", big), chat("tiny", "hi"), chat("room", big), chat("team", big), chat("other", big)],
+    fed,
+    monoOf,
+    leadOf,
+  );
+  expect(feeds.map((feed) => [feed.monoId, feed.evenWithoutSetting, feed.session.id])).toEqual([
+    ["notes-lead", true, "own"],
+    ["proj-lead", true, "team"],
+  ]);
+});

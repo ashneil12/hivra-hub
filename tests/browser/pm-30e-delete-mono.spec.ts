@@ -5,7 +5,7 @@ import { openLocalHub } from "./localHub";
 import { ringContrast } from "./contrastProbe";
 
 // Round 30e proof (the real app in a browser, not Ash's Mac; made-up data labelled Example:): "Delete mono…" asks in
-// the shared confirm, not the native sheet: "Delete “Example: Pip”?", what else goes, "This can't be undone.", Cancel
+// the shared confirm, not the native sheet: "Delete “Example: Pip”?", what else goes and how to put it back (WP-76's trash), Cancel
 // focused with its ring showing, a red Delete, a darker overlay behind. Cancel keeps the Mono.
 //   PM_PROOF_SPEC=pm-30e-delete-mono.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs/on-r47 npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -39,7 +39,9 @@ test("Delete mono… asks in the shared confirm; Cancel keeps the Mono", async (
   await page.getByRole("menuitem", { name: "Delete mono…" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("Delete “Example: Pip”?");
-  await expect(dialog).toContainText("Its current chat will be deleted and its habits stop. Its soul and memory are kept. This can't be undone.");
+  await expect(dialog).toContainText("Its current chat is stopped and moved to the trash with it, and its habits stop. Its files go to the trash for 30 days, and you can put them back.");
+  // WP-76: the Mono goes to the trash, so the confirm doesn't also say it can't be undone.
+  await expect(dialog).not.toContainText("can't be undone");
   const cancel = dialog.getByRole("button", { name: "Cancel" });
   await expect(cancel).toBeFocused();
   expect(await cancel.evaluate((el) => getComputedStyle(el).boxShadow)).not.toBe("none");
