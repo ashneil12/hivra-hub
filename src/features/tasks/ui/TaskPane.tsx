@@ -1,11 +1,12 @@
 // WP-70: the tasks of this project, under the crew. A failed load keeps the last list.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { hubData } from "../../hub/model/hubData";
 import { nextDetail, nextTasks } from "../model/keep";
 import { taskProjectKeys } from "../model/projects";
+import { peekTaskFocus, subscribeTaskFocus } from "../../search/model/finderOpen";
 import { TaskDetail, type TaskDetailTask } from "./TaskDetail";
 
 type StoreTask = TaskDetailTask & {
@@ -33,6 +34,8 @@ export function TaskPane({ project }: { project: string }) {
   const [note, setNote] = useState<string | null>(null);
   const generation = useRef(0);
   const detailGeneration = useRef(0);
+  const seenFocus = useRef(0);
+  const focus = useSyncExternalStore(subscribeTaskFocus, peekTaskFocus, () => null);
   const tasksRef = useRef(tasks);
   const openRef = useRef(open);
   tasksRef.current = tasks;
@@ -83,6 +86,13 @@ export function TaskPane({ project }: { project: string }) {
       if (gen === detailGeneration.current) setNote("Couldn't load tasks. Trying again.");
     }
   }, []);
+
+  // WP-74: the finder asks for a task. A request made before this pane was mounted still opens.
+  useEffect(() => {
+    if (!focus || focus.token === seenFocus.current) return;
+    seenFocus.current = focus.token;
+    void refreshOpen(focus.id, focus.project);
+  }, [focus, refreshOpen]);
 
   useEffect(() => {
     void load();

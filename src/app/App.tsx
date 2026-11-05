@@ -125,7 +125,7 @@ import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
 import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
-import { OPEN_CREW } from "../features/crew/model/focus";
+import { OPEN_CREW, openCrew } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
 import type { WakeQueue } from "../features/firstmate/watcher/wakeQueue";
@@ -307,7 +307,7 @@ import {
   type MonoActivitySelection,
 } from "../features/monos/model/monoActivity";
 import { MenuBar } from "./shell/MenuBar";
-import { FilePicker } from "../features/files/ui/FilePicker";
+import { FinderHost } from "../features/search/ui/FinderHost";
 import {
   DeleteSessionDialog,
   type SessionDeleteChoice,
@@ -981,6 +981,9 @@ import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock
 import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
+import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
+import { requestDocFocus, requestTaskFocus } from "../features/search/model/finderOpen";
+import { openDocsMode } from "../features/docs/docsMode";
 import type { SettingsAnchor } from "../features/settings/ui/SettingsView";
 import {
   OPEN_CONNECTIONS_EVENT,
@@ -1856,6 +1859,8 @@ function Workspace({
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePickerInitialQuery, setFilePickerInitialQuery] = useState("");
   const [filePickerResetToken, setFilePickerResetToken] = useState(0);
+  // WP-74: ⌘K and ⌘⇧P use the finder. ⌘P stays go to file.
+  const [finderMode, setFinderMode] = useState(false);
   const [dirtyFiles, setDirtyFiles] = useState<Set<string>>(
     () => new Set(windowTransfer?.dirtyFileIds ?? []),
   );
@@ -14626,6 +14631,7 @@ function Workspace({
     setInboxViewOpen(false);
     setNotesViewOpen(false);
     setAutomationsViewOpen(false);
+    setFinderMode(false);
     setFilePickerInitialQuery("");
     setFilePickerResetToken((token) => token + 1);
     setFilePickerOpen(true);
@@ -14635,7 +14641,19 @@ function Workspace({
     setInboxViewOpen(false);
     setNotesViewOpen(false);
     setAutomationsViewOpen(false);
+    setFinderMode(true);
     setFilePickerInitialQuery(">");
+    setFilePickerResetToken((token) => token + 1);
+    setFilePickerOpen(true);
+  }, []);
+  // WP-74: ⌘K opens the same palette, ready to search every kind.
+  const onOpenFinder = useCallback(() => {
+    setSearchViewOpen(false);
+    setInboxViewOpen(false);
+    setNotesViewOpen(false);
+    setAutomationsViewOpen(false);
+    setFinderMode(true);
+    setFilePickerInitialQuery("");
     setFilePickerResetToken((token) => token + 1);
     setFilePickerOpen(true);
   }, []);
@@ -15423,6 +15441,7 @@ function Workspace({
     onReload,
     onFindInProject,
     onOpenSearch,
+    onOpenFinder,
     onOpenInbox,
     onOpenNotes,
     pickProject,
@@ -15455,6 +15474,7 @@ function Workspace({
     onReload,
     onFindInProject,
     onOpenSearch,
+    onOpenFinder,
     onOpenInbox,
     onOpenNotes,
     pickProject,
@@ -15656,12 +15676,14 @@ function Workspace({
       }
       const shortcut = resolveAppShortcut(e);
       if (shortcut) {
+        // WP-74: ⌘K opens the finder. Ctrl+K in the terminal stays with the terminal.
         if (
-          shortcut === "App: Search" &&
-          e.target instanceof Element &&
-          e.target.closest(".monocode-terminal") &&
-          e.ctrlKey &&
-          !e.metaKey
+          finderShortcutAction(
+            shortcut,
+            e.target instanceof Element && !!e.target.closest(".monocode-terminal"),
+            e.ctrlKey,
+            e.metaKey,
+          ) === "leave"
         ) {
           return;
         }
@@ -15683,7 +15705,7 @@ function Workspace({
         else if (shortcut === "App: Command Palette")
           run("open_command_palette", a.onOpenCommandPalette);
         else if (shortcut === "View: Reload") run("reload", a.onReload);
-        else if (shortcut === "App: Search") run("open_search", a.onOpenSearch);
+        else if (shortcut === "App: Search") run("open_finder", a.onOpenFinder);
         else if (shortcut === "App: Settings")
           run("open_settings", () => a.openSettings());
         else if (shortcut === "App: Find in Files")
@@ -17531,17 +17553,65 @@ function Workspace({
           </div>
 
           {filePickerOpen ? (
-            <FilePicker
+            <FinderHost
               key={filePickerResetToken}
+              finder={finderMode}
               open
               cwd={filesCwd}
               openPaths={openFilePaths}
               initialQuery={filePickerInitialQuery}
+              history={history}
+              sessions={sessions.filter((session) => !session.inboxAsk)}
+              recents={recents}
               onOpenFile={onOpenFile}
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
               }}
               onClose={() => setFilePickerOpen(false)}
+              onOpenHit={(hit, beside, query) => {
+                setFilePickerOpen(false);
+                // WP-74: each kind opens in the screen that already owns it.
+                routeFinderHit(hit, beside, query, {
+                  openTask: (id, project) => {
+                    requestTaskFocus(id, project);
+                    openCrew();
+                    setSearchViewOpen(false);
+                    setInboxViewOpen(false);
+                    setNotesViewOpen(false);
+                  },
+                  openDoc: (id, blockId) => {
+                    openDocsMode();
+                    setNotesViewOpen(true);
+                    setSearchViewOpen(false);
+                    setInboxViewOpen(false);
+                    setAutomationsViewOpen(false);
+                    requestDocFocus(id, blockId);
+                  },
+                  openMessage: (sessionId, blockId, q) => {
+                    requestTranscriptJump(sessionId, blockId, q);
+                    void onSelectHistorySession(sessionId);
+                  },
+                  openConversation: (sessionId) => {
+                    void onSelectHistorySession(sessionId);
+                  },
+                  openMono: (id) => {
+                    void onOpenMono(id);
+                  },
+                  openFile: (path, line, column, pin) => {
+                    onOpenFile(
+                      path,
+                      line != null ? { line, column } : undefined,
+                      { exact: true, pin },
+                    );
+                  },
+                  openProject: (path) => {
+                    onSelectProject(path);
+                  },
+                  runCommand: (id) => {
+                    if (id === "reload") actions.current.onReload();
+                  },
+                });
+              }}
             />
           ) : null}
 

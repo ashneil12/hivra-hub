@@ -22,6 +22,8 @@ import {
   looksLikeProject,
 } from "../../projects/model/recents";
 import type { OpenFileFn } from "../../search/model/search";
+import { finderKeyAction, type FinderHit, type FinderScope } from "../../search/model/finder";
+import { FinderList } from "../../search/ui/FinderList";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { MatchText } from "../../../shared/ui/MatchText";
@@ -41,6 +43,14 @@ const ACTIONS: Action[] = [
   { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
 ];
 
+type FinderPalette = {
+  hits: readonly FinderHit[];
+  scope: FinderScope;
+  onQuery: (query: string) => void;
+  onToggleScope: () => void;
+  onOpen: (hit: FinderHit, beside: boolean) => void;
+};
+
 type Props = {
   open: boolean;
   cwd: string;
@@ -49,6 +59,8 @@ type Props = {
   onOpenFile: OpenFileFn;
   onRunAction: (id: string) => void;
   onClose: () => void;
+  /** WP-74: set when this palette is the finder. Off for go to file. */
+  finder?: FinderPalette;
 };
 
 export function FilePicker({
@@ -59,11 +71,14 @@ export function FilePicker({
   onOpenFile,
   onRunAction,
   onClose,
+  finder,
 }: Props) {
   const peekFiles = () => peekProjectFiles(cwd);
   const search = useRef<HTMLInputElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+  const onFinderQuery = useRef(finder?.onQuery);
+  onFinderQuery.current = finder?.onQuery;
   const [query, setQuery] = useState(initialQuery);
   const [active, setActive] = useState(0);
   const [files, setFiles] = useState(() => peekFiles() ?? []);
@@ -101,11 +116,17 @@ export function FilePicker({
       return hit ? [{ ...action, ...hit }] : [];
     }).sort((a, b) => b.score - a.score);
   }, [actionQuery, paletteMode]);
-  const optionCount = paletteMode ? actionResults.length : results.length;
+  const showingFinder = finder != null && !paletteMode;
+  const optionCount = paletteMode
+    ? actionResults.length
+    : showingFinder
+      ? finder.hits.length
+      : results.length;
 
   useEffect(() => {
     if (!open) return;
     setQuery(initialQuery);
+    onFinderQuery.current?.(initialQuery);
     setActive(0);
     setError(null);
     const searchable = looksLikeProject(cwd);
@@ -174,6 +195,31 @@ export function FilePicker({
   };
 
   const onSearchKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (showingFinder && finder) {
+      const action = finderKeyAction({
+        key: e.key,
+        metaKey: e.metaKey,
+        ctrlKey: e.ctrlKey,
+        altKey: e.altKey,
+      });
+      if (action?.type === "move") {
+        e.preventDefault();
+        if (optionCount === 0) return;
+        setActive((index) => (index + action.delta + optionCount) % optionCount);
+        return;
+      }
+      if (action?.type === "open") {
+        e.preventDefault();
+        const hit = finder.hits[active];
+        if (hit) finder.onOpen(hit, action.beside);
+        return;
+      }
+      if (action?.type === "scope") {
+        e.preventDefault();
+        finder.onToggleScope();
+        return;
+      }
+    }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (optionCount === 0) return;
@@ -200,7 +246,9 @@ export function FilePicker({
     if (e.key === "Tab") e.preventDefault();
   };
 
-  const empty = emptyLabel({
+  const empty = showingFinder
+    ? finderEmpty(query, finder.hits.length)
+    : emptyLabel({
     cwd,
     query,
     loading,
@@ -210,14 +258,16 @@ export function FilePicker({
     paletteMode,
     actionCount: actionResults.length,
   });
+  const finderLabel = showingFinder ? "Finder" : paletteMode ? "Command Palette" : "Go to File";
 
   return createPortal(
     <div className="fixed inset-0" style={{ zIndex: LAYER.dialog }}>
       <div className="absolute inset-0" onMouseDown={onClose} />
       <div
         role="dialog"
-        aria-label={paletteMode ? "Command Palette" : "Go to File"}
+        aria-label={finderLabel}
         data-file-picker
+        {...(finder ? { "data-finder": "" } : {})}
         onMouseDown={(e) => e.stopPropagation()}
         className="absolute left-1/2 top-[12%] flex w-[min(560px,calc(100vw-24px))] -translate-x-1/2 flex-col overflow-hidden rounded-lg border border-content/10 bg-content/5 backdrop-blur-xl"
       >
@@ -228,8 +278,8 @@ export function FilePicker({
               ref={search}
               type="text"
               value={query}
-              placeholder="Go to File (type > for commands)"
-              aria-label={paletteMode ? "Command Palette" : "Go to File"}
+              placeholder={showingFinder ? "Search Hivra" : "Go to File (type > for commands)"}
+              aria-label={finderLabel}
               spellCheck={false}
               autoComplete="off"
               autoCorrect="off"
@@ -238,11 +288,17 @@ export function FilePicker({
               onChange={(e) => {
                 setQuery(e.target.value);
                 setActive(0);
+                onFinderQuery.current?.(e.target.value);
               }}
               onKeyDown={onSearchKey}
             />
           </label>
         </div>
+        {showingFinder && finder ? (
+          <p data-finder-scope className="px-3 pb-1 text-[11px] text-content/50">
+            {finder.scope === "project" ? "This project" : "All projects"}
+          </p>
+        ) : null}
         {empty ? (
           <p className="px-3 pb-3 pt-1 text-[12px] text-content/50">{empty}</p>
         ) : paletteMode ? (
@@ -252,6 +308,13 @@ export function FilePicker({
             query={actionQuery}
             onActive={setActive}
             onRun={runAction}
+          />
+        ) : showingFinder && finder ? (
+          <FinderList
+            hits={finder.hits}
+            active={active}
+            onActive={setActive}
+            onOpen={finder.onOpen}
           />
         ) : (
           <FileList
@@ -266,6 +329,12 @@ export function FilePicker({
     </div>,
     document.body,
   );
+}
+
+function finderEmpty(query: string, count: number): string | null {
+  if (!query.trim()) return "Type to search";
+  if (count === 0) return "Nothing matches";
+  return null;
 }
 
 function emptyLabel({
