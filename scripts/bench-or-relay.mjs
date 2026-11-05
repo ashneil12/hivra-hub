@@ -255,8 +255,3 @@ export async function startOpenRouterRelay({ readKey = keychainOpenRouterKey, up
 
   return { host: "127.0.0.1", port, url: `http://127.0.0.1:${port}`, token: runToken, server, close };
 }
-
-/** True when this process was handed a relay to talk to (the launcher's own condition, both halves set). */
-export function hasRelay(env = process.env) {
-  return !!String(env[RELAY_URL_ENV] ?? "").trim() && !!String(env[RELAY_TOKEN_ENV] ?? "").trim();
-}

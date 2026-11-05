@@ -381,7 +381,7 @@ test("an OpenRouter run's profile opens the relay port only, grants the launcher
   // The ports the other bridges leave open for the local gateway are shut for this run.
   assert.equal(launch.profile.includes(":8317"), false);
   assert.equal(launch.profile.includes(":8318"), false);
-  assert.equal(namedLoopbackPorts(env, { observe: false }).map((item) => item.port), [relayPort]);
+  assert.deepEqual(namedLoopbackPorts(env, { observe: false }).map((item) => item.port), [relayPort]);
 
   // The launcher file, and nothing of the gateway's beside it.
   const readOnly = cliReadOnlyPaths({ realHome: REAL, cli: launcher, devConfig });

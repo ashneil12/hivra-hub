@@ -141,7 +141,8 @@ test("a read under a closed tree is dropped, and haiku does not get the gateway 
   assert.equal(isCliReadPath(`${REAL}/.local/bin/claude-deepseek`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-openrouter` }), false);
   // The gateway's own launchers keep their files.
   assert.equal(isCliReadPath(`${REAL}/.local/share/claude-gpt/proxy-key`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-grok` }), true);
-  const openrouterProfile = benchSandboxProfile({ realHome: REAL, home: HOME, project: PROJECT, readOnly: openrouter });
+  // As `agentCommand` builds it, with `cli` named: that is what tells the profile these reads belong to this launcher.
+  const openrouterProfile = benchSandboxProfile({ realHome: REAL, home: HOME, project: PROJECT, readOnly: openrouter, cli: `${REAL}/.local/bin/claude-openrouter` });
   assert.ok(openrouterProfile.includes(`${REAL}/.local/bin/claude-openrouter`));
   assert.equal(openrouterProfile.includes("claude-gpt"), false);
   const haikuProfile = benchSandboxProfile({ realHome: REAL, home: HOME, project: PROJECT, readOnly: haiku });
