@@ -80,6 +80,37 @@ export function recordMonoSpawnedSession(
   return { ...mono, blocks };
 }
 
+/**
+ * A card already in the chat for a worker that was waiting. Undefined means leave
+ * it. A start that names no source does not rewrite a card that named none.
+ */
+export function waitingCardAfterStart(
+  card: MonoSpawnedSession,
+  start: Pick<MonoSpawnedSession, "model" | "harness" | "effort" | "from">,
+): MonoSpawnedSession | undefined {
+  const named = !!(card.from || card.effort);
+  const startNames = !!(start.from || start.effort);
+  // A start that names no source does not rewrite a card that named none.
+  if (!named && !startNames) return undefined;
+  const next: MonoSpawnedSession = {
+    ...card,
+    model: start.model.trim() || card.model,
+    harness: start.harness,
+  };
+  if (start.effort) next.effort = start.effort;
+  else delete next.effort;
+  if (start.from) next.from = start.from;
+  else delete next.from;
+  if (
+    next.model === card.model &&
+    next.harness === card.harness &&
+    next.effort === card.effort &&
+    next.from === card.from
+  )
+    return undefined;
+  return next;
+}
+
 type SessionReceipt = {
   launches: MonoSpawnedSession[];
   listed: MonoSpawnedSession[];
