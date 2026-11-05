@@ -6,7 +6,22 @@ import "../../src/styles/index.css";
 // r94 (item 3, s15 SCRIPTED 8c60): the worker card as DelegationBatchRow lays it out under a Lead's reply (card, then
 // "Stalled" and "Stop" beside it), at the chat width the URL asks for.
 const width = Number(new URLSearchParams(location.search).get("w") ?? "640");
-const launch = { sessionId: "w1", cwd: "/repo/tally", title: new URLSearchParams(location.search).get("t") ?? "Show tally count on the board", harness: "claude" as const, model: "claude:sonnet-5", effort: "High" };
+// `f=1`: the Mono asked for Codex, which isn't installed here, so the card says what the worker runs on instead.
+const fellBack = new URLSearchParams(location.search).get("f") === "1";
+const launch = {
+  sessionId: "w1",
+  cwd: "/repo/tally",
+  title: new URLSearchParams(location.search).get("t") ?? "Show tally count on the board",
+  harness: "claude" as const,
+  model: "claude:sonnet-5",
+  effort: "High",
+  ...(fellBack
+    ? {
+        from: "set for this Mono",
+        cliFallback: "Codex isn't installed here, so this worker runs on Claude Code.",
+      }
+    : {}),
+};
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
