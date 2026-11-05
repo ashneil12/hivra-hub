@@ -197,6 +197,8 @@ import {
   type InboxReplyTarget,
 } from "./InboxComments";
 import { InboxPrDiff } from "./InboxPrDiff";
+import { PrAttribution } from "../../attribution/ui/PrAttribution";
+import { usePrAttribution } from "../../attribution/ui/usePrAttribution";
 import {
   InboxDescriptionSummary,
   InboxPrChangesGlance,
@@ -2156,6 +2158,8 @@ export function InboxDetail({
   const [startProject, setStartProject] = useState(defaultProject);
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  // WP-86: the agents and tasks behind this pull request. Not only the side panel.
+  const prCredit = usePrAttribution(item.projectPath || cwd, isPr ? thread : null);
   const chooseStartProject =
     tracker || ((gitlab || azuredevops) && !item.projectPath);
   const status = tracker
@@ -3067,6 +3071,7 @@ export function InboxDetail({
                     }}
                   />
                 ) : null}
+                {isPr ? <PrAttribution credit={prCredit} /> : null}
                 <InboxComments
                   thread={thread}
                   loading={threadLoading}
