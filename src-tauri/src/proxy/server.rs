@@ -30,8 +30,31 @@ pub const HEALTH_PATH: &str = "/.hivra/health";
 pub const DEFAULT_PROXY_PORT: u16 = 7400;
 
 const MAX_HEAD: usize = 64 * 1024;
+/// Reading the request line and headers only.
 const CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+/// After the head: a WebSocket, an SSE body or a long poll may send nothing for much longer
+/// than half a minute and still be alive. This is a backstop for a peer that vanished without
+/// closing, not an idle timeout.
+const STREAM_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the proxy waits on a socket. Reading the request head is the only part with a
+/// short limit; once a request is routed a quiet socket is normal (a Vite HMR WebSocket, an
+/// SSE body), so the stream limit is a backstop for a peer that vanished, not an idle timeout.
+#[derive(Clone, Copy, Debug)]
+struct Timeouts {
+    head: Duration,
+    stream: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            head: CLIENT_TIMEOUT,
+            stream: STREAM_TIMEOUT,
+        }
+    }
+}
 
 pub struct BoundProxy {
     pub port: u16,
@@ -48,6 +71,15 @@ impl BoundProxy {
 
 /// Start a proxy on `port`, loopback only. The listener threads live for the process.
 pub fn start(store: Arc<RouteStore>, port: u16, log_path: PathBuf) -> Result<BoundProxy, String> {
+    start_with(store, port, log_path, Timeouts::default())
+}
+
+fn start_with(
+    store: Arc<RouteStore>,
+    port: u16,
+    log_path: PathBuf,
+    timeouts: Timeouts,
+) -> Result<BoundProxy, String> {
     let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
         .map_err(|error| format!("The proxy can't listen on 127.0.0.1:{port}: {error}"))?;
     let v4_addr = v4.local_addr().map_err(|error| error.to_string())?;
@@ -56,9 +88,9 @@ pub fn start(store: Arc<RouteStore>, port: u16, log_path: PathBuf) -> Result<Bou
     // ::1 may be absent on a machine without IPv6. The v4 listener still serves every name.
     let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, actual)).ok();
     let v6_addr = v6.as_ref().and_then(|listener| listener.local_addr().ok());
-    spawn_accept(v4, store.clone(), log_path.clone());
+    spawn_accept(v4, store.clone(), log_path.clone(), timeouts);
     if let Some(v6) = v6 {
-        spawn_accept(v6, store, log_path);
+        spawn_accept(v6, store, log_path, timeouts);
     }
     Ok(BoundProxy {
         port: actual,
@@ -164,7 +196,12 @@ fn daily_proxy_port(dev_data_dir: &Path) -> Option<u16> {
     text.trim().parse::<u16>().ok().filter(|port| *port != 0)
 }
 
-fn spawn_accept(listener: TcpListener, store: Arc<RouteStore>, log_path: PathBuf) {
+fn spawn_accept(
+    listener: TcpListener,
+    store: Arc<RouteStore>,
+    log_path: PathBuf,
+    timeouts: Timeouts,
+) {
     let _ = std::thread::Builder::new()
         .name("hivra-proxy".into())
         .spawn(move || {
@@ -174,7 +211,7 @@ fn spawn_accept(listener: TcpListener, store: Arc<RouteStore>, log_path: PathBuf
                 let log_path = log_path.clone();
                 let _ = std::thread::Builder::new()
                     .name("hivra-proxy-request".into())
-                    .spawn(move || serve(stream, &store, &log_path));
+                    .spawn(move || serve(stream, &store, &log_path, timeouts));
             }
         });
 }
@@ -208,13 +245,13 @@ impl RequestHead {
     }
 }
 
-fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path) {
+fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path, timeouts: Timeouts) {
     if !client.peer_addr().is_ok_and(|peer| peer.ip().is_loopback()) {
         return;
     }
     let started = Instant::now();
-    let _ = client.set_read_timeout(Some(CLIENT_TIMEOUT));
-    let _ = client.set_write_timeout(Some(CLIENT_TIMEOUT));
+    let _ = client.set_read_timeout(Some(timeouts.head));
+    let _ = client.set_write_timeout(Some(timeouts.head));
     let peer = client.peer_addr().ok();
     let mut reader = BufReader::new(match client.try_clone() {
         Ok(clone) => clone,
@@ -228,6 +265,10 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path) {
             return;
         }
     };
+
+    // The head is in. Everything after it may be quiet for a long time without being dead.
+    let _ = client.set_read_timeout(Some(timeouts.stream));
+    let _ = client.set_write_timeout(Some(timeouts.stream));
 
     // A health check is the only request answered without a name. It is loopback-only.
     if head.target == HEALTH_PATH && head.method == "GET" {
@@ -273,8 +314,8 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path) {
             return;
         }
     };
-    let _ = upstream.set_read_timeout(Some(CLIENT_TIMEOUT));
-    let _ = upstream.set_write_timeout(Some(CLIENT_TIMEOUT));
+    let _ = upstream.set_read_timeout(Some(timeouts.stream));
+    let _ = upstream.set_write_timeout(Some(timeouts.stream));
 
     if head.is_upgrade() {
         // Forward the handshake unchanged, then let the two sockets talk directly.
@@ -851,6 +892,123 @@ mod tests {
         stream.write_all(b"ping").unwrap();
         let read = stream.read(&mut buffer).unwrap();
         assert_eq!(&buffer[..read], b"ping");
+    }
+
+    fn proxy_with_timeouts(
+        names: &[(&str, u16)],
+        tag: &str,
+        timeouts: Timeouts,
+    ) -> (Guard, BoundProxy) {
+        let dir = Guard::new(tag);
+        let store = Arc::new(RouteStore::new(dir.path()));
+        for (name, port) in names {
+            store
+                .add_route(name, *port, std::process::id(), false)
+                .unwrap();
+        }
+        let bound = start_with(store, 0, dir.path().join("proxy.log"), timeouts).unwrap();
+        (dir, bound)
+    }
+
+    /// A backend that reads one request head, stays quiet longer than the head timeout, and
+    /// only then answers. An app thinking for a moment is not an app that has gone.
+    fn sleepy_backend(delay: Duration) -> u16 {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            std::thread::sleep(delay);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello",
+            );
+        });
+        port
+    }
+
+    fn short_head() -> Timeouts {
+        Timeouts {
+            head: Duration::from_millis(150),
+            stream: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn a_slow_response_body_is_not_cut_by_the_head_timeout() {
+        let port = sleepy_backend(Duration::from_millis(500));
+        let (dir, bound) = proxy_with_timeouts(&[("shop-slow.localhost", port)], "slow", short_head());
+        let reply = request(&bound, &get("shop-slow.localhost"));
+        assert!(reply.ends_with("hello"), "the body was cut: {reply:?}");
+        drop(dir);
+    }
+
+    #[test]
+    fn an_idle_websocket_is_not_cut_by_the_head_timeout() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+            }
+            if stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+                )
+                .is_err()
+            {
+                return;
+            }
+            let mut buffer = [0u8; 16];
+            loop {
+                match reader.read(&mut buffer) {
+                    Ok(0) | Err(_) => return,
+                    Ok(read) => {
+                        if stream.write_all(&buffer[..read]).is_err() {
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+        let (dir, bound) = proxy_with_timeouts(
+            &[("shop-idle.localhost", port)],
+            "ws-idle",
+            short_head(),
+        );
+        let mut stream = TcpStream::connect_timeout(&bound.v4, Duration::from_secs(2)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        stream
+            .write_all(
+                b"GET /socket HTTP/1.1\r\nHost: shop-idle.localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n",
+            )
+            .unwrap();
+        let mut buffer = [0u8; 512];
+        let read = stream.read(&mut buffer).unwrap();
+        let text = String::from_utf8_lossy(&buffer[..read]);
+        assert!(text.contains("101 Switching Protocols"), "{text}");
+        // Quiet for longer than the head timeout: a live socket may send nothing for minutes.
+        std::thread::sleep(Duration::from_millis(500));
+        stream.write_all(b"ping").unwrap();
+        let read = stream.read(&mut buffer).expect("the idle socket was closed");
+        assert_eq!(&buffer[..read], b"ping");
+        drop(dir);
     }
 
     #[test]
