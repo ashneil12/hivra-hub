@@ -46,18 +46,20 @@ pub(crate) fn read_with_retry<T>(mut read: impl FnMut() -> Result<T, String>) ->
     }
 }
 
-pub fn lines_before_run(workdir: &Path) -> Result<HashSet<String>, String> {
-    read_with_retry(|| dirty_hashes(workdir).map(|lines| lines.hashes))
+pub fn lines_before_run(workdir: &Path) -> Result<git::DirtyLines, String> {
+    // A truncated read is `Ok`. Retrying it would not see the lines the cap
+    // dropped, and treating it as a failure would throw away the lines already stored.
+    read_with_retry(|| dirty_hashes(workdir))
 }
 
 /// The before-run snapshot, started off the caller's thread. `wait` is the only
 /// place that blocks, and only the crew's exit path calls it.
 pub struct BeforeRun {
-    rx: std::sync::mpsc::Receiver<Option<HashSet<String>>>,
+    rx: std::sync::mpsc::Receiver<Option<git::DirtyLines>>,
 }
 
 impl BeforeRun {
-    pub fn wait(self) -> Option<HashSet<String>> {
+    pub fn wait(self) -> Option<git::DirtyLines> {
         self.rx.recv().ok().flatten()
     }
 }
@@ -86,6 +88,10 @@ fn journal_pause() -> Duration {
 }
 
 /// Start the snapshot and return at once. A turn must not wait on git.
+///
+/// The read runs after this returns. A line written before that read finishes
+/// is already in the tree, so it counts as pre-existing and is not journaled.
+/// That under-credits the run. It does not credit a line the crew did not write.
 pub fn start_before_run(workdir: &Path) -> BeforeRun {
     let workdir = workdir.to_path_buf();
     let pause = journal_pause();
@@ -253,30 +259,50 @@ pub fn task_id_for_session(
     Ok(lookup_task(&conn, session_id)?.map(|task| task.id))
 }
 
-/// Journal the lines that appeared while the crew ran. Git runs before the
-/// database is locked. A failed read leaves the journal as it was.
-pub fn note_run(
-    app: &AppHandle,
-    session_id: &str,
-    workdir: &Path,
-    before: &HashSet<String>,
-) -> Result<(), String> {
-    if logic::valid_id(session_id).is_none() {
-        return Ok(());
+/// Hashes to journal for this run, with the repo the after read resolved.
+/// `None` skips the run: the before read was truncated, so a line that was
+/// already dirty can sit inside the after window and look new. The after read
+/// is not started in that case.
+pub(crate) fn journal_additions(
+    before: &git::DirtyLines,
+    after: impl FnOnce() -> Result<git::DirtyLines, String>,
+) -> Result<Option<(std::path::PathBuf, Vec<String>)>, String> {
+    if before.truncated {
+        return Ok(None);
     }
-    let after = read_with_retry(|| dirty_hashes(workdir))?;
-    let mut fresh: Vec<String> = after.hashes.difference(before).cloned().collect();
-    if fresh.is_empty() {
-        return Ok(());
-    }
+    let after = after()?;
+    let mut fresh: Vec<String> = after.hashes.difference(&before.hashes).cloned().collect();
     if fresh.len() > git::MAX_LINES {
         return Err(REFUSAL.into());
     }
     fresh.sort();
+    Ok(Some((after.repo, fresh)))
+}
+
+/// Journal the lines that appeared while the crew ran. Git runs before the
+/// database is locked. A failed read leaves the journal as it was.
+/// A truncated before read journals nothing.
+pub fn note_run(
+    app: &AppHandle,
+    session_id: &str,
+    workdir: &Path,
+    before: &git::DirtyLines,
+) -> Result<(), String> {
+    if logic::valid_id(session_id).is_none() {
+        return Ok(());
+    }
+    let Some((repo, fresh)) =
+        journal_additions(before, || read_with_retry(|| dirty_hashes(workdir)))?
+    else {
+        return Ok(());
+    };
+    if fresh.is_empty() {
+        return Ok(());
+    }
     let Some(store) = app.try_state::<SessionStore>() else {
         return Err(REFUSAL.into());
     };
-    remember_lines(&store, &after.repo, session_id, &fresh)
+    remember_lines(&store, &repo, session_id, &fresh)
 }
 
 pub(crate) fn remember_lines(

@@ -19,6 +19,10 @@ pub const MAX_FILE_BYTES: u64 = 1_048_576;
 pub struct DirtyLines {
     pub repo: PathBuf,
     pub hashes: HashSet<String>,
+    /// The cap stopped the read while a distinctive line was still unread.
+    /// A later snapshot can then hold a line that was already dirty. Callers
+    /// must not journal a run whose before snapshot is truncated.
+    pub truncated: bool,
 }
 
 fn stop(pid: u32) {
@@ -96,33 +100,58 @@ fn inside(root: &Path, child: &Path) -> bool {
 }
 
 /// Stop once the cap is full. Lines past it are left out; that is not a failed read.
-fn hash_lines(lines: &[String], into: &mut HashSet<String>) {
-    for line in lines {
+/// True when a distinctive line in `lines` was not stored.
+fn hash_lines(lines: &[String], into: &mut HashSet<String>) -> bool {
+    for (index, line) in lines.iter().enumerate() {
         if into.len() >= MAX_LINES {
-            return;
+            return lines[index..].iter().any(|line| {
+                !logic::is_boilerplate(line) && !into.contains(&logic::hash_line(line))
+            });
         }
         if logic::is_boilerplate(line) {
             continue;
         }
         into.insert(logic::hash_line(line));
     }
+    false
 }
 
-fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String> {
+/// The diff is already in memory. A line added past the cap still counts, unless
+/// it is boilerplate or a duplicate of a hash already stored.
+fn patch_past_cap_has_new_line(patch: &str, kept: &HashSet<String>) -> bool {
+    let mut seen = 0usize;
+    for raw in patch.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        if line.starts_with("+++") || !line.starts_with('+') {
+            continue;
+        }
+        let text = &line[1..];
+        if seen < MAX_LINES {
+            seen += 1;
+            continue;
+        }
+        if !logic::is_boilerplate(text) && !kept.contains(&logic::hash_line(text)) {
+            return true;
+        }
+    }
+    false
+}
+
+fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<bool, String> {
     let listed = git_text(
         repo,
         &["ls-files", "--others", "--exclude-standard", "-z"],
         Duration::from_secs(8),
     )?;
+    let mut truncated = false;
     for rel in listed.split('\0') {
+        if rel.is_empty() || rel.split(['/', '\\']).any(|part| part == "..") {
+            continue;
+        }
+        // A file still listed once the cap is full was not read. Opening it
+        // would go past the cap, so the snapshot is truncated instead.
         if into.len() >= MAX_LINES {
-            return Ok(());
-        }
-        if rel.is_empty() {
-            continue;
-        }
-        if rel.contains('\0') || rel.split(['/', '\\']).any(|part| part == "..") {
-            continue;
+            return Ok(true);
         }
         let path = repo.join(rel);
         let meta = match std::fs::symlink_metadata(&path) {
@@ -149,19 +178,23 @@ fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String
         }
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<String> = text.split('\n').map(|line| line.to_string()).collect();
-        hash_lines(&lines, into);
+        if hash_lines(&lines, into) {
+            truncated = true;
+        }
     }
-    Ok(())
+    Ok(truncated)
 }
 
 /// Hashes of the distinctive lines currently dirty in the worktree.
 /// A tree past the line cap stops. The lines already collected still stand, so
 /// the caller does not throw the snapshot away and try the whole read again.
+/// `truncated` is set instead, and a truncated read is still `Ok`.
 /// A missing git is an error, so the caller does not guess.
 /// A repository with no commit yet still hashes untracked lines.
 pub fn dirty_hashes(workdir: &Path) -> Result<DirtyLines, String> {
     let repo = toplevel(workdir)?;
     let mut hashes = HashSet::new();
+    let mut truncated = false;
     match git(
         &repo,
         &["rev-parse", "--verify", "-q", "HEAD"],
@@ -173,16 +206,27 @@ pub fn dirty_hashes(workdir: &Path) -> Result<DirtyLines, String> {
             Duration::from_secs(8),
         ) {
             Ok(patch) => {
-                let (lines, _) = logic::added_lines(&patch, MAX_LINES);
-                hash_lines(&lines, &mut hashes);
+                let (lines, cut) = logic::added_lines(&patch, MAX_LINES);
+                if hash_lines(&lines, &mut hashes) {
+                    truncated = true;
+                }
+                if cut && patch_past_cap_has_new_line(&patch, &hashes) {
+                    truncated = true;
+                }
             }
             Err(_) => return Err("git didn't answer".into()),
         },
         Err(GitFail::Rejected) => {}
         Err(GitFail::Unavailable) => return Err("git didn't answer".into()),
     }
-    untracked_lines(&repo, &mut hashes)?;
-    Ok(DirtyLines { repo, hashes })
+    if untracked_lines(&repo, &mut hashes)? {
+        truncated = true;
+    }
+    Ok(DirtyLines {
+        repo,
+        hashes,
+        truncated,
+    })
 }
 
 pub fn recent_shas(repo: &Path, limit: usize) -> Result<Vec<String>, String> {

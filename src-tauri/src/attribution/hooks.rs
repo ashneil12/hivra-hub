@@ -9,12 +9,18 @@ use std::time::Duration;
 const SCRIPT: &str = include_str!("hook.sh");
 const REFUSAL: &str = "The hooks folder isn't inside this copy's data.";
 
-/// Every name githooks(5) documents. One missing file is a repository hook that
-/// never runs while a crew's git is pointed at this folder.
+/// Every name githooks(5) documents, except three that must not be files here.
+/// One missing name from this list is a repository hook that never runs while
+/// a crew's git is pointed at this folder.
+/// push-to-checkout: its presence makes receive-pack hand over the worktree
+/// update, so a forwarder that exits 0 moves the ref and leaves the files stale
+/// when receive.denyCurrentBranch is updateInstead.
+/// proc-receive: git runs it only when that feature is configured, and it must
+/// speak the pkt-line protocol. Exiting 0 does not.
+/// fsmonitor-watchman: git never runs that name from the hooks directory.
 const HOOK_NAMES: &[&str] = &[
     "applypatch-msg",
     "commit-msg",
-    "fsmonitor-watchman",
     "p4-changelist",
     "p4-post-changelist",
     "p4-pre-submit",
@@ -35,8 +41,6 @@ const HOOK_NAMES: &[&str] = &[
     "pre-rebase",
     "pre-receive",
     "prepare-commit-msg",
-    "proc-receive",
-    "push-to-checkout",
     "reference-transaction",
     "sendemail-validate",
     "update",

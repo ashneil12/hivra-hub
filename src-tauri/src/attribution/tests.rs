@@ -593,8 +593,10 @@ fn a_repo_with_no_commit_still_hashes_new_lines() {
     let dirty = super::git::dirty_hashes(&made.repo).unwrap();
     let hashed = super::logic::hash_line(line);
     assert!(dirty.hashes.contains(&hashed));
+    assert!(!dirty.truncated);
     let again = super::lines_before_run(&made.repo).unwrap();
-    assert!(again.contains(&hashed));
+    assert!(again.hashes.contains(&hashed));
+    assert!(!again.truncated);
 }
 
 #[test]
@@ -803,12 +805,14 @@ fn an_older_ledger_gains_its_columns_in_place() {
     assert_eq!(crate::session_store::SCHEMA_VERSION, 19);
 }
 
-/// Every name githooks(5) documents. A missing file is a repo hook that
-/// silently stops firing while a crew's git is pointed at this folder.
+/// Every name githooks(5) documents, except three that must not be files in
+/// the crew folder. push-to-checkout: receive-pack hands it the worktree
+/// update, so a forwarder that exits 0 moves the ref and leaves the files.
+/// proc-receive: only when configured, and exit 0 does not speak its protocol.
+/// fsmonitor-watchman: git never runs that name from the hooks directory.
 const GITHOOKS: &[&str] = &[
     "applypatch-msg",
     "commit-msg",
-    "fsmonitor-watchman",
     "p4-changelist",
     "p4-post-changelist",
     "p4-pre-submit",
@@ -829,12 +833,13 @@ const GITHOOKS: &[&str] = &[
     "pre-rebase",
     "pre-receive",
     "prepare-commit-msg",
-    "proc-receive",
-    "push-to-checkout",
     "reference-transaction",
     "sendemail-validate",
     "update",
 ];
+
+/// Present, these change git or do nothing. They must not come back.
+const HOOKS_NOT_INSTALLED: &[&str] = &["fsmonitor-watchman", "proc-receive", "push-to-checkout"];
 
 fn mark_executable(path: &Path) {
     #[cfg(unix)]
@@ -930,6 +935,72 @@ fn every_githooks_name_is_installed() {
             assert!(mode & 0o111 != 0, "{name} is not executable");
         }
     }
+    for name in HOOKS_NOT_INSTALLED {
+        assert!(!dir.join(name).exists(), "{name} must not be installed");
+    }
+}
+
+/// receive.denyCurrentBranch=updateInstead updates the files itself, but only
+/// when no push-to-checkout hook exists. The crew's environment must not get
+/// in the way: the ref and the working tree both move.
+#[test]
+fn a_crew_push_updates_a_checked_out_worktree() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    let remote = scratch.path().join("remote");
+    fs::create_dir_all(&remote).unwrap();
+    git(&remote, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(remote.join("keep.txt"), "base\n").unwrap();
+    git(&remote, &base, &["add", "keep.txt"]).unwrap();
+    git(&remote, &base, &["commit", "-m", "base"]).unwrap();
+    git(
+        &remote,
+        &base,
+        &["config", "receive.denyCurrentBranch", "updateInstead"],
+    )
+    .unwrap();
+    let config_before = fs::read(remote.join(".git").join("config")).unwrap();
+    let local = scratch.path().join("local");
+    git(
+        scratch.path(),
+        &base,
+        &["clone", remote.to_str().unwrap(), local.to_str().unwrap()],
+    )
+    .unwrap();
+    fs::write(local.join("keep.txt"), "pushed\n").unwrap();
+    git(&local, &base, &["add", "keep.txt"]).unwrap();
+    git(&local, &base, &["commit", "-m", "push"]).unwrap();
+    let armed = arm(&scratch.path().join("data"));
+    assert!(
+        !Path::new(&armed.hooks_path)
+            .join("push-to-checkout")
+            .exists(),
+        "push-to-checkout is installed, so receive-pack will not update the worktree"
+    );
+    let crew = crew_pairs(&base, &armed);
+    git(
+        &local,
+        &crew,
+        &["push", remote.to_str().unwrap(), "HEAD:main"],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read_to_string(remote.join("keep.txt")).unwrap(),
+        "pushed\n",
+        "the ref moved and the working tree did not"
+    );
+    let status = git(&remote, &base, &["status", "--porcelain"]).unwrap();
+    assert_eq!(status.trim(), "", "worktree left dirty: {status}");
+    assert_eq!(
+        git(&remote, &base, &["rev-parse", "HEAD"]).unwrap(),
+        git(&local, &base, &["rev-parse", "HEAD"]).unwrap()
+    );
+    assert_eq!(
+        fs::read(remote.join(".git").join("config")).unwrap(),
+        config_before,
+        "the push wrote the remote config"
+    );
 }
 
 #[test]
@@ -1351,6 +1422,7 @@ fn the_journal_caps_the_total_number_of_lines() {
     fs::write(made.repo.join("z-sentinel.txt"), format!("{sentinel}\n")).unwrap();
     let dirty = super::git::dirty_hashes(&made.repo)
         .expect("a tree past the line cap is capped, not a failed read");
+    assert!(dirty.truncated, "lines past the cap were dropped");
     assert!(dirty.hashes.len() <= cap, "{}", dirty.hashes.len());
     assert!(dirty.hashes.contains(&super::logic::hash_line(
         "distinctive widget line 00001 stays"
@@ -1360,6 +1432,146 @@ fn the_journal_caps_the_total_number_of_lines() {
         cap + 20
     ))));
     assert!(!dirty.hashes.contains(&super::logic::hash_line(sentinel)));
+    let via_retry = super::lines_before_run(&made.repo).expect("a full cap is not a failed read");
+    assert!(via_retry.truncated);
+    assert_eq!(via_retry.hashes, dirty.hashes);
+}
+
+fn fill_lines(count: usize) -> String {
+    let mut text = String::new();
+    for n in 1..=count {
+        text.push_str(&format!("distinctive widget line {n:05} stays\n"));
+    }
+    text
+}
+
+#[test]
+fn the_line_cap_is_only_truncated_when_a_line_was_left_out() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let cap = super::git::MAX_LINES;
+    let path = made.repo.join("a-lines.txt");
+    fs::write(&path, fill_lines(cap)).unwrap();
+    let exact = super::git::dirty_hashes(&made.repo).unwrap();
+    assert_eq!(exact.hashes.len(), cap);
+    assert!(!exact.truncated, "a read that finished on the cap is whole");
+
+    let mut boilerplate = fill_lines(cap);
+    boilerplate.push_str("short\n");
+    fs::write(&path, boilerplate).unwrap();
+    let tail = super::git::dirty_hashes(&made.repo).unwrap();
+    assert!(!tail.truncated, "a boilerplate tail is not a dropped line");
+    assert_eq!(tail.hashes.len(), cap);
+
+    let mut duplicate = fill_lines(cap);
+    duplicate.push_str("distinctive widget line 00001 stays\n");
+    fs::write(&path, duplicate).unwrap();
+    let again = super::git::dirty_hashes(&made.repo).unwrap();
+    assert!(
+        !again.truncated,
+        "a repeated line is already in the snapshot"
+    );
+
+    let mut overflow = fill_lines(cap);
+    let extra = "distinctive widget line past the stored cap";
+    overflow.push_str(extra);
+    overflow.push('\n');
+    fs::write(&path, overflow).unwrap();
+    let cut = super::git::dirty_hashes(&made.repo).unwrap();
+    assert!(cut.truncated);
+    assert!(!cut.hashes.contains(&super::logic::hash_line(extra)));
+    assert!(cut.hashes.contains(&super::logic::hash_line(
+        "distinctive widget line 00001 stays"
+    )));
+}
+
+#[test]
+fn a_tracked_diff_past_the_cap_is_truncated() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(
+        made.repo.join("tracked.txt"),
+        "base line that stays tracked\n",
+    )
+    .unwrap();
+    git(&made.repo, &base, &["add", "tracked.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let cap = super::git::MAX_LINES;
+    fs::write(made.repo.join("tracked.txt"), fill_lines(cap + 1)).unwrap();
+    let dirty = super::git::dirty_hashes(&made.repo).unwrap();
+    assert!(dirty.truncated);
+    assert!(dirty.hashes.contains(&super::logic::hash_line(
+        "distinctive widget line 00001 stays"
+    )));
+    assert!(!dirty.hashes.contains(&super::logic::hash_line(&format!(
+        "distinctive widget line {:05} stays",
+        cap + 1
+    ))));
+}
+
+#[test]
+fn a_truncated_before_read_is_not_journaled() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let cap = super::git::MAX_LINES;
+    fs::write(made.repo.join("a-lines.txt"), fill_lines(cap + 20)).unwrap();
+    let sentinel = "distinctive sentinel past the line cap";
+    fs::write(made.repo.join("z-sentinel.txt"), format!("{sentinel}\n")).unwrap();
+    let before = super::start_before_run(&made.repo)
+        .wait()
+        .expect("the before read finished");
+    let past = super::logic::hash_line(&format!("distinctive widget line {:05} stays", cap + 1));
+    let sentinel_hash = super::logic::hash_line(sentinel);
+    assert!(before.truncated);
+    assert!(!before.hashes.contains(&past));
+    assert!(!before.hashes.contains(&sentinel_hash));
+
+    let mut kept = String::new();
+    for n in 31..=cap + 20 {
+        kept.push_str(&format!("distinctive widget line {n:05} stays\n"));
+    }
+    fs::write(made.repo.join("a-lines.txt"), kept).unwrap();
+    let crew = "distinctive crew widget written during the run";
+    fs::write(made.repo.join("m-during.txt"), format!("{crew}\n")).unwrap();
+    let after = super::git::dirty_hashes(&made.repo).unwrap();
+    let crew_hash = super::logic::hash_line(crew);
+    for hash in [&past, &sentinel_hash, &crew_hash] {
+        assert!(
+            after.hashes.contains(hash) && !before.hashes.contains(hash),
+            "a pre-existing line did not land in the after window"
+        );
+    }
+    let decision = super::journal_additions(&before, || {
+        panic!("a truncated before read must not be differenced")
+    });
+    assert!(
+        decision.unwrap().is_none(),
+        "a truncated before read was journaled"
+    );
+}
+
+#[test]
+fn a_finished_before_read_journals_only_the_new_line() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let old = "distinctive line that was already dirty";
+    fs::write(made.repo.join("old.txt"), format!("{old}\n")).unwrap();
+    let before = super::start_before_run(&made.repo)
+        .wait()
+        .expect("the before read finished");
+    assert!(!before.truncated);
+    let crew = "distinctive crew widget written during the run";
+    fs::write(made.repo.join("new.txt"), format!("{crew}\n")).unwrap();
+    let (_repo, fresh) = super::journal_additions(&before, || super::git::dirty_hashes(&made.repo))
+        .unwrap()
+        .expect("a finished before read is journaled");
+    assert_eq!(fresh, vec![super::logic::hash_line(crew)]);
+    assert!(!fresh.contains(&super::logic::hash_line(old)));
 }
 
 struct PauseReset;
