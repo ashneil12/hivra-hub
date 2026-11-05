@@ -4,6 +4,10 @@
 export type DoorStatus = {
   enabled: boolean;
   url: string | null;
+  /** Why the door isn't listening. Missing means it started, or it was left off. */
+  problem?: string | null;
+  /** The saved port is in use. Offer to pick another. */
+  portTaken?: boolean;
 };
 
 export type GrantView = {
@@ -45,6 +49,8 @@ export type OutsideApi = {
     write: boolean,
   ) => Promise<ConsentResult>;
   deny: (requestId: string) => Promise<ConsentResult>;
+  /** Bind a different port. Only meaningful when `portTaken` is set. */
+  pickNewPort: () => Promise<DoorStatus>;
 };
 
 /** What the person allowed this connection to do. */
@@ -75,4 +81,5 @@ export const appApi: OutsideApi = {
   approve: (requestId, projectIds, write) =>
     command("outside_approve", { requestId, projectIds, write }),
   deny: (requestId) => command("outside_deny", { requestId }),
+  pickNewPort: () => command("outside_pick_new_port"),
 };

@@ -12,6 +12,8 @@ function mount(id: string, api: OutsideApi) {
 }
 
 const off: OutsideApi["status"] = () => Promise.resolve({ enabled: false, url: null });
+const keepPort: OutsideApi["pickNewPort"] = () =>
+  Promise.resolve({ enabled: false, url: null });
 
 let releaseStale: (rows: GrantView[]) => void = () => {};
 let grantCalls = 0;
@@ -31,6 +33,7 @@ const late: OutsideApi = {
   pending: () => Promise.resolve(emptyPending),
   approve: () => Promise.resolve({ redirectUri: "" }),
   deny: () => Promise.resolve({ redirectUri: "" }),
+  pickNewPort: keepPort,
 };
 (window as unknown as { releaseStale: () => Promise<void> }).releaseStale = () =>
   new Promise((done) => {
@@ -78,6 +81,7 @@ const grant: OutsideApi = {
   pending: () => Promise.resolve(emptyPending),
   approve: () => Promise.resolve({ redirectUri: "" }),
   deny: () => Promise.resolve({ redirectUri: "" }),
+  pickNewPort: keepPort,
 };
 mount("grant", grant);
 
@@ -111,6 +115,7 @@ const ask: OutsideApi = {
     asked = false;
     return Promise.resolve({ redirectUri: "http://127.0.0.1:9/cb?error=access_denied" });
   },
+  pickNewPort: keepPort,
 };
 mount("ask", ask);
 
@@ -134,5 +139,55 @@ const miss: OutsideApi = {
     return Promise.resolve({ redirectUri: "" });
   },
   deny: () => Promise.resolve({ redirectUri: "" }),
+  pickNewPort: keepPort,
 };
 mount("miss", miss);
+
+let moved = false;
+const down: OutsideApi = {
+  status: () =>
+    Promise.resolve(
+      moved
+        ? { enabled: true, url: "http://127.0.0.1:27180/mcp", problem: null, portTaken: false }
+        : {
+            enabled: true,
+            url: null,
+            problem: "couldn't start: port 27179 is already in use",
+            portTaken: true,
+          },
+    ),
+  setEnabled: off,
+  grants: () => Promise.resolve([]),
+  disconnect: () => Promise.resolve(false),
+  pending: () => Promise.resolve(emptyPending),
+  approve: () => Promise.resolve({ redirectUri: "" }),
+  deny: () => Promise.resolve({ redirectUri: "" }),
+  pickNewPort: () => {
+    moved = true;
+    return Promise.resolve({
+      enabled: true,
+      url: "http://127.0.0.1:27180/mcp",
+      problem: null,
+      portTaken: false,
+    });
+  },
+};
+mount("down", down);
+
+const closed: OutsideApi = {
+  status: () =>
+    Promise.resolve({
+      enabled: false,
+      url: null,
+      problem: "couldn't start: couldn't open the database",
+      portTaken: false,
+    }),
+  setEnabled: off,
+  grants: () => Promise.resolve([]),
+  disconnect: () => Promise.resolve(false),
+  pending: () => Promise.resolve(emptyPending),
+  approve: () => Promise.resolve({ redirectUri: "" }),
+  deny: () => Promise.resolve({ redirectUri: "" }),
+  pickNewPort: keepPort,
+};
+mount("closed", closed);

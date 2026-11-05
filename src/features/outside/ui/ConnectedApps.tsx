@@ -114,7 +114,22 @@ export function ConnectedApps({ api = appApi }: Props) {
         />
         Let AI tools on this computer read Hivra
       </label>
-      {status.enabled && status.url ? <p className="text-content/60">{status.url}</p> : null}
+      {status.enabled && status.url && !status.problem ? (
+        <p className="text-content/60">{status.url}</p>
+      ) : null}
+      {status.problem ? <p>{status.problem}</p> : null}
+      {status.portTaken ? (
+        <button
+          type="button"
+          className={BTN}
+          onClick={() => {
+            const gen = ++generation.current;
+            void reloadAfter(gen, () => api.pickNewPort());
+          }}
+        >
+          Pick a new port
+        </button>
+      ) : null}
       {sent ? <p>Finish in the browser window.</p> : null}
       {problem ? (
         <p role="alert" className="text-content/70">

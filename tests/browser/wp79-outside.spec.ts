@@ -47,6 +47,23 @@ test("asks for a project before it allows a tool to read", async ({ page }) => {
   await expect(page.getByText("code=")).toHaveCount(0);
 });
 
+test("says the door could not start, and offers a new port only when the port is taken", async ({
+  page,
+}) => {
+  await page.goto(pageUrl);
+  const down = page.locator("#down");
+  await expect(down.getByText("couldn't start: port 27179 is already in use")).toBeVisible();
+  await expect(down.getByRole("button", { name: "Pick a new port" })).toBeVisible();
+  await down.getByRole("button", { name: "Pick a new port" }).click();
+  await expect(down.getByText("http://127.0.0.1:27180/mcp")).toBeVisible();
+  await expect(down.getByText("couldn't start: port 27179 is already in use")).toHaveCount(0);
+  await expect(down.getByRole("button", { name: "Pick a new port" })).toHaveCount(0);
+
+  const closed = page.locator("#closed");
+  await expect(closed.getByText("couldn't start: couldn't open the database")).toBeVisible();
+  await expect(closed.getByRole("button", { name: "Pick a new port" })).toHaveCount(0);
+});
+
 test("says the browser was not sent on when there is no redirect", async ({ page }) => {
   await page.goto(pageUrl);
   const miss = page.locator("#miss");
