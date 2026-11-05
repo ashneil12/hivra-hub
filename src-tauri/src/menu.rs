@@ -513,16 +513,24 @@ fn build(
 
     #[cfg(target_os = "macos")]
     {
-        let quit = MenuItemBuilder::with_id("quit", "Quit MonoCode")
+        let quit = MenuItemBuilder::with_id("quit", crate::display_name::QUIT_LABEL)
             .accelerator("CmdOrCtrl+Q")
             .build(app)?;
-        let app_menu = SubmenuBuilder::new(app, "MonoCode")
-            .about(Some(AboutMetadata::default()))
+        // WP-07: the menu and About panel say Hivra. The bundle name is unchanged, so AppKit may
+        // still title the menu bar from CFBundleName; the item text and the About name do not.
+        let app_menu = SubmenuBuilder::new(app, crate::display_name::DISPLAY_NAME)
+            .about_with_text(
+                crate::display_name::ABOUT_LABEL,
+                Some(AboutMetadata {
+                    name: Some(crate::display_name::DISPLAY_NAME.to_string()),
+                    ..Default::default()
+                }),
+            )
             .separator()
             .item(&open_settings)
             .item(&check_for_updates)
             .separator()
-            .hide()
+            .hide_with_text(crate::display_name::HIDE_LABEL)
             .hide_others()
             .show_all()
             .separator()
@@ -534,7 +542,9 @@ fn build(
             .minimize()
             .maximize()
             .build()?;
-        let website = MenuItemBuilder::with_id("help_website", "MonoCode Website").build(app)?;
+        // The label says Hivra. The address stays usemono.dev (menu.rs dispatch).
+        let website = MenuItemBuilder::with_id("help_website", crate::display_name::WEBSITE_LABEL)
+            .build(app)?;
         let github = MenuItemBuilder::with_id("help_github", "View on GitHub").build(app)?;
         let report_bug = MenuItemBuilder::with_id("help_report_bug", "Report a Bug…").build(app)?;
         let request_feature =

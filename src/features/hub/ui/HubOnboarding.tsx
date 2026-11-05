@@ -13,6 +13,7 @@ import { addStarterMono, starterOffers } from "../model/starterMonos";
 import { setUserName } from "../model/userName";
 import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, type ThemePresetId } from "../model/onboarding";
 import { setupProved, snoozeSetupCard } from "../model/setupProof";
+import { DISPLAY_NAME } from "../../../app/model/displayName";
 import { HubOnboardingSetup } from "./HubOnboardingSetup";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
@@ -253,12 +254,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                 }}
                 className={`${PRIMARY} disabled:cursor-not-allowed disabled:opacity-50`}
               >
-                {last ? "Start using MonoCode" : "Continue"}
+                {last ? `Start using ${DISPLAY_NAME}` : "Continue"}
               </button>
             </>
           ) : last ? (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
-              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : "Start using MonoCode"}
+              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : `Start using ${DISPLAY_NAME}`}
             </button>
           ) : (
             <button type="button" data-hub-onboarding-next onClick={() => setStep(step + 1)} className={PRIMARY}>

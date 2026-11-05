@@ -149,8 +149,9 @@ describe("settings pages", () => {
       await render(section);
       const footer = container.querySelector<HTMLElement>("[data-build-stamp]");
       expect(footer?.textContent).toContain(
-        "MonoCode Hub Dev 0.16.0 · hub/1b-identity @ 09141d8-dirty · built ",
+        "Hivra 0.16.0 · hub/1b-identity @ 09141d8-dirty · built ",
       );
+      expect(footer?.textContent).not.toContain("MonoCode");
       expect(footer?.textContent).toContain("dev copy wt-a");
       expect(footer?.title).toContain("com.ash.monocode-hub.dev.wt-a");
     }

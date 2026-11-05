@@ -48,7 +48,7 @@ pub(super) const ACTIONS: [Action; 2] = [
     },
     Action {
         id: "mono-chat-quit",
-        title: "Quit MonoCode",
+        title: crate::display_name::QUIT_LABEL,
         symbol: "power",
         destructive: true,
     },
@@ -507,5 +507,15 @@ mod tests {
             [0, 0, 255, 255]
         );
         assert!(icon_for("missing", &mascots).is_none());
+    }
+
+    #[test]
+    fn the_quit_row_says_hivra() {
+        let quit = ACTIONS
+            .iter()
+            .find(|action| action.id == "mono-chat-quit")
+            .expect("quit row");
+        assert_eq!(quit.title, crate::display_name::QUIT_LABEL);
+        assert!(!quit.title.contains("MonoCode"));
     }
 }

@@ -120,7 +120,7 @@ Each phase ends **verified in the installed app** (`~/Projects/harness/WORKING-L
 
 **1b. One app, one clean way to develop it** (Ash 19 Oct: "there's multiple versions of the app ... i'd like a
 way to make it easy"; the rest comes from T3 Code's self-hosting setup):
-- **Dev slots.** Running the hub from any worktree opens "MonoCode Hub Dev - <branch>". It has its own data folder,
+- **Dev slots.** Running the hub from any worktree opens "Hivra Dev - <branch>". It has its own data folder,
   its own port and a DEV ribbon, so it can never touch the daily app's chats, Keychain or Ash OS. (Done: `hub:dev` used
   to run as `com.ash.monocode-hub` on the live data folder; each worktree now runs its own
   `com.ash.monocode-hub.dev.<slot>`, `scripts/hub-dev.mjs`.)
