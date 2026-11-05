@@ -158,6 +158,8 @@ import {
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
+// WP-92: the worker route's answer, so the host call is typed without a value.
+import type { WorkerArmOutcome } from "../features/agent-app/model/agentAppSecrets";
 import { submitWithSettlement } from "./model/managedSubmission";
 import { providerFailureOf, withProviderFailure } from "./model/turnFailure";
 import {
@@ -224,6 +226,10 @@ import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
 import { HubSurface } from "../features/hub/ui/HubSurface";
 import { ShipNotice } from "../features/hub/ui/ShipNotice";
+// WP-92: a Mono's request for a key appears as a form card above the chat.
+import { SecretCards } from "../features/secrets/ui/SecretRequestCard";
+// WP-92: a finished turn's "Needs Ash (provide): a key" gets the same form, not the composer.
+import { SecretKeyAsk } from "../features/secrets/ui/SecretKeyAsk";
 import {
   hubData,
   hubProjectFolder,
@@ -2737,6 +2743,8 @@ function Workspace({
       : (monoViewSession?.id ?? active?.id);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  // WP-92: the chat in view, for the key ask form below its header.
+  const activeChat = sessions.find((session) => session.id === activeSessionId);
 
   // Sessions that belong in the UI: a habit's hidden run is not one of them,
   // and asks through its Mono's chat rather than on its own.
@@ -14342,6 +14350,9 @@ function Workspace({
               list: (ownerSession) => tauriPrWatches.list(ownerSession),
               hubProjectId: hubProjectIdFor,
             },
+            // WP-92: a worker's keys. Rust checks and asks; the values are armed for the child and never come back here.
+            secretsWorkerArm: (sessionId, request) =>
+              invoke<WorkerArmOutcome>("plugin:hub|secrets_worker_arm", { sessionId, request }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
@@ -17208,6 +17219,11 @@ function Workspace({
                 >
                   {/* WP-06: ship news is a slim bar at the top of the main pane, above the coding team and every hub page. It renders nothing when there is nothing to say. */}
                   <ShipNotice />
+                  {/* WP-92: a pending key request, and a finished turn's key ask, in the chat's own pane. */}
+                  <div className="px-3 pt-2 empty:hidden">
+                    <SecretCards />
+                    <SecretKeyAsk chat={activeChat} />
+                  </div>
                   <div
                     className={
                       searchViewOpen ||
