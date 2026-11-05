@@ -87,6 +87,43 @@ pub fn set_enabled(conn: &Connection, on: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The raw settings value. Callers validate it: a row read back from disk is untrusted.
+pub fn raw_setting(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    ensure(conn)?;
+    conn.query_row(
+        "SELECT value FROM outside_settings WHERE key = ?1",
+        params![key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Store the port only when no port is saved yet. Returns whether this call wrote it.
+pub fn insert_port_if_empty(conn: &Connection, port: u16) -> Result<bool, String> {
+    ensure(conn)?;
+    let wrote = conn
+        .execute(
+            "INSERT INTO outside_settings (key, value) VALUES ('port', ?1)
+             ON CONFLICT(key) DO NOTHING",
+            params![port.to_string()],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(wrote == 1)
+}
+
+/// Replace the saved port only while it is still `from`. Returns whether this call wrote it.
+pub fn replace_port(conn: &Connection, from: &str, port: u16) -> Result<bool, String> {
+    ensure(conn)?;
+    let wrote = conn
+        .execute(
+            "UPDATE outside_settings SET value = ?1 WHERE key = 'port' AND value = ?2",
+            params![port.to_string(), from],
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(wrote == 1)
+}
+
 pub fn client_count(conn: &Connection) -> Result<i64, String> {
     conn.query_row("SELECT COUNT(*) FROM outside_clients", [], |row| row.get(0))
         .map_err(|e| e.to_string())

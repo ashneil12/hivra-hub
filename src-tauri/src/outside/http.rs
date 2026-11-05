@@ -6,8 +6,9 @@
 // HTTP/1.1 server bound to 127.0.0.1. A missing Origin is allowed only on
 // POST /mcp. The body limit is refused before the body is read.
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -36,18 +37,65 @@ enum ReadStop {
     TooLarge,
 }
 
+pub(crate) enum Listen {
+    /// The OS picks. A memory door has nothing to reuse, so tests can run side by side.
+    Ephemeral,
+    /// The saved port. Never try another one.
+    Exact(u16),
+    /// The first free port in the range. Used only when nothing valid is saved yet.
+    FirstFree(Range<u16>),
+}
+
+pub(crate) enum ListenError {
+    Taken(u16),
+    NoneFree,
+    Other(String),
+}
+
 pub(crate) fn serve(
     db: Arc<DbInner>,
     stop: Arc<AtomicBool>,
     redirects: super::Redirects,
-) -> std::io::Result<(u16, JoinHandle<()>)> {
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    listener.set_nonblocking(true)?;
-    let port = listener.local_addr()?.port();
+    listen: Listen,
+) -> Result<(u16, JoinHandle<()>), ListenError> {
+    let (listener, port) = bind_listener(listen)?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|err| ListenError::Other(err.to_string()))?;
     let handle = thread::Builder::new()
         .name("hivra-outside".into())
-        .spawn(move || accept_loop(listener, db, stop, redirects, port))?;
+        .spawn(move || accept_loop(listener, db, stop, redirects, port))
+        .map_err(|err| ListenError::Other(err.to_string()))?;
     Ok((port, handle))
+}
+
+fn bind_listener(listen: Listen) -> Result<(TcpListener, u16), ListenError> {
+    match listen {
+        Listen::Ephemeral => {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+                .map_err(|err| ListenError::Other(err.to_string()))?;
+            let port = listener
+                .local_addr()
+                .map_err(|err| ListenError::Other(err.to_string()))?
+                .port();
+            Ok((listener, port))
+        }
+        Listen::Exact(port) => match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => Ok((listener, port)),
+            Err(err) if err.kind() == ErrorKind::AddrInUse => Err(ListenError::Taken(port)),
+            Err(err) => Err(ListenError::Other(err.to_string())),
+        },
+        Listen::FirstFree(range) => {
+            for port in range {
+                match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                    Ok(listener) => return Ok((listener, port)),
+                    Err(err) if err.kind() == ErrorKind::AddrInUse => continue,
+                    Err(err) => return Err(ListenError::Other(err.to_string())),
+                }
+            }
+            Err(ListenError::NoneFree)
+        }
+    }
 }
 
 fn accept_loop(

@@ -1120,6 +1120,7 @@ pub fn run() {
             outside::outside_pending,
             outside::outside_approve,
             outside::outside_deny,
+            outside::outside_pick_new_port,
         ])
         .build(context)
         .expect("error while building MonoCode");
