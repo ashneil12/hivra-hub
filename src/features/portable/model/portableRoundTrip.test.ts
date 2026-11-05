@@ -623,9 +623,11 @@ it("WP-89: export and import carry the Mono and system worker defaults, and impo
   const badPending = { name: "x", path: null, doc: bad, inspection: null, fromV1: false, folders: {}, skillsHere: {} };
   await e.plan.applyImport(badPending, e.plan.planImport(badPending), e.plan.defaultChoices(e.plan.planImport(badPending)));
   expect(e.workers.systemWorkerDefault()).toEqual({ effort: "high" });
-  expect(e.workers.projectWorkerDefault("hivra")).toEqual({ cli: "claude", model: "cursor:composer", effort: "medium" });
+  // A CLI that was named and isn't one is dropped. The model is not rewritten as Claude.
+  expect(e.workers.projectWorkerDefault("hivra")).toBeUndefined();
+  expect(e.workers.workerLimits("hivra").workers).toBeGreaterThan(0);
   expect(JSON.stringify(e.workers.workerLimits("hivra"))).not.toContain("not-a-cli");
   for (const w of e.souls.waitingSouls()) await e.souls.seatWaitingSoul(w.monoId, disk.write, undefined, disk.read);
-  expect(e.mono.findMono("ada")?.workerDefault).toEqual({ cli: "claude", model: "cursor:composer", effort: "huge" });
+  expect(e.mono.findMono("ada")?.workerDefault).toEqual({ model: "cursor:composer", effort: "huge" });
   expect(JSON.stringify(e.mono.findMono("ada"))).not.toContain("SECRETCLI");
 });

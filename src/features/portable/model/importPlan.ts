@@ -497,12 +497,15 @@ async function applyOwnedSetting(
       if (typeof saved.heavy === "number") next.heavy = saved.heavy;
       const model = typeof saved.model === "string" && saved.model.trim() ? saved.model : undefined;
       const rawCli = typeof saved.cli === "string" ? saved.cli.trim() : "";
-      // A CLI that isn't one is dropped. An old row with none still imports, and reads as Claude.
-      const cli = rawCli && isCli(rawCli) ? rawCli : undefined;
-      if (next.workers === undefined && next.heavy === undefined && !model) continue;
+      // A CLI that was named and isn't one is dropped, and its model is not rewritten as Claude.
+      // An old row with no CLI still imports, and reads as Claude.
+      const cliWasNamed = rawCli.length > 0;
+      const cli = cliWasNamed && isCli(rawCli) ? rawCli : undefined;
+      const keepModel = !!model && (!cliWasNamed || !!cli);
+      if (next.workers === undefined && next.heavy === undefined && !keepModel) continue;
       if (next.workers !== undefined || next.heavy !== undefined) setWorkerLimits(project, next);
       // The project's own worker model (E7) travels with its limits.
-      if (model)
+      if (keepModel && model)
         setProjectWorkerModel(project, {
           model,
           ...(typeof saved.effort === "string" && saved.effort ? { effort: saved.effort } : {}),

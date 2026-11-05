@@ -1,6 +1,6 @@
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
-import { readProjectWorkerDefault } from "../../crew/model/workerDefault";
+import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import { chatQuestion, gateQuestion } from "../../hub/model/chatQuestions";
 import { forUser } from "../../hub/model/userName";
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
@@ -234,7 +234,7 @@ function parseCrewRules(value: unknown): CrewRule[] | undefined {
 /** A hand-edited default is untrusted. A blank or broken one is dropped, not rewritten. */
 function parseWorkerDefault(value: unknown): WorkerPick | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  return readProjectWorkerDefault(value as { cli?: string; model?: string; effort?: string });
+  return cleanStoredDefault(value as { cli?: string; model?: string; effort?: string });
 }
 
 function newMonoId(): string {

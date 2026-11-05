@@ -97,6 +97,12 @@ it("keeps a Mono's worker default, and drops one that isn't usable", () => {
     return next;
   });
   expect(findMono(mono.id)?.workerDefault).toBeUndefined();
+  // A Mono default is not an old project row. No CLI stays no CLI, not Claude.
+  updateMono(mono.id, (current) => ({
+    ...current,
+    workerDefault: { model: "cursor:composer", effort: "huge" },
+  }));
+  expect(findMono(mono.id)?.workerDefault).toEqual({ model: "cursor:composer", effort: "huge" });
 });
 
 it("a design Mono's crew rule beats the coding team's and a plugin's", () => {
