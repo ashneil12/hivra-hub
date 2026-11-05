@@ -1,11 +1,15 @@
 // WP-73. The real strip and the real Home. This page only answers the commands they already call.
+import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { setHubDataSource, hubData } from "../../src/features/hub/model/hubData";
-import { setHubSelection } from "../../src/features/hub/model/hubNav";
+import { openCodingTeam, setHubSelection, useHubSelection } from "../../src/features/hub/model/hubNav";
 import type { HubDataSource } from "../../src/features/hub/model/types";
-import { setHomeOpener } from "../../src/features/home/model/opener";
+import { applyHomeOpen, setHomeOpener, type HomeOpenHands } from "../../src/features/home/model/opener";
+import { takeHomeDecision } from "../../src/features/home/model/pending";
 import { HomeView } from "../../src/features/home/ui/HomeView";
 import { ProjectStrip } from "../../src/features/hub/ui/ProjectStrip";
+import { FirstMateInbox } from "../../src/features/crew/ui/FirstMateInbox";
+import type { FirstMateItem } from "../../src/features/crew/model/inbox";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
@@ -58,6 +62,11 @@ const projects = [
   { id: "notes", name: "Notes", shortName: "Notes", iconShape: "folder" as const, folder: null },
 ];
 
+const inboxItems: FirstMateItem[] = [
+  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", updatedAt: 1 },
+  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", updatedAt: 2 },
+];
+
 const base = hubData();
 const src = Object.create(base) as HubDataSource;
 src.listProjects = () => projects;
@@ -93,30 +102,53 @@ const fake = installFakeTauri("home", (command, args) => {
   return null;
 });
 
-setHomeOpener((target) => {
-  document.body.dataset.opened = JSON.stringify(target);
-});
-
 document.getElementById("task-moved")!.addEventListener("click", () => {
   const task = tasks.find((item) => item.id === "write");
   if (task) task.title = "Write the notes now";
   fake.emit("tasks://changed", {});
 });
 
-const shell = document.getElementById("shell")!;
-const strip = document.createElement("div");
-const main = document.createElement("div");
-main.id = "root";
-main.style.display = "flex";
-main.style.minWidth = "0";
-main.style.flex = "1";
-shell.append(strip, main);
+/** The inbox Home asked for. The list's project is the folder, the same path the opener queues. */
+function OpenedInbox({ tick }: { tick: number }) {
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  useEffect(() => {
+    const key = takeHomeDecision(inboxItems.map((item) => ({ key: item.key, project: item.project })));
+    if (key) setSelectedKey(key);
+  }, [tick]);
+  return <FirstMateInbox items={inboxItems} selectedKey={selectedKey} />;
+}
 
-createRoot(strip).render(
-  <ProjectStrip
-    selection={{ project: "crew", item: "home" }}
-    onPickProject={() => undefined}
-    onCreateProject={() => undefined}
-  />,
-);
-createRoot(main).render(<HomeView />);
+function Shell() {
+  const selection = useHubSelection();
+  const [chatId, setChatId] = useState<string | null>(null);
+  const [inboxTick, setInboxTick] = useState(0);
+  useEffect(() => setHomeOpener((target) => {
+    document.body.dataset.opened = JSON.stringify(target);
+    const hands: HomeOpenHands = {
+      closeChrome: () => undefined,
+      openInbox: () => setInboxTick((n) => n + 1),
+      openNotes: () => undefined,
+      // The session open does not move the hub. applyHomeOpen does, when the project has a folder.
+      openSession: (id) => setChatId(id),
+      openTeam: (projectId) => openCodingTeam(projectId),
+      projects: () => projects,
+    };
+    applyHomeOpen(target, hands);
+  }), []);
+  return (
+    <>
+      <ProjectStrip
+        selection={selection}
+        onPickProject={() => undefined}
+        onCreateProject={() => undefined}
+      />
+      <div id="root" style={{ display: "flex", minWidth: 0, flex: "1", flexDirection: "column" }}>
+        <HomeView />
+        {chatId ? <section aria-label="Opened chat" data-open-id={chatId}>Opened chat</section> : null}
+        <OpenedInbox tick={inboxTick} />
+      </div>
+    </>
+  );
+}
+
+createRoot(document.getElementById("shell")!).render(<Shell />);

@@ -26,16 +26,29 @@ test("home lists what needs the person, follows a task as it moves, and keeps an
 
   await page.getByRole("button", { name: "Crew · Should we ship?" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "inbox", projectId: "crew", decisionKey: "ship" }));
+  await expect(page.locator("article[data-selected='true']")).toHaveAttribute("data-decision-key", "ship");
+  await expect(page.locator("article[data-selected='true']")).toContainText("Should we ship?");
   await page.getByRole("button", { name: "Crew · Which font?" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "task", projectId: "crew", id: "font" }));
   await page.getByRole("button", { name: "Plan" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "doc", id: "plan" }));
   await page.getByRole("button", { name: "Lead chat" }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "chat", id: "c1" }));
+  await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "chat", id: "c1", projectId: "crew" }));
+  await expect(page.locator("[data-hub-home] button")).not.toHaveAttribute("aria-current", "true");
+  await expect(page.getByRole("region", { name: "Opened chat" })).toHaveAttribute("data-open-id", "c1");
 
   // The button sits outside the shell and under it. Calling click on the element itself still runs its listener.
   await page.locator("#task-moved").evaluate((button: HTMLButtonElement) => button.click());
   await expect(page.getByRole("button", { name: "Crew · Write the notes now · Ada" })).toBeVisible();
+
+  await page.getByRole("button", { name: "Hide Moving now" }).click();
+  await expect(page.getByRole("heading", { name: "Moving now" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Hide Recent" }).click();
+  await expect(page.getByRole("heading", { name: "Recent" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Show Moving now" }).click();
+  await page.getByRole("button", { name: "Show Recent" }).click();
+  await expect(page.getByRole("heading", { name: "Moving now" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Recent" })).toBeVisible();
 
   await page.getByRole("button", { name: "Move Recent up" }).click();
   await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "needs-you recent moving-now");
