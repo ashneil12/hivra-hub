@@ -9,7 +9,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { dummyStoppedOk, finishSceneApps, sceneAgents } from "../bench-guard.mjs";
+import { applyCanary, canaryReport, canaryTable, dummyStoppedOk, finishSceneApps, sceneAgents, startSceneAgentPoll } from "../bench-guard.mjs";
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
 import { hardChecks } from "./checks.mjs";
@@ -145,6 +145,8 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     log(`  ${scene.id}: FAIL: ${agentsEarly.reason}`);
     return result;
   }
+  const agentPoll = startSceneAgentPoll(ctx);
+  try {
   // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
@@ -188,7 +190,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     notes.push(`Keep one long chat: on for ${mono}${set.ok === false ? " (failed)" : ""}`);
   }
   let place = await resolve(scene.openingTo ?? scene.place);
-  if (!place) return finish({ invalid: `no place to send the opening (${JSON.stringify(scene.openingTo ?? scene.place)})` });
+  if (!place) return await finish({ invalid: `no place to send the opening (${JSON.stringify(scene.openingTo ?? scene.place)})` });
   const placeSession = async () => (place.session ? place.session : place.mono ? ctx.monoSession(place.mono) : null);
 
   // Lines the app itself writes into the chat for Ash (a "Waiting on you" notice), first seen at.
@@ -399,7 +401,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
     last = await send(move.text, { verbatim: false });
   }
-  return finish({ invalid });
+  return await finish({ invalid });
 
   // -- evidence, checks, judge, verdict ------------------------------------------------------------------------------------
   async function finish({ invalid: why }) {
@@ -458,7 +460,8 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
     const appsAfter = typeof ctx.listApps === "function" ? ctx.listApps() : null;
     const touch = finishSceneApps(appsBefore, appsAfter, ctx.stopRun);
-    const agentsAfter = sceneAgents(ctx);
+    const watched = await agentPoll.stop();
+    const agentsAfter = watched.hit;
     const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
     if (hardStops.length) {
       scored.verdict = "FAIL";
@@ -470,11 +473,18 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && !hardStops.includes(item));
       scored.reasons = [...hardStops, dummyReason, ...rest];
     }
-    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scored, hard, judged, notes };
-    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));
+    const evidenceBody = { ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes, agents: watched.agents };
+    const canary = canaryReport(scene.canaryClis, { agents: watched.agents, evidence: evidenceBody, hit: agentsAfter });
+    const scoredCanary = applyCanary(scored, canary);
+    if (canary?.rows?.length) fs.appendFileSync(path.join(dir, "transcript.md"), `\n## Canary\n\n${canaryTable(canary.rows)}\n`);
+    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scoredCanary, hard, judged, notes, agents: watched.agents };
+    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ...evidenceBody, ...(canary ? { canary: canary.rows } : {}) }, null, 2));
     fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
     log(`  ${scene.id}: ${result.verdict}${result.wouldBe ? ` (would be ${result.wouldBe})` : ""}${result.reasons?.length ? `: ${result.reasons.slice(0, 2).join("; ")}` : ""}`);
     return result;
+  }
+  } finally {
+    await agentPoll.stop();
   }
 }
 
