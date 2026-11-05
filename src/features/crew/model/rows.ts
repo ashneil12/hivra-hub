@@ -21,6 +21,8 @@ export type CrewWorkerInput = {
   follow?: string | null;
   brief?: string | null;
   goal?: string | null;
+  /** WP-84: the shared task this crew moves, when the delegation names one. */
+  taskId?: string | null;
 };
 
 export type CrewSessionInput = {

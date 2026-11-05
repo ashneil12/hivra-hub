@@ -32,6 +32,8 @@ import { defaultViewState, isGroup, type FilterGroup, type GroupBy, type OrderBy
 import { BulkBar } from "./BulkBar";
 import { TaskBoard } from "./TaskBoard";
 import { TaskDetail } from "./TaskDetail";
+// WP-84: phase documents and the review decision live on the open task.
+import { answerWork, changePath, commentId, noteDocComment, noteTaskComment, phaseFor, subscribePhase } from "../../phases/model/store";
 import { TaskList } from "./TaskList";
 import { TaskTimeline } from "./TaskTimeline";
 import { stackUrlFor } from "../../stacks/model/link";
@@ -194,12 +196,14 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [naming, setNaming] = useState(false);
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const [note, setNote] = useState<string | null>(null);
+  const [phaseTick, setPhaseTick] = useState(0);
   const [appUrl, setAppUrl] = useState<string | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const generation = useRef(0);
   const detailGeneration = useRef(0);
   const seenFocus = useRef(0);
   const focus = useSyncExternalStore(subscribeTaskFocus, peekTaskFocus, () => null);
+  useEffect(() => subscribePhase(() => setPhaseTick((tick) => tick + 1)), []);
   const bulkGeneration = useRef(0);
   const tasksRef = useRef(tasks);
   const openRef = useRef(open);
@@ -704,7 +708,19 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               now={now}
               parentTitle={open.parentId ? loaded.find((task) => task.id === open.parentId)?.title ?? null : null}
               subtasks={loaded.filter((task) => task.parentId === open.id).map((task) => ({ number: task.number, title: task.title, status: task.status }))}
-              onComment={(text) => void write(open, { comment: text })}
+              onComment={(text) => {
+                void write(open, { comment: text });
+                // WP-84: a comment on the task reaches the next phase run.
+                noteTaskComment(open.id, text, commentId());
+              }}
+              phase={phaseTick >= 0 ? phaseFor(open.id) : undefined}
+              onPhaseAnswer={(choice, words) => {
+                void answerWork(open.id, choice, words, commentId);
+              }}
+              onPhasePath={(path) => {
+                void changePath(open.id, path, commentId);
+              }}
+              onPhaseDocComment={(docNumber, text) => noteDocComment(open.id, docNumber, text, commentId())}
               onStatus={(status) => void write(open, { status })}
               onPriority={(priority) => void write(open, { priority })}
               onAssign={(assignee) => void write(open, { assignee: assignee || null })}

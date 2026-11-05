@@ -71,6 +71,7 @@ import {
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
 import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
 import {
@@ -13495,6 +13496,8 @@ function Workspace({
           let refreshed = false;
           const workerStarted = Date.now();
           const finish = (result: MonoSessionCompletionResult) => {
+            // WP-84: a phase worker's reply moves the task. A coding worker is unchanged.
+            if (isPhaseSession(sessionId)) deliverPhaseResult(sessionId, phaseFinish(result.status, result.result));
             if (settled) return;
             settled = true;
             // WP-13: an account failure can name the next signed-in CLI. A timeout of that note still reports the failure.
