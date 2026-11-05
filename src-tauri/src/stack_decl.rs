@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, HashSet};
 use serde::{Deserialize, Serialize};
 
 const MAX_SERVICES: usize = 8;
-const MAX_PORTS: usize = 16;
+/// One worktree gets one block of ten ports (`stacks::BLOCK`).
+const MAX_PORTS: usize = 10;
 const MAX_VALUE: usize = 500;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,6 +237,10 @@ mod tests {
             (
                 r#"{"version":1,"stack":{"services":[{"name":"web","image":"nope","ports":[{"env":"PORT"}]}]}}"#,
                 "unknown field",
+            ),
+            (
+                r#"{"version":1,"stack":{"services":[{"name":"web","ports":[{"env":"P0"},{"env":"P1"},{"env":"P2"},{"env":"P3"},{"env":"P4"},{"env":"P5"},{"env":"P6"},{"env":"P7"},{"env":"P8"},{"env":"P9"},{"env":"P10"}]}]}}"#,
+                "at most 10",
             ),
         ];
         for (text, needle) in cases {
