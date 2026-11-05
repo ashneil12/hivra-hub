@@ -105,6 +105,33 @@ async function until(read, timeoutMs, everyMs = 500) {
   }
 }
 
+/**
+ * Puts Ash's team on the fresh copy (WP-05 seats nobody) and waits until the project's Lead and a seated leadership
+ * room exist. `beforeReady`, when it returns the pre-load, is that call; otherwise the Ash team is loaded here.
+ * `until` is injectable so a test can try once. Returns the ready snapshot and the Monos the pre-load named.
+ */
+export async function waitForSeatedRoom({ act, log, spec, beforeReady, until: wait = until }) {
+  let teamResult = beforeReady ? await beforeReady({ act, log }) : null;
+  if (!teamResult && (spec.team ?? "ash") === "ash") {
+    teamResult = await act("teamPack", { pack: "ash", project: spec.project?.id });
+    if (teamResult?.ok === false) throw new Error(`the hub wouldn't pre-load Ash's team: ${teamResult.error ?? teamResult.pack}`);
+    const names = (teamResult?.monos ?? []).map((mono) => mono.name).filter(Boolean).join(", ");
+    log(`team: Ash's pre-load (${names || "none"}; souls written: ${(teamResult.wrote ?? []).join(", ") || "none"})`);
+  } else if (teamResult?.ok === false) {
+    throw new Error(`the hub wouldn't pre-load Ash's team: ${teamResult.error ?? teamResult.pack}`);
+  }
+  const leadId = `${spec.project.id}-lead`;
+  const roomId = `${spec.project.id}:leadership`;
+  const ready = await wait(async () => {
+    const snap = await act("snapshot", {}, 60_000);
+    const lead = snap.monos?.find((mono) => mono.id === leadId);
+    const room = snap.rooms?.find((r) => r.id === roomId);
+    return lead && room?.memberIds?.length ? snap : null;
+  }, 180_000, 3_000);
+  if (!ready) throw new Error(`the hub never made ${leadId} and a seated ${roomId}`);
+  return { ready, team: teamResult?.monos ?? [], leadId, roomId };
+}
+
 function alive(pid) {
   try {
     process.kill(pid, 0);
@@ -240,6 +267,8 @@ async function main() {
  *  - evidenceDir: where under the repo the run's folder goes (default evidence/realtest);
  *  - routedAgents: the agents run on a custom model through the hub's router, so the Claude login is only needed for
  *    the app's helper calls and its account limits don't gate the run (they are still read and logged when reachable);
+ *  - beforeReady({act, log}): before the ready wait, once the window's driver answers. Return the teamPack
+ *    result to seat that team; return nothing and the Ash pre-load runs here (a fresh copy seats nobody);
  *  - afterReady(ctx): once the hub is ready and its defaults are set (add a custom model, pick it);
  *  - play(ctx, {runScenario, stopped}): replaces the scenario loop and returns the results; the realtest grader is not
  *    run (the caller judges).
@@ -675,16 +704,8 @@ export async function runBench(options, hooks = {}) {
       }
     }, 1_500);
 
-    // Ready: the project's Lead exists and its leadership room is seated.
-    const leadId = `${spec.project.id}-lead`;
-    const roomId = `${spec.project.id}:leadership`;
-    const ready = await until(async () => {
-      const snap = await act("snapshot", {}, 60_000);
-      const lead = snap.monos?.find((mono) => mono.id === leadId);
-      const room = snap.rooms?.find((r) => r.id === roomId);
-      return lead && room?.memberIds?.length ? snap : null;
-    }, 180_000, 3_000);
-    if (!ready) throw new Error(`the hub never made ${leadId} and a seated ${roomId}`);
+    // Ready: the project's Lead exists and its leadership room has the team (a fresh copy seats nobody until this).
+    const { ready, team, leadId, roomId } = await waitForSeatedRoom({ act, log, spec, beforeReady: hooks.beforeReady });
     fs.writeFileSync(path.join(evidence, "snapshot-ready.json"), JSON.stringify(ready, null, 2));
     log(`ready: ${leadId}; room ${roomId} seats ${ready.rooms.find((r) => r.id === roomId).memberIds.join(", ")}`);
     await act("defaults", { model: spec.appModel ?? "claude:sonnet-5", effort: spec.effort ?? "medium" });
@@ -801,7 +822,7 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
+    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
