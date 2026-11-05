@@ -23,9 +23,15 @@
 //   npm run hub:realtest -- --keep                         # keep the temporary HOME afterwards
 //   npm run hub:realtest -- --claude-config ~/claude-acct-2   # more Claude accounts Ash signed in himself (repeatable)
 //   npm run hub:realtest -- --agents deepseek-sub          # the default (--agents deepseek-sub | claude | haiku-test)
+//   npm run hub:realtest -- --agents openrouter-sub        # every chat on OpenRouter through ~/.local/bin/claude-openrouter
 //
 // Default (Ash, 27 Oct: "no test or run may use his Claude subscription"): every chat, helper call and the grader on
 // DeepSeek V4.1 Flash through ~/.local/bin/claude-deepseek. Claude runs only when someone passes `--agents claude`.
+// A bridge (`--agents grok-sub`, `--agents openrouter-sub`) runs every chat and helper call through Ash's own launcher,
+// never a Claude login. Grok's grader stays on the DeepSeek launcher, as it always has; an OpenRouter run's grader goes
+// to OpenRouter with it (the empty DeepSeek balance is why the run moved: grading there would leave every run UNGRADED).
+// An OpenRouter run also starts its own loopback relay, outside the chats' sandbox, which holds the launcher's Keychain
+// key (scripts/bench-or-relay.mjs): see docs/REALTEST.md.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
@@ -34,6 +40,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { appsFromPs, benchBroken, benchDenyRules, CONTROL_ENDPOINT_KEYS, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
+import { RELAY_TOKEN_ENV, RELAY_URL_ENV, startOpenRouterRelay } from "./bench-or-relay.mjs";
 import { DAILY_CONTROL_PORTS, installedClaudeHonoursTmpdir, parseLoopbackEndpoint, privateTempDir, privateTempEnv } from "./bench-sandbox.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
@@ -104,6 +111,22 @@ export function grokBridge(file = GROK_BRIDGE) {
     return file;
   } catch {
     throw new Error(`--agents grok-sub needs the Grok launcher at ${file} (Claude Code on Grok through the local gateway); it isn't there`);
+  }
+}
+
+/**
+ * Ash's launcher for Claude Code on OpenRouter (default model deepseek/deepseek-v4.1-flash; it reads its own key from
+ * the Keychain and rewrites every --model). Presence only: the file is never read.
+ */
+export const OPENROUTER_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-openrouter");
+
+/** The OpenRouter launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
+export function openrouterBridge(file = OPENROUTER_BRIDGE) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return file;
+  } catch {
+    throw new Error(`--agents openrouter-sub needs the OpenRouter launcher at ${file} (Claude Code on OpenRouter); it isn't there`);
   }
 }
 
@@ -183,47 +206,76 @@ export function parseArgs(argv) {
   };
 }
 
-/** Which model the agents (and the grader) run on: DeepSeek by default, Claude or Grok only when named. */
+/** Which model the agents (and the grader) run on: DeepSeek by default, a launcher or Claude only when named. */
 export function benchAgents(argv, named = null) {
   if (named !== null && !BENCH_AGENTS.includes(named)) throw new Error(`--agents is ${BENCH_AGENTS.join(", ")}, not "${named}"`);
-  const claude = named === "claude";
-  const haikuTest = named === "haiku-test";
-  const grokSub = named === "grok-sub";
-  const deepseekNamed = argv.includes("--deepseek-sub") || named === "deepseek-sub";
-  if ((claude || haikuTest || grokSub) && deepseekNamed) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
-  const deepseekSub = deepseekNamed || (!claude && !haikuTest && !grokSub);
-  return { deepseekSub, grokSub, ...(haikuTest ? { haikuTest } : {}) };
+  // A bridge also has its own switch (--deepseek-sub, --openrouter-sub). Naming two models at once is a mistake: they
+  // are different agents' models. Naming the same one twice (--agents deepseek-sub --deepseek-sub) is just one.
+  const picked = [...new Set([...(named ? [named] : []), ...BRIDGE_FLAGS.filter((flag) => argv.includes(flag)).map((flag) => flag.slice(2))])];
+  if (picked.length > 1) throw new Error(`--agents ${picked.join(" and ")} are two different agents' models; pass one`);
+  const choice = picked[0] ?? "deepseek-sub";
+  const haikuTest = choice === "haiku-test";
+  return {
+    deepseekSub: choice === "deepseek-sub",
+    grokSub: choice === "grok-sub",
+    openrouterSub: choice === "openrouter-sub",
+    ...(haikuTest ? { haikuTest } : {}),
+  };
 }
 /** haiku-test: every chat on Haiku with Ash's Anthropic test key (ANTHROPIC_TEST_API_KEY), never a Claude login. */
-export const BENCH_AGENTS = ["deepseek-sub", "claude", "haiku-test", "grok-sub"];
+export const BENCH_AGENTS = ["deepseek-sub", "claude", "haiku-test", "grok-sub", "openrouter-sub"];
+/** The bridges' own switches, the same as naming one with --agents. */
+export const BRIDGE_FLAGS = ["--deepseek-sub", "--openrouter-sub"];
 
-/** True when the grader stays on the DeepSeek launcher (the default, Haiku test workers, and Grok agents). */
+/**
+ * The launcher every chat and helper call of this run goes through, or null on plain Claude, a custom model and Haiku
+ * test workers. Each bridge's own presence check runs here, so a Mac without its launcher is refused in plain words
+ * before anything starts. `bridges` is only for the tests.
+ */
+export function bridgeLauncher(options, bridges = {}) {
+  if (options.deepseekSub) return (bridges.deepseek ?? deepseekBridge)();
+  if (options.grokSub) return (bridges.grok ?? grokBridge)();
+  if (options.openrouterSub) return (bridges.openrouter ?? openrouterBridge)();
+  return null;
+}
+
+/**
+ * True when the grader stays on the DeepSeek launcher: the default, Haiku test workers, and Grok's agents (Grok agents
+ * have always been graded on DeepSeek). OpenRouter is deliberately NOT one of them (Ash, 5 Nov: "everything on OR"): a
+ * run moves off DeepSeek because that gateway's balance is what ran out, so grading there would leave every run
+ * UNGRADED. `graderVia` sends its grader to OpenRouter instead.
+ */
 export function graderUsesDeepSeek(options) {
   return !!(options.deepseekSub || options.haikuTest || options.grokSub);
 }
 
-/** The grader's CLI and model: through the DeepSeek launcher, so grading never spends Claude unless asked. */
-export function graderVia(options) {
-  if (graderUsesDeepSeek(options)) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
+/**
+ * The grader's CLI and model. DeepSeek's launcher by default, so grading never spends Claude unless asked; an OpenRouter
+ * run grades on OpenRouter through its own launcher (the launcher rewrites the model to its own, so the alias here is
+ * the book's `sonnet`, the same word the wrapper asks for). `bridges` is only for the tests, as in `bridgeLauncher`.
+ */
+export function graderVia(options, bridges = {}) {
+  if (options.openrouterSub) return { claude: (bridges.openrouter ?? openrouterBridge)(), model: "sonnet" };
+  if (graderUsesDeepSeek(options)) return { claude: (bridges.deepseek ?? deepseekBridge)(), model: DEEPSEEK_BRIDGE_MODEL };
   return {};
 }
 
 /**
- * The model the bench's claude wrapper asks for. Grok keeps the book's model (the launcher maps it). DeepSeek uses
- * the gateway's alias. Haiku test workers are Haiku.
+ * The model the bench's claude wrapper asks for. Grok and OpenRouter keep the book's model (their launcher maps it to
+ * its own). DeepSeek uses the gateway's alias. Haiku test workers are Haiku.
  */
-export function wrapperModel({ grokSub = false, deepseekSub = false, haikuTest = false, specModel = "sonnet" } = {}) {
+export function wrapperModel({ grokSub = false, openrouterSub = false, deepseekSub = false, haikuTest = false, specModel = "sonnet" } = {}) {
   if (haikuTest) return "haiku";
-  if (grokSub) return specModel || "sonnet";
+  if (grokSub || openrouterSub) return specModel || "sonnet";
   if (deepseekSub) return DEEPSEEK_BRIDGE_MODEL;
   return specModel || "sonnet";
 }
 
-/** Plan flags the window reads. Grok is `launcher` (no Claude sign-in) and never `deepseek` (that would rename models). */
+/** Plan flags the window reads. A launcher is `launcher` (no Claude sign-in) and never `deepseek` (that would rename models). */
 export function planFlags(options) {
   return {
     ...(options.deepseekSub ? { deepseek: true } : {}),
-    ...(options.grokSub ? { launcher: true } : {}),
+    ...(options.grokSub || options.openrouterSub ? { launcher: true } : {}),
   };
 }
 
@@ -240,8 +292,15 @@ export function dailyControlPorts(env = process.env) {
   return out;
 }
 
-/** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
-export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings, appBin, worktree, honoursTmpdir, dailyPorts = [] }) {
+/**
+ * The throwaway `claude` the dev copy runs. A launcher run (Grok, OpenRouter) sets its REALTEST_*_SUB so the wrapper
+ * strips the caller's credentials: the launcher carries its own key.
+ *
+ * `relay` is this run's OpenRouter relay (`bench-or-relay.mjs`), when its agents run on OpenRouter: its loopback URL and
+ * one-run token are what the launcher talks to instead of the Keychain, and `gateway` is the same address in the
+ * `host:port` form the sandbox profile's port list reads, so that one port is the only one opened.
+ */
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, openrouter = false, relay = null, node, script, realHome, allowed, devData, benchSettings, appBin, worktree, honoursTmpdir, dailyPorts = [] }) {
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     "#!/bin/sh",
@@ -252,6 +311,8 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     ...(dailyPorts.length ? [`export ${DAILY_CONTROL_PORTS}=${quote(dailyPorts.join(","))}`] : []),
     ...(haiku ? ["export REALTEST_HAIKU_TEST=1"] : []),
     ...(grok ? ["export REALTEST_GROK_SUB=1"] : []),
+    ...(openrouter ? ["export REALTEST_OPENROUTER_SUB=1"] : []),
+    ...(relay ? [`export ${RELAY_URL_ENV}=${quote(relay.url)}`, `export ${RELAY_TOKEN_ENV}=${quote(relay.token)}`, `export REALTEST_GATEWAY=${quote(relay.gateway)}`] : []),
     `export REALTEST_EFFORT=${quote(effort)}`,
     `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
     ...(realHome ? [`export REALTEST_REAL_HOME=${quote(realHome)}`] : []),
@@ -345,13 +406,16 @@ async function main() {
  *    result to seat that team; return nothing and the Ash pre-load runs here (a fresh copy seats nobody);
  *  - afterReady(ctx): once the hub is ready and its defaults are set (add a custom model, pick it);
  *  - play(ctx, {runScenario, stopped}): replaces the scenario loop and returns the results; the realtest grader is not
- *    run (the caller judges).
+ *    run (the caller judges);
+ *  - bridges: launcher paths instead of the real presence checks (only for the tests, as in `bridgeLauncher`);
+ *  - startRelay / relay: how this run's OpenRouter relay is started and what it is started with (only for the tests;
+ *    the real ones are `startOpenRouterRelay` and the Keychain read in scripts/bench-or-relay.mjs).
  * Resolves with {id, evidence, results, stopReason}.
  */
 export async function runBench(options, hooks = {}) {
   const spec = hooks.spec ?? readJson(options.scenarios);
   // On a gateway launcher no chat spends Claude: limits are logged, not enforced, as for routed agents.
-  const bridge = options.deepseekSub ? deepseekBridge() : options.grokSub ? grokBridge() : null;
+  const bridge = bridgeLauncher(options, hooks.bridges);
   const unmetered = !!hooks.routedAgents || !!bridge;
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
@@ -392,6 +456,7 @@ export async function runBench(options, hooks = {}) {
   let stopReason = null;
   let results = [];
   let accountList = [];
+  let relay = null;
 
   const cleanup = async () => {
     clearInterval(pumpTimer);
@@ -432,6 +497,15 @@ export async function runBench(options, hooks = {}) {
       }
     }
     if (left.length) log(`stopped ${left.length} leftover process(es) of this run`);
+    // Last, so a chat still in flight during the shutdown above isn't refused mid-answer: the relay ends with the run.
+    if (relay) {
+      try {
+        await relay.close();
+      } catch {
+        // already gone
+      }
+      relay = null;
+    }
   };
   const ending = cleanupOnExit(
     async () => {
@@ -488,6 +562,15 @@ export async function runBench(options, hooks = {}) {
     log(`run ${id}: slot ${slot.slot} (${slot.identifier}), HOME ${home}, evidence ${path.relative(ROOT, evidence)}`);
     log(`budget: ${budget.maxTurns} model turns, ${budget.maxRequests} model requests, ${budget.maxMinutes} min; ${hooks.play ? "the caller's scenes" : `${scenarios.length} scenarios`}`);
 
+    // -- the OpenRouter relay -------------------------------------------------------------------------------------------------
+    // A sandboxed chat can't read the Keychain and can't reach openrouter.ai, so the run's own loopback relay (started
+    // out here, outside the fence) holds the key and the launcher is handed only its URL and a one-run token. The
+    // sandbox profile then opens exactly that port and none of the gateway ports the other bridges need.
+    if (options.openrouterSub) {
+      relay = await (hooks.startRelay ?? startOpenRouterRelay)(hooks.relay ?? {});
+      log(`OpenRouter relay on ${relay.host}:${relay.port} holds the Keychain key; the chats' sandbox opens only that port`);
+    }
+
     // -- the temporary HOME: the dev copies' Claude login and git identity, nothing of the real home's ---------------------
     if (!fs.existsSync(DEV_CLAUDE_CONFIG)) throw new Error(`${DEV_CLAUDE_CONFIG} is missing: sign a dev copy's Claude in first`);
     fs.mkdirSync(path.join(home, ".monocode-hub-dev"), { recursive: true });
@@ -526,9 +609,13 @@ export async function runBench(options, hooks = {}) {
       return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     });
     const status = { loggedIn: readings.some((r) => r.loggedIn) };
-    if (bridge) log(options.grokSub
-      ? `every chat and helper call on Grok through the local gateway launcher (${bridge}); no Claude login used`
-      : `every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`);
+    if (bridge) log(
+      options.grokSub
+        ? `every chat and helper call on Grok through the local gateway launcher (${bridge}); no Claude login used`
+        : options.openrouterSub
+          ? `every chat and helper call on OpenRouter through ${bridge}; no Claude login used`
+          : `every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`,
+    );
     if (!status.loggedIn && !unmetered) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
     if (!status.loggedIn && !bridge) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
     const use = readings[0];
@@ -594,11 +681,13 @@ export async function runBench(options, hooks = {}) {
         state,
         realClaude,
         config: DEV_CLAUDE_CONFIG,
-        model: wrapperModel({ grokSub: !!options.grokSub, deepseekSub: !!options.deepseekSub, haikuTest: !!options.haikuTest, specModel: spec.model ?? "sonnet" }),
+        model: wrapperModel({ grokSub: !!options.grokSub, openrouterSub: !!options.openrouterSub, deepseekSub: !!options.deepseekSub, haikuTest: !!options.haikuTest, specModel: spec.model ?? "sonnet" }),
         effort: spec.effort ?? "medium",
         memoryDir,
         haiku: !!options.haikuTest,
         grok: !!options.grokSub,
+        openrouter: !!options.openrouterSub,
+        relay: relay ? { url: relay.url, token: relay.token, gateway: `${relay.host}:${relay.port}` } : null,
         node: process.execPath,
         script: path.join(ROOT, "scripts/hub-realtest-claude.mjs"),
         realHome: REAL_HOME,
@@ -613,8 +702,8 @@ export async function runBench(options, hooks = {}) {
       { mode: 0o755 },
     );
     const planFile = path.join(scratch, "verify-plan.json");
-    // On a gateway launcher the window knows it: no Claude account's sign-in or limit holds workers.
-    // Grok sets `launcher` only. `deepseek` would rename every model, which the Grok gateway would reject.
+    // On a launcher the window knows it: no Claude account's sign-in or limit holds workers.
+    // Grok and OpenRouter set `launcher` only. `deepseek` would rename every model, which their own launcher rejects.
     const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...planFlags(options) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);

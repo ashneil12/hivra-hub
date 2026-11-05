@@ -9,7 +9,7 @@ import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-real
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { DEEPSEEK_BRIDGE_MODEL, claudeWrapperScript, deepseekBridge, graderUsesDeepSeek, graderVia, grokBridge, parseArgs as benchArgs, planFlags, usageOf, wrapperModel } from "./hub-realtest.mjs";
+import { DEEPSEEK_BRIDGE_MODEL, OPENROUTER_BRIDGE, bridgeLauncher, claudeWrapperScript, deepseekBridge, graderUsesDeepSeek, graderVia, grokBridge, openrouterBridge, parseArgs as benchArgs, planFlags, usageOf, wrapperModel } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -205,6 +205,98 @@ test("the Grok launcher's child drops the caller's credential variables and keep
   assert.equal(stripped.CLAUDE_CONFIG_DIR, "/tmp/cfg");
   assert.equal(stripped.REALTEST_GROK_SUB, "1");
   assert.equal(childEnv(env, { grok: false }).ANTHROPIC_API_KEY, "sk-not-real");
+});
+
+// Ash, 5 Nov: "everything on OR" — the DeepSeek balance behind the local gateway is empty, so the benches run on
+// OpenRouter through his own launcher. The same shape as grok-sub, with its own launcher.
+test("--agents openrouter-sub points at the OpenRouter launcher, chats and grader alike", () => {
+  const openrouter = benchArgs(["--agents", "openrouter-sub"]);
+  assert.equal(openrouter.openrouterSub, true);
+  assert.equal(openrouter.deepseekSub, false);
+  assert.equal(openrouter.grokSub, false);
+  // Its own switch, like --deepseek-sub.
+  assert.equal(benchArgs(["--openrouter-sub"]).openrouterSub, true);
+  assert.equal(benchArgs([]).openrouterSub, false);
+  // Never two agents' models at once.
+  assert.throws(() => benchArgs(["--agents", "openrouter-sub", "--deepseek-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "deepseek-sub", "--openrouter-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "openrouter-sub", "--openrouter-sub", "--deepseek-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "claude", "--openrouter-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "haiku-test", "--openrouter-sub"]), /two different agents' models/);
+  assert.throws(() => benchArgs(["--agents", "grok-sub", "--openrouter-sub"]), /two different agents' models/);
+  // The same naming twice is one model, not two (--agents deepseek-sub --deepseek-sub has always been fine).
+  assert.equal(benchArgs(["--agents", "deepseek-sub", "--deepseek-sub"]).deepseekSub, true);
+  // A change of intent (Ash, 5 Nov: "everything on OR"): an OpenRouter run does NOT grade on the DeepSeek launcher —
+  // that gateway's empty balance is the whole reason the run moved — so it grades on OpenRouter, through its own
+  // launcher, which rewrites the alias to its own model. The other bridges are unchanged: Grok's agents still grade on
+  // DeepSeek, exactly as they always have.
+  const bridge = (name) => () => `/${name}/bin/claude-${name}`;
+  assert.equal(graderUsesDeepSeek({ openrouterSub: true }), false);
+  assert.equal(graderUsesDeepSeek({ grokSub: true }), true);
+  assert.deepEqual(graderVia({ openrouterSub: true }, { openrouter: bridge("openrouter") }), { claude: "/openrouter/bin/claude-openrouter", model: "sonnet" });
+  assert.deepEqual(graderVia({ grokSub: true }, { deepseek: bridge("deepseek") }), { claude: "/deepseek/bin/claude-deepseek", model: DEEPSEEK_BRIDGE_MODEL });
+  assert.deepEqual(planFlags({ openrouterSub: true }), { launcher: true });
+  assert.equal(planFlags({ openrouterSub: true }).deepseek, undefined);
+  assert.equal(wrapperModel({ openrouterSub: true, specModel: "sonnet" }), "sonnet");
+  assert.equal(wrapperModel({ openrouterSub: true }), "sonnet");
+  // Ash's own launcher, beside claude and claude-deepseek; presence only, the file is never read.
+  assert.match(OPENROUTER_BRIDGE, /\/\.local\/bin\/claude-openrouter$/);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "openrouter-bridge-"));
+  const launcher = path.join(dir, "claude-openrouter");
+  assert.throws(() => openrouterBridge(launcher), /needs the OpenRouter launcher/);
+  fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(openrouterBridge(launcher), launcher);
+  const script = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: wrapperModel({ openrouterSub: true }), effort: "medium", memoryDir: "/tmp/mem", openrouter: true, node: "/usr/bin/node", script: "/tmp/wrap.mjs" });
+  assert.match(script, /REALTEST_OPENROUTER_SUB=1/);
+  assert.match(script, /REALTEST_MODEL='sonnet'/);
+  assert.doesNotMatch(script, /claude-fable-5/);
+  assert.doesNotMatch(script, /REALTEST_GROK_SUB/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the run's chats go through its own launcher, never the plain claude binary", () => {
+  const picked = [];
+  const launcherOf = (name) => () => {
+    picked.push(name);
+    return `/${name}/bin/claude-${name}`;
+  };
+  // Plain Claude, a custom model through the hub's router, and Haiku test workers have no launcher.
+  assert.equal(bridgeLauncher({}, { deepseek: launcherOf("deepseek"), openrouter: launcherOf("openrouter") }), null);
+  assert.equal(bridgeLauncher({ haikuTest: true }, { deepseek: launcherOf("deepseek") }), null);
+  assert.deepEqual(picked, []);
+  // Each bridge has its own: an OpenRouter run never falls back to the DeepSeek launcher, and Grok stays Grok.
+  assert.equal(bridgeLauncher({ openrouterSub: true }, { openrouter: launcherOf("openrouter"), deepseek: launcherOf("deepseek") }), "/openrouter/bin/claude-openrouter");
+  assert.equal(bridgeLauncher({ grokSub: true }, { grok: launcherOf("grok"), deepseek: launcherOf("deepseek") }), "/grok/bin/claude-grok");
+  assert.equal(bridgeLauncher({ deepseekSub: true }, { deepseek: launcherOf("deepseek"), openrouter: launcherOf("openrouter") }), "/deepseek/bin/claude-deepseek");
+  assert.deepEqual(picked, ["openrouter", "grok", "deepseek"]);
+  // A missing launcher is refused in plain words here, before anything starts.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-launcher-"));
+  const missing = path.join(dir, "claude-openrouter");
+  assert.throws(() => bridgeLauncher({ openrouterSub: true }, { openrouter: openrouterBridge.bind(null, missing) }), /needs the OpenRouter launcher/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the OpenRouter launcher's child drops the caller's credential variables, and other runs are unchanged", () => {
+  const env = {
+    PATH: "/usr/bin",
+    HOME: "/tmp/bench-home",
+    ANTHROPIC_API_KEY: "sk-not-real",
+    ANTHROPIC_AUTH_TOKEN: "tok-not-real",
+    ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+    ANTHROPIC_TEST_API_KEY: "test-not-real",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-not-real",
+    CLAUDE_CODE_SUBAGENT_MODEL: "sonnet",
+    CLAUDE_CONFIG_DIR: "/tmp/cfg",
+    REALTEST_OPENROUTER_SUB: "1",
+  };
+  const stripped = childEnv(env, { openrouter: true, grok: false });
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_TEST_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) assert.equal(stripped[name], undefined, name);
+  assert.equal(stripped.PATH, "/usr/bin");
+  assert.equal(stripped.HOME, "/tmp/bench-home");
+  assert.equal(stripped.CLAUDE_CODE_SUBAGENT_MODEL, "sonnet");
+  assert.equal(stripped.CLAUDE_CONFIG_DIR, "/tmp/cfg");
+  assert.equal(stripped.REALTEST_OPENROUTER_SUB, "1");
+  assert.equal(childEnv(env, { openrouter: false, grok: false }).ANTHROPIC_API_KEY, "sk-not-real");
 });
 
 // Ash, 23 Oct: "dont use grok use deepseek sub".
