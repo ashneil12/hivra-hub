@@ -129,6 +129,17 @@ export function monoTeamInView(sel: HubSelection): string | undefined {
   return sel.item.startsWith(MONO_TEAM_ITEM) ? sel.item.slice(MONO_TEAM_ITEM.length) || undefined : undefined;
 }
 
+/**
+ * The rail opens a Mono on its own (people, not its team). While that Mono's team is still the selected item, Team
+ * stays pressed and the chat opens inside the team. The project's coding team is the workspace behind the chat: an
+ * empty item would open the hub surface, which then opens a Lead over this chat. No project to stand on: leave the
+ * selection alone. Another Mono's team, or any other item, is left as it is.
+ */
+export function selectionLeavingOwnTeam(sel: HubSelection, monoId: string): HubSelection | undefined {
+  if (!sel.project || monoTeamInView(sel) !== monoId) return undefined;
+  return { project: sel.project, item: "coding-team" };
+}
+
 /** True while one of the app's own views (hubNav.showAppItem) is open: it belongs to no project, so no project tile is lit. */
 export function appItemInView(sel: HubSelection): boolean {
   return sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
