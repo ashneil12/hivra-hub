@@ -1875,6 +1875,8 @@ describe("collapsed rail Inbox actions", () => {
       "Search",
       "Inbox",
       "Notes",
+      // WP-72: Docs sits with Notes. It opens the page tree.
+      "Docs",
       "Automations",
       "Settings",
     ]);

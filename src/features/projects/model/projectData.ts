@@ -1,4 +1,5 @@
-import { projectKey } from "../../../shared/lib/paths";
+import { invoke } from "@tauri-apps/api/core";
+import { projectKey, projectName } from "../../../shared/lib/paths";
 import { clearProjectLogo } from "./projectLogos";
 import { clearProjectChatBackground } from "./chatBackground";
 import {
@@ -6,7 +7,7 @@ import {
   rebaseProjectChatBackgroundSetting,
 } from "./projectChatBackground";
 import { normalizeProjectPath } from "./recents";
-import { deleteSession, listSessionsByProject } from "../../sessions/data/sessionStore";
+import { listSessionsByProject } from "../../sessions/data/sessionStore";
 import {
   clearTabGroupSettings,
   rebaseProjectTabGroupSettings,
@@ -28,15 +29,19 @@ export async function projectSessionCount(path: string): Promise<number> {
   return sessions.length;
 }
 
-/** Everything we persist for a project: saved chats plus its rail appearance. */
+/** Moves a project, and the chats, tasks and docs filed under it, to the trash. */
 export async function removeProjectData(path: string): Promise<void> {
   const normalized = normalizeProjectPath(path);
+  await invoke("trash_project", {
+    folder: normalized,
+    title: projectName(normalized),
+  });
+}
+
+/** Rail appearance for a project that was deleted forever. Chats are already gone. */
+export async function purgeProjectLocal(path: string): Promise<void> {
+  const normalized = normalizeProjectPath(path);
   const key = projectKey(normalized);
-  const sessions = await listSessionsByProject(normalized).catch(() => []);
-  for (const session of sessions) {
-    await deleteSession(session.id).catch(() => undefined);
-  }
-  // Drops the copied image from app data; the localStorage entry goes with it.
   await clearProjectLogo(key).catch(() => undefined);
   await clearProjectChatBackground(key).catch(() => undefined);
   clearProjectChatBackgroundSetting(key);

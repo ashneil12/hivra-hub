@@ -98,6 +98,17 @@ describe("feedTree", () => {
     expect(await treeContext("ed", "monocode")).toBeUndefined();
   });
 
+  it("feeds when a turn asks, and still does nothing without that", async () => {
+    const { io, files } = fakeIo();
+    setTreeIo(io);
+    const blocks = [block("a", "user", "hello from a long first mate")];
+    expect(await feedTree("ed", blocks, { evenWithoutSetting: true })).toBe(1);
+    expect(files.size).toBeGreaterThan(0);
+    expect(await treeContext("ed", "monocode")).toBeUndefined();
+    expect(await treeContext("ed", "monocode", { evenWithoutSetting: true })).toContain("<long_chat>");
+    closeTree("ed");
+  });
+
   it("logs each block once, in order, append-only, and a restart knows what it logged", async () => {
     const { io, files, writes } = fakeIo();
     setTreeIo(io);

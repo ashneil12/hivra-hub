@@ -680,6 +680,13 @@ fn record_drive(data: &Path, drive: &StoredDrive) -> Result<PathBuf, String> {
     match std::fs::hard_link(&tmp, &path) {
         Ok(()) => {
             let _ = std::fs::remove_file(&tmp);
+            // WP-78: the session is recorded, so it started.
+            note_browser(
+                data,
+                crate::activity::BROWSER_START,
+                drive,
+                "Started a browser.",
+            );
             Ok(path)
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -696,9 +703,20 @@ fn record_drive(data: &Path, drive: &StoredDrive) -> Result<PathBuf, String> {
                     file.sync_all()
                 });
             let _ = std::fs::remove_file(&tmp);
-            created.map(|_| path).map_err(|error| {
-                format!("The browser session couldn't be recorded. Try again. {error}")
-            })
+            created
+                .map(|_| {
+                    // WP-78: the session is recorded, so it started.
+                    note_browser(
+                        data,
+                        crate::activity::BROWSER_START,
+                        drive,
+                        "Started a browser.",
+                    );
+                    path
+                })
+                .map_err(|error| {
+                    format!("The browser session couldn't be recorded. Try again. {error}")
+                })
         }
     }
 }
@@ -735,13 +753,42 @@ fn remove_tracked_tree(dir: &Path, token: &str) {
     }
 }
 
-fn remove_if_same(path: &Path, token: &str) {
+/// Removes the drive file when it is still this session. True only when this call removed it,
+/// so two stops cannot both record the end.
+fn remove_if_same(path: &Path, token: &str) -> bool {
     if load_drive(path).is_some_and(|drive| drive.token == token) {
-        let _ = std::fs::remove_file(path);
+        let removed = std::fs::remove_file(path).is_ok();
         if let Some(dir) = path.parent() {
             remove_tracked_tree(dir, token);
         }
+        removed
+    } else {
+        false
     }
+}
+
+fn note_browser(data: &Path, kind: &str, drive: &StoredDrive, summary: &str) {
+    let who = if drive.agent_id.trim().is_empty() {
+        crate::activity::Who::app()
+    } else {
+        crate::activity::Who::first_mate(drive.agent_id.trim(), drive.name.trim())
+    };
+    let link = if drive.agent_id.trim().is_empty() {
+        String::new()
+    } else {
+        format!("session:{}", drive.agent_id.trim())
+    };
+    // The drive token is a secret. It is not the target, the summary or the link.
+    crate::activity::note_db(
+        &data.join("monocode.db"),
+        kind,
+        &who,
+        &who,
+        "",
+        &drive.id,
+        summary,
+        &link,
+    );
 }
 
 fn as_drive(drive: StoredDrive) -> Drive {
@@ -1279,7 +1326,15 @@ fn finish_gone(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(), Stri
     if !tree_confirmed(data, drive) {
         return Err(NOT_YET.into());
     }
-    remove_if_same(path, &drive.token);
+    if remove_if_same(path, &drive.token) {
+        // WP-78: this stop removed the session. A second stop finds nothing.
+        note_browser(
+            data,
+            crate::activity::BROWSER_STOP,
+            drive,
+            "Stopped a browser.",
+        );
+    }
     Ok(())
 }
 
@@ -1358,7 +1413,15 @@ fn stop_recorded_tree(data: &Path, path: &Path, drive: &StoredDrive) -> Result<(
     for row in &rows {
         stop_tracked(data, row)?;
     }
-    remove_if_same(path, &drive.token);
+    if remove_if_same(path, &drive.token) {
+        // WP-78: the recorded tree is gone. finish_run's other branch does not note again.
+        note_browser(
+            data,
+            crate::activity::BROWSER_STOP,
+            drive,
+            "Stopped a browser.",
+        );
+    }
     Ok(())
 }
 
@@ -1654,7 +1717,17 @@ fn finish_run(command: &mut Command, data: &Path, agent: &str, plan: &LaunchEnv)
                 .map(|status| status.code().unwrap_or(1))
                 .unwrap_or(1);
             match load_drive(&path) {
-                Some(drive) if tree_confirmed(data, &drive) => remove_if_same(&path, &plan.token),
+                Some(drive) if tree_confirmed(data, &drive) => {
+                    if remove_if_same(&path, &plan.token) {
+                        // WP-78: the wrapper confirmed the browser was already gone.
+                        note_browser(
+                            data,
+                            crate::activity::BROWSER_STOP,
+                            &drive,
+                            "Stopped a browser.",
+                        );
+                    }
+                }
                 Some(drive) => {
                     let _ = stop_recorded_tree(data, &path, &drive);
                 }

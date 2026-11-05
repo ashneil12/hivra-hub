@@ -94,6 +94,7 @@ pub fn firstmate_set_question_owner(
     )?;
     if let Some(row) = change.row.as_ref().filter(|_| change.applied) {
         let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+        crate::tasks::emit_for_delegations(&app); // WP-70
     }
     Ok(change)
 }

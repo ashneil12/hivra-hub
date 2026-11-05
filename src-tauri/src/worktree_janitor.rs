@@ -1150,6 +1150,10 @@ pub fn discover(roots: &[PathBuf], extra: &[PathBuf]) -> Vec<(PathBuf, Kind)> {
     let mut found: Vec<(PathBuf, Kind)> = Vec::new();
     for root in roots {
         for child in children(root) {
+            // WP-82: treehouse keeps its own state here. It is not a worktree.
+            if child.file_name().and_then(|name| name.to_str()) == Some(".treehouse") {
+                continue;
+            }
             match classify(&child) {
                 Some(Kind::NotGit) => {
                     let nested: Vec<(PathBuf, Kind)> = children(&child)
@@ -1629,10 +1633,16 @@ fn app_context(
         |path| agents.has_working_dir(path) || terminals.has_working_dir(path),
         &runs,
     );
+    // WP-82: a leased slot is never cleaned up. Unreadable leases stop the report
+    // rather than guessing that a slot is free.
+    let mut protected = standard_protections();
+    if let Ok(data_dir) = project_file::data_dir(app) {
+        protected.extend(crate::worktree_pool::leased_protections(&data_dir)?);
+    }
     Ok(Context {
         chats,
         busy,
-        protected: standard_protections(),
+        protected,
         check_pull_requests,
         data_dir: project_file::data_dir(app).ok(),
         measure_total,
@@ -1869,6 +1879,22 @@ mod tests {
     use crate::project_file::tests::{commit, repo};
 
     const NOW: u64 = 1_800_000_000_000;
+
+    #[test]
+    fn treehouse_state_is_not_listed_as_a_worktree() {
+        let temp = temp("monocode-janitor-treehouse");
+        let root = temp.0.join("Worktrees");
+        std::fs::create_dir_all(root.join(".treehouse")).unwrap();
+        std::fs::write(root.join(".treehouse").join("slots.json"), b"{}").unwrap();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let found = discover(&[root], &[]);
+        assert!(found.iter().all(|(path, _)| {
+            path.file_name().and_then(|name| name.to_str()) != Some(".treehouse")
+        }));
+        assert!(found
+            .iter()
+            .any(|(path, kind)| path.ends_with("notes") && *kind == Kind::NotGit));
+    }
 
     /// A clean, merged, idle linked worktree: the remove case. Each test changes one thing.
     fn merged() -> Facts {

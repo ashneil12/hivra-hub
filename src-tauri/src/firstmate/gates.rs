@@ -1366,6 +1366,7 @@ pub async fn firstmate_run_gates(
             )?;
             if change.applied {
                 let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+                crate::tasks::emit_for_delegations(&app); // WP-70
             }
         }
         let checkout = crate::fs::expand_home(&input.checkout);
@@ -1405,6 +1406,7 @@ pub async fn firstmate_run_gates(
         drop(conn);
         if change.applied {
             let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+            crate::tasks::emit_for_delegations(&app); // WP-70
         }
         Ok(Some(record))
     })
@@ -1456,6 +1458,7 @@ pub fn firstmate_gates_decide(
     .inspect(|change| {
         if change.applied {
             let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [id] }));
+            crate::tasks::emit_for_delegations(&app); // WP-70
         }
     })
 }

@@ -44,7 +44,8 @@ export type HistoryPorts = {
   loadState: () => Promise<{ revision: number; state: ImportStateFile }>;
   casState: (revision: number, state: ImportStateFile) => Promise<boolean>;
   writeProposal: (id: string, markdown: string, meta: ProposalMeta) => Promise<void>;
-  ask: (model: ModelChoice, prompt: string) => Promise<AskResult>;
+  /** A null model is the signed-in CLI. A model is used only when the person picked one. */
+  ask: (model: ModelChoice | null, prompt: string) => Promise<AskResult>;
   models: () => Promise<ModelChoice[]>;
 };
 
@@ -218,7 +219,7 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
     }
   }
 
-  const canRun = !running && anyOn && preview != null && chosen != null;
+  const canRun = !running && anyOn && preview != null;
 
   return (
     <section className="flex max-w-xl flex-col gap-4" data-history-import>
@@ -247,7 +248,7 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
         </button>
       </div>
       {preview ? <PreviewBlock preview={preview} /> : null}
-      {models && models.length === 0 ? <p className="text-[13px] text-content/70">Add a model in Other models first.</p> : null}
+      <p className="text-[13px] text-content/70">This uses your signed-in CLI, unless you pick a model.</p>
       {models && models.length > 0 ? (
         <label className="flex flex-col gap-1 text-[13px] text-content">
           Model
@@ -257,7 +258,7 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
             value={modelId}
             onChange={(event) => setModelId(event.target.value)}
           >
-            <option value="">Choose a model</option>
+            <option value="">Signed-in CLI</option>
             {models.map((model) => (
               <option key={model.id} value={model.id}>
                 {model.name}

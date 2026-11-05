@@ -5,12 +5,15 @@ import { HIVRA_LAYOUT_FIXED } from "../../hub/model/hivraLayout";
 import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingTheme, previewingTheme, previewLook, previewTheme, stopPreview, useThemeImportVersion } from "../model/themeImport";
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
+import { ActivityPage } from "../../activity/ui/ActivityPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
+import { TrashPage } from "../../trash/ui/TrashPage";
 import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
+import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
@@ -691,6 +694,10 @@ export function SettingsView({
               ) : null}
               {section === "changes" ? <ChangesPage /> : null}
               {section === "decisions" ? <DecisionsPage /> : null}
+              {section === "activity" ? (
+                // WP-78: Settings → Activity.
+                <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
               {/* WP-75: checked backups, one item or everything. */}
@@ -698,6 +705,10 @@ export function SettingsView({
               {section === "history" ? (
                 // WP-50: past chats, only with a person's OK, drafted for review.
                 <HistoryImportScreen />
+              ) : null}
+              {section === "memory" ? (
+                // WP-51: what a first mate remembers, for the person to review.
+                <MemorySettingsScreen />
               ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
               {section === "teams" ? <TeamsPage /> : null}
@@ -751,6 +762,10 @@ export function SettingsView({
                   onRestoreProject={onRestoreProject}
                   onDeleteProject={onDeleteProject}
                 />
+              ) : null}
+              {/* WP-76: deleted chats, Monos, projects, notes, docs and tasks. */}
+              {section === "trash" ? (
+                <TrashPage onRestoreProject={onRestoreProject} />
               ) : null}
             </div>
           </div>

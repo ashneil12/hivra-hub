@@ -48,6 +48,7 @@ export function confirmTitleName(raw: string, max = 60): string {
 export function ConfirmDelete({
   name,
   detail,
+  undoable = false,
   children,
   deleteLabel = "Delete",
   onCancel,
@@ -57,6 +58,8 @@ export function ConfirmDelete({
   name: string;
   /** Said before "This can't be undone.", e.g. what else goes with a Mono. */
   detail?: string;
+  /** WP-76: it goes to the trash and can be put back, so "This can't be undone." is left out; `detail` says how. */
+  undoable?: boolean;
   children?: ReactNode;
   deleteLabel?: string;
   onCancel: () => void;
@@ -69,7 +72,7 @@ export function ConfirmDelete({
   return (
     <Modal title={`Delete “${confirmTitleName(name)}”?`} size="sm" hideClose onClose={onCancel} scrimClassName="confirm-scrim">
       <div className="flex flex-col gap-4 px-4 pb-4 pt-2 text-[12px]" data-confirm-delete={name}>
-        <p className="text-content/80">{detail ? `${detail} ` : ""}This can't be undone.</p>
+        <p className="text-content/80">{undoable ? detail : `${detail ? `${detail} ` : ""}This can't be undone.`}</p>
         {children}
         <div className="flex justify-end gap-2">
           <button
@@ -97,16 +100,16 @@ export function ConfirmDelete({
 
 // ---- asked from anywhere: `await confirmDelete("Example: tidy the README")` -------------------------------------------
 
-type Ask = { name: string; detail?: string; resolve: (ok: boolean) => void };
+type Ask = { name: string; detail?: string; undoable?: boolean; resolve: (ok: boolean) => void };
 let current: Ask | undefined;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 
 /** Ask Ash to confirm deleting `name`; true only when he picked Delete. One question at a time: a second waits as no. */
-export function confirmDelete(name: string, detail?: string): Promise<boolean> {
+export function confirmDelete(name: string, detail?: string, options?: { undoable?: boolean }): Promise<boolean> {
   if (current) return Promise.resolve(false);
   return new Promise<boolean>((resolve) => {
-    current = { name: name.trim() || "this", detail, resolve };
+    current = { name: name.trim() || "this", detail, undoable: options?.undoable, resolve };
     emit();
   });
 }
@@ -134,5 +137,5 @@ export function ConfirmDeleteHost() {
     () => current,
   );
   if (!ask) return null;
-  return <ConfirmDelete key={ask.name} name={ask.name} detail={ask.detail} onCancel={() => answer(false)} onDelete={() => answer(true)} />;
+  return <ConfirmDelete key={ask.name} name={ask.name} detail={ask.detail} undoable={ask.undoable} onCancel={() => answer(false)} onDelete={() => answer(true)} />;
 }

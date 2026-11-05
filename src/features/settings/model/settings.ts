@@ -34,12 +34,15 @@ export type SettingsSectionId =
   | "inbox"
   | "worktrees"
   | "archive"
+  | "trash"
   | "changes"
   | "decisions"
+  | "activity"
   | "dashboards"
   | "portable"
   | "backups"
   | "history"
+  | "memory"
   | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -103,6 +106,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "decision ask waiting memory never rule history per project inbox",
   },
   {
+    id: "activity",
+    group: "app",
+    label: "Activity",
+    description:
+      "What agents and the app did, newest first. Kept for 90 days.",
+    keywords: "activity log audit history who did what",
+  },
+  {
     id: "dashboards",
     group: "app",
     label: "Dashboards",
@@ -131,6 +142,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
     keywords: "history import claude codex hermes transcript memory",
+  },
+  {
+    id: "memory",
+    group: "app",
+    label: "Memory",
+    description: "What a first mate remembers, with its source, for you to confirm, edit or delete.",
+    keywords: "memory fact skill recall review",
   },
   {
     id: "connectors",
@@ -227,6 +245,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Archive",
     description: "Projects and conversations you have archived.",
     keywords: "archived restore delete hidden",
+  },
+  {
+    id: "trash",
+    group: "workspace",
+    label: "Trash",
+    description:
+      "Deleted chats, Monos, projects, notes, docs and tasks. Restore them, or delete them forever.",
+    keywords: "trash restore delete forever bin",
   },
   {
     id: "worktrees",

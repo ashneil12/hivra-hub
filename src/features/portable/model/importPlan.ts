@@ -327,6 +327,8 @@ export type RustImportReport = {
   automationsAdded: number;
   remindersAdded: number;
   delegationsAdded: number;
+  /** Activity rows added (WP-78). Older builds leave it out. */
+  activityAdded?: number;
   memoryFilesAdded: number;
   memoryFilesBeside: number;
   memoryHistory: string[];
@@ -691,6 +693,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     if (r.automationsAdded) lines.push(`${plural(r.automationsAdded, "automation")} added, paused until you turn each on.`);
     if (r.remindersAdded) lines.push(`${plural(r.remindersAdded, "reminder")} added.`);
     if (r.delegationsAdded) lines.push(`${plural(r.delegationsAdded, "delegation")} added to the history.`);
+    if (r.activityAdded) lines.push(`${r.activityAdded === 1 ? "1 activity line" : `${r.activityAdded} activity lines`} added.`);
     if (r.memoryHistory.length) lines.push(`Memory restored with its history for ${r.memoryHistory.join(", ")}.`);
     if (r.memoryFilesAdded || r.memoryFilesBeside) lines.push(`${plural(r.memoryFilesAdded, "memory file")} added${r.memoryFilesBeside ? `, ${r.memoryFilesBeside} beside your own as .imported.md` : ""}.`);
     if (r.kept) lines.push(`${plural(r.kept, "thing")} already here kept as they were.`);

@@ -67,6 +67,7 @@ import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
   isClaudeAliasModel,
@@ -120,6 +121,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // WP-70: the shared task this work moves. Not a worker's task id.
+      "taskId",
     ],
   ],
   ["tasks.accept", ["taskId", "accept", "reason"]],
@@ -141,6 +144,8 @@ export type DelegationMeta = {
   goal?: string;
   /** The hub project id (what Ash OS resolves), when the folder is one of the hub's projects. */
   project?: string;
+  /** WP-70: the shared task this work moves. */
+  taskId?: string;
 };
 
 /** A worker chat as this window has it. */
@@ -257,6 +262,8 @@ export type AgentAppTasksHost = {
       goal?: string;
       askIds: string[];
       mode: "queue" | "steer";
+      /** WP-70: the shared task this brief moves. */
+      taskId?: string;
     },
   ): Promise<{
     row: Delegation | null;
@@ -650,6 +657,38 @@ function questionView(prompt: UserQuestionPrompt) {
   };
 }
 
+/** WP-70: the shared task a delegation moves. Absent when the chat didn't name one. */
+function sharedTaskId(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim() || value.trim().length > 80) {
+    throw new Error("taskId must be the shared task's id");
+  }
+  return value.trim();
+}
+
+/** A named task must be in this chat's project. Checked before a worker starts, and only when the store is there. */
+async function sharedTaskInThisProject(source: Session, taskId: string, host: AgentAppHost): Promise<void> {
+  if (!host.taskStore) return;
+  let project: string;
+  try {
+    project = taskProjectOf(source, host);
+  } catch {
+    return;
+  }
+  let found: unknown;
+  try {
+    found = await host.taskStore("tasks_get", {
+      actor: { id: source.id, project, kind: "agent" },
+      id: taskId,
+    });
+  } catch (error) {
+    throw new Error(error instanceof Error && error.message ? error.message : "No task with that id.");
+  }
+  const projectId =
+    found && typeof found === "object" && "projectId" in found ? (found as { projectId?: unknown }).projectId : undefined;
+  if (projectId !== project) throw new Error("That task is in another project.");
+}
+
 async function delegate(
   source: Session,
   requestId: string,
@@ -672,6 +711,9 @@ async function delegate(
     input.title === undefined ? firstLine(brief) : text(input.title, "title", 200);
   const asks = askIds(input.asks);
   const goal = text(input.goal, "goal", 1_000);
+  // WP-70: the shared task this work moves. Checked before a worker starts.
+  const sharedTask = sharedTaskId(input.taskId);
+  if (sharedTask) await sharedTaskInThisProject(source, sharedTask, host);
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
@@ -698,6 +740,7 @@ async function delegate(
       title,
       asks,
       goal,
+      ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
       gateFolder: source.cwd,
@@ -966,6 +1009,7 @@ async function delegate(
     askIds: asks,
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
+    ...(sharedTask ? { taskId: sharedTask } : {}),
   };
   // Always monitored: a task reports back to the chat that delegated it.
   try {
@@ -1034,6 +1078,7 @@ async function briefLead(
     title: string;
     asks: string[];
     goal?: string;
+    taskId?: string;
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
@@ -1057,6 +1102,7 @@ async function briefLead(
     brief: job.brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
+    ...(job.taskId ? { taskId: job.taskId } : {}),
     askIds: job.asks,
     mode: whenBusy,
   });

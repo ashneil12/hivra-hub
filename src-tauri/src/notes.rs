@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::fs::expand_home;
 use crate::session_store::{now_millis, validate_id, SessionStore};
@@ -122,6 +122,8 @@ pub fn ensure_notes_table(conn: &Connection) -> rusqlite::Result<()> {
     if artifact_kind_present == 0 {
         conn.execute("ALTER TABLE notes ADD COLUMN artifact_kind TEXT", [])?;
     }
+    // WP-72: docs columns and history live on notes, not in a second store.
+    crate::docs::ensure_docs_schema(conn)?;
     Ok(())
 }
 
@@ -170,11 +172,67 @@ pub fn notes_delete(
 ) -> Result<(), String> {
     validate_id(&id, "note")?;
     let conn = store.lock_conn()?;
-    delete_note(&conn, &id).map_err(|e| e.to_string())?;
+    let kind: Option<String> = conn
+        .query_row(
+            "SELECT content_kind FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    // Artifacts share this table and are not trash. A missing row is already gone.
+    if kind.as_deref() != Some("note") {
+        return Ok(());
+    }
+    if crate::trash::is_trashed(&conn, "note", &id).map_err(|error| error.to_string())? {
+        return Ok(());
+    }
+    let title: String = conn
+        .query_row(
+            "SELECT title FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| "Untitled".into());
+    let source_cwd: Option<String> = conn
+        .query_row(
+            "SELECT source_cwd FROM notes WHERE id = ?1",
+            params![&id],
+            |row| row.get(0),
+        )
+        .ok()
+        .flatten();
     drop(conn);
-    // The note deletion is authoritative. A cleanup failure should not leave a
-    // successfully deleted note visible in the UI.
-    let _ = remove_note_assets(&app, &id);
+    // WP-76: images move first. If the ledger insert fails, they come back.
+    // A failed rollback is returned, and the ledger is tried again so the folder stays listed.
+    crate::trash::park_note_assets(&app, &id).map_err(|error| error.to_string())?;
+    let data = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let name = format!("note-{id}");
+    let original = data.join("note-assets").join(&id);
+    let conn = store.lock_conn()?;
+    let parked = crate::trash::record_after_moves(
+        &conn,
+        &data.join("trash"),
+        &[(name, original)],
+        &crate::trash::Item {
+            kind: "note".into(),
+            id: id.clone(),
+            title,
+            parent_kind: source_cwd.as_ref().map(|_| "project".into()),
+            parent_id: source_cwd,
+            payload: "{}".into(),
+        },
+        &[],
+        crate::session_store::now_millis(),
+    );
+    drop(conn);
+    if let Err(error) = parked {
+        return Err(error.to_string());
+    }
+    let _ = app.emit(crate::trash::CHANGED, ());
     Ok(())
 }
 
@@ -310,7 +368,7 @@ fn validate_note_asset_path(asset: &str) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 
-fn remove_note_assets(app: &AppHandle, note_id: &str) -> Result<(), String> {
+pub(crate) fn remove_note_assets(app: &AppHandle, note_id: &str) -> Result<(), String> {
     let dir = note_assets_dir(app, note_id)?;
     match std::fs::remove_dir_all(dir) {
         Ok(()) => Ok(()),
@@ -323,14 +381,28 @@ fn list_notes(conn: &Connection) -> rusqlite::Result<Vec<Note>> {
     list_content(conn, "note")
 }
 
+fn hidden_note_clause(conn: &Connection) -> &'static str {
+    // A notes database from before the trash ledger has no `trash_items` yet. Listing must
+    // still work; once the ledger exists, trashed notes stay out of the list and out of get.
+    match conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trash_items'",
+        [],
+        |_| Ok(1i64),
+    ) {
+        Ok(_) => crate::trash::HIDDEN_NOTE_CLAUSE,
+        Err(_) => "",
+    }
+}
+
 fn list_content(conn: &Connection, kind: &str) -> rusqlite::Result<Vec<Note>> {
-    let mut stmt = conn.prepare(
+    let hidden = hidden_note_clause(conn);
+    let mut stmt = conn.prepare(&format!(
         "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
                 created_at, updated_at, slug_pending
          FROM notes
-         WHERE content_kind = ?1
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         WHERE content_kind = ?1{hidden}
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = stmt.query_map(params![kind], read_note)?;
     rows.collect()
 }
@@ -340,11 +412,14 @@ fn get_note(conn: &Connection, id: &str) -> rusqlite::Result<Option<Note>> {
 }
 
 fn get_content(conn: &Connection, id: &str, kind: &str) -> rusqlite::Result<Option<Note>> {
+    let hidden = hidden_note_clause(conn);
     conn.query_row(
-        "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
-                created_at, updated_at, slug_pending
-         FROM notes
-         WHERE id = ?1 AND content_kind = ?2",
+        &format!(
+            "SELECT id, slug, title, body, source_session_id, source_cwd, tags_json,
+                    created_at, updated_at, slug_pending
+             FROM notes
+             WHERE id = ?1 AND content_kind = ?2{hidden}"
+        ),
         params![id, kind],
         read_note,
     )
@@ -354,6 +429,10 @@ fn get_content(conn: &Connection, id: &str, kind: &str) -> rusqlite::Result<Opti
 #[cfg(test)]
 fn upsert_note(conn: &Connection, note: &NoteUpsert) -> rusqlite::Result<Note> {
     upsert_content(conn, note, "note", None)
+}
+
+fn note_failed(message: impl Into<String>) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(message.into())
 }
 
 pub(crate) fn upsert_content(
@@ -412,22 +491,61 @@ pub(crate) fn upsert_content(
             } else {
                 (existing.slug, existing.slug_pending)
             };
-        conn.execute(
-            "UPDATE notes
-             SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
-                 source_cwd = ?6, slug = ?7, slug_pending = ?8
-             WHERE id = ?5",
-            params![
-                title,
-                body,
-                tags_json,
-                updated_at,
-                note.id,
-                project_cwd,
-                slug,
-                slug_pending
-            ],
-        )?;
+        // WP-72: a Notes edit that changes the Markdown drops the derived blocks.
+        // The next Docs open converts again. The same body keeps them. `body` on
+        // the right is the row's current value, not the new one.
+        // A text change also keeps the row as a version and bumps doc_version, so
+        // a Docs client still holding the old version cannot put that text back.
+        if kind == "note" && (title != existing.title || body != existing.body) {
+            let tx = conn.unchecked_transaction()?;
+            let doc_version: i64 = tx.query_row(
+                "SELECT COALESCE(doc_version, 0) FROM notes WHERE id = ?1",
+                params![note.id],
+                |row| row.get(0),
+            )?;
+            crate::docs::keep_note_text(&tx, &note.id).map_err(note_failed)?;
+            let changed = tx.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END,
+                     doc_version = doc_version + 1
+                 WHERE id = ?5 AND doc_version = ?9",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending,
+                    doc_version
+                ],
+            )?;
+            if changed != 1 {
+                return Err(note_failed("The page changed somewhere else"));
+            }
+            tx.commit()?;
+        } else {
+            conn.execute(
+                "UPDATE notes
+                 SET title = ?1, body = ?2, tags_json = ?3, updated_at = ?4,
+                     source_cwd = ?6, slug = ?7, slug_pending = ?8,
+                     blocks_json = CASE WHEN ?2 = body THEN blocks_json ELSE NULL END
+                 WHERE id = ?5",
+                params![
+                    title,
+                    body,
+                    tags_json,
+                    updated_at,
+                    note.id,
+                    project_cwd,
+                    slug,
+                    slug_pending
+                ],
+            )?;
+        }
         Ok(Note {
             id: note.id.clone(),
             slug,
@@ -481,11 +599,19 @@ pub(crate) fn upsert_content(
 }
 
 fn delete_note(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    // WP-72: a deleted note takes its versions and mentions with it.
+    conn.execute("DELETE FROM note_versions WHERE note_id = ?1", params![id])?;
+    conn.execute("DELETE FROM note_mentions WHERE note_id = ?1", params![id])?;
     conn.execute(
         "DELETE FROM notes WHERE id = ?1 AND content_kind = 'note'",
         params![id],
     )?;
     Ok(())
+}
+
+/// Hard-delete a note row. Assets are removed by the caller. Only purge and delete-forever use this.
+pub(crate) fn purge_note(conn: &Connection, id: &str) -> rusqlite::Result<()> {
+    delete_note(conn, id)
 }
 
 fn read_note(row: &rusqlite::Row<'_>) -> rusqlite::Result<Note> {
@@ -581,7 +707,7 @@ fn is_placeholder_title(title: &str) -> bool {
     }
 }
 
-fn unique_slug(conn: &Connection, title: &str) -> rusqlite::Result<String> {
+pub(crate) fn unique_slug(conn: &Connection, title: &str) -> rusqlite::Result<String> {
     let base = slugify(title);
     for index in 0..1000 {
         let candidate = if index == 0 {
@@ -1095,6 +1221,48 @@ mod tests {
         delete_note(&conn, "n1").unwrap();
         assert!(get_note(&conn, "n1").unwrap().is_none());
         assert!(list_notes(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_notes_edit_keeps_blocks_only_when_the_body_stays() {
+        let store = SessionStore::open_in_memory().unwrap();
+        upsert(&store, "n1", "Plan", "hello");
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "UPDATE notes SET blocks_json = '[{\"id\":\"b\"}]' WHERE id = 'n1'",
+            [],
+        )
+        .unwrap();
+        let same = NoteUpsert {
+            id: "n1".into(),
+            title: "Plan".into(),
+            body: "hello".into(),
+            tags: Vec::new(),
+            source_session_id: None,
+            source_cwd: None,
+            finalize_slug: false,
+        };
+        upsert_note(&conn, &same).unwrap();
+        let kept: Option<String> = conn
+            .query_row("SELECT blocks_json FROM notes WHERE id = 'n1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("[{\"id\":\"b\"}]"));
+        upsert_note(
+            &conn,
+            &NoteUpsert {
+                body: "changed".into(),
+                ..same
+            },
+        )
+        .unwrap();
+        let cleared: Option<String> = conn
+            .query_row("SELECT blocks_json FROM notes WHERE id = 'n1'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert!(cleared.is_none());
     }
 
     #[test]

@@ -11,10 +11,11 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Trash2,
   Zap,
   Chatting,
   Code,
-  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock } from "../../shared/ui/icons";
+  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock, Book } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -36,13 +37,16 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,
+  trash: Trash2,
   changes: Undo2,
   decisions: CheckCheck,
+  activity: Clock, // WP-78
   dashboards: DashboardSquare,
   portable: CloudUpload,
   // WP-75: checked backups.
   backups: Folder,
   history: Clock, // WP-50
+  memory: Book, // WP-51
   connectors: Zap,
   teams: Chatting,
 };

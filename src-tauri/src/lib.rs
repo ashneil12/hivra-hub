@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-78: the activity log.
+mod activity;
 mod artifacts;
 // WP-04: the one-time, read-only import from the retired Ash OS bridge.
 mod ash_os_import;
@@ -20,6 +22,8 @@ mod cursor_store;
 mod decisions;
 mod delegations;
 mod dev_fault;
+mod tasks; // WP-70: tasks shared by the person and their agents.
+
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
@@ -41,6 +45,8 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// WP-51: memory the person reviews.
+mod memory_review;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
 mod hub_plugin;
 mod inbox_media;
@@ -70,11 +76,15 @@ mod mono_chat;
 mod mono_home;
 mod mono_transcript;
 mod notes;
+// WP-72: docs are notes, with blocks, versions and a tree.
+mod docs;
 mod notifications;
 mod page_frames;
 mod page_http;
 mod pasteboard;
 mod pi_usage;
+// WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
 // WP-43: a browser profile per agent, and Stop.
@@ -106,6 +116,8 @@ pub mod ship;
 mod platform;
 mod skills;
 pub mod ssh_askpass;
+// Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
+mod worktree_pool;
 // Hivra WP-14: steering messages to running workers.
 mod steering;
 mod tool_detail;
@@ -427,6 +439,8 @@ pub fn run() {
             // A hub-change preview left on by a crash comes back out (self_build.rs).
             self_build::start(app.handle());
             session_store::init(app.handle())?;
+            // WP-76: drop anything that has been in the trash for 30 days, then again each day.
+            trash::start_daily_purge(app.handle().clone());
             ship::init(app.handle(), claim.data_dir.clone(), boot);
             // WP-75: scheduled backups. A dev copy stays off until Settings says otherwise.
             backups::init(claim.data_dir.clone());
@@ -604,6 +618,11 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            // WP-70: tasks shared by the person and their agents.
+            tasks::commands::tasks_list,
+            tasks::commands::tasks_get,
+            tasks::commands::tasks_create,
+            tasks::commands::tasks_update,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             project_tests::run_project_tests,
@@ -755,6 +774,10 @@ pub fn run() {
             worktrees::git_worktree_remove,
             worktrees::git_orchestration_worktree_remove,
             worktrees::git_orchestration_branch_remove,
+            worktree_pool::worktree_pool_status,
+            worktree_pool::worktree_pool_settings,
+            worktree_pool::worktree_pool_set_settings,
+            worktree_pool::worktree_pool_prune,
             project_file::project_file_status,
             project_file::project_file_import,
             project_file::project_file_forget,
@@ -941,8 +964,29 @@ pub fn run() {
             page_http::page_source_token_exists,
             page_http::page_source_token_clear,
             notes::notes_delete,
+            // WP-76: trash screen.
+            trash::trash_list,
+            trash::trash_restore,
+            trash::trash_delete_forever,
+            trash::trash_empty,
+            trash::trash_project,
+            trash::trash_mono,
             notes::notes_save_image,
             notes::notes_image_path,
+            // WP-72: docs commands. The pages are notes.
+            docs::docs_list,
+            docs::docs_get,
+            docs::docs_create,
+            docs::docs_update,
+            docs::docs_adopt,
+            docs::docs_move,
+            docs::docs_versions,
+            docs::docs_restore,
+            docs::docs_favourite,
+            docs::docs_touch,
+            docs::docs_trash,
+            docs::docs_export,
+            docs::docs_resolve,
             mono::mono_load,
             mono::mono_read,
             mono::mono_save,
@@ -1050,6 +1094,8 @@ pub fn run() {
             project_logo::save_project_logo,
             project_logo::remove_project_logo,
             project_logo::forget_logo_file,
+            // WP-78: Settings → Activity.
+            activity::activity_list,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,
@@ -1058,6 +1104,11 @@ pub fn run() {
             history_import::history_import_cas_state,
             history_import::history_import_write_proposal,
             history_import::history_import_ask,
+            // WP-51: memory the person reviews, and a decision on a drafted chat.
+            memory_review::memory_review_load,
+            memory_review::memory_review_cas,
+            history_import::history_import_list_proposals,
+            history_import::history_import_review_proposal,
         ])
         .build(context)
         .expect("error while building MonoCode");

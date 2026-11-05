@@ -5,8 +5,10 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import type { Session } from "../../features/sessions/model/session";
-import { monoForSession } from "../../features/monos/model/mono";
+import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
+import { findMono, monoForSession } from "../../features/monos/model/mono";
 import { feedTree, setTreeCompactor } from "../../features/monos/model/monoTreeStore";
+import { chatBytes, LONG_CHAT_THRESHOLD } from "../../features/memory/model/longChat";
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../integrations/harness";
 import { homeDir } from "../../platform/tauri/fs";
 
@@ -26,21 +28,45 @@ export async function isolatedCompaction(prompt: string): Promise<string> {
   return runHarnessTextPrompt({ harness: "claude", cwd: await homeDir(), prompt, intent: "plan", timeoutMs: COMPACTION_TIMEOUT_MS });
 }
 
-/** The chats to feed now: a long-chat Mono's own chat, idle, with blocks it hasn't been fed since. */
+/** A coding-team chat uses the lead's tree only while the lead has no chat of its own. */
+export function leadForThreshold(sessionId: string): string | undefined {
+  const project = codingTeamChatProject(sessionId);
+  if (!project) return undefined;
+  const lead = findMono(`${project}-lead`);
+  if (!lead || lead.longChat === true) return undefined;
+  if (lead.sessionId && lead.sessionId !== sessionId) return undefined;
+  return lead.id;
+}
+
+/** The chats to feed now: a long-chat Mono's own chat, or a first mate past the size, idle, not fed since. */
 export function treeFeeds(
   sessions: readonly Pick<Session, "id" | "busy" | "blocks">[],
   fedLast: Map<string, string | undefined>,
-  monoOf: (sessionId: string) => { id: string; longChat?: boolean } | undefined = monoForSession,
-): Array<{ monoId: string; session: Pick<Session, "id" | "blocks"> }> {
-  const out: Array<{ monoId: string; session: Pick<Session, "id" | "blocks"> }> = [];
+  monoOf: (sessionId: string) => { id: string; longChat?: boolean; sessionId?: string } | undefined = monoForSession,
+  leadOf: (sessionId: string) => string | undefined = () => undefined,
+): Array<{ monoId: string; session: Pick<Session, "id" | "blocks">; evenWithoutSetting?: boolean }> {
+  const out: Array<{ monoId: string; session: Pick<Session, "id" | "blocks">; evenWithoutSetting?: boolean }> = [];
   for (const session of sessions) {
     if (session.busy) continue;
     const mono = monoOf(session.id);
-    if (mono?.longChat !== true) continue;
+    let monoId: string | undefined;
+    let evenWithoutSetting = false;
+    if (mono?.longChat === true) monoId = mono.id;
+    else if (mono?.sessionId === session.id && chatBytes(session.blocks) >= LONG_CHAT_THRESHOLD) {
+      monoId = mono.id;
+      evenWithoutSetting = true;
+    } else if (!mono) {
+      const leadId = leadOf(session.id);
+      if (leadId && chatBytes(session.blocks) >= LONG_CHAT_THRESHOLD) {
+        monoId = leadId;
+        evenWithoutSetting = true;
+      }
+    }
+    if (!monoId) continue;
     const last = session.blocks[session.blocks.length - 1]?.id;
     if (!last || fedLast.get(session.id) === last) continue;
     fedLast.set(session.id, last);
-    out.push({ monoId: mono.id, session });
+    out.push(evenWithoutSetting ? { monoId, session, evenWithoutSetting: true } : { monoId, session });
   }
   return out;
 }
@@ -55,8 +81,8 @@ export function useMonoTrees(sessions: readonly Session[], enabled: boolean): vo
   }, [on]);
   useEffect(() => {
     if (!on) return;
-    for (const { monoId, session } of treeFeeds(sessions, fedLast.current))
-      void feedTree(monoId, session.blocks).catch((error) => {
+    for (const { monoId, session, evenWithoutSetting } of treeFeeds(sessions, fedLast.current, monoForSession, leadForThreshold))
+      void feedTree(monoId, session.blocks, evenWithoutSetting ? { evenWithoutSetting: true } : undefined).catch((error) => {
         fedLast.current.delete(session.id);
         console.error(`long chat ${monoId}: not fed`, error);
       });

@@ -160,3 +160,17 @@ export async function learnSkillLesson(input: {
     note: forUser`It's in ${title} now, and Ash sees it in Settings → Changes → Bot changes with Undo.`,
   };
 }
+
+/** Takes one lesson back out of that skill's own file. A missing file is left alone. */
+export async function takeBackSkillLesson(skill: string, lesson: string): Promise<void> {
+  const name = slugSkillName(skill);
+  if (!isValidSkillName(name)) return;
+  const sentence = plainLesson(lesson);
+  if (!sentence) return;
+  const path = await skillPath(name);
+  const now = await readTextFile(path).catch(() => "");
+  const back = removeLesson(now, sentence);
+  if (back === undefined) return;
+  await writeTextFile(path, back);
+  invalidateSkills();
+}

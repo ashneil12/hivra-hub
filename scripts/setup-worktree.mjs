@@ -127,6 +127,11 @@ export function setupNodeModules({ main, worktree }) {
     return;
   }
   if (existing) {
+    // Never `npm ci` over a real directory. A matching lockfile is already usable.
+    if (existing.isDirectory() && lockMatches) {
+      log("node_modules already matches the lockfile; nothing to do");
+      return;
+    }
     log("node_modules is already installed here; left as it is");
     return;
   }
