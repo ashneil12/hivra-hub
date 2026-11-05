@@ -3,6 +3,10 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Habit } from "../../features/monos/model/monoHabits";
+import {
+  holdRunCard,
+  takeRunCards,
+} from "../../features/monos/model/monoCards";
 import type { Block, Session } from "../../features/sessions/model/session";
 
 let stored: Habit[] = [];
@@ -255,6 +259,63 @@ it("posts nothing when the run has nothing to say", async () => {
   await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
   expect(host.post).not.toHaveBeenCalled();
   expect(host.remove).toHaveBeenCalled();
+});
+
+function dueHabit() {
+  stored = [
+    {
+      id: "h1",
+      name: "Morning CI check",
+      instructions: "Tell me if CI is red.",
+      schedule: {
+        scheduleKind: "daily",
+        time: "09:00",
+        minute: 0,
+        dayOfWeek: 1,
+      },
+      enabled: true,
+      createdAt: 0,
+      nextRunAt: Date.now() - 60_000,
+    },
+  ];
+}
+
+it("sends a card from the run out with its report", async () => {
+  const card = {
+    type: "worker-default" as const,
+    scope: "mono" as const,
+    line: "Its workers use Opus.",
+  };
+  dueHabit();
+  const host = makeHost("CI is red.");
+  const run = host.run.getMockImplementation()!;
+  host.run.mockImplementation(async (id: string, prompt: string) => {
+    holdRunCard(id, card);
+    return run(id, prompt);
+  });
+  mountHost(host);
+  await vi.waitFor(() => expect(host.post).toHaveBeenCalled());
+  expect(host.post.mock.calls[0][6]).toEqual([card]);
+  expect(takeRunCards(host.add.mock.calls[0][0].id)).toEqual([]);
+});
+
+it("drops a card when the run stays quiet", async () => {
+  const card = {
+    type: "pr" as const,
+    number: 7,
+    note: "Needs a look.",
+  };
+  dueHabit();
+  const host = makeHost("NOTHING_TO_REPORT");
+  const run = host.run.getMockImplementation()!;
+  host.run.mockImplementation(async (id: string, prompt: string) => {
+    holdRunCard(id, card);
+    return run(id, prompt);
+  });
+  mountHost(host);
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("quiet"));
+  expect(host.post).not.toHaveBeenCalled();
+  expect(takeRunCards(host.add.mock.calls[0][0].id)).toEqual([]);
 });
 
 it("puts the sessions a run started on its report", async () => {

@@ -1,5 +1,3 @@
-import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
-import { DEEPSEEK_BRIDGE_NAME } from "../../sessions/model/deepseekBridge";
 import { useEffect, useRef, useState } from "react";
 import { Popover, type PopoverAnchor } from "../../../shared/ui/Popover";
 import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
@@ -18,9 +16,9 @@ import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES } from "./projectShapeIcons";
 import { codingTeamModelLine } from "../model/codingTeamModel";
 import {
-  DEFAULT_LIMITS, MAX_WORKERS, limitsLine, projectWorkerModel, setProjectWorkerModel, setWorkerLimits, workerLimits,
+  DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits,
 } from "../../monos/model/workerPool";
-import { modelEffortSetting, modelsFor, resolveModel } from "../../sessions/model/models";
+import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -240,25 +238,6 @@ function RenameProject({ project, anchor, onClose }: { project: HubProject; anch
 export function ProjectWorkers({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
   const [limits, setLimits] = useState(() => workerLimits(project.id));
   const change = (next: Partial<typeof limits>) => setLimits(setWorkerLimits(project.id, next));
-  // E7: which model this project's workers run on, and at what effort. Unset: the app's usual rule (Sonnet, a stronger
-  // model for a hard job). A task's own model or effort still wins over this.
-  const [choice, setChoice] = useState(() => projectWorkerModel(project.id));
-  const candidates = modelsFor("claude");
-  const chosen = choice ? resolveModel("claude", choice.model) : undefined;
-  const effort = chosen ? modelEffortSetting(chosen) : undefined;
-  const pickModel = (model: string) => {
-    const picked = model ? resolveModel("claude", model) : undefined;
-    const level = picked ? modelEffortSetting(picked) : undefined;
-    const next = picked ? { model: picked.id, ...(level ? { effort: level.value } : {}) } : undefined;
-    setChoice(next);
-    setProjectWorkerModel(project.id, next);
-  };
-  const pickEffort = (value: string) => {
-    if (!choice) return;
-    const next = { model: choice.model, effort: value };
-    setChoice(next);
-    setProjectWorkerModel(project.id, next);
-  };
   const field = (label: string, value: number, key: "workers" | "heavy", max: number) => (
     <label className="flex items-center justify-between gap-2 text-[13px] text-content">
       {label}
@@ -276,34 +255,8 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
       <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
         {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
       </p>
-      <label className="flex items-center justify-between gap-2 text-[13px] text-content">
-        Model for its workers
-        <select value={choice?.model ?? ""} aria-label="Model for its workers" data-project-worker-model
-          onChange={(e) => pickModel(e.target.value)}
-          className="max-w-[60%] rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30">
-          <option value="">Sonnet, harder jobs step up</option>
-          {candidates.map((model) => <option key={model.id} value={model.id}>{model.name}</option>)}
-        </select>
-      </label>
-      {effort && choice ? (
-        <label className="flex items-center justify-between gap-2 text-[13px] text-content">
-          Effort
-          <select value={choice.effort ?? effort.value} aria-label="Effort for its workers" data-project-worker-effort
-            onChange={(e) => pickEffort(e.target.value)}
-            className="max-w-[60%] rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30">
-            {effort.options.map((option) => (
-              <option key={option.value} value={option.value} disabled={option.unsupported}>{option.label}</option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-      <p className="text-[12px] leading-4 text-content/60" data-project-worker-model-line>
-        {choice && chosen
-          ? `Each job here runs on ${chosen.name.replace(/^Claude /, "")}${effort ? ` at ${choice.effort ?? effort.value} effort` : ""}, unless the job names its own model.`
-          : claudeRunsOnSubscriptionBridge()
-            ? `Each job here runs on ${DEEPSEEK_BRIDGE_NAME} at high effort.`
-            : `Each job here runs on Sonnet; one marked hard, a heavy job, a retry, or a job covering 8 or more files gets a stronger model.`}
-      </p>
+      {/* WP-89: the same control as Settings and the Mono, with this project's CLI. */}
+      <WorkerDefaultControl scope="project" projectId={project.id} projectFolder={project.folder ?? undefined} />
       {/* E7: which model the coding team starts on (DeepSeek on High when set up), and why when it isn't. */}
       <p className="text-[12px] leading-4 text-content/60" data-project-model-line>{codingTeamModelLine(project.name)}</p>
       {limits.workers !== DEFAULT_LIMITS.workers || limits.heavy !== DEFAULT_LIMITS.heavy ? (

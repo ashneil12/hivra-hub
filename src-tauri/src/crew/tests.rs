@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use super::budget::{budget_or_default, normalize_failure_policy};
 use super::failure::{self, Kind};
 use super::reroute::{decide, Attempt, FailureInput};
-use super::resolve::{role_model, Pick, Presence};
+use super::resolve::{role_model, CatalogModel, Pick, Presence, RouteDefaults, Skipped};
 use super::rules::{self, Rule};
 use super::store::{self, FailureQuery, RouteQuery, RuleDraft};
 use crate::delegations::{self, DeliveryInput, RecordInput, SettleInput};
@@ -70,6 +70,8 @@ fn query(
         mono: some(mono),
         present: present(who),
         mono_rules: Vec::new(),
+        defaults: None,
+        catalog: std::collections::BTreeMap::new(),
     }
 }
 
@@ -330,6 +332,258 @@ fn precedence_is_one_field_at_a_time_and_the_default_is_a_signed_in_cli() {
     let (work, work_effort) = role_model("work", &routed);
     assert_eq!(work.as_deref(), Some("composer"));
     assert_eq!(work_effort.as_deref(), Some("high"));
+}
+
+fn offered(id: &str, name: &str, efforts: &[&str]) -> CatalogModel {
+    CatalogModel {
+        id: id.into(),
+        name: Some(name.into()),
+        efforts: efforts.iter().map(|effort| (*effort).to_string()).collect(),
+    }
+}
+
+fn stand_in_catalog() -> std::collections::BTreeMap<String, Vec<CatalogModel>> {
+    let mut catalog = std::collections::BTreeMap::new();
+    catalog.insert(
+        "claude".into(),
+        vec![
+            offered("claude:opus-4-7", "Opus 4.7", &["low", "high", "max"]),
+            offered("claude:sonnet-5", "Sonnet", &["low", "medium", "high"]),
+        ],
+    );
+    catalog.insert(
+        "cursor".into(),
+        vec![offered("composer", "Composer", &["medium", "high"])],
+    );
+    catalog.insert(
+        "grok".into(),
+        vec![offered("grok-4", "Grok 4", &["low", "high"])],
+    );
+    catalog
+}
+
+fn pick(cli: &str, model: &str, effort: &str) -> Option<Pick> {
+    Some(Pick {
+        cli: some(cli),
+        model: some(model),
+        effort: some(effort),
+    })
+}
+
+/// WP-89: each field comes from the first source that sets it, and a catalog miss falls through.
+#[test]
+fn a_worker_default_is_one_field_at_a_time_and_a_rule_still_beats_it() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let signed = [("claude", true, true)];
+    let mut open = query("", "", "", "", None, None, &signed);
+    open.defaults = Some(RouteDefaults {
+        mono: pick("grok", "grok-4", "low"),
+        project: pick("cursor", "composer", "medium"),
+        system: pick("codex", "gpt-5", "high"),
+        usual: pick("", "claude:sonnet-5", "medium"),
+    });
+    open.catalog = stand_in_catalog();
+    let from_mono = store::route(&conn, &open, &[]).unwrap();
+    assert_eq!(from_mono.cli.as_deref(), Some("grok"));
+    assert_eq!(from_mono.cli_from, "mono");
+    assert_eq!(from_mono.model.as_deref(), Some("grok-4"));
+    assert_eq!(from_mono.model_from, "mono");
+    assert_eq!(from_mono.effort.as_deref(), Some("low"));
+    assert_eq!(from_mono.effort_from, "mono");
+
+    let mut split = query("", "", "", "", None, None, &signed);
+    split.defaults = Some(RouteDefaults {
+        mono: pick("grok", "", ""),
+        project: pick("", "grok-4", ""),
+        system: pick("", "", "high"),
+        usual: None,
+    });
+    split.catalog = stand_in_catalog();
+    let split = store::route(&conn, &split, &[]).unwrap();
+    assert_eq!(split.cli_from, "mono");
+    assert_eq!(split.model.as_deref(), Some("grok-4"));
+    assert_eq!(split.model_from, "project");
+    assert_eq!(split.effort.as_deref(), Some("high"));
+    assert_eq!(split.effort_from, "system");
+
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![draft("ui", "src/app", "cursor", "composer", "high")],
+        0,
+        None,
+    )
+    .unwrap();
+    let mut ruled = query("ui", "src/app/main.tsx", PROJECT, "", None, None, &signed);
+    ruled.defaults = open.defaults.clone();
+    ruled.catalog = stand_in_catalog();
+    let ruled = store::route(&conn, &ruled, &[]).unwrap();
+    assert_eq!(ruled.cli.as_deref(), Some("cursor"));
+    assert_eq!(ruled.cli_from, "rule");
+    assert_eq!(ruled.model.as_deref(), Some("composer"));
+    assert_eq!(ruled.model_from, "rule");
+    assert_eq!(ruled.effort.as_deref(), Some("high"));
+    assert_eq!(ruled.effort_from, "rule");
+
+    let mut skipped = query("", "", "", "", None, None, &signed);
+    skipped.defaults = Some(RouteDefaults {
+        mono: pick("cursor", "nope", "max"),
+        project: pick("", "composer", "low"),
+        system: pick("", "", "high"),
+        usual: None,
+    });
+    skipped.catalog = stand_in_catalog();
+    let skipped_route = store::route(&conn, &skipped, &[]).unwrap();
+    assert_eq!(skipped_route.cli.as_deref(), Some("cursor"));
+    assert_eq!(skipped_route.model.as_deref(), Some("composer"));
+    assert_eq!(skipped_route.model_from, "project");
+    assert_eq!(skipped_route.effort.as_deref(), Some("high"));
+    assert_eq!(skipped_route.effort_from, "system");
+    assert_eq!(
+        skipped_route.skipped,
+        vec![
+            Skipped {
+                field: "model".into(),
+                from: "mono".into(),
+                value: "nope".into(),
+                reason: "Cursor doesn't offer \"nope\".".into(),
+            },
+            Skipped {
+                field: "effort".into(),
+                from: "mono".into(),
+                value: "max".into(),
+                reason: "Composer doesn't offer \"max\".".into(),
+            },
+            Skipped {
+                field: "effort".into(),
+                from: "project".into(),
+                value: "low".into(),
+                reason: "Composer doesn't offer \"low\".".into(),
+            },
+        ]
+    );
+
+    let mut huge = query(
+        "",
+        "",
+        "",
+        "",
+        Some(Pick {
+            cli: None,
+            model: None,
+            effort: Some("huge".into()),
+        }),
+        None,
+        &signed,
+    );
+    huge.defaults = Some(RouteDefaults {
+        mono: pick("claude", "claude:opus-4-7", "high"),
+        project: None,
+        system: None,
+        usual: None,
+    });
+    huge.catalog = stand_in_catalog();
+    let huge = store::route(&conn, &huge, &[]).unwrap();
+    assert_eq!(huge.effort.as_deref(), Some("high"));
+    assert_eq!(huge.effort_from, "mono");
+    assert_eq!(huge.skipped[0].reason, "\"huge\" isn't an effort.");
+
+    let mut quiet = query(
+        "ui",
+        "src/app",
+        PROJECT,
+        "",
+        Some(Pick {
+            cli: Some("nope".into()),
+            model: None,
+            effort: Some("huge".into()),
+        }),
+        None,
+        &signed,
+    );
+    quiet.defaults = open.defaults.clone();
+    let quiet = store::route(&conn, &quiet, &[]).unwrap();
+    assert_eq!(quiet.cli.as_deref(), Some("cursor"));
+    assert_eq!(quiet.effort.as_deref(), Some("high"));
+    assert!(quiet.skipped.is_empty());
+
+    let mut usual = query(
+        "",
+        "",
+        "",
+        "",
+        None,
+        None,
+        &[("codex", true, true), ("claude", true, true)],
+    );
+    usual.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "claude:sonnet-5", "medium"),
+    });
+    usual.catalog = stand_in_catalog();
+    let usual = store::route(&conn, &usual, &[]).unwrap();
+    assert_eq!(usual.cli.as_deref(), Some("claude"));
+    assert_eq!(usual.cli_from, "default");
+    assert_eq!(usual.model.as_deref(), Some("claude:sonnet-5"));
+    assert_eq!(usual.model_from, "default");
+    assert_eq!(usual.effort.as_deref(), Some("medium"));
+    assert_eq!(usual.effort_from, "default");
+
+    let mut custom = query(
+        "deep",
+        "",
+        "",
+        "",
+        Some(Pick {
+            cli: None,
+            model: Some("custom:deepseek-test".into()),
+            effort: None,
+        }),
+        None,
+        &signed,
+    );
+    custom.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "claude:sonnet-5", "medium"),
+    });
+    custom.catalog = stand_in_catalog();
+    let custom = store::route(&conn, &custom, &[]).unwrap();
+    assert_eq!(custom.model.as_deref(), Some("custom:deepseek-test"));
+    assert_eq!(custom.model_from, "override");
+    assert!(custom.skipped.iter().all(|row| row.field != "model"));
+
+    let mut other = query(
+        "",
+        "",
+        "",
+        "",
+        Some(Pick {
+            cli: Some("cursor".into()),
+            model: Some("custom:deepseek-test".into()),
+            effort: None,
+        }),
+        None,
+        &signed,
+    );
+    other.catalog = stand_in_catalog();
+    other.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "composer", "medium"),
+    });
+    let other = store::route(&conn, &other, &[]).unwrap();
+    assert_ne!(other.model.as_deref(), Some("custom:deepseek-test"));
+    assert!(other
+        .skipped
+        .iter()
+        .any(|row| row.value == "custom:deepseek-test"));
 }
 
 #[test]

@@ -42,7 +42,13 @@ login (`~/.monocode-hub-dev/claude-config`, Ash's Max account). Budget matters: 
 - **The temporary HOME's keychain list** is pointed at the login keychain so `claude` can read the dev login (written
   to `<tmp HOME>/Library/Preferences/com.apple.security.plist`; the real one is untouched), and
   `<tmp HOME>/.monocode-hub-dev/claude-config` is a link to the shared dev config, so the app and Claude agree on where
-  transcripts live.
+  transcripts live. That shared folder is never edited. Bench denies (process control, writes outside the run's own
+  folders, and reads of the real home) live in `<tmp HOME>/.monocode-hub-bench/settings.json`, passed as `--settings`, and on `--disallowedTools`.
+- **Not a real app, and not the real home.** A bench agent cannot signal a process (`kill`, `pkill`, `killall`,
+  `osascript`, `open`, `shutdown`, `reboot`, `launchctl` except `launchctl list`), cannot write outside the run's own
+  folders, and cannot read the real home, `/Applications`, or another app's Application Support. The one process it may stop is the bench's own dummy,
+  through the bench tool. If a real app that was running is gone after a scene, the scene fails with
+  `touched a real app: <name>`, the rest of the round is skipped, and the run exits non-zero.
 
 ## How it drives the app
 
@@ -281,4 +287,6 @@ FAIL on 010dfbcf (`evidence/verify-live-base/`). The browser proof (`tests/brows
 every chat, helper call, tester, judge and the grader on DeepSeek V4.1 Flash through `~/.local/bin/claude-deepseek`
 (`--deepseek-sub`, `--agents deepseek-sub`). The Claude login is used only on an explicit `--agents claude` (realtest) or
 `--agents claude:<model>` (realconv). Haiku test workers (`--agents haiku-test`) use the Anthropic test key; their grader
-still runs on the DeepSeek launcher.
+still runs on the DeepSeek launcher. `--agents grok-sub` points the chats at `~/.local/bin/claude-grok` (Claude Code on
+Grok through the local gateway). The grader stays on the DeepSeek launcher. That launcher is started with no
+`ANTHROPIC_*` or `CLAUDE_CODE_*` credential variables from the caller. DeepSeek stays the default.

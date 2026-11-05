@@ -38,7 +38,6 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
       moving: [],
       recent: [],
       arrangement: defaultArrangement(),
-      projects: [{ id: "crew", name: "Crew" }],
       catalog: [],
       known: true,
       failed: false,
@@ -48,18 +47,20 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
       onShow: () => undefined,
       onPin: () => undefined,
       onUnpin: () => undefined,
-      onStart: () => undefined,
+      onAsk: () => undefined,
       renderPanel: () => createElement("p", null, "Example board"),
       ...props,
     }));
   });
 }
 
-it("hides an empty section, says all quiet, and offers a chat", () => {
+it("hides an empty section, says all quiet, and keeps the chat at the top", () => {
   draw();
   expect(container.querySelector("[data-home-section]")).toBeNull();
   expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
-  expect(container.textContent).toContain("Start a chat with Crew");
+  expect(container.querySelector("[data-home] > div")?.firstElementChild?.hasAttribute("data-home-start")).toBe(true);
+  expect(container.textContent).not.toContain("Start a chat with Crew");
+  expect(container.querySelector("[data-home-summary]")).toBeNull();
   expect(container.querySelector("[data-count]")).toBeNull();
   expect(container.textContent).not.toMatch(/\d/);
 });
@@ -73,7 +74,18 @@ it("shows a section that has a line and hides one that does not", () => {
   expect(container.querySelector("[data-home-section='moving-now']")).not.toBeNull();
   expect(container.querySelector("[data-home-section='recent']")).toBeNull();
   expect(container.querySelector("[data-home-empty]")).toBeNull();
-  expect(container.querySelector("[data-home-start]")).toBeNull();
+  expect(container.querySelector("[data-home] > div")?.firstElementChild?.hasAttribute("data-home-start")).toBe(true);
+});
+
+it("shows the morning summary only when it has a line", () => {
+  draw({
+    summary: [{ id: "task-1", kind: "task", text: "Crew · Write the notes", projectId: "crew" }],
+  });
+  expect(container.querySelector("[data-home-summary]")?.textContent).toContain("Crew · Write the notes");
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  draw({ summary: [] });
+  expect(container.querySelector("[data-home-summary]")).toBeNull();
+  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("All quiet.");
 });
 
 it("does not say all quiet before the first load, including when the load failed", () => {

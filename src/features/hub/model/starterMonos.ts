@@ -7,9 +7,11 @@ export type StarterOffer = {
   name: string;
   role?: string;
   soul: string;
+  /** WP-88: only the coordinator template asks to read every project. */
+  everyProject?: boolean;
 };
 
-type Spec = { name?: unknown; role?: unknown };
+type Spec = { name?: unknown; role?: unknown; everyProjectReads?: unknown };
 
 const soulFiles = import.meta.glob("../../../../src-tauri/plugins/starter-monos/hivra/monos/*/SOUL.md", {
   query: "?raw",
@@ -49,7 +51,14 @@ export function starterOffers(): StarterOffer[] {
     const name = typeof entry.spec?.name === "string" ? entry.spec.name.trim() : "";
     if (!name) continue;
     const role = typeof entry.spec?.role === "string" ? entry.spec.role.trim() : "";
-    offers.push({ id, name, ...(role ? { role } : {}), soul: entry.soul.endsWith("\n") ? entry.soul : `${entry.soul}\n` });
+    const everyProject = entry.spec?.everyProjectReads === true;
+    offers.push({
+      id,
+      name,
+      ...(role ? { role } : {}),
+      soul: entry.soul.endsWith("\n") ? entry.soul : `${entry.soul}\n`,
+      ...(everyProject ? { everyProject: true } : {}),
+    });
   }
   return offers.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
 }
@@ -68,6 +77,7 @@ export function addStarterMono(templateId: string, projects: readonly string[] =
     name: offer.name,
     ...(offer.role ? { role: offer.role } : {}),
     instructions: offer.soul,
+    ...(offer.everyProject ? { everyProject: true } : {}),
   }));
   return findMono(created.id);
 }

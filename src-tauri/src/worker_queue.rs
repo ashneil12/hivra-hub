@@ -47,7 +47,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             workers INTEGER NOT NULL,
             heavy INTEGER NOT NULL,
             model TEXT,
-            effort TEXT
+            effort TEXT,
+            cli TEXT
          );
          CREATE TABLE IF NOT EXISTS worker_heavy (
             seq INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,6 +74,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE worker_limits ADD COLUMN model TEXT;
              ALTER TABLE worker_limits ADD COLUMN effort TEXT;",
         )?;
+    }
+    // WP-89: the project's worker default can name a CLI. A row from before has none, and reads as Claude.
+    let has_cli: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('worker_limits') WHERE name = 'cli'")?
+        .exists([])?;
+    if !has_cli {
+        conn.execute_batch("ALTER TABLE worker_limits ADD COLUMN cli TEXT;")?;
     }
     Ok(())
 }
@@ -206,30 +214,46 @@ pub fn set_limits(
 /// A project's own worker model (E7, Ash's choice in the Workers dialog): the model and effort every worker in the
 /// project runs on unless the task names its own. `None` clears it, and the project's workers go back to the usual
 /// Sonnet (taskDifficulty.ts). Clearing a model clears its effort with it. The limits are left as they are.
+fn usable_text(value: Option<String>, what: &str) -> Result<Option<String>, String> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let text = value.trim();
+    if text.is_empty() {
+        return Ok(None);
+    }
+    if text.chars().count() > ID_MAX || text.contains(['\r', '\n']) {
+        return Err(format!("That {what} isn't usable."));
+    }
+    Ok(Some(text.to_string()))
+}
+
 pub fn set_model(
     conn: &Connection,
     project: &str,
     model: Option<String>,
     effort: Option<String>,
+    cli: Option<String>,
 ) -> Result<Value, String> {
     if project.trim().is_empty() || project.len() > ID_MAX {
         return Err("A project is needed".into());
     }
-    let model = model.filter(|value| !value.trim().is_empty());
-    if model.as_ref().is_some_and(|value| value.len() > ID_MAX) {
-        return Err("That model id is too long".into());
-    }
-    let effort = model
-        .as_ref()
-        .and(effort.filter(|value| !value.trim().is_empty()));
+    let model = usable_text(model, "model id")?;
+    // Clearing the model clears the effort and the CLI with it. No CLI stored means the old Claude-only row.
+    let effort = model.as_ref().and(usable_text(effort, "effort")?);
+    let cli = model.as_ref().and(usable_text(cli, "CLI")?);
     // A new row starts at the app's own defaults, the same as workerPool.ts (6 at once, 2 of them heavy).
     conn.execute(
-        "INSERT INTO worker_limits (project, workers, heavy, model, effort) VALUES (?1, 6, 2, ?2, ?3)
-         ON CONFLICT(project) DO UPDATE SET model = excluded.model, effort = excluded.effort",
-        params![project, model, effort],
+        "INSERT INTO worker_limits (project, workers, heavy, model, effort, cli) VALUES (?1, 6, 2, ?2, ?3, ?4)
+         ON CONFLICT(project) DO UPDATE SET model = excluded.model, effort = excluded.effort, cli = excluded.cli",
+        params![project, model, effort, cli],
     )
     .map_err(|e| e.to_string())?;
-    Ok(json!({ "model": model, "effort": effort }))
+    let mut saved = json!({ "model": model, "effort": effort });
+    if let Some(cli) = &cli {
+        saved["cli"] = json!(cli);
+    }
+    Ok(saved)
 }
 
 pub fn mark_heavy(conn: &Connection, child: &str) -> Result<bool, String> {
@@ -250,11 +274,13 @@ pub fn mark_heavy(conn: &Connection, child: &str) -> Result<bool, String> {
     Ok(added > 0)
 }
 
-/// `{ limits: { <project>: { workers, heavy, model?, effort? } }, heavy: [<child>...] }`.
+/// `{ limits: { <project>: { workers, heavy, model?, effort?, cli? } }, heavy: [<child>...], workerDefault? }`.
+/// `cli` is present only when a model is set and a CLI was stored. `workerDefault` is present only when one is set.
+/// An old row has neither, and reads as the Claude choice it always was.
 pub fn settings(conn: &Connection) -> Result<Value, String> {
     let mut limits = serde_json::Map::new();
     let mut statement = conn
-        .prepare("SELECT project, workers, heavy, model, effort FROM worker_limits")
+        .prepare("SELECT project, workers, heavy, model, effort, cli FROM worker_limits")
         .map_err(|e| e.to_string())?;
     let rows = statement
         .query_map([], |row| {
@@ -264,27 +290,23 @@ pub fn settings(conn: &Connection) -> Result<Value, String> {
                 row.get::<_, i64>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     for row in rows {
-        let (project, workers, heavy, model, effort) = row.map_err(|e| e.to_string())?;
-        limits.insert(
-            project,
-            match model {
-                // The effort goes only when one was chosen (workerPool.ts reads it as optional).
-                Some(model) => match effort {
-                    Some(effort) => json!({
-                        "workers": workers,
-                        "heavy": heavy,
-                        "model": model,
-                        "effort": effort,
-                    }),
-                    None => json!({ "workers": workers, "heavy": heavy, "model": model }),
-                },
-                None => json!({ "workers": workers, "heavy": heavy }),
-            },
-        );
+        let (project, workers, heavy, model, effort, cli) = row.map_err(|e| e.to_string())?;
+        let mut saved = json!({ "workers": workers, "heavy": heavy });
+        if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+            saved["model"] = json!(model);
+            if let Some(effort) = effort.filter(|value| !value.trim().is_empty()) {
+                saved["effort"] = json!(effort);
+            }
+            if let Some(cli) = cli.filter(|value| !value.trim().is_empty()) {
+                saved["cli"] = json!(cli);
+            }
+        }
+        limits.insert(project, saved);
     }
     let mut statement = conn
         .prepare("SELECT child FROM worker_heavy ORDER BY seq")
@@ -294,7 +316,95 @@ pub fn settings(conn: &Connection) -> Result<Value, String> {
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(json!({ "limits": limits, "heavy": heavy }))
+    let mut out = json!({ "limits": limits, "heavy": heavy });
+    if let Some(worker_default) = read_system_default(conn)? {
+        out["workerDefault"] = worker_default;
+    }
+    Ok(out)
+}
+
+const WORKER_DEFAULT_KEY: &str = "worker_default";
+
+/// The app-wide worker default (WP-89). `None`, or an object whose fields are all blank, clears it.
+/// A field that is empty, too long, or holds a line break is refused. Only the fields that were set are stored.
+pub fn set_system_default(conn: &Connection, value: Option<&Value>) -> Result<Value, String> {
+    let Some(value) = value else {
+        conn.execute(
+            "DELETE FROM worker_queue_meta WHERE key = ?1",
+            params![WORKER_DEFAULT_KEY],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(Value::Null);
+    };
+    let Some(object) = value.as_object() else {
+        return Err("A worker default is an object".into());
+    };
+    let mut saved = serde_json::Map::new();
+    for key in ["cli", "model", "effort"] {
+        let Some(field) = object.get(key) else {
+            continue;
+        };
+        if field.is_null() {
+            continue;
+        }
+        let Value::String(text) = field else {
+            return Err(format!("That {key} isn't usable."));
+        };
+        if let Some(clean) = usable_text(Some(text.clone()), key)? {
+            saved.insert(key.to_string(), json!(clean));
+        }
+    }
+    if saved.is_empty() {
+        conn.execute(
+            "DELETE FROM worker_queue_meta WHERE key = ?1",
+            params![WORKER_DEFAULT_KEY],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(Value::Null);
+    }
+    let text = Value::Object(saved.clone()).to_string();
+    conn.execute(
+        "INSERT INTO worker_queue_meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![WORKER_DEFAULT_KEY, text],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(Value::Object(saved))
+}
+
+/// A stored default that isn't the shape we wrote (or a field that isn't usable) is left out, not an error.
+fn read_system_default(conn: &Connection) -> Result<Option<Value>, String> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM worker_queue_meta WHERE key = ?1",
+            params![WORKER_DEFAULT_KEY],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return Ok(None);
+    };
+    let Some(object) = value.as_object() else {
+        return Ok(None);
+    };
+    let mut saved = serde_json::Map::new();
+    for key in ["cli", "model", "effort"] {
+        let Some(text) = object.get(key).and_then(Value::as_str) else {
+            continue;
+        };
+        if let Ok(Some(clean)) = usable_text(Some(text.to_string()), key) {
+            saved.insert(key.to_string(), json!(clean));
+        }
+    }
+    if saved.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(Value::Object(saved)))
+    }
 }
 
 /// The limits and heavy list an older build kept in local storage, imported once. A project already set here keeps
@@ -459,8 +569,21 @@ pub fn worker_model_set(
     project: String,
     model: Option<String>,
     effort: Option<String>,
+    cli: Option<String>,
 ) -> Result<Value, String> {
-    let saved = set_model(&*store.lock_conn()?, &project, model, effort)?;
+    let saved = set_model(&*store.lock_conn()?, &project, model, effort, cli)?;
+    changed(&app);
+    Ok(saved)
+}
+
+/// WP-89: the system-wide worker default. `None` clears it.
+#[tauri::command(async)]
+pub fn worker_default_set(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    value: Option<Value>,
+) -> Result<Value, String> {
+    let saved = set_system_default(&*store.lock_conn()?, value.as_ref())?;
     changed(&app);
     Ok(saved)
 }
@@ -706,7 +829,8 @@ mod tests {
                 &conn,
                 "hivra",
                 Some("claude:opus-5".into()),
-                Some("high".into())
+                Some("high".into()),
+                None,
             )
             .unwrap(),
             json!({ "model": "claude:opus-5", "effort": "high" })
@@ -717,13 +841,20 @@ mod tests {
         );
         // The numbers Ash set later leave the model alone; the model he picks leaves the numbers alone.
         set_limits(&conn, "hivra", 9, 3).unwrap();
-        set_model(&conn, "hivra", Some("custom:deepseek".into()), None).unwrap();
+        set_model(&conn, "hivra", Some("custom:deepseek".into()), None, None).unwrap();
         assert_eq!(
             settings(&conn).unwrap()["limits"]["hivra"],
             json!({ "workers": 9, "heavy": 3, "model": "custom:deepseek" })
         );
         // Back to the usual model: the field goes, and nothing else does.
-        set_model(&conn, "hivra", None, Some("high".into())).unwrap();
+        set_model(
+            &conn,
+            "hivra",
+            None,
+            Some("high".into()),
+            Some("grok".into()),
+        )
+        .unwrap();
         assert_eq!(
             settings(&conn).unwrap()["limits"]["hivra"],
             json!({ "workers": 9, "heavy": 3 })
@@ -740,11 +871,109 @@ mod tests {
         .unwrap();
         set_limits(&conn, "old", 4, 1).unwrap();
         ensure_tables(&conn).unwrap();
-        set_model(&conn, "old", Some("claude:sonnet-5".into()), None).unwrap();
+        set_model(&conn, "old", Some("claude:sonnet-5".into()), None, None).unwrap();
         assert_eq!(
             settings(&conn).unwrap()["limits"]["old"],
             json!({ "workers": 4, "heavy": 1, "model": "claude:sonnet-5" })
         );
+    }
+
+    #[test]
+    fn a_project_cli_and_the_system_default_round_trip_and_an_old_row_has_no_cli() {
+        let conn = conn();
+        assert!(settings(&conn).unwrap().get("workerDefault").is_none());
+        assert_eq!(
+            set_model(
+                &conn,
+                "hivra",
+                Some("  grok-4  ".into()),
+                Some("high".into()),
+                Some("grok".into()),
+            )
+            .unwrap(),
+            json!({ "model": "grok-4", "effort": "high", "cli": "grok" })
+        );
+        assert_eq!(
+            settings(&conn).unwrap()["limits"]["hivra"],
+            json!({ "workers": 6, "heavy": 2, "model": "grok-4", "effort": "high", "cli": "grok" })
+        );
+        // No CLI stored: the old Claude-only row, with no cli key.
+        set_model(
+            &conn,
+            "vg-game",
+            Some("claude:opus-5".into()),
+            Some("high".into()),
+            None,
+        )
+        .unwrap();
+        assert!(settings(&conn).unwrap()["limits"]["vg-game"]
+            .get("cli")
+            .is_none());
+        // Clearing the model clears the CLI with it.
+        set_model(&conn, "hivra", None, None, Some("grok".into())).unwrap();
+        assert!(settings(&conn).unwrap()["limits"]["hivra"]
+            .get("cli")
+            .is_none());
+        assert!(settings(&conn).unwrap()["limits"]["hivra"]
+            .get("model")
+            .is_none());
+
+        let chosen = json!({ "cli": " cursor ", "model": "composer", "effort": "medium" });
+        assert_eq!(
+            set_system_default(&conn, Some(&chosen)).unwrap(),
+            json!({ "cli": "cursor", "model": "composer", "effort": "medium" })
+        );
+        assert_eq!(
+            settings(&conn).unwrap()["workerDefault"],
+            json!({ "cli": "cursor", "model": "composer", "effort": "medium" })
+        );
+        // A blank object clears it, and the key goes.
+        assert_eq!(
+            set_system_default(&conn, Some(&json!({ "cli": "  " }))).unwrap(),
+            Value::Null
+        );
+        assert!(settings(&conn).unwrap().get("workerDefault").is_none());
+        // A line break or a value that isn't text is refused, and nothing is stored.
+        assert!(set_system_default(&conn, Some(&json!({ "model": "bad\nid" }))).is_err());
+        assert!(set_system_default(&conn, Some(&json!({ "effort": 4 }))).is_err());
+        assert!(settings(&conn).unwrap().get("workerDefault").is_none());
+        // What is already on disk and isn't ours is left out, not an error.
+        conn.execute(
+            "INSERT INTO worker_queue_meta (key, value) VALUES ('worker_default', 'not-json')",
+            [],
+        )
+        .unwrap();
+        assert!(settings(&conn).unwrap().get("workerDefault").is_none());
+        conn.execute(
+            "UPDATE worker_queue_meta SET value = ?1 WHERE key = 'worker_default'",
+            params![format!(r#"{{"model":"{}"}}"#, "x".repeat(601))],
+        )
+        .unwrap();
+        assert!(settings(&conn).unwrap().get("workerDefault").is_none());
+    }
+
+    #[test]
+    fn adds_the_cli_column_to_a_limit_row_made_before_it() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE worker_limits (project TEXT PRIMARY KEY, workers INTEGER NOT NULL,
+                heavy INTEGER NOT NULL, model TEXT, effort TEXT);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO worker_limits (project, workers, heavy, model, effort)
+             VALUES ('old', 4, 1, 'claude:sonnet-5', 'medium')",
+            [],
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        let row = settings(&conn).unwrap();
+        assert_eq!(
+            row["limits"]["old"],
+            json!({ "workers": 4, "heavy": 1, "model": "claude:sonnet-5", "effort": "medium" })
+        );
+        assert!(row["limits"]["old"].get("cli").is_none());
+        assert!(row.get("workerDefault").is_none());
     }
 
     #[test]

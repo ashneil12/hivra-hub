@@ -149,6 +149,19 @@ impl SessionStore {
             .lock()
             .map_err(|_| "Session store is locked".into())
     }
+
+    /// `None` when another caller already holds the store. Tests use it to prove a `gh`
+    /// read does not keep the lock. The app itself only uses `lock_conn`.
+    #[cfg(test)]
+    pub(crate) fn try_lock_conn(
+        &self,
+    ) -> Result<Option<std::sync::MutexGuard<'_, Connection>>, String> {
+        match self.conn.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err("Session store is locked".into()),
+        }
+    }
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {

@@ -12,6 +12,7 @@ import {
   monoLook,
 } from "../../features/monos/model/mono";
 import { loadMonoFiles } from "../../features/monos/model/monoFiles";
+import { takeRunCards, type MonoCard } from "../../features/monos/model/monoCards";
 import {
   artifactCards,
   type ArtifactCard,
@@ -65,6 +66,7 @@ export type MonoHabitHost = {
     title: string,
     artifacts?: ArtifactCard[],
     launches?: MonoSpawnedSession[],
+    cards?: MonoCard[],
   ): void;
   /** Puts an approval the run is waiting on to the user, in the Mono's chat. */
   askApproval(
@@ -232,6 +234,8 @@ export function useMonoHabits(
       const notBefore = usageLimitHold(outcome, Date.now());
       // Sessions it started are listed only through the Mono's chat, so a
       // run that started one posts even when it has nothing else to say.
+      // A card held during the run goes out with the report. A quiet run drops it.
+      const cards = takeRunCards(run.id);
       if (report || launches.length)
         host.post(
           monoSessionId,
@@ -243,6 +247,7 @@ export function useMonoHabits(
           look.name,
           artifacts,
           launches,
+          ...(cards.length ? [cards] : []),
         );
       await updateHabits(monoId, (habits) => ({
         habits: habits.map((entry) =>

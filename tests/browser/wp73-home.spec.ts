@@ -75,6 +75,6 @@ test("an empty home says all quiet and offers a chat, with no empty section", as
   await expect(page.getByRole("heading", { name: "Needs you" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Moving now" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Recent" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Start a chat with Crew" }).click();
-  await expect(page.locator("body")).toHaveAttribute("data-opened", JSON.stringify({ kind: "coding", projectId: "crew" }));
+  await expect(page.locator("[data-home-start]")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start a chat with Crew" })).toHaveCount(0);
 });
