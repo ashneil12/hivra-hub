@@ -6,7 +6,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { lexicalPosix } from "./bench-guard.mjs";
+import { CONTROL_ENDPOINT_KEYS, lexicalPosix } from "./bench-guard.mjs";
 
 /** Directories a process may read so it can start. Not the user's files. `/Users` is named only as itself, never as a tree. */
 const SYSTEM_READS = ["/usr", "/bin", "/sbin", "/opt", "/System", "/Library", "/private", "/dev", "/etc", "/var", "/tmp", "/usr/local", "/opt/homebrew", "/System/Volumes", "/Applications"];
@@ -24,8 +24,20 @@ export const SANDBOX_BAD_LIST = "The bench can't start the agent: its folder lis
 /** The daily app's hub bridge. A bench never reaches it, even when a run names this port. */
 export const DAILY_HUB_PORT = 18767;
 
+/** The daily app's own control ports, when this bench was started from one of its chats (`hub-realtest.mjs`). Never opened. */
+export const DAILY_CONTROL_PORTS = "REALTEST_DAILY_CONTROL_PORTS";
+
+/** A spawn env named this copy's control endpoint, but not as a loopback host:port. No agent is started with it. */
+export const SANDBOX_BAD_CONTROL = "The bench can't start the agent: the control endpoint it was handed is not a loopback host:port, so it is not opened.";
+
+/** A spawn env named the daily app's port as the control endpoint. No agent is started with it. */
+export const SANDBOX_DAILY_CONTROL = "The bench can't start the agent: the control endpoint names the daily app's port, so it is not opened.";
+
+/** A control endpoint a bench refuses to open. Its message is the whole refusal, already in `The bench can't start…` form. */
+export class ControlEndpointRefused extends Error {}
+
 const GATEWAY_REASON = "the local model gateway the launcher uses";
-const CONTROL_REASON = "this dev copy's own control port";
+const CONTROL_REASON = "this dev copy's control port";
 const HUB_REASON = "this run's stub hub port";
 
 function clean(value) {
@@ -142,10 +154,10 @@ function block(head, paths, extras = []) {
 
 /**
  * The profile for this run. realHome is closed for reads except the run folders and the listed read-only files.
- * Writes are the run folders only. Shared temp dirs stay closed; the run sets TMPDIR inside its own folder.
+ * Writes are the run folders only. Shared temp dirs stay closed. Claude Code's shell temp follows CLAUDE_CODE_TMPDIR, which the run sets inside its own folder.
  * Outbound network is the named loopback ports only.
  */
-export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, network = [], systemTemps = [] } = {}) {
+export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, appBin, network = [], systemTemps = [], shellTemp = null } = {}) {
   const real = clean(realHome);
   if (!real || real === "/") throw new Error("the real home isn't a path the sandbox can close");
   const tempHome = clean(home);
@@ -177,6 +189,7 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
     if (abs.startsWith("/Users/") && !inside(abs, real) && !runRoots.some((root) => inside(abs, root))) continue;
     extras.push({ path: abs, reason });
   }
+  const appFile = appCliRead(appBin, { realHome: real });
   const temps = unique(systemTemps.map((item) => clean(item)).filter((abs) => abs && abs !== "/"));
   const reads = unique(SYSTEM_READS.map((item) => clean(item)).filter((abs) => abs && abs !== "/"));
   const lines = [];
@@ -215,11 +228,22 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
     lines.push(`;; ${item.reason}`);
     lines.push(block("allow file-read*", [item.path]));
   }
-  lines.push(";; Writes: this run's folders only, including the real path when /tmp or /var/folders is a symlink. The shared temp dirs themselves stay closed. The run sets TMPDIR inside its own folder. No other path there is allowed: no CLI spawn has shown it needs one.");
+  if (appFile) {
+    lines.push(";; This run's monocode, one file, so the agent shell can run it. The worktree around it stays closed.");
+    lines.push(`(allow file-read*\n    (literal ${quote(appFile)})\n)`);
+  }
+  lines.push(";; Writes: this run's folders only, including the real path when /tmp or /var/folders is a symlink. The shared temp dirs themselves stay closed. Claude Code's shell temp is join(CLAUDE_CODE_TMPDIR or /tmp, claude-<uid>, the cwd with non-letters replaced by dashes). It does not read TMPDIR. The run sets CLAUDE_CODE_TMPDIR inside its own folder, so /private/tmp/claude-<uid> stays closed: the user's own Claude sessions use that parent.");
   const firstWrite = unique([...runRoots, ...temps]);
   if (firstWrite.length) lines.push(block("allow file-write*", firstWrite, ['(literal "/dev/null")', '(literal "/dev/tty")', '(literal "/dev/dtracehelper")']));
   lines.push(block("deny file-write*", [real]));
   if (runRoots.length) lines.push(block("allow file-write*", runRoots));
+  const shell = exactShellTemp(shellTemp);
+  if (shell) {
+    const rule = `(regex #"^${shell}(/|$)")`;
+    lines.push(";; This run's Claude shell temp, one slug. The parent and every other slug stay closed.");
+    lines.push(`(allow file-read*\n    ${rule}\n)`);
+    lines.push(`(allow file-write*\n    ${rule}\n)`);
+  }
   lines.push(";; Outbound network is closed. Loopback is closed too, except the ports named below.");
   lines.push("(deny network-outbound)");
   lines.push("(deny network*)");
@@ -241,24 +265,24 @@ function loopbackHost(host) {
   return null;
 }
 
-function portNumber(value) {
+function portNumber(value, { daily = false } = {}) {
   const n = Number(value);
-  if (!Number.isInteger(n) || n < 1 || n > 65535 || n === DAILY_HUB_PORT) return null;
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return null;
+  if (!daily && n === DAILY_HUB_PORT) return null;
   return n;
 }
 
-/** A loopback host:port, or a bare port meaning 127.0.0.1. The daily hub port and anything else is null. */
-export function parseLoopbackEndpoint(value) {
+function loopbackEndpoint(value, { daily = false } = {}) {
   if (value == null) return null;
   const text = String(value).trim();
   if (!text) return null;
   if (/^\d+$/.test(text)) {
-    const port = portNumber(text);
+    const port = portNumber(text, { daily });
     return port ? { host: "127.0.0.1", port } : null;
   }
   const v6 = text.match(/^\[?::1\]?:(\d+)$/);
   if (v6) {
-    const port = portNumber(v6[1]);
+    const port = portNumber(v6[1], { daily });
     return port ? { host: "::1", port } : null;
   }
   const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `http://${text}`;
@@ -269,9 +293,14 @@ export function parseLoopbackEndpoint(value) {
     return null;
   }
   const host = loopbackHost(url.hostname);
-  const port = portNumber(url.port);
+  const port = portNumber(url.port, { daily });
   if (!host || !port) return null;
   return { host, port };
+}
+
+/** A loopback host:port, or a bare port meaning 127.0.0.1. The daily hub port and anything else is null. */
+export function parseLoopbackEndpoint(value) {
+  return loopbackEndpoint(value);
 }
 
 function acceptedPorts(network) {
@@ -329,11 +358,42 @@ export function resetGatewayCache() {
   gatewayCache = null;
 }
 
+/** The daily app's control ports this bench's own entry env named (`REALTEST_DAILY_CONTROL_PORTS`). Empty when none. */
+export function dailyControlPorts(env = {}) {
+  const text = typeof env[DAILY_CONTROL_PORTS] === "string" ? env[DAILY_CONTROL_PORTS].trim() : "";
+  if (!text) return [];
+  const out = [];
+  for (const item of text.split(/[,\s]+/)) {
+    const parsed = loopbackEndpoint(item, { daily: true });
+    if (parsed && !out.includes(parsed.port)) out.push(parsed.port);
+  }
+  return out;
+}
+
+/**
+ * The control endpoints this spawn env hands the agent, from `MONOCODE_APP_ENDPOINT` and/or
+ * `MONOCODE_CONTROL_ENDPOINT`. A set value that isn't a loopback host:port is `ControlEndpointRefused`, and so is
+ * the daily app's hub port or one of its control ports. Nothing else is refused; what is returned is all that opens.
+ */
+export function controlEndpoints(env = {}) {
+  const daily = new Set(dailyControlPorts(env));
+  const out = [];
+  for (const key of CONTROL_ENDPOINT_KEYS) {
+    const raw = typeof env[key] === "string" ? env[key].trim() : "";
+    if (!raw) continue;
+    const parsed = loopbackEndpoint(raw, { daily: true });
+    if (!parsed) throw new ControlEndpointRefused(SANDBOX_BAD_CONTROL);
+    if (parsed.port === DAILY_HUB_PORT || daily.has(parsed.port)) throw new ControlEndpointRefused(SANDBOX_DAILY_CONTROL);
+    if (!out.some((item) => item.port === parsed.port)) out.push(parsed);
+  }
+  return out;
+}
+
 /** The only loopback ports a bench model call may dial. Port 18767 is never among them. */
 export function namedLoopbackPorts(env = {}, deps = {}) {
   const out = [];
   const add = (value, reason) => {
-    const parsed = parseLoopbackEndpoint(value);
+    const parsed = typeof value === "object" && value ? value : parseLoopbackEndpoint(value);
     if (!parsed || out.some((item) => item.port === parsed.port)) return;
     out.push({ host: parsed.host, port: parsed.port, reason });
   };
@@ -345,7 +405,14 @@ export function namedLoopbackPorts(env = {}, deps = {}) {
       for (const item of seen?.ports ?? []) add(`${item.host}:${item.port}`, GATEWAY_REASON);
     }
   }
-  add(env.MONOCODE_CONTROL_ENDPOINT, CONTROL_REASON);
+  // An in-process model call has no agent to refuse, so a bad control endpoint only leaves that port unopened.
+  let control = [];
+  try {
+    control = controlEndpoints(env);
+  } catch (error) {
+    if (!(error instanceof ControlEndpointRefused) || deps.strict !== false) throw error;
+  }
+  for (const parsed of control) add(parsed, CONTROL_REASON);
   const hub = env.REALTEST_HUB_PORT != null && String(env.REALTEST_HUB_PORT).trim() !== "" ? env.REALTEST_HUB_PORT : env.MONOCODE_HUB_PORT;
   add(hub, HUB_REASON);
   return out;
@@ -362,10 +429,11 @@ export function modelUrlAllowed(url, env = {}) {
   const host = loopbackHost(parsed.hostname);
   const port = portNumber(parsed.port);
   if (!host || !port) return false;
-  return namedLoopbackPorts(env, { observe: false }).some((item) => item.port === port);
+  return namedLoopbackPorts(env, { observe: false, strict: false }).some((item) => item.port === port);
 }
 
 function plainFailure(error) {
+  if (error instanceof ControlEndpointRefused) return error.message;
   const text = String(error?.message ?? "");
   if (/real home isn't set/.test(text)) return SANDBOX_NO_HOME;
   if (text.startsWith("the ")) return `The bench can't start the agent: ${text}.`;
@@ -395,7 +463,12 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
   if (!state || state === "/") return { ok: false, reason: SANDBOX_DIDNT_LOAD };
   let profile;
   try {
+    // A control endpoint this profile must not open stops the run here, whether or not a test supplies its own ports.
+    controlEndpoints(env);
     const readOnly = deps.readOnly ?? cliReadOnlyPaths({ realHome: env.REALTEST_REAL_HOME, cli: bin, devConfig: env.REALTEST_CLAUDE_CONFIG });
+    const uid = Number.isInteger(deps.uid) ? deps.uid : process.getuid?.() ?? 0;
+    const shellTemp = env.REALTEST_CLAUDE_HONOURS_TMPDIR === "0" ? shellTempAllow(deps.cwd ?? process.cwd(), { honours: false, uid }) : null;
+    const namedApp = env.REALTEST_WORKTREE ? worktreeDevBin(env.REALTEST_APP_BIN, env.REALTEST_WORKTREE) : env.REALTEST_APP_BIN;
     profile = benchSandboxProfile({
       realHome: env.REALTEST_REAL_HOME,
       home: env.HOME,
@@ -405,7 +478,9 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
       readOnly,
       builtApp: env.REALTEST_BUILT_APP,
       cli: bin,
+      appBin: namedApp,
       network: deps.network ?? namedLoopbackPorts(env, deps),
+      shellTemp,
     });
   } catch (error) {
     return { ok: false, reason: plainFailure(error) };
@@ -459,6 +534,117 @@ export function privateTempDir(env = {}) {
   return "";
 }
 
+/** Temp variables for one run. Empty is omitted: Claude Code treats an empty CLAUDE_CODE_TMPDIR as unset and uses /tmp. */
+export function privateTempEnv(dir) {
+  if (!dir) return {};
+  return { TMPDIR: dir, TMP: dir, TEMP: dir, CLAUDE_TMPDIR: dir, CLAUDE_CODE_TMPDIR: dir };
+}
+
+/**
+ * Claude Code's shell temp for this cwd. Np() returns CLAUDE_CODE_TMPDIR when it is set, otherwise /tmp.
+ * It does not read TMPDIR. The shell directory is that root, then claude-<uid>, then the cwd with every
+ * non-alphanumeric replaced by "-". A slug longer than 200 also grows a hash; the directory is still under this root.
+ */
+export function claudeShellTemp(cwd, env = {}, { uid = process.getuid?.() ?? 0, resolve = true } = {}) {
+  const given = typeof env.CLAUDE_CODE_TMPDIR === "string" ? env.CLAUDE_CODE_TMPDIR.trim() : "";
+  const root = given.startsWith("/") ? given.replace(/\/+$/, "") || "/" : "/tmp";
+  const base = `${root}/claude-${uid}`;
+  let resolved = base;
+  if (resolve) {
+    try {
+      const real = fs.realpathSync(base);
+      if (typeof real === "string" && real.startsWith("/")) resolved = real;
+    } catch {
+      // not there yet: the path above is the one Claude would mkdir
+    }
+  }
+  return `${resolved}/${String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-")}`;
+}
+
+/** True when this binary's bytes name CLAUDE_CODE_TMPDIR, false when they don't, null when there is nothing to read. */
+export function claudeHonoursCodeTmpdir(bytes) {
+  if (bytes == null) return null;
+  const buf = Buffer.isBuffer(bytes) ? bytes : null;
+  if (!buf || buf.length === 0) return null;
+  return buf.includes(Buffer.from("CLAUDE_CODE_TMPDIR"));
+}
+
+/**
+ * What the installed Claude at <home>/.local/bin/claude does. Null when the binary can't be read:
+ * unknown is not a reason to open /private/tmp.
+ */
+export function installedClaudeHonoursTmpdir(home = os.homedir(), read = fs.readFileSync, realpath = fs.realpathSync) {
+  try {
+    const bin = realpath(path.join(home, ".local", "bin", "claude"));
+    return claudeHonoursCodeTmpdir(read(bin));
+  } catch {
+    return null;
+  }
+}
+
+/** One Claude shell-temp slug: /private/tmp/claude-<uid>/<slug>. The parent, /tmp, and anything else is null. */
+export function exactShellTemp(abs) {
+  const file = clean(abs);
+  if (!file) return null;
+  if (!/^\/private\/tmp\/claude-\d+\/[A-Za-z0-9-][A-Za-z0-9-]*$/.test(file)) return null;
+  return file;
+}
+
+/** The slug allow, only when this Claude is known not to honour CLAUDE_CODE_TMPDIR. Otherwise null. */
+export function shellTempAllow(cwd, { honours, uid = process.getuid?.() ?? 0 } = {}) {
+  if (honours !== false) return null;
+  const id = Number(uid);
+  if (!Number.isInteger(id) || id < 0) return null;
+  const slug = String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-");
+  if (!slug) return null;
+  return exactShellTemp(`/private/tmp/claude-${id}/${slug}`);
+}
+
+/**
+ * The one monocode file a bench agent may read. The name must be monocode. Under the real home it must sit in
+ * Worktrees, never .ssh, .claude, Projects, agent-memory or Library. A /Users path outside this home is refused.
+ */
+export function appCliRead(abs, { realHome } = {}) {
+  const file = clean(abs);
+  if (!file || file === "/" || path.posix.basename(file) !== "monocode") return null;
+  const home = clean(realHome);
+  if (home && home !== "/" && (file === home || ancestorOf(file, home))) return null;
+  if (file.startsWith("/Users/") && (!home || !inside(file, home))) return null;
+  if (home && inside(file, home)) {
+    const top = file.slice(home.length + 1).split("/")[0];
+    if (top !== "Worktrees") return null;
+  }
+  return file;
+}
+
+/** A real `monocode` file inside <worktree>/target. A symlink out to the daily app, or anything else, is null. */
+export function worktreeDevBin(appBin, worktree) {
+  if (typeof appBin !== "string" || !appBin.startsWith("/") || typeof worktree !== "string" || !worktree.startsWith("/")) return null;
+  let file;
+  let root;
+  try {
+    file = fs.realpathSync(appBin);
+    root = fs.realpathSync(worktree);
+  } catch {
+    return null;
+  }
+  const abs = clean(file);
+  if (!abs || path.posix.basename(abs) !== "monocode") return null;
+  if (abs.includes("/MonoCode Hub.app/")) return null;
+  const base = clean(root);
+  if (!base || !abs.startsWith(`${base}/target/`)) return null;
+  return abs;
+}
+
+/** A home that is not the real one, so a login profile can be written there. Null when it isn't safe. */
+export function isolatedHome(home, realHome) {
+  const h = clean(home);
+  const r = clean(realHome);
+  if (!h || h === "/" || !r || r === "/") return null;
+  if (h === r || inside(h, r) || ancestorOf(h, r)) return null;
+  return h;
+}
+
 /** A home and a state dir that are not the real home, so a grader or tester can use the same profile. */
 export function cliSandboxEnv(env = {}) {
   const real = clean(env.REALTEST_REAL_HOME) || clean(os.homedir());
@@ -478,10 +664,7 @@ export function cliSandboxEnv(env = {}) {
   return {
     ...env,
     HOME: home,
-    TMPDIR: temp,
-    TMP: temp,
-    TEMP: temp,
-    CLAUDE_TMPDIR: temp,
+    ...(temp ? privateTempEnv(temp) : { TMPDIR: "", TMP: "", TEMP: "", CLAUDE_TMPDIR: "" }),
     REALTEST_REAL_HOME: real,
     REALTEST_STATE: state,
     REALTEST_CLAUDE_CONFIG: env.REALTEST_CLAUDE_CONFIG || env.CLAUDE_CONFIG_DIR || "",
