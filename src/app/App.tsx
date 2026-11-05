@@ -230,8 +230,10 @@ import {
   NO_PROJECT,
   currentHubSelection,
   hubSurfaceOpen,
+  currentHubSelection,
   monoTeamInView,
   monoTeamItem,
+  selectionLeavingOwnTeam,
   projectHasCodeFolder,
   projectHomeSelection,
   resolveHubOpen,
@@ -5566,6 +5568,11 @@ function Workspace({
           selectProjectRef.current(own.folder);
         }
         setComposerFocused(false);
+      } else {
+        // The rail opens this Mono on its own. Its team still selected (Inbox does not change the item) would keep
+        // Team pressed, so the chat would open inside the team.
+        const left = selectionLeavingOwnTeam(currentHubSelection(), monoId);
+        if (left) setHubSelection(left);
       }
       setMonoActivity(null);
       workspaceNavigation.cancel();
