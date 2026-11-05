@@ -68,7 +68,7 @@ it("credits HumanLayer and Matt Pocock beside the files, not Ash", () => {
   expect(notice).toContain("Copyright 2025-2026 QueryTale, Inc. d/b/a HumanLayer");
   expect(notice).not.toContain("rewritten");
   expect(notice).not.toContain("Ashneil");
-  for (const name of ["diagnosing-bugs", "rpi-tdd", "grill-me"]) {
+  for (const name of ["diagnosing-bugs", "rpi-tdd", "grill-me", "grilling"]) {
     const theirs = readFileSync(resolve(RPI_ROOT, "skills", name, "LICENSE"), "utf8");
     expect(theirs, name).toContain("MIT License");
     expect(theirs, name).toContain("Copyright (c) 2026 Matt Pocock");
@@ -80,7 +80,7 @@ it("credits HumanLayer and Matt Pocock beside the files, not Ash", () => {
     components: { name: string; copyright: string; how: string }[];
   };
   const human = credits.components.find((entry) => entry.name === "Hivra research, plan and build skills");
-  const matt = credits.components.find((entry) => entry.name === "Hivra diagnosing-bugs, tdd and grill-me");
+  const matt = credits.components.find((entry) => entry.name === "Hivra diagnosing-bugs, tdd, grill-me and grilling");
   expect(human?.copyright).toBe("Copyright 2025-2026 QueryTale, Inc. d/b/a HumanLayer");
   expect(human?.how ?? "").not.toMatch(/rewritten|Hivra's because/);
   expect(matt?.copyright).toBe("Copyright (c) 2026 Matt Pocock");
@@ -118,4 +118,16 @@ it("keeps Matt Pocock's tdd under another name so pstack's tdd stays", () => {
   expect(text).toContain("TDD is the red → green loop.");
   expect(existsSync(resolve(RPI_ROOT, "skills", "rpi-tdd", "tests.md"))).toBe(true);
   expect(existsSync(resolve(RPI_ROOT, "skills", "rpi-tdd", "mocking.md"))).toBe(true);
+});
+
+it("keeps grill-me as Matt's pointer and copies the grilling skill it names", () => {
+  const pointer = readFileSync(resolve(RPI_ROOT, "skills", "grill-me", "SKILL.md"), "utf8");
+  expect(pointer).toContain('Call the Skill tool with "grilling".');
+  expect(pointer).not.toContain("design tree");
+  const grilling = readFileSync(resolve(RPI_ROOT, "skills", "grilling", "SKILL.md"), "utf8");
+  expect(grilling).toContain("Interview the user relentlessly");
+  expect(grilling).toContain("design tree");
+  expect(grilling).toContain(`Source: skills/productivity/grilling/SKILL.md @ ${MATT}`);
+  const license = readFileSync(resolve(RPI_ROOT, "skills", "grilling", "LICENSE"), "utf8");
+  expect(license).toBe(readFileSync(resolve(RPI_ROOT, "skills", "grill-me", "LICENSE"), "utf8"));
 });

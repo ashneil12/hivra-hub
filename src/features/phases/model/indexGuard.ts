@@ -23,6 +23,7 @@ export const RPI_SKILL_NAMES = [
   "diagnosing-bugs",
   "rpi-tdd",
   "grill-me",
+  "grilling",
 ] as const;
 
 /** Left out on purpose. Hivra already has its own versions of these. */

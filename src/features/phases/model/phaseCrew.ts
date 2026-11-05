@@ -91,7 +91,7 @@ async function launchPhase(launch: Bound, run: Run, work: Work): Promise<FinishR
     const started = launch.helpers.startLaunch(
       launch.source,
       {
-        prompt: phasePrompt(work, run, skillBody(run.skill)),
+        prompt: phasePrompt(work, run, skillBody(run.skill), launch.source.cwd),
         title: run.phase,
         runtimeMode: "full-access",
         workspaceMode: "current",

@@ -463,9 +463,11 @@ describe("tasks.delegate", () => {
     expect(phaseStarts).toHaveLength(2);
     expect(hard.started.some((args) => args[1] === "app-mono-exo-r-hard")).toBe(false);
     const prompts = phaseStarts.map((args) => (args[0] as { prompt: string }).prompt);
+    expect(prompts[0].startsWith("Hivra runs this phase.")).toBe(true);
     expect(prompts[0]).toContain("Skill: research-questions");
     expect(prompts[0]).toContain("You are a research orchestrator helping to create research questions");
-    expect(prompts[1].startsWith("Skill: research\n")).toBe(true);
+    expect(prompts[1].startsWith("Hivra runs this phase.")).toBe(true);
+    expect(prompts[1]).toContain("Skill: research\n");
     expect(held).toMatchObject({ phased: true, taskId: null });
     const usual = fixture();
     await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-usual" }, usual.host);
@@ -501,11 +503,11 @@ describe("tasks.delegate", () => {
       JSON.stringify({
         version: 1,
         rules: [
-          { name: "questions", match: "^Skill: research-questions", steps: [{ say: "Questions about the save path." }] },
-          { name: "research", match: "^Skill: research\\n", steps: [{ say: "The save drops the last line." }] },
-          { name: "design", match: "^Skill: design-discussion", steps: [{ say: "Keep the last line." }] },
-          { name: "outline", match: "^Skill: implement-outline", times: 1, steps: [{ say: "Outline the save function." }] },
-          { name: "build", match: "^Skill: implement-outline", steps: [{ say: "Build the save function." }] },
+          { name: "questions", match: "Skill: research-questions", steps: [{ say: "Questions about the save path." }] },
+          { name: "research", match: "Skill: research\\n", steps: [{ say: "The save drops the last line." }] },
+          { name: "design", match: "Skill: design-discussion", steps: [{ say: "Keep the last line." }] },
+          { name: "outline", match: "Skill: implement-outline", times: 1, steps: [{ say: "Outline the save function." }] },
+          { name: "build", match: "Skill: implement-outline", steps: [{ say: "Build the save function." }] },
         ],
       }),
     );

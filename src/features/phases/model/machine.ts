@@ -1,5 +1,6 @@
 // WP-84: the phase documents for one task. Every change checks the version it read.
 
+import { SKILL_FOR_PHASE } from "./phasePrompt";
 import { choosePath, pathLabel, readSettings, type PathId, type PhaseSettings, type TaskHint } from "./settings";
 
 export type PhaseId = "product" | "technical" | "research-questions" | "research" | "design" | "outline" | "build";
@@ -9,15 +10,7 @@ export type Decision = (typeof DECISIONS)[number];
 
 const REVIEW = new Set<PhaseId>(["product", "research", "design"]);
 
-const SKILL: Record<PhaseId, string> = {
-  product: "product-document",
-  technical: "technical-document",
-  "research-questions": "research-questions",
-  research: "research",
-  design: "design-discussion",
-  outline: "implement-outline",
-  build: "implement-outline",
-};
+const SKILL: Record<PhaseId, string> = SKILL_FOR_PHASE;
 
 const ITERATE: Record<PhaseId, string> = {
   product: "iterate-product",
@@ -326,14 +319,7 @@ export function currentFacts(docs: readonly { number: number; body: string }[], 
   return ordered.length === 0 ? "" : ordered[ordered.length - 1].body;
 }
 
-/** For a phased task, these documents are the brief. A straight build keeps today's brief. */
-export function phaseBrief(work: Work): string | undefined {
-  if (work.path === "straight" || work.docs.length === 0) return undefined;
-  return [...work.docs]
-    .sort((a, b) => a.number - b.number)
-    .map((doc) => `## ${doc.title}\n${doc.body}`)
-    .join("\n\n");
-}
+export { phaseBrief } from "./phasePrompt";
 
 export function phaseView(work: Work): {
   pathLabel: string;

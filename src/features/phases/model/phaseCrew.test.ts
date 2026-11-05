@@ -5,6 +5,7 @@ import type { Session } from "../../sessions/model/session";
 import { counter } from "./machine";
 import { deliverPhaseResult } from "./phaseBridge";
 import { bindPhaseLauncher, unbindPhaseLauncher } from "./phaseCrew";
+import { PHASE_PREAMBLE } from "./phasePrompt";
 import { startPhaseWork } from "./store";
 
 const PROJECT = "/tmp/phase-crew";
@@ -48,6 +49,43 @@ it("starts one worker for a run when a second ask overlaps it", async () => {
   } finally {
     unbindPhaseLauncher("task-overlap");
     unbindPhaseLauncher("task-overlap");
+  }
+});
+
+it("gives each phase worker the Hivra preamble and the code path", async () => {
+  const prompts: string[] = [];
+  const start: AgentAppHost["start"] = async (_launch, id) => {
+    deliverPhaseResult(id, { body: "A fact about the code." });
+  };
+  const host = { start } as AgentAppHost;
+  const helpers = {
+    startLaunch: (_source: Session, input: Record<string, unknown>) => {
+      prompts.push(String(input.prompt));
+      return {
+        prompt: String(input.prompt),
+        cwd: PROJECT,
+        harness: "claude" as const,
+        reveal: false,
+      };
+    },
+    fileStarted: () => {},
+  } as unknown as TaskHelpers;
+  const source = { id: "mono", cwd: PROJECT, harness: "claude", model: "claude:opus-5-5" } as Session;
+  bindPhaseLauncher("task-preamble", { source, host, helpers, requestId: "r-preamble" });
+  try {
+    const work = await startPhaseWork("task-preamble", { weight: "costly" }, {}, counter());
+    expect(work?.waiting?.phase).toBe("research");
+    expect(prompts.length).toBeGreaterThan(1);
+    const skills = prompts.map((prompt) => prompt.match(/Skill: (\S+)/)?.[1]);
+    expect(skills).toContain("research-questions");
+    expect(skills).toContain("research");
+    for (const prompt of prompts) {
+      expect(prompt.startsWith(PHASE_PREAMBLE)).toBe(true);
+      expect(prompt).toContain(`The code is in ${PROJECT}.`);
+      expect(prompt).toContain("not an artifact directory");
+    }
+  } finally {
+    unbindPhaseLauncher("task-preamble");
   }
 });
 

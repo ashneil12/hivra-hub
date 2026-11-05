@@ -61,7 +61,7 @@ in Settings, under About.
 - [kun](https://github.com/kunchenguid/kun): a person's opinions and voice kept as files agents read (ideas only).
 - [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
 - [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building. The skills were copied from apps/riptide-rpi-claude-plugin at f9bd73534a9fb7099a274f951b698b1297122fd9. Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G.
-- [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd and grill-me, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only.
+- [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd, grill-me and grilling, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).

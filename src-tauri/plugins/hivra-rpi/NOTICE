@@ -11,7 +11,7 @@ part of this plugin, so their notices are not repeated here.
 
 ci-commit, configure-workspaces and setup-worktree are left out: Hivra has its own.
 
-Matt Pocock's skills (diagnosing-bugs, rpi-tdd and grill-me) are MIT.
+Matt Pocock's skills (diagnosing-bugs, rpi-tdd, grill-me and grilling) are MIT.
 Copyright (c) 2026 Matt Pocock
 Source: https://github.com/mattpocock/skills @ 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
 Each of those skill folders keeps his LICENSE.
