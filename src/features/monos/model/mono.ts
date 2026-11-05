@@ -85,6 +85,8 @@ export type Mono = {
   muted?: boolean;
   /** WP-21: this Mono's crew rules. They beat the project's when its chat launches crew. */
   crewRules?: CrewRule[];
+  /** WP-88: may read every project on this copy. Only a real true counts. */
+  everyProject?: boolean;
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -273,6 +275,8 @@ function parseMono(value: unknown): Mono | undefined {
     // WP-21: only a real true counts. A string or 1 from a hand-edited roster is not pinned or muted.
     ...(entry.pinned === true ? { pinned: true } : {}),
     ...(entry.muted === true ? { muted: true } : {}),
+    // WP-88: a string or 1 from a hand-edited roster is not a grant to read every project.
+    ...(entry.everyProject === true ? { everyProject: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(instructions ? { instructions } : {}),
     ...(engine ? { engine } : {}),
