@@ -168,8 +168,9 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await railRow(page, "Chief of Staff").click();
   await expect.poll(() => monoViewShown(page)).toBe(true);
   const brief = page.locator("[data-briefed-team='b-1']:visible");
-  await expect(brief).toHaveText("Briefed EXO coding team: Fix the save bug · 2 working · 1 stuck");
-  await expect(brief).toHaveAttribute("data-briefed-kind", "stuck");
+  // r30b: the brief says whose the stall is, never "stuck". "Briefed EXO coding team: <task> · 2 working · 1 with EXO lead".
+  await expect(brief).toHaveText("Briefed EXO coding team: Fix the save bug · 2 working · 1 with EXO lead");
+  await expect(brief).toHaveAttribute("data-briefed-kind", "with-lead");
   await expect(page.locator("[data-stuck-worker]:visible")).toHaveCount(0);
   await shot(page, "2-cos-chat-briefing-line");
 
@@ -179,7 +180,8 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await expect(page.locator("[data-coding-team-lead]")).toHaveAttribute("data-team-kind", "coding");
   await expect(page.locator("[data-coding-team-lead]")).toContainText("EXO lead");
   await expect(page.locator(`[data-sub-chats="${chats.lead}"] [data-sub-chat]`)).toHaveCount(3);
-  await expect(page.locator(`[data-sub-chat="app-${chats.lead}-t-3"]`)).toHaveAttribute("data-state", "stalled");
+  // r88 (Ash, B13): the same worker chats also nest under the Lead on the rail, so the stalled check stays on this team list.
+  await expect(page.locator(`[data-sub-chats="${chats.lead}"] [data-sub-chat="app-${chats.lead}-t-3"]`)).toHaveAttribute("data-state", "stalled");
   await shot(page, "3-coding-team-from-the-brief");
 
   // 4. Alfred's own team, from its row: Alfred pinned on top ("Owner"), its workers under it, the failed one open.
@@ -194,9 +196,9 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await expect.poll(() => monoViewShown(page)).toBe(true);
   const subs = page.locator(`[data-sub-chats="${chats.alfred}"] [data-sub-chat]`);
   await expect(subs).toHaveCount(3);
-  await expect(page.locator(`[data-sub-chat="app-${chats.alfred}-a-3"]`)).toHaveAttribute("data-state", "failed");
-  // Chief of Staff's brief and the Lead's workers are EXO's, never in Alfred's team or anyone else's.
-  await expect(page.locator(`[data-sub-chat="app-${chats.lead}-t-1"]`)).toHaveCount(0);
+  await expect(subs.and(page.locator(`[data-sub-chat="app-${chats.alfred}-a-3"]`))).toHaveAttribute("data-state", "failed");
+  // Chief of Staff's brief and the Lead's workers are EXO's, never in Alfred's team. The rail still nests EXO's own (r88).
+  await expect(subs.and(page.locator(`[data-sub-chat="app-${chats.lead}-t-1"]`))).toHaveCount(0);
   // The Team button in Alfred's chat is pressed; the strip highlights no project, the rail marks Alfred.
   await expect(page.locator("[data-mono-view-team]:visible")).toHaveAttribute("aria-pressed", "true");
   await expect(railRow(page, "Alfred")).toHaveAttribute("aria-current", "true");
@@ -204,7 +206,7 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await shot(page, "4-alfreds-team");
 
   // 5. One click on a worker opens it in the team; Alfred's row stays marked, the list stays.
-  await page.locator(`[data-sub-chat="app-${chats.alfred}-a-1"]`).click();
+  await subs.and(page.locator(`[data-sub-chat="app-${chats.alfred}-a-1"]`)).click();
   await expect.poll(() => monoViewShown(page)).toBe(false);
   await expect(owner).toBeVisible();
   await expect(page.locator("[data-delegated-chat]:visible").first()).toContainText("Open Alfred", { timeout: 10_000 });
