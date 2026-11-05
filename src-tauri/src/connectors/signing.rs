@@ -98,6 +98,7 @@ pub fn key(store: &dyn SecretStore, create: bool) -> Result<Option<Vec<u8>>, Str
         KEY_ID,
         &Login {
             fields: BTreeMap::from([(FIELD.to_string(), hex(&fresh))]),
+            refs: BTreeMap::new(),
             oauth: None,
         },
     )?;

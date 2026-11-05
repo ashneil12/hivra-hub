@@ -13,11 +13,73 @@ pub const GOOGLE_CLIENT: &str = "google-client";
 const ACCOUNT: &str = "login";
 
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(from = "WireLogin", into = "WireLogin")]
 pub struct Login {
-    #[serde(default)]
+    /// Values the person pasted, or that arrived already at rest.
     pub fields: BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// WP-92: a field that points at a vault entry instead of holding a copy: `{"secret": "<name>"}` in the saved JSON.
+    pub refs: BTreeMap<String, String>,
     pub oauth: Option<OAuthTokens>,
+}
+
+/// The saved shape. A field value is a string, or `{"secret": "<name>"}`; the in-memory `Login` keeps the two apart.
+#[derive(Clone, Serialize, Deserialize)]
+struct WireLogin {
+    #[serde(default)]
+    fields: BTreeMap<String, WireField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    oauth: Option<OAuthTokens>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum WireField {
+    Plain(String),
+    Secret(SecretRef),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct SecretRef {
+    secret: String,
+}
+
+impl From<WireLogin> for Login {
+    fn from(wire: WireLogin) -> Self {
+        let mut fields = BTreeMap::new();
+        let mut refs = BTreeMap::new();
+        for (key, value) in wire.fields {
+            match value {
+                WireField::Plain(value) => {
+                    fields.insert(key, value);
+                }
+                WireField::Secret(reference) => {
+                    refs.insert(key, reference.secret);
+                }
+            }
+        }
+        Self {
+            fields,
+            refs,
+            oauth: wire.oauth,
+        }
+    }
+}
+
+impl From<Login> for WireLogin {
+    fn from(login: Login) -> Self {
+        let mut fields: BTreeMap<String, WireField> = login
+            .fields
+            .into_iter()
+            .map(|(key, value)| (key, WireField::Plain(value)))
+            .collect();
+        for (key, secret) in login.refs {
+            fields.insert(key, WireField::Secret(SecretRef { secret }));
+        }
+        Self {
+            fields,
+            oauth: login.oauth,
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +103,7 @@ impl fmt::Debug for Login {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Login")
             .field("fields", &self.fields.keys().collect::<Vec<_>>())
+            .field("refs", &self.refs.keys().collect::<Vec<_>>())
             .field("oauth", &self.oauth.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -156,6 +219,7 @@ mod tests {
     fn sample() -> Login {
         Login {
             fields: BTreeMap::from([("token".into(), "ghp_SENTINEL_FIELD".into())]),
+            refs: BTreeMap::new(),
             oauth: Some(OAuthTokens {
                 access_token: "ACCESS_SENTINEL".into(),
                 refresh_token: Some("REFRESH_SENTINEL".into()),
@@ -188,6 +252,41 @@ mod tests {
         assert_eq!(redact("abcdef", &["abcdef".into(), "bcd".into()]), "•••");
         // Very short values aren't treated as secrets (they would mangle ordinary text).
         assert_eq!(redact("a b c", &["a".into()]), "a b c");
+    }
+
+    #[test]
+    fn a_login_field_may_point_at_the_vault() {
+        let raw = r#"{"fields":{"token":{"secret":"github-token"}}}"#;
+        let login: Login = serde_json::from_str(raw).unwrap();
+        assert!(login.fields.is_empty());
+        assert_eq!(login.refs["token"], "github-token");
+        // The saved shape stays a reference: it round-trips as one, and never grows a plain value.
+        let stored = serde_json::to_string(&login).unwrap();
+        assert_eq!(stored, raw, "{stored}");
+        let back: Login = serde_json::from_str(&stored).unwrap();
+        assert_eq!(back, login);
+        // Plain values and references live side by side in one saved login.
+        let mixed = Login {
+            fields: BTreeMap::from([("mcp_url".into(), "https://mcp.example/sse".into())]),
+            refs: BTreeMap::from([("token".into(), "github-token".into())]),
+            oauth: None,
+        };
+        let saved = serde_json::to_string(&mixed).unwrap();
+        assert!(
+            saved.contains(r#""token":{"secret":"github-token"}"#),
+            "{saved}"
+        );
+        assert!(
+            saved.contains(r#""mcp_url":"https://mcp.example/sse""#),
+            "{saved}"
+        );
+        assert!(
+            !saved.contains("refs"),
+            "the saved shape has no refs map: {saved}"
+        );
+        // A reference is a name, not a value: redaction has nothing to hide for it, and Debug shows the key only.
+        assert!(mixed.secrets().is_empty() || !mixed.secrets().contains(&"github-token".into()));
+        assert!(!format!("{mixed:?}").contains("https://mcp.example/sse"));
     }
 
     #[test]

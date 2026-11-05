@@ -687,6 +687,15 @@ fn archive_stem(path: &Path) -> String {
 }
 
 pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String> {
+    export_with_vault(env, request, crate::secrets::store::active())
+}
+
+/// WP-92: the export with the vault handed in, so a test can pass an in-memory one and never touch the keychain.
+pub fn export_with_vault(
+    env: &Env,
+    request: &ExportRequest,
+    vault: &dyn crate::secrets::store::Vault,
+) -> Result<ExportReport, String> {
     let mut destination = crate::fs::expand_home(request.destination.trim());
     if request.destination.trim().is_empty() || !destination.is_absolute() {
         return Err("Pick where the export goes.".into());
@@ -731,12 +740,32 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
     if let Some(choice) = &request.memory {
         export_memory(env, choice, &mut writer, &mut counts, &mut notes)?;
     }
+    let vault_db = env.read_db()?;
     if request.workspace {
-        if let Some(conn) = env.read_db()? {
-            export_workspace(env, &conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
+        if let Some(conn) = vault_db.as_ref() {
+            export_workspace(env, conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
         }
         export_note_assets(env, &mut writer, &counts)?;
         counts.remove("noteIds");
+    }
+    // WP-92: the vault goes as an index of handles, never a value, and one exact-value pass runs before the last net.
+    if let Some(conn) = vault_db.as_ref() {
+        writer.json("secrets/index.json", &crate::secrets::index_json(conn)?)?;
+        for index in 0..writer.files.len() {
+            let relative = writer.files[index].0.clone();
+            if is_binary(&relative) || relative == "secrets/index.json" {
+                continue;
+            }
+            let path = staging.0.join(&relative);
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let clean = crate::secrets::redact_known_values(vault, conn, None, &text);
+            if clean != text {
+                write_private(&path, clean.as_bytes())?;
+                writer.files[index] = (relative, clean.len() as u64, sha256_hex(clean.as_bytes()));
+            }
+        }
     }
 
     // The last net: nothing written may still look like a secret.
@@ -1884,10 +1913,13 @@ pub struct ImportReport {
     /// Monos whose SOUL.md this restore wrote from Rust (a memory folder that is the Monos home). The app records these
     /// as its own saves, so its soul tamper check doesn't take them for outside edits (hub/model/soulTamper.ts).
     pub souls_restored: Vec<String>,
+    /// WP-92: vault rows added, each waiting for its value.
+    pub secrets_added: usize,
 }
 
-/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the workspace's
-/// rows: the export is unpacked and checked (up to MAX_UNPACKED) and the memory written before it, never under it.
+/// `lock` takes the session store's lock. Every chat save waits on it, so it is taken only around the rows that go in
+/// (the workspace's, and WP-92's vault index when the export names any secret): the export is unpacked and checked (up
+/// to MAX_UNPACKED) and the memory written before it, never under it.
 pub fn import<G: std::ops::Deref<Target = Connection>>(
     env: &Env,
     request: &ImportRequest,
@@ -1901,9 +1933,24 @@ pub fn import<G: std::ops::Deref<Target = Connection>>(
     if let Some(memory) = &request.memory {
         import_memory(env, &opened, memory, &mut report)?;
     }
-    if let Some(workspace) = &request.workspace {
+    // WP-92: the vault's index lands as rows that wait for their value, with no grants and no .env records. An index
+    // that names nothing is not a reason to take the lock every chat save waits on.
+    let index = opened.json("secrets/index.json").filter(|index| {
+        index
+            .get("secrets")
+            .and_then(Value::as_array)
+            .is_some_and(|list| !list.is_empty())
+    });
+    if request.workspace.is_some() || index.is_some() {
         let conn = lock()?;
-        import_workspace(env, &conn, &opened, workspace, &mut report).map_err(|e| e.to_string())?;
+        if let Some(index) = &index {
+            report.secrets_added =
+                crate::secrets::import_index(&conn, index, crate::session_store::now_millis())?;
+        }
+        if let Some(workspace) = &request.workspace {
+            import_workspace(env, &conn, &opened, workspace, &mut report)
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(report)
 }

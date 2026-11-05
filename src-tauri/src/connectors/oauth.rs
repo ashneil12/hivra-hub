@@ -627,6 +627,7 @@ pub(crate) mod tests {
     ) -> super::super::secrets::Login {
         super::super::secrets::Login {
             fields: Default::default(),
+            refs: Default::default(),
             oauth: Some(OAuthTokens {
                 access_token: "ACCESS_0".into(),
                 refresh_token: Some("REFRESH_0".into()),

@@ -799,9 +799,10 @@ fn the_ticks_decide_what_goes_in_and_what_comes_back() {
     assert!(
         names
             .iter()
-            .all(|n| n == "manifest.json" || n.starts_with("setup/")),
+            .all(|n| n == "manifest.json" || n == "secrets/index.json" || n.starts_with("setup/")),
         "{names:?}"
     );
+    // WP-92: the vault's index is metadata the export always carries; it names no value and no other category.
     let preview = inspect(&target, &dest.to_string_lossy()).unwrap();
     assert!(preview.workspace.is_none() && preview.memory.is_empty());
 
@@ -1854,4 +1855,81 @@ fn docs_history_comes_back_and_a_copy_keeps_its_own_parent() {
         )
         .unwrap();
     assert_eq!(copied_mention, *new_parent);
+}
+
+/// WP-92: the vault goes as an index of handles. A planted value of no known shape is taken out of every text file,
+/// and the index holds metadata only.
+#[test]
+fn wp92_an_export_carries_the_index_and_no_vault_value() {
+    let source_dir = TestDir::new("wp92-export");
+    let out = TestDir::new("wp92-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    let vault = crate::secrets::store::Memory::new();
+    let value = "quietlyplanted1234567890";
+    crate::secrets::save_value(
+        &vault,
+        &conn,
+        "global",
+        "stripe-api-key",
+        Some("Stripe"),
+        value,
+        1_000,
+    )
+    .unwrap();
+    fs::create_dir_all(source.memory_root.join("ash")).unwrap();
+    fs::write(
+        source.memory_root.join("ash/MEMORY.md"),
+        format!("# Ash\n\nStripe: {value}\n"),
+    )
+    .unwrap();
+    drop(conn);
+
+    let dest = out.0.join("export");
+    export_with_vault(&source, &export_request(&dest, Form::Folder), &vault).unwrap();
+    let files = export_texts(&dest);
+    for (name, bytes) in &files {
+        assert!(
+            !String::from_utf8_lossy(bytes).contains(value),
+            "{name} carries the vault's value"
+        );
+    }
+    let index: Value = serde_json::from_slice(&files["secrets/index.json"]).unwrap();
+    assert_eq!(
+        index,
+        json!({"secrets": [{
+            "name": "stripe-api-key",
+            "scope": "global",
+            "label": "Stripe",
+            "last4": "7890",
+            "createdAt": 1_000,
+        }]})
+    );
+    assert!(!files["secrets/index.json"]
+        .windows(value.len())
+        .any(|window| window == value.as_bytes()));
+
+    // Import lands the row waiting for its value, with no grants and no .env records.
+    let target_dir = TestDir::new("wp92-import");
+    let target = env_for(&target_dir.0);
+    let copy = open_store(&target);
+    let copy_conn = copy.lock_conn().unwrap();
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: None,
+    };
+    let report = import(&target, &request, || Ok(&*copy_conn)).unwrap();
+    assert_eq!(report.secrets_added, 1);
+    let rows = crate::secrets::handles(&copy_conn).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].needs_value);
+    assert_eq!(rows[0].version, 0);
+    assert!(rows[0].approved.is_empty());
+    assert!(rows[0].env_files.is_empty());
+    let grants: i64 = copy_conn
+        .query_row("SELECT COUNT(*) FROM secret_grants", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(grants, 0);
 }

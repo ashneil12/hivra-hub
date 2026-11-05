@@ -141,6 +141,18 @@ pub fn prepare(
     dir: &Path,
     store: &dyn SecretStore,
 ) -> Result<(&'static Entry, Login, Plan), String> {
+    prepare_with_vault(args, dir, store, crate::secrets::store::active())
+}
+
+/// WP-92: a saved login field may name a vault entry (`{"secret": "<name>"}`) instead of holding a copy, and this fills
+/// the value in at launch. The value is read through the same scope a chat uses, so a rotation reaches every connector
+/// that references the key. `prepare` is this with the copy's own vault; tests pass a memory one.
+pub fn prepare_with_vault(
+    args: &Args,
+    dir: &Path,
+    store: &dyn SecretStore,
+    vault: &dyn crate::secrets::Vault,
+) -> Result<(&'static Entry, Login, Plan), String> {
     let entry =
         catalog::entry(&args.id).ok_or_else(|| format!("No connector called {}.", args.id))?;
     // Only a session the app started, for this Mono and these projects (signing.rs).
@@ -169,8 +181,58 @@ pub fn prepare(
         login = renew::renew(dir, store, &entry.id, &login)
             .map_err(|failure| redact(&failure.message(), &login.secrets()))?;
     }
+    fill_from_vault(&mut login, dir, &args.projects, vault)?;
     let plan = plan(entry, &login)?;
     Ok((entry, login, plan))
+}
+
+/// WP-92: turn every `{"secret": "<name>"}` field into its value, from the project's own scope first, then global.
+/// Nothing is written: a launch only reads. A key with no value yet is a plain sentence, never a Keychain prompt.
+fn fill_from_vault(
+    login: &mut Login,
+    dir: &Path,
+    projects: &[String],
+    vault: &dyn crate::secrets::Vault,
+) -> Result<(), String> {
+    if login.refs.is_empty() {
+        return Ok(());
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        dir.join("monocode.db"),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .map_err(|_| "Couldn't read your saved keys.".to_string())?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    for (field, name) in std::mem::take(&mut login.refs) {
+        let name = crate::secrets::normalize_name(&name)?;
+        let mut row = None;
+        for project in projects {
+            row =
+                crate::secrets::get_secret(&conn, &crate::secrets::scope_for(Some(project)), &name)
+                    .map_err(|_| "Couldn't read your saved keys.".to_string())?;
+            if row.is_some() {
+                break;
+            }
+        }
+        let row = match row {
+            Some(row) => Some(row),
+            None => crate::secrets::get_secret(&conn, crate::secrets::SCOPE_GLOBAL, &name)
+                .map_err(|_| "Couldn't read your saved keys.".to_string())?,
+        };
+        let Some(row) = row else {
+            return Err(format!(
+                "The key {name} isn't saved any more. Add it under Settings > Secrets."
+            ));
+        };
+        if row.version <= 0 {
+            return Err(format!(
+                "The key {name} has no value yet. Add it under Settings > Secrets."
+            ));
+        }
+        let value = crate::secrets::read_value(vault, &row.scope, &row.name)?;
+        login.fields.insert(field, value.to_string());
+    }
+    Ok(())
 }
 
 /// Renews an OAuth login when the server says it expired, keeps it, and hands back the new headers.
@@ -440,6 +502,7 @@ pub(crate) mod tests {
         let slack = catalog::entry("slack").unwrap();
         let login = Login {
             fields: BTreeMap::from([("token".into(), "xoxp-SENTINEL".into())]),
+            refs: BTreeMap::new(),
             oauth: None,
         };
         let Plan::Stdio { command, args, env } = plan(slack, &login).unwrap() else {
@@ -496,6 +559,7 @@ pub(crate) mod tests {
                 "github",
                 &Login {
                     fields: BTreeMap::from([("token".into(), "ghp_SENTINEL".into())]),
+                    refs: BTreeMap::new(),
                     oauth: None,
                 },
             )
@@ -523,6 +587,153 @@ pub(crate) mod tests {
         assert!(prepare(&a, &dir, &store)
             .unwrap_err()
             .contains("off for this Mono"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// WP-92: a saved login may point at the vault (`{"secret": "<name>"}`); the launch fills the value in, and a
+    /// rotation reaches the connector without the login being rewritten.
+    #[test]
+    fn a_login_that_points_at_the_vault_is_filled_at_launch() {
+        let dir = temp_dir();
+        let mut s = Settings::default();
+        s.connectors.insert(
+            "github".into(),
+            ConnectorState {
+                signed_in: true,
+                method: Some(Method::Token),
+                allow: vec![EVERYWHERE.into()],
+                ..Default::default()
+            },
+        );
+        settings::save(&dir, &s).unwrap();
+        let vault = crate::secrets::store::Memory::new();
+        let project_scope = crate::secrets::scope_for(Some("/p/hivra"));
+        let db = rusqlite::Connection::open(dir.join("monocode.db")).unwrap();
+        crate::secrets::ensure_tables(&db).unwrap();
+        crate::secrets::save_value(
+            &vault,
+            &db,
+            crate::secrets::SCOPE_GLOBAL,
+            "github-token",
+            Some("GitHub token"),
+            "ghp_GLOBAL_SENTINEL",
+            1_000,
+        )
+        .unwrap();
+        crate::secrets::save_value(
+            &vault,
+            &db,
+            &project_scope,
+            "github-token",
+            Some("GitHub token"),
+            "ghp_PROJECT_SENTINEL",
+            1_000,
+        )
+        .unwrap();
+        drop(db);
+
+        let store = Memory::default();
+        store
+            .put(
+                "github",
+                &Login {
+                    fields: BTreeMap::new(),
+                    refs: BTreeMap::from([("token".into(), "github-token".into())]),
+                    oauth: None,
+                },
+            )
+            .unwrap();
+        let a = signed(&store, "github", "m", &["/p/hivra"]);
+        // The chat's project scope wins over global, as it does for a chat.
+        let (_, login, plan) = prepare_with_vault(&a, &dir, &store, &vault).unwrap();
+        let Plan::Remote { headers, .. } = plan else {
+            panic!()
+        };
+        assert_eq!(
+            headers,
+            vec![(
+                "Authorization".to_string(),
+                "Bearer ghp_PROJECT_SENTINEL".to_string()
+            )]
+        );
+        assert!(!format!("{login:?}").contains("PROJECT_SENTINEL"));
+
+        // A rotation is seen at the next launch; the saved login still holds the reference, never a copy.
+        let db = rusqlite::Connection::open(dir.join("monocode.db")).unwrap();
+        crate::secrets::save_value(
+            &vault,
+            &db,
+            &project_scope,
+            "github-token",
+            Some("GitHub token"),
+            "ghp_ROTATED_SENTINEL",
+            2_000,
+        )
+        .unwrap();
+        drop(db);
+        let stored = store.get("github").unwrap().unwrap();
+        assert_eq!(stored.refs["token"], "github-token");
+        assert!(stored.fields.is_empty(), "a reference stays a reference");
+        let (_, _, plan) = prepare_with_vault(&a, &dir, &store, &vault).unwrap();
+        let Plan::Remote { headers, .. } = plan else {
+            panic!()
+        };
+        assert!(headers
+            .iter()
+            .any(|(_, value)| value == "Bearer ghp_ROTATED_SENTINEL"));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_reference_that_is_gone_or_has_no_value_is_a_plain_sentence() {
+        let dir = temp_dir();
+        let mut s = Settings::default();
+        s.connectors.insert(
+            "github".into(),
+            ConnectorState {
+                signed_in: true,
+                method: Some(Method::Token),
+                allow: vec![EVERYWHERE.into()],
+                ..Default::default()
+            },
+        );
+        settings::save(&dir, &s).unwrap();
+        let vault = crate::secrets::store::Memory::new();
+        let db = rusqlite::Connection::open(dir.join("monocode.db")).unwrap();
+        crate::secrets::ensure_tables(&db).unwrap();
+        drop(db);
+        let store = Memory::default();
+        store
+            .put(
+                "github",
+                &Login {
+                    fields: BTreeMap::new(),
+                    refs: BTreeMap::from([("token".into(), "gone-key".into())]),
+                    oauth: None,
+                },
+            )
+            .unwrap();
+        let a = signed(&store, "github", "m", &[]);
+        let err = prepare_with_vault(&a, &dir, &store, &vault).unwrap_err();
+        assert!(err.contains("gone-key isn't saved any more"), "{err}");
+
+        // An imported row is listed but unusable until the person types its value.
+        let db = rusqlite::Connection::open(dir.join("monocode.db")).unwrap();
+        crate::secrets::import_index(
+            &db,
+            &serde_json::json!({"secrets": [{
+                "name": "gone-key",
+                "scope": "global",
+                "label": "GitHub token",
+                "last4": "7890",
+                "createdAt": 1_000,
+            }]}),
+            1_000,
+        )
+        .unwrap();
+        drop(db);
+        let err = prepare_with_vault(&a, &dir, &store, &vault).unwrap_err();
+        assert!(err.contains("has no value yet"), "{err}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -568,6 +779,7 @@ pub(crate) mod tests {
         settings::save(&dir, &s).unwrap();
         let login = Login {
             fields: BTreeMap::from([("token".into(), "ghp_SENTINEL".into())]),
+            refs: BTreeMap::new(),
             oauth: None,
         };
         store.put("github", &login).unwrap();
@@ -878,6 +1090,7 @@ pub(crate) mod tests {
         let telegram = catalog::entry("telegram").unwrap();
         let login = Login {
             fields: BTreeMap::from([("token".into(), "1:ABC".into())]),
+            refs: BTreeMap::new(),
             oauth: None,
         };
         assert!(

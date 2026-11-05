@@ -133,7 +133,20 @@ fn replace_file(from: &Path, to: &Path) -> Result<(), String> {
     }
 }
 
+/// WP-92: the plain compare-and-swap the app's command now reaches through `cas_checked`; kept for the tests that
+/// exercise the store without a vault.
+#[cfg(test)]
 pub fn cas(dir: &Path, expected: u64, doc: Value) -> Result<bool, String> {
+    cas_checked(dir, expected, doc, &|_| false)
+}
+
+/// WP-92: the same save, with one more gate: text that holds a saved key's value, whatever its shape, is refused.
+pub fn cas_checked(
+    dir: &Path,
+    expected: u64,
+    doc: Value,
+    holds_value: &dyn Fn(&str) -> bool,
+) -> Result<bool, String> {
     let _guard = lock();
     if !doc.is_object() {
         return Err("That memory could not be saved.".to_string());
@@ -147,7 +160,7 @@ pub fn cas(dir: &Path, expected: u64, doc: Value) -> Result<bool, String> {
         return Err("That memory could not be saved.".to_string());
     }
     let text = String::from_utf8_lossy(&bytes);
-    if mentions_secret(&text) {
+    if mentions_secret(&text) || holds_value(&text) {
         return Err(
             "That memory looks like it contains a secret, so it was not saved.".to_string(),
         );
@@ -199,8 +212,19 @@ pub fn memory_review_load(app: AppHandle) -> Result<Loaded, String> {
 }
 
 #[tauri::command]
-pub fn memory_review_cas(app: AppHandle, revision: u64, doc: Value) -> Result<bool, String> {
-    cas(&store_dir(&app)?, revision, doc)
+pub fn memory_review_cas(
+    app: AppHandle,
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    revision: u64,
+    doc: Value,
+) -> Result<bool, String> {
+    let dir = store_dir(&app)?;
+    // WP-92: a value of any shape is refused, not only one that looks like a key.
+    let conn = store.lock_conn()?;
+    let vault = crate::secrets::store::active();
+    cas_checked(&dir, revision, doc, &|text| {
+        crate::secrets::holds_known_value(vault, &conn, None, text)
+    })
 }
 
 #[cfg(test)]
@@ -259,6 +283,26 @@ mod tests {
             before
         );
         assert!(!before.contains(secret));
+    }
+
+    #[test]
+    fn wp92_a_value_of_any_shape_is_refused_and_the_previous_file_stays() {
+        let tmp = Tmp::new();
+        assert!(cas_checked(&tmp.path, 0, json!({"items": []}), &|_| false).unwrap());
+        let before = fs::read_to_string(tmp.path.join("doc.json")).unwrap();
+        let value = "plain words nobody would call a key";
+        let held = |text: &str| text.contains(value);
+        let err = cas_checked(&tmp.path, 1, json!({"items": [value]}), &held).unwrap_err();
+        assert_eq!(
+            err,
+            "That memory looks like it contains a secret, so it was not saved."
+        );
+        assert!(!err.contains(value));
+        assert_eq!(
+            fs::read_to_string(tmp.path.join("doc.json")).unwrap(),
+            before
+        );
+        assert!(cas_checked(&tmp.path, 1, json!({"items": ["a note"]}), &held).unwrap());
     }
 
     #[test]
