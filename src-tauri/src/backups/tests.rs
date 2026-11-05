@@ -471,13 +471,14 @@ fn a_chat_a_doc_and_a_task_restore_as_new_items() {
             [],
         )
         .unwrap();
+        // WP-70's own tasks table (the store made it): numbered per project, at most one task per delegation.
         conn.execute_batch(
-            "CREATE TABLE tasks (id TEXT PRIMARY KEY, title TEXT NOT NULL, state TEXT NOT NULL)",
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO tasks (id, title, state) VALUES ('t1', 'File the report', 'open')",
-            [],
+            "INSERT INTO tasks (id, project_id, number, title, status_id, sort_key, source, created_by,
+                                delegation_id, created_at, updated_at)
+             VALUES ('t1', 'p1', 1, 'File the report', 'todo', 'a', 'person', 'person', 'd1', 1, 1);
+             INSERT INTO tasks (id, project_id, number, title, status_id, sort_key, source, created_by,
+                                parent_id, created_at, updated_at)
+             VALUES ('t2', 'p1', 2, 'Check the numbers', 'todo', 'b', 'person', 'person', 't1', 1, 1);",
         )
         .unwrap();
     }
@@ -550,20 +551,47 @@ fn a_chat_a_doc_and_a_task_restore_as_new_items() {
         .unwrap();
     assert!(old_body.contains("/note-assets/n1/pic.png"));
 
+    // The live task is still there and still the delegation's; the copy is the project's next number, belongs to
+    // no delegation, and keeps everything else.
     let task = restore::restore_item(&roots, &conn, &snapshot, "task", "t1").unwrap();
     assert_eq!(task.title, "File the report (restored)");
-    let old_state: String = conn
-        .query_row("SELECT state FROM tasks WHERE id = 't1'", [], |row| {
-            row.get(0)
-        })
+    let old: (i64, Option<String>) = conn
+        .query_row(
+            "SELECT number, delegation_id FROM tasks WHERE id = 't1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
         .unwrap();
-    assert_eq!(old_state, "open");
-    let new_state: String = conn
-        .query_row("SELECT state FROM tasks WHERE id = ?1", [&task.id], |row| {
-            row.get(0)
-        })
+    assert_eq!(old, (1, Some("d1".to_owned())));
+    let new: (String, i64, String, Option<String>) = conn
+        .query_row(
+            "SELECT project_id, number, status_id, delegation_id FROM tasks WHERE id = ?1",
+            [&task.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
         .unwrap();
-    assert_eq!(new_state, "open");
+    assert_eq!(new, ("p1".to_owned(), 3, "todo".to_owned(), None));
+    // A sub-task keeps its parent while the parent is a live task, and loses it once the parent is gone.
+    let child = restore::restore_item(&roots, &conn, &snapshot, "task", "t2").unwrap();
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_id FROM tasks WHERE id = ?1",
+            [&child.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(parent.as_deref(), Some("t1"));
+    conn.execute("DELETE FROM tasks WHERE id = 't1'", [])
+        .unwrap();
+    let orphan = restore::restore_item(&roots, &conn, &snapshot, "task", "t2").unwrap();
+    let parent: Option<String> = conn
+        .query_row(
+            "SELECT parent_id FROM tasks WHERE id = ?1",
+            [&orphan.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(parent.is_none());
 }
 
 #[test]

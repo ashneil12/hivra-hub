@@ -226,6 +226,7 @@ pub fn restore_item(
             "chat",
             &["provider_session_id"],
             None,
+            &[],
         ),
         "doc" => restore_doc(roots, live, snapshot, item_id),
         "task" => restore_task(live, snapshot, item_id),
@@ -242,7 +243,16 @@ fn restore_doc(
     snapshot: &Snapshot,
     item_id: &str,
 ) -> Result<Item, BackupError> {
-    let item = restore_row(live, snapshot, "notes", item_id, "doc", &[], Some("slug"))?;
+    let item = restore_row(
+        live,
+        snapshot,
+        "notes",
+        item_id,
+        "doc",
+        &[],
+        Some("slug"),
+        &[],
+    )?;
     let reader = SnapshotReader::open(snapshot)?;
     let old_body = reader
         .rows("notes", &["id", "body"], |row| {
@@ -290,12 +300,75 @@ fn restore_task(
     item_id: &str,
 ) -> Result<Item, BackupError> {
     let reader = SnapshotReader::open(snapshot)?;
-    if reader.columns("tasks")?.is_none() {
+    let Some(columns) = reader.columns("tasks")? else {
         return Err(BackupError::Missing("This backup has no tasks.".into()));
+    };
+    // WP-70's tasks are numbered per project (UNIQUE project_id, number) and tied to at most one delegation
+    // (UNIQUE delegation_id). The copy takes the project's next number, belongs to no delegation and is not in the
+    // trash, and keeps its parent only while that parent is a live task.
+    let wanted: Vec<&str> = ["id", "project_id", "parent_id"]
+        .into_iter()
+        .filter(|column| columns.iter().any(|name| name == *column))
+        .collect();
+    let row = reader
+        .rows("tasks", &wanted, |row| row.get("id") == Some(item_id))?
+        .into_iter()
+        .next()
+        .ok_or_else(|| BackupError::Missing("That task isn't in this backup.".into()))?;
+    let live_columns = live_columns(live, "tasks")?;
+    let has = |column: &str| live_columns.iter().any(|name| name == column);
+    let mut computed: Vec<(&str, Option<String>)> = Vec::new();
+    if has("number") {
+        let next: i64 = match row.get("project_id") {
+            Some(project) if has("project_id") => live
+                .query_row(
+                    "SELECT COALESCE(MAX(number), 0) + 1 FROM tasks WHERE project_id = ?1",
+                    [project],
+                    |found| found.get(0),
+                )
+                .map_err(|error| BackupError::SnapshotRead(error.to_string()))?,
+            _ => live
+                .query_row(
+                    "SELECT COALESCE(MAX(number), 0) + 1 FROM tasks",
+                    [],
+                    |found| found.get(0),
+                )
+                .map_err(|error| BackupError::SnapshotRead(error.to_string()))?,
+        };
+        computed.push(("number", Some(next.to_string())));
     }
-    restore_row(live, snapshot, "tasks", item_id, "task", &[], None)
+    if has("parent_id") {
+        let parent = row.get("parent_id").map(str::to_owned).filter(|parent| {
+            let trashed = if has("trashed_at") {
+                " AND trashed_at IS NULL"
+            } else {
+                ""
+            };
+            live.query_row(
+                &format!("SELECT 1 FROM tasks WHERE id = ?1{trashed}"),
+                [parent],
+                |_| Ok(()),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .is_some()
+        });
+        computed.push(("parent_id", parent));
+    }
+    restore_row(
+        live,
+        snapshot,
+        "tasks",
+        item_id,
+        "task",
+        &["delegation_id", "trashed_at"],
+        None,
+        &computed,
+    )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_row(
     live: &Connection,
     snapshot: &Snapshot,
@@ -304,6 +377,7 @@ fn restore_row(
     kind: &str,
     null_columns: &[&str],
     unique_column: Option<&str>,
+    computed: &[(&str, Option<String>)],
 ) -> Result<Item, BackupError> {
     let reader = SnapshotReader::open(snapshot)?;
     let Some(snapshot_columns) = reader.columns(table)? else {
@@ -326,7 +400,9 @@ fn restore_row(
     let values: Vec<Option<String>> = columns
         .iter()
         .map(|column| {
-            if column == "id" {
+            if let Some((_, value)) = computed.iter().find(|(name, _)| *name == column) {
+                value.clone()
+            } else if column == "id" {
                 Some(new_id.clone())
             } else if column == "title" {
                 Some(title.clone())
