@@ -371,6 +371,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "name user me my name call you onboarding agents",
   },
   {
+    id: "morning-summary",
+    section: "general",
+    label: "Morning summary",
+    keywords: "home morning daily summary chief habit note",
+  },
+  {
     id: "sounds",
     section: "general",
     label: "Sounds",

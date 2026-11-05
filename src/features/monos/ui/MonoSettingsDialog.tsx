@@ -29,6 +29,9 @@ import {
   type MonoState,
 } from "../model/mono";
 import { closeTree, openTree } from "../model/monoTreeStore";
+import { ensureMorningHabit } from "../../chief/model/habit";
+import { soulAsks } from "../../chief/model/scope";
+import { loadHabits, updateHabits } from "../model/monoHabits";
 import { ConfirmReset } from "./ConfirmReset";
 import { LongChatView } from "./LongChatView";
 import { MemoryPage, SoulPage, useMonoFiles } from "./MonoFilePages";
@@ -124,7 +127,7 @@ export function MonoSettingsDialog({
         </nav>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           {section === "general" ? (
-            <GeneralSection monoId={monoId} agent={agent} {...general} />
+            <GeneralSection monoId={monoId} agent={agent} soul={files?.soul} {...general} />
           ) : section === "soul" ? (
             <SoulPage monoId={monoId} agent={agent} files={files} />
           ) : (
@@ -139,6 +142,7 @@ export function MonoSettingsDialog({
 function GeneralSection({
   monoId,
   agent,
+  soul,
   cwd,
   harness,
   model,
@@ -149,7 +153,7 @@ function GeneralSection({
   onModelSettingsChange,
   onRuntimeModeChange,
   onReset,
-}: Omit<Props, "status" | "initialSection" | "onClose">) {
+}: Omit<Props, "status" | "initialSection" | "onClose"> & { soul?: string | null }) {
   const lock = useLockOverscroll<HTMLDivElement>();
   const shown = useSyncExternalStore(
     subscribeMonos,
@@ -162,6 +166,14 @@ function GeneralSection({
   const longChat = useSyncExternalStore(
     subscribeMonos,
     () => findMono(monoId)?.longChat === true,
+  );
+  const everyProject = useSyncExternalStore(
+    subscribeMonos,
+    () => findMono(monoId)?.everyProject === true,
+  );
+  const asksEveryProject = useSyncExternalStore(
+    subscribeMonos,
+    () => soulAsks(soul) || soulAsks(findMono(monoId)?.instructions),
   );
   return (
     <div
@@ -279,6 +291,20 @@ function GeneralSection({
         />
         {longChat ? <LongChatView monoId={monoId} /> : null}
       </SettingGroup>
+
+      {asksEveryProject ? (
+        <SettingGroup>
+          <SwitchRow
+            label="Read every project"
+            description="Reads tasks, pages and activity on this copy. It still files work into one project."
+            on={everyProject}
+            onChange={(on) => {
+              updateMono(monoId, ({ everyProject: _flag, ...mono }) => (on ? { ...mono, everyProject: true } : mono));
+              if (on) void ensureMorningHabit(monoId, loadHabits, async (id, change) => updateHabits(id, change), Date.now()).catch(() => undefined);
+            }}
+          />
+        </SettingGroup>
+      ) : null}
 
       {onReset ? (
         <>

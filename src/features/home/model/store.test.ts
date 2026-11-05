@@ -107,6 +107,22 @@ it("a timed-out read with no mirror is a failure, not an empty home", async () =
   await expect(readHome(disk, storage(), () => 9)).rejects.toThrow(/unavailable/);
 });
 
+it("keeps a morning summary that was turned off, and drops anything that is not false", async () => {
+  expect(parseHomeDoc({ dailySummary: "false" }).dailySummary).toBeUndefined();
+  expect(parseHomeDoc({ dailySummary: false }).dailySummary).toBe(false);
+  const disk = memoryDisk();
+  const box = storage();
+  const off = await changeHome(disk, box, (doc) => ({ ...doc, dailySummary: false }), () => 4);
+  expect(off?.doc.dailySummary).toBe(false);
+  const arranged = await changeHome(disk, box, (doc) => ({ ...doc, arrangement: doc.arrangement }), () => 5);
+  expect(arranged?.doc.dailySummary).toBe(false);
+  const on = await changeHome(disk, box, (doc) => {
+    const { dailySummary: _flag, ...rest } = doc;
+    return rest;
+  }, () => 6);
+  expect(on?.doc.dailySummary).toBeUndefined();
+});
+
 it("tries a timed-out read again, and a chat survives a full pass of failures", async () => {
   let reads = 0;
   const recovering = {
