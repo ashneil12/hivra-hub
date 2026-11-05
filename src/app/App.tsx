@@ -167,6 +167,8 @@ import {
   trackCiRepair,
 } from "../features/inbox/model/ciRepairTracking";
 import { invoke } from "@tauri-apps/api/core";
+import { setLineRulesSource } from "../features/crew/model/lineRules";
+import { activityNoteSummary } from "../features/crew/model/workerChoice";
 import {
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
@@ -298,6 +300,7 @@ import {
   launchedSessionState,
   monoSpawnedSessions,
   recordMonoSpawnedSession,
+  waitingCardAfterStart,
   type LaunchedSessionState,
   type LaunchedSessionView,
 } from "../features/monos/model/monoSpawnedSessions";
@@ -13208,6 +13211,13 @@ function Workspace({
     // The waiting queue lives in the app's database: survives a restart, shared by every window (worker_queue.rs).
     void setWorkerQueueBackend(tauriWorkerQueue);
   }, []);
+  useEffect(() => {
+    // WP-89: the line in force reads this project's crew rules, and a plugin's.
+    setLineRulesSource((project) =>
+      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
+    );
+    return () => setLineRulesSource(undefined);
+  }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -13325,8 +13335,7 @@ function Workspace({
             block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId),
           );
           if (waiting) {
-            // WP-89: when that worker starts on a newer default, its card names the new effort and where it came from.
-            if (!entry.from && !entry.effort) return;
+            // WP-89: a waiting card follows the start, including a usual model that names no source.
             const next = sessionsRef.current.map((session) => {
               if (session.id !== source.id) return session;
               let touched = false;
@@ -13336,20 +13345,8 @@ function Workspace({
                 let blockTouched = false;
                 const monoSpawnedSessions = block.monoSpawnedSessions.map((card) => {
                   if (card.sessionId !== entry.sessionId) return card;
-                  const updated = {
-                    ...card,
-                    model: entry.model || card.model,
-                    harness: entry.harness,
-                    ...(entry.effort ? { effort: entry.effort } : {}),
-                    ...(entry.from ? { from: entry.from } : {}),
-                  };
-                  if (
-                    updated.model === card.model &&
-                    updated.harness === card.harness &&
-                    updated.effort === card.effort &&
-                    updated.from === card.from
-                  )
-                    return card;
+                  const updated = waitingCardAfterStart(card, entry);
+                  if (!updated) return card;
                   blockTouched = true;
                   return updated;
                 });
@@ -14107,7 +14104,10 @@ function Workspace({
               void upsertSession(updated);
             },
             noteActivity: (entry) => {
-              void invoke("activity_note", entry).catch(() => undefined);
+              // WP-89: the log refuses a summary over 500 characters, so a long line is shortened here.
+              void invoke("activity_note", { ...entry, summary: activityNoteSummary(entry.summary) }).catch(
+                () => undefined,
+              );
             },
             tree: {
               on: (monoId) => longChatOn(monoId),
