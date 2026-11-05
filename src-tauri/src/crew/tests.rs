@@ -508,6 +508,82 @@ fn a_worker_default_is_one_field_at_a_time_and_a_rule_still_beats_it() {
     assert_eq!(quiet.cli.as_deref(), Some("cursor"));
     assert_eq!(quiet.effort.as_deref(), Some("high"));
     assert!(quiet.skipped.is_empty());
+
+    let mut usual = query(
+        "",
+        "",
+        "",
+        "",
+        None,
+        None,
+        &[("codex", true, true), ("claude", true, true)],
+    );
+    usual.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "claude:sonnet-5", "medium"),
+    });
+    usual.catalog = stand_in_catalog();
+    let usual = store::route(&conn, &usual, &[]).unwrap();
+    assert_eq!(usual.cli.as_deref(), Some("claude"));
+    assert_eq!(usual.cli_from, "default");
+    assert_eq!(usual.model.as_deref(), Some("claude:sonnet-5"));
+    assert_eq!(usual.model_from, "default");
+    assert_eq!(usual.effort.as_deref(), Some("medium"));
+    assert_eq!(usual.effort_from, "default");
+
+    let mut custom = query(
+        "deep",
+        "",
+        "",
+        "",
+        Some(Pick {
+            cli: None,
+            model: Some("custom:deepseek-test".into()),
+            effort: None,
+        }),
+        None,
+        &signed,
+    );
+    custom.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "claude:sonnet-5", "medium"),
+    });
+    custom.catalog = stand_in_catalog();
+    let custom = store::route(&conn, &custom, &[]).unwrap();
+    assert_eq!(custom.model.as_deref(), Some("custom:deepseek-test"));
+    assert_eq!(custom.model_from, "override");
+    assert!(custom.skipped.iter().all(|row| row.field != "model"));
+
+    let mut other = query(
+        "",
+        "",
+        "",
+        "",
+        Some(Pick {
+            cli: Some("cursor".into()),
+            model: Some("custom:deepseek-test".into()),
+            effort: None,
+        }),
+        None,
+        &signed,
+    );
+    other.catalog = stand_in_catalog();
+    other.defaults = Some(RouteDefaults {
+        mono: None,
+        project: None,
+        system: None,
+        usual: pick("", "composer", "medium"),
+    });
+    let other = store::route(&conn, &other, &[]).unwrap();
+    assert_ne!(other.model.as_deref(), Some("custom:deepseek-test"));
+    assert!(other
+        .skipped
+        .iter()
+        .any(|row| row.value == "custom:deepseek-test"));
 }
 
 #[test]

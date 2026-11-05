@@ -139,6 +139,8 @@ function pickModel(
     const value = field(rawOf(row.pick, "model"), "model");
     if (!value) continue;
     if (!catalog) return { value, from: row.from };
+    // A Claude custom model is offered even when this catalog doesn't list it. Another CLI's isn't.
+    if (cli === "claude" && value.startsWith("custom:")) return { value, from: row.from };
     if (offers?.some((model) => model.id === value)) return { value, from: row.from };
     skipped.push({ field: "model", from: row.from, value, reason: `${who} doesn't offer "${value}".` });
   }

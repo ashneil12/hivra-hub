@@ -207,6 +207,10 @@ fn pick_model(
         if !catalog_on(catalog) {
             return (Some(value), row.from);
         }
+        // A Claude custom model is offered even when this catalog doesn't list it. Another CLI's isn't.
+        if cli == Some("claude") && value.starts_with("custom:") {
+            return (Some(value), row.from);
+        }
         if listed.is_some_and(|models| models.iter().any(|model| model.id == value)) {
             return (Some(value), row.from);
         }

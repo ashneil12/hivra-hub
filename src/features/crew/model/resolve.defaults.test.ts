@@ -151,6 +151,34 @@ describe("worker defaults, one field at a time", () => {
     ]);
   });
 
+  it("keeps a Claude custom model the catalog does not list, and skips one on another CLI", () => {
+    const rule: CrewRule = {
+      labels: ["deep"],
+      paths: [],
+      model: "custom:deepseek-test",
+      source: "person",
+    };
+    const kept = resolveRoute({ labels: ["deep"], paths: [] }, [rule], signed("claude"), {
+      defaults: { usual: { model: "claude:sonnet-5", effort: "medium" } },
+      catalog,
+    });
+    expect(kept).toMatchObject({
+      cli: "claude",
+      model: "custom:deepseek-test",
+      modelFrom: "rule",
+    });
+    expect(kept.skipped.some((row) => row.field === "model")).toBe(false);
+
+    const elsewhere = resolveRoute(
+      { labels: [], paths: [], override: { cli: "cursor", model: "custom:deepseek-test" } },
+      [],
+      signed("claude"),
+      { defaults: { usual: { model: "composer", effort: "medium" } }, catalog },
+    );
+    expect(elsewhere.model).not.toBe("custom:deepseek-test");
+    expect(elsewhere.skipped.some((row) => row.value === "custom:deepseek-test")).toBe(true);
+  });
+
   it("an effort that isn't one at all is skipped with the reason, then the next source wins", () => {
     const route = resolveRoute(
       { labels: [], paths: [], override: { effort: "huge" } },
