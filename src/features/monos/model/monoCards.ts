@@ -27,6 +27,16 @@ export type MonoCard =
       name: string;
       instructions: string;
       schedule: HabitSchedule;
+    }
+  | {
+      /** WP-89: what this Mono just set its workers to run on. `previous` is Undo. */
+      type: "worker-default";
+      scope: "mono" | "project" | "system";
+      /** The Mono whose chat posted it, so Undo knows who to write. */
+      mono?: string;
+      project?: string;
+      line: string;
+      previous?: { cli?: string; model?: string; effort?: string };
     };
 
 export const CARD_FIELDS = [
@@ -39,6 +49,11 @@ export const CARD_FIELDS = [
   "name",
   "instructions",
   "schedule",
+  "scope",
+  "mono",
+  "project",
+  "line",
+  "previous",
 ] as const;
 
 const MAX_CHOICES = 4;
@@ -47,6 +62,25 @@ function text(value: unknown, name: string, max: number): string {
   if (typeof value !== "string" || !value.trim() || value.length > max)
     throw new Error(`${name} must be text under ${max} characters`);
   return value.replace(/\s+/g, " ").trim();
+}
+
+function storedPick(value: unknown): { cli?: string; model?: string; effort?: string } | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("previous must be the setting this replaced");
+  const raw = value as Record<string, unknown>;
+  const field = (key: string) => {
+    const item = raw[key];
+    if (item === undefined) return undefined;
+    return text(item, key, 200);
+  };
+  const pick = { cli: field("cli"), model: field("model"), effort: field("effort") };
+  if (!pick.cli && !pick.model && !pick.effort) return undefined;
+  return {
+    ...(pick.cli ? { cli: pick.cli } : {}),
+    ...(pick.model ? { model: pick.model } : {}),
+    ...(pick.effort ? { effort: pick.effort } : {}),
+  };
 }
 
 function optionalNote(value: unknown) {
@@ -113,8 +147,39 @@ export function parseCard(input: Record<string, unknown>): MonoCard {
         schedule: habitSchedule(input.schedule),
       };
     }
+    case "worker-default": {
+      only(input, ["scope", "mono", "project", "line", "previous"]);
+      const scope = input.scope;
+      if (scope !== "mono" && scope !== "project" && scope !== "system")
+        throw new Error('scope must be mono, project or system');
+      const previous = storedPick(input.previous);
+      return {
+        type: "worker-default",
+        scope,
+        line: text(input.line, "line", 500),
+        ...(input.mono === undefined ? {} : { mono: text(input.mono, "mono", 80) }),
+        ...(input.project === undefined ? {} : { project: text(input.project, "project", 4096) }),
+        ...(previous ? { previous } : {}),
+      };
+    }
     default:
-      throw new Error("type must be pr, session, choices or habit");
+      throw new Error("type must be pr, session, choices, habit or worker-default");
+  }
+}
+
+/** The words beside a card, so a saved block is never a blank bubble. */
+export function monoCardText(card: MonoCard): string {
+  switch (card.type) {
+    case "worker-default":
+      return card.line;
+    case "pr":
+      return card.note ?? `Pull request ${card.number}`;
+    case "session":
+      return card.note ?? "A session";
+    case "choices":
+      return card.options.join(", ");
+    case "habit":
+      return card.name;
   }
 }
 

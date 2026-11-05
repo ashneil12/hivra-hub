@@ -11,6 +11,7 @@ import {
 } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { isCli, isEffort } from "./clis";
+import type { Catalog, RouteDefaults } from "./resolve";
 import type { CrewRule } from "./rules";
 
 export type CrewPick = {
@@ -28,13 +29,16 @@ export type CrewRouteQuery = {
   mono?: string;
   /** WP-21: rules stored on the Mono. They are that Mono's rules when any survive the checks. */
   monoRules?: CrewRule[];
+  /** WP-89: the Mono, project and system defaults. The command judges them against `catalog`. */
+  defaults?: RouteDefaults;
+  catalog?: Catalog;
 };
 
 export type CrewRouteAnswer = {
   cli?: string | null;
   model?: string | null;
   effort?: string | null;
-  /** Where the CLI came from. Only an override, a brief or a rule replaces the launch. */
+  /** Where the CLI came from. A default, or no source, keeps the launch. */
   cliFrom?: string | null;
   modelFrom?: string | null;
   effortFrom?: string | null;
@@ -101,15 +105,16 @@ function effortFits(harness: HarnessId, modelId: string | undefined, effort: unk
   return value;
 }
 
-const CHOSEN_FROM = new Set(["override", "brief", "rule"]);
+const CHOSEN_FROM = new Set(["override", "brief", "rule", "mono", "project", "system"]);
 
 function chosen(from: string | null | undefined): boolean {
   return typeof from === "string" && CHOSEN_FROM.has(from);
 }
 
 /**
- * The launch fields a crew answer replaces. A field changes only when it came from the override,
- * the brief or a matching rule. A default, or no source, keeps what the app already picked.
+ * The launch fields a crew answer replaces. A field changes when it came from the override,
+ * the brief, a matching rule, or a Mono, project or system default. The app's usual rule, or no
+ * source, keeps what the app already picked.
  * An unknown CLI leaves the launch as it was. A different CLI does not keep the previous model's id.
  * An effort the model doesn't offer is left off, so the start is not refused for it.
  */

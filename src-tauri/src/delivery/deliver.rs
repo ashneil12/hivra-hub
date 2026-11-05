@@ -576,6 +576,25 @@ pub fn deliver(
                 delivery.url = filled.url;
                 delivery.repo = filled.repo;
                 delivery.number = filled.number;
+                // WP-77: a pull request opened through the gate stays linked to its task too.
+                if let (Some(id), Some(repo), Some(number)) = (
+                    delivery.delegation_id.clone(),
+                    delivery.repo.clone(),
+                    delivery.number,
+                ) {
+                    if let Ok(number) = i64::try_from(number) {
+                        if let Ok(conn) = store.lock_conn() {
+                            let _ = crate::github_issues::link_opened_pr(
+                                &conn,
+                                &id,
+                                &repo,
+                                number,
+                                delivery.url.as_deref(),
+                                now,
+                            );
+                        }
+                    }
+                }
                 delivery.branch = Some(branch.clone());
                 delivery.state = if filled.state == "passed" && effective.mode != Mode::CheckedPr {
                     READY
@@ -673,6 +692,21 @@ pub fn deliver(
                         delivery.url.as_deref().unwrap_or(""),
                         now,
                     );
+                }
+                // WP-77: the pull request the crew opens stays linked to its task. Merge completes it on the next read.
+                if let Some(id) = delivery.delegation_id.clone() {
+                    if let Ok(number) = i64::try_from(number) {
+                        if let Ok(conn) = store.lock_conn() {
+                            let _ = crate::github_issues::link_opened_pr(
+                                &conn,
+                                &id,
+                                &pr_repo,
+                                number,
+                                delivery.url.as_deref(),
+                                now,
+                            );
+                        }
+                    }
                 }
                 delivery.repo = Some(pr_repo);
                 delivery.number = Some(number);

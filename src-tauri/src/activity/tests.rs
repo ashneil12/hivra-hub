@@ -765,3 +765,77 @@ fn the_same_moment_orders_the_later_row_first() {
     .unwrap();
     assert_eq!(rest.entries[0].summary, "First.");
 }
+
+#[test]
+fn a_mono_records_its_own_note_and_a_blank_or_huge_one_is_refused() {
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    record_mono_note(
+        &conn,
+        "worker.default",
+        "Its workers use Opus at high effort.",
+        "vg-game",
+        "mono",
+        "vg-game-lead",
+        "EXO lead",
+        NOW,
+    )
+    .unwrap();
+    let page = list(&conn, &ListQuery::default(), NOW).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    let row = &page.entries[0];
+    assert_eq!(row.kind, "worker.default");
+    assert_eq!(row.actor, Who::mono("vg-game-lead", "EXO lead"));
+    assert_eq!(row.initiator, Who::person());
+    assert_eq!(row.project, "vg-game");
+    assert_eq!(row.target, "mono");
+    assert_eq!(row.summary, "Its workers use Opus at high effort.");
+    assert!(record_mono_note(
+        &conn,
+        "worker.default",
+        "  ",
+        "vg-game",
+        "mono",
+        "vg-game-lead",
+        "EXO lead",
+        NOW,
+    )
+    .is_err());
+    let huge = "x".repeat(501);
+    assert!(record_mono_note(
+        &conn,
+        "worker.default",
+        &huge,
+        "vg-game",
+        "mono",
+        "vg-game-lead",
+        "EXO lead",
+        NOW,
+    )
+    .is_err());
+    let long_name = "p".repeat(501);
+    assert!(record_mono_note(
+        &conn,
+        "worker.default",
+        "Kept.",
+        &long_name,
+        "mono",
+        "vg-game-lead",
+        "EXO lead",
+        NOW,
+    )
+    .is_err());
+    assert!(record_mono_note(
+        &conn,
+        "worker.default",
+        "Kept.",
+        "vg-game",
+        "mono",
+        "  ",
+        "EXO lead",
+        NOW,
+    )
+    .is_err());
+    let page = list(&conn, &ListQuery::default(), NOW).unwrap();
+    assert_eq!(page.entries.len(), 1);
+}

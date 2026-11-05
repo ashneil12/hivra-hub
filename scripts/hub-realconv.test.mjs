@@ -10,7 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { SCENES_FILE, benchSpec, parseArgs, pickScenes, readCustomModel, runRealconv } from "./hub-realconv.mjs";
+import { SCENES_FILE, benchRunOptions, benchSpec, parseArgs, pickScenes, readCustomModel, runRealconv } from "./hub-realconv.mjs";
 import { nextAshMove, scriptedProblem } from "./realconv/ash.mjs";
 import { hardChecks, isAckOnly } from "./realconv/checks.mjs";
 import { replyScores, verdict } from "./realconv/judge.mjs";
@@ -53,7 +53,7 @@ test("an OpenAI-compatible provider is called for real, and one that refuses rea
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    const env = { MY_TEST_KEY: "test-key-123" };
+    const env = { MY_TEST_KEY: "test-key-123", REALTEST_GATEWAY: `127.0.0.1:${server.address().port}` };
     const spec = providerSpec({ provider: "custom", model: "m1", baseUrl: `http://127.0.0.1:${server.address().port}/v1/`, keyEnv: "MY_TEST_KEY", effort: "high" }, env);
     const client = makeClient(spec, { env });
     const answer = await client.complete({ system: "sys", prompt: "hi" });
@@ -68,6 +68,14 @@ test("an OpenAI-compatible provider is called for real, and one that refuses rea
   } finally {
     server.close();
   }
+});
+
+test("a model call to a port this run did not name is refused before any request", async () => {
+  const env = { K: "test-key", REALTEST_GATEWAY: "127.0.0.1:8317" };
+  const denied = makeClient(providerSpec({ provider: "custom", model: "m", baseUrl: "http://127.0.0.1:9/v1", keyEnv: "K" }, env), { env });
+  await assert.rejects(denied.complete({ system: "s", prompt: "p" }), /not a loopback port/);
+  const outside = makeClient(providerSpec({ provider: "custom", model: "m", baseUrl: "http://203.0.113.1:9/v1", keyEnv: "K" }, env), { env });
+  await assert.rejects(outside.complete({ system: "s", prompt: "p" }), /not a loopback port/);
 });
 
 test("a provider's error never prints the key", async () => {
@@ -343,10 +351,20 @@ test("a dry run checks the options and starts nothing", async () => {
   assert.match(outcome.plan.skipped[0], /^S17: /);
 });
 
-test("the retired agents choice is not a provider", () => {
-  const retired = `${"grok"}-sub`;
-  assert.throws(() => parseArgs(["--agents", retired]), /not "/);
-  assert.throws(() => providerSpec({ provider: retired }), /unknown provider/);
+test("--agents grok-sub points the hub's chats at Grok and leaves the tester and the judge on DeepSeek", async () => {
+  const options = parseArgs(["--agents", "grok-sub"]);
+  assert.equal(options.agents, "grok-sub");
+  assert.equal(options.tester.provider, "deepseek-sub");
+  assert.equal(options.judge.provider, "deepseek-sub");
+  assert.equal(parseArgs(["--agents", "grok-sub", "--judge", "claude"]).judge.provider, "claude");
+  assert.equal(benchSpec(book, [], options).appModel, "claude:sonnet-5");
+  assert.equal(benchRunOptions(options).grokSub, true);
+  assert.equal(benchRunOptions(options).deepseekSub, false);
+  assert.throws(() => providerSpec({ provider: "grok-sub" }), /unknown provider/);
+  const outcome = await runRealconv({ ...parseArgs(["--scenes", "S10", "--agents", "grok-sub", "--dry-run"]) }, { bench: async () => false });
+  assert.match(outcome.plan.agents, /Grok/);
+  assert.match(outcome.plan.tester, /^deepseek-sub\//);
+  assert.match(outcome.plan.judge, /^deepseek-sub\//);
 });
 
 // Ash, 23 Oct: "dont use grok use deepseek sub" — the same shape, on DeepSeek V4.1 Flash through his local gateway.
@@ -380,6 +398,31 @@ test("a deepseek-sub client runs the DeepSeek launcher, never the plain claude b
 test("S5 runs its coding-team chat in Full access; no other scene changes the mode", () => {
   const modes = book.scenes.filter((s) => s.runtimeMode).map((s) => [s.id, s.runtimeMode]);
   assert.deepEqual(modes, [["S5", "full-access"]]);
+});
+
+test("an ask still open when the scene ends is stuck on that permission, not a plain fail", async () => {
+  const { runConversation } = await import("./realconv/player.mjs");
+  const dir = tmp();
+  const scene = { id: "P1", title: "a read that never got an answer", card: "Ash asks for a file.", place: { room: "room" }, opening: "read the notes", minutes: 0, quietSec: 0, expect: {} };
+  const judge = makeClient({ provider: "fake", model: "fake" }, { script: () => JSON.stringify({ grade: "FAIL", replies: [], realConversation: false, summary: "no reply", sceneChecks: [], autoFails: [] }) });
+  const tester = makeClient({ provider: "fake", model: "fake" }, { script: () => '{"action":"done"}' });
+  const result = await runConversation(scene, {
+    act: async (op) => {
+      if (op === "send") return { ok: true, at: Date.now(), room: "tally:leadership" };
+      if (op === "snapshot") return { ok: true, sessions: [{ id: "chat-1", title: "Tally", cwd: "/tmp/bench-home", mono: "tally-lead", permissionAsks: [{ requestId: 4, tool: "Read", paths: ["/etc/passwd"] }] }], monos: [], rooms: [], dom: { elements: [] } };
+      return { ok: true };
+    },
+    events: [], evidence: dir, project: dir, log: () => {}, pump: async () => {}, usage: () => ({ turns: 0, requests: 0 }),
+    claudeTexts: async () => [], delegationRows: async () => [], monoSession: async () => null, sessionBlocks: async () => [],
+    leadId: "tally-lead", roomId: "tally:leadership", spec: { project: { id: "tally" }, leak: [] }, deadline: Date.now() + 60_000,
+    state: dir, team: [], home: "/tmp/bench-home", dataDir: "/tmp/bench-data", copies: [],
+  }, { tester, judge, agentsReal: false, out: dir, rubric: "" });
+  assert.equal(result.verdict, "stuck on a permission ask: /etc/passwd");
+  assert.notEqual(result.verdict, "FAIL");
+  const evidence = JSON.parse(fs.readFileSync(path.join(dir, "P1", "evidence.json"), "utf8"));
+  assert.equal(evidence.permissionAnswers[0].path, "/etc/passwd");
+  assert.equal(evidence.permissionAnswers[0].decision, "refuse");
+  assert.match(fs.readFileSync(path.join(dir, "P1", "transcript.md"), "utf8"), /permission refuse: \/etc\/passwd/);
 });
 
 test("a quiet room isn't settled while a handoff started in the scene still runs", async () => {

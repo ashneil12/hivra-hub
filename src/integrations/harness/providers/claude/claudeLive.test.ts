@@ -981,6 +981,80 @@ describe("claude assistant message boundaries", () => {
       { type: "message.delta", text: update },
     ]);
   });
+
+  it("keeps a start-ack and the later answer apart when a tool record of the same message comes between them", async () => {
+    const { events, turn } = await startTurn("s1");
+    const ack = "Starting with the hourly checker, then the rest.";
+    const answer = "Six asks. Here's what's true.";
+    // Claude Code writes one assistant record per content block. The tool record
+    // carries the same message id as the ack. The answer is a later message.
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        id: "7dfd6355",
+        content: [{ type: "text", text: ack }],
+      },
+    });
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        id: "7dfd6355",
+        content: [
+          { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "notes.md" } },
+        ],
+      },
+    });
+    emit({
+      type: "user",
+      session_id: "sess_1",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: "ok" }],
+      },
+    });
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        id: "a0007770",
+        content: [{ type: "text", text: answer }],
+      },
+    });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+
+    const session = events.reduce(
+      applyHarnessEvent,
+      newSession("claude", "/repo"),
+    );
+    expect(
+      session.blocks
+        .filter((block) => block.role === "assistant" && block.text.trim())
+        .map((block) => block.text),
+    ).toEqual([ack, answer]);
+
+    // The turn's reply is the deltas, with a blank line where a message finished.
+    // The tool record must not have cleared that boundary, or the two run together.
+    const ackAt = events.findIndex(
+      (event) => event.type === "message.delta" && event.text === ack,
+    );
+    const answerAt = events.findIndex(
+      (event) => event.type === "message.delta" && event.text === answer,
+    );
+    const broke = events.findIndex(
+      (event, index) =>
+        event.type === "message.completed" && index > ackAt && index < answerAt,
+    );
+    expect(broke).toBeGreaterThan(ackAt);
+    let reply = "";
+    for (const event of events) {
+      if (event.type === "message.delta") reply += event.text;
+      else if (event.type === "message.completed") reply += "\n\n";
+    }
+    expect(reply.trim()).toContain("then the rest.\n\nSix asks.");
+    expect(reply.match(/Six asks/g)).toEqual(["Six asks"]);
+  });
 });
 
 describe("claude model switching", () => {

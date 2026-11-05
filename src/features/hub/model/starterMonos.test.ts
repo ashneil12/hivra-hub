@@ -53,4 +53,18 @@ describe("starter monos", () => {
     addStarterMono(starterOffers()[0].id);
     expect(findMono("kept-mono")?.instructions).toBe(edited);
   });
+
+  it("only the coordinator starts able to read every project", () => {
+    const offers = starterOffers();
+    const coordinator = offers.find((item) => item.name === "Coordinator");
+    expect(coordinator?.everyProject).toBe(true);
+    expect(coordinator?.soul).toContain("\nEvery project: read\n");
+    expect(offers.filter((item) => item.everyProject).map((item) => item.id)).toEqual([coordinator?.id]);
+    const added = addStarterMono(coordinator!.id);
+    expect(added?.id).not.toBe(coordinator?.id);
+    expect(added?.everyProject).toBe(true);
+    const other = offers.find((item) => item.name === "Planner");
+    expect(other?.everyProject).toBeUndefined();
+    expect(addStarterMono(other!.id)?.everyProject).toBeUndefined();
+  });
 });

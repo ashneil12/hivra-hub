@@ -10,8 +10,8 @@ use super::mapping::{self, Placement};
 
 pub(crate) const CHANGED: &str = "tasks://changed";
 
-const TITLE_MAX: usize = 300;
-const TEXT_MAX: usize = 12_000;
+pub(crate) const TITLE_MAX: usize = 300;
+pub(crate) const TEXT_MAX: usize = 12_000;
 const PROJECT_MAX: usize = 1_000;
 /// Caps the ancestor walk only. The cycle check has no bound: a walk SQLite cannot finish is an error.
 const DEPTH_MAX: i64 = 1_000;
@@ -117,6 +117,8 @@ pub struct CreateInput {
     pub due_at: Option<i64>,
     pub project: Option<String>,
     pub source: Option<String>,
+    /// WP-77: set when a GitHub item must wait for the person. Not a brief.
+    pub needs_you: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -190,6 +192,19 @@ pub struct Task {
     pub finished_at: Option<i64>,
     /// The worker's own chat (`delegations.child_session`).
     pub chat_id: Option<String>,
+    /// Set when the task is a labelled GitHub issue or pull request (WP-77).
+    pub github_url: Option<String>,
+    pub github_paused: bool,
+    pub github_pulls: Vec<GithubPull>,
+}
+
+/// A pull request linked to a task, other than the task's own GitHub item.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubPull {
+    pub title: String,
+    pub url: String,
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -674,6 +689,7 @@ fn work_of(conn: &Connection, delegation_id: Option<&str>) -> Result<Work, Strin
 
 fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
     let work = work_of(conn, row.delegation_id.as_deref())?;
+    let github = crate::github_issues::shown(conn, &row.id)?;
     Ok(Task {
         id: row.id.clone(),
         project_id: row.project_id.clone(),
@@ -710,6 +726,17 @@ fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
         working_since: work.working_since,
         finished_at: work.finished_at,
         chat_id: work.chat_id,
+        github_url: github.url,
+        github_paused: github.paused,
+        github_pulls: github
+            .pulls
+            .into_iter()
+            .map(|pull| GithubPull {
+                title: pull.title,
+                url: pull.url,
+                state: pull.state,
+            })
+            .collect(),
     })
 }
 
@@ -795,7 +822,7 @@ fn child_counts(conn: &Connection, parent_id: &str) -> Result<(i64, i64, i64), S
 }
 
 /// Rule A, walking upward. An open parent closes when every live child is closed and at least one is completed.
-fn close_ancestors(
+pub(crate) fn close_ancestors(
     conn: &Connection,
     start: &str,
     now: i64,
@@ -877,6 +904,15 @@ fn trash_subtree(
         }
     }
     Ok(())
+}
+
+/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line.
+fn pickup_text(source: &str, number: i64, title: &str, description: &str) -> String {
+    if source == "github" {
+        crate::github_issues::brief::pickup(number, title, description)
+    } else {
+        format!("pick up task #{number}")
+    }
 }
 
 fn wake(conn: &Connection, owner: &str, key: &str, text: &str, now: i64) -> Result<(), String> {
@@ -1106,7 +1142,7 @@ fn insert_row(conn: &Connection, row: &Row) -> Result<(), String> {
     Ok(())
 }
 
-fn create_in(
+pub(crate) fn create_in(
     conn: &Connection,
     actor: &Actor,
     input: &CreateInput,
@@ -1178,7 +1214,7 @@ fn create_in(
         source,
         created_by: actor.id.trim().to_string(),
         delegation_id: None,
-        needs_you: 0,
+        needs_you: i64::from(input.needs_you),
         failed: 0,
         created_at: now,
         updated_at: now,
@@ -1191,14 +1227,15 @@ fn create_in(
             close_ancestors(conn, parent, now, &mut changed, false)?;
         }
     }
-    if actor.kind == "person" {
+    // WP-77: a GitHub task that is waiting on the person is not a brief.
+    if actor.kind == "person" && !input.needs_you {
         if let Some(assignee) = &assignee {
             let id = &row.id;
             wake(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &format!("pick up task #{number}"),
+                &pickup_text(&row.source, number, &row.title, &row.description),
                 now,
             )?;
         }
@@ -1225,7 +1262,7 @@ pub fn create(
     Ok(written)
 }
 
-fn update_in(
+pub(crate) fn update_in(
     conn: &Connection,
     actor: &Actor,
     input: &UpdateInput,
@@ -1245,6 +1282,12 @@ fn update_in(
         Some(description) => description_ok(description)?,
         None => row.description.clone(),
     };
+    // WP-77: GitHub owns the title and description of a linked task.
+    if source_read(&row.source) == "github"
+        && (next_title != row.title || next_description != row.description)
+    {
+        return Err("GitHub controls this task's title and description.".into());
+    }
     let next_priority = match &input.priority {
         Some(priority) => {
             check_priority(priority)?;
@@ -1398,13 +1441,26 @@ fn update_in(
     }
     if actor.kind == "person" && assignee_changed {
         if let Some(assignee) = &next_assignee {
+            // WP-77: the person picking up a GitHub task ends the hold.
+            if source_read(&row.source) == "github" {
+                conn.execute(
+                    "UPDATE tasks SET needs_you = 0 WHERE id = ?1 AND needs_you != 0",
+                    [&row.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             let id = &row.id;
             let number = row.number;
             wake(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &format!("pick up task #{number}"),
+                &pickup_text(
+                    &source_read(&row.source),
+                    number,
+                    &next_title,
+                    &next_description,
+                ),
                 now,
             )?;
         }
@@ -1498,7 +1554,12 @@ fn apply_placement(
     now: i64,
     changed: &mut Vec<String>,
 ) -> Result<(), String> {
-    let (status_id, category) = status_named(conn, &row.project_id, placement.status)?;
+    let (mut status_id, mut category) = status_named(conn, &row.project_id, placement.status)?;
+    // WP-77: a merged pull request, or a GitHub state that already closed the task, is not undone by a running delegation.
+    if crate::github_issues::terminal_hold(conn, &row.id)? && !closed(&category) {
+        status_id = row.status_id.clone();
+        category = category_of(conn, &row.status_id)?;
+    }
     let needs = i64::from(placement.needs_you);
     let failed = i64::from(placement.failed);
     let link_new = row.delegation_id.as_deref() != Some(req.delegation_id.as_str());

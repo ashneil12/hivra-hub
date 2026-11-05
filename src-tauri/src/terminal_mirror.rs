@@ -295,7 +295,7 @@ fn remove_dev_target(home: &Path) -> Result<(), String> {
     fs::remove_file(&file).map_err(|_| "Couldn't remove the mirror.".to_string())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum RunError {
     Start,
     Timeout,
@@ -315,7 +315,30 @@ trait Runner {
         -> Result<(), RunError>;
 }
 
-struct ClaudeRunner;
+struct ClaudeRunner {
+    /// Where to look for `claude`. `None` uses the app's GUI search path: the login shell's PATH,
+    /// then the app's own, then the usual install folders. A Finder launch only has a bare PATH.
+    search: Option<String>,
+}
+
+impl ClaudeRunner {
+    fn new() -> Self {
+        Self { search: None }
+    }
+
+    fn search_path(&self) -> String {
+        self.search
+            .clone()
+            .unwrap_or_else(crate::harness::gui_search_path)
+    }
+
+    fn resolve(&self, program: &str) -> Option<PathBuf> {
+        match &self.search {
+            Some(search) => crate::harness::which_in_path(search, program),
+            None => crate::harness::resolve_gui_binary(program),
+        }
+    }
+}
 
 impl Runner for ClaudeRunner {
     fn run(
@@ -327,13 +350,22 @@ impl Runner for ClaudeRunner {
         if program != "claude" {
             return Err(RunError::Start);
         }
-        let mut cmd = std::process::Command::new(program);
+        // `claude` is often in ~/.local/bin or Homebrew's bin, which a GUI launch does not have on PATH.
+        let binary = self.resolve(program).ok_or(RunError::Start)?;
+        let search = self.search_path();
+        let mut cmd = std::process::Command::new(&binary);
         cmd.env_clear();
         for (key, value) in env {
+            if key.eq_ignore_ascii_case("PATH") {
+                continue;
+            }
             if ENV_ALLOW.contains(&key.as_str()) || (key == "CLAUDE_CONFIG_DIR") {
                 cmd.env(key, value);
             }
         }
+        // A `claude` shim starts `node`; it needs the same PATH the resolver searched.
+        let path_key = if cfg!(windows) { "Path" } else { "PATH" };
+        cmd.env(path_key, &search);
         cmd.args(args);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
@@ -1529,7 +1561,7 @@ pub fn terminal_mirror_set(enabled: bool, expected_version: u64) -> Result<Value
             expected_version,
             &resolved_plugin_dir(),
             &inherited,
-            &ClaudeRunner,
+            &ClaudeRunner::new(),
         );
         if outcome.stale {
             return Ok(setting_value(&outcome));
@@ -2305,6 +2337,79 @@ mod tests {
         assert!(ids.contains(&"b"), "{ids:?}");
         let queued = loaded.steers.get("a").map(|queue| queue.len()).unwrap_or(0);
         assert_eq!(queued, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_minimal_path_still_finds_an_injected_claude() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch("path found");
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        let marker = dir.join("ran.txt");
+        let path_out = dir.join("child-path.txt");
+        let script = format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"$PATH\" > '{}'\n",
+            marker.display(),
+            path_out.display()
+        );
+        let claude = bin.join("claude");
+        fs::write(&claude, script).unwrap();
+        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        // The app's own PATH is bare here, as it is for a Finder launch; the resolver adds the folder.
+        let search = format!("{}:/usr/bin:/bin", bin.to_string_lossy());
+        let runner = ClaudeRunner {
+            search: Some(search.clone()),
+        };
+        runner
+            .run(
+                "claude",
+                &["plugin".into(), "install".into(), "/tmp/my plugin".into()],
+                &[("PATH".into(), "/usr/bin:/bin".into())],
+            )
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "plugin\ninstall\n/tmp/my plugin\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&path_out).unwrap(),
+            search,
+            "the child gets the search path, so a node shim in it can start node"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_minimal_path_still_finds_an_injected_claude_on_windows() {
+        let dir = scratch("win-found");
+        let bin = dir.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join("claude.cmd"), "@echo off\r\nexit /b 0\r\n").unwrap();
+        let search = bin.to_string_lossy().into_owned();
+        assert_eq!(
+            crate::harness::which_in_path(&search, "claude"),
+            Some(bin.join("claude.cmd"))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_claude_is_not_run() {
+        let dir = scratch("no-claude");
+        let runner = ClaudeRunner {
+            search: Some(dir.to_string_lossy().into_owned()),
+        };
+        assert!(matches!(
+            runner.run("claude", &["plugin".into()], &[]),
+            Err(RunError::Start)
+        ));
+        assert!(matches!(
+            runner.run("not-claude", &[], &[]),
+            Err(RunError::Start)
+        ));
         let _ = fs::remove_dir_all(&dir);
     }
 

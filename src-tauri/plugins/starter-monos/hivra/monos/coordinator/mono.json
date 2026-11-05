@@ -4,5 +4,6 @@
   "skills": [],
   "crewRules": [
     { "match": { "labels": ["code"] }, "cli": "claude", "effort": "medium" }
-  ]
+  ],
+  "everyProjectReads": true
 }

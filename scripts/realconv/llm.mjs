@@ -16,6 +16,7 @@
 // needs none.
 
 import { spawn } from "node:child_process";
+import { modelUrlAllowed, sandboxedCli } from "../bench-sandbox.mjs";
 import os from "node:os";
 import path from "node:path";
 
@@ -108,11 +109,12 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
       claudeBin ??
       (spec.provider === "deepseek-sub" ? DEEPSEEK_SUB_BIN : path.join(os.homedir(), ".local/bin/claude"));
     const config = claudeConfig ?? path.join(os.homedir(), ".monocode-hub-dev/claude-config");
+    const runSpawn = spawnImpl === spawnAsync ? sandboxedCli : spawnImpl;
     return {
       ...meta,
       async complete({ system, prompt, timeoutMs = 300_000 }) {
         calls += 1;
-        const run = await spawnImpl(
+        const run = await runSpawn(
           bin,
           ["-p", "--model", spec.model, "--effort", spec.effort ?? "medium", "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "--system-prompt", system],
           { input: prompt, encoding: "utf8", timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, env: { ...env, CLAUDE_CONFIG_DIR: config, CLAUDE_SECURESTORAGE_CONFIG_DIR: config, DISABLE_AUTOUPDATER: "1" } },
@@ -122,6 +124,7 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
       },
     };
   }
+  const sendFetch = fetchImpl === globalThis.fetch ? (url, opts) => guardedModelFetch(url, opts, env) : fetchImpl;
   return {
     ...meta,
     async complete({ system, prompt, timeoutMs = 300_000 }) {
@@ -134,7 +137,7 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
         try {
-          return await fetchImpl(`${spec.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal });
+          return await sendFetch(`${spec.baseUrl}/chat/completions`, { method: "POST", headers, body: JSON.stringify(payload), signal: controller.signal });
         } finally {
           clearTimeout(timer);
         }
@@ -155,6 +158,11 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
       return { ...meta, text: text.trim() };
     },
   };
+}
+
+function guardedModelFetch(url, opts, env) {
+  if (!modelUrlAllowed(url, env)) return Promise.reject(new Error("the model call is refused: that address is not a loopback port this run named"));
+  return globalThis.fetch(url, opts);
 }
 
 function scrub(text, key) {

@@ -76,7 +76,9 @@ test("the wrapper with no key exits before any Claude starts, and never prints a
   assert.equal(fs.existsSync(marker), false);
   // With a (fake) key it starts, and neither the log nor the output holds the key.
   fs.writeFileSync(fakeClaude, `#!/bin/sh\ntouch '${marker}'\n[ -n "$ANTHROPIC_API_KEY" ] && [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo '{"type":"result","subtype":"success","ok":true}'\n`, { mode: 0o755 });
-  const ok = spawnSync(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), "--input-format", "stream-json", "-p"], { env: { ...env, [TEST_KEY_ENV]: FAKE, CLAUDE_CODE_OAUTH_TOKEN: "oauth" }, encoding: "utf8", input: "" });
+  const settings = path.join(state, "bench-settings.json");
+  fs.writeFileSync(settings, "{}\n");
+  const ok = spawnSync(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), "--input-format", "stream-json", "-p"], { env: { ...env, [TEST_KEY_ENV]: FAKE, CLAUDE_CODE_OAUTH_TOKEN: "oauth", REALTEST_BENCH_SETTINGS: settings, REALTEST_REAL_HOME: "/Users/example", REALTEST_ALLOWED: "[]" }, encoding: "utf8", input: "" });
   assert.equal(fs.existsSync(marker), true);
   assert.match(ok.stdout, /"ok":true/);
   const logs = fs.readdirSync(path.join(state, "claude")).map((f) => fs.readFileSync(path.join(state, "claude", f), "utf8")).join("");

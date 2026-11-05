@@ -48,6 +48,9 @@ export type StoreTask = {
   workingSince: number | null;
   finishedAt: number | null;
   chatId: string | null;
+  githubUrl: string | null;
+  githubPaused: boolean;
+  githubPulls: { title: string; url: string; state: string }[];
 };
 
 export function isAgentTask(task: Pick<StoreTask, "delegationId">): boolean {
@@ -65,6 +68,22 @@ function whole(value: unknown, fallback = 0): number {
 function texts(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+}
+
+function githubPulls(value: unknown): { title: string; url: string; state: string }[] {
+  if (!Array.isArray(value)) return [];
+  const pulls: { title: string; url: string; state: string }[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const row = item as Record<string, unknown>;
+    if (typeof row.url !== "string" || row.url.trim() === "") continue;
+    pulls.push({
+      title: typeof row.title === "string" ? row.title : "",
+      url: row.url.trim(),
+      state: typeof row.state === "string" ? row.state : "",
+    });
+  }
+  return pulls;
 }
 
 function notes<T extends { id: string }>(value: unknown, field: "body" | "text"): T[] {
@@ -110,6 +129,9 @@ export function readStoreTask(value: unknown): StoreTask | null {
     workingSince: typeof row.workingSince === "number" && Number.isFinite(row.workingSince) ? row.workingSince : null,
     finishedAt: typeof row.finishedAt === "number" && Number.isFinite(row.finishedAt) ? row.finishedAt : null,
     chatId: typeof row.chatId === "string" && row.chatId.trim() !== "" ? row.chatId.trim() : null,
+    githubUrl: typeof row.githubUrl === "string" && row.githubUrl.trim() !== "" ? row.githubUrl.trim() : null,
+    githubPaused: row.githubPaused === true,
+    githubPulls: githubPulls(row.githubPulls),
   };
 }
 
