@@ -1,7 +1,9 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::{Duration, SystemTime};
 
 use rusqlite::Connection;
 
@@ -579,6 +581,379 @@ fn two_crews_do_not_share_one_hook_temp_file() {
     assert_ne!(super::hooks::hook_temp(dir), super::hooks::hook_temp(dir));
 }
 
+/// The name test and the name maker must not drift apart: prune trusts the
+/// first to recognise what the second is writing right now.
+#[test]
+fn every_hook_temp_name_is_recognised_as_one() {
+    let dir = Path::new("hooks");
+    for _ in 0..8 {
+        let temp = super::hooks::hook_temp(dir);
+        let name = temp.file_name().unwrap().to_str().unwrap();
+        assert!(super::hooks::is_hook_temp(name), "not recognised: {name}");
+    }
+    // A near miss is not one: the test has to be exact, or prune would spare a
+    // real file that happens to sit in the folder.
+    for name in [
+        "prepare-commit-msg",
+        ".prepare-commit-msg.tmp",
+        ".prepare-commit-msg.12.tmp",
+        ".prepare-commit-msg.12.3.tmp.bak",
+        "prepare-commit-msg.12.3.tmp",
+        ".prepare-commit-msg..3.tmp",
+        ".prepare-commit-msg.12..tmp",
+        ".prepare-commit-msg.12.3.4.tmp",
+        ".prepare-commit-msg.12.3.tmpx",
+        ".prepare-commit-msg.12a.3.tmp",
+    ] {
+        assert!(
+            !super::hooks::is_hook_temp(name),
+            "wrongly recognised: {name}"
+        );
+    }
+}
+
+/// A temp name can never be a hook name. Without this, a file the repository
+/// owns could be mistaken for somebody's half-written temp file and skipped.
+#[test]
+fn a_temp_name_is_never_a_hook_name() {
+    let dir = Path::new("hooks");
+    for _ in 0..8 {
+        let temp = super::hooks::hook_temp(dir);
+        let name = temp.file_name().unwrap().to_str().unwrap();
+        assert!(
+            !super::hooks::hook_name_ok(name),
+            "claimed as a hook: {name}"
+        );
+    }
+}
+
+/// A data dir and the hooks folder inside it, both canonical, for prune.
+fn hooks_folder(scratch: &Scratch) -> (PathBuf, PathBuf) {
+    let root = scratch.path().join("data");
+    let dir = root.join("attribution").join("hooks").join("repo");
+    fs::create_dir_all(&dir).unwrap();
+    (
+        crate::fs::canonical(&root).unwrap(),
+        crate::fs::canonical(&dir).unwrap(),
+    )
+}
+
+fn keep_set(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+}
+
+/// Write a file and stamp its modified time, so a test never has to sleep. The
+/// handle is dropped before the caller uses the file: a live handle would only
+/// change the answer on Windows, which is the platform these tests must hold on.
+fn write_at(path: &Path, when: SystemTime, body: &str) {
+    fs::write(path, body).unwrap();
+    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_times(fs::FileTimes::new().set_modified(when))
+        .unwrap();
+    drop(file);
+}
+
+/// Write a file and age it.
+fn write_aged(path: &Path, age: Duration, body: &str) {
+    write_at(path, SystemTime::now() - age, body);
+}
+
+/// Just past the grace, so the file counts as a crashed crew's leftover.
+fn past_the_grace() -> Duration {
+    super::hooks::TEMP_GRACE + Duration::from_secs(60)
+}
+
+/// Two crews install into one folder at the same time. Whichever prunes must
+/// leave the other's temp file alone, or the other's publish fails.
+#[test]
+fn a_fresh_temp_file_survives_prune() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let temp = super::hooks::hook_temp(&dir);
+    write_aged(&temp, Duration::ZERO, "#!/bin/sh\n");
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(temp.exists(), "prune removed another crew's live temp file");
+}
+
+/// A crew that died mid-install leaves its temp file behind. Once nobody can
+/// still be writing it, the next install clears it away.
+#[test]
+fn a_stale_temp_file_is_removed_by_prune() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let temp = super::hooks::hook_temp(&dir);
+    write_aged(&temp, past_the_grace(), "#!/bin/sh\n");
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(!temp.exists(), "a crashed crew's temp file was left behind");
+}
+
+/// The grace is for temp names only. A forwarder for a hook the repository no
+/// longer has goes, however recently it was written.
+#[test]
+fn a_forwarder_not_in_keep_is_removed_fresh_or_stale() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let fresh = dir.join("pre-commit");
+    let stale = dir.join("commit-msg");
+    write_aged(&fresh, Duration::ZERO, "#!/bin/sh\n");
+    write_aged(&stale, past_the_grace(), "#!/bin/sh\n");
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(!fresh.exists(), "a fresh forwarder not in keep was kept");
+    assert!(!stale.exists(), "a stale forwarder not in keep was kept");
+}
+
+/// What the folder holds that is not in keep is still off limits.
+#[test]
+fn a_hook_in_keep_is_never_removed() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let kept = dir.join("prepare-commit-msg");
+    write_aged(&kept, past_the_grace(), "#!/bin/sh\n");
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(kept.exists(), "prune removed a hook it was told to keep");
+}
+
+/// Windows refuses to remove a file another crew has open, or has deleted but
+/// not yet closed, with PermissionDenied rather than NotFound. A temp file is
+/// disposable, so that must not fail the whole install.
+#[test]
+fn a_temp_file_that_cannot_be_removed_does_not_refuse() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let temp = super::hooks::hook_temp(&dir);
+    write_aged(&temp, past_the_grace(), "#!/bin/sh\n");
+    let mut tried = 0;
+    let result = super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+        tried += 1;
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    });
+    assert!(
+        result.is_ok(),
+        "a stuck temp file refused the install: {result:?}"
+    );
+    assert_eq!(
+        tried, 1,
+        "the removal was never attempted, so this proves nothing"
+    );
+}
+
+/// Every way a temp file's removal can fail is skipped, not just
+/// PermissionDenied. Windows refuses a file another process holds open with
+/// ERROR_SHARING_VIOLATION (os error 32), and Rust does not map that to
+/// PermissionDenied (only ERROR_ACCESS_DENIED, os error 5, is mapped), so a
+/// sharing violation arrives as some other kind. A rule that named only
+/// PermissionDenied would not cover the case it was written for.
+#[test]
+fn any_error_on_a_temp_file_does_not_refuse() {
+    let sharing_violation = std::io::Error::from_raw_os_error(32).kind();
+    for kind in [
+        std::io::ErrorKind::PermissionDenied,
+        sharing_violation,
+        std::io::ErrorKind::Other,
+    ] {
+        let scratch = Scratch::new();
+        let (root, dir) = hooks_folder(&scratch);
+        let temp = super::hooks::hook_temp(&dir);
+        write_aged(&temp, past_the_grace(), "#!/bin/sh\n");
+        let mut tried = 0;
+        let result =
+            super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+                tried += 1;
+                Err(std::io::Error::from(kind))
+            });
+        assert!(
+            result.is_ok(),
+            "a {kind:?} on a temp file refused the install: {result:?}"
+        );
+        assert_eq!(tried, 1, "the removal was never attempted ({kind:?})");
+    }
+}
+
+/// Any other error on a real hook file refuses, not only PermissionDenied.
+#[test]
+fn another_error_on_a_forwarder_still_refuses() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    write_aged(&dir.join("pre-commit"), Duration::ZERO, "#!/bin/sh\n");
+    let result = super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+        Err(std::io::Error::from(std::io::ErrorKind::Other))
+    });
+    assert!(
+        result.is_err(),
+        "a failed removal of a real hook was swallowed: {result:?}"
+    );
+}
+
+/// The grace is measured from the temp file's own age, with the cut at
+/// TEMP_GRACE. Wide margins, so a slow runner cannot flip either side.
+#[test]
+fn the_grace_boundary_is_the_temp_file_s_own_age() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let young = super::hooks::hook_temp(&dir);
+    let old = super::hooks::hook_temp(&dir);
+    write_aged(
+        &young,
+        super::hooks::TEMP_GRACE - Duration::from_secs(30),
+        "#!/bin/sh\n",
+    );
+    write_aged(
+        &old,
+        super::hooks::TEMP_GRACE + Duration::from_secs(30),
+        "#!/bin/sh\n",
+    );
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(young.exists(), "a temp file inside the grace was removed");
+    assert!(!old.exists(), "a temp file past the grace was kept");
+}
+
+/// A clock step can leave a temp file stamped in the future. That has to read
+/// as fresh: removing a live crew's temp file is the failure being fixed here.
+#[test]
+fn a_temp_file_stamped_in_the_future_is_treated_as_fresh() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let temp = super::hooks::hook_temp(&dir);
+    write_at(
+        &temp,
+        SystemTime::now() + Duration::from_secs(120),
+        "#!/bin/sh\n",
+    );
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(temp.exists(), "a future-stamped temp file was removed");
+}
+
+/// Removing a link removes the link, never what it points at.
+#[cfg(unix)]
+#[test]
+fn prune_removes_a_link_without_touching_its_target() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let target = scratch.path().join("real-pre-commit");
+    fs::write(&target, "#!/bin/sh\necho real\n").unwrap();
+    let link = dir.join("pre-commit");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    super::hooks::prune(&root, &dir, &keep_set(&["prepare-commit-msg"])).unwrap();
+    assert!(!link.exists(), "the link was left behind");
+    assert!(
+        target.exists(),
+        "prune followed the link and removed its target"
+    );
+    assert_eq!(
+        fs::read_to_string(&target).unwrap(),
+        "#!/bin/sh\necho real\n"
+    );
+}
+
+/// A real hook file whose removal fails is an error we must not swallow: the
+/// folder would keep a forwarder for a hook the repository no longer has.
+#[test]
+fn a_forwarder_that_cannot_be_removed_still_refuses() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    write_aged(&dir.join("pre-commit"), Duration::ZERO, "#!/bin/sh\n");
+    let result = super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    });
+    assert!(
+        result.is_err(),
+        "a failed removal of a real hook was swallowed: {result:?}"
+    );
+}
+
+/// The other crew removed it between the listing and the removal. That is not
+/// an error, on any platform.
+#[test]
+fn a_file_that_is_already_gone_does_not_refuse() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    write_aged(&dir.join("pre-commit"), Duration::ZERO, "#!/bin/sh\n");
+    let result = super::hooks::prune_with(&root, &dir, &keep_set(&["prepare-commit-msg"]), |_| {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    });
+    assert!(
+        result.is_ok(),
+        "a lost race refused the install: {result:?}"
+    );
+}
+
+/// A write to the temp file can fail on Windows while another crew holds or is
+/// deleting that name. The next attempt writes a new one rather than failing
+/// the whole crew.
+#[test]
+fn a_failed_publish_write_retries_with_a_new_temp_name() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let dest = dir.join("prepare-commit-msg");
+    let script = "#!/bin/sh\n# retry\n";
+    let mut tries = 0;
+    let result = super::hooks::publish_hook_with(&root, &dir, &dest, script, |hooks| {
+        tries += 1;
+        if tries == 1 {
+            // A name whose folder does not exist: the write fails the way a
+            // sharing violation fails it, without a Windows machine.
+            hooks.join("missing").join("first.tmp")
+        } else {
+            super::hooks::hook_temp(hooks)
+        }
+    });
+    assert!(
+        result.is_ok(),
+        "the second attempt should have published: {result:?}"
+    );
+    assert!(tries >= 2, "it did not retry with a new temp file");
+    assert_eq!(fs::read_to_string(&dest).unwrap(), script);
+}
+
+/// A link planted at the temp name must be refused, never written through:
+/// following it would overwrite whatever it points at.
+#[cfg(unix)]
+#[test]
+fn a_link_at_the_temp_name_is_refused() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let outside = scratch.path().join("outside.txt");
+    fs::write(&outside, "not mine\n").unwrap();
+    let temp = super::hooks::hook_temp(&dir);
+    std::os::unix::fs::symlink(&outside, &temp).unwrap();
+    let dest = dir.join("prepare-commit-msg");
+    let result =
+        super::hooks::publish_hook_with(&root, &dir, &dest, "#!/bin/sh\n", |_| temp.clone());
+    assert!(result.is_err(), "a planted link was followed: {result:?}");
+    assert!(!dest.exists(), "it published through the link anyway");
+    assert_eq!(
+        fs::read_to_string(&outside).unwrap(),
+        "not mine\n",
+        "the link's target was overwritten"
+    );
+}
+
+/// The retry must not become a way round the containment check: a temp name
+/// outside the data folder is refused on every attempt.
+#[test]
+fn a_temp_name_outside_the_data_folder_is_refused_on_every_attempt() {
+    let scratch = Scratch::new();
+    let (root, dir) = hooks_folder(&scratch);
+    let outside = scratch.path().join("outside.tmp");
+    fs::write(&outside, "not mine\n").unwrap();
+    let dest = dir.join("prepare-commit-msg");
+    let mut tries = 0;
+    let result = super::hooks::publish_hook_with(&root, &dir, &dest, "#!/bin/sh\n", |_| {
+        tries += 1;
+        outside.clone()
+    });
+    assert!(
+        result.is_err(),
+        "an outside temp name was published: {result:?}"
+    );
+    assert_eq!(
+        tries, 1,
+        "the containment check did not stop the first attempt"
+    );
+    assert!(!dest.exists(), "it published from outside the data folder");
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "not mine\n");
+}
+
 #[test]
 fn two_crews_installing_together_both_get_the_hook() {
     let scratch = Scratch::new();
@@ -586,29 +961,41 @@ fn two_crews_installing_together_both_get_the_hook() {
     git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
     let data = scratch.path().join("data");
     fs::create_dir_all(&data).unwrap();
-    for _ in 0..8 {
+    let env = env_pairs(&made.env());
+    for round in 0..8 {
         let left = data.clone();
         let right = data.clone();
         let repo_a = made.repo.clone();
         let repo_b = made.repo.clone();
+        let env_a = env.clone();
+        let env_b = env.clone();
         let home_a = made.home.clone();
         let home_b = made.home.clone();
         let global_a = made.global.clone();
         let global_b = made.global.clone();
         let a = std::thread::spawn(move || {
+            let installed = super::hooks::install_for_repo(&left, &repo_a, &env_a);
             let mut cmd = Command::new("git");
             cmd.env("HOME", &home_a).env("GIT_CONFIG_GLOBAL", &global_a);
             super::apply_crew_env(&mut cmd, &left, &repo_a, "chat-1", Some("task-1"));
-            cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT")
+            let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
+            (installed, pointed)
         });
         let b = std::thread::spawn(move || {
+            let installed = super::hooks::install_for_repo(&right, &repo_b, &env_b);
             let mut cmd = Command::new("git");
             cmd.env("HOME", &home_b).env("GIT_CONFIG_GLOBAL", &global_b);
             super::apply_crew_env(&mut cmd, &right, &repo_b, "chat-2", Some("task-2"));
-            cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT")
+            let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
+            (installed, pointed)
         });
-        assert!(a.join().unwrap());
-        assert!(b.join().unwrap());
+        let (from_a, pointed_a) = a.join().unwrap();
+        let (from_b, pointed_b) = b.join().unwrap();
+        assert!(from_a.is_ok(), "round {round}, crew a: {from_a:?}");
+        assert!(from_b.is_ok(), "round {round}, crew b: {from_b:?}");
+        assert_eq!(from_a.unwrap(), from_b.unwrap(), "round {round}");
+        assert!(pointed_a, "round {round}, crew a got no hooksPath");
+        assert!(pointed_b, "round {round}, crew b got no hooksPath");
     }
     let hooks_root = data.join("attribution").join("hooks");
     let dirs: Vec<PathBuf> = fs::read_dir(&hooks_root)

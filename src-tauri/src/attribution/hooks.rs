@@ -45,7 +45,7 @@ const CONFIG_ENV: &[&str] = &[
 
 const GIT_TIMEOUT: Duration = Duration::from_secs(8);
 
-fn hook_name_ok(name: &str) -> bool {
+pub(crate) fn hook_name_ok(name: &str) -> bool {
     let mut chars = name.chars();
     if !matches!(chars.next(), Some(c) if c.is_ascii_lowercase()) {
         return false;
@@ -105,13 +105,48 @@ fn ensure_child(root: &Path, rel: &str) -> Result<PathBuf, String> {
 
 static HOOK_TMP: AtomicU64 = AtomicU64::new(0);
 
+/// The temp names `hook_temp` makes. A hook name can never look like one: it
+/// starts with a lowercase letter and holds no dot.
+const TEMP_PREFIX: &str = ".prepare-commit-msg.";
+const TEMP_SUFFIX: &str = ".tmp";
+
+/// How long a temp file has to sit untouched before it counts as a crashed
+/// crew's leftover. Two crews can install into one folder at the same time, so
+/// a fresh temp file belongs to whoever is writing it right now.
+pub(crate) const TEMP_GRACE: Duration = Duration::from_secs(60);
+
 /// A fresh path for every install. Two crews in one process must not share a file.
 pub(crate) fn hook_temp(dir: &Path) -> PathBuf {
     let n = HOOK_TMP.fetch_add(1, Ordering::Relaxed);
     dir.join(format!(
-        ".prepare-commit-msg.{}.{n}.tmp",
+        "{TEMP_PREFIX}{}.{n}{TEMP_SUFFIX}",
         std::process::id()
     ))
+}
+
+/// True for the names `hook_temp` makes: `.prepare-commit-msg.<pid>.<n>.tmp`.
+/// `hook_name_ok` never accepts a name that starts with a dot, so a file with
+/// one of these names is only ever a temp file.
+pub(crate) fn is_hook_temp(name: &str) -> bool {
+    name.strip_prefix(TEMP_PREFIX)
+        .and_then(|rest| rest.strip_suffix(TEMP_SUFFIX))
+        .and_then(|middle| middle.split_once('.'))
+        .is_some_and(|(pid, n)| {
+            !pid.is_empty()
+                && !n.is_empty()
+                && pid.bytes().all(|byte| byte.is_ascii_digit())
+                && n.bytes().all(|byte| byte.is_ascii_digit())
+        })
+}
+
+/// Old enough that no crew can still be writing it. A time that can't be read,
+/// or sits in the future, is treated as fresh: leaving a stray temp file is
+/// harmless, removing a live one breaks its crew's install.
+fn temp_is_stale(meta: &std::fs::Metadata) -> bool {
+    meta.modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > TEMP_GRACE)
 }
 
 fn script_text(path: &Path) -> Option<String> {
@@ -123,8 +158,19 @@ fn script_text(path: &Path) -> Option<String> {
 /// Publish the hook. A lost rename is not a failure when the installed file is
 /// already this script: the other crew got there first. Only our temp file is removed.
 fn publish_hook(root: &Path, dir: &Path, dest: &Path, script: &str) -> Result<(), String> {
+    publish_hook_with(root, dir, dest, script, hook_temp)
+}
+
+/// `next_temp` is a parameter so a test can make one attempt's write fail.
+pub(crate) fn publish_hook_with(
+    root: &Path,
+    dir: &Path,
+    dest: &Path,
+    script: &str,
+    mut next_temp: impl FnMut(&Path) -> PathBuf,
+) -> Result<(), String> {
     for attempt in 0..8 {
-        let tmp = hook_temp(dir);
+        let tmp = next_temp(dir);
         if !contained(root, &tmp) {
             return Err(REFUSAL.into());
         }
@@ -132,7 +178,14 @@ fn publish_hook(root: &Path, dir: &Path, dest: &Path, script: &str) -> Result<()
             return Err(REFUSAL.into());
         }
         if std::fs::write(&tmp, script.as_bytes()).is_err() {
-            return Err(REFUSAL.into());
+            // Not final. Windows can refuse the write while another crew holds
+            // or is deleting the file, so the next attempt writes a new temp
+            // name instead of failing the whole install.
+            let _ = std::fs::remove_file(&tmp);
+            if attempt + 1 < 8 {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            continue;
         }
         if std::fs::rename(&tmp, dest).is_ok() {
             return Ok(());
@@ -433,7 +486,19 @@ fn forwarder_script(real: &str) -> Result<String, String> {
 /// Remove forwarders for hooks the repository no longer has, and temp files a
 /// failed publish left behind. Only regular files and links inside the folder
 /// are touched; removing a link removes the link, never what it points at.
-fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String> {
+/// Another crew installing into the same folder right now keeps its temp file.
+pub(crate) fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String> {
+    prune_with(root, dir, keep, |path| std::fs::remove_file(path))
+}
+
+/// `remove` is a parameter so a test can make one removal fail the way Windows
+/// fails it, without needing a Windows machine to hold a file open.
+pub(crate) fn prune_with(
+    root: &Path,
+    dir: &Path,
+    keep: &BTreeSet<String>,
+    mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|_| REFUSAL.to_string())?;
     for entry in entries.flatten() {
         let path = entry.path();
@@ -453,10 +518,24 @@ fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String>
         if meta.is_dir() {
             continue;
         }
-        match std::fs::remove_file(&path) {
+        let temp = is_hook_temp(name);
+        if temp && !temp_is_stale(&meta) {
+            continue;
+        }
+        match remove(&path) {
             Ok(()) => {}
             // The other crew renamed or removed it since the listing.
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            // A temp file is disposable, so never fail an install over one. On
+            // Windows a file another process holds open refuses removal with
+            // ERROR_SHARING_VIOLATION (os error 32), which Rust does not map to
+            // PermissionDenied (only ERROR_ACCESS_DENIED, os error 5, is
+            // mapped), and a file already marked for deletion gives
+            // ERROR_ACCESS_DENIED. Both mean the same thing here: another crew
+            // owns that name and ours is not needed.
+            Err(_) if temp => {}
+            // A real hook file that will not go is a refusal: git would keep
+            // running a forwarder for a hook the repository no longer has.
             Err(_) => return Err(REFUSAL.into()),
         }
     }
