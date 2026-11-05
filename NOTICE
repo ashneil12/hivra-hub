@@ -160,6 +160,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/vendor/agentZeroMemories.ts
   The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51).
 
+- HumanLayer's terminal session mirror
+  Source: https://github.com/humanlayer/humanlayer
+  License: Apache-2.0
+  The upstream files were not in the checkout; Apache-2.0
+  Used in: plugins/hivra-mirror
+  The local half (plugin hooks, the event map, parent-process discovery, the session-variable skip and transcript backfill) is reimplemented from the described behaviour. The HumanLayer checkout was not in the sources tree and this build had no network, so the files were not copied byte for byte. The cloud transport (login and a token) is replaced by a loopback port on this Mac (WP-85).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
