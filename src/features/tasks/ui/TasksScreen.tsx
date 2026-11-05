@@ -20,8 +20,8 @@ import {
   toOrbitTasks,
   type StoreTask,
 } from "../model/mapTask";
-import { taskProjectKeys } from "../model/projects";
-import { readViewState } from "../model/viewKeep";
+import { statusProjectIds, taskProjectKeys } from "../model/projects";
+import { readViewState, saveWasStale } from "../model/viewKeep";
 import { PRIORITY_ORDER } from "../vendor/taskMeta";
 import type { Task, TaskStatusDef } from "../vendor/models";
 import { createAutosaver } from "../vendor/views/autosave";
@@ -153,6 +153,27 @@ function sortTasks(tasks: Task[], order: OrderBy, direction: "asc" | "desc"): Ta
   });
 }
 
+function mergeHeld(local: readonly HeldView[], listed: readonly HeldView[], keepIds: ReadonlySet<string>): HeldView[] {
+  const localById = new Map(local.map((view) => [view.id, view]));
+  const merged = listed.map((view) => {
+    const have = localById.get(view.id);
+    return have && have.version > view.version ? have : view;
+  });
+  for (const id of keepIds) {
+    const have = localById.get(id);
+    if (have && !merged.some((view) => view.id === id)) merged.push(have);
+  }
+  return merged;
+}
+
+function pickHeld(previous: HeldView | null, listed: readonly HeldView[], keepIds: ReadonlySet<string>): HeldView | null {
+  const same = previous ? listed.find((view) => view.id === previous.id) : undefined;
+  if (previous && same && previous.version > same.version) return previous;
+  if (same) return same;
+  if (previous && keepIds.has(previous.id)) return previous;
+  return listed.find((view) => view.builtin) ?? listed[0] ?? previous;
+}
+
 function typingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   const tag = target.tagName;
@@ -177,6 +198,10 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const tasksRef = useRef(tasks);
   const openRef = useRef(open);
   const viewRef = useRef(current);
+  const viewsRef = useRef(views);
+  const freshIds = useRef(new Set<string>());
+  const droppedIds = useRef(new Set<string>());
+  const alive = useRef(true);
   const writeRef = useRef("");
   const pageRef = useRef("all");
   const saverRef = useRef<ReturnType<typeof createAutosaver<ViewState>> | null>(null);
@@ -184,12 +209,18 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   tasksRef.current = tasks;
   openRef.current = open;
   viewRef.current = current;
+  viewsRef.current = views;
 
   const load = useCallback(async () => {
     const gen = ++generation.current;
+    const seenFresh = new Set(freshIds.current);
+    const seenDropped = new Set(droppedIds.current);
     let keys: { write: string; read: string[] };
+    let statusIds: string[] = [];
     try {
+      const projects = hubData().listProjects().map((project) => ({ id: project.id, folder: project.folder ?? null }));
       keys = keysFor(scope, cwd);
+      statusIds = statusProjectIds(scope, cwd, projects);
     } catch {
       if (gen !== generation.current) return;
       setTasks((previous) => nextTasks(previous, { ok: false }));
@@ -213,18 +244,31 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
       setTasks((previous) => nextTasks(previous, { ok: false }));
       setNote("Couldn't load tasks. Trying again.");
     }
+    const asked = statusIds.length > 0 ? statusIds : [keys.write];
     try {
-      const rows = await invoke("tasks_statuses", { actor: person(keys.write) });
-      if (gen === generation.current) setStatuses(readStatuses(rows, scope === "all" ? keys.read : [keys.write]));
+      const lists = await Promise.all(
+        asked.map(async (key) => {
+          try {
+            return await invoke("tasks_statuses", { actor: person(key) });
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (gen !== generation.current) return;
+      const flat = lists.flatMap((rows) => (Array.isArray(rows) ? rows : []));
+      setStatuses(readStatuses(flat, asked));
     } catch {
-      if (gen === generation.current) setStatuses(readStatuses(null, scope === "all" ? keys.read : [keys.write]));
+      if (gen === generation.current) setStatuses(readStatuses(null, asked));
     }
     try {
       const listed = await invoke("tasks_views_list", { actor: person(keys.write), pageKey: pageRef.current });
       if (gen !== generation.current) return;
-      const next = readViews(listed);
-      setViews(next);
-      setCurrent((previous) => next.find((view) => view.id === previous?.id) ?? next.find((view) => view.builtin) ?? next[0] ?? previous);
+      const arrived = new Set([...freshIds.current].filter((id) => !seenFresh.has(id)));
+      const droppedDuring = new Set([...droppedIds.current].filter((id) => !seenDropped.has(id)));
+      const next = readViews(listed).filter((item) => !droppedDuring.has(item.id));
+      setViews((previous) => mergeHeld(previous, next, arrived));
+      setCurrent((previous) => pickHeld(previous, next, arrived));
     } catch {
       // The view list is not the task list. A missing command leaves the tasks where they are.
     }
@@ -283,26 +327,36 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   persistRef.current = async (state) => {
     const view = viewRef.current;
     const project = writeRef.current;
+    const pageAtSave = pageRef.current;
     if (!view?.id || project === "") throw new Error("offline");
     const written = (await invoke("tasks_views_save", {
       actor: person(project),
-      input: { pageKey: pageRef.current, id: view.id, name: view.name, state, version: view.version },
+      input: { pageKey: pageAtSave, id: view.id, name: view.name, state, version: view.version },
     })) as { stale?: unknown; view?: unknown };
-    const saved = readOneView(written.view);
+    const saved = readOneView(written?.view);
     if (!saved) throw new Error("offline");
+    // A save started on the way out, or for a page we have already left, must not land on the page now showing.
+    if (!alive.current || pageRef.current !== pageAtSave) return;
+    freshIds.current.add(saved.id);
     viewRef.current = saved;
     setCurrent(saved);
     setViews((previous) => previous.map((item) => (item.id === saved.id ? saved : item)));
-    if (written.stale === true) return;
   };
   useEffect(() => {
     const saver = createAutosaver<ViewState>((state) => persistRef.current(state));
     saverRef.current = saver;
     return () => {
+      saver.flush();
       saver.dispose();
-      saverRef.current = null;
+      if (saverRef.current === saver) saverRef.current = null;
     };
   }, [cwd, scope]);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
 
   function changeView(next: ViewState) {
     const state = readViewState(next);
@@ -354,10 +408,14 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   async function bulk(fields: Record<string, unknown>) {
     const gen = ++bulkGeneration.current;
     const chosen = (tasksRef.current ?? []).filter((task) => selected.has(task.id));
+    let followed = false;
     const result = await runBulk(
       chosen,
       async (task) => {
-        if (isAgentTask(task) && "status" in fields) return "ok";
+        if (isAgentTask(task) && "status" in fields) {
+          followed = true;
+          return "ok";
+        }
         try {
           const written = readWritten(
             await invoke("tasks_update", { actor: person(task.projectId), input: { id: task.id, version: task.version, ...fields } }),
@@ -374,8 +432,10 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
     );
     if (gen !== bulkGeneration.current) return;
     await load();
+    if (gen !== bulkGeneration.current) return;
     if (result === "stale") setNote("That task changed. Showing the latest.");
     else if (result === "unreachable") setNote("Couldn't load tasks. Trying again.");
+    else if (followed) setNote("This task follows its work.");
   }
 
   async function saveCopy(name: string) {
@@ -388,6 +448,8 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
       })) as { view?: unknown };
       const saved = readOneView(written.view);
       if (!saved) return;
+      freshIds.current.add(saved.id);
+      viewRef.current = saved;
       setViews((previous) => [...previous.filter((view) => view.id !== saved.id), saved]);
       setCurrent(saved);
     } catch (error) {
@@ -399,10 +461,31 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   async function deleteView(view: HeldView) {
     if (view.builtin) return;
     try {
-      await invoke("tasks_views_delete", { actor: person(writeRef.current), id: view.id, version: view.version });
-      const rest = views.filter((item) => item.id !== view.id);
+      const written = (await invoke("tasks_views_delete", {
+        actor: person(writeRef.current),
+        id: view.id,
+        version: view.version,
+      })) as { stale?: unknown; view?: unknown } | null;
+      if (!written || typeof written !== "object") {
+        setNote("Couldn't load tasks. Trying again.");
+        return;
+      }
+      if (saveWasStale({ stale: written.stale === true })) {
+        const saved = readOneView(written.view);
+        if (saved) {
+          viewRef.current = saved;
+          setViews((previous) => previous.map((item) => (item.id === saved.id ? saved : item)));
+          setCurrent((previous) => (previous?.id === saved.id ? saved : previous));
+        }
+        setNote("That view changed. Showing the latest.");
+        return;
+      }
+      droppedIds.current.add(view.id);
+      const rest = viewsRef.current.filter((item) => item.id !== view.id);
+      const next = viewRef.current?.id === view.id ? (rest.find((item) => item.builtin) ?? rest[0] ?? null) : (viewRef.current ?? null);
+      viewRef.current = next;
       setViews(rest);
-      setCurrent(rest.find((item) => item.builtin) ?? rest[0] ?? null);
+      setCurrent(next);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setNote(message.trim() || "Couldn't load tasks. Trying again.");
