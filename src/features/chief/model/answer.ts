@@ -64,6 +64,14 @@ export function questionKind(text: string): QuestionKind {
   return "work";
 }
 
+/** A name or id as its own word. "crew" is not inside "screw", and "a.b" is not "axb". */
+function mentions(text: string, needle: string): boolean {
+  const wanted = needle.trim();
+  if (!wanted) return false;
+  const body = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}\\p{N}_])${body}(?![\\p{L}\\p{N}_])`, "u").test(text);
+}
+
 function topicOf(text: string): string {
   const match = /\babout\s+(.+)$/i.exec(text.trim());
   return match?.[1]?.replace(/[?.!]+$/g, "").trim().toLowerCase() ?? "";
@@ -109,7 +117,7 @@ export function askChief(
   }
   const trimmed = text.trim();
   if (!trimmed) return { kind: "question", text: "Which project should this go in?" };
-  const named = input.projects.filter((project) => trimmed.includes(project.name) || trimmed.includes(project.id));
+  const named = input.projects.filter((project) => mentions(trimmed, project.name) || mentions(trimmed, project.id));
   if (named.length !== 1) return { kind: "question", text: "Which project should this go in?" };
   const title = cleanLine(trimmed).slice(0, 200);
   if (!title) return { kind: "question", text: "Which project should this go in?" };

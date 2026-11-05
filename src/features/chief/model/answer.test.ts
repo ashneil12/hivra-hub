@@ -57,6 +57,35 @@ describe("askChief", () => {
     });
     expect(askChief("  ", { readings, projects, loaded: true }).kind).toBe("question");
   });
+
+  it("names a project only as a whole word, not a piece of a longer one", () => {
+    const ask = (text: string, extra: { id: string; name: string; folder: null }[] = []) =>
+      askChief(text, { readings, projects: [...projects, ...extra], loaded: true });
+    expect(ask("Fix the screw")).toEqual({ kind: "question", text: "Which project should this go in?" });
+    expect(ask("Rewrite the composite layout")).toEqual({ kind: "question", text: "Which project should this go in?" });
+    expect(ask("Update the Sitemap")).toEqual({ kind: "question", text: "Which project should this go in?" });
+    expect(ask("Crewman writes the notes")).toEqual({ kind: "question", text: "Which project should this go in?" });
+    expect(ask("Put this on crew")).toEqual({ kind: "file", projectId: "crew", title: "Put this on crew" });
+    expect(ask("Fix a.b please", [{ id: "a.b", name: "Dots", folder: null }])).toEqual({
+      kind: "file",
+      projectId: "a.b",
+      title: "Fix a.b please",
+    });
+    expect(ask("Fix axb please", [{ id: "a.b", name: "Dots", folder: null }])).toEqual({
+      kind: "question",
+      text: "Which project should this go in?",
+    });
+    expect(ask("écrew stays put")).toEqual({ kind: "question", text: "Which project should this go in?" });
+    expect(ask("Ask Müller", [{ id: "mu", name: "Müller", folder: null }])).toEqual({
+      kind: "file",
+      projectId: "mu",
+      title: "Ask Müller",
+    });
+    expect(ask("Ask Müllerei", [{ id: "mu", name: "Müller", folder: null }])).toEqual({
+      kind: "question",
+      text: "Which project should this go in?",
+    });
+  });
 });
 
 describe("linesFromReply", () => {
