@@ -44,7 +44,8 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(asking.locator(".pick")).toHaveText("Suggested: Three slots");
   await expect(asking.locator(".status")).toContainText("Asking");
   await expect(stuck.locator(".status")).toContainText("Stuck");
-  await expect(stuck.locator(".pick")).toContainText("No output for 12 min · still running npm run build");
+  // PM-6 (Critiquito, 21 Oct: "still running npm test" is jargon): the page says the command in plain words.
+  await expect(stuck.locator(".pick")).toContainText("No output for 12 min · still running the build");
   await expect(frame.locator("[data-summary]")).toHaveText("2 need you · 2 working · 4 idle");
   // Asking first, then stuck.
   await expect(frame.locator('[data-list="attention"] [data-item]')).toHaveText([/Pick the save slot layout/, /Build 0.15 for the playtest/]);
@@ -89,7 +90,9 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(hivra.locator(".question")).toHaveText("send it to the waitlist today or wait for the new headline?");
   await shot(page, "agents-4-lead-asks");
   await hivra.getByRole("button", { name: "Take it" }).click();
-  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: send it today\n\n(sent from the Agents page)" }]);
+  // r97 (g): the pick reads as its option. "My pick: send it today" names "Send it to the waitlist today"
+  // (chatQuestions.ts optionForPick; pageSources.test.ts: "the pick reads as its option").
+  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: Send it to the waitlist today\n\n(sent from the Agents page)" }]);
   await expect(hivra).toHaveCount(0);
   await expect(frame.locator('[data-list="working"] [data-item="a:hivra-lead"] .row .doing')).toHaveText("Shipping to the testers");
 
