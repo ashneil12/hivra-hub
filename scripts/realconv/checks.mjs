@@ -124,7 +124,7 @@ export function hardChecks(input) {
   if (expect.roomEnds && roomEnded === false) misses.push("the room never went quiet: it didn't stop and wait for Ash");
   if (expect.noNewMonos && newMonos.length) autoFails.push({ check: "bots-created-without-yes", monos: newMonos });
   if (expect.seatToSeat) {
-    const names = /\b(chief of staff|cos|projects? manager|pm|frank|alfred|critiquito|lead)\b/i;
+    const names = /\b(chief of staff|cos|coordinator|projects? manager|pm|planner|frank|record keeper|alfred|team steward|critiquito|design review|lead)\b/i;
     const roomPosts = toAsh.filter((m) => m.where === "room");
     facts.seatToSeat = roomPosts.filter((m) => names.test(m.text)).length;
     if (!facts.seatToSeat) misses.push("no seat addressed another by name");

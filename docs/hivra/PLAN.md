@@ -149,11 +149,14 @@ for WP-61 and WP-80. 84 starts when 70 and 72 merge, 85 and 86 when 70 (and 78) 
 
 Before the first ship, Ash asked what would tie everything together: a Home overview he can arrange, and one agent
 that knows every project. Home (73) now takes pinned panels and a chosen order; 88 gives the existing Chief of Staff
-a read-only view across projects and puts its chat on Home. 88 starts when 51, 70, 72, 73 and 78 have merged.
+a read-only view across projects and puts its chat on Home. 88 starts when 51, 70, 72, 73 and 78 have merged. 89 lets
+the person set the workers' CLI, model and effort for one Mono, one project or everything, on screen or by telling the
+first mate.
 
 | WP | Title | Size | Depends on | Grok OK |
 | --- | --- | --- | --- | --- |
 | [88](work/WP-88-chief-of-staff.md) | The Chief of Staff knows every project | M | 51, 70, 72, 73, 78 | yes |
+| [89](work/WP-89-worker-model.md) | Change what your workers run on, anywhere, in one step | M | 13 | yes |
 
 ## Running it
 
