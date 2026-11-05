@@ -27,6 +27,8 @@ export type LedgerRow = {
   agent: string | null;
   fileCount: number;
   lineCount: number;
+  /** Distinctive lines matched. A later inferred row replaces this one only when it matches more. */
+  overlap?: number;
   subject: string | null;
 };
 
@@ -64,6 +66,7 @@ export function attributeCommit(
       chatId: found.chat,
       taskId: found.task,
       agent: fromJournal?.agent ?? agentHint,
+      overlap: 0,
       subject: subjectOf(commit.message),
     };
   }
@@ -75,6 +78,7 @@ export function attributeCommit(
       chatId: run.chatId,
       taskId: run.taskId,
       agent: run.agent ?? agentHint,
+      overlap: run.matches,
       subject: subjectOf(commit.message),
     };
   }
@@ -84,6 +88,7 @@ export function attributeCommit(
     chatId: null,
     taskId: null,
     agent: null,
+    overlap: 0,
     subject: subjectOf(commit.message),
   });
 }

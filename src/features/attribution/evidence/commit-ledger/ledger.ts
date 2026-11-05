@@ -9,28 +9,31 @@ export const RANK = { person: 0, inferred: 1, confirmed: 2 } as const;
 
 /**
  * Keep the stronger credit. Equal confirmed rows keep the identity already
- * stored when the ids differ. Counts may refresh. A later journal can raise
- * a person's row to inferred.
+ * stored when the ids differ. An inferred row is replaced only when the new
+ * pass matches more distinctive lines. Counts may still refresh.
  */
 export function mergeLedger(existing: LedgerRow | null, incoming: LedgerRow): LedgerRow {
   if (!existing) return incoming;
   const kept = RANK[existing.tier];
   const next = RANK[incoming.tier];
   if (next < kept) return existing;
-  if (next === kept) {
-    if (
-      existing.tier === "confirmed" &&
-      (existing.chatId !== incoming.chatId || existing.taskId !== incoming.taskId)
-    ) {
-      return existing;
-    }
-    return {
-      ...existing,
-      fileCount: incoming.fileCount,
-      lineCount: incoming.lineCount,
-    };
+  if (next > kept) return incoming;
+  if (
+    existing.tier === "confirmed" &&
+    (existing.chatId !== incoming.chatId || existing.taskId !== incoming.taskId)
+  ) {
+    return existing;
   }
-  return incoming;
+  const existingOverlap = existing.overlap ?? 0;
+  const incomingOverlap = incoming.overlap ?? 0;
+  if (existing.tier === "inferred" && incomingOverlap > existingOverlap) {
+    return incoming;
+  }
+  return {
+    ...existing,
+    fileCount: incoming.fileCount,
+    lineCount: incoming.lineCount,
+  };
 }
 
 /** A failed or timed-out read is not an empty ledger. */
