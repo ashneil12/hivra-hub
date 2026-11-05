@@ -1,0 +1,15 @@
+Hivra research, plan and build skills
+=======================================
+
+The phase idea (research, then a design, then a build, with a straight path for a
+small task) comes from HumanLayer (https://github.com/humanlayer/humanlayer),
+Apache-2.0.
+
+The skill text was rewritten. The HumanLayer source tree was not in the checkout
+this package was built from, and nothing here was copied from it. ci-commit,
+configure-workspaces and setup-worktree are left out: Hivra has its own.
+
+diagnosing-bugs, tdd and grill-me use the names from Matt Pocock's skills
+(https://github.com/mattpocock/skills). SOURCES.md lists that repository as MIT.
+Its LICENSE file was not in the checkout, so this text is Hivra's too, and it is
+called by name only.
