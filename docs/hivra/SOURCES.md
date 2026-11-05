@@ -60,6 +60,8 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles) | MIT-0 | One AGENTS.md shared by every agent CLI | Ideas | 83 |
 | [HumanLayer](https://github.com/humanlayer/humanlayer) | Apache-2.0 | Research, Plan, Implement phases with short documents reviewed before code, and its 22 skills; a Claude Code plugin that mirrors terminal sessions live with reply, stop and permission answers; commit attribution by session trailer and line-hash overlap; a full local stack per worktree; tasks that group sessions and their documents. Its cloud sync (Postgres and Electric) is a reference for 61 and 80 | Copy with credit; swap its cloud transport for Hivra's local control port | 84, 85, 86, 87 |
 | [Matt Pocock's skills](https://github.com/mattpocock/skills) | MIT | Small skills a first mate calls by name: a diagnosis loop for hard bugs, test-first building, and an interview that sharpens a plan with the person | Copy three with credit, called by name only | 84 |
+| [portless](https://github.com/vercel-labs/portless) | Apache-2.0 | A stable name per worktree for its app and services, a local proxy that routes by name, a route registry that only its owner can remove, port allocation | Translate its registry, labels and proxy to Rust with credit; no TLS, no hosts file, no sudo | 82, 87, 90 |
+| [emulate](https://github.com/vercel-labs/emulate) | Apache-2.0 | 14 stateful stand-ins for outside services (OAuth flows, signed webhooks, seeds, reset, snapshots), per-service base URLs | Run its pinned npm package and write its base URLs into each stack; translate its base-URL rules and file store | 82, 87, 90 |
 
 ## Vision to packages
 
@@ -85,3 +87,4 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Crews' work checked before GitHub, ready worktrees (Kun Chen's tools, 4 Nov) | 81, 82 |
 | Agents learn from past chats with evidence; the person's opinions and voice | 83 |
 | Research and plan before building, terminal sessions in Hivra, who made each commit, a stack per worktree (HumanLayer, 4 Nov) | 84, 85, 86, 87 |
+| Each worktree has its own web address, and its tests meet fake outside services (portless, emulate, 5 Nov) | 82, 87, 90 |
