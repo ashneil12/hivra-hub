@@ -291,6 +291,22 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/historyImport",
       "how": "The chat preview and the Claude, Codex and Hermes readers, translated line by line. A preview counts from the header only (WP-50)"
+    },
+    {
+      "name": "Mercury's belief confidence",
+      "url": "https://github.com/cosmicstack-labs/mercury-agent",
+      "licence": "MIT",
+      "copyright": "Copyright © 2026 Cosmic Stack",
+      "where": "src/features/memory/vendor/mercuryBelief.ts",
+      "how": "ftsMatch and confidence copied from src/memory/beliefs.ts. BeliefStore is not included because it needs Mercury's sqlite driver (WP-51)"
+    },
+    {
+      "name": "Agent Zero's memories prompt",
+      "url": "https://github.com/agent0ai/agent-zero",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
+      "where": "src/features/memory/vendor/agentZeroMemories.ts",
+      "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
     }
   ]
 }

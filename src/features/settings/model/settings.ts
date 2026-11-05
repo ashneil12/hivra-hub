@@ -39,6 +39,7 @@ export type SettingsSectionId =
   | "dashboards"
   | "portable"
   | "history"
+  | "memory"
   | "connectors";
 
 /** Rail buckets. Sections list in order under their group label. */
@@ -122,6 +123,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
     keywords: "history import claude codex hermes transcript memory",
+  },
+  {
+    id: "memory",
+    group: "app",
+    label: "Memory",
+    description: "What a first mate remembers, with its source, for you to confirm, edit or delete.",
+    keywords: "memory fact skill recall review",
   },
   {
     id: "connectors",

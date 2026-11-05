@@ -98,6 +98,9 @@ import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
 import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
 import { useMonoTrees } from "./hooks/useMonoTrees";
+import { useMemoryCurator } from "./hooks/useMemoryCurator";
+import { pickSummaryTree } from "../features/memory/model/longChat";
+import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
@@ -9311,11 +9314,23 @@ function Workspace({
           }
           // A long-chat Mono's fresh conversation opens on its tree's view, ahead of the message: the system prompt
           // stays as it is, so its cache holds (monoTreeStore.ts treeContext).
-          const treeMono = mono && !rawCommand && !current.providerSessionId ? monoForSession(sessionId) : undefined;
-          if (treeMono?.longChat) {
-            const treeNote = await treeContext(treeMono.id, appCliCommand(await invoke<string | null>("app_cli_path"))).catch(
-              () => undefined,
-            );
+          // WP-51: a first mate past the size uses the same tree, even without "Keep one long chat".
+          const treePick = pickSummaryTree({
+            sessionId,
+            mono: !!mono,
+            teamId: team?.id,
+            raw: !!rawCommand,
+            hasProviderSession: !!current.providerSessionId,
+            blocks: current.blocks,
+            own: mono ? monoForSession(sessionId) : undefined,
+            lead: team ? findMono(`${team.id}-lead`) : undefined,
+          });
+          if (treePick) {
+            const treeNote = await treeContext(
+              treePick.id,
+              appCliCommand(await invoke<string | null>("app_cli_path")),
+              treePick.evenWithoutSetting ? { evenWithoutSetting: true } : undefined,
+            ).catch(() => undefined);
             if (treeNote) appContext.push(treeNote);
           }
           // Habit posts land in the chat outside any turn, so the Mono's
@@ -9394,6 +9409,17 @@ function Workspace({
           if ((mono || teamPlan?.soul) && !rawCommand) sendText = monoTurn(sendText, appContext);
           else if (appContext.length)
             sendText += `\n\n${appContext.join("\n\n")}`;
+          // WP-51: reviewed memory rides in the turn, fenced as untrusted, never in the system prompt.
+          if (!rawCommand) {
+            const memoryMate =
+              mono && monoForSession(sessionId)?.sessionId === sessionId
+                ? monoForSession(sessionId)?.id
+                : team
+                  ? `${team.id}-lead`
+                  : undefined;
+            const recallNote = await recalledFence(memoryMate, turnPrompt);
+            if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
+          }
           await sendTurn(sendText);
           if (teamHanded && teamPlan?.soul && !providerLost) {
             recordAgentContext(
@@ -10198,6 +10224,8 @@ function Workspace({
   );
   // A long-chat Mono's finished turns go into its summary tree, in the background (monoTreeStore.ts).
   useMonoTrees(sessions, IS_HUB_BUNDLE);
+  // WP-51: after a first mate's turn, one unreviewed fact or a skill proposal.
+  useMemoryCurator(sessions, IS_HUB_BUNDLE);
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {

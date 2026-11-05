@@ -628,6 +628,7 @@ describe("settings navigation", () => {
       "dashboards",
       "portable",
       "history",
+      "memory",
       "connectors",
       "keybindings",
       "chat",
