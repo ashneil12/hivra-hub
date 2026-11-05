@@ -7,6 +7,7 @@ use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier};
 use std::time::Duration;
 
 use crate::instance::Kind;
@@ -1890,6 +1891,56 @@ fn turning_the_door_off_and_on_keeps_the_port() {
         saved_port(&scratch.db()).as_deref(),
         Some(port.to_string()).as_deref()
     );
+}
+
+/// Two copies of the door's restart-and-toggle body, run at the same moment
+/// the way two `cargo test` runs on one machine run it. Each copy asks the OS
+/// for its own port and cannot be handed the other's, so both keep their port
+/// across an off/on and a restart and both let it go at the end.
+#[test]
+fn two_copies_of_the_door_body_run_at_the_same_time() {
+    let moment = Arc::new(Barrier::new(2));
+    let copies: Vec<_> = (0..2)
+        .map(|copy| {
+            let moment = Arc::clone(&moment);
+            std::thread::spawn(move || {
+                let mut held = HeldPort::reserve();
+                let port = held.port;
+                let scratch = Scratch::new();
+                let db = scratch.db();
+                let ports = [port];
+                // Both copies hold their port now, so the two differ.
+                moment.wait();
+                held.release();
+                // And both start their door at the same moment.
+                moment.wait();
+
+                let door = Outside::open(db.clone(), Kind::Daily, &ports).unwrap();
+                door.set_enabled(true).unwrap();
+                assert_eq!(door.port(), Some(port), "copy {copy}");
+                door.set_enabled(false).unwrap();
+                assert!(door.port().is_none(), "copy {copy}");
+                door.set_enabled(true).unwrap();
+                assert_eq!(door.port(), Some(port), "copy {copy}");
+                drop(door);
+
+                let restarted = must_init_ports(db.clone(), Kind::Daily, &ports);
+                assert_eq!(restarted.port(), Some(port), "copy {copy}");
+                assert!(problem_of(&restarted).problem.is_none(), "copy {copy}");
+                drop(restarted);
+
+                let released = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+                    .unwrap_or_else(|err| panic!("copy {copy} still holds {port}: {err}"));
+                drop(released);
+                port
+            })
+        })
+        .collect();
+    let ports: Vec<u16> = copies
+        .into_iter()
+        .map(|copy| copy.join().expect("both copies finish"))
+        .collect();
+    assert_ne!(ports[0], ports[1], "the two copies picked the same port");
 }
 
 /// A dev copy is given the dev range, which does not meet the daily app's.
