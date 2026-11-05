@@ -1,0 +1,384 @@
+//! WP-92: the one sentence, as tests. A value exists in the person's keychain and in the one place they approved, and
+//! in no transcript, log line, error message, tool result, database row or export. These tests are deliberately blunt:
+//! they plant a value and then search every place the app could have kept it.
+
+use super::store::{Memory, Vault};
+use super::*;
+use crate::session_store::SessionStore;
+use std::process::Command;
+
+const VALUE: &str = "sk_live_51NxAbCdEfGhIjKlMnOp";
+const NAME: &str = "stripe-api-key";
+
+struct Bench {
+    store: SessionStore,
+    vault: Memory,
+    now: i64,
+}
+
+impl Bench {
+    fn new() -> Self {
+        Self {
+            store: SessionStore::open_in_memory().unwrap(),
+            vault: Memory::new(),
+            now: 1_700_000_000_000,
+        }
+    }
+}
+
+/// Every text a table holds, one string per row, with SQLite's own quoting so a value cannot hide behind an escaping.
+fn every_table_text(conn: &rusqlite::Connection) -> String {
+    let mut tables = Vec::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+            .unwrap();
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).unwrap();
+        for table in rows {
+            tables.push(table.unwrap());
+        }
+    }
+    let mut all = String::new();
+    for table in tables {
+        let Ok(mut stmt) = conn.prepare(&format!("SELECT * FROM \"{table}\"")) else {
+            continue;
+        };
+        let columns = stmt.column_count();
+        let mut rows = stmt.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            for index in 0..columns {
+                all.push_str(&format!("{:?} ", row.get_ref(index).unwrap()));
+            }
+            all.push('\n');
+        }
+    }
+    all
+}
+
+fn worker_request() -> worker::WorkerRequest {
+    worker::WorkerRequest {
+        chat: "chat-1".into(),
+        mono: "Tally".into(),
+        project: None,
+        executable: "claude".into(),
+        secrets: vec![worker::WorkerSecret {
+            name: NAME.into(),
+            env: "STRIPE_API_KEY".into(),
+        }],
+    }
+}
+
+#[test]
+fn a_saved_value_is_in_no_database_row_whatever_window_wrote_it() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    let saved = save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        Some("Stripe"),
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    // The one deliberate excerpt: the last four characters, which the page shows.
+    assert_eq!(saved.last4.as_deref(), Some("MnOp"));
+    // A request, a grant and a `.env` record too, so no table is left out of the search.
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "stripe",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    open_request(
+        &bench.vault,
+        &conn,
+        RequestInput {
+            chat: "chat-1".into(),
+            mono: Some("Tally".into()),
+            project: None,
+            scope: Some(SCOPE_GLOBAL.into()),
+            name: "another-key".into(),
+            why: "to list customers".into(),
+        },
+        bench.now,
+    )
+    .unwrap();
+    record_env_write(&conn, SCOPE_GLOBAL, NAME, "/p", "STRIPE_API_KEY", bench.now).unwrap();
+    let commit = conn.transaction().unwrap();
+    commit.commit().unwrap();
+    let dump = every_table_text(&conn);
+    for form in scrub::needles(VALUE) {
+        assert!(!dump.contains(&form), "the database holds {form}: {dump}");
+    }
+    let _ = &mut conn;
+}
+
+#[test]
+fn no_handle_or_error_sentence_carries_the_value() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    let saved = save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let json = serde_json::to_string(&handles(&conn).unwrap()).unwrap();
+    assert!(!json.contains(VALUE), "{json}");
+    assert!(!format!("{saved:?}").contains(VALUE));
+    // The refusal for a wrong name says the name, never a neighbouring value.
+    let refused = reveal(&bench.vault, SCOPE_GLOBAL, "missing-key").unwrap_err();
+    assert!(!refused.contains(VALUE), "{refused}");
+    // A damaged grant never echoes its bytes.
+    let dir = std::env::temp_dir().join(format!("wp92-grant-{}", uuid::Uuid::new_v4()));
+    let damaged = grant::check(&bench.vault, "not-base64!", &dir, bench.now).unwrap_err();
+    assert!(!damaged.contains(VALUE), "{damaged}");
+    // A command run's error paths are plain sentences.
+    let request = RunRequest {
+        chat: "chat-1".into(),
+        mono: Some("Tally".into()),
+        project: None,
+        name: NAME.into(),
+        env: "PATH".into(),
+        command: vec!["stripe".into()],
+        cwd: None,
+        timeout_seconds: None,
+    };
+    let refused = prepare_run(&bench.vault, &mut conn, request, bench.now).unwrap_err();
+    assert!(!refused.contains(VALUE), "{refused}");
+}
+
+#[test]
+fn dev_and_daily_names_never_cross_and_a_daily_grant_does_not_verify_in_a_dev_copy() {
+    use crate::hub_keychain::{scoped_service, DEV_PREFIX};
+    use crate::instance::Kind;
+    let daily = service(SCOPE_GLOBAL, NAME).unwrap();
+    assert_eq!(daily, "monocode-hub:secret:global:stripe-api-key");
+    assert_eq!(
+        scoped_service(Kind::Dev, &daily),
+        "monocode-hub-dev:secret:global:stripe-api-key"
+    );
+    assert!(!scoped_service(Kind::Dev, &daily).starts_with("monocode-hub:secret:"));
+
+    // Two copies have two different signing keys, so a grant made by the daily app is refused in a dev copy.
+    let daily_vault = Memory::new();
+    let dev_vault = Memory::new();
+    dev_vault
+        .write(grant::KEY_SERVICE, grant::KEY_ACCOUNT, &"ab".repeat(32))
+        .unwrap();
+    let payload = grant::Payload {
+        scope: SCOPE_GLOBAL.into(),
+        name: NAME.into(),
+        version: 1,
+        subject: "Tally".into(),
+        env: "STRIPE_API_KEY".into(),
+        command: vec!["stripe".into()],
+        cwd: None,
+        nonce: "0123456789abcdef".into(),
+        expires_at: 9_999_999_999_999,
+        timeout_seconds: 120,
+    };
+    let signed = grant::sign_payload(&daily_vault, &payload).unwrap();
+    let dir = std::env::temp_dir().join(format!("wp92-grant-{}", uuid::Uuid::new_v4()));
+    let refused = grant::check(&dev_vault, &signed, &dir, 1_700_000_000_000).unwrap_err();
+    assert!(refused.contains("didn't sign"), "{refused}");
+    assert!(grant::check(&daily_vault, &signed, &dir, 1_700_000_000_000).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(DEV_PREFIX.starts_with("monocode-hub-dev"));
+}
+
+#[test]
+fn the_export_index_holds_the_metadata_and_no_value() {
+    let bench = Bench::new();
+    let conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        Some("Stripe"),
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let index = serde_json::to_string(&index_json(&conn).unwrap()).unwrap();
+    for form in scrub::needles(VALUE) {
+        assert!(!index.contains(&form), "the index holds {form}");
+    }
+    assert!(index.contains(NAME));
+    assert!(index.contains("Stripe"));
+    assert!(index.contains("MnOp"));
+    // Import lands as metadata with no value: it is listed, and has to be filled in before use.
+    let other = Bench::new();
+    let conn = other.store.lock_conn().unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&index).unwrap();
+    assert_eq!(import_index(&conn, &parsed, other.now).unwrap(), 1);
+    let rows = handles(&conn).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].needs_value);
+    assert!(!has_value(&other.vault, SCOPE_GLOBAL, NAME).unwrap());
+    assert!(grants_for(&conn, SCOPE_GLOBAL, NAME).unwrap().is_empty());
+    assert!(env_writes_for(&conn, SCOPE_GLOBAL, NAME)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn holds_known_value_catches_the_value_in_any_shape() {
+    let bench = Bench::new();
+    let conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    for form in scrub::needles(VALUE) {
+        let note = format!("a memory note that mentions {form} in passing");
+        assert!(
+            holds_known_value(&bench.vault, &conn, Some(SCOPE_GLOBAL), &note),
+            "missed {form}"
+        );
+    }
+    assert!(!holds_known_value(
+        &bench.vault,
+        &conn,
+        Some(SCOPE_GLOBAL),
+        "a note about something else"
+    ));
+}
+
+#[test]
+fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "claude",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    let outcome = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now).unwrap();
+    let worker::WorkerOutcome::Ready { secrets } = outcome else {
+        panic!("expected ready, got {outcome:?}");
+    };
+    worker::clear_for_tests();
+    worker::arm("worker-1", secrets);
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("worker-1", &bench.vault, &mut cmd, &conn, bench.now).unwrap();
+    let envs: Vec<(String, String)> = cmd
+        .get_envs()
+        .filter_map(|(key, value)| {
+            Some((
+                key.to_string_lossy().into_owned(),
+                value?.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect();
+    assert_eq!(
+        envs,
+        vec![("STRIPE_API_KEY".to_string(), VALUE.to_string())]
+    );
+    assert!(!envs.iter().any(|(key, _)| key.starts_with("MONOCODE_")));
+    // The worker printing the value reaches the app as the marker, not the bytes.
+    let line = format!("{{\"text\":\"the key is {VALUE}\"}}");
+    let scrubbed = worker::scrub_line("worker-1", line);
+    assert!(!scrubbed.contains(VALUE), "{scrubbed}");
+    assert!(scrubbed.contains(scrub::MARKER));
+    // A session with no secrets is unchanged.
+    assert_eq!(worker::scrub_line("other", "plain".into()), "plain");
+    worker::forget("worker-1");
+    assert_eq!(worker::scrub_line("worker-1", VALUE.into()), VALUE);
+}
+
+#[test]
+fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let first = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now).unwrap();
+    assert!(matches!(first, worker::WorkerOutcome::Waiting { .. }));
+    let key = match first {
+        worker::WorkerOutcome::Waiting { decision_key, .. } => decision_key,
+        _ => unreachable!(),
+    };
+    // The question names the Mono and says the whole session will hold it.
+    let decision = crate::decisions::get(&conn, "", &key).unwrap().unwrap();
+    assert!(decision.question.contains("Tally"));
+    assert!(decision.question.contains("whole worker session"));
+    assert!(decision.question.contains("narrower"));
+    // Nothing was armed: a spawn now would carry no value.
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("never-armed", &bench.vault, &mut cmd, &conn, bench.now).unwrap();
+    assert_eq!(cmd.get_envs().count(), 0);
+    // "Once" is a grant for exactly one worker.
+    crate::decisions::answer(&mut conn, "", &key, "Once", None, bench.now + 1).unwrap();
+    let second = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 2).unwrap();
+    assert!(matches!(second, worker::WorkerOutcome::Ready { .. }));
+    let third = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 3).unwrap();
+    assert!(matches!(third, worker::WorkerOutcome::Waiting { .. }));
+}
+
+#[test]
+fn a_worker_asking_for_itself_is_refused_with_the_first_mate_reason() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    // A running delegation whose child is chat-1 makes it a worker (one level beneath its first mate).
+    crate::delegations::record(
+        &mut conn,
+        crate::delegations::RecordInput {
+            owner_session: "lead".into(),
+            request_id: "req-1".into(),
+            child_session: "chat-1".into(),
+            ..Default::default()
+        },
+        bench.now,
+    )
+    .unwrap();
+    let refused =
+        worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now).unwrap_err();
+    assert!(refused.contains("first mate"), "{refused}");
+    assert_eq!(
+        refused,
+        crate::decisions::check_may_ask(&conn, "chat-1").unwrap_err()
+    );
+}

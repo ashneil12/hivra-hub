@@ -49,6 +49,8 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// Hivra WP-92: the secret vault. A value exists in the keychain and one place the person chose.
+pub mod secrets;
 // WP-51: memory the person reviews.
 mod memory_review;
 // WP-83: learn from past chats. Readers, and the write after an accept.

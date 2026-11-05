@@ -33,6 +33,8 @@ fn main() {
         // A connector for a Claude Code session: checks it is allowed, reads its login from the Keychain and serves it
         // over stdio (src/connectors/launch.rs). No window, no database.
         Some("connector-run") => std::process::exit(monocode_lib::connectors::run_main(&rest())),
+        // WP-92: one secret into one child's environment, from a grant the app signed (src/secrets/run.rs).
+        Some("secret-run") => std::process::exit(monocode_lib::secrets::run::run_main(&rest())),
         // WP-30: a plugin's stdio MCP server, started for an agent CLI's session once the plugin is checked to be on
         // (src/plugins/wiring.rs). No window, no database.
         Some("plugin-mcp") => std::process::exit(monocode_lib::plugins::run_main(&rest())),

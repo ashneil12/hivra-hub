@@ -1,0 +1,345 @@
+//! WP-92 step 6: one worker's environment.
+//!
+//! A first mate names up to three secrets for a worker it delegates. The app checks each name exactly as a command run
+//! does, with the worker's own CLI as the executable, and asks the person first if that CLI has no grant. Only once
+//! every name is approved are the handles armed under the new worker's session id. `harness_spawn` (Rust) reads the
+//! values straight from the Keychain into that one child's environment — they never cross the webview — and the same
+//! child's output is scrubbed before it reaches the app's transcript.
+//!
+//! What this route cannot do, said plainly on the card and in WP-92: the whole worker session holds the value, including
+//! anything it starts. The command route (`secrets.run`) is the narrower one.
+//!
+//! Spec note: WP-92 asks for "the same cleared environment and allow-list as secret-run". A worker is a Claude/Codex/Devin
+//! CLI that cannot start without its own HOME, PATH and provider login, so this route keeps the CLI's environment and
+//! adds only the approved variable; it adds no `MONOCODE_*` value, no app token and no model key of its own. The command
+//! route still uses the cleared allow-list.
+
+use std::collections::{HashMap, HashSet};
+use std::process::Command;
+use std::sync::Mutex;
+
+use rusqlite::Connection;
+use serde::{Deserialize, Serialize};
+use zeroize::Zeroizing;
+
+use super::*;
+
+/// The most one worker may be given.
+pub const MAX_WORKER_SECRETS: usize = 3;
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerSecret {
+    pub name: String,
+    pub env: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkerRequest {
+    /// The first mate's chat.
+    pub chat: String,
+    pub mono: String,
+    #[serde(default)]
+    pub project: Option<String>,
+    /// The worker's CLI (its provider id, like `claude`), which the grants are for.
+    pub executable: String,
+    pub secrets: Vec<WorkerSecret>,
+}
+
+/// One approved handle, kept in memory only until the worker spawns.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArmedSecret {
+    pub scope: String,
+    pub name: String,
+    pub env: String,
+    pub version: i64,
+    /// The Mono whose worker it is, for the activity row and no other purpose.
+    #[serde(skip)]
+    pub mono: String,
+    /// The worker's CLI, for the activity row.
+    #[serde(skip)]
+    pub executable: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "state")]
+pub enum WorkerOutcome {
+    #[serde(rename = "missing")]
+    Missing { name: String, scope: String },
+    #[serde(rename = "waiting")]
+    Waiting {
+        #[serde(rename = "decisionKey")]
+        decision_key: String,
+        name: String,
+        scope: String,
+    },
+    #[serde(rename = "denied")]
+    Denied {
+        #[serde(rename = "decisionKey")]
+        decision_key: String,
+        name: String,
+    },
+    /// Every name is approved: the handles may be armed for the worker's session.
+    #[serde(rename = "ready")]
+    Ready { secrets: Vec<ArmedSecret> },
+}
+
+/// Resolve every name, asking the person where there is no grant. Nothing is armed unless all names are ready.
+pub fn prepare(
+    vault: &dyn Vault,
+    conn: &mut Connection,
+    request: WorkerRequest,
+    now: i64,
+) -> Result<WorkerOutcome, String> {
+    let chat = request.chat.trim();
+    if chat.is_empty() {
+        return Err("Which chat is asking?".into());
+    }
+    crate::decisions::check_may_ask(conn, chat)?;
+    let mono = request.mono.trim();
+    if mono.is_empty() {
+        return Err("Which Mono is asking?".into());
+    }
+    let executable = request.executable.trim();
+    if executable.is_empty()
+        || executable.len() > 120
+        || executable.contains(['/', '\\', ' ', '\0'])
+    {
+        return Err("That worker's CLI is unknown.".into());
+    }
+    if request.secrets.is_empty() {
+        return Err("Name at least one secret.".into());
+    }
+    if request.secrets.len() > MAX_WORKER_SECRETS {
+        return Err(format!(
+            "A worker gets at most {MAX_WORKER_SECRETS} secrets."
+        ));
+    }
+    let project = request
+        .project
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty());
+    let mut names = HashSet::new();
+    let mut envs = HashSet::new();
+    let mut armed = Vec::new();
+    for wanted in &request.secrets {
+        let name = normalize_name(&wanted.name)?;
+        if !names.insert(name.clone()) {
+            return Err(format!("{name} is named twice."));
+        }
+        if !valid_env_name(&wanted.env) {
+            return Err(
+                "The environment variable's name is capital letters, digits and underscores, like STRIPE_API_KEY."
+                    .into(),
+            );
+        }
+        if run::is_allowlisted_env(&wanted.env) {
+            return Err(format!(
+                "{} is one of the names the worker already gets. Pick a name of its own.",
+                wanted.env
+            ));
+        }
+        if !envs.insert(wanted.env.clone()) {
+            return Err(format!("{} is used twice.", wanted.env));
+        }
+        let Some(row) = resolve(conn, project.as_deref(), &name)? else {
+            return Ok(WorkerOutcome::Missing {
+                name,
+                scope: scope_for(project.as_deref()),
+            });
+        };
+        if !has_value(vault, &row.scope, &row.name)? {
+            return Ok(WorkerOutcome::Missing {
+                name: row.name,
+                scope: row.scope,
+            });
+        }
+        let question = format!(
+            "Let {mono} start a worker with {} in its environment? The whole worker session will hold the value, \
+             including anything it starts. Running one command with it is narrower: ask for that instead.",
+            row.label
+        );
+        match ensure_grant(
+            conn,
+            Approval {
+                chat: chat.to_string(),
+                mono: Some(mono.to_string()),
+                project: project.clone(),
+                scope: row.scope.clone(),
+                name: row.name.clone(),
+                executable: executable.to_string(),
+                question,
+                options: approval_options(project.is_some()),
+                recommended: "Once".into(),
+            },
+            now,
+        )? {
+            ApprovalOutcome::Granted => armed.push(ArmedSecret {
+                scope: row.scope,
+                name: row.name,
+                env: wanted.env.clone(),
+                version: row.version,
+                mono: mono.to_string(),
+                executable: executable.to_string(),
+            }),
+            ApprovalOutcome::Waiting { decision_key } => {
+                return Ok(WorkerOutcome::Waiting {
+                    decision_key,
+                    name: row.name,
+                    scope: row.scope,
+                })
+            }
+            ApprovalOutcome::Denied { decision_key } => {
+                return Ok(WorkerOutcome::Denied {
+                    decision_key,
+                    name: row.name,
+                })
+            }
+        }
+    }
+    Ok(WorkerOutcome::Ready { secrets: armed })
+}
+
+/// Handles armed for a worker that has not spawned yet.
+fn armed() -> &'static Mutex<HashMap<String, Vec<ArmedSecret>>> {
+    static MAP: std::sync::OnceLock<Mutex<HashMap<String, Vec<ArmedSecret>>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Values held for a running worker, only to scrub its output. Cleared when the child exits.
+struct SessionValues {
+    /// The values themselves, held so their `Zeroizing` drop clears them when the child is gone.
+    #[allow(dead_code)]
+    values: Zeroizing<Vec<String>>,
+    needles: Vec<String>,
+}
+
+fn session_values() -> &'static Mutex<HashMap<String, SessionValues>> {
+    static MAP: std::sync::OnceLock<Mutex<HashMap<String, SessionValues>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Arm the approved handles under the worker's session id. Only `secrets_worker_arm` calls this.
+pub fn arm(session_id: &str, secrets: Vec<ArmedSecret>) {
+    if session_id.trim().is_empty() || secrets.is_empty() {
+        return;
+    }
+    if let Ok(mut map) = armed().lock() {
+        map.insert(session_id.to_string(), secrets);
+    }
+}
+
+/// Put the armed values into one worker's own environment. Called by `harness_spawn` before the child forks.
+///
+/// The handles are consumed, so a second spawn of the same session gets nothing without a fresh approval. A value that
+/// changed (or vanished) since the approval refuses the spawn rather than starting with a stale one.
+pub fn apply_to_child(
+    session_id: &str,
+    vault: &dyn Vault,
+    cmd: &mut Command,
+    conn: &Connection,
+    now: i64,
+) -> Result<(), String> {
+    let secrets = armed()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(session_id))
+        .unwrap_or_default();
+    if secrets.is_empty() {
+        return Ok(());
+    }
+    let mut values = Vec::new();
+    let mut needles = Vec::new();
+    for secret in &secrets {
+        let service = service(&secret.scope, &secret.name)?;
+        let value = vault
+            .read(&service, ACCOUNT)?
+            .ok_or_else(|| "That secret was deleted. Ask for it again.".to_string())?;
+        let current = get_secret(conn, &secret.scope, &secret.name)?
+            .is_some_and(|row| row.version == secret.version);
+        if !current {
+            return Err("That secret changed. Ask for it again.".into());
+        }
+        cmd.env(&secret.env, &value);
+        needles.extend(scrub::needles(&value));
+        values.push(value);
+        touch_used(conn, &secret.scope, &secret.name, now)?;
+    }
+    needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
+    needles.dedup();
+    if let Ok(mut map) = session_values().lock() {
+        map.insert(
+            session_id.to_string(),
+            SessionValues {
+                values: Zeroizing::new(values),
+                needles,
+            },
+        );
+    }
+    if let Some(first) = secrets.first() {
+        record_worker(conn, &first.mono, &first.executable, &secrets, now)?;
+    }
+    Ok(())
+}
+
+/// Scrub one line of a worker's output. A session without armed secrets is returned unchanged.
+pub fn scrub_line(session_id: &str, line: String) -> String {
+    let Ok(map) = session_values().lock() else {
+        return line;
+    };
+    let Some(values) = map.get(session_id) else {
+        return line;
+    };
+    scrub::mask(&line, &values.needles)
+}
+
+/// The child is gone: forget its values.
+pub fn forget(session_id: &str) {
+    if let Ok(mut map) = session_values().lock() {
+        map.remove(session_id);
+    }
+    if let Ok(mut map) = armed().lock() {
+        map.remove(session_id);
+    }
+}
+
+/// One activity row per worker given a secret: the Mono, the CLI and the names. Never a value.
+pub fn record_worker(
+    conn: &Connection,
+    mono: &str,
+    executable: &str,
+    secrets: &[ArmedSecret],
+    at: i64,
+) -> Result<(), String> {
+    let names: Vec<&str> = secrets.iter().map(|secret| secret.name.as_str()).collect();
+    crate::activity::record(
+        conn,
+        "secret.worker",
+        &crate::activity::Who::mono(mono, mono),
+        &crate::activity::Who::mono(mono, mono),
+        "",
+        executable,
+        &format!(
+            "{mono} started a worker with {} in its environment",
+            names.join(", ")
+        ),
+        "",
+        at,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+pub(crate) fn clear_for_tests() {
+    if let Ok(mut map) = armed().lock() {
+        map.clear();
+    }
+    if let Ok(mut map) = session_values().lock() {
+        map.clear();
+    }
+}
