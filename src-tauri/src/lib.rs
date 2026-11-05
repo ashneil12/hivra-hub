@@ -623,6 +623,11 @@ pub fn run() {
             tasks::commands::tasks_get,
             tasks::commands::tasks_create,
             tasks::commands::tasks_update,
+            // WP-71: saved views and the statuses a board draws.
+            tasks::commands::tasks_views_list,
+            tasks::commands::tasks_views_save,
+            tasks::commands::tasks_views_delete,
+            tasks::commands::tasks_statuses,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             project_tests::run_project_tests,
