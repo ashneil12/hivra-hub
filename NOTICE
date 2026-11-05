@@ -160,6 +160,20 @@ Third-party components Hivra adds:
   Used in: src/features/memory/vendor/agentZeroMemories.ts
   The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51).
 
+- Hivra research, plan and build skills
+  Source: https://github.com/humanlayer/humanlayer
+  License: Apache-2.0
+  Copyright 2026 Ashneil Lanelle
+  Used in: plugins/hivra-rpi
+  The phase idea is HumanLayer's. The skill text is Hivra's because the checkout was not available, so it was rewritten rather than copied (WP-84).
+
+- Hivra diagnosing-bugs, tdd and grill-me
+  Source: https://github.com/mattpocock/skills
+  License: MIT
+  Copyright 2026 Ashneil Lanelle
+  Used in: plugins/hivra-rpi/skills/diagnosing-bugs, plugins/hivra-rpi/skills/tdd, plugins/hivra-rpi/skills/grill-me
+  The names are Matt Pocock's. The LICENSE file was not in the checkout, so the text is Hivra's and the skills are called by name only (WP-84).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

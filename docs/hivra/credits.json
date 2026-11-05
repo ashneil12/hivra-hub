@@ -184,13 +184,13 @@
       "name": "HumanLayer",
       "url": "https://github.com/humanlayer/humanlayer",
       "licence": "Apache-2.0",
-      "gave": "research and plan before building, terminal sessions mirrored into the app, commit attribution and a local stack per worktree, planned for Wave G"
+      "gave": "research and plan before building (the phase idea; the skill text is Hivra's because the checkout was not available). Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G"
     },
     {
       "name": "Matt Pocock's skills",
       "url": "https://github.com/mattpocock/skills",
       "licence": "MIT",
-      "gave": "the diagnosing-bugs, tdd and grill-me skills, copied into the research, plan and build pack, planned for Wave G"
+      "gave": "diagnosing-bugs, tdd and grill-me, called by name only. The text is Hivra's because the LICENSE file was not in the checkout"
     }
   ],
   "components": [
@@ -369,6 +369,22 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/memory/vendor/agentZeroMemories.ts",
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
+    },
+    {
+      "name": "Hivra research, plan and build skills",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Ashneil Lanelle",
+      "where": "plugins/hivra-rpi",
+      "how": "The phase idea is HumanLayer's. The skill text is Hivra's because the checkout was not available, so it was rewritten rather than copied (WP-84)"
+    },
+    {
+      "name": "Hivra diagnosing-bugs, tdd and grill-me",
+      "url": "https://github.com/mattpocock/skills",
+      "licence": "MIT",
+      "copyright": "Copyright 2026 Ashneil Lanelle",
+      "where": "plugins/hivra-rpi/skills/diagnosing-bugs, plugins/hivra-rpi/skills/tdd, plugins/hivra-rpi/skills/grill-me",
+      "how": "The names are Matt Pocock's. The LICENSE file was not in the checkout, so the text is Hivra's and the skills are called by name only (WP-84)"
     }
   ]
 }
