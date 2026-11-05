@@ -30,6 +30,8 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { benchDenyRules } from "./bench-guard.mjs";
+import { agentCommand, privateTempDir, sandboxCwd } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -54,12 +56,33 @@ const FIXTURES = path.join(HERE, "../src/integrations/harness/providers/claude/f
 const FIXTURE_FILES = { 529: "529-overloaded.ndjson", 402: "402-billing.ndjson", 429: "503-gateway-429-limit.ndjson" };
 const MEMORY_DIR = process.env.REALTEST_MEMORY_DIR;
 const MEMORY_MCP = path.join(HERE, "hub-realtest-memory-mcp.mjs");
+const BENCH_MCP = path.join(HERE, "bench-dummy-mcp.mjs");
 const KEEP_MODELS = /haiku/i;
 const HAIKU_TEST = process.env.REALTEST_HAIKU_TEST === "1";
 /** The process environment variable Ash keeps the Anthropic test key in (28 Oct; launchd sets it, not the shell). */
 export const TEST_KEY_ENV = "ANTHROPIC_TEST_API_KEY";
 /** Anything that could sign a Haiku test worker in some other way (a login, a subscription token, another endpoint). */
 const OTHER_AUTH = ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_CUSTOM_HEADERS"];
+const GROK_SUB = process.env.REALTEST_GROK_SUB === "1";
+
+/**
+ * A variable that would hand the Grok launcher one of the caller's credentials. Every ANTHROPIC_* name, a
+ * CLAUDE_CODE_* name that is a key or a token, and the other ways a Claude process signs in. A stray one makes the
+ * local gateway answer 401. CLAUDE_CODE_SUBAGENT_MODEL is a model name, not a credential, and stays.
+ */
+export function isLauncherCredential(name) {
+  if (OTHER_AUTH.includes(name) || name === TEST_KEY_ENV) return true;
+  if (name.startsWith("ANTHROPIC_")) return true;
+  return name.startsWith("CLAUDE_CODE_") && /KEY|TOKEN|SECRET|AUTH|CREDENTIAL|PASSWORD/i.test(name);
+}
+
+/** The environment a child of the Grok launcher gets: the caller's credential variables removed. Other runs are unchanged. */
+export function childEnv(env, { grok = GROK_SUB } = {}) {
+  if (!grok) return env;
+  const out = { ...env };
+  for (const name of Object.keys(out)) if (isLauncherCredential(name)) delete out[name];
+  return out;
+}
 
 /** The test key from this process or launchd's environment, or null. Never printed. */
 export function testKey(env = process.env, launchctl = () => execFileSync("launchctl", ["getenv", TEST_KEY_ENV], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })) {
@@ -168,6 +191,52 @@ export function benchFenceArgs(args) {
   return out;
 }
 
+function attachBenchGuard(args, { settings, rules }) {
+  const out = [...args];
+  const have = [];
+  const seen = new Set();
+  const add = (rule) => {
+    if (!rule || seen.has(rule)) return;
+    seen.add(rule);
+    have.push(rule);
+  };
+  const at = out.indexOf("--disallowedTools");
+  if (at >= 0) for (const rule of String(out[at + 1] ?? "").split(",")) add(rule);
+  for (const rule of rules) add(rule);
+  const joined = have.join(",");
+  if (at >= 0) out[at + 1] = joined;
+  else out.push("--disallowedTools", joined);
+  if (settings && !out.includes("--settings")) out.push("--settings", settings);
+  return out;
+}
+
+/**
+ * A bench chat's real arguments. A conversation with no bench settings file, or without every deny rule, is refused
+ * and must not be spawned. `--version` and other non-chats are unchanged.
+ */
+export function prepareBenchSpawn(args, env = {}) {
+  const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
+  const fenced = benchFenceArgs(args);
+  if (!conversation) return { ok: true, args: fenced };
+  let allowed = [];
+  try {
+    const parsed = JSON.parse(env.REALTEST_ALLOWED ?? "[]");
+    if (Array.isArray(parsed)) allowed = parsed;
+  } catch {
+    allowed = [];
+  }
+  const rules = benchDenyRules({ realHome: env.REALTEST_REAL_HOME ?? "", allowed });
+  const settings = env.REALTEST_BENCH_SETTINGS ?? "";
+  const guarded = attachBenchGuard(fenced, { settings, rules });
+  const at = guarded.indexOf("--disallowedTools");
+  const have = new Set(String(guarded[at + 1] ?? "").split(",").filter(Boolean));
+  const missing = rules.filter((rule) => !have.has(rule));
+  if (missing.length || !settings || !fs.existsSync(settings)) {
+    return { ok: false, args: guarded, reason: "bench chat refused: the deny rules or the bench settings file are missing" };
+  }
+  return { ok: true, args: guarded };
+}
+
 /** The shim folder (made once per run) and the env that puts it first and stops browser opens. */
 export function benchFenceEnv(env, state) {
   const bin = path.join(state, "bench-bin");
@@ -234,6 +303,28 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
   return out;
 }
 
+/** The bench dummy's stop tool, beside memory. Helper calls with no MCP config are left alone. */
+export function withBench(args, { state = process.env.REALTEST_STATE, node = process.execPath } = {}) {
+  if (!state) return args;
+  const at = args.indexOf("--mcp-config");
+  if (at < 0 || at + 1 >= args.length) return args;
+  let config;
+  try {
+    config = JSON.parse(args[at + 1]);
+  } catch {
+    return args;
+  }
+  if (!config?.mcpServers) return args;
+  config.mcpServers.bench = { command: node, args: [BENCH_MCP], env: { REALTEST_STATE: state } };
+  const out = [...args];
+  out[at + 1] = JSON.stringify(config);
+  const tool = "mcp__bench__stop_bench_dummy";
+  const allowed = out.indexOf("--allowedTools");
+  if (allowed >= 0 && allowed + 1 < out.length) out[allowed + 1] = `${out[allowed + 1]},${tool}`;
+  else out.push("--allowedTools", tool);
+  return out;
+}
+
 /** One stdin line with live model/effort changes held to the budget. */
 export function rewriteInput(line, { routed = false } = {}) {
   if (routed) return line;
@@ -256,6 +347,32 @@ function promptOf(message) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.map((part) => (part.type === "text" ? part.text : `[${part.type}]`)).join("\n");
   return "";
+}
+
+/** The real CLI, under the run's seatbelt profile. A missing sandbox or a bad profile does not spawn it. */
+function launchReal(args, env, stdio) {
+  const launch = agentCommand(REAL, args, env);
+  if (!launch.ok) return launch;
+  const temp = privateTempDir(env);
+  const spawned = { ...env, REALTEST_SANDBOX_PROFILE: launch.file };
+  if (temp) {
+    try {
+      fs.mkdirSync(temp, { recursive: true });
+      spawned.TMPDIR = temp;
+      spawned.TMP = temp;
+      spawned.TEMP = temp;
+      spawned.CLAUDE_TMPDIR = temp;
+    } catch {
+      // a directory that isn't there is not where the CLI writes
+    }
+  }
+  return { ok: true, child: spawn(launch.command, launch.args, { env: spawned, stdio, cwd: sandboxCwd(process.cwd(), env) }) };
+}
+
+function refuseStart(reason, { json = false } = {}) {
+  process.stderr.write(`hub-realtest-claude: ${reason}\n`);
+  if (json) process.stdout.write(`${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: reason, duration_ms: 0, num_turns: 0, total_cost_usd: 0 })}\n`);
+  process.exit(2);
 }
 
 function main() {
@@ -284,8 +401,9 @@ function main() {
     }
   }
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
-    const child = spawn(REAL, args, { env, stdio: "inherit" });
-    child.on("exit", (code) => process.exit(code ?? 1));
+    const launched = launchReal(args, childEnv(env), "inherit");
+    if (!launched.ok) refuseStart(launched.reason);
+    launched.child.on("exit", (code) => process.exit(code ?? 1));
     return;
   }
   const logDir = path.join(STATE, "claude");
@@ -306,8 +424,15 @@ function main() {
     }
   };
   const routed = isRouted(process.env);
-  env = benchFenceEnv(env, STATE);
-  const realArgs = benchFenceArgs(withMemory(rewriteArgs(args, { routed })));
+  env = childEnv(benchFenceEnv(env, STATE));
+  const prepared = prepareBenchSpawn(withBench(withMemory(rewriteArgs(args, { routed }))), process.env);
+  if (!prepared.ok) {
+    log({ dir: "refused", reason: prepared.reason });
+    usage({ kind: "refused" });
+    process.stdout.write(`${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: prepared.reason, duration_ms: 0, num_turns: 0, total_cost_usd: 0 })}\n`);
+    process.exit(2);
+  }
+  const realArgs = prepared.args;
   log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
   // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
@@ -316,7 +441,13 @@ function main() {
     const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
     if (from) log({ dir: "carry", session: resumed, from, to: account.config });
   }
-  const child = spawn(REAL, realArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
+  const launched = launchReal(realArgs, env, ["pipe", "pipe", "pipe"]);
+  if (!launched.ok) {
+    log({ dir: "refused", reason: launched.reason });
+    usage({ kind: "refused" });
+    refuseStart(launched.reason, { json: true });
+  }
+  const child = launched.child;
   const named = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
   let session = named("--resume") ?? named("--session-id");
   let model = realArgs[realArgs.indexOf("--model") + 1] ?? MODEL;

@@ -82,6 +82,11 @@ pub async fn harness_update(
         .map(|arg| arg.to_string())
         .collect();
     tauri::async_runtime::spawn_blocking(move || {
+        crate::verify_live::provider_start_allowed(
+            crate::verify_live::plan(),
+            Some(&binary_provider),
+            &command,
+        )?;
         if !is_resolved_harness_binary(&command, Some(&binary_provider), binary_path.as_deref()) {
             return Err("harness_update: not a resolved harness CLI".to_string());
         }
