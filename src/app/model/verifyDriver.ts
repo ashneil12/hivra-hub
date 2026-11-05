@@ -61,8 +61,8 @@ export type DriverHost = {
   openSession(sessionId: string, owner?: string): void;
   /** A new chat in a project's coding team (App.tsx startCodingTeamChat): its id, or null when it has no code folder. */
   startCodingTeamChat?(projectId: string, runtimeMode?: RuntimeMode): string | null;
-  /** Ash's Allow on a chat's permission card (the bench's `approve` step; a verify dev copy only). */
-  approve?(sessionId: string, requestId: number): void;
+  /** Ash's Allow or Deny on one permission card (the bench's `approve` step; a verify dev copy only). */
+  approve?(sessionId: string, requestId: number, decision?: "allow" | "deny"): void;
   /**
    * The sidebar's Archive on one chat (App.tsx onRemoveHistorySession in archive mode, no confirm): the run's own
    * teardown (`cleanup`). Never the Reset chat path.
@@ -125,9 +125,31 @@ const BENCH_MODES: readonly RuntimeMode[] = ["supervised", "auto-accept-edits", 
 
 /** The permission cards a chat is waiting on Ash for: undecided approval blocks, oldest first. */
 export function pendingApprovals(session: Session | undefined): number[] {
+  return pendingPermissionAsks(session).map((ask) => ask.requestId);
+}
+
+/** One undecided permission card, with the tool and the paths the provider said it would touch. */
+export type PermissionAsk = {
+  requestId: number;
+  tool: string;
+  paths: string[];
+  command?: string;
+};
+
+/** What each open permission card would do, so the bench can allow or refuse it. Oldest first. */
+export function pendingPermissionAsks(session: Session | undefined): PermissionAsk[] {
   return (session?.blocks ?? [])
     .filter((block) => block.approval && !block.approval.decided)
-    .map((block) => block.approval!.requestId);
+    .map((block) => {
+      const call = block.approval?.call;
+      const command = call?.command ?? block.tool?.command;
+      return {
+        requestId: block.approval!.requestId,
+        tool: call?.tool ?? block.tool?.title ?? "",
+        paths: call?.paths ?? block.tool?.paths ?? [],
+        ...(command ? { command } : {}),
+      };
+    });
 }
 
 export function driverEnabled(): boolean {
@@ -173,8 +195,9 @@ function sessionRow(session: Session) {
     // "Needs the user:" ask worded over two lines).
     question: !!(session as { pendingQuestion?: unknown }).pendingQuestion || !!findWaitingChat(session.id),
     usageLimit: !!session.usageLimit,
-    // Held on a permission card Ash hasn't decided (S14's stuck case).
+    // Held on a permission card Ash hasn't decided (S14's stuck case), and what each card would touch.
     approvals: pendingApprovals(session).length,
+    permissionAsks: pendingPermissionAsks(session),
     hidden: !!session.sidebarHidden,
     orchestrationLeadId: session.orchestrationLeadId ?? null,
     mono: mono?.id ?? null,
@@ -561,14 +584,24 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       return { ok, at: Date.now(), reason: failure.reason, tone: failure.tone, ...(ok ? {} : { error: "it couldn't take it right now" }) };
     }
     case "approve": {
-      // Ash taps Allow on every permission card the chat is waiting on, as he would in the chat.
+      // Ash taps Allow or Deny. With no card named, Allow on every card still waiting (a scripted step).
+      // With a requestId, only that card, and only while it is still waiting.
       const sessionId = String(action.session ?? "");
       const session = host.sessions().find((s) => s.id === sessionId);
       if (!session) throw new Error("approve: no chat");
       if (!host.approve) return { ok: false, error: "approve: this window can't approve", session: sessionId };
       const pending = pendingApprovals(session);
-      for (const requestId of pending) host.approve(sessionId, requestId);
-      return { ok: true, at: Date.now(), session: sessionId, approved: pending.length };
+      const decision = action.decision === "deny" ? "deny" : "allow";
+      const wanted = typeof action.requestId === "number" ? pending.filter((id) => id === action.requestId) : pending;
+      for (const requestId of wanted) host.approve(sessionId, requestId, decision);
+      return {
+        ok: true,
+        at: Date.now(),
+        session: sessionId,
+        approved: decision === "allow" ? wanted.length : 0,
+        denied: decision === "deny" ? wanted.length : 0,
+        decision,
+      };
     }
     case "reload":
       // The window reloads the way a vite full reload or View > Reload does (pagehide, then a fresh page), once this
