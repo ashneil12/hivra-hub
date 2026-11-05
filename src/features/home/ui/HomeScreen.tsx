@@ -1,9 +1,9 @@
 // Home. Orbit's column and entrance, restyled: no counters, no status icons, no view-all links.
 // HomePage.tsx imports Orbit data hooks and shows those, so this screen is not a copy of that file.
 
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
-import type { HomeLine } from "../model/lines";
+import type { HomeLine, HomeLineKind } from "../model/lines";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
 import "./home.css";
@@ -14,40 +14,80 @@ const TITLE: Record<string, string> = {
   recent: "Recent",
 };
 
+export type HomeNote = {
+  id: string;
+  kind: string;
+  text: string;
+  projectId: string;
+};
+
 export function sectionTitle(ref: SectionRef, catalog: readonly CatalogPanel[]): string {
   if (ref.kind === "builtin") return TITLE[ref.id] ?? ref.id;
   return catalog.find((panel) => panel.plugin === ref.plugin && panel.panelId === ref.panelId)?.title || "Pinned panel";
 }
 
+function noteLine(note: HomeNote): HomeLine {
+  const kind: HomeLineKind = note.kind === "doc" || note.kind === "chat" || note.kind === "decision" ? note.kind : "moving";
+  return { id: `${note.kind}:${note.id}`, kind, text: note.text, projectId: note.projectId, target: note.id, at: 0 };
+}
+
+function Notes({ notes, onOpen }: { notes: readonly HomeNote[]; onOpen: (line: HomeLine) => void }) {
+  return notes.map((note) => (
+    <button
+      key={`${note.kind}:${note.id}`}
+      type="button"
+      data-home-line={note.kind}
+      className="flex min-h-10 w-full items-center px-1 py-1.5 text-left text-[13px] text-content hover:underline"
+      onClick={() => onOpen(noteLine(note))}
+    >
+      <span className="min-w-0 flex-1 truncate">{note.text}</span>
+    </button>
+  ));
+}
+
 /**
- * The empty Home offers a chat with a project's coding team.
- * WP-88: this box becomes the Chief of Staff's chat and stays at the top of Home.
+ * The chat at the top of Home. It stays there whether or not the sections have lines.
+ * WP-88: this is the Chief of Staff's chat, not a button that leaves Home.
  */
 export function HomeChatBox({
-  projects,
-  onStart,
+  reply,
+  onAsk,
+  onOpen,
 }: {
-  projects: readonly { id: string; name: string }[];
-  onStart: (projectId: string) => void;
+  reply?: { text?: string; notes?: readonly HomeNote[] };
+  onAsk: (text: string) => void;
+  onOpen: (line: HomeLine) => void;
 }) {
+  const [text, setText] = useState("");
+  const notes = reply?.notes ?? [];
   return (
-    <div data-home-start className="rounded-lg border border-stroke px-4 py-3">
-      <p className="text-[13px] text-content">Start a chat</p>
-      {projects.length === 0 ? <p className="mt-2 text-[13px] text-content/70">Add a project first.</p> : (
-        <div className="mt-2 flex flex-col items-start gap-1">
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              className="text-left text-[13px] text-content underline-offset-2 hover:underline"
-              onClick={() => onStart(project.id)}
-            >
-              Start a chat with {project.name}
-            </button>
-          ))}
+    <form
+      data-home-start=""
+      className="rounded-lg border border-stroke px-4 py-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        onAsk(text);
+      }}
+    >
+      <label className="block text-[13px] text-content">
+        Ask
+        <input
+          aria-label="Ask"
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          className="mt-2 w-full bg-transparent text-[13px] text-content outline-none"
+        />
+      </label>
+      <button type="submit" className="mt-2 text-[13px] text-content underline-offset-2 hover:underline">
+        Ask
+      </button>
+      {reply?.text || notes.length > 0 ? (
+        <div data-home-reply className="mt-3 border-t border-stroke pt-2">
+          {reply?.text ? <p className="text-[13px] text-content">{reply.text}</p> : null}
+          {notes.length > 0 ? <Notes notes={notes} onOpen={onOpen} /> : null}
         </div>
-      )}
-    </div>
+      ) : null}
+    </form>
   );
 }
 
@@ -64,34 +104,36 @@ export function HomeScreen({
   moving,
   recent,
   arrangement,
-  projects,
   catalog,
   known,
   failed,
+  summary,
+  reply,
   onOpen,
   onMove,
   onHide,
   onShow,
   onPin,
   onUnpin,
-  onStart,
+  onAsk,
   renderPanel,
 }: {
   needsYou: readonly HomeLine[];
   moving: readonly HomeLine[];
   recent: readonly HomeLine[];
   arrangement: HomeArrangement;
-  projects: readonly { id: string; name: string }[];
   catalog: readonly CatalogPanel[];
   known: boolean;
   failed: boolean;
+  summary?: readonly HomeNote[];
+  reply?: { text?: string; notes?: readonly HomeNote[] };
   onOpen: (line: HomeLine) => void;
   onMove: (key: string, dir: -1 | 1) => void;
   onHide: (key: string) => void;
   onShow: (key: string) => void;
   onPin: (plugin: string, panelId: string) => void;
   onUnpin: (key: string) => void;
-  onStart: (projectId: string) => void;
+  onAsk: (text: string) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
@@ -107,7 +149,8 @@ export function HomeScreen({
   });
   const pinned = new Set(arrangement.order.filter((ref) => ref.kind === "panel").map(sectionKey));
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
-  const quiet = known && needsYou.length + moving.length + recent.length === 0;
+  const summaryNotes = summary ?? [];
+  const quiet = known && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -115,6 +158,12 @@ export function HomeScreen({
       className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content"
     >
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
+        {known ? <HomeChatBox reply={reply} onAsk={onAsk} onOpen={onOpen} /> : null}
+        {known && summaryNotes.length > 0 ? (
+          <div data-home-summary className="rounded-lg border border-stroke px-3 py-2">
+            <Notes notes={summaryNotes} onOpen={onOpen} />
+          </div>
+        ) : null}
         {visible.map((ref, index) => {
           const key = sectionKey(ref);
           const title = sectionTitle(ref, catalog);
@@ -165,9 +214,6 @@ export function HomeScreen({
         {quiet ? (
           <div data-home-empty>
             <p className="text-[13px] text-content">All quiet.</p>
-            <div className="mt-4">
-              <HomeChatBox projects={projects} onStart={onStart} />
-            </div>
           </div>
         ) : null}
         {!known && failed ? <p data-home-retry className="text-[13px] text-content/70">Couldn't load home. Trying again.</p> : null}
