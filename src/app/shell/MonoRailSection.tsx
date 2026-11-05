@@ -17,7 +17,7 @@ import { delegationActions, useDelegationRows } from "../../features/monos/model
 import { childChatsByMono } from "../../features/monos/model/delegationView";
 import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
-import { countWork, newestPerChild, stuckOf, stuckOwner, useStuckDismissalsVersion, type StuckWorker } from "../../features/monos/model/workerStuck";
+import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
 import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
@@ -250,10 +250,9 @@ export function MonoRailSection({
   for (const c of waitingChats()) if (c.monoId && !waitingByMono.has(c.monoId)) waitingByMono.set(c.monoId, c);
   const workOf = (monoId: string) => {
     const children = childChats.get(monoId) ?? [];
-    const rows = children.flatMap((chat) => (chat.row ? [chat.row] : []));
     return {
       attention: subChatAttention(children, now),
-      counts: railOf(rows, now, needsYouCountFor(needsYou, monoId)),
+      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsYouCountFor(needsYou, monoId)),
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
@@ -261,13 +260,11 @@ export function MonoRailSection({
   // "2 working". Workers are counted on the line under it (FoldedWorkSummary), as before.
   const busy = monos.filter((mono) => (states.get(mono.id) ?? IDLE).status === "working");
   const busyText = busy.length === 1 ? shownName(busy[0]) : busy.length ? `${busy.length} working` : undefined;
-  const total: RailCounts = { working: 0, asking: 0, needsYou: 0, stuck: 0, failed: false };
+  const total: WorkCounts = { working: 0, asking: 0, stuck: 0 };
   for (const { counts } of work.values()) {
     total.working += counts.working;
     total.asking += counts.asking;
-    total.needsYou += counts.needsYou;
     total.stuck += counts.stuck;
-    total.failed = total.failed || counts.failed;
   }
   // "1 needs you" opens only what Ash must act on (r30), from the same list: r51, every row behind the count, workers and
   // jobs alike, so the panel's rows and header always equal the chip.
@@ -676,51 +673,18 @@ const DISK_RECHECK_MS = 60_000;
 const NEEDS_YOU_RED = "text-red-400";
 
 /**
- * What the rail says under a Mono. `needsYou` is the red count (only what Ash must act on). `stuck` is everyone else
- * the watcher has stopped: a quiet stall, a usage limit, a plain failure. Ash needs that on the line, not folded into
- * "working" and not renamed. `failed` is set when one of those is a failure, so the line's kind is "failed".
+ * The rail's counts under the red rule (r30): what works, what waits on its Lead, and only what Ash must act on in the
+ * third place (`stuck` here is that "needs you" count). A worker its Lead is handling or retrying isn't counted.
  */
-type RailCounts = {
-  working: number;
-  asking: number;
-  needsYou: number;
-  stuck: number;
-  failed: boolean;
-};
-
-function railOf(rows: Parameters<typeof countWork>[0], now: number, needsYou: number): RailCounts {
-  const counts = countWork(rows, now);
-  let failed = false;
-  for (const row of newestPerChild(rows)) {
-    const stuck = stuckOf(row, now);
-    if (!stuck || stuck.kind === "asking") continue;
-    if (stuckOwner(stuck) === "needs-you") continue;
-    if (stuck.kind === "failed") failed = true;
-  }
-  return {
-    working: counts.working,
-    asking: counts.asking,
-    needsYou,
-    stuck: Math.max(0, counts.stuck - (counts.needsYou ?? 0)),
-    failed,
-  };
+function railCounts(counts: WorkCounts, needsYou: number): WorkCounts {
+  return { working: counts.working, asking: counts.asking, stuck: needsYou, needsYou };
 }
-
-function railKind(counts: RailCounts): "needs-you" | "failed" | "stuck" | "asking" | "working" {
-  if (counts.needsYou) return "needs-you";
-  if (counts.failed) return "failed";
-  if (counts.stuck) return "stuck";
-  if (counts.asking) return "asking";
-  return "working";
-}
-
-/** "2 working · 1 waiting · 1 needs you · 1 stuck". Needs you stays in front of stuck, so that phrase stays whole. */
-function railSplit(counts: RailCounts): string | undefined {
+/** "2 working · 1 waiting · 1 needs you", never "stuck"; nothing when nothing is out. */
+function railSplit(counts: WorkCounts): string | undefined {
   const parts = [
     counts.working ? `${counts.working} working` : "",
     counts.asking ? `${counts.asking} waiting` : "",
-    counts.needsYou ? `${counts.needsYou} needs you` : "",
-    counts.stuck ? `${counts.stuck} stuck` : "",
+    counts.stuck ? `${counts.stuck} needs you` : "",
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : undefined;
 }
@@ -735,33 +699,36 @@ function MonoWorkLine({
 }: {
   monoId: string;
   name: string;
-  counts: RailCounts;
+  counts: WorkCounts;
   stuck: readonly StuckWorker[];
   team?: TeamTarget;
   onOpen: () => void;
-  /** "1 needs you" opens what only Ash can sort, beside the rail (B6). */
+  /** "1 stuck" opens its stuck workers beside the rail, each answerable there (B6). */
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
-  const kind = railKind(counts);
-  const tail = counts.needsYou > 0 || counts.stuck > 0;
-  // Red is only for Needs you. A stall or a failure its Lead still has is grey "N stuck", so it stays visible.
-  const Mark = counts.working ? Loader : tail ? CircleAlert : Clock;
-  const markColor = counts.working || !counts.needsYou ? "text-content/45" : NEEDS_YOU_RED;
+  const short = shortSplit(counts);
+  // Red is only for Needs you, and no third colour: what is counted here is what only Ash can sort (r30).
+  const stuckColor = NEEDS_YOU_RED;
+  // Work still running leads with the spinner (the row already carries the stuck mark); with nothing running, the
+  // line's own mark says why it waits.
+  const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
+  // Waiting on its Lead is not stuck: only stuck work colours the mark.
+  const markColor = short.working || !short.stuck ? "text-content/45" : stuckColor;
   return (
     <div
       className="ml-5 flex h-6 min-w-0 items-center border-l border-content/10 pl-1.5"
       data-mono-work={monoId}
-      data-mono-work-kind={kind}
+      data-mono-work-kind={counts.stuck ? "needs-you" : counts.asking ? "asking" : "working"}
     >
-      {/* The line is two targets: what is working opens its team; "N needs you" opens what Ash must sort. */}
+      {/* The line is two targets: what is working opens its team; "1 stuck" opens the stuck workers to answer them. */}
       <span className="flex min-w-0 flex-1 items-center text-[12px] text-content/45" data-mono-work-split>
         <button
           type="button"
           title={[railSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
-          aria-label={`${railSplit(counts)}. Open ${team ? team.name : name}`}
+          aria-label={`${railSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
           onClick={onOpen}
           className={`flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-content/6 hover:text-content${
-            tail ? " shrink" : " flex-1"
+            short.stuck ? " shrink" : " flex-1"
           }`}
         >
           <Mark
@@ -769,19 +736,13 @@ function MonoWorkLine({
             className={`size-3.5 shrink-0 ${markColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
             strokeWidth={1.75}
           />
-          {counts.working ? <span className="min-w-0 truncate">{counts.working} working</span> : null}
-          {counts.working && counts.asking ? <span aria-hidden> · </span> : null}
-          {counts.asking ? <span className="min-w-0 truncate" data-mono-work-waiting>{counts.asking} waiting</span> : null}
-          {(counts.working || counts.asking) && tail ? <span aria-hidden> · </span> : null}
+          {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
+          {short.working && short.waiting ? <span aria-hidden> · </span> : null}
+          {short.waiting ? <span className="min-w-0 truncate" data-mono-work-waiting>{short.waiting} waiting</span> : null}
+          {(short.working || short.waiting) && short.stuck ? <span aria-hidden> · </span> : null}
         </button>
-        {counts.needsYou ? (
-          <StuckButton count={counts.needsYou} color={NEEDS_YOU_RED} label={`See what needs you for ${name}`} onOpen={onOpenStuck} />
-        ) : null}
-        {counts.needsYou && counts.stuck ? <span aria-hidden> · </span> : null}
-        {counts.stuck ? (
-          <span className="shrink-0 px-1.5 text-content/60" data-mono-work-stuck>
-            {counts.stuck} stuck
-          </span>
+        {short.stuck ? (
+          <StuckButton count={short.stuck} color={stuckColor} label={`See what needs you for ${name}`} onOpen={onOpenStuck} />
         ) : null}
       </span>
     </div>
@@ -829,38 +790,33 @@ function FoldedWorkSummary({
   counts,
   onOpenStuck,
 }: {
-  counts: RailCounts;
+  counts: WorkCounts;
   stuck: readonly StuckWorker[];
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
-  const tail = counts.needsYou > 0 || counts.stuck > 0;
-  const Mark = counts.working ? Loader : tail ? CircleAlert : Clock;
-  const markColor = counts.working || !counts.needsYou ? "text-content/45" : NEEDS_YOU_RED;
+  const short = shortSplit(counts);
+  // Red is only for Needs you, and no third colour: what is counted here is what only Ash can sort (r30).
+  const stuckColor = NEEDS_YOU_RED;
+  const Mark = short.working ? Loader : counts.stuck ? CircleAlert : Clock;
   return (
     <div
       className="mx-3 -mt-1 mb-1.5 flex h-6 min-w-0 items-center px-1 text-[12px] text-content/45"
       title={railSplit(counts)}
       data-mono-rail-summary
-      data-mono-work-kind={railKind(counts)}
+      data-mono-work-kind={counts.stuck ? "needs-you" : counts.asking ? "asking" : "working"}
     >
       <span className="flex min-w-0 items-center gap-1.5 pr-0.5" data-mono-rail-summary-split>
         <Mark
           aria-hidden
-          className={`size-3.5 shrink-0 ${markColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
+          className={`size-3.5 shrink-0 ${short.working || !short.stuck ? "text-content/45" : stuckColor}${Mark === Loader ? " animate-spin motion-reduce:animate-none" : ""}`}
           strokeWidth={1.75}
         />
-        {counts.working ? <span className="min-w-0 truncate">{counts.working} working</span> : null}
-        {counts.working && counts.asking ? <span aria-hidden className="shrink-0">·</span> : null}
-        {counts.asking ? <span className="min-w-0 truncate" data-mono-work-waiting>{counts.asking} waiting</span> : null}
-        {(counts.working || counts.asking) && tail ? <span aria-hidden className="shrink-0">·</span> : null}
+        {short.working ? <span className="min-w-0 truncate">{short.working} working</span> : null}
+        {short.working && short.waiting ? <span aria-hidden className="shrink-0">·</span> : null}
+        {short.waiting ? <span className="min-w-0 truncate" data-mono-work-waiting>{short.waiting} waiting</span> : null}
+        {(short.working || short.waiting) && short.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
       </span>
-      {counts.needsYou ? <StuckButton count={counts.needsYou} color={NEEDS_YOU_RED} label="See what needs you" onOpen={onOpenStuck} /> : null}
-      {counts.needsYou && counts.stuck ? <span aria-hidden className="shrink-0">·</span> : null}
-      {counts.stuck ? (
-        <span className="shrink-0 text-content/60" data-mono-work-stuck>
-          {counts.stuck} stuck
-        </span>
-      ) : null}
+      {short.stuck ? <StuckButton count={short.stuck} color={stuckColor} label="See what needs you" onOpen={onOpenStuck} /> : null}
     </div>
   );
 }
