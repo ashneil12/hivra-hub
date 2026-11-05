@@ -76,9 +76,9 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
 ## Build
 
 1. **Names and their registry, translated from portless.** Port `routes.ts` line by line to
-   `src-tauri/src/proxy/routes.rs`, keeping the mkdir lock (10 s stale, 15 s wait), `addRoute(hostname, port, pid,
-   force)`, `removeRoute(hostname, owner_pid)` that only removes a name its own process added, and
-   `pruneStaleRoutes()`. Port its tests. One registry per copy, in `<data>/proxy/routes.json`, with a lock file and
+   `src-tauri/src/proxy/routes.rs`, keeping the mkdir lock (10 s stale, 15 s wait), `addRoute` with its optional
+   force for a name a dead process left behind, `removeRoute(hostname, owner_pid)` that only removes a name its own
+   process added, and `pruneStaleRoutes()`. Port its tests. One registry per copy, in `<data>/proxy/routes.json`, with a lock file and
    the writer's pid; a second window sees the proxy already running and uses it instead of starting another.
    Why a translation and not the package: the proxy has to outlive the window and the registry is written by WP-87's
    Rust, and portless's TypeScript cannot run inside Rust's process. Those five files total about 3,000 lines; only
