@@ -51,6 +51,11 @@ export function TerminalMirrorPane({
   const given = tasks != null;
 
   useEffect(() => {
+    setDraft("");
+    setTaskId("");
+  }, [session.id]);
+
+  useEffect(() => {
     if (given) return;
     const folder = projectId?.trim() ?? "";
     const mine = ++gen.current;

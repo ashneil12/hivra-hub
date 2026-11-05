@@ -17211,10 +17211,11 @@ function Workspace({
                               style={{ gridArea: "main" }}
                             >
                               <div className="relative min-h-0 min-w-0 flex-1">
-                                {/* WP-85: the terminal session covers the chat. It is not a harness session. */}
+                                {/* WP-85: the terminal session covers the chat. It is not a harness session. The key drops a reply typed for another one. */}
                                 {terminalMirror.session ? (
                                   <div className="absolute inset-0 z-10">
                                     <TerminalMirrorPane
+                                      key={terminalMirror.session.id}
                                       session={terminalMirror.session}
                                       projectId={hubProject?.id}
                                       note={terminalMirror.note}
