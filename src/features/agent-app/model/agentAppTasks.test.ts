@@ -38,6 +38,7 @@ import {
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
 import { addMono, findMono, updateMono } from "../../monos/model/mono";
+import { setLineRulesSource } from "../../crew/model/lineRules";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { resolveRoute } from "../../crew/model/resolve";
@@ -1938,12 +1939,23 @@ describe("parallel workers per project, with throttling (H8)", () => {
   it("saves the limit when Ash tells the Lead (tasks.workers), and reads it back", async () => {
     const { source, host } = pooled();
     expect(await handleAgentApp(source, "w0", "tasks.workers", {}, host)).toMatchObject({ project: "vg-game", workers: 6, heavy: 2 });
-    const saved = await handleAgentApp(source, "w1", "tasks.workers", { workers: 20, heavy: 4 }, host) as {
-      line: string;
-    };
-    expect(saved).toMatchObject({ project: "vg-game", workers: 20, heavy: 4 });
-    expect(saved.line).toContain("vg-game runs up to 20 workers at once, 4 of them on heavy tests.");
-    expect(saved.line).toContain("Its workers use the usual model.");
+    const saved = await handleAgentApp(source, "w1", "tasks.workers", { workers: 20, heavy: 4 }, host);
+    expect(saved).toEqual({
+      project: "vg-game",
+      workers: 20,
+      heavy: 4,
+      line: "vg-game runs up to 20 workers at once, 4 of them on heavy tests. Its workers use the usual model.",
+      inForce: {
+        cli: null,
+        model: null,
+        effort: null,
+        cliFrom: "none",
+        modelFrom: "none",
+        effortFrom: "none",
+        skipped: [],
+      },
+      scopes: { mono: null, project: null, system: null },
+    });
     expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
     await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
   });
@@ -2013,7 +2025,10 @@ describe("parallel workers per project, with throttling (H8)", () => {
       addMono({ id: "other-lead", name: "Other", mascot: "fox", color: "hsl(245 75% 65%)", projects: ["/tmp/other"] });
     });
 
-    afterEach(() => localStorage.removeItem("monocode:mono-roster"));
+    afterEach(() => {
+      localStorage.removeItem("monocode:mono-roster");
+      setLineRulesSource(undefined);
+    });
 
     function lead(who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono", rows: Delegation[] = []) {
       const f = pooled(rows, who === "team" ? "team" : "mono");
@@ -2057,6 +2072,17 @@ describe("parallel workers per project, with throttling (H8)", () => {
       expect(read.line).toContain("Crew rules still send `frontend` work to Sonnet.");
     });
 
+    it("names a project rule and a plugin rule on the line", async () => {
+      setLineRulesSource(async () => ({
+        rules: [{ labels: ["backend"], paths: [], model: "claude:sonnet-5", source: "person" }],
+        plugins: [{ labels: ["checks"], paths: [], cli: "cursor", source: "plugin" }],
+      }));
+      const { source, host } = lead();
+      const read = await handleAgentApp(source, "w", "tasks.workers", {}, host) as { line: string };
+      expect(read.line).toContain("`backend` work to Sonnet");
+      expect(read.line).toContain("`checks` work to Cursor");
+    });
+
     it("sets and clears each scope, and a plain name resolves", async () => {
       const { source, host } = lead();
       const mono = await handleAgentApp(source, "m", "tasks.workers", { scope: "mono", model: "opus", effort: "high" }, host) as { line: string };
@@ -2076,15 +2102,23 @@ describe("parallel workers per project, with throttling (H8)", () => {
 
       const everywhere = await handleAgentApp(source, "s", "tasks.workers", { scope: "system", effort: "high" }, host) as { scopes: { system: { effort: string } } };
       expect(everywhere.scopes.system).toEqual({ effort: "high" });
-      await handleAgentApp(source, "sc", "tasks.workers", { scope: "system", clear: true }, host);
-      await handleAgentApp(source, "pc", "tasks.workers", { scope: "project", clear: true }, host);
+      const clearedSystem = await handleAgentApp(source, "sc", "tasks.workers", { scope: "system", clear: true }, host) as {
+        scopes: { system: unknown; project: { cli: string } };
+      };
+      expect(clearedSystem.scopes.system).toBeNull();
+      expect(clearedSystem.scopes.project).toEqual({ cli: "grok", model: "grok-4", effort: "low" });
+      const clearedProject = await handleAgentApp(source, "pc", "tasks.workers", { scope: "project", clear: true }, host) as {
+        scopes: { project: unknown; system: unknown };
+      };
+      expect(clearedProject.scopes.project).toBeNull();
+      expect(clearedProject.scopes.system).toBeNull();
       expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
     });
 
     it("refuses an unknown model, a wrong effort, and the callers who may not set it", async () => {
       const { source, host } = lead();
       await expect(handleAgentApp(source, "bad", "tasks.workers", { scope: "mono", model: "nope" }, host)).rejects.toThrow(
-        /No CLI offers "nope"/,
+        /No CLI offers "nope"\. They offer Opus 4\.7.+Sonnet.+Composer.+Grok 4/,
       );
       await expect(
         handleAgentApp(source, "eff", "tasks.workers", { scope: "project", cli: "cursor", model: "composer", effort: "max" }, host),
@@ -2126,6 +2160,23 @@ describe("parallel workers per project, with throttling (H8)", () => {
       expect(notes).toEqual([
         expect.objectContaining({ kind: "worker.default", target: "mono", project: "vg-game", actorId: "vg-game-lead" }),
       ]);
+      const long = "n".repeat(200);
+      updateMono("vg-game-lead", (mono) => ({
+        ...mono,
+        crewRules: [
+          { labels: [long], paths: [], model: "claude:sonnet-5", source: "person" },
+          { labels: ["m".repeat(200)], paths: [], model: "claude:opus-4-7", source: "person" },
+        ],
+      }));
+      const wide = lead();
+      const wideCards: { line?: string }[] = [];
+      const wideNotes: { summary?: string }[] = [];
+      wide.host.postCard = (_id, card) => wideCards.push(card as { line?: string });
+      wide.host.noteActivity = (entry) => wideNotes.push(entry);
+      await handleAgentApp(wide.source, "long", "tasks.workers", { scope: "mono", model: "opus", effort: "high" }, wide.host);
+      expect(wideCards[0]?.line?.length ?? 0).toBeGreaterThan(500);
+      expect(wideNotes[0]?.summary?.length ?? 0).toBeLessThanOrEqual(500);
+      expect(wideNotes[0]?.summary?.startsWith("vg-game runs up to")).toBe(true);
       const limitsOnly = lead();
       const quiet: unknown[] = [];
       limitsOnly.host.postCard = () => quiet.push("card");

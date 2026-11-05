@@ -48,10 +48,12 @@ import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import { launchCatalog } from "../../crew/model/launchCatalog";
+import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import { routeDefaults } from "../../crew/model/workerDefault";
 import {
+  activityNoteSummary,
   crewRuleSentence,
   describeInForce,
   planWorkerChoice,
@@ -1439,7 +1441,7 @@ function saveMonoDefault(
  * it reads them; with them (what Ash said: "let hivra run 20 workers today") it saves them, as the project's settings do.
  * WP-89: scope, cli, model, effort and clear set what those workers run on.
  */
-function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
+async function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const choosing =
     input.scope !== undefined ||
     input.cli !== undefined ||
@@ -1494,7 +1496,9 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
   const monoPick = (monoId ? findMono(monoId)?.workerDefault : undefined) ?? (planned?.scope === "mono" ? undefined : currentMono);
   const projectPick = tasks.pool.projectDefault?.(project);
   const systemPick = tasks.pool.systemDefault?.();
-  const rules = carriedMonoRules(storedMono?.crewRules ?? owner.mono?.crewRules);
+  const monoRules = carriedMonoRules(storedMono?.crewRules ?? owner.mono?.crewRules);
+  const loaded = await lineRulesFor(folder, monoRules);
+  const rules = loaded ?? monoRules;
   const catalog = launchCatalog();
   const changed = [planned && !planned.pick ? scopeClearLine(planned.scope) : "", planned?.dropped ?? ""]
     .filter(Boolean)
@@ -1518,7 +1522,7 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
     });
     host.noteActivity?.({
       kind: "worker.default",
-      summary: line,
+      summary: activityNoteSummary(line),
       project: planned.scope === "system" ? "app" : project,
       target: planned.scope,
       actorId: setter.id,
