@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { askChief, fileIntoProject } from "../../chief/model/answer";
+import { fileIntoProject } from "../../chief/model/answer";
+import { createHomeAsks } from "../model/ask";
 import { readingsOf } from "../../chief/model/homeReadings";
 import { summaryLines } from "../../chief/model/summary";
 import { MORNING_HABIT_ID } from "../../chief/model/habit";
@@ -28,6 +29,10 @@ export function HomeView() {
   const source = useMemo(() => realHomeSource(), []);
   const loader = useRef(createHomeLoader(source));
   const token = useRef(0);
+  const asks = useRef<ReturnType<typeof createHomeAsks> | null>(null);
+  if (!asks.current) {
+    asks.current = createHomeAsks((projectId, title) => fileIntoProject((command, args) => invoke(command, args), projectId, title));
+  }
   const snapRef = useRef<HomeSnapshot | null>(null);
   const [snap, setSnap] = useState<HomeSnapshot | null>(null);
   const [failed, setFailed] = useState(false);
@@ -153,7 +158,7 @@ export function HomeView() {
   const summary = summaryLines(report, snap?.summaryOff === true, readings);
   async function onAsk(text: string) {
     const current = snapRef.current;
-    const result = askChief(text, {
+    const next = await asks.current?.ask(text, {
       readings: current
         ? readingsOf({
             projects: current.projects,
@@ -166,16 +171,8 @@ export function HomeView() {
       projects: (current?.projects ?? []).map((project) => ({ id: project.id, name: project.name, folder: project.folder })),
       loaded: current != null,
     });
-    if (result.kind === "question") {
-      setReply({ text: result.text });
-      return;
-    }
-    if (result.kind === "lines") {
-      setReply(result.lines.length ? { notes: result.lines } : { text: "Nothing to say." });
-      return;
-    }
-    const filed = await fileIntoProject((command, args) => invoke(command, args), result.projectId, result.title);
-    setReply(filed.ok ? { text: "Filed.", notes: filed.id ? [{ id: filed.id, kind: "task", text: result.title, projectId: result.projectId }] : [] } : { text: filed.text });
+    if (!next) return;
+    setReply(next);
   }
   return (
     <HomeScreen
