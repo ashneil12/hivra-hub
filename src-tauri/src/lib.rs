@@ -128,6 +128,9 @@ mod skills;
 pub mod ssh_askpass;
 // Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
 mod worktree_pool;
+// WP-87: a stack per worktree, with its own ports and Compose project.
+mod stack_decl;
+mod stacks;
 // Hivra WP-14: steering messages to running workers.
 mod steering;
 mod tool_detail;
@@ -802,6 +805,10 @@ pub fn run() {
             worktree_pool::worktree_pool_settings,
             worktree_pool::worktree_pool_set_settings,
             worktree_pool::worktree_pool_prune,
+            stacks::stack_status,
+            stacks::stack_down,
+            stacks::stack_stale,
+            stacks::stack_remove_stale,
             project_file::project_file_status,
             project_file::project_file_import,
             project_file::project_file_forget,
