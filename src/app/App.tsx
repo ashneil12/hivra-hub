@@ -230,7 +230,6 @@ import {
   NO_PROJECT,
   currentHubSelection,
   hubSurfaceOpen,
-  currentHubSelection,
   monoTeamInView,
   monoTeamItem,
   selectionLeavingOwnTeam,
