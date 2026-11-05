@@ -20,6 +20,7 @@ use crate::session_store::SessionStore;
 const MAX_LINE: usize = 1_000_000;
 const MAX_TEXT: usize = 100_000;
 const SETTING_FILE: &str = "terminal-mirror.json";
+const BOOK_FILE: &str = "terminal-mirror-book.json";
 const TARGET_FILE: &str = "hivra-mirror.json";
 const PLUGIN_NAME: &str = "hivra-mirror";
 
@@ -50,11 +51,13 @@ fn gate() -> std::sync::MutexGuard<'static, ()> {
 
 #[derive(Default)]
 struct Book {
+    revision: u64,
     sessions: Vec<LiveSession>,
     removed: HashSet<String>,
     steers: HashMap<String, VecDeque<Value>>,
 }
 
+#[derive(Clone)]
 struct LiveSession {
     id: String,
     title: String,
@@ -364,13 +367,39 @@ fn plugin_ready(dir: &Path) -> bool {
     dir.join("hooks").join("hooks.json").is_file()
 }
 
+fn source_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/hivra-mirror")
+}
+
+/// A shipped app keeps the plugin next to its resources. The source tree is only the dev fallback.
+fn bundle_plugin_dirs(exe: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(folder) = exe.parent() {
+        if let Some(contents) = folder.parent() {
+            dirs.push(contents.join("Resources").join(PLUGIN_NAME));
+        }
+        dirs.push(folder.join(PLUGIN_NAME));
+        dirs.push(folder.join("resources").join(PLUGIN_NAME));
+    }
+    dirs
+}
+
+fn pick_plugin_dir(candidates: &[PathBuf]) -> Option<PathBuf> {
+    candidates.iter().find(|dir| plugin_ready(dir)).cloned()
+}
+
 fn resolved_plugin_dir() -> PathBuf {
+    let mut candidates = Vec::new();
     if let Ok(dir) = std::env::var("HIVRA_MIRROR_PLUGIN") {
         if !dir.is_empty() {
-            return PathBuf::from(dir);
+            candidates.push(PathBuf::from(dir));
         }
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/hivra-mirror")
+    if let Ok(exe) = std::env::current_exe() {
+        candidates.extend(bundle_plugin_dirs(&exe));
+    }
+    candidates.push(source_plugin_dir());
+    pick_plugin_dir(&candidates).unwrap_or_else(source_plugin_dir)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -707,12 +736,57 @@ fn remove_session(book: &mut Book, id: &str) {
     book.steers.remove(id);
 }
 
-fn pop_permission(book: &mut Book, id: &str) -> Option<Value> {
+fn steer_kind(steer: &Value) -> Option<&str> {
+    steer.get("kind").and_then(Value::as_str)
+}
+
+fn steer_request(steer: &Value) -> &str {
+    steer.get("requestId").and_then(Value::as_str).unwrap_or("")
+}
+
+fn pop_where(book: &mut Book, id: &str, pred: impl Fn(&Value) -> bool) -> Option<Value> {
     let queue = book.steers.get_mut(id)?;
-    let index = queue
-        .iter()
-        .position(|steer| steer.get("kind").and_then(Value::as_str) == Some("permission"))?;
-    queue.remove(index)
+    let index = queue.iter().position(pred)?;
+    let steer = queue.remove(index)?;
+    if queue.is_empty() {
+        book.steers.remove(id);
+    }
+    Some(steer)
+}
+
+fn stamp(mut steer: Value, id: &str) -> Value {
+    if let Some(obj) = steer.as_object_mut() {
+        obj.insert("sessionId".into(), json!(id));
+    }
+    steer
+}
+
+/// A permission answer is only for the prompt that asked. An older answer is dropped, not applied to the next one.
+fn take_permission(book: &mut Book, id: &str, request_id: &str) -> Option<Value> {
+    if id.is_empty() || request_id.is_empty() {
+        return None;
+    }
+    if let Some(queue) = book.steers.get_mut(id) {
+        queue.retain(|steer| {
+            steer_kind(steer) != Some("permission") || steer_request(steer) == request_id
+        });
+        if queue.is_empty() {
+            book.steers.remove(id);
+        }
+    }
+    pop_where(book, id, |steer| {
+        steer_kind(steer) == Some("permission") && steer_request(steer) == request_id
+    })
+    .map(|steer| stamp(steer, id))
+}
+
+fn permission_request_id(event: &Value) -> String {
+    event
+        .get("permission")
+        .and_then(|value| value.get("requestId"))
+        .and_then(Value::as_str)
+        .map(clean_id)
+        .unwrap_or_default()
 }
 
 fn handle_line(book: &mut Book, line: &str, now: i64) -> (String, Vec<Value>) {
@@ -722,15 +796,34 @@ fn handle_line(book: &mut Book, line: &str, now: i64) -> (String, Vec<Value>) {
     let Ok(value) = serde_json::from_str::<Value>(line) else {
         return (ack(&[]), Vec::new());
     };
+    if value.get("type").and_then(Value::as_str) == Some("wait") {
+        let id = clean_id(value.get("sessionId").and_then(Value::as_str).unwrap_or(""));
+        let request_id = clean_id(value.get("requestId").and_then(Value::as_str).unwrap_or(""));
+        // A wait must not drop a different prompt's answer. The hook is still asking for this one.
+        let Some(steer) = pop_where(book, &id, |steer| {
+            steer_kind(steer) == Some("permission") && steer_request(steer) == request_id
+        }) else {
+            return (ack(&[]), Vec::new());
+        };
+        let steer = stamp(steer, &id);
+        return (ack(std::slice::from_ref(&steer)), vec![steer]);
+    }
     if value.get("type").and_then(Value::as_str) != Some("events") {
         return (ack(&[]), Vec::new());
     }
+    let hook = value
+        .get("hook")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let deliver_reply = hook.contains("stop") || hook.contains("userprompt");
     let events = value
         .get("events")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
     let mut steers = Vec::new();
+    let mut replied = HashSet::new();
     for event in &events {
         let session_id = clean_id(
             event
@@ -747,11 +840,15 @@ fn handle_line(book: &mut Book, line: &str, now: i64) -> (String, Vec<Value>) {
                     == Some("approval");
         apply_event(book, event, now);
         if wants_permission {
-            if let Some(mut steer) = pop_permission(book, &session_id) {
-                if let Some(obj) = steer.as_object_mut() {
-                    obj.insert("sessionId".into(), json!(session_id));
-                }
+            if let Some(steer) = take_permission(book, &session_id, &permission_request_id(event)) {
                 steers.push(steer);
+            }
+        }
+        if deliver_reply && !session_id.is_empty() && replied.insert(session_id.clone()) {
+            if let Some(steer) = pop_where(book, &session_id, |steer| {
+                steer_kind(steer) == Some("reply")
+            }) {
+                steers.push(stamp(steer, &session_id));
             }
         }
     }
@@ -890,8 +987,8 @@ fn attach_task(
     session_id: &str,
     task_id: &str,
     now: i64,
-) -> Result<(), String> {
-    let task_id = task_id.trim();
+) -> Result<Vec<String>, String> {
+    let task_id = task_id.trim().to_string();
     if task_id.is_empty() || book.removed.contains(session_id) {
         return Err("That task isn't there.".into());
     }
@@ -904,7 +1001,7 @@ fn attach_task(
     };
     let trashed: Option<i64> = match conn.query_row(
         "SELECT trashed_at FROM tasks WHERE id = ?1",
-        [task_id],
+        [task_id.as_str()],
         |row| row.get(0),
     ) {
         Ok(value) => value,
@@ -921,7 +1018,7 @@ fn attach_task(
         rusqlite::params![activity_id, task_id, now, text],
     )
     .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(vec![task_id])
 }
 
 fn setting_value(outcome: &SetOutcome) -> Value {
@@ -947,6 +1044,18 @@ fn emit_changed(app: &AppHandle) {
 }
 
 pub fn init(app: AppHandle, data_dir: PathBuf, kind: Kind) {
+    {
+        let mut book = lock_book();
+        if book.revision == 0
+            && book.sessions.is_empty()
+            && book.steers.is_empty()
+            && book.removed.is_empty()
+        {
+            if let Ok(loaded) = open_book(&data_dir) {
+                *book = loaded;
+            }
+        }
+    }
     let home = home_dir();
     if let Ok(listener) = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)) {
         if let Ok(addr) = listener.local_addr() {
@@ -1002,6 +1111,312 @@ fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
 }
 
+fn book_file_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+}
+
+enum ReadBook {
+    Missing,
+    Bad,
+    Ready(Book),
+}
+
+fn book_path(dir: &Path) -> PathBuf {
+    dir.join(BOOK_FILE)
+}
+
+fn session_json(session: &LiveSession) -> Value {
+    json!({
+        "id": session.id,
+        "title": session.title,
+        "folder": session.folder,
+        "state": session.state,
+        "blocks": session.blocks,
+        "updatedAt": session.updated_at,
+        "permission": session.permission,
+        "transcript": session.transcript,
+    })
+}
+
+fn steer_json(steers: &HashMap<String, VecDeque<Value>>) -> Value {
+    let mut map = serde_json::Map::new();
+    for (id, queue) in steers {
+        let kept: Vec<&Value> = queue
+            .iter()
+            .filter(|steer| matches!(steer_kind(steer), Some("reply" | "stop" | "permission")))
+            .take(20)
+            .collect();
+        if !kept.is_empty() {
+            map.insert(
+                id.clone(),
+                Value::Array(kept.into_iter().cloned().collect()),
+            );
+        }
+    }
+    Value::Object(map)
+}
+
+fn parse_book(text: &str) -> Option<Book> {
+    let value: Value = serde_json::from_str(text).ok()?;
+    let obj = value.as_object()?;
+    if !obj.get("sessions").map(Value::is_array).unwrap_or(true) {
+        return None;
+    }
+    let mut book = Book {
+        revision: obj.get("revision").and_then(Value::as_u64).unwrap_or(0),
+        ..Book::default()
+    };
+    for item in obj
+        .get("sessions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let id = clean_id(item.get("id").and_then(Value::as_str).unwrap_or(""));
+        if id.is_empty() || book.removed.contains(&id) {
+            continue;
+        }
+        let session = LiveSession {
+            id: id.clone(),
+            title: {
+                let title = clean_chars(item.get("title").and_then(Value::as_str).unwrap_or(""), 200);
+                if title.trim().is_empty() {
+                    "Terminal".into()
+                } else {
+                    title.trim().to_string()
+                }
+            },
+            folder: clean_chars(item.get("folder").and_then(Value::as_str).unwrap_or(""), 2000)
+                .trim()
+                .to_string(),
+            state: clean_state(item.get("state").and_then(Value::as_str), "running"),
+            blocks: item
+                .get("blocks")
+                .and_then(Value::as_array)
+                .map(|blocks| blocks.iter().filter_map(clean_block).collect())
+                .unwrap_or_default(),
+            updated_at: item.get("updatedAt").and_then(Value::as_i64).unwrap_or(0),
+            permission: item.get("permission").and_then(|value| {
+                let request_id = clean_id(value.get("requestId").and_then(Value::as_str).unwrap_or(""));
+                if request_id.is_empty() {
+                    None
+                } else {
+                    Some(json!({
+                        "requestId": request_id,
+                        "tool": clean_chars(value.get("tool").and_then(Value::as_str).unwrap_or("Tool"), 200),
+                    }))
+                }
+            }),
+            transcript: item
+                .get("transcript")
+                .and_then(Value::as_str)
+                .map(clean_chars_path)
+                .filter(|path| !path.is_empty()),
+        };
+        if let Some(existing) = book.sessions.iter_mut().find(|kept| kept.id == session.id) {
+            if session.updated_at >= existing.updated_at {
+                *existing = session;
+            }
+        } else {
+            book.sessions.push(session);
+        }
+    }
+    for id in obj
+        .get("removed")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let id = clean_id(id.as_str().unwrap_or(""));
+        if !id.is_empty() {
+            remove_session(&mut book, &id);
+        }
+    }
+    if let Some(map) = obj.get("steers").and_then(Value::as_object) {
+        for (id, queue) in map {
+            let id = clean_id(id);
+            if id.is_empty() || book.removed.contains(&id) {
+                continue;
+            }
+            let Some(items) = queue.as_array() else {
+                continue;
+            };
+            for steer in items.iter().take(20) {
+                if !matches!(steer_kind(steer), Some("reply" | "stop" | "permission")) {
+                    continue;
+                }
+                book.steers
+                    .entry(id.clone())
+                    .or_default()
+                    .push_back(steer.clone());
+            }
+        }
+    }
+    Some(book)
+}
+
+fn read_book(dir: &Path) -> Result<ReadBook, String> {
+    let path = book_path(dir);
+    if climbs(&path) {
+        return Err("Couldn't read the sessions.".into());
+    }
+    match fs::symlink_metadata(&path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(ReadBook::Missing),
+        Err(_) => return Err("Couldn't read the sessions.".into()),
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err("Couldn't read the sessions.".into())
+        }
+        Ok(_) => {}
+    }
+    let text = fs::read_to_string(&path).map_err(|_| "Couldn't read the sessions.".to_string())?;
+    match parse_book(&text) {
+        Some(book) => Ok(ReadBook::Ready(book)),
+        None => Ok(ReadBook::Bad),
+    }
+}
+
+fn quarantine_book(dir: &Path) {
+    let path = book_path(dir);
+    let bad = dir.join("terminal-mirror-book.json.bad");
+    if is_symlink(&path) || is_symlink(&bad) || bad.exists() {
+        return;
+    }
+    let _ = fs::rename(&path, &bad);
+}
+
+/// A bad file is set aside and the list starts empty. A symlink is not followed.
+fn open_book(dir: &Path) -> Result<Book, String> {
+    match read_book(dir)? {
+        ReadBook::Ready(book) => Ok(book),
+        ReadBook::Missing => Ok(Book::default()),
+        ReadBook::Bad => {
+            quarantine_book(dir);
+            Ok(Book::default())
+        }
+    }
+}
+
+fn write_book_file(dir: &Path, book: &Book, revision: u64) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|_| "Couldn't save the sessions.".to_string())?;
+    let path = book_path(dir);
+    if is_symlink(&path) || climbs(&path) || is_symlink(dir) {
+        return Err("Couldn't save the sessions.".into());
+    }
+    let stored = json!({
+        "revision": revision,
+        "sessions": book.sessions.iter().map(session_json).collect::<Vec<_>>(),
+        "removed": book.removed.iter().collect::<Vec<_>>(),
+        "steers": steer_json(&book.steers),
+    });
+    let bytes = serde_json::to_vec_pretty(&stored)
+        .map_err(|_| "Couldn't save the sessions.".to_string())?;
+    let tmp = dir.join("terminal-mirror-book.json.tmp");
+    if is_symlink(&tmp) {
+        return Err("Couldn't save the sessions.".into());
+    }
+    fs::write(&tmp, &bytes).map_err(|_| "Couldn't save the sessions.".to_string())?;
+    if is_symlink(&path) {
+        let _ = fs::remove_file(&tmp);
+        return Err("Couldn't save the sessions.".into());
+    }
+    fs::rename(&tmp, &path).map_err(|_| "Couldn't save the sessions.".to_string())
+}
+
+/// Writes only when `book.revision` is still the file's revision. A miss means someone else wrote; try again.
+fn save_book(dir: &Path, book: &mut Book) -> Result<bool, String> {
+    let _guard = book_file_lock();
+    let current = match read_book(dir)? {
+        ReadBook::Ready(loaded) => loaded.revision,
+        ReadBook::Missing => 0,
+        // A corrupt file is set aside. It is not overwritten in place, and it is not treated as the latest revision.
+        ReadBook::Bad => {
+            quarantine_book(dir);
+            0
+        }
+    };
+    if current != book.revision {
+        return Ok(false);
+    }
+    let next = book.revision.saturating_add(1);
+    write_book_file(dir, book, next)?;
+    book.revision = next;
+    Ok(true)
+}
+
+fn merge_disk_into(book: &mut Book, extra: &Book) {
+    for id in &extra.removed {
+        remove_session(book, id);
+    }
+    for session in &extra.sessions {
+        if book.removed.contains(&session.id) {
+            continue;
+        }
+        if let Some(existing) = session_mut(book, &session.id) {
+            if session.updated_at > existing.updated_at {
+                *existing = session.clone();
+            }
+        } else {
+            book.sessions.push(session.clone());
+        }
+    }
+    for (id, queue) in &extra.steers {
+        if book.removed.contains(id) {
+            continue;
+        }
+        let dest = book.steers.entry(id.clone()).or_default();
+        for steer in queue {
+            if dest.len() >= 20 {
+                break;
+            }
+            if !dest.iter().any(|kept| kept == steer) {
+                dest.push_back(steer.clone());
+            }
+        }
+    }
+}
+
+fn commit_mirror(
+    data_dir: &Path,
+    home: &Path,
+    history_dir: &Path,
+    book: &mut Book,
+) -> Result<(), String> {
+    for _ in 0..5 {
+        match save_book(data_dir, book) {
+            Ok(true) => {
+                for session in &book.sessions {
+                    if let Some(transcript) = &session.transcript {
+                        mark_imported(history_dir, home, Path::new(transcript))?;
+                    }
+                }
+                return Ok(());
+            }
+            Ok(false) => {
+                let disk = open_book(data_dir)?;
+                let revision = disk.revision;
+                merge_disk_into(book, &disk);
+                book.revision = revision;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err("Couldn't save the sessions.".into())
+}
+
+/// One session from a second writer. A lost race reloads and tries again, so neither write is dropped.
+#[cfg(test)]
+fn merge_saved(dir: &Path, extra: &Book) -> Result<(), String> {
+    for _ in 0..8 {
+        let mut book = open_book(dir)?;
+        merge_disk_into(&mut book, extra);
+        if save_book(dir, &mut book)? {
+            return Ok(());
+        }
+    }
+    Err("Couldn't save the sessions.".into())
+}
+
 fn handle_conn(
     mut stream: TcpStream,
     app: &AppHandle,
@@ -1020,29 +1435,36 @@ fn handle_conn(
         return Err(());
     };
     let now = crate::session_store::now_millis();
-    let (response, steers, transcripts) = {
+    let kind = serde_json::from_str::<Value>(&line)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("type")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let (response, steers) = {
         let mut book = lock_book();
         let (response, steers) = handle_line(&mut book, &line, now);
-        let transcripts = book
-            .sessions
-            .iter()
-            .filter_map(|session| session.transcript.clone())
-            .collect::<Vec<_>>();
-        (response, steers, transcripts)
+        // A reply or a session update is kept only after this write. The transcript is marked
+        // imported inside that write, so a failed save still leaves the file for history.
+        if kind == "events" || !steers.is_empty() {
+            let _ = commit_mirror(data_dir, home, &data_dir.join("history-import"), &mut book);
+        }
+        (response, steers)
     };
-    for transcript in transcripts {
-        let _ = mark_imported(
-            &data_dir.join("history-import"),
-            home,
-            Path::new(&transcript),
-        );
-    }
     if stream.write_all(response.as_bytes()).is_err() {
-        let mut book = lock_book();
-        restore_taken(&mut book, steers);
+        if !steers.is_empty() {
+            let mut book = lock_book();
+            restore_taken(&mut book, steers);
+            let _ = commit_mirror(data_dir, home, &data_dir.join("history-import"), &mut book);
+        }
         return Err(());
     }
-    emit_changed(app);
+    if !(kind == "wait" && steers.is_empty()) {
+        emit_changed(app);
+    }
     Ok(())
 }
 
@@ -1181,6 +1603,7 @@ pub fn terminal_mirror_steer(
 
 #[tauri::command]
 pub fn terminal_mirror_attach(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     session_id: String,
     task_id: String,
@@ -1188,7 +1611,7 @@ pub fn terminal_mirror_attach(
     let session_id = clean_id(&session_id);
     let conn = store.lock_conn()?;
     let book = lock_book();
-    attach_task(
+    let changed = attach_task(
         &conn,
         &book,
         &session_id,
@@ -1197,6 +1620,7 @@ pub fn terminal_mirror_attach(
     )?;
     drop(book);
     drop(conn);
+    let _ = app.emit(crate::tasks::store::CHANGED, json!({ "ids": changed }));
     if let Ok(slot) = host_slot().lock() {
         if let Some(host) = slot.as_ref() {
             emit_changed(&host.app);
@@ -1609,6 +2033,64 @@ mod tests {
     }
 
     #[test]
+    fn a_permission_answer_matches_its_prompt_and_a_reply_leaves_on_the_next_turn() {
+        let mut book = Book::default();
+        apply_event(
+            &mut book,
+            &json!({"kind":"session","id":"p","folder":"/work","title":"Ask"}),
+            1,
+        );
+        queue_steer(&mut book, "p", json!({"kind":"reply","text":"later"})).unwrap();
+        queue_steer(
+            &mut book,
+            "p",
+            json!({"kind":"permission","requestId":"ask-1","allow":true}),
+        )
+        .unwrap();
+        queue_steer(
+            &mut book,
+            "p",
+            json!({"kind":"permission","requestId":"ask-2","allow":false}),
+        )
+        .unwrap();
+        let (waiting, _) = handle_line(
+            &mut book,
+            &json!({"type":"wait","sessionId":"p","requestId":"ask-1"}).to_string(),
+            2,
+        );
+        assert!(
+            waiting.contains("ask-1"),
+            "the prompt that asked is the one that gets the answer"
+        );
+        assert!(!waiting.contains("ask-2"));
+        let (line, _) = handle_line(
+            &mut book,
+            &json!({"type":"events","hook":"PermissionRequest","events":[{"kind":"block","sessionId":"p","block":{"id":"ask","role":"approval","text":"Allow Bash?"},"permission":{"requestId":"ask-2","tool":"Bash"}}]}).to_string(),
+            3,
+        );
+        assert!(line.contains("ask-2"));
+        assert!(
+            !line.contains("ask-1"),
+            "a different prompt must not take this answer"
+        );
+        let (stop_line, taken) = handle_line(
+            &mut book,
+            &json!({"type":"events","hook":"Stop","events":[{"kind":"status","sessionId":"p","state":"idle"}]}).to_string(),
+            4,
+        );
+        assert!(
+            stop_line.contains("later"),
+            "a reply queued for the next turn has to leave with that turn"
+        );
+        assert!(taken.iter().any(|steer| steer["kind"] == "reply"));
+        assert!(book
+            .steers
+            .get("p")
+            .map(|queue| queue.is_empty())
+            .unwrap_or(true));
+    }
+
+    #[test]
     fn attach_is_once_and_a_missing_task_fails() {
         let store = SessionStore::open_in_memory().unwrap();
         let mut conn = store.lock_conn().unwrap();
@@ -1634,7 +2116,8 @@ mod tests {
             &json!({"kind":"session","id":"s","folder":"/work/my notes","title":"Notes"}),
             1,
         );
-        attach_task(&conn, &book, "s", &written.task.id, 2).unwrap();
+        let ids = attach_task(&conn, &book, "s", &written.task.id, 2).unwrap();
+        assert_eq!(ids, vec![written.task.id.clone()]);
         attach_task(&conn, &book, "s", &written.task.id, 3).unwrap();
         let count: i64 = conn
             .query_row(
@@ -1714,5 +2197,138 @@ mod tests {
         let _ = fs::remove_dir_all(&home);
         let _ = fs::remove_dir_all(&history);
         let _ = fs::remove_dir_all(&history_a);
+    }
+
+    fn transcript_file(home: &Path) -> PathBuf {
+        let path = home
+            .join(".claude")
+            .join("projects")
+            .join("n")
+            .join("c.jsonl");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "{}\n").unwrap();
+        let text = path.to_string_lossy().into_owned();
+        assert!(
+            text.chars().count() <= 200,
+            "the transcript path has to fit in the book"
+        );
+        path
+    }
+
+    fn session_book(id: &str, transcript: Option<String>) -> Book {
+        let mut book = Book::default();
+        apply_event(
+            &mut book,
+            &json!({"kind":"session","id":id,"folder":"/work","title":"Notes"}),
+            1,
+        );
+        if let Some(path) = transcript {
+            book.sessions[0].transcript = Some(path);
+        }
+        book
+    }
+
+    #[test]
+    fn a_saved_session_is_still_there_and_a_failed_save_is_not_marked() {
+        let dir = scratch("saved");
+        let home = scratch("saved-home");
+        let history = dir.join("history-import");
+        let transcript = transcript_file(&home);
+        let mut book = session_book("s", Some(transcript.to_string_lossy().into_owned()));
+        commit_mirror(&dir, &home, &history, &mut book).unwrap();
+        let loaded = open_book(&dir).unwrap();
+        assert_eq!(loaded.sessions.len(), 1);
+        assert_eq!(loaded.sessions[0].id, "s");
+        assert_eq!(loaded.sessions[0].title, "Notes");
+        assert_eq!(loaded.revision, 1);
+        let key = import_key(&home, &transcript).unwrap();
+        let state = crate::history_import::load_state(&history).unwrap();
+        assert_eq!(state.state["entries"][&key]["status"], "submitted");
+
+        let blocked = scratch("blocked");
+        let not_dir = blocked.join("file");
+        fs::write(&not_dir, "x").unwrap();
+        let missed = scratch("blocked-hist");
+        let mut again = session_book("s", Some(transcript.to_string_lossy().into_owned()));
+        assert!(commit_mirror(&not_dir, &home, &missed, &mut again).is_err());
+        let entries = crate::history_import::load_state(&missed).unwrap();
+        assert!(entries.state["entries"].as_object().unwrap().is_empty());
+
+        let bad = scratch("bad-book");
+        fs::write(book_path(&bad), "nope").unwrap();
+        let emptied = open_book(&bad).unwrap();
+        assert!(emptied.sessions.is_empty());
+        assert!(bad.join("terminal-mirror-book.json.bad").is_file());
+        assert!(!book_path(&bad).exists());
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        let _ = fs::remove_dir_all(&blocked);
+        let _ = fs::remove_dir_all(&missed);
+        let _ = fs::remove_dir_all(&bad);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_book_is_not_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = scratch("link-book");
+        let real = scratch("link-real");
+        fs::write(real.join("secret"), "keep").unwrap();
+        symlink(real.join("secret"), book_path(&dir)).unwrap();
+        let mut book = session_book("s", None);
+        assert!(save_book(&dir, &mut book).is_err());
+        assert_eq!(fs::read_to_string(real.join("secret")).unwrap(), "keep");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&real);
+    }
+
+    #[test]
+    fn two_saves_keep_both_sessions() {
+        let dir = scratch("both");
+        let mut left = session_book("a", None);
+        queue_steer(&mut left, "a", json!({"kind":"reply","text":"later"})).unwrap();
+        let right = session_book("b", None);
+        thread::scope(|scope| {
+            let dir_a = dir.clone();
+            let dir_b = dir.clone();
+            scope.spawn(move || merge_saved(&dir_a, &left).unwrap());
+            scope.spawn(move || merge_saved(&dir_b, &right).unwrap());
+        });
+        let loaded = open_book(&dir).unwrap();
+        let ids: Vec<&str> = loaded
+            .sessions
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect();
+        assert!(ids.contains(&"a"), "{ids:?}");
+        assert!(ids.contains(&"b"), "{ids:?}");
+        let queued = loaded.steers.get("a").map(|queue| queue.len()).unwrap_or(0);
+        assert_eq!(queued, 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_shipped_bundle_is_used_when_the_source_tree_is_gone() {
+        let root = scratch("bundle");
+        let resources = root.join("Contents").join("Resources").join(PLUGIN_NAME);
+        plugin(&resources);
+        let exe = root.join("Contents").join("MacOS").join("monocode");
+        fs::create_dir_all(exe.parent().unwrap()).unwrap();
+        let missing = root.join("no-such-plugin");
+        assert!(pick_plugin_dir(std::slice::from_ref(&missing)).is_none());
+        assert_eq!(
+            pick_plugin_dir(&[missing, resources.clone()]).as_deref(),
+            Some(resources.as_path())
+        );
+        let env_dir = scratch("env-plugin");
+        plugin(&env_dir);
+        assert_eq!(
+            pick_plugin_dir(&[env_dir.clone(), resources.clone()]).as_deref(),
+            Some(env_dir.as_path())
+        );
+        assert!(bundle_plugin_dirs(&exe).iter().any(|dir| dir == &resources));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&env_dir);
     }
 }
