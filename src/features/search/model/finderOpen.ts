@@ -1,6 +1,13 @@
 // WP-74: opening a finder hit focuses the screen that already owns that thing.
 // The request is kept until that screen is on screen, so a late mount still opens it.
 
+import type { FileOpenOptions } from "./search";
+
+/** ⌘Enter opens the file beside the current one. It does not pin the tab. */
+export function finderFileOptions(beside: boolean): FileOpenOptions {
+  return { exact: true, beside };
+}
+
 export type TaskFocus = { id: string; project: string; token: number };
 export type DocFocus = { id: string; blockId: string | null; token: number };
 

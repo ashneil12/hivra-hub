@@ -982,7 +982,11 @@ import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
 import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
-import { requestDocFocus, requestTaskFocus } from "../features/search/model/finderOpen";
+import {
+  finderFileOptions,
+  requestDocFocus,
+  requestTaskFocus,
+} from "../features/search/model/finderOpen";
 import { openDocsMode } from "../features/docs/docsMode";
 import type { SettingsAnchor } from "../features/settings/ui/SettingsView";
 import {
@@ -7655,10 +7659,11 @@ function Workspace({
           fileProjectCwd,
         );
         const pin = !!options?.pin;
+        const beside = !!options?.beside;
         if (loadFileTabMode() === "workspace") {
           // Built once: the updater may run twice in StrictMode.
           const created = newEditorWorkspaceTab(
-            pin ? file : { ...file, preview: true },
+            pin || beside ? file : { ...file, preview: true },
           );
           let target: { tabId: string; paneId?: string } | undefined;
           // Select inside the updater, not from `tabsRef`: two opens resuming
@@ -7672,6 +7677,7 @@ function Workspace({
                 created,
                 (tabs, tab) => insertBesideActive(tabs, tab, fileProjectCwd),
                 pin,
+                beside,
               );
               target = result;
               return result.tabs;
@@ -7700,6 +7706,7 @@ function Workspace({
             return openEditorTab(entry, file, {
               split: focusedSession?.blocks.length === 0 ? "left" : "right",
               pin,
+              beside,
             });
           }),
         );
@@ -17597,11 +17604,11 @@ function Workspace({
                   openMono: (id) => {
                     void onOpenMono(id);
                   },
-                  openFile: (path, line, column, pin) => {
+                  openFile: (path, line, column, beside) => {
                     onOpenFile(
                       path,
                       line != null ? { line, column } : undefined,
-                      { exact: true, pin },
+                      finderFileOptions(beside),
                     );
                   },
                   openProject: (path) => {
