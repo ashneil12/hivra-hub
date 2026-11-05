@@ -23,7 +23,10 @@
 //
 // Never ~/.claude, never Opus, never the daily app: it only runs where the bench put it. The bench points REALTEST_REAL_CLAUDE
 // at the DeepSeek launcher by default (Ash, 27 Oct), and at the real Claude CLI only on `--agents claude`, so this
-// pass-through never reaches Ash's Claude subscription unless someone asks.
+// pass-through never reaches Ash's Claude subscription unless someone asks. On an OpenRouter run the launcher is the
+// OpenRouter one and CLAUDE_OPENROUTER_RELAY_URL / CLAUDE_OPENROUTER_RELAY_TOKEN point it at this run's own loopback
+// relay (scripts/bench-or-relay.mjs), which holds the real key: the two names are the run's route, not a credential, and
+// `childEnv` always keeps them.
 
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -31,6 +34,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { benchDenyRules, benchShellProbe, hasControlEndpoint } from "./bench-guard.mjs";
+import { RELAY_ENV } from "./bench-or-relay.mjs";
 import { agentCommand, appCliRead, isolatedHome, privateTempDir, privateTempEnv, sandboxCwd, worktreeDevBin } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
@@ -64,11 +68,13 @@ export const TEST_KEY_ENV = "ANTHROPIC_TEST_API_KEY";
 /** Anything that could sign a Haiku test worker in some other way (a login, a subscription token, another endpoint). */
 const OTHER_AUTH = ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_CUSTOM_HEADERS"];
 const GROK_SUB = process.env.REALTEST_GROK_SUB === "1";
+const OPENROUTER_SUB = process.env.REALTEST_OPENROUTER_SUB === "1";
 
 /**
- * A variable that would hand the Grok launcher one of the caller's credentials. Every ANTHROPIC_* name, a
+ * A variable that would hand a launcher one of the caller's credentials. Every ANTHROPIC_* name, a
  * CLAUDE_CODE_* name that is a key or a token, and the other ways a Claude process signs in. A stray one makes the
- * local gateway answer 401. CLAUDE_CODE_SUBAGENT_MODEL is a model name, not a credential, and stays.
+ * local gateway answer 401 (Grok) or points the launcher somewhere else than the model the run is paying for
+ * (OpenRouter). CLAUDE_CODE_SUBAGENT_MODEL is a model name, not a credential, and stays.
  */
 export function isLauncherCredential(name) {
   if (OTHER_AUTH.includes(name) || name === TEST_KEY_ENV) return true;
@@ -76,11 +82,15 @@ export function isLauncherCredential(name) {
   return name.startsWith("CLAUDE_CODE_") && /KEY|TOKEN|SECRET|AUTH|CREDENTIAL|PASSWORD/i.test(name);
 }
 
-/** The environment a child of the Grok launcher gets: the caller's credential variables removed. Other runs are unchanged. */
-export function childEnv(env, { grok = GROK_SUB } = {}) {
-  if (!grok) return env;
+/**
+ * The environment a child of a launcher gets: the caller's credential variables removed, since the launcher carries
+ * its own key. Other runs (plain Claude, DeepSeek) are unchanged. The two relay variables are the run's route to its
+ * own loopback relay, not a credential, and always stay (bench-or-relay.mjs).
+ */
+export function childEnv(env, { grok = GROK_SUB, openrouter = OPENROUTER_SUB } = {}) {
+  if (!grok && !openrouter) return env;
   const out = { ...env };
-  for (const name of Object.keys(out)) if (isLauncherCredential(name)) delete out[name];
+  for (const name of Object.keys(out)) if (isLauncherCredential(name) && !RELAY_ENV.includes(name)) delete out[name];
   return out;
 }
 

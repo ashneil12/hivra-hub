@@ -378,6 +378,54 @@ test("--agents grok-sub points the hub's chats at Grok and leaves the tester and
   assert.match(outcome.plan.judge, /^deepseek-sub\//);
 });
 
+// Ash, 5 Nov: "everything on OR" — the DeepSeek balance behind the local gateway is empty, so a run can go entirely
+// through his own launcher for Claude Code on OpenRouter (~/.local/bin/claude-openrouter).
+test("--agents openrouter-sub points the hub's chats at OpenRouter, and the tester and judge follow when named", async () => {
+  const options = parseArgs(["--agents", "openrouter-sub"]);
+  assert.equal(options.agents, "openrouter-sub");
+  // On its own it is a bridge like grok-sub: the tester and the judge stay on DeepSeek unless Ash names them.
+  assert.equal(options.tester.provider, "deepseek-sub");
+  assert.equal(options.judge.provider, "deepseek-sub");
+  const all = parseArgs(["--agents", "openrouter-sub", "--tester", "openrouter-sub", "--judge", "openrouter-sub"]);
+  assert.deepEqual([all.agents, all.tester.provider, all.judge.provider], ["openrouter-sub", "openrouter-sub", "openrouter-sub"]);
+  // The app keeps its Claude default; the bench's wrapper sends every call to the launcher.
+  assert.equal(benchSpec(book, [], options).appModel, "claude:sonnet-5");
+  assert.equal(benchRunOptions(options).openrouterSub, true);
+  assert.equal(benchRunOptions(options).deepseekSub, false);
+  assert.equal(benchRunOptions(options).grokSub, false);
+  assert.equal(benchRunOptions(options).haikuTest, undefined);
+  const spec = providerSpec({ provider: "openrouter-sub" });
+  assert.equal(spec.model, "deepseek/deepseek-v4.1-flash");
+  assert.equal(spec.real, true);
+  // No key variable: the launcher reads its own key from the Keychain.
+  assert.equal(spec.keyEnv, undefined);
+  const outcome = await runRealconv({ ...parseArgs(["--scenes", "S10", "--agents", "openrouter-sub", "--dry-run"]) }, { bench: async () => false });
+  assert.match(outcome.plan.agents, /OpenRouter/);
+  assert.match(outcome.plan.tester, /^deepseek-sub\//);
+  assert.match(outcome.plan.judge, /^deepseek-sub\//);
+});
+
+test("an openrouter-sub client runs the OpenRouter launcher, never the plain claude binary", async () => {
+  const calls = [];
+  const spawnImpl = async (bin, args) => {
+    calls.push({ bin, args });
+    return { status: 0, stdout: "ok", stderr: "" };
+  };
+  const client = makeClient(providerSpec({ provider: "openrouter-sub" }), { spawnImpl });
+  const answer = await client.complete({ system: "s", prompt: "p" });
+  assert.equal(answer.text, "ok");
+  assert.match(calls[0].bin, /\/\.local\/bin\/claude-openrouter$/);
+  // The same CLI call shape as the DeepSeek launcher, through a launcher this test owns (a fake one, never Ash's).
+  const dir = tmp();
+  const fake = path.join(dir, "claude-openrouter");
+  fs.writeFileSync(fake, "#!/bin/sh\necho unreachable\n", { mode: 0o755 });
+  const withFake = makeClient(providerSpec({ provider: "openrouter-sub" }), { claudeBin: fake, spawnImpl });
+  await withFake.complete({ system: "s", prompt: "p" });
+  assert.equal(calls[1].bin, fake);
+  assert.deepEqual(calls[1].args.slice(0, 3), ["-p", "--model", "deepseek/deepseek-v4.1-flash"]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // Ash, 23 Oct: "dont use grok use deepseek sub" — the same shape, on DeepSeek V4.1 Flash through his local gateway.
 test("--agents deepseek-sub puts the agents, the tester and the judge on the DeepSeek launcher", () => {
   const options = parseArgs(["--agents", "deepseek-sub"]);

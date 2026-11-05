@@ -46,7 +46,7 @@ export type VerifyPlan = {
   driver?: boolean;
   /** The real bench's Claude Code runs on DeepSeek through the local gateway launcher (`--deepseek-sub`). */
   deepseek?: boolean;
-  /** The real bench's Claude Code runs on another local gateway launcher (`--agents grok-sub`). Not a DeepSeek model rewrite. */
+  /** The real bench's Claude Code runs on another launcher of Ash's (`--agents grok-sub`, `--agents openrouter-sub`). Not a DeepSeek model rewrite. */
   launcher?: boolean;
   /** Hub projects the copy's local store starts with (added once; the bench's projects used to come from a stub). */
   projects?: Array<{ id: string; name: string; folder?: string }>;

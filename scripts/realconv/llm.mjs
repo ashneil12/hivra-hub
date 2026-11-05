@@ -8,6 +8,8 @@
 //                           provider's id
 //   deepseek-sub            Claude Code on DeepSeek V4.1 Flash through Ash's local gateway: the same CLI call as
 //                           `claude`, through his launcher ~/.local/bin/claude-deepseek (it keeps its key to itself)
+//   openrouter-sub          Claude Code on OpenRouter through Ash's launcher ~/.local/bin/claude-openrouter (its own key
+//                           from the Keychain; the same CLI call, and it rewrites every --model to its own default)
 //   fake                    a scripted stand-in for the runner's own tests. Never a real model: anything it touches is
 //                           marked not real, and a scene it played or judged can never PASS.
 //
@@ -28,8 +30,12 @@ export const OPENAI_COMPATIBLE = {
   openai: "https://api.openai.com/v1",
   custom: "",
 };
-export const PROVIDERS = ["claude", "deepseek-sub", ...Object.keys(OPENAI_COMPATIBLE), "fake"];
+export const PROVIDERS = ["claude", "deepseek-sub", "openrouter-sub", ...Object.keys(OPENAI_COMPATIBLE), "fake"];
 export const DEEPSEEK_SUB_BIN = path.join(os.homedir(), ".local/bin/claude-deepseek");
+/** Ash's launcher for Claude Code on OpenRouter; only its path is used (never read), and it keeps its key to itself. */
+export const OPENROUTER_SUB_BIN = path.join(os.homedir(), ".local/bin/claude-openrouter");
+/** The model label the OpenRouter launcher serves by default; the launcher rewrites whatever the bench asks for. */
+export const OPENROUTER_SUB_MODEL = "deepseek/deepseek-v4.1-flash";
 
 /** True for a provider that is a real model (anything but the scripted fake). */
 export const isReal = (provider) => provider !== "fake";
@@ -43,6 +49,7 @@ export function providerSpec({ provider, model, baseUrl, keyEnv, effort } = {}, 
   if (!PROVIDERS.includes(name)) throw new Error(`unknown provider "${provider}" (one of ${PROVIDERS.join(", ")})`);
   if (name === "claude") return { provider: name, model: model || "sonnet", effort: effort || "medium", real: true };
   if (name === "deepseek-sub") return { provider: name, model: model || "deepseek-v4.1-flash", effort: effort || "medium", real: true };
+  if (name === "openrouter-sub") return { provider: name, model: model || OPENROUTER_SUB_MODEL, effort: effort || "medium", real: true };
   if (name === "fake") return { provider: name, model: "fake", real: false };
   const url = String(baseUrl || OPENAI_COMPATIBLE[name] || "").replace(/\/+$/, "");
   if (!url) throw new Error(`${name}: give its address with --*-base-url`);
@@ -104,10 +111,10 @@ export function makeClient(spec, { env = process.env, fetchImpl = globalThis.fet
       },
     };
   }
-  if (spec.provider === "claude" || spec.provider === "deepseek-sub") {
+  if (spec.provider === "claude" || spec.provider === "deepseek-sub" || spec.provider === "openrouter-sub") {
     const bin =
       claudeBin ??
-      (spec.provider === "deepseek-sub" ? DEEPSEEK_SUB_BIN : path.join(os.homedir(), ".local/bin/claude"));
+      (spec.provider === "deepseek-sub" ? DEEPSEEK_SUB_BIN : spec.provider === "openrouter-sub" ? OPENROUTER_SUB_BIN : path.join(os.homedir(), ".local/bin/claude"));
     const config = claudeConfig ?? path.join(os.homedir(), ".monocode-hub-dev/claude-config");
     const runSpawn = spawnImpl === spawnAsync ? sandboxedCli : spawnImpl;
     return {

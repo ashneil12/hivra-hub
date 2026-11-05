@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, ControlEndpointRefused, controlEndpoints, DAILY_CONTROL_PORTS, dailyControlPorts, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_BAD_CONTROL, SANDBOX_DAILY_CONTROL, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, ControlEndpointRefused, controlEndpoints, DAILY_CONTROL_PORTS, dailyControlPorts, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isCliReadPath, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_BAD_CONTROL, SANDBOX_DAILY_CONTROL, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
 import { benchFenceEnv, benchProbeOnce, probeBenchAgent } from "./hub-realtest-claude.mjs";
 import { benchDenyRules, writeBenchSettings } from "./bench-guard.mjs";
 
@@ -131,6 +131,20 @@ test("a read under a closed tree is dropped, and haiku does not get the gateway 
   assert.equal(haiku.some((item) => item.path.includes("proxy-key")), false);
   const deep = cliReadOnlyPaths({ realHome: REAL, cli: `${REAL}/.local/bin/claude-deepseek`, devConfig: `${REAL}/.monocode-hub-dev/claude-config` });
   assert.ok(deep.some((item) => item.path.endsWith("/proxy-key")));
+  // The OpenRouter launcher reads no key of its own inside the fence (the run's relay holds it), so it gets its own
+  // script and not one byte of the gateway's: no proxy-key, no launcher.py, no settings.json.
+  const openrouter = cliReadOnlyPaths({ realHome: REAL, cli: `${REAL}/.local/bin/claude-openrouter`, devConfig: `${REAL}/.monocode-hub-dev/claude-config` });
+  assert.deepEqual([...new Set(openrouter.filter((item) => item.path.includes("claude-openrouter")).map((item) => item.path))], [`${REAL}/.local/bin/claude-openrouter`]);
+  assert.equal(openrouter.some((item) => item.path.includes("claude-gpt")), false);
+  assert.equal(isCliReadPath(`${REAL}/.local/bin/claude-openrouter`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-openrouter` }), true);
+  assert.equal(isCliReadPath(`${REAL}/.local/share/claude-gpt/proxy-key`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-openrouter` }), false);
+  assert.equal(isCliReadPath(`${REAL}/.local/bin/claude-deepseek`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-openrouter` }), false);
+  // The gateway's own launchers keep their files.
+  assert.equal(isCliReadPath(`${REAL}/.local/share/claude-gpt/proxy-key`, { realHome: REAL, cli: `${REAL}/.local/bin/claude-grok` }), true);
+  // As `agentCommand` builds it, with `cli` named: that is what tells the profile these reads belong to this launcher.
+  const openrouterProfile = benchSandboxProfile({ realHome: REAL, home: HOME, project: PROJECT, readOnly: openrouter, cli: `${REAL}/.local/bin/claude-openrouter` });
+  assert.ok(openrouterProfile.includes(`${REAL}/.local/bin/claude-openrouter`));
+  assert.equal(openrouterProfile.includes("claude-gpt"), false);
   const haikuProfile = benchSandboxProfile({ realHome: REAL, home: HOME, project: PROJECT, readOnly: haiku });
   assert.equal(haikuProfile.includes("proxy-key"), false);
   assert.equal(haikuProfile.includes("launcher.py"), false);

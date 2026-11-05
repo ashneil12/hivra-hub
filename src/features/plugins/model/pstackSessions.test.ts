@@ -1,4 +1,4 @@
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -167,7 +167,8 @@ describe("pstack reaches every chat", () => {
     const { home } = layOut(snapshot.on);
     const claude = await claudeSees("claude-pstack-on");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
-    const expected = [...snapshot.skills, ...creator];
+    const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
+    const expected = [...snapshot.skills, ...creator, ...rpi];
     expect(claude.args).toContain("--plugin-dir");
     expect(claude.skills).toEqual(expect.arrayContaining(expected));
     expect(claude.skills).toHaveLength(expected.length);
@@ -180,13 +181,17 @@ describe("pstack reaches every chat", () => {
     const { home } = layOut(snapshot.off);
     const claude = await claudeSees("claude-pstack-off");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
+    const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
+    const staying = [...creator, ...rpi];
     expect(claude.args).toContain("--plugin-dir");
-    expect(claude.skills).toEqual(expect.arrayContaining(creator));
-    expect(claude.skills).toHaveLength(creator.length);
+    expect(claude.skills).toEqual(expect.arrayContaining(staying));
+    expect(claude.skills).toHaveLength(staying.length);
     expect(claude.skills).not.toContain("tdd");
+    expect(claude.skills).toContain("rpi-tdd");
     const codex = await codexSees("codex-pstack-off", home);
-    expect(codex).toEqual(expect.arrayContaining(creator));
-    expect(codex).toHaveLength(creator.length);
+    expect(codex).toEqual(expect.arrayContaining(staying));
+    expect(codex).toHaveLength(staying.length);
     expect(codex).not.toContain("tdd");
+    expect(codex).toContain("rpi-tdd");
   });
 });
