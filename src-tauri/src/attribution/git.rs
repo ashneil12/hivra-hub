@@ -150,22 +150,31 @@ fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String
 
 /// Hashes of the distinctive lines currently dirty in the worktree.
 /// Truncation and a missing git are errors, so the caller does not guess.
+/// A repository with no commit yet still hashes untracked lines.
 pub fn dirty_hashes(workdir: &Path) -> Result<DirtyLines, String> {
     let repo = toplevel(workdir)?;
     let mut hashes = HashSet::new();
     match git(
         &repo,
-        &["diff", "-U0", "--no-ext-diff", "HEAD"],
+        &["rev-parse", "--verify", "-q", "HEAD"],
         Duration::from_secs(8),
     ) {
-        Ok(patch) => {
-            let (lines, truncated) = logic::added_lines(&patch, MAX_LINES);
-            if truncated {
-                return Err("git didn't answer".into());
+        Ok(_) => match git(
+            &repo,
+            &["diff", "-U0", "--no-ext-diff", "HEAD"],
+            Duration::from_secs(8),
+        ) {
+            Ok(patch) => {
+                let (lines, truncated) = logic::added_lines(&patch, MAX_LINES);
+                if truncated {
+                    return Err("git didn't answer".into());
+                }
+                hash_lines(&lines, &mut hashes)?;
             }
-            hash_lines(&lines, &mut hashes)?;
-        }
-        Err(_) => return Err("git didn't answer".into()),
+            Err(_) => return Err("git didn't answer".into()),
+        },
+        Err(GitFail::Rejected) => {}
+        Err(GitFail::Unavailable) => return Err("git didn't answer".into()),
     }
     untracked_lines(&repo, &mut hashes)?;
     Ok(DirtyLines { repo, hashes })
