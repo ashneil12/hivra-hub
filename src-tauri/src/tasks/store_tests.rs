@@ -878,3 +878,34 @@ fn an_agent_task_carries_its_cli_and_how_long_it_has_been_working() {
         .iter()
         .all(|name| names.iter().filter(|other| *other == name).count() == 1));
 }
+
+#[test]
+fn a_project_does_not_see_another_projects_statuses() {
+    let store = mem();
+    let conn = store.lock_conn().unwrap();
+    ensure_tables(&conn).unwrap();
+    let mine = person("my project");
+    let other = person("café");
+    statuses(&conn, &mine).unwrap();
+    statuses(&conn, &other).unwrap();
+    conn.execute(
+        "INSERT INTO task_statuses (id, project_id, name, category, position, color, version)
+         VALUES ('ts-blocked', 'café', 'Blocked', 'started', 9, NULL, 1)",
+        [],
+    )
+    .unwrap();
+    let rows = statuses(&conn, &mine).unwrap();
+    assert!(rows.iter().all(|row| row.project_id == "my project"));
+    assert!(rows.iter().all(|row| row.name != "Blocked"));
+    assert!(rows.iter().any(|row| row.name == "Todo"));
+    let theirs = statuses(&conn, &other).unwrap();
+    assert!(theirs.iter().all(|row| row.project_id == "café"));
+    assert!(theirs.iter().any(|row| row.name == "Blocked"));
+    let spaced = statuses(&conn, &person("  my project  ")).unwrap();
+    assert!(spaced.iter().all(|row| row.project_id == "my project"));
+    let windows = statuses(&conn, &person("C:\\Code\\Other")).unwrap();
+    assert!(windows
+        .iter()
+        .all(|row| row.project_id == "C:\\Code\\Other"));
+    assert!(windows.iter().all(|row| row.name != "Blocked"));
+}

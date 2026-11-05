@@ -725,16 +725,18 @@ pub struct StatusRow {
     pub color: String,
 }
 
+/// Statuses for this project only. Another project's workflow is not a column here.
 pub fn statuses(conn: &Connection, actor: &Actor) -> Result<Vec<StatusRow>, String> {
     actor_ok(actor, false)?;
-    ensure_workflow(conn, actor.project.trim())?;
+    let project = actor.project.trim();
+    ensure_workflow(conn, project)?;
     let mut stmt = conn
         .prepare(
-            "SELECT project_id, name, category, position, color FROM task_statuses ORDER BY project_id, position, name",
+            "SELECT project_id, name, category, position, color FROM task_statuses WHERE project_id = ?1 ORDER BY position, name",
         )
         .map_err(|error| error.to_string())?;
     let rows = stmt
-        .query_map([], |row| {
+        .query_map(params![project], |row| {
             let name: String = row.get(1)?;
             Ok(StatusRow {
                 id: name.clone(),

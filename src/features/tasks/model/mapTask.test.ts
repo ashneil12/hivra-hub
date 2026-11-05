@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { fallbackStatuses, hivraFields, readStoreTasks, toOrbitTasks } from "./mapTask";
+import { fallbackStatuses, hivraFields, readStatuses, readStoreTasks, toOrbitTasks } from "./mapTask";
 
 const person = {
   id: "task-1",
@@ -68,6 +68,23 @@ test("a bad priority, a duplicate id and a missing list do not throw", () => {
   const [task] = toOrbitTasks(readStoreTasks([{ id: "a", title: "A", priority: "nope", projectId: "crew" }]), [], 0);
   expect(task?.priority).toBe("none");
   expect(task?.statusId).toBe("Backlog");
+});
+
+test("another project's status is not a column on this one", () => {
+  const rows = [
+    { projectId: "crew", name: "Todo", category: "unstarted", position: 1 },
+    { projectId: "other", name: "Blocked", category: "started", position: 4 },
+    { projectId: "café", name: "En revue", category: "started", position: 2 },
+    { projectId: "", name: "Nope" },
+    { name: "Missing project" },
+    null,
+    "bad",
+  ];
+  const statuses = readStatuses(rows, ["crew", "café"]);
+  expect(statuses.map((status) => `${status.projectId}:${status.name}`).sort()).toEqual(["café:En revue", "crew:Todo"]);
+  expect(readStatuses(rows, ["my project"])).toEqual(fallbackStatuses("my project"));
+  expect(readStatuses([{ projectId: "other", name: "Blocked" }], ["C:\\Code\\Other"])).toEqual(fallbackStatuses("C:\\Code\\Other"));
+  expect(readStatuses(null, []).map((status) => status.projectId)).toEqual(fallbackStatuses("").map((status) => status.projectId));
 });
 
 test("a drop writes one status name and one assignee", () => {

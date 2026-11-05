@@ -19,3 +19,22 @@ export function taskProjectKeys(cwd: string, projects: readonly TaskProject[]): 
   }
   return { write, read };
 }
+
+function addId(ids: string[], id: string) {
+  if (id !== "" && !ids.includes(id)) ids.push(id);
+}
+
+/**
+ * Projects whose statuses the board should ask for. A folder path is not one of them:
+ * asking for it would file a second workflow under the path. All tasks asks each project once.
+ */
+export function statusProjectIds(scope: "all" | "project", cwd: string, projects: readonly TaskProject[]): string[] {
+  if (scope === "project") {
+    const write = taskProjectKeys(cwd, projects).write;
+    return write === "" ? [] : [write];
+  }
+  const ids: string[] = [];
+  for (const project of projects) addId(ids, project.id);
+  addId(ids, taskProjectKeys(cwd, projects).write);
+  return ids;
+}

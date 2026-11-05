@@ -145,8 +145,12 @@ export function fallbackStatuses(projectId: string): TaskStatusDef[] {
   }));
 }
 
-/** Status rows from the command. A bad row is skipped. An empty reply uses the default workflow. */
+/**
+ * Status rows from the command. A bad row is skipped, and so is a row for a project that was not asked for.
+ * None left means the default workflow for those projects, not another project's statuses.
+ */
 export function readStatuses(value: unknown, projectIds: readonly string[]): TaskStatusDef[] {
+  const allowed = new Set(projectIds.filter((id) => id !== ""));
   const defs: TaskStatusDef[] = [];
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -154,7 +158,7 @@ export function readStatuses(value: unknown, projectIds: readonly string[]): Tas
       const row = item as Record<string, unknown>;
       const name = text(row.name);
       const projectId = text(row.projectId);
-      if (name === "" || projectId === "") continue;
+      if (name === "" || projectId === "" || !allowed.has(projectId)) continue;
       defs.push({
         id: name,
         projectId,
@@ -168,7 +172,7 @@ export function readStatuses(value: unknown, projectIds: readonly string[]): Tas
     }
   }
   if (defs.length > 0) return defs;
-  const ids = projectIds.filter((id) => id !== "");
+  const ids = [...allowed];
   return (ids.length > 0 ? ids : [""]).flatMap((projectId) => fallbackStatuses(projectId));
 }
 
