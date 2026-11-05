@@ -50,6 +50,55 @@ pub fn lines_before_run(workdir: &Path) -> Result<HashSet<String>, String> {
     read_with_retry(|| dirty_hashes(workdir).map(|lines| lines.hashes))
 }
 
+/// The before-run snapshot, started off the caller's thread. `wait` is the only
+/// place that blocks, and only the crew's exit path calls it.
+pub struct BeforeRun {
+    rx: std::sync::mpsc::Receiver<Option<HashSet<String>>>,
+}
+
+impl BeforeRun {
+    pub fn wait(self) -> Option<HashSet<String>> {
+        self.rx.recv().ok().flatten()
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static JOURNAL_PAUSE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Tests only. The pause is read on the calling thread and slept on the worker,
+/// so one slow journal does not stall the other tests.
+#[cfg(test)]
+pub(crate) fn set_journal_pause_for_test(ms: u64) {
+    JOURNAL_PAUSE_MS.with(|cell| cell.set(ms));
+}
+
+fn journal_pause() -> Duration {
+    #[cfg(test)]
+    {
+        JOURNAL_PAUSE_MS.with(|cell| Duration::from_millis(cell.get()))
+    }
+    #[cfg(not(test))]
+    {
+        Duration::from_millis(0)
+    }
+}
+
+/// Start the snapshot and return at once. A turn must not wait on git.
+pub fn start_before_run(workdir: &Path) -> BeforeRun {
+    let workdir = workdir.to_path_buf();
+    let pause = journal_pause();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if !pause.is_zero() {
+            std::thread::sleep(pause);
+        }
+        let _ = tx.send(lines_before_run(&workdir).ok());
+    });
+    BeforeRun { rx }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CommitCredit {

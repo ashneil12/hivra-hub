@@ -1308,3 +1308,87 @@ fn a_non_executable_pre_commit_does_not_block() {
     let body = git(&made.repo, &base, &["log", "-1", "--format=%B"]).unwrap();
     assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
 }
+
+#[test]
+fn the_journal_skips_binary_and_oversized_files() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let kept = "distinctive kept widget line alpha";
+    fs::write(made.repo.join("keep.txt"), format!("{kept}\n")).unwrap();
+    let hidden = "distinctive binary widget must not count";
+    let mut binary = vec![0u8];
+    binary.extend(hidden.as_bytes());
+    binary.push(b'\n');
+    fs::write(made.repo.join("blob.bin"), binary).unwrap();
+    let too_big = "distinctive oversized widget must not count";
+    let mut huge = format!("{too_big}\n").into_bytes();
+    huge.resize(super::git::MAX_FILE_BYTES as usize + 1, b'x');
+    fs::write(made.repo.join("huge.txt"), huge).unwrap();
+    let exact = "distinctive exact size widget is kept";
+    let mut fitted = format!("{exact}\n").into_bytes();
+    fitted.resize(super::git::MAX_FILE_BYTES as usize, b'y');
+    fs::write(made.repo.join("fitted.txt"), fitted).unwrap();
+    let dirty = super::git::dirty_hashes(&made.repo).unwrap();
+    assert!(dirty.hashes.contains(&super::logic::hash_line(kept)));
+    assert!(dirty.hashes.contains(&super::logic::hash_line(exact)));
+    assert!(!dirty.hashes.contains(&super::logic::hash_line(hidden)));
+    assert!(!dirty.hashes.contains(&super::logic::hash_line(too_big)));
+}
+
+#[test]
+fn the_journal_caps_the_total_number_of_lines() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    let cap = super::git::MAX_LINES;
+    let mut text = String::new();
+    for n in 1..=cap + 20 {
+        text.push_str(&format!("distinctive widget line {n:05} stays\n"));
+    }
+    fs::write(made.repo.join("a-lines.txt"), text).unwrap();
+    let sentinel = "distinctive sentinel past the line cap";
+    fs::write(made.repo.join("z-sentinel.txt"), format!("{sentinel}\n")).unwrap();
+    let dirty = super::git::dirty_hashes(&made.repo)
+        .expect("a tree past the line cap is capped, not a failed read");
+    assert!(dirty.hashes.len() <= cap, "{}", dirty.hashes.len());
+    assert!(dirty.hashes.contains(&super::logic::hash_line(
+        "distinctive widget line 00001 stays"
+    )));
+    assert!(!dirty.hashes.contains(&super::logic::hash_line(&format!(
+        "distinctive widget line {:05} stays",
+        cap + 20
+    ))));
+    assert!(!dirty.hashes.contains(&super::logic::hash_line(sentinel)));
+}
+
+struct PauseReset;
+
+impl Drop for PauseReset {
+    fn drop(&mut self) {
+        super::set_journal_pause_for_test(0);
+    }
+}
+
+#[test]
+fn harness_spawn_does_not_wait_on_a_slow_journal() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
+    super::set_journal_pause_for_test(800);
+    let _reset = PauseReset;
+    let started = std::time::Instant::now();
+    let pending = super::start_before_run(&made.repo);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(300),
+        "the turn waited {elapsed:?} on the journal"
+    );
+    let waited = std::time::Instant::now();
+    let got = pending.wait();
+    assert!(
+        waited.elapsed() >= std::time::Duration::from_millis(500),
+        "the journal did not run in the background"
+    );
+    assert!(got.is_some(), "the journal did not finish");
+}

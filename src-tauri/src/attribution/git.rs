@@ -12,6 +12,9 @@ use std::time::Duration;
 use super::logic::{self, CommitView};
 
 pub const MAX_LINES: usize = 5000;
+/// Untracked files larger than this are not read. A journal must not pull a
+/// binary or a dump into the turn.
+pub const MAX_FILE_BYTES: u64 = 1_048_576;
 
 pub struct DirtyLines {
     pub repo: PathBuf,
@@ -92,17 +95,17 @@ fn inside(root: &Path, child: &Path) -> bool {
     child.starts_with(root)
 }
 
-fn hash_lines(lines: &[String], into: &mut HashSet<String>) -> Result<(), String> {
+/// Stop once the cap is full. Lines past it are left out; that is not a failed read.
+fn hash_lines(lines: &[String], into: &mut HashSet<String>) {
     for line in lines {
         if into.len() >= MAX_LINES {
-            return Err("git didn't answer".into());
+            return;
         }
         if logic::is_boilerplate(line) {
             continue;
         }
         into.insert(logic::hash_line(line));
     }
-    Ok(())
 }
 
 fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String> {
@@ -112,6 +115,9 @@ fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String
         Duration::from_secs(8),
     )?;
     for rel in listed.split('\0') {
+        if into.len() >= MAX_LINES {
+            return Ok(());
+        }
         if rel.is_empty() {
             continue;
         }
@@ -126,7 +132,7 @@ fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String
         if meta.file_type().is_symlink() || !meta.file_type().is_file() {
             continue;
         }
-        if meta.len() > 1_048_576 {
+        if meta.len() > MAX_FILE_BYTES {
             continue;
         }
         let Ok(canon) = crate::fs::canonical(&path) else {
@@ -143,13 +149,15 @@ fn untracked_lines(repo: &Path, into: &mut HashSet<String>) -> Result<(), String
         }
         let text = String::from_utf8_lossy(&bytes);
         let lines: Vec<String> = text.split('\n').map(|line| line.to_string()).collect();
-        hash_lines(&lines, into)?;
+        hash_lines(&lines, into);
     }
     Ok(())
 }
 
 /// Hashes of the distinctive lines currently dirty in the worktree.
-/// Truncation and a missing git are errors, so the caller does not guess.
+/// A tree past the line cap stops. The lines already collected still stand, so
+/// the caller does not throw the snapshot away and try the whole read again.
+/// A missing git is an error, so the caller does not guess.
 /// A repository with no commit yet still hashes untracked lines.
 pub fn dirty_hashes(workdir: &Path) -> Result<DirtyLines, String> {
     let repo = toplevel(workdir)?;
@@ -165,11 +173,8 @@ pub fn dirty_hashes(workdir: &Path) -> Result<DirtyLines, String> {
             Duration::from_secs(8),
         ) {
             Ok(patch) => {
-                let (lines, truncated) = logic::added_lines(&patch, MAX_LINES);
-                if truncated {
-                    return Err("git didn't answer".into());
-                }
-                hash_lines(&lines, &mut hashes)?;
+                let (lines, _) = logic::added_lines(&patch, MAX_LINES);
+                hash_lines(&lines, &mut hashes);
             }
             Err(_) => return Err("git didn't answer".into()),
         },
