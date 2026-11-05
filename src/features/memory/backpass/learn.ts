@@ -9,6 +9,7 @@ import { applyEdit } from "./apply";
 import { anchoredHunks, renderHunkLines, type Hunk } from "./diff";
 import {
   emptyGapLedger,
+  pruneGapLedger,
   recordSightings,
   sessionCount,
   type GapLedger,
@@ -65,6 +66,8 @@ export type LearnInput = {
   scope: Scope;
   capTokens?: number;
   now?: string;
+  /** How long a sighting still counts. `90d` when omitted. `all` keeps every one. */
+  maxAge?: string;
 };
 
 export type LearnResult = {
@@ -127,9 +130,18 @@ export function learn(input: LearnInput): LearnResult {
     });
   }
   recordSightings(ledger, valid);
+  if (Number.isFinite(Date.parse(now))) {
+    pruneGapLedger(ledger, { maxAge: input.maxAge ?? "90d", nowMs: Date.parse(now) });
+  }
+  const live = new Set<string>();
+  for (const entry of Object.values(ledger.entries)) {
+    if (entry.memoryPath !== input.file) continue;
+    for (const sessionId of Object.keys(entry.sessions)) live.add(sessionId);
+  }
+  const counted = valid.filter((row) => live.has(row.sessionId));
 
   const hunks = anchoredHunks(input.original, input.staged);
-  if (valid.length < MIN_SESSIONS || hunks.length === 0) {
+  if (counted.length < MIN_SESSIONS || hunks.length === 0) {
     return { proposals: [], ledger, droppedQuotes, refused: null, written: false };
   }
 
@@ -158,7 +170,7 @@ export function learn(input: LearnInput): LearnResult {
     kind,
     file: input.file,
     title: input.title,
-    transcripts: valid.length,
+    transcripts: counted.length,
     hunks,
     gapIds,
   };
@@ -173,8 +185,8 @@ export function learn(input: LearnInput): LearnResult {
     title: input.title,
     kind,
     hunks,
-    quotes: valid.map((row) => ({ sessionId: row.sessionId, quote: row.quote })),
-    transcripts: valid.length,
+    quotes: counted.map((row) => ({ sessionId: row.sessionId, quote: row.quote })),
+    transcripts: counted.length,
     gapIds,
     diff: hunks.map((hunk) => renderHunkLines(hunk.lines)).join("\n"),
   };

@@ -6,7 +6,8 @@
 // Rewrite reason: the observer-identity migration is for backpass's own older ledger
 // files. Hivra starts empty, so only the corroboration rules are kept: a citation
 // wins, otherwise similarity, sessions are never double-counted, and merge keeps
-// the shortest phrasing.
+// the shortest phrasing. The 90-day expiry is ported. Skill-body coverage is not:
+// the skill-body parser was left behind with the skill write path.
 
 import { sha256 } from "./sha";
 import { similarity } from "./similarity";
@@ -220,4 +221,44 @@ export function mergeGapEntries(ledger: GapLedger, groups: unknown): number {
     }
   }
   return absorbed;
+}
+
+/**
+ * A duration like `90d`. `all` and `0` mean no age limit. Anything else is also
+ * no age limit: a bad value from disk must not wipe the ledger.
+ */
+export function parseSince(since: string | null | undefined): number | null {
+  if (since === null || since === undefined || since === "all" || since === "0") return null;
+  const match = String(since)
+    .trim()
+    .match(/^(\d+)\s*([dhwm])$/i);
+  if (!match) return null;
+  const n = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const ms: Record<string, number> = { m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+  const size = ms[unit];
+  return size === undefined ? null : n * size;
+}
+
+/**
+ * Drop sightings first seen more than `maxAge` ago. Skill coverage is not applied.
+ */
+export function pruneGapLedger(
+  ledger: GapLedger,
+  options: { maxAge?: string | null; nowMs: number },
+): { expired: number } {
+  const maxAgeMs = parseSince(options.maxAge ?? "90d");
+  const cutoff = maxAgeMs === null ? Number.NEGATIVE_INFINITY : options.nowMs - maxAgeMs;
+  let expired = 0;
+  for (const [id, entry] of Object.entries(ledger.entries)) {
+    for (const [sessionId, obs] of Object.entries(entry.sessions)) {
+      const when = Date.parse(obs.firstObservedAt || obs.observedAt);
+      if (!Number.isFinite(when) || when < cutoff) {
+        expired += 1;
+        delete entry.sessions[sessionId];
+      }
+    }
+    if (!Object.keys(entry.sessions).length) delete ledger.entries[id];
+  }
+  return { expired };
 }

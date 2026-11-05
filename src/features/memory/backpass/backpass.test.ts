@@ -11,7 +11,7 @@ import { emptyRejections, isSuppressedByRejection, recordRejection } from "./rej
 import { estimateTokens } from "./tokens";
 import { opinionsForAgents, renderOpinions, voiceForDraft } from "./profile";
 import { instructionFiles } from "./agentsFile";
-import { defaultSchedule, parseSchedule, weeklyDue, WEEK_MS } from "./schedule";
+import { defaultSchedule, offerSchedule, parseSchedule, stateAfterOffer, weeklyDue, WEEK_MS } from "./schedule";
 import type { Scope } from "./scope";
 
 const NOW = "2026-11-05T00:00:00.000Z";
@@ -83,6 +83,67 @@ describe("learn", () => {
     expect(twice.proposals[0].transcripts).toBe(2);
     expect(twice.proposals[0].quotes.map((row) => row.sessionId).sort()).toEqual(["a", "b"]);
     expect(twice.written).toBe(false);
+  });
+
+  it("does not let a sighting older than 90 days corroborate a new chat", () => {
+    const day = 24 * 60 * 60 * 1000;
+    const old = new Date(Date.parse(NOW) - 120 * day).toISOString();
+    const once = learn({
+      transcripts: transcripts(["a"]),
+      sightings: [sighting("a", "say the lesson once")],
+      file: "AGENTS.md",
+      role: "instruction",
+      original: ORIGINAL,
+      staged: STAGED,
+      title: "Say it once",
+      scope: scope(),
+      now: old,
+    });
+    const twice = learn({
+      transcripts: transcripts(["a", "b"]),
+      sightings: [sighting("a", "say the lesson once"), sighting("b", "say the lesson once")],
+      file: "AGENTS.md",
+      role: "instruction",
+      original: ORIGINAL,
+      staged: STAGED,
+      title: "Say it once",
+      ledger: once.ledger,
+      scope: scope(),
+      now: NOW,
+    });
+    expect(twice.proposals).toEqual([]);
+    const sessions = Object.values(twice.ledger.entries).flatMap((entry) => Object.keys(entry.sessions));
+    expect(sessions).toEqual(["b"]);
+
+    const kept = learn({
+      transcripts: transcripts(["a", "b"]),
+      sightings: [sighting("a", "say the lesson once"), sighting("b", "say the lesson once")],
+      file: "AGENTS.md",
+      role: "instruction",
+      original: ORIGINAL,
+      staged: STAGED,
+      title: "Say it once",
+      ledger: once.ledger,
+      scope: scope(),
+      now: NOW,
+      maxAge: "all",
+    });
+    expect(kept.proposals).toHaveLength(1);
+
+    const badAge = learn({
+      transcripts: transcripts(["a", "b"]),
+      sightings: [sighting("a", "say the lesson once"), sighting("b", "say the lesson once")],
+      file: "AGENTS.md",
+      role: "instruction",
+      original: ORIGINAL,
+      staged: STAGED,
+      title: "Say it once",
+      ledger: once.ledger,
+      scope: scope(),
+      now: NOW,
+      maxAge: "nope",
+    });
+    expect(badAge.proposals).toHaveLength(1);
   });
 
   it("counts one session once, even when it is named twice", () => {
@@ -526,5 +587,23 @@ describe("profile and instructions", () => {
     expect(weeklyDue({ weekly: true, lastOfferedAt: NOW }, Date.parse(NOW) + WEEK_MS)).toBe(true);
     expect(parseSchedule({ weekly: "yes", lastOfferedAt: 4 })).toEqual(defaultSchedule());
     expect(weeklyDue(parseSchedule(null), Date.parse(NOW))).toBe(false);
+  });
+
+  it("stamps an offer so the weekly line stays quiet for a week", () => {
+    const on = { weekly: true, lastOfferedAt: null as string | null };
+    const stamped = offerSchedule(on, NOW);
+    expect(stamped.lastOfferedAt).toBe(NOW);
+    expect(weeklyDue(stamped, Date.parse(NOW))).toBe(false);
+    expect(weeklyDue(stamped, Date.parse(NOW) + WEEK_MS)).toBe(true);
+    expect(offerSchedule({ weekly: false, lastOfferedAt: null }, NOW)).toEqual({
+      weekly: false,
+      lastOfferedAt: null,
+    });
+    expect(offerSchedule(on, "not a time")).toEqual(on);
+    const saved = stateAfterOffer({ schedule: on, ledger: { version: 1 } }, NOW);
+    expect(saved.changed).toBe(true);
+    expect(saved.state.ledger).toEqual({ version: 1 });
+    expect(weeklyDue(parseSchedule(saved.state.schedule), Date.parse(NOW))).toBe(false);
+    expect(stateAfterOffer({ schedule: { weekly: false, lastOfferedAt: null } }, NOW).changed).toBe(false);
   });
 });

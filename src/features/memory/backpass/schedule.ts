@@ -17,6 +17,26 @@ export function weeklyDue(schedule: Schedule, nowMs: number): boolean {
   return nowMs - at >= WEEK_MS;
 }
 
+/** Remember that the weekly line was shown. Off, or a bad time, is left alone. */
+export function offerSchedule(schedule: Schedule, at: string): Schedule {
+  if (!schedule || schedule.weekly !== true) return schedule;
+  if (typeof at !== "string" || !at.trim() || !Number.isFinite(Date.parse(at))) return schedule;
+  return { ...schedule, lastOfferedAt: at };
+}
+
+/** The saved state after an offer. `changed` is false when there is nothing to write. */
+export function stateAfterOffer(
+  state: Record<string, unknown>,
+  at: string,
+): { state: Record<string, unknown>; changed: boolean } {
+  const schedule = parseSchedule(state.schedule);
+  const next = offerSchedule(schedule, at);
+  if (next.weekly === schedule.weekly && next.lastOfferedAt === schedule.lastOfferedAt) {
+    return { state, changed: false };
+  }
+  return { state: { ...state, schedule: next }, changed: true };
+}
+
 /** Disk is untrusted. Anything that isn't this shape comes back as off. */
 export function parseSchedule(value: unknown): Schedule {
   if (!value || typeof value !== "object") return defaultSchedule();
