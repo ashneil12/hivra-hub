@@ -4,6 +4,8 @@ mod account_identity;
 // WP-78: the activity log.
 mod activity;
 mod artifacts;
+// WP-79: a loopback door for outside AI tools.
+mod outside;
 // WP-04: the one-time, read-only import from the retired Ash OS bridge.
 mod ash_os_import;
 mod automations;
@@ -452,6 +454,7 @@ pub fn run() {
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
             control::init(app.handle())?;
+            outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
             checkpoint::init(app.handle())?;
@@ -1124,6 +1127,15 @@ pub fn run() {
             memory_review::memory_review_cas,
             history_import::history_import_list_proposals,
             history_import::history_import_review_proposal,
+            // WP-79: Settings → Connected apps.
+            outside::outside_status,
+            outside::outside_set_enabled,
+            outside::outside_grants,
+            outside::outside_disconnect,
+            outside::outside_pending,
+            outside::outside_approve,
+            outside::outside_deny,
+            outside::outside_pick_new_port,
         ])
         .build(context)
         .expect("error while building MonoCode");
