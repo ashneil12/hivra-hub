@@ -4,6 +4,8 @@ import { appLink } from "../../stacks/model/link";
 import { PRIORITY_LABEL, PRIORITY_ORDER } from "../vendor/taskMeta";
 import type { TaskPriority } from "../vendor/models";
 import { workingLabel } from "../model/working";
+import { PhasePanel } from "../../phases/ui/PhasePanel";
+import type { PathId } from "../../phases/model/settings";
 import { MarkdownView } from "./MarkdownView";
 
 const STATUSES = ["Backlog", "Todo", "In progress", "In review", "Done", "Cancelled"] as const;
@@ -41,6 +43,10 @@ export function TaskDetail({
   onPriority,
   onAssign,
   onOpenChat,
+  phase,
+  onPhaseAnswer,
+  onPhasePath,
+  onPhaseDocComment,
   appUrl,
 }: {
   task: TaskDetailTask;
@@ -53,6 +59,16 @@ export function TaskDetail({
   onPriority?: (priority: string) => void;
   onAssign?: (assignee: string) => void;
   onOpenChat?: (chatId: string) => void;
+  phase?: {
+    pathLabel: string;
+    why: string;
+    pathId: PathId;
+    documents: readonly { number: number; title: string; body: string }[];
+    waiting: boolean;
+  } | null;
+  onPhaseAnswer?: (choice: string, words: string) => void;
+  onPhasePath?: (path: string) => void;
+  onPhaseDocComment?: (docNumber: number, text: string) => void;
   /** Local URL of this checkout's stack. Anything else is not shown. */
   appUrl?: string | null;
 }) {
@@ -68,6 +84,18 @@ export function TaskDetail({
       {task.needsYou ? <p className="text-[12px] text-content">Needs you</p> : null}
       {task.failed ? <p className="text-[12px] text-content">Failed</p> : null}
       {task.description ? <MarkdownView source={task.description} /> : null}
+      {phase ? (
+        <PhasePanel
+          pathLabel={phase.pathLabel}
+          why={phase.why}
+          pathId={phase.pathId}
+          documents={phase.documents}
+          waiting={phase.waiting}
+          onAnswer={onPhaseAnswer}
+          onPath={onPhasePath}
+          onDocComment={onPhaseDocComment}
+        />
+      ) : null}
       {task.githubUrl ? (
         <>
           <a href={task.githubUrl} className="mt-1 block text-[12px] text-content">
