@@ -59,20 +59,29 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
         .map_err(|_| crate::platform::secrets::unreachable().to_string())
 }
 
+/// WP-92: the words for a store failure. `keyring` reports a store that won't let this process in (a locked one
+/// included) as `NoStorageAccess`; every other failure keeps its own sentence.
+fn refusal(err: keyring::Error, fallback: &'static str) -> String {
+    match err {
+        keyring::Error::NoStorageAccess(_) => crate::platform::secrets::locked().to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {
     if secret.is_empty() {
         return Err("Nothing to save.".into());
     }
     entry(service, account)?
         .set_password(secret)
-        .map_err(|_| crate::platform::secrets::not_saved().to_string())
+        .map_err(|err| refusal(err, crate::platform::secrets::not_saved()))
 }
 
 pub fn exists(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err(crate::platform::secrets::not_checked().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_checked())),
     }
 }
 
@@ -81,7 +90,7 @@ pub(crate) fn read(service: &str, account: &str) -> Result<Option<String>, Strin
     match entry(service, account)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err(crate::platform::secrets::not_read().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_read())),
     }
 }
 
@@ -89,7 +98,7 @@ pub fn delete(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err(crate::platform::secrets::not_removed().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_removed())),
     }
 }
 
@@ -140,6 +149,23 @@ mod tests {
         }
         assert!(check_service("monocode-hub:github").is_ok());
         assert!(check_service("monocode-hub-test:proof").is_ok());
+    }
+
+    #[test]
+    fn a_store_that_wont_let_us_in_says_locked() {
+        // Constructed errors only: this never reaches the login keychain.
+        let locked = keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("locked")));
+        assert_eq!(
+            refusal(locked, "fallback"),
+            crate::platform::secrets::locked()
+        );
+        let other = keyring::Error::PlatformFailure(Box::new(std::io::Error::other("nope")));
+        assert_eq!(refusal(other, "fallback"), "fallback");
+        let missing = keyring::Error::NoEntry;
+        assert_eq!(refusal(missing, "fallback"), "fallback");
+        // A locked store is "try again", never "wrong secret".
+        assert!(crate::platform::secrets::locked().contains("again"));
+        assert!(!crate::platform::secrets::locked().contains("wrong"));
     }
 
     #[test]

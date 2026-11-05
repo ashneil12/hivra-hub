@@ -67,6 +67,19 @@ pub fn not_read() -> &'static str {
     }
 }
 
+/// WP-92: a store that won't let this process in, in the person's words. `keyring` reports that as `NoStorageAccess`;
+/// a Mac denies or unlocks interactively, and that refusal keeps its own sentence ("try again").
+pub fn locked() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Your Mac's keychain is locked. Unlock it and try again."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Your secret store is locked. Unlock it and try again."
+    }
+}
+
 pub fn not_removed() -> &'static str {
     #[cfg(target_os = "macos")]
     {
@@ -108,6 +121,10 @@ mod tests {
                 super::not_removed(),
                 "The Keychain didn't remove the login."
             );
+            assert_eq!(
+                super::locked(),
+                "Your Mac's keychain is locked. Unlock it and try again."
+            );
         }
         #[cfg(not(target_os = "macos"))]
         {
@@ -117,6 +134,7 @@ mod tests {
                 super::not_checked(),
                 super::not_read(),
                 super::not_removed(),
+                super::locked(),
             ] {
                 assert!(!sentence.contains("Keychain"), "{sentence}");
             }
