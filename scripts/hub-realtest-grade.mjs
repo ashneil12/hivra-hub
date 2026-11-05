@@ -7,7 +7,8 @@
 //   node scripts/hub-realtest-grade.mjs evidence/realtest/<run>      # grade a finished run (again), on DeepSeek
 //   node scripts/hub-realtest-grade.mjs evidence/realtest/<run> --agents claude   # on Claude, only if named
 //
-// The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, never Claude unless named.
+// The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, OpenRouter for an
+// OpenRouter run (its own launcher, which maps the model), and never Claude unless someone named it.
 
 import { asksSection } from "./hub-realtest-asks.mjs";
 import { sandboxedCliSync } from "./bench-sandbox.mjs";
