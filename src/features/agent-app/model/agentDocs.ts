@@ -6,6 +6,9 @@ import type { DocRecord } from "../../docs/gateway";
 import { blocksToMarkdown, markdownToBlocks } from "../../docs/model/markdown";
 import type { MentionTarget } from "../../docs/model/types";
 import type { Session } from "../../sessions/model/session";
+import { copyProjects, pageReadable, resolveProject, sameProject } from "../../chief/model/reads";
+import { scopeOpen } from "../../chief/model/scope";
+import { taskProjectOf } from "../../tasks/model/agentTasks";
 import type { AgentAppHost } from "./agentApp";
 
 export const DOC_FIELDS: [string, readonly string[]][] = [
@@ -57,6 +60,29 @@ function stored(markdown: string, pages: readonly DocRecord[]): { body: string; 
   return { body, blocksJson: JSON.stringify(blocks) };
 }
 
+async function readWide(action: string, input: Record<string, unknown>, host: AgentAppHost): Promise<unknown> {
+  const known = copyProjects(host.knownProjects?.());
+  const named = input.project === undefined
+    ? undefined
+    : resolveProject(typeof input.project === "string" ? input.project : "", known);
+  if (input.project !== undefined && !named) throw new Error("Not a project on this copy.");
+  const docs = docsOf(host);
+  if (action === "docs.list") {
+    const pages = (await docs.list()).filter((page) => !page.trashedAt && pageReadable(page.sourceCwd, named, known));
+    return pages.map((page) => ({
+      id: page.id,
+      title: page.title,
+      slug: page.slug,
+      parentId: page.parentId,
+      updatedAt: page.updatedAt,
+    }));
+  }
+  const id = pageId(input.id);
+  const page = await docs.get(id);
+  if (!page || page.trashedAt || !pageReadable(page.sourceCwd, named, known)) throw new Error("Page was not found");
+  return asData(page);
+}
+
 function asData(page: DocRecord) {
   return {
     id: page.id,
@@ -75,6 +101,23 @@ export async function handleDocs(
   host: AgentAppHost,
   projectFor: (source: Session, input: Record<string, unknown>) => string,
 ): Promise<unknown> {
+  const mono = host.monoOf?.(source.id);
+  const wide = await scopeOpen(mono, mono ? async () => (await host.agentFiles(mono.id)).soul : undefined);
+  // WP-88: a wide read can name any project on this copy. A write stays on this chat's project.
+  if (wide && (action === "docs.create" || action === "docs.update") && input.project !== undefined) {
+    let own = "";
+    try {
+      own = taskProjectOf(source, host);
+    } catch {
+      own = "";
+    }
+    const named = typeof input.project === "string" ? input.project : "";
+    const known = copyProjects(host.knownProjects?.());
+    if (!sameProject(named, own, known)) throw new Error("That project isn't this chat's.");
+  }
+  if (wide && (action === "docs.list" || action === "docs.get")) {
+    return readWide(action, input, host);
+  }
   const project =
     input.project !== undefined || host.monoOf?.(source.id)
       ? projectFor(source, input)
