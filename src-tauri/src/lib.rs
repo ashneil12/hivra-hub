@@ -53,6 +53,8 @@ mod history_import;
 mod hub_keychain;
 // WP-51: memory the person reviews.
 mod memory_review;
+// WP-83: learn from past chats. Readers, and the write after an accept.
+mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
 mod hub_plugin;
 mod inbox_media;
@@ -1136,6 +1138,14 @@ pub fn run() {
             memory_review::memory_review_cas,
             history_import::history_import_list_proposals,
             history_import::history_import_review_proposal,
+            // WP-83: proposals from past chats, accepted one at a time.
+            learn_stores::learn_stores_list,
+            learn_stores::learn_stores_read,
+            learn_stores::learn_apply_edit,
+            learn_stores::learn_state_load,
+            learn_stores::learn_state_cas,
+            learn_stores::learn_profile_load,
+            learn_stores::learn_profile_save,
             // WP-79: Settings → Connected apps.
             outside::outside_status,
             outside::outside_set_enabled,
