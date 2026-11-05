@@ -351,8 +351,9 @@ fn block_terms(input: &str) -> Vec<String> {
         .collect()
 }
 
-/// The first block whose text contains a query term. Invalid JSON is no block,
-/// not a failed search. A title-only hit has no block id.
+/// The first block whose text contains every query term. A block that has only
+/// one of them is not the match. Invalid JSON is no block, not a failed search.
+/// A title-only hit, or terms split across blocks, has no block id.
 fn matching_block(json: &str, terms: &[String]) -> Option<String> {
     if terms.is_empty() {
         return None;
@@ -378,11 +379,8 @@ fn find_block(value: &serde_json::Value, terms: &[String]) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .filter(|id| !id.is_empty());
             if let Some(id) = id {
-                if !text.is_empty()
-                    && terms
-                        .iter()
-                        .any(|term| text.to_lowercase().contains(term.as_str()))
-                {
+                let lower = text.to_lowercase();
+                if !text.is_empty() && terms.iter().all(|term| lower.contains(term.as_str())) {
                     return Some(id.to_string());
                 }
             }
@@ -424,10 +422,12 @@ fn block_plain(map: &serde_json::Map<String, serde_json::Value>) -> String {
 }
 
 /// `PRAGMA integrity_check`, except that an FTS5 "malformed inverted index"
-/// line is confirmed with FTS5's own `integrity-check`. Bundled SQLite 3.46.0
-/// reports that after a row is updated twice, or after a rebuild, while the
-/// index is fine and FTS5's check passes. A real failure of that command still
-/// fails. Translated from Orbit's `integrity_check`.
+/// line is confirmed with FTS5's own `integrity-check`. Orbit saw SQLite 3.46.0
+/// report that after a row was updated twice, or after a rebuild, while the
+/// index was fine. 3.46.1 stopped reporting it. This tree bundles SQLite 3.53.2
+/// (`libsqlite3-sys` 0.38.2), so startup and ship keep the raw pragma. A real
+/// failure of FTS5's own check still fails. Translated from Orbit's
+/// `integrity_check`.
 #[cfg(test)]
 pub(crate) fn integrity(conn: &Connection) -> Result<(), String> {
     let mut statement = conn
@@ -902,6 +902,40 @@ mod tests {
         .unwrap();
         let hit = &search(&conn, "findme").unwrap().docs[0];
         assert!(hit.block_id.is_none());
+    }
+
+    #[test]
+    fn a_doc_opens_on_the_block_that_contains_every_term() {
+        let conn = indexed();
+        let blocks = r#"[{"id":"block-1","type":"paragraph","props":{},"content":[{"type":"text","text":"Only the layout","styles":{}}],"children":[]},{"id":"block-2","type":"paragraph","props":{},"content":[{"type":"text","text":"The sidebar layout lives here","styles":{}}],"children":[]}]"#;
+        create_doc(
+            &conn,
+            &doc_input(
+                "page-split",
+                "Notes",
+                "sidebar layout",
+                blocks,
+                "/work/proj",
+            ),
+        )
+        .unwrap();
+        let hit = &search(&conn, "sidebar layout").unwrap().docs[0];
+        assert_eq!(hit.id, "page-split");
+        assert_eq!(hit.block_id.as_deref(), Some("block-2"));
+
+        let split = r#"[{"id":"block-a","type":"paragraph","props":{},"content":[{"type":"text","text":"sidebar only","styles":{}}],"children":[]},{"id":"block-b","type":"paragraph","props":{},"content":[{"type":"text","text":"layout only","styles":{}}],"children":[]}]"#;
+        create_doc(
+            &conn,
+            &doc_input("page-parts", "Parts", "sidebar layout", split, "/work/proj"),
+        )
+        .unwrap();
+        let parts = search(&conn, "sidebar layout")
+            .unwrap()
+            .docs
+            .into_iter()
+            .find(|doc| doc.id == "page-parts")
+            .unwrap();
+        assert!(parts.block_id.is_none());
     }
 
     #[test]
