@@ -23,7 +23,7 @@ import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
 import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
-import type { Pick } from "../../crew/model/resolve";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 
 export type WorkerLimits = {
   workers: number;
@@ -74,7 +74,7 @@ let settingsCopy: {
   limits: Record<string, Partial<WorkerLimits>>;
   heavy: Set<string>;
   /** WP-89: the worker default for every project, when one is set. */
-  workerDefault?: Pick;
+  workerDefault?: WorkerPick;
 } = { limits: {}, heavy: new Set() };
 
 const clampCount = (n: unknown, fallback: number) =>
@@ -127,17 +127,17 @@ export function projectWorkerModel(project: string): { model: string; effort?: s
 }
 
 /** WP-89: the project's worker default, including a CLI. An old row with no CLI reads as Claude. */
-export function projectWorkerDefault(project: string): Pick | undefined {
+export function projectWorkerDefault(project: string): WorkerPick | undefined {
   return readProjectWorkerDefault(settingsCopy.limits[project]);
 }
 
 /** WP-89: the worker default for every project, when one is set. */
-export function systemWorkerDefault(): Pick | undefined {
+export function systemWorkerDefault(): WorkerPick | undefined {
   return cleanStoredDefault(settingsCopy.workerDefault);
 }
 
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
-export function setSystemWorkerDefault(choice: Pick | undefined): void {
+export function setSystemWorkerDefault(choice: WorkerPick | undefined): void {
   const clean = cleanStoredDefault(choice);
   settingsCopy = { ...settingsCopy, workerDefault: clean };
   changed();
@@ -255,7 +255,7 @@ export type WorkerQueueBackend = {
   settings(): Promise<{
     limits: Record<string, Partial<WorkerLimits>>;
     heavy: string[];
-    workerDefault?: Pick;
+    workerDefault?: WorkerPick;
   }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
   /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
@@ -264,7 +264,7 @@ export type WorkerQueueBackend = {
     choice: { cli?: string; model: string; effort?: string } | undefined,
   ): Promise<unknown>;
   /** WP-89: the worker default for every project. Undefined clears it. */
-  setWorkerDefault(choice: Pick | undefined): Promise<unknown>;
+  setWorkerDefault(choice: WorkerPick | undefined): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -332,7 +332,7 @@ export function memoryWorkerQueue(
     imported: false,
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
-    workerDefault: undefined as Pick | undefined,
+    workerDefault: undefined as WorkerPick | undefined,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -409,7 +409,7 @@ export function memoryWorkerQueue(
       notify();
       return store.limits[project];
     },
-    setWorkerDefault: async (choice: Pick | undefined) => {
+    setWorkerDefault: async (choice: WorkerPick | undefined) => {
       store.workerDefault = choice;
       notify();
       return choice ?? null;
