@@ -63,6 +63,7 @@ function Harness() {
       },
       schedule: async () => ({ weekly: false, lastOfferedAt: null }),
       setWeekly: async (weekly) => weekly === true || weekly === false,
+      markOffered: async () => true,
     }),
     [costFails],
   );

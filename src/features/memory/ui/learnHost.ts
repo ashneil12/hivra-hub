@@ -7,7 +7,7 @@ import { mentionsSecret } from "../model/doc";
 import { askForLessons, redactForModel } from "../backpass/ask";
 import { acceptProposal, type Proposal } from "../backpass/learn";
 import { instructionFiles } from "../backpass/agentsFile";
-import { parseSchedule } from "../backpass/schedule";
+import { parseSchedule, stateAfterOffer } from "../backpass/schedule";
 import {
   costOf,
   lessonPrompt,
@@ -120,6 +120,13 @@ export function learnPorts(now: () => string = () => new Date().toISOString()): 
       const state = asObject(loaded.state) ?? {};
       const schedule = parseSchedule(state.schedule);
       return saveState(loaded.revision, { ...state, schedule: { ...schedule, weekly } });
+    },
+    markOffered: async (at) => {
+      const loaded = await loadState();
+      const state = asObject(loaded.state) ?? {};
+      const next = stateAfterOffer(state, at);
+      if (!next.changed) return true;
+      return saveState(loaded.revision, next.state);
     },
     saveProfile: (which, text, expectedSha256) =>
       invoke<boolean>("learn_profile_save", { which, expectedSha256, next: text }),

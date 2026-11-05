@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Schedule } from "../backpass/schedule";
 import { weeklyDue } from "../backpass/schedule";
 import { formatTokens } from "../backpass/tokens";
+import { textAfterLoad, textAfterSave } from "./profileDraft";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
 
@@ -31,6 +32,7 @@ export type LearnPorts = {
   saveProfile: (which: "opinions" | "voice", text: string, expectedSha256: string) => Promise<boolean>;
   schedule: () => Promise<Schedule>;
   setWeekly: (weekly: boolean) => Promise<boolean>;
+  markOffered: (at: string) => Promise<boolean>;
 };
 
 function message(error: unknown, fallback: string): string {
@@ -46,6 +48,8 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
   const [voice, setVoice] = useState("");
   const [weekly, setWeekly] = useState(false);
   const [schedule, setSchedule] = useState<Schedule | null>(null);
+  const [heldOffer, setHeldOffer] = useState(false);
+  const [offerTick, setOfferTick] = useState(0);
   const [includeUser, setIncludeUser] = useState(false);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -53,6 +57,11 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
   const generation = useRef(0);
   const portsRef = useRef(ports);
   portsRef.current = ports;
+  const nowRef = useRef(now);
+  nowRef.current = now;
+  const opinionsDirty = useRef(false);
+  const voiceDirty = useRef(false);
+  const offerAttempts = useRef(0);
 
   async function loadCost() {
     try {
@@ -74,8 +83,8 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
         portsRef.current.schedule(),
       ]);
       setProfiles(nextProfiles);
-      setOpinions(nextProfiles.opinions);
-      setVoice(nextProfiles.voice);
+      setOpinions((typed) => textAfterLoad(typed, opinionsDirty.current, nextProfiles.opinions));
+      setVoice((typed) => textAfterLoad(typed, voiceDirty.current, nextProfiles.voice));
       setSchedule(nextSchedule);
       setWeekly(nextSchedule.weekly === true);
     } catch (error) {
@@ -87,6 +96,39 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
     void loadCost();
     void loadRest();
   }, []);
+
+  useEffect(() => {
+    if (!schedule || heldOffer || !weeklyDue(schedule, nowRef.current())) return;
+    const ms = nowRef.current();
+    if (!Number.isFinite(ms)) return;
+    const at = new Date(ms).toISOString();
+    let cancelled = false;
+    void (async () => {
+      let ok = false;
+      try {
+        ok = await portsRef.current.markOffered(at);
+      } catch {
+        ok = false;
+      }
+      if (cancelled) return;
+      if (ok) {
+        setHeldOffer(true);
+        setSchedule((current) => (current ? { ...current, lastOfferedAt: at } : current));
+        return;
+      }
+      offerAttempts.current += 1;
+      if (offerAttempts.current > 2) return;
+      try {
+        const fresh = await portsRef.current.schedule();
+        if (!cancelled) setSchedule(fresh);
+      } catch {
+        if (!cancelled) setOfferTick((tick) => tick + 1);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [schedule, heldOffer, offerTick]);
 
   async function onRun() {
     if (busyRef.current || cost === null) return;
@@ -158,13 +200,29 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
       const ok = await portsRef.current.saveProfile(which, text, sha);
       if (!ok) {
         setNote("That file changed. Try again.");
-        await loadRest();
+        const next = await portsRef.current.loadProfiles();
+        setProfiles(next);
+        setOpinions((typed) => textAfterLoad(typed, opinionsDirty.current, next.opinions));
+        setVoice((typed) => textAfterLoad(typed, voiceDirty.current, next.voice));
         return;
       }
       const next = await portsRef.current.loadProfiles();
       setProfiles(next);
-      setOpinions(next.opinions);
-      setVoice(next.voice);
+      if (which === "opinions") {
+        setOpinions((typedNow) => {
+          const kept = textAfterSave(typedNow, text, next.opinions);
+          opinionsDirty.current = kept.dirty;
+          return kept.text;
+        });
+        setVoice((typed) => textAfterLoad(typed, voiceDirty.current, next.voice));
+      } else {
+        setVoice((typedNow) => {
+          const kept = textAfterSave(typedNow, text, next.voice);
+          voiceDirty.current = kept.dirty;
+          return kept.text;
+        });
+        setOpinions((typed) => textAfterLoad(typed, opinionsDirty.current, next.opinions));
+      }
     } catch (error) {
       setNote(message(error, "That could not be saved. Try again."));
     } finally {
@@ -192,7 +250,7 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
         <input type="checkbox" checked={weekly} onChange={(event) => void onWeekly(event.target.checked)} />
         Run once a week
       </label>
-      {due ? <p className="text-sm">A weekly look is ready.</p> : null}
+      {due || heldOffer ? <p className="text-sm">A weekly look is ready.</p> : null}
       <label className="flex items-center gap-2 text-sm">
         <input
           type="checkbox"
@@ -229,7 +287,11 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
         <textarea
           aria-label="Opinions"
           value={opinions}
-          onChange={(event) => setOpinions(event.target.value)}
+          disabled={!profiles}
+          onChange={(event) => {
+            opinionsDirty.current = true;
+            setOpinions(event.target.value);
+          }}
           className="min-h-24 rounded-md border border-content/15 bg-transparent px-2 py-1"
         />
       </label>
@@ -241,7 +303,11 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
         <textarea
           aria-label="Voice"
           value={voice}
-          onChange={(event) => setVoice(event.target.value)}
+          disabled={!profiles}
+          onChange={(event) => {
+            voiceDirty.current = true;
+            setVoice(event.target.value);
+          }}
           className="min-h-24 rounded-md border border-content/15 bg-transparent px-2 py-1"
         />
       </label>
