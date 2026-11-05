@@ -546,13 +546,16 @@ pub(crate) fn run_action(
     // WP-87: only a long-running action with a declared stack prepares ports and Compose.
     // Check and ship pass an empty env and do not start Docker.
     let stack_env = if action.long_running && file.stack.is_some() {
-        crate::stacks::maybe_start(
+        let started = crate::stacks::maybe_start(
             &crate::stacks::env_from_app(app)?,
             &main,
             &checkout,
             true,
             file.stack.as_ref(),
-        )?
+        );
+        // A failed start can still have cleared `running`. The task card refetches either way.
+        let _ = app.emit(crate::stacks::STACKS_CHANGED, ());
+        started?
     } else {
         Vec::new()
     };

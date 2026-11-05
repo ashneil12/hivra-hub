@@ -219,12 +219,20 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
 
   useEffect(() => {
     let live = true;
+    const requested = cwd;
     setAppUrl(null);
-    void stackUrlFor(cwd).then((url) => {
-      if (live) setAppUrl(url);
+    const pull = () => {
+      void stackUrlFor(requested).then((url) => {
+        if (live) setAppUrl(url);
+      });
+    };
+    pull();
+    const pending = listen("stacks://changed", () => {
+      if (live) pull();
     });
     return () => {
       live = false;
+      void pending.then((done) => done());
     };
   }, [cwd]);
 
