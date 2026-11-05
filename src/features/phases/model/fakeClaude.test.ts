@@ -3,7 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { begin, counter, running } from "./machine";
-import { finishFromFake } from "./fakeClaude";
+import { fakeClaudeLaunch, finishFromFake, phasePrompt } from "./fakeClaude";
+import { skillText } from "./skillText";
 
 const dirs: string[] = [];
 
@@ -43,4 +44,32 @@ it("writes the fake Claude's research and retries when it does not answer", asyn
   const retried = await finishFromFake(again, waiting, slow, join(dir, "slow-state"), ids, 400);
   expect(retried.work.docs).toEqual([]);
   expect(retried.work.runs[0]?.status).toBe("retry");
+});
+
+it("gives the fake Claude only the scenario and the state directory", () => {
+  const previous = process.env.SECRET_TOKEN;
+  process.env.SECRET_TOKEN = "nope";
+  try {
+    const launch = fakeClaudeLaunch("/tmp/rules.json", "/tmp/state", "phase-1");
+    expect(launch.env.FAKE_CLAUDE_SCENARIO).toBe("/tmp/rules.json");
+    expect(launch.env.FAKE_CLAUDE_STATE).toBe("/tmp/state");
+    expect(launch.env.SECRET_TOKEN).toBeUndefined();
+    expect(Object.keys(launch.env).sort()).toEqual(["FAKE_CLAUDE_SCENARIO", "FAKE_CLAUDE_STATE"]);
+  } finally {
+    if (previous === undefined) delete process.env.SECRET_TOKEN;
+    else process.env.SECRET_TOKEN = previous;
+  }
+});
+
+it("puts the iterate skill's own text in the prompt", () => {
+  const text = skillText("iterate-design");
+  expect(text).toContain("Edit the design document");
+  const ids = counter();
+  const work = begin("task-4", { weight: "costly" }, {}, ids);
+  const run = running(work);
+  if (!run) throw new Error("no run");
+  const prompt = phasePrompt(work, { ...run, skill: "iterate-design", steering: ["use the queue"] }, text);
+  expect(prompt).toContain("Edit the design document");
+  expect(prompt).toContain("use the queue");
+  expect(prompt).toContain("Skill: iterate-design");
 });
