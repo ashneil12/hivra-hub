@@ -61,6 +61,7 @@ in Settings, under About.
 - [kun](https://github.com/kunchenguid/kun): a person's opinions and voice kept as files agents read (ideas only).
 - [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
 - [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building, terminal sessions mirrored into the app, commit attribution and a local stack per worktree, planned for Wave G.
+- [Matt Pocock's skills](https://github.com/mattpocock/skills): the diagnosing-bugs, tdd and grill-me skills, copied into the research, plan and build pack, planned for Wave G.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
