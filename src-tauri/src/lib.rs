@@ -10,6 +10,8 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-75: checked backups, one-item restore, and a full restore through the ship path.
+pub mod backups;
 mod chat_background;
 mod checkpoint;
 mod codex_mono_store;
@@ -363,6 +365,10 @@ pub fn run() {
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
     // (src/ship.rs). May exit.
     let boot = ship::startup(&identity, &claim.data_dir);
+    // WP-75: finish a full restore a dead helper left, before the database opens.
+    if let Err(error) = backups::finish_pending(&claim.data_dir) {
+        eprintln!("backup: {error}");
+    }
     if let Err(error) = instance::apply_dev_environment(&identity) {
         instance::refuse(&instance::Refusal::DevSetup { error });
     }
@@ -436,6 +442,8 @@ pub fn run() {
             // WP-76: drop anything that has been in the trash for 30 days, then again each day.
             trash::start_daily_purge(app.handle().clone());
             ship::init(app.handle(), claim.data_dir.clone(), boot);
+            // WP-75: scheduled backups. A dev copy stays off until Settings says otherwise.
+            backups::init(claim.data_dir.clone());
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
@@ -506,6 +514,14 @@ pub fn run() {
             ship::ship_accept,
             ship::ship_receipt,
             ship::ship_start,
+            backups::backups_status,
+            backups::backups_set_schedule,
+            backups::backups_set_folder,
+            backups::backups_create,
+            backups::backups_list,
+            backups::backups_items,
+            backups::backups_restore_item,
+            backups::backups_restore_all,
             instance::db_health,
             control::control_enable,
             control::control_disable,

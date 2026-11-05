@@ -83,6 +83,13 @@ Third-party components Hivra adds:
   Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
   Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
 
+- Orbit's checked backups
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  Copyright coollabsio and the Orbit contributors
+  Used in: src-tauri/src/backups/
+  Snapshot layout, manifest written last, checksum verification and retention, translated from crates/platform/src/backup.rs and backup/reader.rs to rusqlite (WP-75). S3 and Postgres are not included.
+
 - Orbit's audit log
   Source: https://github.com/coollabsio/orbit
   License: Apache-2.0

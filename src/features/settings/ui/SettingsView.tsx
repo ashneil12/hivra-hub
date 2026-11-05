@@ -9,6 +9,8 @@ import { ActivityPage } from "../../activity/ui/ActivityPage";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
+// WP-75: checked backups.
+import { BackupsPage } from "../../backups/ui/BackupsPage";
 import { TrashPage } from "../../trash/ui/TrashPage";
 import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
 import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
@@ -698,6 +700,8 @@ export function SettingsView({
               ) : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
+              {/* WP-75: checked backups, one item or everything. */}
+              {section === "backups" ? <BackupsPage /> : null}
               {section === "history" ? (
                 // WP-50: past chats, only with a person's OK, drafted for review.
                 <HistoryImportScreen />

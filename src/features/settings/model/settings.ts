@@ -40,6 +40,7 @@ export type SettingsSectionId =
   | "activity"
   | "dashboards"
   | "portable"
+  | "backups"
   | "history"
   | "memory"
   | "connectors";
@@ -125,6 +126,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Export and import",
     description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
     keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
+  },
+  {
+    id: "backups",
+    group: "app",
+    label: "Backups",
+    description:
+      "A checked copy on a schedule. Bring back one chat, Mono, doc or task, or put everything back.",
+    keywords: "backup restore snapshot schedule hourly daily chat mono doc task",
   },
   {
     id: "history",

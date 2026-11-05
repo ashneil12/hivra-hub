@@ -628,6 +628,7 @@ describe("settings navigation", () => {
       "activity",
       "dashboards",
       "portable",
+      "backups",
       "history",
       "memory",
       "connectors",
