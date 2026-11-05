@@ -721,8 +721,14 @@ mod tests {
                 let command = foreign($provider);
                 let refused =
                     provider_start_allowed(Some(&plan), Some($provider), &command).unwrap_err();
-                assert!(refused.contains($provider), "{refused}");
-                assert!(refused.contains("Claude wrapper"), "{refused}");
+                // The exact words: src/features/crew/model/benchCli.ts refuses the same start in the window.
+                assert_eq!(
+                    refused,
+                    format!(
+                        "This bench only starts the run's own Claude wrapper. It won't start {}.",
+                        $provider
+                    )
+                );
                 assert!(provider_start_allowed(None, Some($provider), &command).is_ok());
             }
         };

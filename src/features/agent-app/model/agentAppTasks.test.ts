@@ -50,7 +50,8 @@ import {
 } from "../../../integrations/harness/providers/claude/claudeProtocol";
 import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
 
-const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
+// `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
+const probe = vi.hoisted(() => ({ probed: true, runs: 0, onlyClaude: false }));
 // The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
 const bridge = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../integrations/harness/providers/claude/claudeDeepseekBridge", async (actual) => {
@@ -65,9 +66,10 @@ vi.mock("../../selfBuild/model/hubCode", async (actual) => ({
 const PROJECT_PREVIEW = "/tmp/hub-preview";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
-  // Before the first probe ends every harness reads as missing.
+  // Before the first probe ends every harness reads as missing. A bench plan resolves only the Claude wrapper.
   isHarnessAvailable: (id: string) =>
-    probe.probed && (id === "claude" || id === "codex" || (bridge.on && id === "grok")),
+    probe.probed &&
+    (id === "claude" || (!probe.onlyClaude && (id === "codex" || (bridge.on && id === "grok")))),
   hasProbedHarnessAvailability: () => probe.probed,
   probeHarnessAvailability: async () => {
     probe.runs += 1;
@@ -194,6 +196,21 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
     now: () => clock.now,
   };
   return { api: host, acknowledged, cancelled, answered, declared, clock };
+}
+
+/** What the window is handed on a bench (appIdentity.ts): a dev copy with a verify plan. */
+function benchIdentity() {
+  return {
+    product: "MonoCode Hub Dev",
+    version: "0.16.0",
+    identifier: "com.ash.monocode-hub.dev.verify",
+    kind: "dev",
+    slot: "verify",
+    stamp: { sha: "09141d88a1b2c3d4e5f60718293a4b5c6d7e8f90", branch: "bench", dirty: false, builtAt: "2026-11-05T00:00:00Z" },
+    schemaVersion: 19,
+    policy: {},
+    verify: { runId: "bench-1" },
+  };
 }
 
 function fixture(
@@ -2256,6 +2273,88 @@ describe("parallel workers per project, with throttling (H8)", () => {
       expect(second).toMatchObject({ harness: "claude", model: "claude:sonnet-5", modelSettings: { effort: "medium" } });
       expect(seen(second)).toMatchObject({ model: "claude-sonnet-5", effort: "medium" });
       expect(started[0][0]).toMatchObject({ model: "claude:opus-4-7", modelSettings: { effort: "high" } });
+    });
+
+    /** The command's route, without Tauri: what crew_route answers for the defaults it is sent. */
+    function realCrewRoute(available: string[] = ["claude", "codex"]) {
+      return vi.fn(async (query: CrewRouteQuery) =>
+        resolveRoute(
+          {
+            labels: query.labels,
+            paths: query.paths,
+            ...(query.override ? { override: query.override } : {}),
+          },
+          query.monoRules ?? [],
+          available.map((cli) => ({ cli, installed: true, signedIn: true })),
+          {
+            ...(query.defaults ? { defaults: query.defaults } : {}),
+            catalog: query.catalog ?? launchCatalog(),
+          },
+        ),
+      );
+    }
+
+    it("starts a worker on the CLI this chat set for its Mono with tasks.workers, not the chat's own", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = realCrewRoute();
+      const set = (await handleAgentApp(source, "m-codex", "tasks.workers", { scope: "mono", cli: "codex" }, host)) as {
+        inForce: { cli: string; cliFrom: string };
+      };
+      expect(set.inForce).toMatchObject({ cli: "codex", cliFrom: "mono" });
+      await handleAgentApp(source, "r-codex", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ harness: "codex", model: "codex:gpt-5" });
+    });
+
+    it("carries the model and effort this chat set for its Mono's workers", async () => {
+      setHarnessModels("codex", [
+        {
+          id: "codex:gpt-5",
+          harness: "codex",
+          name: "GPT-5",
+          settings: efforts(["low", "medium", "high"]),
+        },
+      ]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = realCrewRoute();
+      const set = (await handleAgentApp(
+        source,
+        "m-codex-effort",
+        "tasks.workers",
+        { scope: "mono", cli: "codex", model: "gpt 5", effort: "high" },
+        host,
+      )) as { inForce: { cli: string; model: string; effort: string } };
+      expect(set.inForce).toMatchObject({ cli: "codex", model: "codex:gpt-5", effort: "high" });
+      await handleAgentApp(source, "r-codex-effort", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(started[0][0]).toMatchObject({
+        harness: "codex",
+        model: "codex:gpt-5",
+        modelSettings: { effort: "high" },
+      });
+    });
+
+    it("refuses a worker routed off the wrapper in a bench, instead of quietly running it on Claude", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      api.crewRoute = realCrewRoute();
+      // The bench start: tasks.workers still says what is in force; only the CLI itself cannot start here.
+      probe.onlyClaude = true;
+      const global = globalThis as Record<string, unknown>;
+      global.__MONOCODE_APP__ = benchIdentity();
+      try {
+        const set = (await handleAgentApp(source, "m-codex", "tasks.workers", { scope: "mono", cli: "codex" }, host)) as {
+          inForce: { cli: string; cliFrom: string };
+        };
+        expect(set.inForce).toMatchObject({ cli: "codex", cliFrom: "mono" });
+        await expect(
+          handleAgentApp(source, "r-codex", "tasks.delegate", { brief: "Build the title." }, host),
+        ).rejects.toThrow("This bench only starts the run's own Claude wrapper. It won't start codex.");
+      } finally {
+        delete global.__MONOCODE_APP__;
+        probe.onlyClaude = false;
+      }
+      expect(started).toEqual([]);
     });
   });
 

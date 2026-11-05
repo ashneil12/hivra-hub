@@ -47,6 +47,7 @@ import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
+import { benchCliRefusal } from "../../crew/model/benchCli";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
@@ -881,6 +882,9 @@ async function delegate(
   let chosenEffort = effort;
   let crewChose = false;
   let ranFrom: string | undefined;
+  // WP-89: a bench (verify_live.rs) starts only its own Claude wrapper. A worker routed to another CLI there is
+  // refused in the bench's words after the route, never quietly started on Claude instead.
+  let benchRefusal: string | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
@@ -913,11 +917,14 @@ async function delegate(
           chosenEffort = next.effort;
           if (answer) ranFrom = ranFromPhrase(answer);
         }
+      } else if (next.harness && next.harness !== baseline) {
+        benchRefusal = benchCliRefusal(next.harness);
       }
     } catch {
       // A timeout is not a final failure: the model already chosen still starts.
     }
   }
+  if (benchRefusal) throw new Error(benchRefusal);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
