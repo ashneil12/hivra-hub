@@ -87,6 +87,8 @@ export type SessionSummary = {
   draft?: boolean;
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
+  // WP-85: a Claude session started in a terminal, not one Hivra started.
+  terminal?: { state: string; folder: string };
 };
 
 type SessionRecord = {
