@@ -253,7 +253,7 @@ Rust. The rest are ideas only.
 
 1. **The goal graph (dag-ulw), as WP-91.** Hivra's orchestration run already requires file scopes per task, gives each
    worker an isolated checkout, dispatches in dependency order and accepts only on review. Missing: one run goal and a
-   finish-line check run (and seen failing) before work, a baseline, a plan-time check that two parallel tasks never
+   finish-line check run, and seen failing, before work, a baseline, a plan-time check that two parallel tasks never
    share a write scope, a required verify task and a run verdict, and a graph view. WP-91 adds those and changes no
    existing run model.
 2. **Per-lane model chains.** Hivra has one model and effort per route, with precedence, skip reasons and a CLI-level

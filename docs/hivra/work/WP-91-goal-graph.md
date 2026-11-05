@@ -18,8 +18,8 @@ met. The whole graph, with its layers, states, repairs and verify node, is live 
 
 Ash, 5 Nov: he shared [oh-my-hermes](https://github.com/rlaope/oh-my-hermes) (MIT, read at commit `2676c33`) and asked
 for Hivra's way of running big work to be the best one. Its graph planner, dag-ulw, is the part worth the close look.
-Its own skill makes eight claims; the code behind them is uneven, and Hivra's orchestration run already matches it on
-most of them:
+Ash listed eight claims worth checking; the code behind them is uneven, and Hivra's orchestration run already matches
+it on most of them:
 
 | # | dag-ulw's point | Hivra today | Verdict |
 | --- | --- | --- | --- |
