@@ -131,31 +131,6 @@ function planNodes(proposal: OrchestrationProposal): GraphNode[] {
   }));
 }
 
-/** Layers for a plan: each task one layer below the deepest task it waits for. Cycles are left for `placeLayers`. */
-function depthLayers(nodes: GraphNode[]): string[][] {
-  const known = new Set(nodes.map((node) => node.id));
-  const depth = new Map<string, number>();
-  for (let pass = 0; pass < nodes.length; pass++) {
-    for (const node of nodes) {
-      const waitFor = node.dependsOn.filter((id) => known.has(id));
-      if (depth.has(node.id) || !waitFor.every((id) => depth.has(id))) continue;
-      depth.set(
-        node.id,
-        waitFor.reduce((most, id) => Math.max(most, depth.get(id)! + 1), 0),
-      );
-    }
-  }
-  const rows: string[][] = [];
-  for (let level = 0; ; level++) {
-    const row = nodes
-      .filter((node) => depth.get(node.id) === level)
-      .map((node) => node.id);
-    if (!row.length) break;
-    rows.push(row);
-  }
-  return rows;
-}
-
 /** The rules' layers, kept to tasks this run has, with anything they missed in a last row. */
 function placeLayers(reported: string[][], nodes: GraphNode[]): string[][] {
   const known = new Set(nodes.map((node) => node.id));
@@ -252,8 +227,9 @@ export function GoalGraph({
   const report = current?.goalReport;
   const nodes = current ? runNodes(current) : planNodes(proposal!);
   const byId = new Map(nodes.map((node) => [node.id, node] as const));
+  // The rules' layers, in both cases: the run's own report, or the answer kept on a plan that has not started.
   const layers = placeLayers(
-    current ? (report?.layers ?? []) : depthLayers(nodes),
+    current ? (report?.layers ?? []) : (proposal?.graph?.layers ?? []),
     nodes,
   );
   const big = nodes.length > SMALL_GRAPH;

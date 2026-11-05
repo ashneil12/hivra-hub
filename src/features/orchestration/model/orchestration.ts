@@ -266,6 +266,8 @@ export function describeGoalReport(report: GoalNodeReport): string {
       const [code, ids] = reason.split(":", 2);
       const named = ids ? ` (${ids})` : "";
       switch (code) {
+        case "refused":
+          return `the plan itself was refused: ${ids ?? ""}`;
         case "check_failed":
           return "the finish-line check failed";
         case "check_not_run":
@@ -667,10 +669,18 @@ export class Orchestrator {
     if (!run) return undefined;
     try {
       const answer = await this.goals.report(goalRunView(run));
+      // A graph the rules refuse is not a verdict: its own words are carried as the reason, so the lead and the
+      // card say what is wrong with the run rather than "no reason named".
+      const report: GoalNodeReport = answer.refusal
+        ? {
+            ...answer.report,
+            reasons: [`refused:${answer.refusal.say}`, ...answer.report.reasons],
+          }
+        : answer.report;
       const current = this.run(leadId);
-      if (!current) return answer.report;
-      await this.commit({ ...current, goalReport: answer.report });
-      return answer.report;
+      if (!current) return report;
+      await this.commit({ ...current, goalReport: report });
+      return report;
     } catch (error) {
       console.error("Could not read the goal graph", error);
       return this.run(leadId)?.goalReport;

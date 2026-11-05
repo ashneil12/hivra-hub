@@ -6,6 +6,7 @@ import {
   GOAL_MAX,
   refusalMessage,
   type GoalCheck,
+  type GoalPlanAnswer,
 } from "./orchestrationGoal";
 
 export type OrchestrationChoice = {
@@ -50,6 +51,8 @@ export type OrchestrationProposal = {
   goal: string;
   /** WP-91: the finish line — a command that fails until the goal holds. */
   check: GoalCheck;
+  /** WP-91: what the graph rules answered about this plan, once they were asked. */
+  graph?: GoalPlanAnswer;
   tasks: ProposedTask[];
   error?: string;
   /** Kept only for invalid cards so a retry can repair the response directly. */
@@ -412,11 +415,11 @@ export function orchestrationRepairPrompt(
  */
 export async function checkProposalGraph(
   proposal: OrchestrationProposal,
-  check: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<unknown>,
+  check: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<GoalPlanAnswer>,
 ): Promise<OrchestrationProposal> {
   try {
-    await check(goalPlanNodes(proposal.tasks));
-    return proposal;
+    // The answer's layers are kept on the card, so the plan draws the same graph the run will.
+    return { ...proposal, graph: await check(goalPlanNodes(proposal.tasks)) };
   } catch (reason) {
     return {
       ...proposal,
@@ -439,7 +442,7 @@ export async function completeOrRepairOrchestrationProposal(
   response: string,
   repair: (prompt: string) => Promise<string>,
   canRepair: () => boolean,
-  checkGraph?: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<unknown>,
+  checkGraph?: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<GoalPlanAnswer>,
 ): Promise<OrchestrationProposal> {
   const read = (text: string) => completeOrchestrationProposal(draft, text);
   let first = read(response);
