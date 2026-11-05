@@ -369,6 +369,14 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/memory/vendor/agentZeroMemories.ts",
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
+    },
+    {
+      "name": "backpass",
+      "url": "https://github.com/kunchenguid/backpass",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 Kun Chen",
+      "where": "src/features/memory/backpass, src-tauri/src/learn_stores",
+      "how": "The quote, ledger, rejection, budget and diff rules copied as TypeScript. The pi, grok, opencode and Cursor readers translated line by line into Rust (WP-83)"
     }
   ]
 }
