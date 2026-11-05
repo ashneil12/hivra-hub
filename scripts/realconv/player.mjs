@@ -9,12 +9,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { dummyStoppedOk, finishSceneApps } from "../bench-guard.mjs";
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
 import { hardChecks } from "./checks.mjs";
 import { isTeamSeat, monoIdFor, speakerName } from "./seats.mjs";
 import { judgeScene, verdict } from "./judge.mjs";
-import { permissionDecision, stuckPermissionOutcome } from "./permissions.mjs";
+import { permissionDecision, stuckPermissionOutcome, testerAllowRefused } from "./permissions.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
@@ -136,6 +137,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const stopAt = Math.min(ctx.deadline + 5 * 60_000, t0 + (scene.minutes ?? 12) * 60_000);
   const turnsCap = scene.maxTurns ?? 60;
   const mark = gitMark(ctx.project);
+  const appsBefore = typeof ctx.listApps === "function" ? ctx.listApps() : null;
   // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
@@ -365,10 +367,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
     if (move.action === "click") {
       // Never allow a GitHub, push, remote or credential command, whatever the tester picked: Deny it instead.
+      // Never Allow a path outside the bench folders either, even when the card is not a risky command.
       const risky = riskyAllow(move.label, await ctx.claudeTexts(t0).catch(() => []), place.room ? null : await placeSession());
-      if (risky) {
-        log(`  bench refuses to click "${move.label}" on a risky command (${risky.slice(0, 120)}); Deny instead`);
-        testerLog({ refusedClick: move.label, risky });
+      const snap = risky ? null : await act("snapshot").catch(() => null);
+      const sessionId = risky || place.room ? null : await placeSession();
+      const asks = (snap?.sessions ?? []).filter((session) => !sessionId || session.id === sessionId).flatMap((session) => (session.permissionAsks ?? []).map((ask) => ({ ...ask, cwd: session.cwd || session.worktree || null })));
+      const memory = place.mono && ctx.dataDir ? path.join(ctx.dataDir, "monos", place.mono) : null;
+      const outside = risky ? null : testerAllowRefused(move.label, asks, { home: ctx.home, project: ctx.project, memory, allowed: ctx.allowed });
+      if (risky || outside) {
+        log(`  bench refuses to click "${move.label}" on ${risky ? `a risky command (${risky.slice(0, 120)})` : `a path outside the bench (${outside})`}; Deny instead`);
+        testerLog({ refusedClick: move.label, ...(risky ? { risky } : { outside }) });
         if (!(buttons ?? []).some((b) => b.label === "Deny" && !b.disabled)) {
           await sleep(20_000);
           continue;
@@ -440,6 +448,18 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     if (stuck) {
       scored.verdict = stuck;
       scored.reasons = [stuck, ...(scored.reasons ?? [])];
+    }
+    const appsAfter = typeof ctx.listApps === "function" ? ctx.listApps() : null;
+    const touch = finishSceneApps(appsBefore, appsAfter, ctx.stopRun);
+    if (touch) {
+      scored.verdict = "FAIL";
+      scored.reasons = [touch.reason, ...(scored.reasons ?? []).filter((reason) => reason !== touch.reason)];
+    }
+    if (scene.expect?.stopDummy && !dummyStoppedOk(typeof ctx.readDummy === "function" ? ctx.readDummy() : null)) {
+      const dummyReason = "the bench dummy is still running";
+      scored.verdict = "FAIL";
+      const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && item !== touch?.reason);
+      scored.reasons = [...(touch ? [touch.reason] : []), dummyReason, ...rest];
     }
     const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scored, hard, judged, notes };
     fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));

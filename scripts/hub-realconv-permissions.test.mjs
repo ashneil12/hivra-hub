@@ -3,7 +3,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { permissionDecision, stuckPermissionOutcome } from "./realconv/permissions.mjs";
+import os from "node:os";
+
+import { permissionDecision, stuckPermissionOutcome, testerAllowRefused } from "./realconv/permissions.mjs";
 
 const roots = {
   home: "/tmp/bench-home",
@@ -82,4 +84,14 @@ test("an ask still open at the end names its path, and is not a plain fail", () 
   assert.equal(stuckPermissionOutcome([{ tool: "Read", paths: ["/etc/passwd"] }]), "stuck on a permission ask: /etc/passwd");
   assert.equal(stuckPermissionOutcome([{ command: "cat /etc/shadow" }]), "stuck on a permission ask: cat /etc/shadow");
   assert.equal(stuckPermissionOutcome([{}]), "stuck on a permission ask: (no path)");
+});
+
+test("the tester refuses Allow for the real user's agent-memory, and allows a Read inside the bench", () => {
+  const file = `/Users/${os.userInfo().username}/agent-memory/ash/MEMORY.md`;
+  const bench = { home: "/var/bench/home", project: "/var/bench/project" };
+  assert.equal(testerAllowRefused("Allow", [{ tool: "Read", paths: [file] }], bench), file);
+  assert.equal(testerAllowRefused("Allow once", [{ tool: "Bash", command: `cat ${file}` }], bench), file);
+  assert.equal(testerAllowRefused("Always allow", [], bench), "(no path)");
+  assert.equal(testerAllowRefused("Deny", [{ tool: "Read", paths: [file] }], bench), null);
+  assert.equal(testerAllowRefused("Allow", [{ tool: "Read", paths: ["/var/bench/project/src/app.js"] }], bench), null);
 });

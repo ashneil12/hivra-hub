@@ -88,6 +88,37 @@ export function permissionDecision(ask, roots, { cwd = null, isSymlink = null } 
   return { allow: true, decision: "allow", path: pathText };
 }
 
+const APPROVE_LABEL = /^(allow|allow once|always allow|approve|yes,? allow)$/i;
+
+function askPaths(ask, cwd) {
+  const raw = [];
+  if (Array.isArray(ask?.paths)) raw.push(...ask.paths.filter((item) => typeof item === "string" && item.trim()));
+  if (typeof ask?.command === "string") {
+    for (const match of ask.command.matchAll(/(?:^|[\s"'=])(\/[^\s"'|&;<>]+)/g)) raw.push(match[1]);
+  }
+  const base = cwd ? lexicalPosix(String(cwd).replace(/\/+$/, "") || "/") : null;
+  return raw.map((item) => (item.startsWith("/") ? lexicalPosix(item) : base ? lexicalPosix(`${base}/${item}`) : null));
+}
+
+/**
+ * The path the tester must not Allow, or null when this click is not an allow or every path sits inside the bench.
+ * No ask at all is `(no path)`: fail closed, never Allow.
+ */
+export function testerAllowRefused(label, asks, roots, { cwd = null } = {}) {
+  if (!APPROVE_LABEL.test(String(label ?? "").trim())) return null;
+  const list = Array.isArray(asks) ? asks : [];
+  if (!list.length) return "(no path)";
+  const allowed = [roots?.home, roots?.project, roots?.memory, ...(Array.isArray(roots?.allowed) ? roots.allowed : [])].map(usableRoot).filter(Boolean);
+  for (const ask of list) {
+    const paths = askPaths(ask, cwd || ask?.cwd || null);
+    if (!paths.length) return "(no path)";
+    for (const abs of paths) {
+      if (!abs || !allowed.some((root) => inside(abs, root))) return abs || "(no path)";
+    }
+  }
+  return null;
+}
+
 /** The scene outcome when a permission ask is still open at the end, or null when none is. Not a plain FAIL. */
 export function stuckPermissionOutcome(asks) {
   if (!Array.isArray(asks) || !asks.length) return null;

@@ -81,8 +81,9 @@ and the project's git log. It also holds:
 
 The player is `scripts/realconv/player.mjs`. A permission card is answered by the bench, not the tester: a Read inside
 the run's temporary HOME, the test project, or that Mono's memory folder is allowed, and anything else is refused.
-Each answer is logged with its path. An ask still open at the end is its own outcome, `stuck on a permission ask: <path>`,
-not a plain fail.
+The tester never answers Allow for a path outside the folders this run owns: that temporary HOME, the test project, that Mono's memory, and the run's other bench folders. A real-home read is also denied at the tool, so a
+permission answer cannot open it. Each answer is logged with its path. An ask still open at the end is its own outcome,
+`stuck on a permission ask: <path>`, not a plain fail.
 
 1. **Setup.** Some scenes need something that happened earlier: S2's job to talk about, S4's past decision, S14's stuck
    `zod` install. That setup runs first through the realtest bench's scripted steps and is marked as setup.
