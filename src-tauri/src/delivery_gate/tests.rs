@@ -805,15 +805,38 @@ fn the_daemon_is_a_child_hivra_stops_and_its_environment_is_allow_listed() {
 
 #[cfg(unix)]
 fn wait_file(path: &Path) -> String {
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
         if let Ok(text) = std::fs::read_to_string(path) {
             if !text.is_empty() {
                 return text;
             }
         }
+        if std::time::Instant::now() >= deadline {
+            panic!("nothing was written to {}", path.display());
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    panic!("nothing was written to {}", path.display());
+}
+
+// The daemon writes its files from another process. A loaded machine can take longer than a couple of seconds to
+// get there, so the wait must be on the file appearing, with a deadline far past what a busy machine needs.
+#[cfg(unix)]
+#[test]
+fn a_daemons_file_is_waited_for_while_the_machine_is_busy() {
+    let dir = std::env::temp_dir().join(format!("wp-flake-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("argv");
+    let writer = {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            std::fs::write(&file, "daemon\n").unwrap();
+        })
+    };
+    assert_eq!(wait_file(&file).trim(), "daemon");
+    writer.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
