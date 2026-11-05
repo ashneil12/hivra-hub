@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
 use crate::local_services::emulate::{self, ServicePort};
+use crate::pinned_tool::Fetcher;
 use crate::proxy::labels::{stack_label, MAX_LABEL};
 use crate::stack_decl::StackDecl;
 
@@ -275,7 +276,7 @@ pub fn env_from_app(app: &AppHandle) -> Result<StackEnv, String> {
         claims_dir,
         names,
         proxy_port,
-        stand_in: Some(Arc::new(EmulateStandIn { data_dir })),
+        stand_in: Some(Arc::new(EmulateStandIn::new(data_dir))),
         path_env,
     })
 }
@@ -454,9 +455,7 @@ pub fn stop_for_worktree(data_dir: &Path, worktree: &Path) -> Result<(), String>
             store: crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(data_dir)),
         })),
         proxy_port: None,
-        stand_in: Some(Arc::new(EmulateStandIn {
-            data_dir: data_dir.to_path_buf(),
-        })),
+        stand_in: Some(Arc::new(EmulateStandIn::new(data_dir.to_path_buf()))),
         path_env: None,
     };
     down(&env, worktree)
@@ -750,10 +749,45 @@ fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, Strin
 
 struct EmulateStandIn {
     data_dir: PathBuf,
+    /// The one downloader the app has. A test hands it fixtures instead.
+    fetcher: Arc<dyn Fetcher + Send + Sync>,
 }
 
-impl StandIn for EmulateStandIn {
-    fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String> {
+impl EmulateStandIn {
+    fn new(data_dir: PathBuf) -> Self {
+        Self {
+            data_dir,
+            fetcher: Arc::new(crate::pinned_tool::UreqFetcher),
+        }
+    }
+
+    /// The tool to run, fetching it the first time and never again. `start` uses the real pin
+    /// table; a test passes its own.
+    fn tool_for(&self, tarballs: &[emulate::Tarball]) -> Result<PathBuf, StandInOutcome> {
+        if let Some(tool) = emulate::installed(&self.data_dir) {
+            return Ok(tool);
+        }
+        match emulate::install_files(&self.data_dir, self.fetcher.as_ref(), tarballs) {
+            Ok(tool) => Ok(tool),
+            // Nothing was even downloaded, so there is no download to explain.
+            Err(_) if !emulate::all_pinned(tarballs) => Err(StandInOutcome {
+                pid: None,
+                note: Some(emulate::NOT_INSTALLED_NOTE.into()),
+            }),
+            // Offline, a mismatched file or no disk room: the stack still runs, and its named
+            // URLs then fail closed instead of reaching the real service.
+            Err(_) => Err(StandInOutcome {
+                pid: None,
+                note: Some(emulate::DOWNLOAD_NOTE.into()),
+            }),
+        }
+    }
+
+    fn start_with(
+        &self,
+        request: &StandInRequest,
+        tarballs: &[emulate::Tarball],
+    ) -> Result<StandInOutcome, String> {
         match emulate::probe_node(request.path_env.clone()) {
             emulate::NodeStatus::Ready { .. } => {}
             emulate::NodeStatus::Unavailable(note) => {
@@ -763,24 +797,9 @@ impl StandIn for EmulateStandIn {
                 })
             }
         }
-        let tool = match emulate::installed(&self.data_dir) {
-            Some(tool) => tool,
-            None => {
-                // A tarball left by the downloader is installed now, against its pin.
-                let tarball = emulate::tool_dir(&self.data_dir).join("package.tgz");
-                match emulate::install_from_tarball(&self.data_dir, &tarball) {
-                    Ok(tool) => tool,
-                    Err(_) => {
-                        return Ok(StandInOutcome {
-                            pid: None,
-                            note: Some(
-                                "The stand-in isn't installed, so the tests use the named URLs with nothing behind them."
-                                    .into(),
-                            ),
-                        })
-                    }
-                }
-            }
+        let tool = match self.tool_for(tarballs) {
+            Ok(tool) => tool,
+            Err(outcome) => return Ok(outcome),
         };
         // emulate's own precedence: this stack's named URL wins over any environment value.
         let emulate_env = std::env::var("EMULATE_BASE_URL").ok();
@@ -817,6 +836,12 @@ impl StandIn for EmulateStandIn {
                 note: Some(format!("The stand-in didn't start: {error}")),
             }),
         }
+    }
+}
+
+impl StandIn for EmulateStandIn {
+    fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String> {
+        self.start_with(request, &emulate::TARBALLS)
     }
 
     fn stop(&self, stack_dir: &Path) -> Result<(), String> {
@@ -4167,5 +4192,158 @@ mod tests {
         assert_eq!(routes.load_routes_raw().unwrap().len(), 3);
         stop_for_worktree(&fix.data, &fix.first).unwrap();
         assert!(routes.load_routes_raw().unwrap().is_empty());
+    }
+
+    /// Everything the real stand-in needs to run without a network or Node 24: a throwaway data
+    /// folder, a stack folder, the four fixture tarballs, and a `node` on PATH that answers with
+    /// a version this app accepts. `None` where the platform has no `/bin/sh` to write it with.
+    struct StandInFix {
+        /// Held only to keep the temp folder alive for the test's lifetime.
+        _temp: Tmp,
+        data: PathBuf,
+        stack_dir: PathBuf,
+        request: StandInRequest,
+        table: Vec<emulate::Tarball>,
+        bodies: Vec<(String, Vec<u8>)>,
+    }
+
+    impl StandInFix {
+        fn new() -> Option<Self> {
+            #[cfg(windows)]
+            {
+                return None;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let temp = Tmp::new();
+                let data = temp.root.join("data");
+                let stack_dir = temp.root.join("stack");
+                let bin = temp.root.join("bin");
+                std::fs::create_dir_all(&bin).unwrap();
+                let node = bin.join("node");
+                std::fs::write(
+                    &node,
+                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; fi\nexit 0\n",
+                )
+                .unwrap();
+                std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+                let (table, bodies) = emulate::tests::fixture();
+                let request = StandInRequest {
+                    stack_dir: stack_dir.clone(),
+                    services: vec![ServicePort {
+                        service: "github".into(),
+                        port: 22010,
+                        base_url: "http://github-shop-wp-90.localhost:7400".into(),
+                    }],
+                    path_env: Some(bin.to_string_lossy().into_owned()),
+                };
+                Some(Self {
+                    _temp: temp,
+                    data,
+                    stack_dir,
+                    request,
+                    table,
+                    bodies,
+                })
+            }
+        }
+
+        fn stand_in(&self, fetcher: Arc<dyn Fetcher + Send + Sync>) -> EmulateStandIn {
+            EmulateStandIn {
+                data_dir: self.data.clone(),
+                fetcher,
+            }
+        }
+
+        fn online(&self) -> Arc<emulate::tests::Fake> {
+            Arc::new(emulate::tests::Fake::online(self.bodies.clone()))
+        }
+    }
+
+    fn without_a_shell() -> Option<StandInFix> {
+        println!("skipped: this platform has no /bin/sh to make a fake node with");
+        None
+    }
+
+    #[test]
+    fn a_first_start_installs_the_stand_in_and_a_second_one_downloads_nothing() {
+        let Some(fix) = StandInFix::new().or_else(without_a_shell) else {
+            return;
+        };
+        let fetcher = fix.online();
+        let stand_in = fix.stand_in(fetcher.clone());
+        let first = stand_in.start_with(&fix.request, &fix.table).unwrap();
+        assert!(first.pid.is_some(), "{first:?}");
+        assert_eq!(fetcher.hits(), 4);
+        assert!(emulate::installed(&fix.data).is_some());
+        assert!(fix.stack_dir.join("emulate.config.json").is_file());
+        assert!(fix.stack_dir.join("emulate.pid").is_file());
+        let second = stand_in.start_with(&fix.request, &fix.table).unwrap();
+        assert!(second.pid.is_some(), "{second:?}");
+        assert_eq!(fetcher.hits(), 4, "the second start fetched something");
+    }
+
+    #[test]
+    fn an_offline_download_leaves_the_stack_running_with_a_plain_note() {
+        let Some(fix) = StandInFix::new().or_else(without_a_shell) else {
+            return;
+        };
+        let fetcher: Arc<emulate::tests::Fake> = Arc::new(emulate::tests::Fake::offline());
+        let stand_in = fix.stand_in(fetcher.clone());
+        let outcome = stand_in.start_with(&fix.request, &fix.table).unwrap();
+        assert_eq!(outcome.pid, None);
+        assert_eq!(outcome.note.as_deref(), Some(emulate::DOWNLOAD_NOTE));
+        assert_eq!(fetcher.hits(), 1);
+        assert!(!fix.stack_dir.join("emulate.pid").exists());
+        // Nothing that `installed` would accept, and no version folder left half-made.
+        assert!(emulate::installed(&fix.data).is_none());
+        assert!(!emulate::tool_dir(&fix.data).exists());
+    }
+
+    #[test]
+    fn a_start_with_no_pin_says_nothing_was_downloaded() {
+        let Some(fix) = StandInFix::new().or_else(without_a_shell) else {
+            return;
+        };
+        let mut table = fix.table.clone();
+        table[0].sha256 = "";
+        let fetcher = fix.online();
+        let stand_in = fix.stand_in(fetcher.clone());
+        let outcome = stand_in.start_with(&fix.request, &table).unwrap();
+        assert_eq!(outcome.pid, None);
+        assert_eq!(outcome.note.as_deref(), Some(emulate::NOT_INSTALLED_NOTE));
+        assert_eq!(fetcher.hits(), 0);
+    }
+
+    #[test]
+    fn a_node_older_than_24_is_a_note_and_not_a_download() {
+        let Some(fix) = StandInFix::new().or_else(without_a_shell) else {
+            return;
+        };
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let bin = fix.request.path_env.clone().unwrap();
+            std::fs::write(
+                Path::new(&bin).join("node"),
+                "#!/bin/sh\necho v22.23.4\nexit 0\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(
+                Path::new(&bin).join("node"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let fetcher = fix.online();
+        let stand_in = fix.stand_in(fetcher.clone());
+        let outcome = stand_in.start_with(&fix.request, &fix.table).unwrap();
+        assert_eq!(outcome.pid, None);
+        assert!(outcome
+            .note
+            .as_deref()
+            .is_some_and(|note| note.contains("older than 24")));
+        assert_eq!(fetcher.hits(), 0);
     }
 }
