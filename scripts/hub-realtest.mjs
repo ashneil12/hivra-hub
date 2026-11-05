@@ -33,10 +33,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { appsFromPs, benchDenyRules, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
-import { privateTempDir } from "./bench-sandbox.mjs";
+import { appsFromPs, benchBroken, benchDenyRules, CONTROL_ENDPOINT_KEYS, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
+import { DAILY_CONTROL_PORTS, installedClaudeHonoursTmpdir, parseLoopbackEndpoint, privateTempDir, privateTempEnv } from "./bench-sandbox.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
+import { probeBenchAgent } from "./hub-realtest-claude.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
 import { benchAccounts, claudeConfigArgs, latestReadings, limitedFiles, startCheck, watchAccounts, writeAccounts } from "./hub-realtest-accounts.mjs";
 
@@ -226,8 +227,21 @@ export function planFlags(options) {
   };
 }
 
+/**
+ * The daily app's control ports this bench's own entry env names (when the bench was started from one of its chats).
+ * The sandbox never opens them: a bench chat naming one is refused rather than given the daily app's port.
+ */
+export function dailyControlPorts(env = process.env) {
+  const out = [];
+  for (const key of CONTROL_ENDPOINT_KEYS) {
+    const parsed = parseLoopbackEndpoint(env?.[key]);
+    if (parsed && !out.includes(parsed.port)) out.push(parsed.port);
+  }
+  return out;
+}
+
 /** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
-export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings }) {
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings, appBin, worktree, honoursTmpdir, dailyPorts = [] }) {
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     "#!/bin/sh",
@@ -235,6 +249,7 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
     `export REALTEST_CLAUDE_CONFIG=${quote(config)}`,
     `export REALTEST_MODEL=${quote(model)}`,
+    ...(dailyPorts.length ? [`export ${DAILY_CONTROL_PORTS}=${quote(dailyPorts.join(","))}`] : []),
     ...(haiku ? ["export REALTEST_HAIKU_TEST=1"] : []),
     ...(grok ? ["export REALTEST_GROK_SUB=1"] : []),
     `export REALTEST_EFFORT=${quote(effort)}`,
@@ -243,6 +258,10 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     ...(allowed ? [`export REALTEST_ALLOWED=${quote(JSON.stringify(allowed))}`] : []),
     ...(devData ? [`export REALTEST_DEV_DATA=${quote(devData)}`] : []),
     ...(benchSettings ? [`export REALTEST_BENCH_SETTINGS=${quote(benchSettings)}`] : []),
+    ...(appBin ? [`export REALTEST_APP_BIN=${quote(appBin)}`] : []),
+    ...(worktree ? [`export REALTEST_WORKTREE=${quote(worktree)}`] : []),
+    ...(honoursTmpdir === false ? ["export REALTEST_CLAUDE_HONOURS_TMPDIR=0"] : []),
+    ...(honoursTmpdir === true ? ["export REALTEST_CLAUDE_HONOURS_TMPDIR=1"] : []),
     `exec ${quote(node)} ${quote(script)} "$@"`,
     "",
   ].join("\n");
@@ -566,6 +585,8 @@ export async function runBench(options, hooks = {}) {
     // -- the claude wrapper -----------------------------------------------------------------------------------------------
     // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
+    const binary = path.join(ROOT, "target/debug/monocode");
+    const claudeHonours = installedClaudeHonoursTmpdir();
     const claude = path.join(bin, "claude");
     fs.writeFileSync(
       claude,
@@ -584,6 +605,10 @@ export async function runBench(options, hooks = {}) {
         allowed: allowedRoots,
         devData: dataDir,
         benchSettings: settingsFile,
+        appBin: binary,
+        worktree: ROOT,
+        honoursTmpdir: claudeHonours,
+        dailyPorts: dailyControlPorts(process.env),
       }),
       { mode: 0o755 },
     );
@@ -598,7 +623,6 @@ export async function runBench(options, hooks = {}) {
     registerSlot(slot, home);
     writeSlotConfig(slot);
     const config = mergePatch(readJson(path.join(ROOT, "src-tauri/tauri.hub.conf.json")), readJson(slot.configFile));
-    const binary = path.join(ROOT, "target/debug/monocode");
     if (options.build) {
       log("building the dev copy (cargo build, shared cache) ...");
       const buildLog = fs.openSync(path.join(evidence, "build.log"), "w");
@@ -661,8 +685,9 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_VERIFY_LIVE: planFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       ...BENCH_GIT_ENV,
-      ...(runTmp ? { TMPDIR: runTmp, TMP: runTmp, TEMP: runTmp, CLAUDE_TMPDIR: runTmp } : {}),
+      ...(runTmp ? privateTempEnv(runTmp) : {}),
     });
+    delete appEnv.ZDOTDIR;
     // The run's own launch, and (r98, B5) its reopen after Ash's Quit: the same binary, HOME and data, in the background
     // (MONOCODE_HUB_BACKGROUND: an accessory app that never activates or comes forward, like `open -g`).
     let launches = 0;
@@ -763,6 +788,9 @@ export async function runBench(options, hooks = {}) {
     log("the window's driver answers");
     pumpTimer = setInterval(() => {
       void pump({ tick: true });
+      // The wrapper's first chat proved the agent's shell can reach this copy's control port (or couldn't and wrote it).
+      const broken = benchBroken(state);
+      if (broken) stopRun(broken);
       const now = usageOf(readNdjson(path.join(state, "usage.ndjson")));
       // Every account's newest reading and limit file: an account that runs out sits out, new Claude processes go to
       // the next one, and the run stops only when every account is out (E5, hub-realtest-accounts.mjs).
@@ -939,6 +967,17 @@ export async function runBench(options, hooks = {}) {
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
     if (hooks.afterReady) await hooks.afterReady(ctx);
+    // A chat spawned before the scenarios began may already have found the control port unreachable.
+    const brokenBefore = benchBroken(state);
+    if (brokenBefore) {
+      stopRun(brokenBefore);
+      log(brokenBefore);
+    }
+    const shellBroken = probeBenchAgent({ home, state, appBin: binary, worktree: ROOT, realHome: REAL_HOME, path: process.env.PATH ?? "" });
+    if (shellBroken) {
+      stopRun(shellBroken);
+      log(shellBroken);
+    }
     if (hooks.play) {
       results = await hooks.play(ctx, { runScenario, stopped: () => stopReason });
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));

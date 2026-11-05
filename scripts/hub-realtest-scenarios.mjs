@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
-import { finishSceneApps, sceneAgents } from "./bench-guard.mjs";
+import { canaryReport, canaryTable, finishSceneApps, sceneAgents, startSceneAgentPoll } from "./bench-guard.mjs";
 import { isTeamSeat, monoIdFor, speakerName } from "./realconv/seats.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -76,6 +76,8 @@ export async function runScenario(scenario, ctx) {
     log(`  ${scenario.id}: FAIL: ${agentsEarly.reason}`);
     return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics: {}, notes: [agentsEarly.reason], waits: [], chats: {}, verdict: "FAIL", fail: agentsEarly.reason };
   }
+  const agentPoll = startSceneAgentPoll(ctx);
+  try {
   // A run-wide look (no steps of its own): everything since the run began.
   const t0 = scenario.since === "run" ? ctx.runStarted : Date.now();
   const stop = Math.min(deadline + 10 * 60_000, Date.now() + (scenario.minutes ?? 10) * 60_000);
@@ -522,16 +524,28 @@ export async function runScenario(scenario, ctx) {
   const names = Object.fromEntries([...(ctx.team ?? []), ...(snap?.monos ?? [])].filter((mono) => mono?.id && mono?.name).map((mono) => [mono.id, mono.name]));
   const result = { ...record, ended, metrics, room, otherRooms, texts, names, answers: questionAnswers(ctx.state, t0), delegations: rows, criteria: scenario.criteria ?? "", ...(scenario.asks ? { asks: scenario.asks } : {}) };
   const touch = finishSceneApps(appsBefore, typeof ctx.listApps === "function" ? ctx.listApps() : null, ctx.stopRun);
-  const agentsAfter = sceneAgents(ctx);
+  const watched = await agentPoll.stop();
+  const agentsAfter = watched.hit;
   const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
+  result.agents = watched.agents;
+  const canary = canaryReport(scenario.canaryClis, { agents: watched.agents, evidence: result, hit: agentsAfter });
+  if (canary?.hardStop && !hardStops.includes(canary.hardStop)) hardStops.push(canary.hardStop);
   if (hardStops.length) {
     result.verdict = "FAIL";
     result.fail = hardStops.join("; ");
+  } else if (canary?.unproven) {
+    result.verdict = "NOT PROVEN";
+    result.fail = canary.unproven;
   }
+  if (canary) result.canary = canary.rows;
   fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify(result, null, 2));
-  fs.writeFileSync(path.join(dir, "transcript.md"), transcript(scenario, result, t0));
+  const written = transcript(scenario, result, t0);
+  fs.writeFileSync(path.join(dir, "transcript.md"), canary?.rows?.length ? `${written}\n## Canary\n\n${canaryTable(canary.rows)}\n` : written);
   log(`  ${scenario.id}: ${metrics.usage.turns} turns, ${metrics.room.messages} room messages, ${metrics.delegations.count} delegations, ${metrics.minutes} min`);
-  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), ...(hardStops.length ? { verdict: "FAIL", fail: hardStops.join("; ") } : {}) };
+  return { id: scenario.id, title: scenario.title, bench: scenario.bench ?? [], metrics, notes: record.notes, waits: record.waits, chats: Object.fromEntries(chats), agents: watched.agents, ...(canary ? { canary: canary.rows } : {}), ...(result.verdict ? { verdict: result.verdict, fail: result.fail } : {}) };
+  } finally {
+    await agentPoll.stop();
+  }
 }
 
 /** The workers of the rows: the port each brief gave it, whether those ports are all different, and their checkouts. */
