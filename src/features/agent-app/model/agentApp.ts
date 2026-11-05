@@ -24,6 +24,8 @@ import {
 } from "../../sessions/model/models";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import type { CrewRule } from "../../crew/model/rules";
+import { cleanRanFrom } from "../../crew/model/workerChoice";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -245,6 +247,8 @@ export type AgentAppHost = {
     team?: string;
     /** WP-21: crew rules stored on this Mono. */
     crewRules?: CrewRule[];
+    /** WP-89: the worker default stored on this Mono. */
+    workerDefault?: WorkerPick;
   } | undefined;
   /**
    * The Mono a session belongs to, workers included (hub/model/hubMcp.ts chatMonoOwner): a worker works as the Mono
@@ -264,6 +268,15 @@ export type AgentAppHost = {
   };
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
+  /** WP-89: one line in the activity log. Absent in a build that has no log. */
+  noteActivity?(entry: {
+    kind: string;
+    summary: string;
+    project: string;
+    target: string;
+    actorId: string;
+    actorName: string;
+  }): void;
   habits?: {
     load(monoId: string): Promise<Habit[]>;
     update<T>(
@@ -802,6 +815,23 @@ function startLaunch(
       ? { worktreeCwd: currentWorktree }
       : {}),
     ...(worktreeBase ? { worktreeBase } : {}),
+    // WP-89: the start card names where this came from, and the effort only when this launch set one.
+    ...launchCard(input, model, requestedSettings),
+  };
+}
+
+/** The source line and effort a start card shows. An unknown source is left off. */
+function launchCard(
+  input: Record<string, unknown>,
+  model: ReturnType<typeof resolveModel>,
+  settings: Record<string, unknown>,
+): { ranFrom?: string; ranEffort?: string } {
+  const ranFrom = cleanRanFrom(input.ranFrom);
+  const ranEffort =
+    input.effort !== undefined ? modelEffortLabel(model, settings as Record<string, string>) : undefined;
+  return {
+    ...(ranFrom ? { ranFrom } : {}),
+    ...(ranEffort ? { ranEffort } : {}),
   };
 }
 

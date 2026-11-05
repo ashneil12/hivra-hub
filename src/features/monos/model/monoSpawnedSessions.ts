@@ -7,6 +7,7 @@ import {
   isProseBlock,
   type TurnItem,
 } from "../../sessions/model/transcriptActivity";
+import { cleanRanFrom } from "../../crew/model/workerChoice";
 import {
   HARNESSES,
   sessionDraftBlock,
@@ -39,6 +40,7 @@ export function sanitizeMonoSpawnedSessions(
       typeof item.effort === "string" && item.effort.trim() && item.effort.length <= 40
         ? item.effort.trim()
         : undefined;
+    const from = cleanRanFrom(item.from);
     if (!result.has(item.sessionId))
       result.set(item.sessionId, {
         sessionId: item.sessionId,
@@ -47,6 +49,7 @@ export function sanitizeMonoSpawnedSessions(
         harness: item.harness,
         model: item.model,
         ...(effort ? { effort } : {}),
+        ...(from ? { from } : {}),
       });
   }
   return [...result.values()];
@@ -75,6 +78,37 @@ export function recordMonoSpawnedSession(
     monoSpawnedSessions: [...(block.monoSpawnedSessions ?? []), launched],
   };
   return { ...mono, blocks };
+}
+
+/**
+ * A card already in the chat for a worker that was waiting. Undefined means leave
+ * it. A start that names no source does not rewrite a card that named none.
+ */
+export function waitingCardAfterStart(
+  card: MonoSpawnedSession,
+  start: Pick<MonoSpawnedSession, "model" | "harness" | "effort" | "from">,
+): MonoSpawnedSession | undefined {
+  const named = !!(card.from || card.effort);
+  const startNames = !!(start.from || start.effort);
+  // A start that names no source does not rewrite a card that named none.
+  if (!named && !startNames) return undefined;
+  const next: MonoSpawnedSession = {
+    ...card,
+    model: start.model.trim() || card.model,
+    harness: start.harness,
+  };
+  if (start.effort) next.effort = start.effort;
+  else delete next.effort;
+  if (start.from) next.from = start.from;
+  else delete next.from;
+  if (
+    next.model === card.model &&
+    next.harness === card.harness &&
+    next.effort === card.effort &&
+    next.from === card.from
+  )
+    return undefined;
+  return next;
 }
 
 type SessionReceipt = {

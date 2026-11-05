@@ -1,4 +1,6 @@
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
+import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import { chatQuestion, gateQuestion } from "../../hub/model/chatQuestions";
 import { forUser } from "../../hub/model/userName";
 import { markMonoRemovedByUser } from "../../hub/model/builtInMonos";
@@ -85,6 +87,8 @@ export type Mono = {
   muted?: boolean;
   /** WP-21: this Mono's crew rules. They beat the project's when its chat launches crew. */
   crewRules?: CrewRule[];
+  /** WP-89: the CLI, model and effort its workers use, when this Mono sets one. */
+  workerDefault?: WorkerPick;
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -227,6 +231,12 @@ function parseCrewRules(value: unknown): CrewRule[] | undefined {
   return rules.length ? rules : undefined;
 }
 
+/** A hand-edited default is untrusted. A blank or broken one is dropped, not rewritten. */
+function parseWorkerDefault(value: unknown): WorkerPick | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return cleanStoredDefault(value as { cli?: string; model?: string; effort?: string });
+}
+
 function newMonoId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
@@ -247,6 +257,7 @@ function parseMono(value: unknown): Mono | undefined {
   const legacyProject = text("legacyProject");
   const role = text("role");
   const crewRules = parseCrewRules(entry.crewRules);
+  const workerDefault = parseWorkerDefault(entry.workerDefault);
   const roomSessions = Object.fromEntries(
     Object.entries(record(entry.roomSessions)).filter(
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
@@ -274,6 +285,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.pinned === true ? { pinned: true } : {}),
     ...(entry.muted === true ? { muted: true } : {}),
     ...(crewRules ? { crewRules } : {}),
+    ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),
     ...(engine ? { engine } : {}),
     ...(engine && engineModel ? { engineModel } : {}),

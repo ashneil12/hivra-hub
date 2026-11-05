@@ -88,23 +88,24 @@ describe("The model its workers run on", () => {
     const anchor = document.createElement("button");
     document.body.append(anchor);
     act(() => root.render(createElement(ProjectWorkers, { project: hivra, anchor, onClose: vi.fn() })));
-    const line = () => document.querySelector("[data-project-worker-model-line]")?.textContent ?? "";
+    const line = () => document.querySelector("[data-worker-default-line]")?.textContent ?? "";
+    const empty = document.querySelector<HTMLSelectElement>("[data-project-worker-model]")?.options[0]?.text ?? "";
     expect(projectWorkerModel("hivra")).toBeUndefined();
-    expect(line()).toBe(
-      "Each job here runs on Sonnet; one marked hard, a heavy job, a retry, or a job covering 8 or more files gets a stronger model.",
-    );
+    expect(empty).toBe("Use the default");
+    expect(document.querySelector("[data-project-worker-model-line]")).toBeNull();
+    expect(line()).toBe("Its workers use the usual model.");
     expect(document.querySelector("[data-project-worker-effort]")).toBeNull();
     // Choosing a model keeps its own default effort, and the line says the value the workers start at.
     act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-model]")!, "claude:opus-5-5"));
     expect(projectWorkerModel("hivra")).toEqual({ model: "claude:opus-5-5", effort: "medium" });
-    expect(line()).toBe("Each job here runs on Opus 5.5 at medium effort, unless the job names its own model.");
+    expect(line()).toBe("Its workers use Opus 5.5 at medium effort (set for this project).");
     act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-effort]")!, "high"));
     expect(projectWorkerModel("hivra")).toEqual({ model: "claude:opus-5-5", effort: "high" });
     expect(line()).toContain("Opus 5.5 at high effort");
-    // Back to the usual rule: nothing saved, so a hard job steps up again.
+    // Back to the usual rule: nothing saved, so the next scope shows through.
     act(() => pick(document.querySelector<HTMLSelectElement>("[data-project-worker-model]")!, ""));
     expect(projectWorkerModel("hivra")).toBeUndefined();
-    expect(line()).toContain("Each job here runs on Sonnet");
+    expect(line()).toBe("Its workers use the usual model.");
     anchor.remove();
   });
 });

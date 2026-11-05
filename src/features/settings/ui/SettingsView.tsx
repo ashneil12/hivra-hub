@@ -6,6 +6,8 @@ import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingThe
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
+// WP-79: Settings → Connected apps.
+import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
@@ -18,6 +20,7 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -698,6 +701,10 @@ export function SettingsView({
                 // WP-78: Settings → Activity.
                 <ActivityPage onOpenSession={onOpenSession} />
               ) : null}
+              {section === "connected" ? (
+                // WP-79: Settings → Connected apps.
+                <ConnectedApps />
+              ) : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
               {/* WP-75: checked backups, one item or everything. */}
@@ -723,6 +730,8 @@ export function SettingsView({
                   <CrewRulesPage cwd={cwd} />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
+                  <GithubIssuesSetting project={cwd} />
                 </>
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
