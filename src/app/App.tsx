@@ -5,6 +5,7 @@ import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
+import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
@@ -102,6 +103,8 @@ import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { profileNote } from "../features/memory/ui/profileForTurn";
+import { ensureMorningHabit } from "../features/chief/model/habit";
+import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
@@ -168,6 +171,8 @@ import {
   trackCiRepair,
 } from "../features/inbox/model/ciRepairTracking";
 import { invoke } from "@tauri-apps/api/core";
+import { setLineRulesSource } from "../features/crew/model/lineRules";
+import { activityNoteSummary } from "../features/crew/model/workerChoice";
 import {
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
@@ -305,6 +310,7 @@ import {
   launchedSessionState,
   monoSpawnedSessions,
   recordMonoSpawnedSession,
+  waitingCardAfterStart,
   type LaunchedSessionState,
   type LaunchedSessionView,
 } from "../features/monos/model/monoSpawnedSessions";
@@ -849,6 +855,7 @@ import {
   subscribeMonos,
   type MonoState,
 } from "../features/monos/model/mono";
+import { holdRunCard, monoCardText } from "../features/monos/model/monoCards";
 import {
   codingTeamContext,
   loadMonoFiles,
@@ -9188,10 +9195,9 @@ function Workspace({
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
-          if (options?.onSettled && event.type === "message.delta")
-            controlText = (controlText + event.text).slice(-20_000);
-          if (options?.onSettled && event.type === "message.completed")
-            controlText += "\n";
+          // A finished assistant message is its own paragraph. One newline glues "rest.Six".
+          if (options?.onSettled)
+            controlText = appendControlEvent(controlText, event);
           if (event.type === "session.error")
             controlOutcome = withProviderFailure(controlOutcome, event);
           if (
@@ -9555,7 +9561,15 @@ function Workspace({
                 : team
                   ? `${team.id}-lead`
                   : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt);
+            // WP-88: a Mono that reads every project recalls every mate's reviewed memory.
+            // The soul file counts, the same way the tools do. A timeout still recalls nothing.
+            const recallWide = (await turnRecallWide(monoForSession(sessionId), async () => {
+              if (!agentFiles) throw new Error("unread");
+              return agentFiles.soul;
+            }))
+              ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
+              : undefined;
+            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);
@@ -9876,20 +9890,21 @@ function Workspace({
   /** Adds a block to a Mono's chat outside any turn, once no reply is streaming. */
   const appendToMono = (
     monoId: string,
-    block: Block,
+    block: Block | Block[],
     then?: (mono: Session) => void,
     attempt = 0,
   ) => {
+    const added = Array.isArray(block) ? block : [block];
     const mono = sessionsRef.current.find((session) => session.id === monoId);
     if (!mono) return;
     if (mono.busy && attempt < 120) {
       window.setTimeout(
-        () => appendToMono(monoId, block, then, attempt + 1),
+        () => appendToMono(monoId, added, then, attempt + 1),
         5_000,
       );
       return;
     }
-    const next: Session = { ...mono, blocks: [...mono.blocks, block] };
+    const next: Session = { ...mono, blocks: [...mono.blocks, ...added] };
     sessionsRef.current = sessionsRef.current.map((session) =>
       session.id === monoId ? next : session,
     );
@@ -9950,17 +9965,26 @@ function Workspace({
       );
       setSessions(sessionsRef.current);
     },
-    post: (monoId, habit, text, name, artifacts, launches) =>
+    post: (monoId, habit, text, name, artifacts, launches, cards) =>
       appendToMono(
         monoId,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text,
-          monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
-          ...(artifacts?.length ? { artifactCards: artifacts } : {}),
-          ...(launches?.length ? { monoSpawnedSessions: launches } : {}),
-        },
+        [
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text,
+            monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+            ...(artifacts?.length ? { artifactCards: artifacts } : {}),
+            ...(launches?.length ? { monoSpawnedSessions: launches } : {}),
+          },
+          ...(cards ?? []).map((card) => ({
+            id: crypto.randomUUID(),
+            role: "assistant" as const,
+            text: monoCardText(card),
+            monoCard: card,
+            monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+          })),
+        ],
         (posted) => {
           monoReplies.noteReply(monoId);
           void announceSessionFinished(
@@ -12405,7 +12429,8 @@ function Workspace({
     },
     startCodingTeamChat: (projectId, runtimeMode) => startCodingTeamChat(projectId, runtimeMode),
     // Called after this render, so onApproval (declared below) is set by then.
-    approve: (sessionId, requestId) => onApproval(sessionId, requestId, "allow"),
+    // bench: Allow, or Deny when the run refuses a permission card.
+    approve: (sessionId, requestId, decision) => onApproval(sessionId, requestId, decision ?? "allow"),
     // The run's teardown: the sidebar's Archive, no confirm. Declared below, so read through its ref.
     archive: (sessionId) => removeSessionRef.current(sessionId, "archive", true),
     openSession: (sessionId, owner) => {
@@ -12441,7 +12466,7 @@ function Workspace({
       showHub: (selection) => verifyDriverHost.current!.showHub(selection),
       startCodingTeamChat: (projectId, runtimeMode) =>
         verifyDriverHost.current!.startCodingTeamChat?.(projectId, runtimeMode) ?? null,
-      approve: (sessionId, requestId) => verifyDriverHost.current!.approve?.(sessionId, requestId),
+      approve: (sessionId, requestId, decision) => verifyDriverHost.current!.approve?.(sessionId, requestId, decision),
       archive: async (sessionId) => (await verifyDriverHost.current!.archive?.(sessionId)) ?? false,
     });
   }, []);
@@ -13238,6 +13263,13 @@ function Workspace({
     // The waiting queue lives in the app's database: survives a restart, shared by every window (worker_queue.rs).
     void setWorkerQueueBackend(tauriWorkerQueue);
   }, []);
+  useEffect(() => {
+    // WP-89: the line in force reads this project's crew rules, and a plugin's.
+    setLineRulesSource((project) =>
+      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
+    );
+    return () => setLineRulesSource(undefined);
+  }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
   removeSessionRef.current = onRemoveHistorySession;
 
@@ -13351,8 +13383,37 @@ function Workspace({
           if (!sourceTurnId) return;
           // A worker that waited (H8) already has its card, from the turn that asked for it.
           const asked = sessionsRef.current.find((session) => session.id === source.id);
-          if (asked?.blocks.some((block) => block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId)))
+          const waiting = asked?.blocks.some((block) =>
+            block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId),
+          );
+          if (waiting) {
+            // WP-89: a waiting card follows the start, including a usual model that names no source.
+            const next = sessionsRef.current.map((session) => {
+              if (session.id !== source.id) return session;
+              let touched = false;
+              const blocks = session.blocks.map((block) => {
+                if (!block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId))
+                  return block;
+                let blockTouched = false;
+                const monoSpawnedSessions = block.monoSpawnedSessions.map((card) => {
+                  if (card.sessionId !== entry.sessionId) return card;
+                  const updated = waitingCardAfterStart(card, entry);
+                  if (!updated) return card;
+                  blockTouched = true;
+                  return updated;
+                });
+                if (!blockTouched) return block;
+                touched = true;
+                return { ...block, monoSpawnedSessions };
+              });
+              return touched ? { ...session, blocks } : session;
+            });
+            if (next.some((session, index) => session !== sessionsRef.current[index])) {
+              sessionsRef.current = next;
+              setSessions(next);
+            }
             return;
+          }
           const next = sessionsRef.current.map((session) =>
             session.id === source.id
               ? recordMonoSpawnedSession(session, sourceTurnId, entry)
@@ -13626,6 +13687,9 @@ function Workspace({
                   model:
                     created?.model ??
                     resolveModel(launch.harness, launch.model).id,
+                  // WP-89: the start card names the effort and where the CLI, model and effort came from.
+                  ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
+                  ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
                 });
               };
               const open = sessionsRef.current.find(
@@ -14065,6 +14129,38 @@ function Workspace({
             },
             isMono: (id) => isMonoSession(id),
             isHabitRun: (id) => isHabitRun(id),
+            // WP-89: a worker-default change lands in this chat, and in the activity log.
+            postCard: (sessionId, card) => {
+              if (isHabitRun(sessionId)) {
+                holdRunCard(sessionId, card);
+                return;
+              }
+              const latest = sessionsRef.current.find((session) => session.id === sessionId);
+              if (!latest) return;
+              const updated = {
+                ...latest,
+                blocks: [
+                  ...latest.blocks,
+                  {
+                    id: crypto.randomUUID(),
+                    role: "assistant" as const,
+                    text: monoCardText(card),
+                    monoCard: card,
+                  },
+                ],
+              };
+              sessionsRef.current = sessionsRef.current.map((session) =>
+                session.id === sessionId ? updated : session,
+              );
+              setSessions(sessionsRef.current);
+              void upsertSession(updated);
+            },
+            noteActivity: (entry) => {
+              // WP-89: the log refuses a summary over 500 characters, so a long line is shortened here.
+              void invoke("activity_note", { ...entry, summary: activityNoteSummary(entry.summary) }).catch(
+                () => undefined,
+              );
+            },
             tree: {
               on: (monoId) => longChatOn(monoId),
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
@@ -14082,6 +14178,18 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-88: projects on this copy, the activity log, and reviewed memory.
+            knownProjects: () => hubData().listProjects().map((project) => ({
+              id: project.id,
+              name: project.name,
+              folder: project.folder ?? null,
+            })),
+            activityList: (query) => invoke("activity_list", { query }),
+            memoryDoc: async () => {
+              const loaded = await invoke<{ doc?: unknown } | null>("memory_review_load");
+              return loaded?.doc ?? null;
+            },
+            mateIds: () => listMonos().map((item) => item.id),
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
@@ -14106,6 +14214,10 @@ function Workspace({
                     : {}),
                   // WP-21: this Mono's crew rules go with the route.
                   ...(mono.crewRules?.length ? { crewRules: mono.crewRules } : {}),
+                  ...(mono.instructions ? { instructions: mono.instructions } : {}),
+                  ...(mono.everyProject === true ? { everyProject: true } : {}),
+                  // WP-89: this Mono's worker default goes with the route.
+                  ...(mono.workerDefault ? { workerDefault: mono.workerDefault } : {}),
                 }
               );
             },
@@ -14116,7 +14228,20 @@ function Workspace({
               const mono = findMono(monoId);
               return mono ? monoLook(mono).name : undefined;
             },
-            habits: { load: loadHabits, update: updateHabits },
+            habits: {
+              load: async (monoId: string) => {
+                const list = await loadHabits(monoId);
+                // WP-88: the morning note is one habit. An edited one is left alone. A timeout keeps the old list.
+                if (!readsEveryProject(findMono(monoId))) return list;
+                try {
+                  await ensureMorningHabit(monoId, loadHabits, async (id, change) => updateHabits(id, change), Date.now());
+                } catch {
+                  return list;
+                }
+                return loadHabits(monoId).catch(() => list);
+              },
+              update: updateHabits,
+            },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
               firstMate: steering,
@@ -14171,6 +14296,9 @@ function Workspace({
                     title: job.title,
                     harness: launch.harness as HarnessId,
                     model: launch.model || launch.harness,
+                    // WP-89: a waiting worker's card names the effort and where it came from.
+                    ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
+                    ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
                   }),
               }),
               briefLead: async (owner, mono, input) => {

@@ -1,11 +1,13 @@
 // Hivra WP-11: the app's one hook for the first mate's wake queue (watcher/wakeQueue.ts). The main window delivers:
 // at start (a restart is a non-event: what was owed is drained), whenever Rust stores a wake, and on the watcher's
 // half-minute look, which also fires due timers.
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { getSession } from "../../sessions/data/sessionStore";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
+import { isCodingTeamChat } from "../../hub/model/codingTeam";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { FIRSTMATE_WAKE, setCurrentWakeQueue, tauriWakeQueue, WakeQueue, type WakeQueueBackend } from "../watcher/wakeQueue";
 
@@ -47,6 +49,13 @@ export function useFirstMateWakes(options: {
     };
     const look = () => {
       if (!live) return;
+      // WP-77: labelled GitHub issues, on the same look. Rust waits a few minutes between reads.
+      const projects = latest.current.sessionsRef.current.flatMap((session) => {
+        const project = session.cwd.trim();
+        if (!project || !isCodingTeamChat(session.id)) return [];
+        return [{ project, assignee: session.id }];
+      });
+      void invoke("github_issues_poll", { projects }).catch(() => undefined);
       void queue
         .tick()
         .catch(() => 0)

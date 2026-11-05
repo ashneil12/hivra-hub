@@ -110,3 +110,30 @@ it("counts needs you only after a real list, and a removed task is not counted",
   const none = await loadNeedsYouCount(source({ decisions: async () => [], tasks: async () => [], projects: () => [] }));
   expect(none).toBe(0);
 });
+
+it("keeps the morning summary switch when the store times out", async () => {
+  const base = source();
+  await base.disk.write("home", { dailySummary: false, savedAt: 3, recent: [] }, 0);
+  const snap = await fetchHome(base, () => 4);
+  expect(snap.summaryOff).toBe(true);
+  const down = {
+    async readDoc() {
+      throw new Error("timeout");
+    },
+    async read() {
+      throw new Error("timeout");
+    },
+    async write() {
+      return 1;
+    },
+  };
+  const mirror = {
+    get: (key: string) => (key === "monocode:home" ? JSON.stringify({ savedAt: 1, dailySummary: false, recent: [] }) : null),
+    set: () => undefined,
+  };
+  const kept = await fetchHome(source({ disk: down, storage: mirror }), () => 8);
+  expect(kept.summaryOff).toBe(true);
+  const settled = { ...snap, storeUnavailable: false as const };
+  const timed = { ...kept, summaryOff: false };
+  expect(mergeHomeLoad(settled, timed).snap.summaryOff).toBe(true);
+});

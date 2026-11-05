@@ -42,6 +42,8 @@ export type HomeSnapshot = {
   rev: number;
   /** The arrangement store did not answer. The snapshot is a mirror or the last good read, and it should be tried again. */
   storeUnavailable: boolean;
+  /** WP-88: the morning summary was turned off. Absent means it is on. */
+  summaryOff?: boolean;
 };
 
 export type HomeSource = {
@@ -89,6 +91,7 @@ export async function fetchHome(source: HomeSource, now: () => number = Date.now
     arrangement: home.doc.arrangement,
     rev: home.rev,
     storeUnavailable: home.unavailable,
+    summaryOff: home.doc.dailySummary === false,
   };
 }
 
@@ -99,7 +102,14 @@ export function mergeHomeLoad(prev: HomeSnapshot | null, next: HomeSnapshot): { 
   if (!next.storeUnavailable) return { snap: next, retry: false };
   if (prev && !prev.storeUnavailable) {
     return {
-      snap: { ...next, arrangement: prev.arrangement, chats: prev.chats, rev: prev.rev, storeUnavailable: true },
+      snap: {
+        ...next,
+        arrangement: prev.arrangement,
+        chats: prev.chats,
+        rev: prev.rev,
+        summaryOff: prev.summaryOff,
+        storeUnavailable: true,
+      },
       retry: true,
     };
   }

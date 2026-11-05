@@ -62,6 +62,33 @@ test("an agent bar runs from when the work started to when it finished", () => {
   expect(finished?.dueAt).toBe("2026-03-04T00:00:00.000Z");
 });
 
+test("a labelled GitHub issue keeps its link, pause and pulls", () => {
+  const [task] = readStoreTasks([
+    {
+      id: "g",
+      title: "Fix the door",
+      githubUrl: " https://github.com/acme/web/issues/7 ",
+      githubPaused: true,
+      githubPulls: [
+        { title: "Crew", url: "https://github.com/acme/web/pull/4", state: "merged" },
+        { url: "  " },
+        { title: 1, url: " https://github.com/acme/web/pull/5 " },
+        null,
+      ],
+    },
+  ]);
+  expect(task?.githubUrl).toBe("https://github.com/acme/web/issues/7");
+  expect(task?.githubPaused).toBe(true);
+  expect(task?.githubPulls).toEqual([
+    { title: "Crew", url: "https://github.com/acme/web/pull/4", state: "merged" },
+    { title: "", url: "https://github.com/acme/web/pull/5", state: "" },
+  ]);
+  const plain = readStoreTasks([{ id: "p", title: "Plain" }])[0];
+  expect(plain?.githubUrl).toBeNull();
+  expect(plain?.githubPaused).toBe(false);
+  expect(plain?.githubPulls).toEqual([]);
+});
+
 test("a bad priority, a duplicate id and a missing list do not throw", () => {
   expect(readStoreTasks(null)).toEqual([]);
   expect(readStoreTasks([{ id: "a", title: "A", priority: "nope" }, { id: "a", title: "again" }])).toHaveLength(1);

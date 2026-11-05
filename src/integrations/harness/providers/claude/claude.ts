@@ -1495,9 +1495,11 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
     emitTaskListIfNeeded(live, tool.name, tool.input);
   }
 
-  // Each assistant record is one Claude message. Wait until the next message
-  // begins to close its UI block, so a backgrounded turn stays visibly live.
-  live.pendingAssistantBoundary = !!(snapshot || live.emittedAssistant);
+  // Claude Code writes one record per content block, so a tool record follows
+  // the text of the same message and has no text of its own. It must not clear
+  // the boundary the text set, or message.completed never fires before the next
+  // message and the two run together ("rest.Six"). A later record may only set it.
+  if (snapshot || live.emittedAssistant) live.pendingAssistantBoundary = true;
   live.emittedAssistant = "";
   live.emittedReasoning = "";
 }

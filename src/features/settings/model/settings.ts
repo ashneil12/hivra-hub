@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "connected"
   | "dashboards"
   | "portable"
   | "backups"
@@ -112,6 +113,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "connected",
+    group: "app",
+    label: "Connected apps",
+    description:
+      "AI tools on this computer that can read Hivra, and what each one may see.",
+    keywords: "mcp oauth connected apps outside tools claude door",
   },
   {
     id: "dashboards",
@@ -360,6 +369,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "general",
     label: "What should your team call you?",
     keywords: "name user me my name call you onboarding agents",
+  },
+  {
+    id: "morning-summary",
+    section: "general",
+    label: "Morning summary",
+    keywords: "home morning daily summary chief habit note",
   },
   {
     id: "sounds",

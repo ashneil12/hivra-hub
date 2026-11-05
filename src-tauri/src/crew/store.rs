@@ -9,7 +9,10 @@ use serde_json::Value;
 use super::budget::normalize_failure_policy;
 use super::failure::is_account_class;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
-use super::resolve::{default_cli_except, resolve_route, role_model, Pick, Presence, Route};
+use super::resolve::{
+    default_cli_except, resolve_route, role_model, CatalogModel, Pick, Presence, Route,
+    RouteDefaults,
+};
 use super::rules::{self, Rule};
 
 const MAX_RULES: usize = 40;
@@ -105,6 +108,12 @@ pub struct RouteQuery {
     /// WP-21: rules stored on the Mono. When any survive the checks, they are this Mono's rules.
     #[serde(default)]
     pub mono_rules: Vec<Rule>,
+    /// WP-89: the Mono, project and system defaults, and the app's usual model and effort.
+    #[serde(default)]
+    pub defaults: Option<RouteDefaults>,
+    /// WP-89: models each CLI offers. Empty means no catalog, so a model stays a free string.
+    #[serde(default)]
+    pub catalog: std::collections::BTreeMap<String, Vec<CatalogModel>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -525,6 +534,8 @@ pub fn route_at(
         query.brief.as_ref(),
         &merged,
         &query.present,
+        query.defaults.as_ref(),
+        &query.catalog,
     );
     let cooled = cooled_clis(conn, now)?;
     if route.cli_from != "override" {
