@@ -127,6 +127,8 @@ pub mod ssh_askpass;
 // Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
 mod worktree_pool;
 // WP-87: a stack per worktree, with its own ports and Compose project.
+mod local_services; // WP-90: the fake outside service each stack can run
+mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
 mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
