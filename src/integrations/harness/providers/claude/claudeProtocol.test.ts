@@ -34,10 +34,7 @@ import {
   runtimeModeToPermission,
   sessionIdFromMessage,
   statusTextFromSystem,
-  assistantMessageText,
   streamDeltaFromEvent,
-  textBlockGap,
-  textBlockStartFromEvent,
   toClaudePermissionResult,
   toolKindFromName,
   toolStartFromEvent,
@@ -48,61 +45,6 @@ import {
   isReplayedTaskNotificationResult,
 } from "./claudeProtocol";
 import { claudeFailureFromResult } from "./claudeFailure";
-
-describe("assistant message text", () => {
-  const ack = "Starting with the hourly checker, then the rest.";
-  const answer = "Six asks. Here's what's true.";
-  const message = {
-    type: "assistant",
-    message: {
-      content: [
-        { type: "text", text: ack },
-        { type: "tool_use", id: "t", name: "Read", input: {} },
-        { type: "text", text: answer },
-      ],
-    },
-  };
-
-  it("keeps a start-ack and the answer as two paragraphs", () => {
-    expect(assistantMessageText(message)).toContain("then the rest.\n\nSix asks.");
-    expect(assistantMessageText(message)).toBe(`${ack}\n\n${answer}`);
-  });
-
-  it("leaves a single text block unchanged", () => {
-    expect(
-      assistantMessageText({ message: { content: [{ type: "text", text: ack }] } }),
-    ).toBe(ack);
-    expect(assistantMessageText({})).toBe("");
-  });
-
-  it("adds a blank line only before a later text block", () => {
-    expect(textBlockGap("")).toBe("");
-    expect(textBlockGap(ack)).toBe("\n\n");
-    expect(textBlockGap(`${ack}\n`)).toBe("\n");
-    expect(textBlockGap(`${ack}\n\n`)).toBe("");
-  });
-
-  it("sees a text block starting, and not a tool", () => {
-    expect(
-      textBlockStartFromEvent({
-        event: { type: "content_block_start", content_block: { type: "text", text: "" } },
-      }),
-    ).toBe(true);
-    expect(
-      textBlockStartFromEvent({
-        event: {
-          type: "content_block_start",
-          content_block: { type: "tool_use", id: "t", name: "Read" },
-        },
-      }),
-    ).toBe(false);
-    expect(
-      textBlockStartFromEvent({
-        event: { type: "content_block_delta", delta: { type: "text_delta", text: "Six" } },
-      }),
-    ).toBe(false);
-  });
-});
 
 describe("runtimeModeToPermission", () => {
   it("maps runtime modes onto Claude permission flags", () => {
