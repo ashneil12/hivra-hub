@@ -148,6 +148,7 @@ export function parseCliArgs(argv) {
     resume: value("--resume"),
     sessionId: value("--session-id"),
     model: value("--model"),
+    effort: value("--effort"),
     permissionMode: value("--permission-mode"),
     helper: argv.includes("--no-session-persistence") || argv.includes("-p") || argv.includes("--print"),
   };

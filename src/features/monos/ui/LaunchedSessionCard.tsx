@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { projectName } from "../../../shared/lib/paths";
+import { cliLabel } from "../../crew/model/clis";
 import { resolveModel } from "../../sessions/model/models";
 import {
   Chatting,
@@ -125,6 +126,10 @@ export function LaunchedSessionCard({
   const status = stalled ? STALLED : view ? STATUS[view.state] : undefined;
   const ran = modelLabel(launch.harness, launch.model);
   const ranLine = `Runs on ${ran}${launch.effort ? `, ${launch.effort} effort` : ""}`;
+  // WP-89: the card names the CLI, the model, the effort and where they came from. No source, no extra line.
+  const ranWhere = launch.from
+    ? `Runs on ${cliLabel(launch.harness)}, ${ran}${launch.effort ? `, ${launch.effort} effort` : ""} (${launch.from})`
+    : undefined;
   return (
     <button
       type="button"
@@ -132,7 +137,7 @@ export function LaunchedSessionCard({
       data-state={stalled ? "stalled" : view?.state}
       aria-label={`Open session ${title}${status ? `, ${status.label.toLowerCase()}` : ""}`}
       aria-pressed={open}
-      title={[status?.label, ranLine].filter(Boolean).join(" · ")}
+      title={[status?.label, ranLine, launch.from].filter(Boolean).join(" · ")}
       onClick={onOpen}
       disabled={!onOpen}
       className={`@container/card flex min-w-0 max-w-[40rem] flex-1 basis-full items-center gap-2.5 overflow-hidden rounded-xl border py-1.5 pr-1.5 pl-3 text-left font-sans transition-colors hover:border-content/20 hover:bg-content/5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent disabled:opacity-60 ${open ? "border-content/20 bg-content/5" : "border-content/10"}`}
@@ -144,7 +149,7 @@ export function LaunchedSessionCard({
         />
       )}
       {/* r95 (PM): the job's name in full, never cut off: a long one wraps onto a second line. */}
-      <span data-launched-title className="min-w-0 flex-1 whitespace-normal break-words text-[13px] leading-snug text-content">{title}</span>
+      <span data-launched-title className="min-w-0 flex-1 whitespace-normal break-words text-[13px] leading-snug text-content">{ranWhere ? <>{title}<span data-launched-ran className="mt-0.5 block text-[12px] leading-snug text-content/55">{ranWhere}</span></> : title}</span>
       {view?.state === "waiting" ? (
         <span
           data-launched-waiting

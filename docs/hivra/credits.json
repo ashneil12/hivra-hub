@@ -377,6 +377,14 @@
       "copyright": "Copyright (c) 2025 Agent Zero, s.r.o.",
       "where": "src/features/memory/vendor/agentZeroMemories.ts",
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
+    },
+    {
+      "name": "Orbit's MCP door",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/outside",
+      "how": "Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored."
     }
   ]
 }

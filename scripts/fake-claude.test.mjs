@@ -94,6 +94,7 @@ test("parses the arguments the adapter passes", () => {
     resume: "abc",
     sessionId: undefined,
     model: "m",
+    effort: undefined,
     permissionMode: undefined,
     helper: false,
   });

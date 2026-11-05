@@ -298,6 +298,41 @@ describe("Mono database pagination and writes", () => {
     const page = await getMonoTranscriptPage(session.id, { before: 1_000 });
     expect(page.blocks[0].monoHabit).toEqual(monoHabit);
   });
+  it("keeps a worker-default card through a save and drops one that does not parse", async () => {
+    const line = "Its workers use Opus 4.7 at high effort (set for this Mono).";
+    const monoCard = {
+      type: "worker-default" as const,
+      scope: "mono" as const,
+      line,
+      previous: { cli: "claude", model: "claude:sonnet-5", effort: "low" },
+    };
+    const stored = {
+      ...record(),
+      blocks: [
+        { id: "card", role: "assistant" as const, text: line, monoCard },
+        { id: "bad", role: "assistant" as const, text: "nope", monoCard: { type: "nope" } },
+      ],
+    };
+    call.mockResolvedValueOnce(stored);
+    const session = (await getSession(stored.id))!;
+    expect(session.blocks.find((block) => block.id === "card")?.monoCard).toEqual(monoCard);
+    expect(session.blocks.find((block) => block.id === "bad")?.monoCard).toBeUndefined();
+    expect(session.blocks.find((block) => block.id === "bad")?.text).toBe("nope");
+
+    session.blocks = [
+      { id: "card", role: "assistant", text: line, monoCard },
+      { id: "bad", role: "assistant", text: "nope", monoCard: { type: "nope" } as never },
+    ];
+    call.mockResolvedValueOnce(saved(session));
+    await upsertSession(session);
+    const sent = call.mock.calls.at(-1)?.[1] as {
+      session: { blocks: { id: string; monoCard?: unknown; text: string }[] };
+    };
+    const blocks = sent.session.blocks;
+    expect(blocks.find((block) => block.id === "card")?.monoCard).toEqual(monoCard);
+    expect(blocks.find((block) => block.id === "bad")?.monoCard).toBeUndefined();
+    expect(blocks.find((block) => block.id === "bad")?.text).toBe("nope");
+  });
 
   it("preserves a Mono after removing its only loaded draft and appends to the saved tail", async () => {
     const session = await load();
