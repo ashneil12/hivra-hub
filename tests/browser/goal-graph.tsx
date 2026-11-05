@@ -14,13 +14,23 @@ import "../../src/styles/index.css";
 
 const LEAD = "goal-lead";
 const SAVED = "goal-graph:saved";
+const REPORT = "goal-graph:report";
 
 installFakeTauri("main", (command, args) => {
   if (command === "control_save") {
-    localStorage.setItem(SAVED, String(args.state));
+    const state = String(args.state);
+    localStorage.setItem(SAVED, state);
+    // The Rust rules answer `goal_graph_report` from the record; this stand-in answers with the report the saved run carries.
+    const report = (JSON.parse(state) as { goalReport?: unknown }).goalReport;
+    if (report) localStorage.setItem(REPORT, JSON.stringify(report));
+    else localStorage.removeItem(REPORT);
     return null;
   }
   if (command === "control_load") return localStorage.getItem(SAVED);
+  if (command === "goal_graph_report") {
+    const saved = localStorage.getItem(REPORT);
+    return { report: saved ? JSON.parse(saved) : {} };
+  }
   return null;
 });
 
