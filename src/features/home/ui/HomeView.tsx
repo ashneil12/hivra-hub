@@ -1,7 +1,15 @@
 // Home, wired to the app's tasks, decisions, docs and panels. A late load is dropped. A failed load keeps the last one.
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { askChief, fileIntoProject } from "../../chief/model/answer";
+import { readingsOf } from "../../chief/model/homeReadings";
+import { summaryLines } from "../../chief/model/summary";
+import { MORNING_HABIT_ID } from "../../chief/model/habit";
+import { readsEveryProject } from "../../chief/model/scope";
+import { listMonos } from "../../monos/model/mono";
+import { loadHabits } from "../../monos/model/monoHabits";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
@@ -23,6 +31,8 @@ export function HomeView() {
   const snapRef = useRef<HomeSnapshot | null>(null);
   const [snap, setSnap] = useState<HomeSnapshot | null>(null);
   const [failed, setFailed] = useState(false);
+  const [report, setReport] = useState<string | undefined>(undefined);
+  const [reply, setReply] = useState<{ text?: string; notes?: { id: string; kind: string; text: string; projectId: string }[] } | undefined>(undefined);
   useHubDataVersion();
   const projectKey = hubData().listProjects().map((project) => `${project.id}\0${project.name}\0${project.folder ?? ""}`).join("\n");
 
@@ -94,12 +104,36 @@ export function HomeView() {
     };
   }, [projectKey, source]);
 
+  useEffect(() => {
+    let stopped = false;
+    const mono = listMonos().find((item) => readsEveryProject(item));
+    if (!mono) return undefined;
+    void loadHabits(mono.id).then((habits) => {
+      if (stopped) return;
+      const morning = habits.find((habit) => habit.id === MORNING_HABIT_ID);
+      const latest = morning?.runs?.[0];
+      setReport(latest?.outcome === "posted" ? latest.report : undefined);
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+    };
+  }, [snap?.rev]);
+
   async function update(fn: (doc: HomeDoc) => HomeDoc) {
     const mine = ++token.current;
     const written = await changeHome(source.disk, source.storage, fn);
     if (!written || mine !== token.current) return;
     setSnap((prev) => {
-      const next = prev ? { ...prev, arrangement: written.doc.arrangement, chats: written.doc.recent, rev: written.rev, storeUnavailable: false } : prev;
+      const next = prev
+        ? {
+            ...prev,
+            arrangement: written.doc.arrangement,
+            chats: written.doc.recent,
+            rev: written.rev,
+            summaryOff: written.doc.dailySummary === false,
+            storeUnavailable: false,
+          }
+        : prev;
       snapRef.current = next;
       return next;
     });
@@ -109,23 +143,58 @@ export function HomeView() {
   const name = namesFor(projects);
   const tasks = (snap?.tasks ?? []).map((task) => ({ ...task, projectId: hubProjectId(task.projectId, projects) }));
   const arrangement = snap?.arrangement ?? { order: [], hidden: [], savedAt: 0 };
+  const readings = readingsOf({
+    projects,
+    tasks,
+    docs: snap?.docs ?? [],
+    decisions: snap?.decisions ?? [],
+    chats: snap?.chats ?? [],
+  });
+  const summary = summaryLines(report, snap?.summaryOff === true, readings);
+  async function onAsk(text: string) {
+    const current = snapRef.current;
+    const result = askChief(text, {
+      readings: current
+        ? readingsOf({
+            projects: current.projects,
+            tasks: current.tasks.map((task) => ({ ...task, projectId: hubProjectId(task.projectId, current.projects) })),
+            docs: current.docs,
+            decisions: current.decisions,
+            chats: current.chats,
+          })
+        : [],
+      projects: (current?.projects ?? []).map((project) => ({ id: project.id, name: project.name, folder: project.folder })),
+      loaded: current != null,
+    });
+    if (result.kind === "question") {
+      setReply({ text: result.text });
+      return;
+    }
+    if (result.kind === "lines") {
+      setReply(result.lines.length ? { notes: result.lines } : { text: "Nothing to say." });
+      return;
+    }
+    const filed = await fileIntoProject((command, args) => invoke(command, args), result.projectId, result.title);
+    setReply(filed.ok ? { text: "Filed.", notes: filed.id ? [{ id: filed.id, kind: "task", text: result.title, projectId: result.projectId }] : [] } : { text: filed.text });
+  }
   return (
     <HomeScreen
       needsYou={needsYouLines(snap?.decisions ?? [], tasks, name)}
       moving={movingLines(tasks, name)}
       recent={recentLines(snap?.docs ?? [], snap?.chats ?? [])}
       arrangement={snap ? arrangement : { order: [], hidden: [], savedAt: 0 }}
-      projects={projects}
       catalog={snap?.catalog ?? []}
       known={snap != null}
       failed={failed}
+      summary={summary}
+      reply={reply}
       onOpen={(line) => openFromHome(targetFor(line))}
       onMove={(key, dir) => void update((doc) => ({ ...doc, arrangement: moveSection(doc.arrangement, key, dir) }))}
       onHide={(key) => void update((doc) => ({ ...doc, arrangement: hideSection(doc.arrangement, key) }))}
       onShow={(key) => void update((doc) => ({ ...doc, arrangement: showSection(doc.arrangement, key) }))}
       onPin={(plugin, panelId) => void update((doc) => ({ ...doc, arrangement: pinPanel(doc.arrangement, plugin, panelId) }))}
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
-      onStart={(projectId) => openFromHome({ kind: "coding", projectId })}
+      onAsk={(text) => void onAsk(text)}
       renderPanel={(panel) => <PanelFrame plugin={panel.plugin} panelId={panel.panelId} spec={panel.spec} />}
     />
   );
