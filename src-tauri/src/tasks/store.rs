@@ -10,8 +10,8 @@ use super::mapping::{self, Placement};
 
 pub(crate) const CHANGED: &str = "tasks://changed";
 
-const TITLE_MAX: usize = 300;
-const TEXT_MAX: usize = 12_000;
+pub(crate) const TITLE_MAX: usize = 300;
+pub(crate) const TEXT_MAX: usize = 12_000;
 const PROJECT_MAX: usize = 1_000;
 /// Caps the ancestor walk only. The cycle check has no bound: a walk SQLite cannot finish is an error.
 const DEPTH_MAX: i64 = 1_000;
@@ -180,6 +180,19 @@ pub struct Task {
     pub trashed_at: Option<i64>,
     pub comments: Vec<Comment>,
     pub activity: Vec<Activity>,
+    /// Set when the task is a labelled GitHub issue or pull request (WP-77).
+    pub github_url: Option<String>,
+    pub github_paused: bool,
+    pub github_pulls: Vec<GithubPull>,
+}
+
+/// A pull request linked to a task, other than the task's own GitHub item.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubPull {
+    pub title: String,
+    pub url: String,
+    pub state: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -607,6 +620,7 @@ fn activity_of(conn: &Connection, row: &Row) -> Result<Vec<Activity>, String> {
 }
 
 fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
+    let github = crate::github_issues::shown(conn, &row.id)?;
     Ok(Task {
         id: row.id.clone(),
         project_id: row.project_id.clone(),
@@ -639,6 +653,17 @@ fn present(conn: &Connection, row: &Row, full: bool) -> Result<Task, String> {
         } else {
             Vec::new()
         },
+        github_url: github.url,
+        github_paused: github.paused,
+        github_pulls: github
+            .pulls
+            .into_iter()
+            .map(|pull| GithubPull {
+                title: pull.title,
+                url: pull.url,
+                state: pull.state,
+            })
+            .collect(),
     })
 }
 
@@ -684,7 +709,7 @@ fn child_counts(conn: &Connection, parent_id: &str) -> Result<(i64, i64, i64), S
 }
 
 /// Rule A, walking upward. An open parent closes when every live child is closed and at least one is completed.
-fn close_ancestors(
+pub(crate) fn close_ancestors(
     conn: &Connection,
     start: &str,
     now: i64,
@@ -995,7 +1020,7 @@ fn insert_row(conn: &Connection, row: &Row) -> Result<(), String> {
     Ok(())
 }
 
-fn create_in(
+pub(crate) fn create_in(
     conn: &Connection,
     actor: &Actor,
     input: &CreateInput,
@@ -1114,7 +1139,7 @@ pub fn create(
     Ok(written)
 }
 
-fn update_in(
+pub(crate) fn update_in(
     conn: &Connection,
     actor: &Actor,
     input: &UpdateInput,
@@ -1134,6 +1159,12 @@ fn update_in(
         Some(description) => description_ok(description)?,
         None => row.description.clone(),
     };
+    // WP-77: GitHub owns the title and description of a linked task.
+    if source_read(&row.source) == "github"
+        && (next_title != row.title || next_description != row.description)
+    {
+        return Err("GitHub controls this task's title and description.".into());
+    }
     let next_priority = match &input.priority {
         Some(priority) => {
             check_priority(priority)?;
@@ -1387,7 +1418,12 @@ fn apply_placement(
     now: i64,
     changed: &mut Vec<String>,
 ) -> Result<(), String> {
-    let (status_id, category) = status_named(conn, &row.project_id, placement.status)?;
+    let (mut status_id, mut category) = status_named(conn, &row.project_id, placement.status)?;
+    // WP-77: a merged pull request, or a GitHub state that already closed the task, is not undone by a running delegation.
+    if crate::github_issues::terminal_hold(conn, &row.id)? && !closed(&category) {
+        status_id = row.status_id.clone();
+        category = category_of(conn, &row.status_id)?;
+    }
     let needs = i64::from(placement.needs_you);
     let failed = i64::from(placement.failed);
     let link_new = row.delegation_id.as_deref() != Some(req.delegation_id.as_str());

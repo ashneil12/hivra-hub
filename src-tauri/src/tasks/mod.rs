@@ -3,7 +3,7 @@
 pub(crate) mod commands;
 mod mapping;
 pub(crate) mod mcp;
-mod store;
+pub(crate) mod store;
 pub(crate) mod sync;
 
 pub(crate) use store::ensure_tables;

@@ -22,7 +22,8 @@ mod cursor_store;
 mod decisions;
 mod delegations;
 mod dev_fault;
-mod tasks; // WP-70: tasks shared by the person and their agents.
+mod github_issues;
+mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
@@ -623,6 +624,10 @@ pub fn run() {
             tasks::commands::tasks_get,
             tasks::commands::tasks_create,
             tasks::commands::tasks_update,
+            // WP-77: labelled GitHub issues become tasks. Reads only.
+            github_issues::github_issues_setting_get,
+            github_issues::github_issues_setting_set,
+            github_issues::github_issues_poll,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             project_tests::run_project_tests,
