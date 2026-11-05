@@ -164,6 +164,7 @@ pub fn tasks_create(
                 due_at: input.due_at,
                 project: input.project,
                 source: input.source,
+                needs_you: false,
             },
             now_millis(),
         )?
@@ -212,4 +213,68 @@ pub fn tasks_update(
         emit(&app, &written.changed);
     }
     Ok(written)
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewBody {
+    pub page_key: String,
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub state: Option<serde_json::Value>,
+    #[serde(default)]
+    pub version: Option<i64>,
+}
+
+#[tauri::command(async)]
+pub fn tasks_views_list(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+    page_key: String,
+) -> Result<Vec<super::views::ViewRecord>, String> {
+    let conn = store.lock_conn()?;
+    super::views::list(&conn, &Actor::from(actor), &page_key)
+}
+
+#[tauri::command(async)]
+pub fn tasks_views_save(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+    input: ViewBody,
+) -> Result<super::views::ViewSaved, String> {
+    let conn = store.lock_conn()?;
+    super::views::save(
+        &conn,
+        &Actor::from(actor),
+        &super::views::ViewInput {
+            id: input.id,
+            page_key: input.page_key,
+            name: input.name,
+            state: input.state.unwrap_or_else(super::views::default_state),
+            version: input.version,
+        },
+    )
+}
+
+#[tauri::command(async)]
+pub fn tasks_views_delete(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+    id: String,
+    version: i64,
+) -> Result<super::views::ViewSaved, String> {
+    let conn = store.lock_conn()?;
+    super::views::delete(&conn, &Actor::from(actor), &id, version)
+}
+
+#[tauri::command(async)]
+pub fn tasks_statuses(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+) -> Result<Vec<store::StatusRow>, String> {
+    let conn = store.lock_conn()?;
+    store::statuses(&conn, &Actor::from(actor))
 }

@@ -5,6 +5,8 @@
 // auto-resume off here; everything else is switched off in Rust. Outside the app (vitest, the browser preview) there
 // is no identity and the daily behaviour applies, as before.
 
+import { DISPLAY_NAME } from "./displayName";
+
 export type AppKind = "daily" | "dev";
 
 export type AppStamp = {
@@ -180,13 +182,13 @@ export function stampLabel(stamp: AppStamp): string {
   return `${stamp.branch} @ ${shortSha(stamp.sha)}${stamp.dirty ? "-dirty" : ""}`;
 }
 
-/** The name at the end of every window title: "MonoCode", or for a dev copy "MonoCode Hub Dev - <branch> @ <sha>". */
+/** The name at the end of every window title: "Hivra", or for a dev copy "Hivra Dev - <branch> @ <sha>". */
 export function windowTitleSuffix(
   identity: AppIdentity | null = appIdentity(),
 ): string {
   return isDevCopy(identity)
-    ? `MonoCode Hub Dev - ${stampLabel(identity!.stamp)}`
-    : "MonoCode";
+    ? `${DISPLAY_NAME} Dev - ${stampLabel(identity!.stamp)}`
+    : DISPLAY_NAME;
 }
 
 /** "19 Oct 2026, 21:04" in local time, or the raw text when it isn't a date. */
@@ -203,17 +205,25 @@ export function builtAtLabel(builtAt: string): string {
 }
 
 /**
- * The Settings footer. r65 (Critiquito): the daily app shows only its version ("MonoCode Hub 0.16.7"); a dev copy keeps
+ * The Settings footer. r65 (Critiquito): the daily app shows only its version ("Hivra 0.16.7"); a dev copy keeps
  * "hub/next @ 09141d8 · built 19 Oct 2026, 21:04 · dev copy <slot>" so a test run can tell builds apart.
+ * The name is the display name, never `identity.product` (that is the bundle name the binary was built with).
  */
 export function buildLine(identity: AppIdentity): string {
-  if (identity.kind !== "dev") return `${identity.product} ${identity.version}`.trim();
+  const named = displayVersion(identity.version);
+  if (identity.kind !== "dev") return named;
   const parts = [
-    `${identity.product} ${identity.version}`.trim(),
+    named,
     stampLabel(identity.stamp),
   ];
   const built = builtAtLabel(identity.stamp.builtAt);
   if (built) parts.push(`built ${built}`);
-  parts.push(`dev copy ${identity.slot ?? ""}`.trim());
+  parts.push(`dev copy ${identity.slot?.trim() ?? ""}`.trim());
   return parts.join(" · ");
+}
+
+/** "Hivra 0.16.0", or just "Hivra" when the version is missing or blank. */
+function displayVersion(version: string): string {
+  const trimmed = version.trim();
+  return trimmed ? `${DISPLAY_NAME} ${trimmed}` : DISPLAY_NAME;
 }

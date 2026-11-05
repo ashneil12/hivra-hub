@@ -149,6 +149,19 @@ impl SessionStore {
             .lock()
             .map_err(|_| "Session store is locked".into())
     }
+
+    /// `None` when another caller already holds the store. Tests use it to prove a `gh`
+    /// read does not keep the lock. The app itself only uses `lock_conn`.
+    #[cfg(test)]
+    pub(crate) fn try_lock_conn(
+        &self,
+    ) -> Result<Option<std::sync::MutexGuard<'_, Connection>>, String> {
+        match self.conn.try_lock() {
+            Ok(guard) => Ok(Some(guard)),
+            Err(std::sync::TryLockError::WouldBlock) => Ok(None),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err("Session store is locked".into()),
+        }
+    }
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {
@@ -1310,6 +1323,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-74: the task and doc search index, after both tables exist.
+    crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
     crate::watcher::ensure_tables(conn)?;
     // Hivra WP-14: steering messages and decisions.

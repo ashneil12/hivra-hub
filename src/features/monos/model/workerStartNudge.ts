@@ -2,6 +2,7 @@
 // its turn without one delegate_task call. Three prompt fixes didn't change it, so the app checks: a turn that is over,
 // listed several asks, says work starts and started no worker gets one app message asking it to start them now. Once
 // per Ash message, never on its own nudge's turn, never while it works.
+import { agentMemoryRoot, memoryTools } from "../../hub/model/agentMemoryPath";
 import { forUser } from "../../hub/model/userName";
 import { delegateToolFailed, delegateToolName } from "../../sessions/model/monocodeToolCall";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
@@ -98,11 +99,16 @@ const STANDING_RULE =
   /\b(?:from now on|going forward|from here on|every time you|always (?:run|use|check|ask|write|test|keep|make|do|put|say|commit|add)|never (?:again|use|run|commit|push|ship|change|touch))\b/i;
 
 /**
- * Where a standing rule is saved: the memory files (WP-04 retired Ash OS and its ash_remember tool). A chat that saved
- * it wrote one of them; an older chat's ash_remember call still counts.
+ * Where a standing rule is saved: this copy's memory files, named in full (agentMemoryPath.ts). A chat that saved it
+ * wrote one of them; an older chat's ash_remember call still counts. The path is not name-swapped.
  */
 export function saveRuleWhere(): string {
-  return forUser("in his words, in the project's ~/agent-memory/<project>/decisions.md (~/agent-memory/ash/decisions.md if it holds for every project)");
+  const home = agentMemoryRoot();
+  const projectFile = home ? `${home}/<project>/decisions.md` : "decisions.md";
+  const where = home
+    ? forUser`in his words, in the project's ${projectFile} (${`${home}/ash/decisions.md`} if it holds for every project)`
+    : forUser`in his words, in the project's ${projectFile} (Ash's decisions.md if it holds for every project)`;
+  return memoryTools() ? `with ash_remember first, ${where}` : where;
 }
 const SAVED = /ash_remember|agent-memory\/\S*decisions\.md/;
 
