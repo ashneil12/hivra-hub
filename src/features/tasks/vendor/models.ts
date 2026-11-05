@@ -17,6 +17,9 @@ export interface User {
   name: string;
 }
 
+/** Orbit's project row. The view helpers only read `id`, `name` and `color`. */
+export type Project = import("./records").ProjectRecord;
+
 export type StatusCategory = "unstarted" | "started" | "completed" | "cancelled" | "duplicate";
 export type TaskPriority = "none" | "low" | "medium" | "high" | "urgent";
 

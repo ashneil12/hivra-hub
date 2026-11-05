@@ -78,3 +78,14 @@ it("a project with no folder is a hub page, not the previous workspace", async (
   expect(nav.hubSurfaceOpen(coded)).toBe(false);
   expect(nav.projectHomeSelection({ id: "win", folder: "C:\\work\\hivra" }).item).toBe("coding-team");
 });
+
+it("home is an app view, not a retired project screen", async () => {
+  vi.stubEnv("VITE_MONOCODE_HUB", "1");
+  const nav = await import("./hubNav");
+  expect(nav.retiredHubItem("home")).toBe(false);
+  expect(nav.appItemInView({ project: "hivra", item: "home" })).toBe(true);
+  expect(nav.hubSurfaceOpen({ project: "hivra", item: "home" })).toBe(true);
+  nav.setHubSelection({ project: "hivra", item: "coding-team" });
+  nav.showAppItem("home");
+  expect(nav.currentHubSelection()).toEqual({ project: "hivra", item: "home" });
+});

@@ -158,6 +158,11 @@ export function setHomeDir(path: string | undefined): void {
   cachedHomeDir = path ? trimSlash(slash(path)) : undefined;
 }
 
+/** The home `setHomeDir` recorded, if startup has primed one. */
+export function knownHomeDir(): string | undefined {
+  return cachedHomeDir;
+}
+
 /**
  * Home directory, recognised the same way `prettyCwd` finds one inside a
  * project path. This module has no direct OS access, so a `~/` reference can

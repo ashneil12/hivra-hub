@@ -4,6 +4,7 @@
 // re-attaches the job (delegations.ts resumeMonitor), so its next report goes to the Lead; the Lead gets an app message
 // at once to save his call and say what happens next; and the worker's turn carries a note that his words decide.
 import { forUser } from "../../hub/model/userName";
+import { saveRuleWhere } from "./workerStartNudge";
 import type { QueuedMessage } from "../../sessions/model/session";
 import { isQuestionWakeFor } from "./delegationQuestions";
 import { isOpenDelegation, type Delegation } from "./delegations";
@@ -30,7 +31,7 @@ export function ashAnsweredLeadNote(row: Pick<Delegation, "id" | "title">, words
     waitForIdle: true,
     // r86: it cuts into a busy Lead's turn, so the Lead never decides his call without him.
     steerWhenBusy: true,
-    text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your worker on "${short(row.title || "its job", 80)}" in its chat: "${short(words, 400)}". The worker carries on from his words, not from any pick of yours. This settles that choice even if this turn was told to ask him: write no \`Needs Ash:\` line and no pick for it; start your reply with \`Answered:\` and his words. Save his call now in your project's ~/agent-memory/<project>/decisions.md, in his words, then tell him in one line what happens next, as work still to come ("the worker will…"; nothing is in until its report lands; if you asked him this too, that line says it is answered; don't ask it again). Its report comes to you when it is done. This is an app notification, not a new message from Ash.`,
+    text: forUser`${ASH_ANSWERED_PREFIX} From the app: Ash answered your worker on "${short(row.title || "its job", 80)}" in its chat: "${short(words, 400)}". The worker carries on from his words, not from any pick of yours. This settles that choice even if this turn was told to ask him: write no \`Needs Ash:\` line and no pick for it; start your reply with \`Answered:\` and his words. Save his call now ${saveRuleWhere()}, then tell him in one line what happens next, as work still to come ("the worker will…"; nothing is in until its report lands; if you asked him this too, that line says it is answered; don't ask it again). Its report comes to you when it is done. This is an app notification, not a new message from Ash.`,
   };
 }
 
