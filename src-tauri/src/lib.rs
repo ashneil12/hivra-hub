@@ -22,6 +22,7 @@ mod cursor_store;
 mod decisions;
 mod delegations;
 mod dev_fault;
+mod finder; // WP-74: one search box for tasks, docs and everything else.
 mod tasks; // WP-70: tasks shared by the person and their agents.
 
 // Hivra WP-12: delivery modes and the one merge path.
@@ -79,7 +80,7 @@ mod mono_home;
 mod mono_transcript;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
-mod docs;
+pub(crate) mod docs;
 mod notifications;
 mod page_frames;
 mod page_http;
@@ -625,6 +626,13 @@ pub fn run() {
             tasks::commands::tasks_get,
             tasks::commands::tasks_create,
             tasks::commands::tasks_update,
+            // WP-71: saved views and the statuses a board draws.
+            tasks::commands::tasks_views_list,
+            tasks::commands::tasks_views_save,
+            tasks::commands::tasks_views_delete,
+            tasks::commands::tasks_statuses,
+            // WP-74: full-text search over tasks and docs.
+            finder::finder_search,
             dev_fault::dev_fault_take_worker_failure,
             gates::run_worker_gate,
             project_tests::run_project_tests,

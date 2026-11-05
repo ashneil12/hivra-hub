@@ -209,6 +209,8 @@ const fixtureInvoke = async (
   )
     return;
   if (command === "quick_composer_take") return null;
+  // The app asks for the home directory as it starts (WP-23). Same stand-in as the shared browser mock.
+  if (command === "home_dir" || command === "plugin:path|resolve_directory") return "/Users/ash";
   const hub = hubFixtureAnswer(command);
   if (hub) return hub.value;
   throw new Error(`Unavailable fixture service: ${command}`);
