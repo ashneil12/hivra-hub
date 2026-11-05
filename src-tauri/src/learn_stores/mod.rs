@@ -17,10 +17,8 @@ use std::path::Path;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-pub use apply::{
-    learn_apply, profile_load, profile_save, state_cas, state_load, LoadedProfiles, LoadedState,
-};
-pub use gate::{list_stores, read_store, Limits, ListedChat, StandIn};
+pub use apply::{profile_load, profile_save, state_cas, state_load, LoadedProfiles, LoadedState};
+pub use gate::{Limits, ListedChat, StandIn, StoreLocate};
 
 #[tauri::command]
 pub fn learn_stores_list(
@@ -29,28 +27,62 @@ pub fn learn_stores_list(
 ) -> Result<Vec<ListedChat>, String> {
     let home = crate::dirs_home().ok_or_else(|| "This Mac has no home folder.".to_string())?;
     let dev = crate::instance::kind() == crate::instance::Kind::Dev;
-    list_stores(
+    let (env_home, local) = store_locate();
+    gate::list_located(
         Path::new(&home),
         stand_ins.as_deref(),
         include_cursor_ide.unwrap_or(false),
         dev,
         Limits::production(),
+        &StoreLocate {
+            hermes_env: env_home.as_deref(),
+            windows: cfg!(windows),
+            local_app_data: local.as_deref(),
+        },
     )
 }
 
 #[tauri::command]
-pub fn learn_stores_read(source: String, root: String, rel: String) -> Result<String, String> {
-    read_store(&source, Path::new(&root), &rel, Limits::production())
+pub fn learn_stores_read(
+    source: String,
+    root: String,
+    rel: String,
+    stand_ins: Option<Vec<StandIn>>,
+) -> Result<String, String> {
+    let home = crate::dirs_home().ok_or_else(|| "This Mac has no home folder.".to_string())?;
+    let dev = crate::instance::kind() == crate::instance::Kind::Dev;
+    let (env_home, local) = store_locate();
+    gate::read_allowed(
+        Path::new(&home),
+        &source,
+        Path::new(&root),
+        &rel,
+        stand_ins.as_deref(),
+        dev,
+        Limits::production(),
+        &StoreLocate {
+            hermes_env: env_home.as_deref(),
+            windows: cfg!(windows),
+            local_app_data: local.as_deref(),
+        },
+    )
 }
 
 #[tauri::command]
 pub fn learn_apply_edit(
+    app: AppHandle,
     path: String,
     expected_sha256: String,
     next: String,
     role: String,
 ) -> Result<bool, String> {
-    learn_apply(Path::new(&path), &expected_sha256, &next, &role)
+    apply::apply_inside(
+        &store_dir(&app)?,
+        Path::new(&path),
+        &expected_sha256,
+        &next,
+        &role,
+    )
 }
 
 #[tauri::command]
@@ -76,6 +108,13 @@ pub fn learn_profile_save(
     next: String,
 ) -> Result<bool, String> {
     profile_save(&store_dir(&app)?, &which, &expected_sha256, &next)
+}
+
+fn store_locate() -> (Option<String>, Option<String>) {
+    (
+        std::env::var("HERMES_HOME").ok(),
+        std::env::var("LOCALAPPDATA").ok(),
+    )
 }
 
 fn store_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {

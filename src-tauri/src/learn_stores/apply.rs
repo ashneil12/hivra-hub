@@ -31,6 +31,44 @@ fn lock() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
+const LEARN_FILES: [&str; 4] = ["opinions.md", "voice.md", "AGENTS.md", "CLAUDE.md"];
+
+/// The command's write. Only a profile file inside this learn folder, then the hash check.
+pub fn apply_inside(
+    dir: &Path,
+    path: &Path,
+    expected_sha256: &str,
+    next: &str,
+    role: &str,
+) -> Result<bool, String> {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Err("That file isn't in the learn folder.".into());
+    };
+    if !LEARN_FILES.contains(&name)
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir))
+        || is_symlink(dir)
+    {
+        return Err("That file isn't in the learn folder.".into());
+    }
+    let joined = absolute(dir).join(name);
+    if absolute(path) != joined {
+        return Err("That file isn't in the learn folder.".into());
+    }
+    learn_apply(&joined, expected_sha256, next, role)
+}
+
+fn absolute(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
+    }
+}
+
 pub fn learn_apply(
     path: &Path,
     expected_sha256: &str,
@@ -230,14 +268,11 @@ fn read_named(dir: &Path, name: &str) -> Result<(String, String), String> {
 fn load_unlocked(dir: &Path) -> Result<LoadedState, String> {
     let path = dir.join("state.json");
     if is_symlink(&path) {
-        return Ok(LoadedState {
-            revision: 0,
-            state: json!({}),
-        });
+        return Err("Couldn't read the saved lessons.".into());
     }
     match fs::read_to_string(&path) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
-            Ok(value) => Ok(LoadedState {
+            Ok(value) if value.is_object() => Ok(LoadedState {
                 revision: value.get("revision").and_then(Value::as_u64).unwrap_or(0),
                 state: value
                     .get("state")
@@ -245,10 +280,7 @@ fn load_unlocked(dir: &Path) -> Result<LoadedState, String> {
                     .filter(|state| state.is_object())
                     .unwrap_or_else(|| json!({})),
             }),
-            Err(_) => Ok(LoadedState {
-                revision: 0,
-                state: json!({}),
-            }),
+            Ok(_) | Err(_) => Err("Couldn't read the saved lessons.".into()),
         },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(LoadedState {
             revision: 0,

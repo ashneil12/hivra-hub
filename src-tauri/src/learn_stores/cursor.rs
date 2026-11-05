@@ -125,7 +125,7 @@ pub fn discover_ide(
     cutoff_ms: Option<i64>,
 ) -> Result<Vec<CursorIdeSession>, String> {
     let db_path = user_dir.join("globalStorage").join("state.vscdb");
-    if !db_path.is_file() {
+    if !guarded_db(&db_path)? {
         return Ok(Vec::new());
     }
     let conn = open_read_only(&db_path)?;
@@ -187,7 +187,7 @@ pub fn discover_ide(
 
 pub fn read_ide(user_dir: &Path, composer_id: &str) -> Result<Vec<LearnEvent>, String> {
     let db_path = user_dir.join("globalStorage").join("state.vscdb");
-    if !db_path.is_file() {
+    if !guarded_db(&db_path)? {
         return Ok(Vec::new());
     }
     let conn = open_read_only(&db_path)?;
@@ -291,6 +291,25 @@ pub fn ide_user_dir(home: &Path) -> PathBuf {
     } else {
         home.join(".config").join("Cursor").join("User")
     }
+}
+
+/// Missing is an empty store. A link or a file over the cap is a refusal, not a read.
+fn guarded_db(db_path: &Path) -> Result<bool, String> {
+    let meta = match fs::symlink_metadata(db_path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("Couldn't read Cursor.".into()),
+    };
+    if meta.file_type().is_symlink() {
+        return Err("That file isn't in the folder.".into());
+    }
+    if !meta.is_file() {
+        return Ok(false);
+    }
+    if meta.len() > crate::history_import::MAX_READ_BYTES {
+        return Err("That chat is too big to read in one go.".into());
+    }
+    Ok(true)
 }
 
 fn open_read_only(path: &Path) -> Result<Connection, String> {

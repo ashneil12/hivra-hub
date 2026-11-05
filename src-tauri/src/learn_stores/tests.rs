@@ -577,6 +577,336 @@ fn a_missing_daily_store_is_empty_not_an_error() {
 }
 
 #[test]
+fn listing_pi_skips_a_file_over_the_cap() {
+    let home = Tmp::new("pi-list-home");
+    let root = Tmp::new("pi-list");
+    let mut body = String::from("{\"type\":\"session\",\"id\":\"big\",\"cwd\":\"/repo\"}\n");
+    body.push_str(&"x".repeat(80));
+    fs::write(root.0.join("big.jsonl"), body).unwrap();
+    let listed = gate::list_stores(
+        &home.0,
+        Some(&[StandIn {
+            source: "pi".into(),
+            root: root.0.to_string_lossy().into_owned(),
+        }]),
+        false,
+        true,
+        Limits {
+            max_read: 40,
+            max_files: 10,
+        },
+    )
+    .unwrap();
+    assert!(
+        listed.iter().all(|chat| chat.id != "big"),
+        "a pi chat over the cap was listed: {listed:?}"
+    );
+}
+
+#[test]
+fn hermes_follows_the_active_profile() {
+    let home = Tmp::new("hermes-profile");
+    let root = home.0.join(".hermes");
+    fs::create_dir_all(root.join("profiles").join("work")).unwrap();
+    fs::write(root.join("active_profile"), "work\n").unwrap();
+    fs::write(
+        root.join("profiles").join("work").join("chat.jsonl"),
+        "{}\n",
+    )
+    .unwrap();
+    fs::write(root.join("other.jsonl"), "{}\n").unwrap();
+    let listed = gate::list_stores(&home.0, None, false, false, Limits::production()).unwrap();
+    let hermes: Vec<_> = listed
+        .iter()
+        .filter(|chat| chat.source == "hermes")
+        .collect();
+    assert_eq!(hermes.len(), 1, "{listed:?}");
+    assert!(
+        hermes[0].rel.ends_with("chat.jsonl"),
+        "rel {}",
+        hermes[0].rel
+    );
+}
+
+#[test]
+fn hermes_home_env_is_the_only_hermes_store() {
+    let home = Tmp::new("hermes-env-home");
+    let custom = Tmp::new("hermes-env");
+    fs::write(custom.0.join("chat.jsonl"), "{}\n").unwrap();
+    fs::create_dir_all(home.0.join(".hermes")).unwrap();
+    fs::write(home.0.join(".hermes").join("ignored.jsonl"), "{}\n").unwrap();
+    let listed = gate::list_located(
+        &home.0,
+        None,
+        false,
+        false,
+        Limits::production(),
+        &gate::StoreLocate {
+            hermes_env: Some(custom.0.to_str().unwrap()),
+            windows: false,
+            local_app_data: None,
+        },
+    )
+    .unwrap();
+    let hermes: Vec<_> = listed
+        .iter()
+        .filter(|chat| chat.source == "hermes")
+        .collect();
+    assert_eq!(hermes.len(), 1, "{listed:?}");
+    assert!(hermes[0].rel.ends_with("chat.jsonl"), "{}", hermes[0].rel);
+    assert!(!hermes[0].root.contains(".hermes"));
+}
+
+#[test]
+fn hermes_on_windows_uses_local_app_data() {
+    let home = Tmp::new("hermes-win-home");
+    let local = Tmp::new("hermes-local");
+    fs::create_dir_all(local.0.join("hermes")).unwrap();
+    fs::write(local.0.join("hermes").join("chat.jsonl"), "{}\n").unwrap();
+    fs::create_dir_all(home.0.join(".hermes")).unwrap();
+    fs::write(home.0.join(".hermes").join("nope.jsonl"), "{}\n").unwrap();
+    let listed = gate::list_located(
+        &home.0,
+        None,
+        false,
+        false,
+        Limits::production(),
+        &gate::StoreLocate {
+            hermes_env: None,
+            windows: true,
+            local_app_data: Some(local.0.to_str().unwrap()),
+        },
+    )
+    .unwrap();
+    let hermes: Vec<_> = listed
+        .iter()
+        .filter(|chat| chat.source == "hermes")
+        .collect();
+    assert_eq!(hermes.len(), 1, "{listed:?}");
+    assert!(hermes[0].rel.ends_with("chat.jsonl"), "{}", hermes[0].rel);
+    assert!(!hermes[0].root.contains(".hermes"));
+}
+
+#[test]
+fn a_read_stays_inside_a_named_store() {
+    let home = Tmp::new("read-home");
+    let projects = home.0.join(".claude").join("projects");
+    fs::create_dir_all(&projects).unwrap();
+    fs::write(projects.join("real.jsonl"), "REAL CHAT\n").unwrap();
+    fs::create_dir_all(home.0.join(".ssh")).unwrap();
+    fs::write(home.0.join(".ssh").join("id_ed25519"), "PRIVATE KEY\n").unwrap();
+    let locate = gate::StoreLocate::unix();
+    let limits = Limits::production();
+    let dev = gate::read_allowed(
+        &home.0,
+        "claude",
+        &projects,
+        "real.jsonl",
+        None,
+        true,
+        limits,
+        &locate,
+    )
+    .unwrap_err();
+    assert!(dev.contains("stand-ins"), "{dev}");
+    assert!(!dev.contains("REAL CHAT"));
+    let ssh = gate::read_allowed(
+        &home.0,
+        "claude",
+        &home.0,
+        ".ssh/id_ed25519",
+        None,
+        false,
+        limits,
+        &locate,
+    )
+    .unwrap_err();
+    assert!(ssh.contains("isn't one of the chat folders"), "{ssh}");
+    assert!(!ssh.contains("PRIVATE KEY"));
+    let parent = gate::read_allowed(
+        &home.0,
+        "claude",
+        &home.0.join(".claude"),
+        "projects/real.jsonl",
+        None,
+        false,
+        limits,
+        &locate,
+    )
+    .unwrap_err();
+    assert!(parent.contains("isn't one of the chat folders"), "{parent}");
+    assert!(!parent.contains("REAL CHAT"));
+    let daily = gate::read_allowed(
+        &home.0,
+        "claude",
+        &projects,
+        "real.jsonl",
+        None,
+        false,
+        limits,
+        &locate,
+    )
+    .unwrap();
+    assert!(daily.contains("REAL CHAT"), "{daily}");
+    let stand = Tmp::new("read-stand");
+    fs::write(
+        stand.0.join("chat.jsonl"),
+        "{\"type\":\"session\",\"id\":\"s\",\"cwd\":\"/repo\"}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"stand-in hello\"}]}}\n",
+    )
+    .unwrap();
+    let named = StandIn {
+        source: "pi".into(),
+        root: stand.0.to_string_lossy().into_owned(),
+    };
+    let read = gate::read_allowed(
+        &home.0,
+        "pi",
+        &stand.0,
+        "chat.jsonl",
+        Some(&[named]),
+        true,
+        limits,
+        &locate,
+    )
+    .unwrap();
+    assert!(read.contains("stand-in hello"), "{read}");
+}
+
+#[test]
+fn apply_inside_does_not_create_a_file_outside_the_learn_folder() {
+    let learn = Tmp::new("learn-dir");
+    let outside = Tmp::new("outside-note");
+    let empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    let note = outside.0.join("note.md");
+    let err = apply::apply_inside(&learn.0, &note, empty, "hello\n", "instruction").unwrap_err();
+    assert!(err.contains("learn folder"), "{err}");
+    assert!(!note.exists());
+    let nested = learn.0.join("note.md");
+    let err = apply::apply_inside(&learn.0, &nested, empty, "hello\n", "instruction").unwrap_err();
+    assert!(err.contains("learn folder"), "{err}");
+    assert!(!nested.exists());
+    let agents = learn.0.join("AGENTS.md");
+    assert!(apply::apply_inside(&learn.0, &agents, empty, "hello\n", "instruction").unwrap());
+    assert_eq!(fs::read_to_string(&agents).unwrap(), "hello\n");
+}
+
+#[test]
+fn a_corrupt_ledger_is_not_treated_as_empty() {
+    let tmp = Tmp::new("corrupt-ledger");
+    fs::write(tmp.0.join("state.json"), "{").unwrap();
+    match apply::state_load(&tmp.0) {
+        Err(err) => assert!(err.contains("saved lessons"), "{err}"),
+        Ok(_) => panic!("a corrupt ledger loaded as empty"),
+    }
+    match apply::state_cas(&tmp.0, 0, json!({"rejections": {}})) {
+        Err(err) => assert!(err.contains("saved lessons"), "{err}"),
+        Ok(_) => panic!("a corrupt ledger was replaced"),
+    }
+    assert_eq!(fs::read_to_string(tmp.0.join("state.json")).unwrap(), "{");
+}
+
+#[cfg(unix)]
+#[test]
+fn cursor_ide_does_not_follow_a_symlink() {
+    let outside = Tmp::new("cursor-outside");
+    let user = outside.0.join("User");
+    write_ide_db(&user);
+    let linked = Tmp::new("cursor-linked");
+    let linked_user = linked.0.join("User");
+    fs::create_dir_all(linked_user.join("globalStorage")).unwrap();
+    fs::create_dir_all(linked_user.join("workspaceStorage").join("ws-1")).unwrap();
+    fs::write(
+        linked_user
+            .join("workspaceStorage")
+            .join("ws-1")
+            .join("workspace.json"),
+        r#"{"folder":"file:///repo/demo"}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        user.join("globalStorage").join("state.vscdb"),
+        linked_user.join("globalStorage").join("state.vscdb"),
+    )
+    .unwrap();
+    match cursor::discover_ide(&linked_user, None) {
+        Err(err) => assert!(
+            err.contains("isn't in the folder") || err.contains("link"),
+            "{err}"
+        ),
+        Ok(found) => panic!("a symlinked Cursor database was opened: {found:?}"),
+    }
+    match gate::read_store("cursor-ide", &linked_user, "keep", Limits::production()) {
+        Err(err) => assert!(
+            err.contains("isn't in the folder") || err.contains("link"),
+            "{err}"
+        ),
+        Ok(text) => panic!("a symlinked Cursor database was read: {text}"),
+    }
+}
+
+#[test]
+fn cursor_ide_refuses_a_database_over_the_cap() {
+    let home = Tmp::new("cursor-cap-home");
+    let user = ide_user_dir(&home.0);
+    write_ide_db(&user);
+    match gate::read_store(
+        "cursor-ide",
+        &user,
+        "keep",
+        Limits {
+            max_read: 10,
+            max_files: 5,
+        },
+    ) {
+        Err(err) => assert!(err.contains("too big"), "{err}"),
+        Ok(text) => panic!("a Cursor database over the cap was read: {text}"),
+    }
+    let listed = gate::list_stores(
+        &home.0,
+        None,
+        true,
+        false,
+        Limits {
+            max_read: 10,
+            max_files: 5,
+        },
+    )
+    .unwrap();
+    assert!(listed.iter().all(|chat| chat.source != "cursor-ide"));
+}
+
+fn write_ide_db(user: &std::path::Path) {
+    fs::create_dir_all(user.join("globalStorage")).unwrap();
+    fs::create_dir_all(user.join("workspaceStorage").join("ws-1")).unwrap();
+    fs::write(
+        user.join("workspaceStorage")
+            .join("ws-1")
+            .join("workspace.json"),
+        r#"{"folder":"file:///repo/demo"}"#,
+    )
+    .unwrap();
+    let db = user.join("globalStorage").join("state.vscdb");
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE composerHeaders (composerId TEXT, workspaceId TEXT);
+         CREATE TABLE cursorDiskKV (key TEXT, value TEXT);",
+    )
+    .unwrap();
+    conn.execute("INSERT INTO composerHeaders VALUES ('keep', 'ws-1')", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO cursorDiskKV VALUES ('composerData:keep', '{\"createdAt\":5,\"lastUpdatedAt\":9}')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO cursorDiskKV VALUES ('bubbleId:keep:1', '{\"type\":1,\"text\":\"Ship the parser.\"}')",
+        [],
+    )
+    .unwrap();
+}
+
+#[test]
 fn a_file_over_the_cap_is_refused() {
     let tmp = Tmp::new("cap");
     let file = tmp.0.join("big.jsonl");

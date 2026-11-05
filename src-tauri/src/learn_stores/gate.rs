@@ -5,6 +5,7 @@
 //! Claude, Codex and Hermes bytes go through WP-50's reader after that check.
 
 use std::fs;
+use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -32,6 +33,26 @@ impl Limits {
     }
 }
 
+/// Where Hermes lives. Passed in so a test can name `HERMES_HOME` or the Windows
+/// folder without changing the process environment.
+#[derive(Clone, Copy)]
+pub struct StoreLocate<'a> {
+    pub hermes_env: Option<&'a str>,
+    pub windows: bool,
+    pub local_app_data: Option<&'a str>,
+}
+
+impl StoreLocate<'static> {
+    #[cfg(test)]
+    pub fn unix() -> Self {
+        Self {
+            hermes_env: None,
+            windows: false,
+            local_app_data: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StandIn {
@@ -54,12 +75,31 @@ pub struct ListedChat {
     pub bytes: u64,
 }
 
+#[cfg(test)]
 pub fn list_stores(
     home: &Path,
     stand_ins: Option<&[StandIn]>,
     include_cursor_ide: bool,
     dev: bool,
     limits: Limits,
+) -> Result<Vec<ListedChat>, String> {
+    list_located(
+        home,
+        stand_ins,
+        include_cursor_ide,
+        dev,
+        limits,
+        &StoreLocate::unix(),
+    )
+}
+
+pub fn list_located(
+    home: &Path,
+    stand_ins: Option<&[StandIn]>,
+    include_cursor_ide: bool,
+    dev: bool,
+    limits: Limits,
+    locate: &StoreLocate<'_>,
 ) -> Result<Vec<ListedChat>, String> {
     if dev {
         let Some(stand_ins) = stand_ins.filter(|items| !items.is_empty()) else {
@@ -68,7 +108,7 @@ pub fn list_stores(
         let mut out = Vec::new();
         for stand_in in stand_ins {
             let root = PathBuf::from(&stand_in.root);
-            if refuses_stand_in(home, &root) {
+            if refuses_stand_in(home, &root, locate) {
                 return Err("A dev copy only reads transcript stand-ins a test names.".into());
             }
             if is_symlink(&root) {
@@ -91,7 +131,7 @@ pub fn list_stores(
         return Ok(out);
     }
     let mut out = Vec::new();
-    for (source, root) in daily_roots(home, include_cursor_ide) {
+    for (source, root) in daily_roots(home, include_cursor_ide, locate) {
         if is_symlink(&root) || !root.exists() {
             continue;
         }
@@ -144,6 +184,9 @@ pub fn read_store(source: &str, root: &Path, rel: &str, limits: Limits) -> Resul
             if !include_cursor_rel(rel) {
                 return Err("That chat wasn't found.".into());
             }
+            let db = root.join("globalStorage").join("state.vscdb");
+            ensure_inside(root, &db)?;
+            ensure_size(&db, limits.max_read)?;
             let events = cursor::read_ide(root, rel)?;
             Ok(render(&events))
         }
@@ -221,6 +264,16 @@ fn list_one(
             if !include_cursor_ide {
                 return Ok(());
             }
+            let db = root.join("globalStorage").join("state.vscdb");
+            match fs::symlink_metadata(&db) {
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(_) => return Err("Couldn't read this store.".into()),
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err("That file isn't in the folder.".into());
+                }
+                Ok(meta) if !meta.is_file() || meta.len() > limits.max_read => return Ok(()),
+                Ok(_) => {}
+            }
             for session in cursor::discover_ide(root, None)? {
                 if out.len() >= limits.max_files {
                     break;
@@ -292,7 +345,9 @@ fn list_one(
                     .map(|stem| stem.to_string_lossy().into_owned())
                     .unwrap_or_default();
                 let (cwd, title) = if source == "pi" {
-                    let text = fs::read_to_string(&file).unwrap_or_default();
+                    let Some(text) = read_head(&file, limits.max_read) else {
+                        continue;
+                    };
                     let descriptor = pi::classify_text(&text, false, &id);
                     (descriptor.as_ref().map(|item| item.cwd.clone()), None)
                 } else {
@@ -380,7 +435,17 @@ fn walk(dir: &Path, max_files: usize, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Pat
     }
 }
 
-fn daily_roots(home: &Path, include_cursor_ide: bool) -> Vec<(String, PathBuf)> {
+fn daily_roots(
+    home: &Path,
+    include_cursor_ide: bool,
+    locate: &StoreLocate<'_>,
+) -> Vec<(String, PathBuf)> {
+    let hermes = history_import::resolve_hermes_home(
+        home,
+        locate.hermes_env,
+        locate.windows,
+        locate.local_app_data,
+    );
     let mut roots = vec![
         ("claude".into(), home.join(".claude").join("projects")),
         ("codex".into(), home.join(".codex").join("sessions")),
@@ -388,7 +453,7 @@ fn daily_roots(home: &Path, include_cursor_ide: bool) -> Vec<(String, PathBuf)> 
             "codex".into(),
             home.join(".codex").join("archived_sessions"),
         ),
-        ("hermes".into(), home.join(".hermes")),
+        ("hermes".into(), hermes),
         ("pi".into(), home.join(".pi").join("agent").join("sessions")),
         ("grok".into(), home.join(".grok").join("sessions")),
         (
@@ -406,8 +471,8 @@ fn daily_roots(home: &Path, include_cursor_ide: bool) -> Vec<(String, PathBuf)> 
     roots
 }
 
-fn real_prefixes(home: &Path) -> Vec<PathBuf> {
-    vec![
+fn real_prefixes(home: &Path, locate: &StoreLocate<'_>) -> Vec<PathBuf> {
+    let mut prefixes = vec![
         home.join(".claude"),
         home.join(".grok"),
         home.join(".codex"),
@@ -420,22 +485,103 @@ fn real_prefixes(home: &Path) -> Vec<PathBuf> {
             .join("Application Support")
             .join("Cursor"),
         home.join("AppData").join("Roaming").join("Cursor"),
-    ]
+    ];
+    if let Some(env) = locate
+        .hermes_env
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        prefixes.push(PathBuf::from(env));
+    }
+    prefixes.push(history_import::resolve_hermes_home(
+        home,
+        locate.hermes_env,
+        locate.windows,
+        locate.local_app_data,
+    ));
+    prefixes
 }
 
 /// A stand-in inside a real store, or a parent of one (including the home), is refused.
-fn refuses_stand_in(home: &Path, root: &Path) -> bool {
+fn refuses_stand_in(home: &Path, root: &Path, locate: &StoreLocate<'_>) -> bool {
     let root = absolute(root);
     let home = absolute(home);
     if root == home {
         return true;
     }
-    for store in real_prefixes(&home) {
+    for store in real_prefixes(&home, locate) {
+        let store = absolute(&store);
         if root.starts_with(&store) || store.starts_with(&root) {
             return true;
         }
     }
     false
+}
+
+fn same_path(left: &Path, right: &Path) -> bool {
+    crate::fs::path_to_js(&absolute(left)) == crate::fs::path_to_js(&absolute(right))
+}
+
+/// The command's gate. A dev copy may read only a named stand-in. A daily copy may
+/// read only a store root this build already knows. The bytes are read after that.
+#[allow(clippy::too_many_arguments)]
+pub fn read_allowed(
+    home: &Path,
+    source: &str,
+    root: &Path,
+    rel: &str,
+    stand_ins: Option<&[StandIn]>,
+    dev: bool,
+    limits: Limits,
+    locate: &StoreLocate<'_>,
+) -> Result<String, String> {
+    if rel.contains('\0')
+        || Path::new(rel).components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+        || Path::new(rel).is_absolute()
+    {
+        return Err("That file isn't in the folder.".into());
+    }
+    if is_symlink(root) {
+        return Err("That folder is a link, so it was not read.".into());
+    }
+    if dev {
+        let named = stand_ins.unwrap_or(&[]).iter().any(|stand_in| {
+            stand_in.source == source && same_path(Path::new(&stand_in.root), root)
+        });
+        if !named || refuses_stand_in(home, root, locate) {
+            return Err("A dev copy only reads transcript stand-ins a test names.".into());
+        }
+    } else {
+        let allowed = daily_roots(home, true, locate)
+            .iter()
+            .any(|(store_source, store_root)| {
+                store_source == source && same_path(store_root, root)
+            });
+        if !allowed {
+            return Err("That folder isn't one of the chat folders.".into());
+        }
+    }
+    read_store(source, root, rel, limits)
+}
+
+/// The first slice of a chat, for classifying a pi session. A link, a non-file,
+/// or a file over the cap is skipped rather than failing the whole list.
+fn read_head(path: &Path, max_read: u64) -> Option<String> {
+    let meta = fs::symlink_metadata(path).ok()?;
+    if meta.file_type().is_symlink() || !meta.is_file() || meta.len() > max_read {
+        return None;
+    }
+    let mut file = fs::File::open(path).ok()?;
+    let take = 65_536u64.min(meta.len()) as usize;
+    let mut buf = vec![0u8; take];
+    let read = file.read(&mut buf).ok()?;
+    buf.truncate(read);
+    Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
 fn absolute(path: &Path) -> PathBuf {
