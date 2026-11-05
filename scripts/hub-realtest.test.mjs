@@ -3,13 +3,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { isRouted, pickModel, rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
+import { childEnv, isRouted, pickModel, rewriteArgs, rewriteInput, withMemory } from "./hub-realtest-claude.mjs";
 import { parseGrade } from "./hub-realtest-grade.mjs";
 import { questionAnswers, roomRounds, runChecks, workerSpread } from "./hub-realtest-scenarios.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { deepseekBridge, graderVia, parseArgs as benchArgs, usageOf } from "./hub-realtest.mjs";
+import { DEEPSEEK_BRIDGE_MODEL, claudeWrapperScript, deepseekBridge, graderUsesDeepSeek, graderVia, grokBridge, parseArgs as benchArgs, planFlags, usageOf, wrapperModel } from "./hub-realtest.mjs";
 
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
@@ -148,10 +148,53 @@ test("a Haiku helper stays Haiku; anything else is the bench model", () => {
   assert.equal(pickModel("opus"), "sonnet");
 });
 
-test("the retired agents choice is refused in plain words", () => {
-  const retired = `${"grok"}-sub`;
-  assert.throws(() => benchArgs([`--${retired}`]), /retired/);
-  assert.throws(() => benchArgs(["--agents", retired]), /retired/);
+test("--agents grok-sub points at the Grok launcher and leaves the grader on DeepSeek", () => {
+  const grok = benchArgs(["--agents", "grok-sub"]);
+  assert.equal(grok.grokSub, true);
+  assert.equal(grok.deepseekSub, false);
+  assert.equal(benchArgs([]).deepseekSub, true);
+  assert.equal(benchArgs([]).grokSub, false);
+  assert.throws(() => benchArgs(["--agents", "grok-sub", "--deepseek-sub"]), /two different agents' models/);
+  assert.equal(graderUsesDeepSeek({ grokSub: true }), true);
+  assert.equal(graderUsesDeepSeek({ deepseekSub: false }), false);
+  assert.deepEqual(planFlags({ grokSub: true }), { launcher: true });
+  assert.deepEqual(planFlags({ deepseekSub: true }), { deepseek: true });
+  assert.equal(planFlags({ grokSub: true }).deepseek, undefined);
+  assert.equal(wrapperModel({ grokSub: true, specModel: "sonnet" }), "sonnet");
+  assert.equal(wrapperModel({ deepseekSub: true }), DEEPSEEK_BRIDGE_MODEL);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "grok-bridge-"));
+  const launcher = path.join(dir, "claude-grok");
+  assert.throws(() => grokBridge(launcher), /needs the Grok launcher/);
+  fs.writeFileSync(launcher, "#!/bin/sh\n", { mode: 0o755 });
+  assert.equal(grokBridge(launcher), launcher);
+  const script = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", grok: true, node: "/usr/bin/node", script: "/tmp/wrap.mjs" });
+  assert.match(script, /REALTEST_GROK_SUB=1/);
+  assert.match(script, /REALTEST_MODEL='sonnet'/);
+  assert.doesNotMatch(script, /claude-fable-5/);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("the Grok launcher's child drops the caller's credential variables and keeps the rest", () => {
+  const env = {
+    PATH: "/usr/bin",
+    HOME: "/tmp/bench-home",
+    ANTHROPIC_API_KEY: "sk-not-real",
+    ANTHROPIC_AUTH_TOKEN: "tok-not-real",
+    ANTHROPIC_BASE_URL: "https://api.anthropic.com",
+    ANTHROPIC_TEST_API_KEY: "test-not-real",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-not-real",
+    CLAUDE_CODE_SUBAGENT_MODEL: "sonnet",
+    CLAUDE_CONFIG_DIR: "/tmp/cfg",
+    REALTEST_GROK_SUB: "1",
+  };
+  const stripped = childEnv(env, { grok: true });
+  for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_TEST_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) assert.equal(stripped[name], undefined, name);
+  assert.equal(stripped.PATH, "/usr/bin");
+  assert.equal(stripped.HOME, "/tmp/bench-home");
+  assert.equal(stripped.CLAUDE_CODE_SUBAGENT_MODEL, "sonnet");
+  assert.equal(stripped.CLAUDE_CONFIG_DIR, "/tmp/cfg");
+  assert.equal(stripped.REALTEST_GROK_SUB, "1");
+  assert.equal(childEnv(env, { grok: false }).ANTHROPIC_API_KEY, "sk-not-real");
 });
 
 // Ash, 23 Oct: "dont use grok use deepseek sub".
@@ -165,7 +208,7 @@ test("the bench runs on DeepSeek by default, grader too; Claude only when someon
   assert.equal(benchArgs(["--agents", "deepseek-sub"]).deepseekSub, true);
   assert.equal(benchArgs(["--agents", "claude"]).deepseekSub, false);
   assert.throws(() => benchArgs(["--agents", "claude", "--deepseek-sub"]), /two different agents' models/);
-  assert.throws(() => benchArgs(["--agents", "gpt"]), /--agents is deepseek-sub, claude, haiku-test/);
+  assert.throws(() => benchArgs(["--agents", "gpt"]), /--agents is deepseek-sub, claude, haiku-test, grok-sub/);
   assert.deepEqual(graderVia({ deepseekSub: false }), {});
 });
 
@@ -200,6 +243,29 @@ test("a coding-team send goes to the test project's hub id, not to the project's
   await runScenario({ id: "ct", title: "ct", minutes: 1, steps: [{ send: { codingTeam: "project" }, as: "fix", text: "the stats test is red" }] }, ctx).catch(() => undefined);
   assert.deepEqual(sent[0], { codingTeam: "tally" });
   fs.rmSync(evidence, { recursive: true, force: true });
+});
+
+test("an unsandboxed agent before a scenario is not played, and it stops the round", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const calls = [];
+  const stopped = [];
+  const result = await runScenario({ id: "agent", title: "agent", minutes: 1, steps: [{ send: { room: "room" }, text: "hi" }] }, {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence: os.tmpdir(), state: os.tmpdir(),
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0 }),
+    act: async (kind) => {
+      calls.push(kind);
+      return { sessions: [], rooms: [] };
+    },
+    listAgents: () => "  200 100 /opt/homebrew/bin/codex\n",
+    agentWatch: () => ({ rootPid: 100, profile: "/private/var/bench/state/sandbox.sb", wrapper: "/private/var/bench/bin/claude" }),
+    stopRun: (why) => stopped.push(why),
+  });
+  assert.equal(result.verdict, "FAIL");
+  assert.equal(result.fail, "unsandboxed agent: codex");
+  assert.deepEqual(calls, []);
+  assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
 });
 
 test("a coding-team step can start in Full access, and an approve step taps Allow in that chat", async () => {

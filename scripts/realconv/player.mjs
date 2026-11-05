@@ -9,11 +9,13 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
+import { dummyStoppedOk, finishSceneApps, sceneAgents } from "../bench-guard.mjs";
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
 import { hardChecks } from "./checks.mjs";
 import { isTeamSeat, monoIdFor, speakerName } from "./seats.mjs";
 import { judgeScene, verdict } from "./judge.mjs";
+import { permissionDecision, stuckPermissionOutcome, testerAllowRefused } from "./permissions.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const ms = (value) => (typeof value === "number" ? value : value ? Date.parse(value) : 0);
@@ -135,6 +137,14 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   const stopAt = Math.min(ctx.deadline + 5 * 60_000, t0 + (scene.minutes ?? 12) * 60_000);
   const turnsCap = scene.maxTurns ?? 60;
   const mark = gitMark(ctx.project);
+  const appsBefore = typeof ctx.listApps === "function" ? ctx.listApps() : null;
+  const agentsEarly = sceneAgents(ctx);
+  if (agentsEarly) {
+    const result = { id: scene.id, title: scene.title, started: t0, ended: Date.now(), minutes: 0, verdict: "FAIL", reasons: [agentsEarly.reason], notes };
+    fs.writeFileSync(path.join(dir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
+    log(`  ${scene.id}: FAIL: ${agentsEarly.reason}`);
+    return result;
+  }
   // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
   // The chat screen as Ash sees it, for a design reviewer: after each reply settles, and at the end.
@@ -191,6 +201,46 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 
   const ashLines = [];
   const clicks = [];
+  // Permission cards the bench already answered (session id + request id), so a stale snapshot doesn't answer twice.
+  const answeredAsks = new Set();
+  const permissionAnswers = [];
+  /** True when this path, or a folder on the way, is a symlink. Never follows the link. */
+  const pathIsSymlink = (abs) => {
+    try {
+      return fs.lstatSync(abs).isSymbolicLink();
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * Answer every open permission card the way Ash would: allow a Read inside the run's temporary HOME, the test
+   * project, or that Mono's memory folder, and refuse anything else. An ordinary question card is left for the tester.
+   */
+  const answerPermissionAsks = async () => {
+    const snap = await act("snapshot").catch(() => null);
+    for (const session of snap?.sessions ?? []) {
+      for (const ask of session.permissionAsks ?? []) {
+        if (typeof ask?.requestId !== "number") continue;
+        const key = `${session.id}:${ask.requestId}`;
+        if (answeredAsks.has(key)) continue;
+        const memory = session.mono && ctx.dataDir ? path.join(ctx.dataDir, "monos", session.mono) : null;
+        const decided = permissionDecision(
+          { tool: ask.tool, paths: ask.paths, command: ask.command },
+          { home: ctx.home, project: ctx.project, memory },
+          { cwd: session.cwd || session.worktree || null, isSymlink: ctx.isSymlink ?? pathIsSymlink },
+        );
+        const result = await act("approve", {
+          session: session.id,
+          requestId: ask.requestId,
+          decision: decided.allow ? "allow" : "deny",
+        }).catch((error) => ({ ok: false, error: error.message }));
+        const ok = result?.ok !== false;
+        permissionAnswers.push({ t: Date.now(), session: session.id, path: decided.path, tool: ask.tool ?? "", decision: decided.decision, ok });
+        log(`  permission ${decided.decision} ${decided.path}${ok ? "" : ` (the window didn't take it: ${result?.error ?? "refused"})`}`);
+        if (ok) answeredAsks.add(key);
+      }
+    }
+  };
   const send = async (text, { verbatim }) => {
     // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
     const mode = place.codingTeam && scene.runtimeMode ? { runtimeMode: scene.runtimeMode } : {};
@@ -256,6 +306,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   /** Until the place has answered Ash's last line and gone idle, or `until` (ms) passes. */
   const settle = async (since, until) => {
     while (Date.now() < until && Date.now() < stopAt) {
+      await answerPermissionAsks();
       await ctx.pump();
       if (ctx.usage(t0).turns >= turnsCap) {
         notes.push(`turn budget (${turnsCap}) reached`);
@@ -323,10 +374,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
     if (move.action === "click") {
       // Never allow a GitHub, push, remote or credential command, whatever the tester picked: Deny it instead.
+      // Never Allow a path outside the bench folders either, even when the card is not a risky command.
       const risky = riskyAllow(move.label, await ctx.claudeTexts(t0).catch(() => []), place.room ? null : await placeSession());
-      if (risky) {
-        log(`  bench refuses to click "${move.label}" on a risky command (${risky.slice(0, 120)}); Deny instead`);
-        testerLog({ refusedClick: move.label, risky });
+      const snap = risky ? null : await act("snapshot").catch(() => null);
+      const sessionId = risky || place.room ? null : await placeSession();
+      const asks = (snap?.sessions ?? []).filter((session) => !sessionId || session.id === sessionId).flatMap((session) => (session.permissionAsks ?? []).map((ask) => ({ ...ask, cwd: session.cwd || session.worktree || null })));
+      const memory = place.mono && ctx.dataDir ? path.join(ctx.dataDir, "monos", place.mono) : null;
+      const outside = risky ? null : testerAllowRefused(move.label, asks, { home: ctx.home, project: ctx.project, memory, allowed: ctx.allowed });
+      if (risky || outside) {
+        log(`  bench refuses to click "${move.label}" on ${risky ? `a risky command (${risky.slice(0, 120)})` : `a path outside the bench (${outside})`}; Deny instead`);
+        testerLog({ refusedClick: move.label, ...(risky ? { risky } : { outside }) });
         if (!(buttons ?? []).some((b) => b.label === "Deny" && !b.disabled)) {
           await sleep(20_000);
           continue;
@@ -347,6 +404,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   // -- evidence, checks, judge, verdict ------------------------------------------------------------------------------------
   async function finish({ invalid: why }) {
     await ctx.pump();
+    await answerPermissionAsks();
     await shoot("end");
     const ended = Date.now();
     const snap = await act("snapshot").catch(() => null);
@@ -387,12 +445,33 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     });
     const triggered = scene.triggeredBy === "stuck" ? stuckSeen.length > 0 : true;
     const copies = copyMarks.map(({ copy, mark: copyMark }) => ({ name: copy.name, folder: copy.folder, ...copyLog(copy.folder, copyMark), changes: gitChanges(copy.folder, copyMark) }));
-    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies, clicks });
+    const transcriptText = transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies, clicks, permissionAnswers });
     fs.writeFileSync(path.join(dir, "transcript.md"), transcriptText);
     const judged = why || !triggered ? null : await judgeScene(judge, scene, transcriptText, hard, rubric);
     const provenance = { agents: agentsReal === true, tester: tester.real === true, judge: judge.real === true };
-    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered }), hard, judged, notes };
-    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));
+    const openAsks = (snap?.sessions ?? []).flatMap((session) => session.permissionAsks ?? []);
+    const stuck = stuckPermissionOutcome(openAsks);
+    const scored = verdict({ hard, judged, provenance, invalid: why ?? (ashLines.some((l) => l.scripted) ? "a line sent as Ash was scripted" : null), triggered });
+    if (stuck) {
+      scored.verdict = stuck;
+      scored.reasons = [stuck, ...(scored.reasons ?? [])];
+    }
+    const appsAfter = typeof ctx.listApps === "function" ? ctx.listApps() : null;
+    const touch = finishSceneApps(appsBefore, appsAfter, ctx.stopRun);
+    const agentsAfter = sceneAgents(ctx);
+    const hardStops = [touch?.reason, agentsAfter?.reason].filter(Boolean);
+    if (hardStops.length) {
+      scored.verdict = "FAIL";
+      scored.reasons = [...hardStops, ...(scored.reasons ?? []).filter((reason) => !hardStops.includes(reason))];
+    }
+    if (scene.expect?.stopDummy && !dummyStoppedOk(typeof ctx.readDummy === "function" ? ctx.readDummy() : null)) {
+      const dummyReason = "the bench dummy is still running";
+      scored.verdict = "FAIL";
+      const rest = (scored.reasons ?? []).filter((item) => item !== dummyReason && !hardStops.includes(item));
+      scored.reasons = [...hardStops, dummyReason, ...rest];
+    }
+    const result = { id: scene.id, title: scene.title, started: t0, ended, minutes: Math.round((ended - t0) / 600) / 100, provenance, screens, ...scored, hard, judged, notes };
+    fs.writeFileSync(path.join(dir, "evidence.json"), JSON.stringify({ ashLines, toAsh, texts, delegations: rows, stuckSeen, permissionAnswers, changes: { ...changes, diff: changes.diff.slice(0, 50_000) }, tests, notes }, null, 2));
     fs.writeFileSync(path.join(dir, "result.json"), JSON.stringify(result, null, 2));
     log(`  ${scene.id}: ${result.verdict}${result.wouldBe ? ` (would be ${result.wouldBe})` : ""}${result.reasons?.length ? `: ${result.reasons.slice(0, 2).join("; ")}` : ""}`);
     return result;
@@ -418,8 +497,9 @@ export function copyLog(folder, mark) {
   return { commits: out.status === 0 ? out.stdout.split("\n").filter(Boolean).slice(0, 40) : [] };
 }
 
-export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies = [], clicks = [] }) {
+export function transcript(scene, { t0, ashLines, toAsh, texts, rows, changes, tests, stuckSeen, notes, copies = [], clicks = [], permissionAnswers = [] }) {
   const timeline = [
+    ...permissionAnswers.map((a) => ({ t: a.t, line: `permission ${a.decision}: ${a.path}${a.ok ? "" : " (the window didn't take it)"}` })),
     ...clicks.map((c) => ({ t: c.t, line: `**Ash clicks** "${c.label}"${c.ok ? "" : ` (it didn't take: ${c.error})`}` })),
     ...ashLines.map((l) => ({ t: l.t, line: `**Ash**${l.verbatim ? " (his own words)" : ""}${l.accepted ? "" : ` (NOT accepted: ${l.error})`}: ${l.text}` })),
     ...toAsh.map((m) => ({ t: m.t, line: `[${m.where}] **${m.who}**: ${m.text}` })),
