@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-52 work packages in seven waves. A wave's packages run in parallel; a package starts when everything it depends on
+56 work packages in nine waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -158,6 +158,17 @@ first mate.
 | [88](work/WP-88-chief-of-staff.md) | The Chief of Staff knows every project | M | 51, 70, 72, 73, 78 | yes |
 | [89](work/WP-89-worker-model.md) | Change what your workers run on, anywhere, in one step | M | 13 | yes |
 
+### Wave I: a web address per worktree, and fake outside services (portless and emulate, 5 Nov)
+
+Ash found portless and emulate (both Apache-2.0) and asked whether they would let parallel agents run apps and
+browser-test without colliding on ports, cookies, hostnames or shared outside accounts. Ports were already covered by
+WP-87; 90 adds a name per worktree and a local stand-in for each outside service, so a crew's tests use fake accounts.
+It builds on 87's stack, so it starts when 87 merges.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [90](work/WP-90-portless-emulate.md) | Every worktree gets its own web address, and its tests meet a fake service | L | 82, 87 | yes |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this
@@ -179,3 +190,42 @@ first mate.
 - **Native-only behaviour.** Browser specs can't see the native window. Any package touching windows, menus,
   Keychain, or the bundle keeps its dev-copy check open until done.
 - **Licences.** Any vendored file goes through [SOURCES.md](SOURCES.md)'s rules.
+
+## Ideas from kitze's factory teaser (5 Nov)
+
+Ash watched kitze's factory teaser and asked what of it Hivra should take. It is a product tour, not a repository,
+so nothing is credited and no source is added to SOURCES.md. Each candidate below says what Hivra already has and
+what is missing, so any of them can become a package when Ash says. None has a WP doc yet.
+
+1. **An automations factory canvas.** Hivra has automations that run on a time or a GitHub or GitLab event, with a
+   list of runs (`src-tauri/src/automations.rs`), and the activity log (WP-78). Missing: a webhook trigger, a canvas
+   that shows the graph of what feeds what, and a live activity feed of runs ("Webhook received", "Automation
+   completed", "Automation failed" with the reason in plain words).
+2. **A Machines view.** Hivra knows this Mac, the remote host (WP-60, WP-61) and the phone, and it checks each
+   CLI's version with the right update command for Claude Code, Codex, opencode and Pi
+   (`src-tauri/src/harness_updates.rs`). Missing: every machine as a card (Mac, VPS, Proxmox hosts, phone), Cursor and
+   Gemini in the harness list, a harness × machine version matrix, and one-click Update that reaches a machine other
+   than this one.
+3. **Agents as bots.** Hivra has Monos with a persona (WP-05, WP-21), a provider and model per Mono (`MonoEngine`), a
+   worker default per Mono, project and app (WP-89), crew rules that reroute after a failure (WP-13), and skills and
+   commands that come with plugins (WP-30, WP-41). The teaser's per-bot settings are role, provider and model, an
+   ordered fallback list of provider and model, effort from Low to Max, fast mode, and the bot's own Commands and
+   Skills lists. Missing: one bot card that shows all of it together, an ordered fallback list on the bot itself,
+   fast mode, and the bot's own Commands and Skills lists.
+4. **A chat doctor.** Hivra resumes a turn cut by a quit or a crash (up to 3 times), starts fresh from its brief when
+   a chat's transcript is gone, says "resume stopped" in the chat, and has `monocode healthcheck` for the database.
+   Missing: a pass that finds broken chats by itself (lost transcript, a turn that never ends, a session that fails
+   on every message) and repairs them, with a list of what it found and what it did.
+5. **A Commands and Skills library page.** Hivra gets skills and commands from plugins (WP-30, WP-31, WP-41), and the
+   finder (WP-74) searches tasks and docs. Missing: one page that lists every command and skill with its plugin,
+   counts and search.
+6. **A Home "Everything" view.** Hivra's Home is a column of movable sections with a pinned panel (WP-73), beside
+   Tasks (WP-70), the Chief of Staff's view across projects (WP-88) and decisions (WP-14). Missing: one plain-language
+   paragraph of what is going on now ("16 agents are working… 55 decisions are waiting on you…"), workspace cards,
+   to-dos with draft and ready, and notes and a scratchpad on Home. WP-73 rule 6 forbids counters on Home on purpose;
+   the paragraph fits that rule, and the cards' counts would need Ash to reopen it.
+7. **A Today page.** Hivra has the activity log (WP-78), tasks with their states (WP-70) and sessions (the old Today
+   screen was retired in WP-06 because it showed chat state rather than a day's work). Missing: what was worked on
+   today or any other day by date, grouped by status or anything else; time worked with an hourly bar; messages sent
+   and received; to-dos finished by agents against waiting for review (accepted, returned); decisions made
+   automatically against made by the person; chats active against done.
