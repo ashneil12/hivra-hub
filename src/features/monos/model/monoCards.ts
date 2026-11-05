@@ -32,6 +32,8 @@ export type MonoCard =
       /** WP-89: what this Mono just set its workers to run on. `previous` is Undo. */
       type: "worker-default";
       scope: "mono" | "project" | "system";
+      /** The Mono whose chat posted it, so Undo knows who to write. */
+      mono?: string;
       project?: string;
       line: string;
       previous?: { cli?: string; model?: string; effort?: string };
@@ -48,6 +50,7 @@ export const CARD_FIELDS = [
   "instructions",
   "schedule",
   "scope",
+  "mono",
   "project",
   "line",
   "previous",
@@ -145,7 +148,7 @@ export function parseCard(input: Record<string, unknown>): MonoCard {
       };
     }
     case "worker-default": {
-      only(input, ["scope", "project", "line", "previous"]);
+      only(input, ["scope", "mono", "project", "line", "previous"]);
       const scope = input.scope;
       if (scope !== "mono" && scope !== "project" && scope !== "system")
         throw new Error('scope must be mono, project or system');
@@ -154,6 +157,7 @@ export function parseCard(input: Record<string, unknown>): MonoCard {
         type: "worker-default",
         scope,
         line: text(input.line, "line", 500),
+        ...(input.mono === undefined ? {} : { mono: text(input.mono, "mono", 80) }),
         ...(input.project === undefined ? {} : { project: text(input.project, "project", 4096) }),
         ...(previous ? { previous } : {}),
       };

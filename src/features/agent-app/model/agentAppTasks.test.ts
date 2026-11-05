@@ -2169,7 +2169,13 @@ describe("parallel workers per project, with throttling (H8)", () => {
       setSystemWorkerDefault({ cli: "claude", model: "claude:opus-4-7", effort: "high" });
       await handleAgentApp(source, "after", "tasks.delegate", { brief: "Build the title." }, host);
       const first = started[0][0] as { model: string; modelSettings?: { effort?: string } };
-      expect(first).toMatchObject({ harness: "claude", model: "claude:opus-4-7", modelSettings: { effort: "high" } });
+      expect(first).toMatchObject({
+        harness: "claude",
+        model: "claude:opus-4-7",
+        modelSettings: { effort: "high" },
+        ranFrom: "set for every worker",
+        ranEffort: "high",
+      });
       expect(seen(first)).toMatchObject({ model: "claude-opus-4-7", effort: "high" });
 
       // Changed while it runs. Asked again, and pumped, it is not started over.

@@ -7,6 +7,7 @@ import {
   isProseBlock,
   type TurnItem,
 } from "../../sessions/model/transcriptActivity";
+import { cleanRanFrom } from "../../crew/model/workerChoice";
 import {
   HARNESSES,
   sessionDraftBlock,
@@ -39,6 +40,7 @@ export function sanitizeMonoSpawnedSessions(
       typeof item.effort === "string" && item.effort.trim() && item.effort.length <= 40
         ? item.effort.trim()
         : undefined;
+    const from = cleanRanFrom(item.from);
     if (!result.has(item.sessionId))
       result.set(item.sessionId, {
         sessionId: item.sessionId,
@@ -47,6 +49,7 @@ export function sanitizeMonoSpawnedSessions(
         harness: item.harness,
         model: item.model,
         ...(effort ? { effort } : {}),
+        ...(from ? { from } : {}),
       });
   }
   return [...result.values()];

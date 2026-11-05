@@ -221,6 +221,21 @@ it("sanitizes saved references and strips extra fields", () => {
     ]),
   ).toEqual([{ ...launch, title: "Review" }]);
   expect(sanitizeMonoSpawnedSessions({})).toEqual([]);
+  expect(
+    sanitizeMonoSpawnedSessions([
+      { ...launch, sessionId: "sourced", from: "set for this Mono" },
+      { ...launch, sessionId: "joined", from: "set for this Mono, set for every worker" },
+      { ...launch, sessionId: "bad-from", from: "from a script\nset for this Mono" },
+      { ...launch, sessionId: "unknown-from", from: "guessed" },
+      { ...launch, sessionId: "mixed", from: "set for this Mono, guessed" },
+    ]).map((entry) => [entry.sessionId, entry.from]),
+  ).toEqual([
+    ["sourced", "set for this Mono"],
+    ["joined", "set for this Mono, set for every worker"],
+    ["bad-from", undefined],
+    ["unknown-from", undefined],
+    ["mixed", undefined],
+  ]);
 });
 
 it("reads a launched session's state for its card", () => {

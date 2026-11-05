@@ -13321,8 +13321,50 @@ function Workspace({
           if (!sourceTurnId) return;
           // A worker that waited (H8) already has its card, from the turn that asked for it.
           const asked = sessionsRef.current.find((session) => session.id === source.id);
-          if (asked?.blocks.some((block) => block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId)))
+          const waiting = asked?.blocks.some((block) =>
+            block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId),
+          );
+          if (waiting) {
+            // WP-89: when that worker starts on a newer default, its card names the new effort and where it came from.
+            if (!entry.from && !entry.effort) return;
+            const next = sessionsRef.current.map((session) => {
+              if (session.id !== source.id) return session;
+              let touched = false;
+              const blocks = session.blocks.map((block) => {
+                if (!block.monoSpawnedSessions?.some((card) => card.sessionId === entry.sessionId))
+                  return block;
+                let blockTouched = false;
+                const monoSpawnedSessions = block.monoSpawnedSessions.map((card) => {
+                  if (card.sessionId !== entry.sessionId) return card;
+                  const updated = {
+                    ...card,
+                    model: entry.model || card.model,
+                    harness: entry.harness,
+                    ...(entry.effort ? { effort: entry.effort } : {}),
+                    ...(entry.from ? { from: entry.from } : {}),
+                  };
+                  if (
+                    updated.model === card.model &&
+                    updated.harness === card.harness &&
+                    updated.effort === card.effort &&
+                    updated.from === card.from
+                  )
+                    return card;
+                  blockTouched = true;
+                  return updated;
+                });
+                if (!blockTouched) return block;
+                touched = true;
+                return { ...block, monoSpawnedSessions };
+              });
+              return touched ? { ...session, blocks } : session;
+            });
+            if (next.some((session, index) => session !== sessionsRef.current[index])) {
+              sessionsRef.current = next;
+              setSessions(next);
+            }
             return;
+          }
           const next = sessionsRef.current.map((session) =>
             session.id === source.id
               ? recordMonoSpawnedSession(session, sourceTurnId, entry)
@@ -13596,6 +13638,9 @@ function Workspace({
                   model:
                     created?.model ??
                     resolveModel(launch.harness, launch.model).id,
+                  // WP-89: the start card names the effort and where the CLI, model and effort came from.
+                  ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
+                  ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
                 });
               };
               const open = sessionsRef.current.find(
@@ -14172,6 +14217,9 @@ function Workspace({
                     title: job.title,
                     harness: launch.harness as HarnessId,
                     model: launch.model || launch.harness,
+                    // WP-89: a waiting worker's card names the effort and where it came from.
+                    ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
+                    ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
                   }),
               }),
               briefLead: async (owner, mono, input) => {

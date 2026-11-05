@@ -55,6 +55,7 @@ import {
   crewRuleSentence,
   describeInForce,
   planWorkerChoice,
+  ranFromPhrase,
   scopeClearLine,
 } from "../../crew/model/workerChoice";
 import { commitRoster, findMono } from "../../monos/model/mono";
@@ -877,6 +878,7 @@ async function delegate(
   let launchModel = model?.model;
   let chosenEffort = effort;
   let crewChose = false;
+  let ranFrom: string | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
@@ -907,6 +909,7 @@ async function delegate(
           launchHarness = next.harness;
           launchModel = next.model;
           chosenEffort = next.effort;
+          if (answer) ranFrom = ranFromPhrase(answer);
         }
       }
     } catch {
@@ -980,6 +983,7 @@ async function delegate(
         ...(launchHarness ? { harness: launchHarness } : {}),
         ...(launchModel ? { model: launchModel } : {}),
         ...(chosenEffort !== undefined ? { effort: chosenEffort } : {}),
+        ...(ranFrom ? { ranFrom } : {}),
         // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
         // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
         runtimeMode: WORKER_RUNTIME_MODE,
@@ -1507,7 +1511,8 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
     host.postCard?.(source.id, {
       type: "worker-default",
       scope: planned.scope,
-      ...(planned.scope === "project" ? { project } : {}),
+      mono: setter.id,
+      ...(planned.scope === "system" ? {} : { project }),
       line,
       ...(previous ? { previous } : {}),
     });

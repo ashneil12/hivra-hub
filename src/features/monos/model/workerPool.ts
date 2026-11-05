@@ -854,7 +854,10 @@ export function workerPoolHost(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
   /** Put the waiting worker's card in its chat (it shows "Waiting for a free worker" until it starts). */
-  card?(job: QueuedWorker, launch: { cwd: string; harness: string; model?: string }): void;
+  card?(
+    job: QueuedWorker,
+    launch: { cwd: string; harness: string; model?: string; ranFrom?: string; ranEffort?: string },
+  ): void;
 }): WorkerPoolHost {
   const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room });
   return {

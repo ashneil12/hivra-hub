@@ -66,6 +66,8 @@ export type MonoSpawnedSession = {
   model: string;
   /** The reasoning effort it runs at, as the picker words it, when its model offers one. */
   effort?: string;
+  /** WP-89: where its CLI, model and effort came from, in the words the settings line uses. */
+  from?: string;
 };
 
 export type TaskListItemStatus =

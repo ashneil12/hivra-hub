@@ -200,6 +200,32 @@ function phrase(from: FieldSource): string | undefined {
   return SOURCE[from];
 }
 
+/** Where a launch's fields came from, in the same words as the line in force. An unknown source is left out. */
+export function ranFromPhrase(from: {
+  cliFrom?: string | null;
+  modelFrom?: string | null;
+  effortFrom?: string | null;
+}): string | undefined {
+  const phrases: string[] = [];
+  for (const item of [from.modelFrom, from.effortFrom, from.cliFrom]) {
+    const words = item ? SOURCE[item] : undefined;
+    if (words && !phrases.includes(words)) phrases.push(words);
+  }
+  return phrases.length ? phrases.join(", ") : undefined;
+}
+
+const RAN_FROM = new Set(Object.values(SOURCE));
+
+/** A stored "where it came from" line: known phrases only, nothing else. */
+export function cleanRanFrom(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  if (!text || text.length > 160 || /[\r\n]/.test(text)) return undefined;
+  const parts = text.split(", ").map((part) => part.trim()).filter(Boolean);
+  if (!parts.length || parts.some((part) => !RAN_FROM.has(part))) return undefined;
+  return parts.join(", ");
+}
+
 function findModel(catalog: Catalog, cli: string | null, id: string | null): CatalogModel | undefined {
   if (!id) return undefined;
   if (cli && catalog[cli]) return catalog[cli].find((model) => model.id === id);

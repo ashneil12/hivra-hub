@@ -5,6 +5,7 @@ import {
   crewRuleSentence,
   inForceSentence,
   planWorkerChoice,
+  ranFromPhrase,
   scopeClearLine,
 } from "./workerChoice";
 
@@ -142,6 +143,17 @@ describe("merging onto what is already set", () => {
     expect(() => planWorkerChoice({ scope: "mono" }, undefined, catalog)).toThrow("Say the model, or clear it.");
     expect(() => planWorkerChoice({ scope: "team", model: "opus" }, undefined, catalog)).toThrow(/scope must be/);
     expect(() => planWorkerChoice({ scope: "mono", clear: false }, undefined, catalog)).toThrow("clear must be true");
+  });
+});
+
+describe("where a launch came from", () => {
+  it("uses one phrase when the fields share a source, and both when they don't", () => {
+    expect(ranFromPhrase({ cliFrom: "mono", modelFrom: "mono", effortFrom: "mono" })).toBe("set for this Mono");
+    expect(ranFromPhrase({ modelFrom: "mono", effortFrom: "system" })).toBe(
+      "set for this Mono, set for every worker",
+    );
+    expect(ranFromPhrase({ cliFrom: "default", modelFrom: "none", effortFrom: null })).toBeUndefined();
+    expect(ranFromPhrase({ modelFrom: "made-up" })).toBeUndefined();
   });
 });
 
