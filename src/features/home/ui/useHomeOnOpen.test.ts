@@ -88,3 +88,14 @@ it("stays when the load finds nothing", async () => {
   await act(async () => { await Promise.resolve(); });
   expect(currentHubSelection()).toEqual({ project: "hivra", item: "coding-team" });
 });
+
+it("does not open home when they left and came back to the same place before the load finished", async () => {
+  vi.stubEnv("VITE_MONOCODE_HUB", "1");
+  setHubSelection({ project: "hivra", item: "coding-team" });
+  let resolve: (count: number) => void = () => undefined;
+  mount(() => new Promise((done) => { resolve = done; }));
+  setHubSelection({ project: "hivra", item: "autopilot" });
+  setHubSelection({ project: "hivra", item: "coding-team" });
+  await act(async () => { resolve(4); });
+  expect(currentHubSelection()).toEqual({ project: "hivra", item: "coding-team" });
+});

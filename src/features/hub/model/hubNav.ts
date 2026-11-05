@@ -53,6 +53,11 @@ function subscribe(cb: () => void): () => void {
   return () => window.removeEventListener(EVENT, cb);
 }
 
+/** WP-73: Home watches the selection. Leaving and coming back is still a move. */
+export function subscribeHubSelection(cb: () => void): () => void {
+  return subscribe(cb);
+}
+
 export function useHubSelection(): HubSelection {
   return useSyncExternalStore(subscribe, read, read);
 }

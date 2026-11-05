@@ -3,7 +3,7 @@
 
 import { useEffect, useRef } from "react";
 import { hubDefaultsOn } from "../../hub/model/hubDefaults";
-import { currentHubSelection, showAppItem } from "../../hub/model/hubNav";
+import { currentHubSelection, showAppItem, subscribeHubSelection } from "../../hub/model/hubNav";
 import { loadNeedsYouCount, realHomeSource } from "../model/load";
 import { chooseOpening } from "../model/openOnLaunch";
 
@@ -16,23 +16,29 @@ export function useHomeOnOpen(load: () => Promise<number> = defaultLoad, retryMs
     if (!hubDefaultsOn()) return;
     const start = currentHubSelection();
     let stopped = false;
+    let moved = false;
     let timer = 0;
+    const stopWatch = subscribeHubSelection(() => {
+      const now = currentHubSelection();
+      if (now.project !== start.project || now.item !== start.item) moved = true;
+    });
     const attempt = () => {
-      if (stopped) return;
+      if (stopped || moved) return;
       const now = currentHubSelection();
       if (now.project !== start.project || now.item !== start.item) return;
       loadRef.current().then((count) => {
         if (stopped) return;
         const later = currentHubSelection();
-        const navigated = later.project !== start.project || later.item !== start.item;
+        const navigated = moved || later.project !== start.project || later.item !== start.item;
         if (chooseOpening({ needsYou: count, navigated }) === "home") showAppItem("home");
       }).catch(() => {
-        if (!stopped) timer = window.setTimeout(attempt, retryMs);
+        if (!stopped && !moved) timer = window.setTimeout(attempt, retryMs);
       });
     };
     attempt();
     return () => {
       stopped = true;
+      stopWatch();
       window.clearTimeout(timer);
     };
   }, [retryMs]);
