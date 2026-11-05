@@ -37,3 +37,63 @@ test("a late reply for the previous project does not overwrite the current one",
   await expect(page.getByText("Stale note.")).toHaveCount(0);
   await expect(page.getByText("acme/old")).toHaveCount(0);
 });
+
+test("a label edit and the switch do not share one version", async ({ page }) => {
+  await page.goto(pageUrl);
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled hivra" })).toBeEnabled();
+  await page.evaluate(() => {
+    (window as unknown as { holdSaves: boolean }).holdSaves = true;
+  });
+  const label = page.getByRole("textbox", { name: "Label", exact: true });
+  await label.fill("bugs");
+  await label.blur();
+  await page.getByRole("switch", { name: "Take GitHub issues labelled bugs" }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "1");
+  await page.evaluate(() => (window as unknown as { releaseOneSave: () => void }).releaseOneSave());
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "1");
+  await expect(page.locator("body")).toHaveAttribute("data-pending-expected", "1");
+  await page.evaluate(() => (window as unknown as { releaseOneSave: () => void }).releaseOneSave());
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "0");
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled bugs" })).toHaveAttribute("aria-checked", "true");
+  await expect(label).toHaveValue("bugs");
+  await expect(page.getByText("That changed. Showing the latest.")).toHaveCount(0);
+});
+
+test("a label edit does not turn the switch back off", async ({ page }) => {
+  await page.goto(pageUrl);
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled hivra" })).toBeEnabled();
+  await page.evaluate(() => {
+    (window as unknown as { holdSaves: boolean }).holdSaves = true;
+  });
+  await page.getByRole("switch", { name: "Take GitHub issues labelled hivra" }).click();
+  const label = page.getByRole("textbox", { name: "Label", exact: true });
+  await label.fill("bugs");
+  await label.blur();
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "1");
+  await page.evaluate(() => (window as unknown as { releaseOneSave: () => void }).releaseOneSave());
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "1");
+  await expect(page.locator("body")).toHaveAttribute("data-pending-expected", "1");
+  await page.evaluate(() => (window as unknown as { releaseOneSave: () => void }).releaseOneSave());
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "0");
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled bugs" })).toHaveAttribute("aria-checked", "true");
+  await expect(label).toHaveValue("bugs");
+});
+
+test("a rejected save is not followed by a queued overwrite", async ({ page }) => {
+  await page.goto(pageUrl);
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled hivra" })).toBeEnabled();
+  await page.evaluate(() => {
+    (window as unknown as { holdSaves: boolean }).holdSaves = true;
+  });
+  const label = page.getByRole("textbox", { name: "Label", exact: true });
+  await label.fill("bugs");
+  await label.blur();
+  await page.getByRole("switch", { name: "Take GitHub issues labelled bugs" }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "1");
+  await page.evaluate(() => (window as unknown as { bumpSaved: () => void }).bumpSaved());
+  await page.evaluate(() => (window as unknown as { releaseOneSave: () => void }).releaseOneSave());
+  await expect(page.locator("body")).toHaveAttribute("data-pending-saves", "0");
+  await expect(page.getByText("That changed. Showing the latest.")).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Take GitHub issues labelled hivra" })).toHaveAttribute("aria-checked", "false");
+  await expect(label).toHaveValue("hivra");
+});

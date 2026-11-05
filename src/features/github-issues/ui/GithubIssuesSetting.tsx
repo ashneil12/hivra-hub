@@ -38,38 +38,46 @@ export function GithubIssuesSetting({ project }: { project: string }) {
   const [enabled, setEnabled] = useState(false);
   const [label, setLabel] = useState("hivra");
   const [repo, setRepo] = useState<string | null>(null);
-  const [version, setVersion] = useState(0);
   const [note, setNote] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const gen = useRef(0);
   const projectNow = useRef(project);
   projectNow.current = project;
+  const versionRef = useRef(0);
+  // The last switch choice, including one whose save has not returned. A label edit queued behind it sends this, not the last render.
+  const enabledRef = useRef(false);
+  const projectTicket = useRef(0);
+  const epoch = useRef(0);
+  const chain = useRef<Promise<void>>(Promise.resolve());
 
   const storedLabel = useRef("hivra");
 
   function apply(next: Setting) {
     storedLabel.current = next.label || "hivra";
+    versionRef.current = next.version;
+    enabledRef.current = next.enabled;
     setEnabled(next.enabled);
     setLabel(next.label || "hivra");
     setRepo(next.repo);
-    setVersion(next.version);
     setNote(next.note);
     setReady(true);
   }
 
   useEffect(() => {
+    const ticket = ++projectTicket.current;
     const mine = ++gen.current;
     const folder = project.trim();
+    versionRef.current = 0;
+    enabledRef.current = false;
     setReady(false);
     setEnabled(false);
     setLabel("hivra");
     setRepo(null);
-    setVersion(0);
     setNote(null);
     if (!folder) return;
     void invoke("github_issues_setting_get", { project: folder })
       .then((got) => {
-        if (mine !== gen.current) return;
+        if (ticket !== projectTicket.current || mine !== gen.current) return;
         const next = asSetting(got);
         if (!next) {
           setNote(TRY_AGAIN);
@@ -78,35 +86,55 @@ export function GithubIssuesSetting({ project }: { project: string }) {
         apply(next);
       })
       .catch((error: unknown) => {
-        if (mine !== gen.current) return;
+        if (ticket !== projectTicket.current || mine !== gen.current) return;
         setNote(message(error));
       });
   }, [project]);
 
-  async function save(nextEnabled: boolean, nextLabel: string) {
+  function save(nextEnabled: boolean, nextLabel: string) {
     const folder = projectNow.current.trim();
     if (!folder || !ready) return;
+    const ticket = projectTicket.current;
+    const myEpoch = epoch.current;
     const mine = ++gen.current;
-    try {
-      const got = asSetting(
-        await invoke("github_issues_setting_set", {
-          project: folder,
-          enabled: nextEnabled,
-          label: nextLabel.trim() || "hivra",
-          expectedVersion: version,
-        }),
-      );
-      if (mine !== gen.current) return;
-      if (!got) {
-        setNote(TRY_AGAIN);
-        return;
+    const run = async () => {
+      if (ticket !== projectTicket.current || myEpoch !== epoch.current) return;
+      if (projectNow.current.trim() !== folder) return;
+      try {
+        const got = asSetting(
+          await invoke("github_issues_setting_set", {
+            project: folder,
+            enabled: nextEnabled,
+            label: nextLabel.trim() || "hivra",
+            expectedVersion: versionRef.current,
+          }),
+        );
+        if (ticket !== projectTicket.current) return;
+        if (!got) {
+          if (mine === gen.current) setNote(TRY_AGAIN);
+          return;
+        }
+        versionRef.current = got.version;
+        if (got.stale) {
+          // Another window wrote. Show that, and do not let a queued edit overwrite it.
+          epoch.current += 1;
+          apply(got);
+          return;
+        }
+        if (mine === gen.current) {
+          apply(got);
+          playCue("switch");
+        }
+      } catch (error) {
+        if (ticket !== projectTicket.current || mine !== gen.current) return;
+        setNote(message(error));
       }
-      apply(got);
-      playCue("switch");
-    } catch (error) {
-      if (mine !== gen.current) return;
-      setNote(message(error));
-    }
+    };
+    const job = chain.current.then(run, run);
+    chain.current = job.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   const shown = label.trim() || "hivra";
@@ -124,7 +152,10 @@ export function GithubIssuesSetting({ project }: { project: string }) {
           aria-label={`Take GitHub issues labelled ${shown}`}
           aria-checked={enabled}
           disabled={!project.trim() || !ready}
-          onClick={() => void save(!enabled, shown)}
+          onClick={() => {
+            enabledRef.current = !enabledRef.current;
+            void save(enabledRef.current, shown);
+          }}
           className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${enabled ? "bg-accent" : "bg-content/20"}`}
         >
           <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${enabled ? "left-4.5" : "left-0.5"}`} />
@@ -139,7 +170,7 @@ export function GithubIssuesSetting({ project }: { project: string }) {
           onChange={(event) => setLabel(event.target.value)}
           onBlur={() => {
             const next = label.trim() || "hivra";
-            if (ready && next !== storedLabel.current) void save(enabled, next);
+            if (ready && next !== storedLabel.current) void save(enabledRef.current, next);
           }}
           className="mt-1 w-full rounded-md border border-stroke bg-transparent px-2 py-1 text-[12px] text-content"
         />

@@ -7,6 +7,31 @@ import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
 const held: Array<() => void> = [];
+const heldSaves: Array<{ args: Record<string, unknown>; resolve: (value: unknown) => void }> = [];
+let stored = {
+  enabled: false,
+  label: "hivra",
+  repo: "acme/web",
+  version: 0,
+  stale: false,
+  note: null as string | null,
+};
+
+function answerSet(args: Record<string, unknown>) {
+  const expected = Number(args.expectedVersion);
+  if (expected !== stored.version) {
+    return { ...stored, stale: true, note: "That changed. Showing the latest." };
+  }
+  stored = {
+    enabled: args.enabled === true,
+    label: String(args.label ?? "hivra"),
+    repo: "acme/web",
+    version: stored.version + 1,
+    stale: false,
+    note: null,
+  };
+  return { ...stored };
+}
 
 installFakeTauri("wp77", (command, args) => {
   const project = String(args.project ?? "");
@@ -32,14 +57,13 @@ installFakeTauri("wp77", (command, args) => {
   }
   if (command === "github_issues_setting_set") {
     document.body.dataset.lastCommand = command;
-    return {
-      enabled: args.enabled === true,
-      label: String(args.label ?? "hivra"),
-      repo: "acme/web",
-      version: 1,
-      stale: false,
-      note: null,
-    };
+    const hold = (window as unknown as { holdSaves?: boolean }).holdSaves === true;
+    if (!hold) return answerSet(args);
+    return new Promise((resolve) => {
+      heldSaves.push({ args, resolve });
+      document.body.dataset.pendingSaves = String(heldSaves.length);
+      document.body.dataset.pendingExpected = String(args.expectedVersion ?? "");
+    });
   }
   return null;
 });
@@ -47,6 +71,15 @@ installFakeTauri("wp77", (command, args) => {
 Object.assign(window, {
   releaseStale() {
     for (const resolve of held.splice(0)) resolve();
+  },
+  releaseOneSave() {
+    const next = heldSaves.shift();
+    if (!next) return;
+    next.resolve(answerSet(next.args));
+    document.body.dataset.pendingSaves = String(heldSaves.length);
+  },
+  bumpSaved() {
+    stored.version += 1;
   },
 });
 
