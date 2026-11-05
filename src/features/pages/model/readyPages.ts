@@ -224,15 +224,15 @@ function attention(agents) {
   const out = [];
   const walk = (agent, workers, path) => {
     for (const w of workers) {
-      if (w.state === "asking" || w.needsYou || w.state === "stuck")
-        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: "", state: w.state, since: w.since, reason: w.reason, word: w.state === "stuck" && !w.needsYou ? "Stuck" : w.word, needsYou: w.needsYou,
+      if (w.state === "asking" || w.needsYou)
+        out.push({ key: "w:" + w.id, name: w.title, under: "From " + path, doing: "", state: w.state, since: w.since, reason: w.reason, word: w.word, needsYou: w.needsYou,
           question: w.question, openArgs: { workerId: w.id }, stopArgs: { workerId: w.id } });
       walk(agent, w.workers || [], path);
     }
   };
   for (const a of agents) {
-    if (a.state === "asking" || a.needsYou || a.state === "stuck")
-      out.push({ key: "a:" + a.id, name: a.name, doing: a.state === "stuck" ? a.doing : "", state: a.state, since: a.since, reason: a.reason, question: a.question, word: a.state === "stuck" && !a.needsYou ? "Stuck" : a.word, needsYou: a.needsYou,
+    if (a.state === "asking" || a.needsYou)
+      out.push({ key: "a:" + a.id, name: a.name, doing: a.state === "stuck" ? a.doing : "", state: a.state, since: a.since, reason: a.reason, question: a.question, word: a.word, needsYou: a.needsYou,
         agentId: a.id, openArgs: { agentId: a.id }, stopArgs: a.state === "stuck" && a.chatId ? { agentId: a.id } : null });
     walk(a, a.workers || [], a.name);
   }
