@@ -193,7 +193,7 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       </p>
       <p className="text-[13px] text-content/80">{defaultLine(signedIn)}</p>
       {/* WP-89: the default for every worker, above the rules list. */}
-      <WorkerDefaultControl scope="system" title="Default for every worker" />
+      <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"

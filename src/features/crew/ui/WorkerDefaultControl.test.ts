@@ -5,11 +5,14 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HubProject } from "../../hub/model/types";
+import { setLineRulesSource } from "../model/lineRules";
 import { addMono, commitRoster, findMono } from "../../monos/model/mono";
 import {
   projectWorkerDefault,
   projectWorkerModel,
   resetWorkerPool,
+  setProjectWorkerModel,
+  setSystemWorkerDefault,
   systemWorkerDefault,
 } from "../../monos/model/workerPool";
 import { resetHarnessModelOverlays, setHarnessModels } from "../../sessions/model/models";
@@ -94,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  setLineRulesSource(undefined);
   resetHarnessModelOverlays();
   vi.unstubAllGlobals();
 });
@@ -222,5 +226,94 @@ describe("what is in force on the three screens", () => {
       "That Mono isn't on this Mac.",
     );
     expect(findMono("ada")).toBeUndefined();
+  });
+
+  it("keeps the saved project default when another CLI is chosen and no model is picked yet", () => {
+    setProjectWorkerModel("hivra", { cli: "cursor", model: "cursor:composer", effort: "medium" });
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    act(() => root.render(createElement(ProjectWorkers, { project: hivra, anchor, onClose: () => undefined })));
+    const project = scope("project");
+    expect(project.model().querySelector("option")?.textContent).toBe("Use the default");
+    expect(document.querySelector("[data-project-worker-model-line]")).toBeNull();
+    act(() => pick(project.cli(), ""));
+    expect(projectWorkerDefault("hivra")).toEqual({
+      cli: "cursor",
+      model: "cursor:composer",
+      effort: "medium",
+    });
+    act(() => root.unmount());
+    expect(projectWorkerDefault("hivra")).toEqual({
+      cli: "cursor",
+      model: "cursor:composer",
+      effort: "medium",
+    });
+
+    setProjectWorkerModel("hivra", { model: "claude:opus-4-7", effort: "high" });
+    root = createRoot(container);
+    act(() => root.render(createElement(ProjectWorkers, { project: hivra, anchor, onClose: () => undefined })));
+    act(() => pick(scope("project").cli(), "cursor"));
+    expect(projectWorkerDefault("hivra")).toEqual({
+      cli: "claude",
+      model: "claude:opus-4-7",
+      effort: "high",
+    });
+    anchor.remove();
+  });
+
+  it("names a project rule and a plugin rule, and drops a rule that arrives for the previous folder", async () => {
+    let finishOld: (value: { rules: unknown[]; plugins: unknown[] }) => void = () => undefined;
+    setLineRulesSource((project) => {
+      if (project === "/old") {
+        return new Promise((resolve) => {
+          finishOld = resolve;
+        });
+      }
+      if (project !== hivra.folder) return Promise.resolve(undefined);
+      return Promise.resolve({
+        rules: [{ labels: ["backend"], paths: [], model: "claude:opus-4-7", source: "person" }],
+        plugins: [{ labels: ["checks"], paths: [], cli: "cursor", source: "plugin" }],
+      });
+    });
+    setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "low" });
+    const anchor = document.createElement("button");
+    document.body.append(anchor);
+    await act(async () => {
+      root.render(
+        createElement(
+          "div",
+          null,
+          createElement(CrewRulesPage, {
+            cwd: hivra.folder,
+            initial: { rules: [], plugins: [], signedIn: [{ cli: "claude", installed: true, signedIn: true }] },
+          }),
+          createElement(ProjectWorkers, { project: hivra, anchor, onClose: () => undefined }),
+        ),
+      );
+      await Promise.resolve();
+    });
+    expect(scope("project").line()).toContain("`backend` work to Opus 4.7");
+    expect(scope("project").line()).toContain("`checks` work to Cursor");
+    expect(scope("system").line()).toContain("`backend` work to Opus 4.7");
+    expect(scope("system").line()).toContain("`frontend` work to Sonnet 5");
+
+    await act(async () => {
+      root.render(createElement(WorkerDefaultControl, { scope: "system", projectFolder: "/old" }));
+    });
+    await act(async () => {
+      root.render(createElement(WorkerDefaultControl, { scope: "system", projectFolder: hivra.folder }));
+      await Promise.resolve();
+    });
+    expect(scope("system").line()).toContain("`backend`");
+    finishOld({
+      rules: [{ labels: ["stale"], paths: [], model: "claude:sonnet-5", source: "person" }],
+      plugins: [],
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(scope("system").line()).not.toContain("`stale`");
+    expect(scope("system").line()).toContain("`backend`");
+    anchor.remove();
   });
 });

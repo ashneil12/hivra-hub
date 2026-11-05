@@ -1,11 +1,13 @@
 // WP-89: one control for the CLI, model and effort a scope's workers use.
 // "Use the default" clears that scope. The line says what is in force.
 
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
 import { CLI_ORDER, cliLabel, isCli, isEffort } from "../model/clis";
 import { launchCatalog } from "../model/launchCatalog";
 import type { Pick } from "../model/resolve";
+import { lineRulesFor } from "../model/lineRules";
+import type { CrewRule } from "../model/rules";
 import { crewRuleSentence, inForceSentence } from "../model/workerChoice";
 import { cleanStoredDefault } from "../model/workerDefault";
 import {
@@ -62,8 +64,11 @@ export function WorkerDefaultControl({
 }) {
   useWorkerPoolVersion();
   useSyncExternalStore(subscribeMonos, monosSnapshot);
-  const [pendingCli, setPendingCli] = useState("");
+  // null: no pending choice. "": Claude Code was picked, and no model yet.
+  const [pendingCli, setPendingCli] = useState<string | null>(null);
   const [problem, setProblem] = useState<string>();
+  const [loadedRules, setLoadedRules] = useState<readonly CrewRule[] | null>(null);
+  const loadedRulesRef = useRef<readonly CrewRule[] | null>(null);
   const catalog = launchCatalog();
   const storedMono = monoId ? findMono(monoId) : monoOnFolder(projectFolder);
   const pick =
@@ -74,9 +79,29 @@ export function WorkerDefaultControl({
           ? projectWorkerDefault(projectId)
           : undefined
         : storedMono?.workerDefault;
-  const shownCli = pendingCli || (pick?.cli && pick.cli !== "claude" ? pick.cli : "");
+  const shownCli = pendingCli !== null ? pendingCli : pick?.cli && pick.cli !== "claude" ? pick.cli : "";
   const listCli = shownCli || "claude";
-  const rules = storedMono?.crewRules ?? [];
+  const ownRules = storedMono?.crewRules ?? [];
+  const folder = projectFolder?.trim() ?? "";
+  // listMonos() builds a new object every read, so the effect keys on the rules' text.
+  // A new object each render would fetch again forever. A late read for the previous
+  // folder is dropped; a failed read leaves the line that is already showing.
+  const rulesKey = `${storedMono?.id ?? ""}\0${JSON.stringify(ownRules)}`;
+  useEffect(() => {
+    let alive = true;
+    const shown = ownRules;
+    void lineRulesFor(folder || undefined, shown).then((rules) => {
+      if (!alive || rules === null) return;
+      const baseline = loadedRulesRef.current ?? shown;
+      if (JSON.stringify(baseline) === JSON.stringify(rules)) return;
+      loadedRulesRef.current = rules;
+      setLoadedRules(rules);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [folder, rulesKey]);
+  const rules = loadedRules ?? ownRules;
   const defaults =
     scope === "system"
       ? { system: systemWorkerDefault() }
@@ -133,21 +158,20 @@ export function WorkerDefaultControl({
     const target = cli || "claude";
     const offered = modelOptions(target).some((model) => model.id === pick?.model);
     if (scope === "project") {
-      if (!cli) {
-        setPendingCli("");
-        if (pick?.cli && pick.cli !== "claude") write(undefined);
-        return;
-      }
+      // Picking a CLI does not clear the saved default. It stays until a model is chosen.
       if (offered && pick?.model) {
-        setPendingCli("");
-        write({ cli, model: pick.model, ...(fits(cli, pick.model, pick.effort) ? { effort: pick.effort } : {}) });
+        setPendingCli(null);
+        write({
+          cli: target,
+          model: pick.model,
+          ...(fits(target, pick.model, pick.effort) ? { effort: pick.effort } : {}),
+        });
         return;
       }
       setPendingCli(cli);
-      if (pick) write(undefined);
       return;
     }
-    setPendingCli("");
+    setPendingCli(null);
     if (!cli) {
       if (offered && pick?.model) {
         write(
@@ -175,14 +199,14 @@ export function WorkerDefaultControl({
 
   const onModel = (modelId: string) => {
     if (!modelId) {
-      setPendingCli("");
+      setPendingCli(null);
       write(undefined);
       return;
     }
     const cli = listCli;
     const id = cli === "claude" ? resolveModel("claude", modelId).id : modelId;
     const effort = defaultEffort(cli, id);
-    setPendingCli("");
+    setPendingCli(null);
     if (scope === "project" && cli === "claude") {
       write({ model: id, ...(effort ? { effort } : {}) });
       return;
@@ -201,7 +225,7 @@ export function WorkerDefaultControl({
   };
 
   const clear = () => {
-    setPendingCli("");
+    setPendingCli(null);
     write(undefined);
   };
 
@@ -239,7 +263,7 @@ export function WorkerDefaultControl({
           data-project-worker-model={scope === "project" ? "" : undefined}
           onChange={(event) => onModel(event.target.value)}
         >
-          <option value="">{scope === "project" ? "Sonnet, harder jobs step up" : "Use the default"}</option>
+          <option value="">Use the default</option>
           {models.map((model) => (
             <option key={model.id} value={model.id}>
               {model.name}
