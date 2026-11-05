@@ -3,7 +3,9 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
+mod attribution;
 // WP-04: the one-time, read-only import from the retired Ash OS bridge.
 mod ash_os_import;
 mod automations;
@@ -1106,6 +1108,9 @@ pub fn run() {
             project_logo::forget_logo_file,
             // WP-78: Settings → Activity.
             activity::activity_list,
+            // WP-86: commits on a task, and the agents behind a pull request.
+            attribution::attribution_for_task,
+            attribution::attribution_for_commits,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,
