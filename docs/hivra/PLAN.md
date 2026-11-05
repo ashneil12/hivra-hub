@@ -158,7 +158,19 @@ first mate.
 | [88](work/WP-88-chief-of-staff.md) | The Chief of Staff knows every project | M | 51, 70, 72, 73, 78 | yes |
 | [89](work/WP-89-worker-model.md) | Change what your workers run on, anywhere, in one step | M | 13 | yes |
 
-### Wave I: a web address per worktree, and fake outside services (portless and emulate, 5 Nov)
+### Wave I: secrets that never reach the model (Ash, 5 Nov)
+
+Ash asked for the thing he does by hand today: an agent that needs a key asks for it, the person pastes it once into a
+form card in the chat, and it goes straight into the Mac's keychain. Later the agent names it ("use my Stripe key"),
+the app hands it to one approved command for one run, and the agent sees only output with the value taken out. It
+replaces the current "Needs Ash (provide)" paste, which writes the key into the transcript. It starts now, and takes
+WP-14's asking mechanics when they merge.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [92](work/WP-92-secret-vault.md) | Agents ask for a secret and use it without ever seeing it | L | none | no |
+
+### Wave J: a web address per worktree, and fake outside services (portless and emulate, 5 Nov)
 
 Ash found portless and emulate (both Apache-2.0) and asked whether they would let parallel agents run apps and
 browser-test without colliding on ports, cookies, hostnames or shared outside accounts. Ports were already covered by
@@ -169,7 +181,7 @@ It builds on 87's stack, so it starts when 87 merges.
 | --- | --- | --- | --- | --- |
 | [90](work/WP-90-portless-emulate.md) | Every worktree gets its own web address, and its tests meet a fake service | L | 82, 87 | yes |
 
-### Wave J: the goal graph (oh-my-hermes, 5 Nov)
+### Wave K: the goal graph (oh-my-hermes, 5 Nov)
 
 Ash shared oh-my-hermes (MIT, read at commit `2676c33`) and asked for Hivra's way of running big work to be the
 best one. Most of its graph planner is already in Hivra's orchestration run: required file scopes, isolated

@@ -15,6 +15,7 @@ import {
   type JanitorReport,
 } from "../model/worktreeJanitor";
 import type { RemoveWorktree } from "../model/worktrees";
+import { StaleStacks } from "../../stacks/ui/StaleStacks";
 
 const GROUPS: { outcome: JanitorOutcome; title: string }[] = [
   { outcome: "remove", title: "Safe to remove: merged and clean" },
@@ -146,6 +147,7 @@ export function WorktreeCleanup({
         whether it is merged, unchanged or has local work, and why it is safe to clean or kept.
         Nothing is removed until you tap. Branches and chats stay.
       </p>
+      <StaleStacks />
       {error && (
         <p role="alert" className="break-words text-[12px] text-red-400">
           {error}

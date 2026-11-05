@@ -2,7 +2,7 @@
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
-| J | L | 14, 40, 82 | yes |
+| K | L | 14, 40, 82 | yes |
 
 ## Goal
 
