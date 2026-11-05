@@ -11,7 +11,8 @@ import path from "node:path";
 
 import { roomMessages } from "../hub-realtest-scenarios.mjs";
 import { nextAshMove, scriptedProblem } from "./ash.mjs";
-import { hardChecks, SEAT_IDS } from "./checks.mjs";
+import { hardChecks } from "./checks.mjs";
+import { isTeamSeat, monoIdFor, speakerName } from "./seats.mjs";
 import { judgeScene, verdict } from "./judge.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -164,14 +165,14 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
   // -- where Ash writes ------------------------------------------------------------------------------------------------
   const resolve = async (to) => {
     if (to.room) return { room: to.room === "room" ? ctx.roomId : to.room };
-    if (to.mono) return { mono: to.mono === "lead" ? ctx.leadId : to.mono };
+    if (to.mono) return { mono: monoIdFor(to.mono, ctx.team ?? [], ctx.leadId) };
     if (to.chat) return chats[to.chat] ? { session: chats[to.chat] } : null;
     if (to.codingTeam) return { codingTeam: to.codingTeam === "project" ? ctx.spec.project.id : to.codingTeam };
     return null;
   };
   // "Keep one long chat" on for the scene's Mono first (scene.longChat: "lead" or a Mono id); off is the default.
   if (scene.longChat) {
-    const mono = scene.longChat === "lead" ? ctx.leadId : scene.longChat;
+    const mono = monoIdFor(scene.longChat, ctx.team ?? [], ctx.leadId);
     const set = await act("monoSetting", { mono, longChat: true }).catch((error) => ({ ok: false, error: error.message }));
     log(`  ${scene.id}: Keep one long chat on for ${mono}${set.ok === false ? ` (FAILED: ${set.error})` : ""}`);
     notes.push(`Keep one long chat: on for ${mono}${set.ok === false ? " (failed)" : ""}`);
@@ -209,7 +210,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     await ctx.pump();
     const lines = ashLines.map((l) => ({ t: l.t, who: "Ash", text: l.text }));
     if (place.room) {
-      for (const m of roomMessages(events, place.room, t0)) if (m.from !== "ash") lines.push({ t: m.t, who: m.from, text: m.text });
+      for (const m of roomMessages(events, place.room, t0)) if (m.from !== "ash") lines.push({ t: m.t, who: speakerName(m.from, ctx.team), text: m.text });
     } else {
       const session = await placeSession();
       for (const line of await ctx.claudeTexts(t0)) {
@@ -352,11 +353,12 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     const rows = (await ctx.delegationRows()).filter((row) => ms(row.created_at) >= t0 - 1000 || ms(row.updated_at) >= t0);
     const workers = new Set(rows.map((row) => row.child_session).filter(Boolean));
     const monoOf = Object.fromEntries((snap?.monos ?? []).filter((m) => m.sessionId).map((m) => [m.sessionId, m.id]));
-    const texts = (await ctx.claudeTexts(t0)).map((line) => ({ ...line, who: monoOf[line.session] ?? (workers.has(line.session) ? "worker" : line.session ? `chat ${line.session.slice(0, 8)}` : "app helper call") }));
+    const roster = [...(ctx.team ?? []), ...(snap?.monos ?? [])];
+    const texts = (await ctx.claudeTexts(t0)).map((line) => ({ ...line, who: speakerName(monoOf[line.session], roster) ?? (workers.has(line.session) ? "worker" : line.session ? `chat ${line.session.slice(0, 8)}` : "app helper call") }));
     const room = roomMessages(events, ctx.roomId, t0);
     const toAsh = [];
     const toAshAll = [
-      ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: m.from, where: "room", text: m.text ?? "" })),
+      ...room.filter((m) => m.from !== "ash").map((m) => ({ t: m.t, who: speakerName(m.from, roster), where: "room", text: m.text ?? "" })),
       // A room turn's or a Mono message's NO_REPLY is folded by the app into "nothing new to add" (RoomNoteCard): silence, not words to Ash.
       ...texts.filter((l) => l.text && !l.result && l.who !== "worker" && l.who !== "app helper call" && !(l.hidden && /^\W*NO_REPLY\W*$/i.test(l.text.trim()))).map((l) => ({ t: l.t, who: l.who, where: "chat", text: l.text, midTurn: (l.tools ?? []).length > 0 })),
       ...(place.room ? [] : (await appNotices(await placeSession())).map((n) => ({ t: n.t, who: "app", where: "chat", text: n.text }))),
@@ -373,7 +375,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
       ashLines,
       delegations: rows,
       stuckSeen,
-      workerRoomPosts: room.filter((m) => m.from && !SEAT_IDS.has(m.from) && m.from !== ctx.leadId),
+      workerRoomPosts: room.filter((m) => m.from && !isTeamSeat(m.from, ctx.team) && m.from !== ctx.leadId),
       leaks,
       git: changes,
       tests: tests && { ...tests, code: tests.passesSomewhere ? 0 : tests.code },

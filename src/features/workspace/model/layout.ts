@@ -233,6 +233,17 @@ export function newReleaseNotesWorkspaceTab(
   };
 }
 
+/** Beside opens a new tab and leaves the preview where it is, so the new file is permanent. */
+function permanentWorkspaceTab(tab: WorkspaceTab): WorkspaceTab {
+  return {
+    ...tab,
+    editorPanes: tab.editorPanes.map((pane) => ({
+      ...pane,
+      files: pane.files.map((file) => ({ ...file, preview: false })),
+    })),
+  };
+}
+
 /** Create a top-level workspace tab whose first and only pane is this file. */
 export function newEditorWorkspaceTab(file: FilePaneTab): WorkspaceTab {
   const pane = newEditorPane(file);
@@ -274,6 +285,7 @@ export function openWorkspaceFile(
   created: WorkspaceTab,
   insert: (tabs: WorkspaceTab[], tab: WorkspaceTab) => WorkspaceTab[],
   pin = false,
+  beside = false,
 ): { tabs: WorkspaceTab[]; tabId: string; paneId?: string } {
   const key = editorTabKey(file);
   const project = pathKey(file.projectCwd ?? file.cwd);
@@ -282,16 +294,19 @@ export function openWorkspaceFile(
     .find(({ pane }) => pane.files.some((open) => editorTabKey(open) === key));
   const hit =
     existing?.tab ??
-    (pin
+    (pin || beside
       ? undefined
       : tabs.find((tab) => {
           const open = previewWorkspaceFile(tab);
           return !!open && pathKey(open.projectCwd ?? open.cwd) === project;
         }));
-  if (!hit) return { tabs: insert(tabs, created), tabId: created.id };
+  if (!hit) {
+    const next = beside ? permanentWorkspaceTab(created) : created;
+    return { tabs: insert(tabs, next), tabId: next.id };
+  }
   return {
     tabs: tabs.map((tab) =>
-      tab === hit ? openEditorTab(tab, file, { pin }) : tab,
+      tab === hit ? openEditorTab(tab, file, { pin, beside }) : tab,
     ),
     tabId: hit.id,
     paneId: existing?.pane.id ?? hit.editorPanes[0].id,
@@ -536,6 +551,8 @@ export type OpenEditorTabOptions = {
   split?: "left" | "right";
   /** Open (or promote an existing tab) as permanent instead of preview. */
   pin?: boolean;
+  /** Open in a new pane to the right of the current editor, leaving it a preview. */
+  beside?: boolean;
 };
 
 /** Tabs opened by browsing lists: files, per-file diffs, commits, session diffs. */
@@ -628,6 +645,22 @@ export function openEditorTab(
       : withoutPreview(file);
   const focusedPane = tab.editorPanes.find((pane) => pane.id === tab.focusedId);
   const targetPane = focusedPane ?? tab.editorPanes[0];
+  if (options.beside) {
+    const editorPane = newEditorPane(file);
+    return {
+      ...tab,
+      layout: splitPaneRelative(
+        tab.layout,
+        targetPane?.id ?? tab.focusedId,
+        "right",
+        editorPane.id,
+        options.split === "left",
+      ),
+      focusedId: editorPane.id,
+      diffFocused: false,
+      editorPanes: [...tab.editorPanes, editorPane],
+    };
+  }
   if (targetPane) {
     const previewIndex = file.preview
       ? targetPane.files.findIndex((entry) => entry.preview)

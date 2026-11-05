@@ -1,7 +1,8 @@
 // Docs, on the notes screen (WP-72). Pages are notes. A version is kept when the
 // editor goes idle or the page closes. A timeout leaves the text where it is.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { takeHomeDoc } from "../../home/model/pending";
 import { inProjectScope } from "../../projects/model/projectScope";
 import type { DocsGateway, DocRecord, DocVersionRecord } from "../gateway";
 import { markdownOf } from "../gateway";
@@ -11,6 +12,7 @@ import { migrateNote } from "../model/migrate";
 import { DocSaveQueue, SaveConflict, type SaveResult } from "../model/saveQueue";
 import { canMove, childrenOf, dropToMove, type DropZone } from "../model/tree";
 import { emptyParagraph, type Block, type MentionTarget } from "../model/types";
+import { peekDocFocus, subscribeDocFocus } from "../../search/model/finderOpen";
 import { BlockEditor } from "./BlockEditor";
 
 const SAVE_WAIT_MS = 8_000;
@@ -58,6 +60,8 @@ export function DocsScreen({
 }: Props) {
   const [pages, setPages] = useState<DocRecord[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const docFocus = useSyncExternalStore(subscribeDocFocus, peekDocFocus, () => null);
+  const seenDoc = useRef(0);
   const [title, setTitle] = useState("");
   const [blocks, setBlocks] = useState<Block[]>(() => [emptyParagraph(newId("b"))]);
   const [versions, setVersions] = useState<DocVersionRecord[]>([]);
@@ -198,6 +202,12 @@ export function DocsScreen({
     };
   }, []);
 
+  // WP-73: a doc opened from Home waits until this list has it.
+  useEffect(() => {
+    const id = takeHomeDoc(pages.map((page) => page.id));
+    if (id) setSelectedId(id);
+  }, [pages]);
+
   useEffect(() => {
     void refresh().catch((err: unknown) => {
       setError(err instanceof Error ? err.message : "Pages could not be loaded");
@@ -205,6 +215,13 @@ export function DocsScreen({
     // The list is this screen's own store. Reload when the scope changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scopeProject]);
+
+  // WP-74: the finder opens this page, including a request made before the screen was mounted.
+  useEffect(() => {
+    if (!docFocus || docFocus.token === seenDoc.current) return;
+    seenDoc.current = docFocus.token;
+    setSelectedId(docFocus.id);
+  }, [docFocus]);
 
   useEffect(() => {
     const id = selectedId;
@@ -531,6 +548,7 @@ export function DocsScreen({
               blocks={blocks}
               onChange={editBlocks}
               catalog={targets}
+              focusBlockId={docFocus && docFocus.id === selectedId ? docFocus.blockId : null}
               onSubpage={() => void createPage(selectedId)}
               onSaveFiles={saveFiles ? (files) => saveFiles(selectedId, files) : undefined}
             />
