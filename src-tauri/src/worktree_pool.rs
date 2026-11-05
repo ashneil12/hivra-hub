@@ -351,12 +351,13 @@ impl Lock {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if lock_is_stale(&path) {
                         let _ = std::fs::remove_file(&path);
-                        continue;
+                    } else {
+                        std::thread::sleep(Duration::from_millis(25));
                     }
+                    // Checked on the stale path too: a lock file that can't be removed is not a wait forever.
                     if std::time::Instant::now() >= deadline {
                         return Err(format!("{POOL_FULL_PREFIX}{POOL_FULL_NOTE}"));
                     }
-                    std::thread::sleep(Duration::from_millis(25));
                 }
                 Err(error) => return Err(error.to_string()),
             }
@@ -1090,13 +1091,17 @@ mod tests {
 
     impl Tmp {
         fn new() -> Self {
+            // Tests run in parallel, and the clock's ticks are coarse enough that two of them can land on the same
+            // reading. The counter keeps every test's folder its own, so one test's cleanup can't remove another's.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
-                "wp82-{}-{}",
+                "wp82-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&root).unwrap();
             Self { root }
