@@ -1,6 +1,8 @@
 // Reads labelled issues and pull requests through `gh`. The arguments follow the Inbox
 // (`formatGithubQuery` in src/features/inbox/model/githubTasks.ts, and `git_github_work_items_for`):
-// `--state all`, a kind qualifier, and a label search. Nothing here writes to GitHub.
+// `--state all`, a kind qualifier, and a label search. The search also names open and
+// closed, because a search that omits the state does not return a closed issue or a
+// merged pull request. Nothing here writes to GitHub.
 //
 // A dev copy uses `MONOCODE_PR_WATCH_GH` and never the real account. The daily app ignores it.
 
@@ -12,6 +14,10 @@ use serde_json::Value;
 use super::rules::{self, GhChoice};
 
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// One read asks for this many rows. GitHub's search will not return more than 1000,
+/// and a page of exactly this many may still be missing a labelled item.
+pub const LIST_LIMIT: usize = 1000;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot {
@@ -70,7 +76,7 @@ pub fn list_args(kind: &str, repo: &str, search: &str) -> Vec<String> {
         "--state".into(),
         "all".into(),
         "--limit".into(),
-        "100".into(),
+        LIST_LIMIT.to_string(),
         "--repo".into(),
         repo.to_string(),
         "--json".into(),

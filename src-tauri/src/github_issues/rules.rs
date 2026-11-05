@@ -110,7 +110,11 @@ pub fn label_ok(value: &str) -> Result<String, String> {
     Ok(value.to_string())
 }
 
-/// The same shape as `formatGithubQuery`: the kind, then the label term. State is `all` on the command.
+/// Kind and label, as `formatGithubQuery` writes them, then both states.
+///
+/// `--state all` is a separate flag. A search that does not name a state comes back
+/// open only, so a closed issue or a merged pull request would look like the label left.
+/// `is:closed` includes a merged pull request.
 pub fn search_query(kind: &str, label: &str) -> Result<String, String> {
     let label = label_ok(label)?;
     let is = if kind == "pr" || kind == "pull_request" {
@@ -126,7 +130,7 @@ pub fn search_query(kind: &str, label: &str) -> Result<String, String> {
     } else {
         format!("label:\"{label}\"")
     };
-    Ok(format!("{is} {term}"))
+    Ok(format!("{is} {term} (is:open OR is:closed)"))
 }
 
 /// Which configured project a labelled item belongs to. Two matches are a conflict: don't move it.
@@ -214,14 +218,31 @@ mod tests {
     }
 
     #[test]
+    fn the_search_names_open_and_closed() {
+        // A query that does not name both states is not a full board. Closed issues and
+        // merged pull requests have to come back, or the next read treats them as unlabelled.
+        let issues = search_query("issue", "hivra").unwrap();
+        assert!(
+            issues.contains("is:open") && issues.contains("is:closed"),
+            "{issues}"
+        );
+        let prs = search_query("pull_request", "needs hivra").unwrap();
+        assert!(
+            prs.contains("is:open") && prs.contains("is:closed"),
+            "{prs}"
+        );
+        assert!(prs.contains("label:\"needs hivra\""));
+    }
+
+    #[test]
     fn the_search_matches_the_inbox_query_shape() {
         assert_eq!(
             search_query("issue", "hivra").unwrap(),
-            "is:issue label:hivra"
+            "is:issue label:hivra (is:open OR is:closed)"
         );
         assert_eq!(
             search_query("pull_request", "needs hivra").unwrap(),
-            "is:pr label:\"needs hivra\""
+            "is:pr label:\"needs hivra\" (is:open OR is:closed)"
         );
         assert!(search_query("issue", "bad\"label").is_err());
         assert!(search_query("issue", "a\nb").is_err());

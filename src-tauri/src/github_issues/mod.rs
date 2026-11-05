@@ -54,10 +54,9 @@ pub fn github_issues_setting_set(
     assignee: Option<String>,
     expected_version: i64,
 ) -> Result<Setting, String> {
-    let mut conn = store.lock_conn()?;
     let mut gh = CliGh;
-    sync::set_setting(
-        &mut conn,
+    sync::save_setting(
+        &store,
         &project,
         SettingWrite {
             enabled,

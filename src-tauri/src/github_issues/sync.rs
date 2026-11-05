@@ -255,6 +255,68 @@ pub fn set_setting(
     Ok(view_of(&saved))
 }
 
+/// Whether turning the setting on has to ask `gh` for the repo. A stale write does not:
+/// the read would hold nothing the save can use. A bad label fails here, before `gh`.
+fn repo_lookup_needed(
+    conn: &Connection,
+    project: &str,
+    write: &SettingWrite<'_>,
+) -> Result<bool, String> {
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let project = project_ok(project)?;
+    let current = load(conn, &project)?;
+    let version = current.as_ref().map(|row| row.version).unwrap_or(0);
+    if version != write.expected_version {
+        return Ok(false);
+    }
+    let label = match write.label.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => rules::label_ok(value)?,
+        None => current
+            .as_ref()
+            .map(|row| row.label.clone())
+            .unwrap_or_else(|| "hivra".into()),
+    };
+    rules::label_ok(&label)?;
+    if write
+        .repo
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Ok(false);
+    }
+    if !write.enabled {
+        return Ok(false);
+    }
+    Ok(current.as_ref().and_then(|row| row.repo.clone()).is_none())
+}
+
+/// Save a setting without holding the database lock across `gh repo view`.
+pub fn save_setting(
+    store: &SessionStore,
+    project: &str,
+    write: SettingWrite<'_>,
+    gh: &mut dyn IssuesGh,
+) -> Result<Setting, String> {
+    let project = project.trim();
+    let needs = {
+        let conn = store.lock_conn()?;
+        repo_lookup_needed(&conn, project, &write)?
+    };
+    let fetched = if needs {
+        let json = gh.view_repo(project)?;
+        Some(gh::parse_repo(&json)?)
+    } else {
+        None
+    };
+    let write = SettingWrite {
+        repo: fetched.as_deref().or(write.repo),
+        ..write
+    };
+    let mut conn = store.lock_conn()?;
+    set_setting(&mut conn, project, write, gh)
+}
+
 /// The pull request the crew opened, linked to its task. A failure here must not fail the open.
 pub fn link_opened_pr(
     conn: &Connection,
@@ -341,7 +403,7 @@ pub fn poll(
             continue;
         };
         match read_labelled(gh, &saved.label, &repo) {
-            Ok((issues, prs)) => {
+            Ok(board) => {
                 let pulls = {
                     let conn = store.lock_conn()?;
                     open_pulls(&conn, &repo)?
@@ -356,7 +418,15 @@ pub fn poll(
                     }
                 }
                 let mut conn = store.lock_conn()?;
-                let changed = apply(&mut conn, &saved, &issues, &prs, &views, now)?;
+                let changed = apply(
+                    &mut conn,
+                    &saved,
+                    &board.issues,
+                    &board.prs,
+                    &views,
+                    board.truncated,
+                    now,
+                )?;
                 report.changed.extend(changed);
                 report.polled += 1;
             }
@@ -491,17 +561,24 @@ fn claim(conn: &Connection, project: &str, now: i64) -> Result<bool, String> {
     Ok(updated == 1)
 }
 
-fn read_labelled(
-    gh: &mut dyn IssuesGh,
-    label: &str,
-    repo: &str,
-) -> Result<(Vec<ItemRead>, Vec<ItemRead>), String> {
+struct Board {
+    issues: Vec<ItemRead>,
+    prs: Vec<ItemRead>,
+    /// The page came back full, so a linked number that is missing may still be labelled.
+    truncated: bool,
+}
+
+fn read_labelled(gh: &mut dyn IssuesGh, label: &str, repo: &str) -> Result<Board, String> {
     let issues = gh.list("issue", repo, &rules::search_query("issue", label)?)?;
     let prs = gh.list("pr", repo, &rules::search_query("pull_request", label)?)?;
-    Ok((
-        gh::parse_list(&issues, "issue")?,
-        gh::parse_list(&prs, "pr")?,
-    ))
+    let issues = gh::parse_list(&issues, "issue")?;
+    let prs = gh::parse_list(&prs, "pr")?;
+    let truncated = issues.len() >= gh::LIST_LIMIT || prs.len() >= gh::LIST_LIMIT;
+    Ok(Board {
+        issues,
+        prs,
+        truncated,
+    })
 }
 
 fn open_pulls(conn: &Connection, repo: &str) -> Result<Vec<i64>, String> {
@@ -580,6 +657,7 @@ fn apply(
     issues: &[ItemRead],
     prs: &[ItemRead],
     views: &[PullView],
+    truncated: bool,
     now: i64,
 ) -> Result<Vec<String>, String> {
     let tx = conn
@@ -635,7 +713,11 @@ fn apply(
             }
         }
     }
-    pause_missing(&tx, &current.project_id, &repo, &seen, &hold, &mut changed)?;
+    // A full page is not the whole board. Pausing whatever fell off would mark a
+    // still-labelled issue as if the label had been removed.
+    if !truncated {
+        pause_missing(&tx, &current.project_id, &repo, &seen, &hold, &mut changed)?;
+    }
     apply_pulls(&tx, &repo, views, now, &mut changed)?;
     let fingerprint = fingerprint_of(&synced, views);
     let unchanged = current.last_fingerprint.as_deref() == Some(fingerprint.as_str());
@@ -990,6 +1072,8 @@ fn apply_pulls(
             )
             .map_err(|e| e.to_string())?;
             // A merged crew pull request completes the task. Closed unmerged does not.
+            // The issue can stay open, so a later poll sees no state change and will not
+            // close this parent. Rule A runs here, while the child has just become Done.
             if view.state == "merged" {
                 if let Some(status_id) = status_for(conn, &project_id, "issue", "closed")? {
                     let updated = conn
@@ -1001,6 +1085,13 @@ fn apply_pulls(
                         .map_err(|e| e.to_string())?;
                     if updated > 0 {
                         push(changed, &task_id);
+                    }
+                }
+                if let Some(task) = task_row(conn, &task_id)? {
+                    if task.trashed_at.is_none() && closed_status(conn, &task.status_id)? {
+                        if let Some(parent_id) = task.parent_id {
+                            store::close_ancestors(conn, &parent_id, now, changed, false)?;
+                        }
                     }
                 }
             }

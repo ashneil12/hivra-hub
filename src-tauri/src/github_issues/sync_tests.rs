@@ -8,7 +8,7 @@ use super::gh::{self, IssuesGh};
 use super::rules;
 use super::sync::{self, Assignee, SettingWrite};
 use crate::session_store::SessionStore;
-use crate::tasks::store::{self, Actor, SyncRequest, UpdateInput};
+use crate::tasks::store::{self, Actor, CreateInput, SyncRequest, UpdateInput};
 
 const PROJECT: &str = "C:\\work\\café ..\\proj";
 const OTHER: &str = "/work/other";
@@ -20,8 +20,14 @@ struct Fake {
     prs: Vec<Value>,
     views: BTreeMap<i64, Value>,
     fail_lists: bool,
+    /// Drop closed rows unless the search names them, and stop at `LIST_LIMIT`.
+    /// That is the read a real `gh` gives this code today.
+    faithful: bool,
     calls: Vec<String>,
     poke: Option<Box<dyn FnMut()>>,
+    repo_body: Option<String>,
+    on_repo: Option<Box<dyn FnMut() -> bool>>,
+    repo_lock_free: bool,
 }
 
 impl Fake {
@@ -31,10 +37,38 @@ impl Fake {
             prs,
             views: BTreeMap::new(),
             fail_lists: false,
+            faithful: false,
             calls: Vec::new(),
             poke: None,
+            repo_body: None,
+            on_repo: None,
+            repo_lock_free: false,
         }
     }
+}
+
+/// What a search that does not name a closed state returns, then cut to one page.
+fn github_search_page(search: &str, rows: &[Value], limit: usize) -> Vec<Value> {
+    let wants_closed = search.contains("is:closed") || search.contains("is:merged");
+    let mut kept = Vec::new();
+    for row in rows {
+        if !wants_closed && row_is_closed(row) {
+            continue;
+        }
+        kept.push(row.clone());
+        if kept.len() == limit {
+            break;
+        }
+    }
+    kept
+}
+
+fn row_is_closed(row: &Value) -> bool {
+    let state = row.get("state").and_then(Value::as_str).unwrap_or("");
+    if state.eq_ignore_ascii_case("closed") || state.eq_ignore_ascii_case("merged") {
+        return true;
+    }
+    matches!(row.get("mergedAt"), Some(value) if !value.is_null())
 }
 
 impl IssuesGh for Fake {
@@ -46,12 +80,15 @@ impl IssuesGh for Fake {
         if self.fail_lists {
             return Err("GitHub didn't answer in time.".into());
         }
-        let rows = if kind == "pr" {
-            &self.prs
+        let mut rows = if kind == "pr" {
+            self.prs.clone()
         } else {
-            &self.issues
+            self.issues.clone()
         };
-        Ok(Value::Array(rows.clone()).to_string())
+        if self.faithful {
+            rows = github_search_page(search, &rows, gh::LIST_LIMIT);
+        }
+        Ok(Value::Array(rows).to_string())
     }
 
     fn view_pr(&mut self, repo: &str, number: i64) -> Result<String, String> {
@@ -64,7 +101,13 @@ impl IssuesGh for Fake {
 
     fn view_repo(&mut self, cwd: &str) -> Result<String, String> {
         self.calls.push(format!("repo {cwd}"));
-        Err("no repo".into())
+        if let Some(mut check) = self.on_repo.take() {
+            self.repo_lock_free = check();
+        }
+        match &self.repo_body {
+            Some(body) => Ok(body.clone()),
+            None => Err("no repo".into()),
+        }
     }
 }
 
@@ -980,13 +1023,13 @@ fn list_arguments_match_the_inbox_search() {
             "--state",
             "all",
             "--limit",
-            "100",
+            "1000",
             "--repo",
             REPO,
             "--json",
             "number,title,body,state,labels",
             "--search",
-            "is:issue label:hivra",
+            "is:issue label:hivra (is:open OR is:closed)",
         ]
     );
     let args = gh::list_args(
@@ -994,7 +1037,9 @@ fn list_arguments_match_the_inbox_search() {
         REPO,
         &rules::search_query("pull_request", "needs hivra").unwrap(),
     );
-    assert!(args.iter().any(|arg| arg == "is:pr label:\"needs hivra\""));
+    assert!(args
+        .iter()
+        .any(|arg| arg == "is:pr label:\"needs hivra\" (is:open OR is:closed)"));
     assert!(args
         .iter()
         .any(|arg| arg == "number,title,body,state,labels,mergedAt"));
@@ -1016,4 +1061,238 @@ fn an_issue_row_that_is_really_a_pull_request_is_ignored() {
     );
     poll_at(&store, &mut fake, 0, &[]);
     assert!(ids(&store).is_empty());
+}
+
+#[test]
+fn a_closed_issue_and_a_merged_pull_request_are_not_read_as_the_label_leaving() {
+    let store = open();
+    enable(&store, PROJECT, "hivra", Some(MATE));
+    let mut fake = Fake::new(
+        vec![gh_issue(7, "Fix the door", "", "OPEN", &["hivra"])],
+        vec![gh_pr(8, "The PR", "", "OPEN", None, &["hivra"])],
+    );
+    fake.faithful = true;
+    poll_at(&store, &mut fake, 0, &[]);
+    let issue = titled(&store, "Fix the door");
+    let pr = titled(&store, "The PR");
+    let mut conn = store.lock_conn().unwrap();
+    store::update(
+        &mut conn,
+        &person(),
+        &UpdateInput {
+            id: issue.id.clone(),
+            version: Some(issue.version),
+            status: Some("In progress".into()),
+            ..Default::default()
+        },
+        20,
+    )
+    .unwrap();
+    drop(conn);
+    fake.issues = vec![gh_issue(7, "Fix the door", "", "CLOSED", &["hivra"])];
+    fake.prs = vec![gh_pr(
+        8,
+        "The PR",
+        "",
+        "CLOSED",
+        Some("2020-01-01T00:00:00Z"),
+        &["hivra"],
+    )];
+    poll_at(&store, &mut fake, rules::MIN_POLL_MS, &[]);
+    let issue = task(&store, &issue.id);
+    let pr = task(&store, &pr.id);
+    assert_eq!(issue.status, "Done");
+    assert!(!issue.github_paused);
+    assert_eq!(pr.status, "Done");
+    assert!(!pr.github_paused);
+    assert_eq!(paused(&store, 7), 0);
+    assert_eq!(paused(&store, 8), 0);
+}
+
+#[test]
+fn a_full_page_does_not_pause_an_item_that_fell_off_it() {
+    let store = open();
+    enable(&store, PROJECT, "hivra", Some(MATE));
+    let mut fake = Fake::new(
+        vec![gh_issue(7, "Fix the door", "", "OPEN", &["hivra"])],
+        vec![],
+    );
+    poll_at(&store, &mut fake, 0, &[]);
+    let kept = only(&store);
+    let mut page = Vec::new();
+    for n in 0..gh::LIST_LIMIT as i64 {
+        // No labels: a row we cannot read, and not issue 7. A full page of these
+        // is not proof that 7 lost its label.
+        page.push(json!({"number": 10_000 + n, "title": "other", "state": "OPEN"}));
+    }
+    fake.issues = page;
+    fake.faithful = true;
+    poll_at(&store, &mut fake, rules::MIN_POLL_MS, &[]);
+    assert_eq!(paused(&store, 7), 0);
+    assert!(!task(&store, &kept.id).github_paused);
+    fake.issues.clear();
+    let at = next_at(&store, PROJECT).unwrap();
+    poll_at(&store, &mut fake, at, &[]);
+    assert_eq!(paused(&store, 7), 1);
+}
+
+#[test]
+fn turning_the_setting_on_does_not_hold_the_database_lock_during_the_repo_read() {
+    let store = open();
+    let ptr: *const SessionStore = &store;
+    let mut fake = Fake::new(vec![], vec![]);
+    fake.repo_body = Some(r#"{"nameWithOwner":"acme/web"}"#.to_string());
+    fake.on_repo = Some(Box::new(move || {
+        let store = unsafe { &*ptr };
+        store.try_lock_conn().ok().flatten().is_some()
+    }));
+    let saved = sync::save_setting(
+        &store,
+        PROJECT,
+        SettingWrite {
+            enabled: true,
+            label: Some("hivra"),
+            repo: None,
+            assignee: None,
+            expected_version: 0,
+        },
+        &mut fake,
+    )
+    .unwrap();
+    assert!(fake.repo_lock_free, "the repo read held the database lock");
+    assert!(saved.enabled);
+    assert_eq!(saved.repo.as_deref(), Some(REPO));
+    assert_eq!(saved.version, 1);
+    let missed = sync::save_setting(
+        &store,
+        OTHER,
+        SettingWrite {
+            enabled: true,
+            label: Some("hivra"),
+            repo: None,
+            assignee: None,
+            expected_version: 0,
+        },
+        &mut Fake::new(vec![], vec![]),
+    );
+    assert!(missed.is_err());
+    let conn = store.lock_conn().unwrap();
+    assert!(!sync::get_setting(&conn, OTHER).unwrap().enabled);
+}
+
+#[test]
+fn a_merged_crew_pull_request_closes_an_open_parent() {
+    let store = open();
+    enable(&store, PROJECT, "hivra", Some(MATE));
+    let mut conn = store.lock_conn().unwrap();
+    let epic = store::create(
+        &mut conn,
+        &person(),
+        &CreateInput {
+            title: "Epic".into(),
+            ..Default::default()
+        },
+        1,
+    )
+    .unwrap();
+    let story = store::create(
+        &mut conn,
+        &person(),
+        &CreateInput {
+            title: "Story".into(),
+            parent_id: Some(epic.task.id.clone()),
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap();
+    drop(conn);
+    let mut fake = Fake::new(
+        vec![gh_issue(8, "The issue", "", "OPEN", &["hivra"])],
+        vec![],
+    );
+    poll_at(&store, &mut fake, 0, &[]);
+    let issue = titled(&store, "The issue");
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "UPDATE tasks SET parent_id = ?1, delegation_id = 'del-parent' WHERE id = ?2",
+        rusqlite::params![story.task.id, issue.id],
+    )
+    .unwrap();
+    sync::link_opened_pr(
+        &conn,
+        "del-parent",
+        REPO,
+        4,
+        Some("https://github.com/acme/web/pull/4"),
+        10,
+    )
+    .unwrap();
+    drop(conn);
+    fake.views.insert(
+        4,
+        json!({"state": "CLOSED", "mergedAt": "2020-01-01T00:00:00Z", "title": "Crew", "url": "https://github.com/acme/web/pull/4"}),
+    );
+    poll_at(&store, &mut fake, rules::MIN_POLL_MS, &[]);
+    assert_eq!(task(&store, &issue.id).status, "Done");
+    assert_eq!(task(&store, &story.task.id).status, "Done");
+    assert_eq!(task(&store, &epic.task.id).status, "Done");
+}
+
+#[test]
+fn an_open_sibling_keeps_the_parent_open_when_a_crew_pull_request_merges() {
+    let store = open();
+    enable(&store, PROJECT, "hivra", Some(MATE));
+    let mut conn = store.lock_conn().unwrap();
+    let story = store::create(
+        &mut conn,
+        &person(),
+        &CreateInput {
+            title: "Story".into(),
+            ..Default::default()
+        },
+        1,
+    )
+    .unwrap();
+    store::create(
+        &mut conn,
+        &person(),
+        &CreateInput {
+            title: "Still open".into(),
+            parent_id: Some(story.task.id.clone()),
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap();
+    drop(conn);
+    let mut fake = Fake::new(
+        vec![gh_issue(8, "The issue", "", "OPEN", &["hivra"])],
+        vec![],
+    );
+    poll_at(&store, &mut fake, 0, &[]);
+    let issue = titled(&store, "The issue");
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "UPDATE tasks SET parent_id = ?1, delegation_id = 'del-sib' WHERE id = ?2",
+        rusqlite::params![story.task.id, issue.id],
+    )
+    .unwrap();
+    sync::link_opened_pr(&conn, "del-sib", REPO, 4, None, 10).unwrap();
+    drop(conn);
+    fake.views.insert(
+        4,
+        json!({"state": "CLOSED", "mergedAt": null, "title": "Crew", "url": "https://github.com/acme/web/pull/4"}),
+    );
+    poll_at(&store, &mut fake, rules::MIN_POLL_MS, &[]);
+    assert_eq!(task(&store, &issue.id).status, "Backlog");
+    assert_eq!(task(&store, &story.task.id).status, "Backlog");
+    fake.views.insert(
+        4,
+        json!({"state": "CLOSED", "mergedAt": "2020-01-01T00:00:00Z", "title": "Crew", "url": "https://github.com/acme/web/pull/4"}),
+    );
+    let at = next_at(&store, PROJECT).unwrap();
+    poll_at(&store, &mut fake, at, &[]);
+    assert_eq!(task(&store, &issue.id).status, "Done");
+    assert_eq!(task(&store, &story.task.id).status, "Backlog");
 }
