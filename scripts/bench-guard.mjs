@@ -809,7 +809,7 @@ function isPlanWrapper(command, wrapper) {
   return samePath(argv[1], wrapper);
 }
 
-/** `sandbox_check(pid, NULL, SANDBOX_FILTER_NONE)`. 1 sandboxed, 0 not. Anything else is not an answer. */
+/** `sandbox_check(pid, NULL, SANDBOX_FILTER_NONE)`. The raw code: 1 sandboxed, 0 not. Anything else is left as a number so the caller can refuse it. */
 const SANDBOX_CHECK_PY = [
   "import sys",
   "sys.path = [p for p in sys.path if p not in ('', '.')]",
@@ -822,7 +822,7 @@ const SANDBOX_CHECK_PY = [
   "for raw in sys.argv[1:]:",
   "    pid = int(raw)",
   "    rc = int(fn(pid, None, 0))",
-  "    out[str(pid)] = True if rc == 1 else False if rc == 0 else None",
+  "    out[str(pid)] = rc",
   "json.dump(out, sys.stdout)",
 ].join("\n");
 
@@ -835,7 +835,20 @@ const SANDBOX_HELPER_ENV = {
   LANG: "C",
 };
 
-const SANDBOX_UNVERIFIED = "can't verify the sandbox";
+/** The helper's answer. Only the kernel's 1 is sandboxed. 0 and every other value are not. */
+function kernelSandboxed(value) {
+  return value === 1;
+}
+
+/** A test double may say yes with boolean true or with 1. Anything else is not sandboxed. */
+function doubleSandboxed(value) {
+  return value === true || value === 1;
+}
+
+/** No reading. Every pid is unsandboxed. `ok: false` is never a pass. */
+function noneSandboxed(pids) {
+  return { ok: false, byPid: new Map(pids.map((pid) => [pid, false])) };
+}
 
 function checkPids(pids) {
   if (!Array.isArray(pids)) return null;
@@ -851,13 +864,9 @@ function checkPids(pids) {
 }
 
 function answerFromMap(pids, byPid) {
-  if (!(byPid instanceof Map)) return { ok: false };
+  if (!(byPid instanceof Map)) return noneSandboxed(pids);
   const out = new Map();
-  for (const pid of pids) {
-    const value = byPid.get(pid);
-    if (typeof value !== "boolean") return { ok: false };
-    out.set(pid, value);
-  }
+  for (const pid of pids) out.set(pid, doubleSandboxed(byPid.get(pid)));
   return { ok: true, byPid: out };
 }
 
@@ -871,10 +880,8 @@ function answerFromJson(pids, text) {
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
   const byPid = new Map();
   for (const pid of pids) {
-    if (!Object.prototype.hasOwnProperty.call(parsed, String(pid))) return { ok: false };
-    const value = parsed[String(pid)];
-    if (typeof value !== "boolean") return { ok: false };
-    byPid.set(pid, value);
+    const value = Object.prototype.hasOwnProperty.call(parsed, String(pid)) ? parsed[String(pid)] : undefined;
+    byPid.set(pid, kernelSandboxed(value));
   }
   return { ok: true, byPid };
 }
@@ -889,21 +896,21 @@ function kernelSandbox(pids, execFile) {
       stdio: ["ignore", "pipe", "pipe"],
       maxBuffer: 1024 * 1024,
     });
-  let last = { ok: false };
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
-      last = answerFromJson(pids, run());
+      const parsed = answerFromJson(pids, run());
+      if (parsed.ok) return parsed;
     } catch {
-      last = { ok: false };
+      // missing interpreter, a load error, a timeout, or a non-zero exit: try once more, then fail closed
     }
-    if (last.ok) return last;
   }
-  return last;
+  return noneSandboxed(pids);
 }
 
 /**
  * One question to the kernel for every pid: is that process sandboxed?
- * `{ ok: false }` when it can't be asked, or a pid has no true/false answer. Never a silent yes.
+ * Only an answer of 1 is sandboxed. 0, any other value, a missing pid, or a helper that can't run is not:
+ * that pid is false. A helper that can't run is `{ ok: false, byPid }` with every pid false. Never a silent yes.
  * A caller may pass `sandboxOf` or `execFile` in tests. A scene does not.
  */
 export function underProfile(pids, { execFile = execFileSync, sandboxOf } = {}) {
@@ -913,10 +920,10 @@ export function underProfile(pids, { execFile = execFileSync, sandboxOf } = {}) 
   if (typeof sandboxOf === "function") {
     try {
       const answer = sandboxOf(list);
-      if (!answer || answer.ok === false) return { ok: false };
+      if (!answer || answer.ok === false) return noneSandboxed(list);
       return answerFromMap(list, answer.byPid);
     } catch {
-      return { ok: false };
+      return noneSandboxed(list);
     }
   }
   return kernelSandbox(list, execFile);
@@ -951,7 +958,8 @@ function descendedFrom(pid, rootPid, byPid) {
 /**
  * An agent CLI descended from the dev app that the kernel does not have in a sandbox.
  * The wrapper's sh, bash and node launchers are not agents. Null when ps can't be read, the app pid
- * isn't known, or every such agent is sandboxed. `can't verify the sandbox` when the kernel can't be asked.
+ * isn't known, or every such agent is sandboxed. A helper that can't run, or a pid whose answer isn't 1,
+ * counts as unsandboxed and stops the round. Nothing passes because the check was skipped.
  */
 export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile } = {}) {
   if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
@@ -970,9 +978,9 @@ export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile 
     candidates.map((item) => item.pid),
     { execFile, sandboxOf },
   );
-  if (!status.ok) return { fail: true, reason: SANDBOX_UNVERIFIED };
+  if (!status.ok) return { fail: true, reason: `unsandboxed agent: ${candidates[0].name}` };
   for (const item of candidates) {
-    if (status.byPid.get(item.pid) !== true) return { fail: true, reason: `unsandboxed agent: ${item.name}` };
+    if (status.byPid?.get(item.pid) !== true) return { fail: true, reason: `unsandboxed agent: ${item.name}` };
   }
   return null;
 }

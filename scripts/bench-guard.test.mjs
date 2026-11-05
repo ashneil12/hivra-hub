@@ -233,24 +233,25 @@ test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a 
   assert.deepEqual(stopped, ["unsandboxed agent: codex", "unsandboxed agent: hermes"]);
 });
 
-test("a sandbox helper that can't answer stops the round, and the scene asks once", () => {
+test("a sandbox helper that can't answer counts the agent as unsandboxed, and the scene asks once", () => {
   const wrapper = "/private/var/bench/bin/claude";
   const row = "  240 100 /usr/bin/claude";
   const stopped = [];
   const hit = finishSceneAgents(row, { rootPid: 100, wrapper, execFile: () => { throw new Error("no python"); } }, (why) => stopped.push(why));
-  assert.equal(hit.reason, "can't verify the sandbox");
+  assert.equal(hit.reason, "unsandboxed agent: claude");
   assert.equal(isHardStop(hit.reason), true);
   assert.equal(exitCodeForStop(hit.reason), 1);
-  assert.deepEqual(stopped, ["can't verify the sandbox"]);
+  assert.deepEqual(stopped, ["unsandboxed agent: claude"]);
+  assert.equal(isHardStop("can't verify the sandbox"), true);
   assert.equal(
     sceneAgents({
       listAgents: () => row,
       agentWatch: () => ({ rootPid: 100, wrapper, execFile: () => "not-json" }),
       stopRun: (why) => stopped.push(why),
     }).reason,
-    "can't verify the sandbox",
+    "unsandboxed agent: claude",
   );
-  assert.deepEqual(stopped, ["can't verify the sandbox", "can't verify the sandbox"]);
+  assert.deepEqual(stopped, ["unsandboxed agent: claude", "unsandboxed agent: claude"]);
   let calls = 0;
   const retried = unsandboxedAgents(row, {
     rootPid: 100,
@@ -271,7 +272,7 @@ test("a sandbox helper that can't answer stops the round, and the scene asks onc
     execFile: (_cmd, args) => {
       calls += 1;
       seen = args.filter((arg) => /^\d+$/.test(arg));
-      return JSON.stringify({ 241: false, 242: true });
+      return JSON.stringify({ 241: 0, 242: 1 });
     },
   });
   assert.equal(calls, 1);
@@ -282,9 +283,68 @@ test("a sandbox helper that can't answer stops the round, and the scene asks onc
   assert.equal(calls, 0);
   assert.equal(underProfile([], { execFile: () => { throw new Error("no"); } }).ok, true);
   assert.equal(underProfile([0]).ok, false);
-  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 999: true }) }).reason, "can't verify the sandbox");
-  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) }).reason, "can't verify the sandbox");
-  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, sandboxOf: () => { throw new Error("down"); } }).reason, "can't verify the sandbox");
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) }), null);
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: true }) }).reason, "unsandboxed agent: claude");
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, sandboxOf: () => { throw new Error("down"); } }).reason, "unsandboxed agent: claude");
+});
+
+test("a helper that is missing, errors, or returns anything but 0 or 1 counts that pid as unsandboxed and stops the round", () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const row = "  240 100 /usr/bin/claude";
+  const watch = (execFile) => ({ rootPid: 100, wrapper, execFile });
+  const stop = (execFile) => {
+    const stopped = [];
+    const hit = finishSceneAgents(row, watch(execFile), (why) => stopped.push(why));
+    assert.equal(hit.reason, "unsandboxed agent: claude");
+    assert.equal(isHardStop(hit.reason), true);
+    assert.equal(exitCodeForStop(hit.reason), 1);
+    assert.deepEqual(stopped, ["unsandboxed agent: claude"]);
+    const status = underProfile([240], { execFile });
+    assert.notEqual(status.byPid?.get(240), true);
+    assert.equal(status.byPid.get(240), false);
+  };
+  const missing = () => {
+    const error = new Error("spawn python3 ENOENT");
+    error.code = "ENOENT";
+    throw error;
+  };
+  let missingCalls = 0;
+  const missed = underProfile([240], {
+    execFile: () => {
+      missingCalls += 1;
+      missing();
+    },
+  });
+  assert.equal(missingCalls, 2);
+  assert.equal(missed.ok, false);
+  assert.equal(missed.byPid.get(240), false);
+  stop(missing);
+  const timedOut = Object.assign(new Error("spawnSync python3 ETIMEDOUT"), { code: "ETIMEDOUT" });
+  stop(() => {
+    throw timedOut;
+  });
+  stop(() => {
+    throw new Error("dyld: Library not loaded");
+  });
+  stop(() => "not-json");
+  stop(() => "");
+  for (const value of [2, -1, null, "1", "0", false, 0]) {
+    stop(() => JSON.stringify({ 240: value }));
+  }
+  stop(() => JSON.stringify({ 999: 1 }));
+  const mixed = underProfile([240, 241], { execFile: () => JSON.stringify({ 240: 1, 241: 2 }) });
+  assert.equal(mixed.ok, true);
+  assert.equal(mixed.byPid.get(240), true);
+  assert.equal(mixed.byPid.get(241), false);
+  const named = unsandboxedAgents(["  240 100 /usr/bin/claude", "  241 100 /opt/homebrew/bin/codex"].join("\n"), {
+    rootPid: 100,
+    wrapper,
+    execFile: () => JSON.stringify({ 240: 1, 241: 2 }),
+  });
+  assert.equal(named.reason, "unsandboxed agent: codex");
+  const sandboxed = underProfile([240], { execFile: () => JSON.stringify({ 240: 1 }) });
+  assert.equal(sandboxed.ok, true);
+  assert.equal(sandboxed.byPid.get(240), true);
 });
 
 test("the kernel reports a sandboxed process, a plain claude child fails the scene, and the wrapper node is skipped", { skip: process.platform !== "darwin" }, () => {
@@ -355,6 +415,124 @@ test("the kernel reports a sandboxed process, a plain claude child fails the sce
         // already gone
       }
     }
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
+});
+
+test("the wrapper's haiku helper runs sandboxed under the profile it generates", { skip: process.platform === "darwin" ? false : "sandbox-exec and sandbox_check are macOS only", timeout: 30_000 }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing");
+  const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-helper-")));
+  const realHome = path.join(rootDir, "real");
+  const home = path.join(rootDir, "home");
+  const state = path.join(rootDir, "state");
+  const config = path.join(rootDir, "config");
+  fs.mkdirSync(realHome);
+  fs.mkdirSync(path.join(home, "tmp"), { recursive: true });
+  fs.mkdirSync(state);
+  fs.mkdirSync(config);
+  const settings = path.join(state, "bench-settings.json");
+  fs.writeFileSync(settings, "{}\n");
+  const stub = path.join(home, "claude-stub");
+  fs.writeFileSync(stub, "#!/bin/sh\nsleep 30\n", { mode: 0o755 });
+  const helperArgs = [
+    "--output-format", "stream-json",
+    "--verbose",
+    "--input-format", "stream-json",
+    "--include-partial-messages",
+    "--no-session-persistence",
+    "--strict-mcp-config",
+    "--mcp-config", JSON.stringify({ mcpServers: {} }),
+    "--model", "claude-haiku-4-5",
+    "--settings", JSON.stringify({ disableAllHooks: true }),
+  ];
+  const wrapperProc = spawn(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), ...helperArgs], {
+    cwd: home,
+    stdio: ["pipe", "pipe", "pipe"],
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      HOME: home,
+      TMPDIR: path.join(home, "tmp"),
+      REALTEST_STATE: state,
+      REALTEST_REAL_CLAUDE: stub,
+      REALTEST_CLAUDE_CONFIG: config,
+      REALTEST_REAL_HOME: realHome,
+      REALTEST_BENCH_SETTINGS: settings,
+      REALTEST_MODEL: "sonnet",
+    },
+  });
+  let stderr = "";
+  wrapperProc.stderr.on("data", (buf) => {
+    stderr += buf.toString();
+  });
+  wrapperProc.stdout.on("data", () => {});
+  const kill = (pid) => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
+  try {
+    let child = null;
+    for (let i = 0; i < 80 && wrapperProc.exitCode == null; i += 1) {
+      let text = "";
+      try {
+        text = execFileSync("ps", ["-axww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+      } catch {
+        text = "";
+      }
+      const rows = [];
+      for (const line of text.split("\n")) {
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+        if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]), command: match[3] });
+      }
+      const pending = [wrapperProc.pid];
+      const seen = new Set();
+      while (pending.length) {
+        const pid = pending.pop();
+        if (seen.has(pid)) continue;
+        seen.add(pid);
+        for (const row of rows) {
+          if (row.ppid !== pid) continue;
+          pending.push(row.pid);
+          if (row.command.includes(stub)) child = row;
+        }
+      }
+      if (child) break;
+      spawnSync("/bin/sleep", ["0.1"]);
+    }
+    const logDir = path.join(state, "claude");
+    let logged = "";
+    if (fs.existsSync(logDir)) {
+      for (const name of fs.readdirSync(logDir)) logged += fs.readFileSync(path.join(logDir, name), "utf8");
+    }
+    assert.ok(child, `the wrapper did not start the helper\n${stderr}\n${logged}\nexit ${wrapperProc.exitCode}`);
+    assert.match(child.command, /--no-session-persistence/);
+    assert.match(child.command, /claude-haiku-4-5/);
+    const status = underProfile([child.pid]);
+    assert.equal(status.ok, true, JSON.stringify({ status, command: child.command, stderr }));
+    assert.equal(status.byPid.get(child.pid), true, child.command);
+  } finally {
+    let text = "";
+    try {
+      text = execFileSync("ps", ["-axww", "-o", "pid=,ppid=,command="], { encoding: "utf8" });
+    } catch {
+      text = "";
+    }
+    const rows = [];
+    for (const line of text.split("\n")) {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]) });
+    }
+    const pending = [wrapperProc.pid];
+    const seen = new Set();
+    while (pending.length) {
+      const pid = pending.pop();
+      if (seen.has(pid)) continue;
+      seen.add(pid);
+      for (const row of rows) if (row.ppid === pid) pending.push(row.pid);
+    }
+    for (const pid of seen) kill(pid);
     fs.rmSync(rootDir, { recursive: true, force: true });
   }
 });
