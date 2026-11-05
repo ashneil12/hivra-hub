@@ -323,6 +323,14 @@
       "how": "tasksLib.ts, taskMeta.ts, subIssuesLib.ts, bulkUpdates.ts and relationsLib.ts copied with their tests (WP-70). The parent check, the auto-close rule and the version check are translated from the Rust repositories to rusqlite. Hivra does not close descendants, store relations, or add a duplicate status category."
     },
     {
+      "name": "Orbit's GitHub label sync",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/github_issues",
+      "how": "The label match and sync_github_work_item rules, translated from the GitHub webhook onto rusqlite and a poll (WP-77). A title over 300 characters or a description over 12,000 is rejected, not stored. A labelled pull request drops only its own row in github_pull_links, so a crew pull request on a different task can still complete that task."
+    },
+    {
       "name": "Raven's chat importer",
       "url": "https://github.com/EverMind-AI/Raven",
       "licence": "Apache-2.0",
