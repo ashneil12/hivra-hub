@@ -41,6 +41,21 @@
       "license": "MIT",
       "copyright": "Copyright (c) 2026 Ashneil Lanelle",
       "left_out": []
+    },
+    {
+      "name": "hivra-rpi",
+      "folder": "hivra-rpi",
+      "repository": "https://github.com/humanlayer/humanlayer",
+      "path": "apps/riptide-rpi-claude-plugin",
+      "commit": "f9bd73534a9fb7099a274f951b698b1297122fd9",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "copyright": "Copyright [yyyy] [name of copyright owner]",
+      "left_out": [
+        "skills/ci-commit",
+        "skills/configure-workspaces",
+        "skills/setup-worktree"
+      ]
     }
   ]
 }

@@ -1,0 +1,8 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hivra-rpi",
+  "version": "0.1.0",
+  "description": "Research, plan and build phases. The first mate runs each skill by name. They are not part of the always-on skill index.",
+  "license": "Apache-2.0",
+  "keywords": ["hivra", "phases", "research"]
+}
