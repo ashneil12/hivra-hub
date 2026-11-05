@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { useMemo } from "react";
 import { learnSkillLesson, takeBackSkillLesson } from "../../selfBuild/model/skillLearn";
 import { parseDoc, type MemoryDoc } from "../model/doc";
+import { LearnFromChats } from "./LearnFromChats";
+import { learnPorts } from "./learnHost";
 import { MemoryReview, type ImportRow, type MemoryPorts } from "./MemoryReview";
 
 type Loaded = { revision: number; doc: unknown };
@@ -32,5 +34,12 @@ function realPorts(): MemoryPorts {
 
 export function MemorySettingsScreen() {
   const ports = useMemo(() => realPorts(), []);
-  return <MemoryReview ports={ports} />;
+  // WP-83: proposals from past chats, beside the memory review.
+  const learn = useMemo(() => learnPorts(), []);
+  return (
+    <>
+      <MemoryReview ports={ports} />
+      <LearnFromChats ports={learn} />
+    </>
+  );
 }
