@@ -1,16 +1,20 @@
 // WP-08: README, NOTICE, SOURCES.md and the Credits view must list the same sources. Edit docs/hivra/credits.json and
 // the docs together; this test names whichever one drifted.
-import { readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import { CREDITED_COMPONENTS, INSPIRATIONS } from "./credits";
+import { CREDITED_COMPONENTS, INSPIRATIONS, type CreditedComponent } from "./credits";
 import { CreditsList } from "../ui/CreditsList";
 
 vi.mock("@tauri-apps/plugin-opener", () => ({ openUrl: vi.fn(async () => undefined) }));
 
 const read = (path: string) => readFileSync(resolve(process.cwd(), path), "utf8");
+
+/** A component whose code is not in the tree yet; its NOTICE entry lands in the PR that copies it. */
+const plannedAs = (component: CreditedComponent) =>
+  /^Planned for (WP-\d+), code not copied yet:/.exec(component.how)?.[1];
 
 /** The rows of SOURCES.md's "The sources" table: name, link and licence. */
 function sourcesTable() {
@@ -37,17 +41,42 @@ describe("credits", () => {
     expect(lines).toEqual(INSPIRATIONS.map((s) => `- [${s.name}](${s.url}): ${s.gave}.`));
   });
 
-  it("gives every component a NOTICE entry with its source, licence and copyright", () => {
+  it("gives every component already in the tree a NOTICE entry with its source, licence and copyright", () => {
     const notice = read("NOTICE");
     const hivra = notice.slice(0, notice.indexOf("\nMonoCode\n========"));
     expect(hivra.startsWith("Hivra\n=====")).toBe(true);
     const entries = [...hivra.matchAll(/^- (.+)$/gm)].map((m) => m[1]);
-    expect(entries).toEqual(CREDITED_COMPONENTS.map((c) => c.name));
-    for (const c of CREDITED_COMPONENTS) {
+    const shipped = CREDITED_COMPONENTS.filter((c) => !plannedAs(c));
+    expect(entries).toEqual(shipped.map((c) => c.name));
+    for (const c of shipped) {
       const entry = hivra.slice(hivra.indexOf(`- ${c.name}\n`)).split("\n\n")[0];
       expect(entry).toContain(`Source: ${c.url}`);
       expect(entry).toContain(`License: ${c.licence}`);
       expect(entry).toContain(c.copyright);
+    }
+  });
+
+  it("keeps a planned component out of the NOTICE and names the work package that copies it", () => {
+    const notice = read("NOTICE");
+    const hivra = notice.slice(0, notice.indexOf("\nMonoCode\n========"));
+    const entries = [...hivra.matchAll(/^- (.+)$/gm)].map((m) => m[1]);
+    const work = readdirSync(resolve(process.cwd(), "docs/hivra/work"));
+    for (const c of CREDITED_COMPONENTS) {
+      const wp = plannedAs(c);
+      if (!wp) continue;
+      // The NOTICE claims code that exists; a planned component's entry waits for the code.
+      expect(entries).not.toContain(c.name);
+      expect(hivra).not.toContain(c.name);
+      expect(work.some((file) => file.startsWith(`${wp}-`))).toBe(true);
+    }
+  });
+
+  it("does not call a component planned once its code is in the tree", () => {
+    for (const c of CREDITED_COMPONENTS) {
+      if (!plannedAs(c)) continue;
+      for (const path of c.where.split(",").map((part) => part.trim()).filter(Boolean)) {
+        expect(existsSync(resolve(process.cwd(), path)), `${c.name} is copied to ${path}`).toBe(false);
+      }
     }
   });
 

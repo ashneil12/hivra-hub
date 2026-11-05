@@ -1,6 +1,6 @@
 # Hivra: the build plan
 
-52 work packages in seven waves. A wave's packages run in parallel; a package starts when everything it depends on
+57 work packages in ten waves. A wave's packages run in parallel; a package starts when everything it depends on
 has merged. Sizes are agent time: S is under two hours, M is half a day, L is about a day.
 
 ## How to take a package
@@ -170,6 +170,30 @@ WP-14's asking mechanics when they merge.
 | --- | --- | --- | --- | --- |
 | [92](work/WP-92-secret-vault.md) | Agents ask for a secret and use it without ever seeing it | L | none | no |
 
+### Wave J: a web address per worktree, and fake outside services (portless and emulate, 5 Nov)
+
+Ash found portless and emulate (both Apache-2.0) and asked whether they would let parallel agents run apps and
+browser-test without colliding on ports, cookies, hostnames or shared outside accounts. Ports were already covered by
+WP-87; 90 adds a name per worktree and a local stand-in for each outside service, so a crew's tests use fake accounts.
+It builds on 87's stack, so it starts when 87 merges.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [90](work/WP-90-portless-emulate.md) | Every worktree gets its own web address, and its tests meet a fake service | L | 82, 87 | yes |
+
+### Wave K: the goal graph (oh-my-hermes, 5 Nov)
+
+Ash shared oh-my-hermes (MIT, read at commit `2676c33`) and asked for Hivra's way of running big work to be the
+best one. Most of its graph planner is already in Hivra's orchestration run: required file scopes, isolated
+checkouts, dependency-ordered dispatch, review before acceptance, failure contained to the downstream. WP-91 adds
+the parts Hivra lacks: one goal and a finish-line check proved before work, a baseline, scope checks when the plan
+is approved, a required verify task and a run verdict, plus a live graph. It extends the orchestration run and
+WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 14 for the approve step.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [91](work/WP-91-goal-graph.md) | The goal graph: a finish line proved first, and a live view of the run | L | 14, 40, 82 | yes |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this
@@ -191,3 +215,104 @@ WP-14's asking mechanics when they merge.
 - **Native-only behaviour.** Browser specs can't see the native window. Any package touching windows, menus,
   Keychain, or the bundle keeps its dev-copy check open until done.
 - **Licences.** Any vendored file goes through [SOURCES.md](SOURCES.md)'s rules.
+
+## Ideas from kitze's factory teaser (5 Nov)
+
+Ash watched kitze's factory teaser and asked what of it Hivra should take. It is a product tour, not a repository,
+so nothing is credited and no source is added to SOURCES.md. Each candidate below says what Hivra already has and
+what is missing, so any of them can become a package when Ash says. None has a WP doc yet.
+
+1. **An automations factory canvas.** Hivra has automations that run on a time or a GitHub or GitLab event, with a
+   list of runs (`src-tauri/src/automations.rs`), and the activity log (WP-78). Missing: a webhook trigger, a canvas
+   that shows the graph of what feeds what, and a live activity feed of runs ("Webhook received", "Automation
+   completed", "Automation failed" with the reason in plain words).
+2. **A Machines view.** Hivra knows this Mac, the remote host (WP-60, WP-61) and the phone, and it checks each
+   CLI's version with the right update command for Claude Code, Codex, opencode and Pi
+   (`src-tauri/src/harness_updates.rs`). Missing: every machine as a card (Mac, VPS, Proxmox hosts, phone), Cursor and
+   Gemini in the harness list, a harness × machine version matrix, and one-click Update that reaches a machine other
+   than this one.
+3. **Agents as bots.** Hivra has Monos with a persona (WP-05, WP-21), a harness and model per Mono (`MonoEngine`), a
+   worker default per Mono, project and app (WP-89), crew rules that reroute after a failure (WP-13), and skills and
+   commands that come with plugins (WP-30, WP-41). The teaser's per-bot settings are role, provider and model, an
+   ordered fallback list of provider and model, effort from Low to Max, fast mode, and the bot's own Commands and
+   Skills lists. Missing: one bot card that shows all of it together, an ordered fallback list on the bot itself,
+   fast mode, and the bot's own Commands and Skills lists.
+4. **A chat doctor.** Hivra resumes a turn cut by a quit or a crash (up to 3 times), starts fresh from its brief when
+   a chat's transcript is gone, says "resume stopped" in the chat, and has `monocode healthcheck` for the database.
+   Missing: a pass that finds broken chats by itself (lost transcript, a turn that never ends, a session that fails
+   on every message) and repairs them, with a list of what it found and what it did.
+5. **A Commands and Skills library page.** Hivra gets skills and commands from plugins (WP-30, WP-31, WP-41), and the
+   finder (WP-74) searches tasks and docs. Missing: one page that lists every command and skill with its plugin,
+   counts and search.
+6. **A Home "Everything" view.** Hivra's Home is a column of movable sections with a pinned panel (WP-73), beside
+   Tasks (WP-70), the Chief of Staff's view across projects (WP-88) and decisions (WP-14). Missing: one plain-language
+   paragraph of what is going on now ("16 agents are working… 55 decisions are waiting on you…"), workspace cards,
+   to-dos with draft and ready, and notes and a scratchpad on Home. WP-73 rule 6 forbids counters on Home on purpose;
+   the paragraph fits that rule, and the cards' counts would need Ash to reopen it.
+7. **A Today page.** Hivra has the activity log (WP-78), tasks with their states (WP-70) and sessions (the old Today
+   screen was retired in WP-06 because it showed chat state rather than a day's work). Missing: what was worked on
+   today or any other day by date, grouped by status or anything else; time worked with an hourly bar; messages sent
+   and received; to-dos finished by agents against waiting for review (accepted, returned); decisions made
+   automatically against made by the person; chats active against done.
+
+## From oh-my-hermes (5 Nov)
+
+Ash shared [oh-my-hermes](https://github.com/rlaope/oh-my-hermes) (MIT, read at commit `2676c33`), a Python operating
+layer that sits beside Hermes Agent, so this is what it adds on top of the Hermes Hivra already drives as one of its
+harnesses (`src/integrations/harness/providers/hermes/`). Each item says what Hivra has and what is missing; the graph
+planner has its own package, WP-91. Copied with credit, if 91 is taken: `dag_core.py` and `dag_run.py`, translated to
+Rust. The rest are ideas only.
+
+1. **The goal graph (dag-ulw), as WP-91.** Hivra's orchestration run already requires file scopes per task, gives each
+   worker an isolated checkout, dispatches in dependency order and accepts only on review. Missing: one run goal and a
+   finish-line check run, and seen failing, before work, a baseline, a plan-time check that two parallel tasks never
+   share a write scope, a required verify task and a run verdict, and a graph view. WP-91 adds those and changes no
+   existing run model.
+2. **Per-lane model chains.** Hivra has one model and effort per route, with precedence, skip reasons and a CLI-level
+   reroute after a failure (`src-tauri/src/crew/resolve.rs`, `crew/reroute.rs`). Missing: an ordered chain per kind of
+   work (deep, quick, review, visual), each with its effort rung and the next candidate named when a provider refuses a
+   model; today that refusal is retried only for the Claude Code proxy (`model_router.rs`).
+3. **Reasoned memory.** WP-51 plans a curator, a review screen and fenced recall. Missing: an admission state for every
+   fact with a written reason for keep, refuse or defer, duplicate hints, and a ranked recall pack under a token budget
+   that says what it left out and why.
+4. **Two-axis evidence labels.** Hivra derives five statuses and WP-40's verdict in code. Missing: the same evidence in
+   the task's words, separating the phase from the proof ("Plan · not run", "Code · reported done", "Test · verified"),
+   so a worker's report can never read as a verified test.
+5. **A deterministic skill router.** Hivra lists skills and slash commands and receives plugins' routing (WP-30, WP-41,
+   WP-45). Missing: a phrase-and-token router that picks a skill and its instruction at message time, with guardrails
+   and negative controls, rather than an always-on index.
+6. **LSP tools.** Hivra exposes no definition, references, rename or diagnostics tool to a Hermes worker (its own CLI
+   may have them). Missing: those tools, with UTF-16 positions and a fail-closed "no language server" answer.
+7. **A Hermes doctor.** `npm run hub:doctor` checks the app's identity, bundles, data folders and worktrees. Missing:
+   one pass over the Hermes path itself, install, auth, profile, language server and memory database, with a short
+   ordered list of what to fix and privacy flags that keep personal files out of the report.
+
+## From Aether (5 Nov)
+
+Ash shared [Aether](https://runaether.dev), a closed-source product, so this is ideas only: no code, nothing credited.
+Its campaigns (a lead splits a job across sub-agents, each in its own devbox on its own branch, and one pull request
+comes back) is what Hivra's orchestration run already does, so it is not a candidate. The gaps:
+
+1. **A machine per task.** Hivra has a warm worktree pool that keeps installs and build cache (WP-82), and a remote
+   host and cloud machine (WP-60, WP-61). Missing: a disposable machine boundary per task (Aether uses a fresh
+   Firecracker microVM, never reused), suspend when idle, destroy when the pull request merges or closes or after 48
+   hours, and a measured ready time. The site says about five seconds, not twenty (its CLI shows 4.7 s), and warm slots
+   are the reason.
+2. **The person's own subscription, for one session.** Hivra runs Claude Code, Codex and the rest on the person's own
+   logins on this Mac, and WP-89 sets model and effort per task. Missing: carrying that subscription or key to a cloud
+   machine for the length of a session and revoking it after; WP-60 and WP-61 never say how the host gets the
+   credential, and export and dev-copy rules strip secrets on purpose.
+3. **Watching and steering from the phone.** Hivra's paired phone can watch a live conversation, send, answer
+   questions, start a session, cancel, rename and archive, and read project files, search and git. Missing: it relays
+   through the open desktop window, so it stops when the laptop closes; no terminal in the task's machine; no Inbox of
+   tasks and decisions, and no pull-request review or approve on the phone; no reply by email that resumes a run.
+4. **Works when the laptop closes.** Hivra plans this in WP-60 (delegations, the wake queue and the classifier move to
+   the remote host) and WP-61 (the cloud machine, routines with safety caps and an away feed). Missing: the service
+   that provisions machines is outside WP-61's scope; automations and routines still fire from the desktop row, so a
+   schedule while the laptop is off needs the host to own them too; the caps cover routines, not every unattended run.
+5. **A reviewer that runs the changed code.** Hivra has WP-40's gates and verdict, WP-81's pre-GitHub gate (review,
+   tests, docs and lint in a throwaway worktree, then CI repair), e2e evidence from WP-42 and WP-43, and PR watch.
+   Missing: an independent reviewer that boots the changed app and files findings from the running app as a pull-request
+   verdict (WP-42 is the worker proving itself); before-and-after screenshots and a session video; reviewing every new
+   pull request in a connected repository whoever wrote it, and re-reviewing each push until approve; fork pull
+   requests reviewed read-only.
