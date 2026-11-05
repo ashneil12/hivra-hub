@@ -10,8 +10,8 @@ import { startPhaseWork } from "./store";
 
 const PROJECT = "/tmp/phase-crew";
 
-function launcher(start: AgentAppHost["start"], requestId: string) {
-  const host = { start } as AgentAppHost;
+function launcher(start: AgentAppHost["start"], requestId: string, extra: Partial<AgentAppHost> = {}) {
+  const host = { start, ...extra } as AgentAppHost;
   const helpers = {
     startLaunch: (_source: Session, input: Record<string, unknown>) => ({
       prompt: String(input.prompt),
@@ -86,6 +86,82 @@ it("gives each phase worker the Hivra preamble and the code path", async () => {
     }
   } finally {
     unbindPhaseLauncher("task-preamble");
+  }
+});
+
+it("puts the task's title and description in every run's prompt, read when that run starts", async () => {
+  const prompts: string[] = [];
+  const reads: string[] = [];
+  const start: AgentAppHost["start"] = async (_launch, id) => {
+    deliverPhaseResult(id, { body: "A fact about the code." });
+  };
+  const helpers = launcher(start, "r-text").helpers;
+  const host = {
+    start,
+    monoOf: () => ({ id: "mono", projects: [PROJECT] }),
+    taskStore: async (command: string, args: { id?: string }) => {
+      reads.push(`${command}:${args.id ?? ""}`);
+      return {
+        id: args.id,
+        projectId: PROJECT,
+        title: "Fix the save",
+        description: "The save drops the last line.",
+      };
+    },
+  } as unknown as AgentAppHost;
+  const original = helpers.startLaunch;
+  helpers.startLaunch = ((source, input) => {
+    prompts.push(String(input.prompt));
+    return original(source, input);
+  }) as TaskHelpers["startLaunch"];
+  const source = { id: "mono", cwd: PROJECT, harness: "claude", model: "claude:opus-5-5" } as Session;
+  bindPhaseLauncher("task-text", { source, host, helpers, requestId: "r-text" });
+  try {
+    const work = await startPhaseWork("task-text", { weight: "costly" }, {}, counter());
+    expect(work?.waiting?.phase).toBe("research");
+    expect(prompts.length).toBe(2);
+    for (const prompt of prompts) {
+      expect(prompt).toContain("Task: task-text");
+      expect(prompt).toContain("Title: Fix the save");
+      expect(prompt).toContain("The save drops the last line.");
+    }
+    // One read per run, so a task edited between phases reaches the later run.
+    expect(reads).toEqual(["tasks_get:task-text", "tasks_get:task-text"]);
+  } finally {
+    unbindPhaseLauncher("task-text");
+  }
+});
+
+it("still starts the phase when the task store cannot answer", async () => {
+  const prompts: string[] = [];
+  const start: AgentAppHost["start"] = async (_launch, id) => {
+    deliverPhaseResult(id, { body: "A fact about the code." });
+  };
+  const helpers = launcher(start, "r-down").helpers;
+  const original = helpers.startLaunch;
+  helpers.startLaunch = ((source, input) => {
+    prompts.push(String(input.prompt));
+    return original(source, input);
+  }) as TaskHelpers["startLaunch"];
+  const host = {
+    start,
+    monoOf: () => ({ id: "mono", projects: [PROJECT] }),
+    taskStore: async () => {
+      throw new Error("The store is unreachable.");
+    },
+  } as unknown as AgentAppHost;
+  const source = { id: "mono", cwd: PROJECT, harness: "claude", model: "claude:opus-5-5" } as Session;
+  bindPhaseLauncher("task-down", { source, host, helpers, requestId: "r-down" });
+  try {
+    const work = await startPhaseWork("task-down", { weight: "costly" }, {}, counter());
+    expect(work?.waiting?.phase).toBe("research");
+    expect(prompts.length).toBe(2);
+    for (const prompt of prompts) {
+      expect(prompt).toContain("Task: task-down");
+      expect(prompt).not.toContain("Title:");
+    }
+  } finally {
+    unbindPhaseLauncher("task-down");
   }
 });
 

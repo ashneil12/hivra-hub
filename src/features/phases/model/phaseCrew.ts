@@ -4,6 +4,7 @@
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import type { TaskHelpers } from "../../agent-app/model/agentAppTasks";
 import type { Session } from "../../sessions/model/session";
+import { taskTextFor } from "../../tasks/model/agentTasks";
 import type { FinishResult, Run, Work } from "./machine";
 import { deliverPhaseResult, waitForPhaseResult } from "./phaseBridge";
 import { phasePrompt } from "./phasePrompt";
@@ -88,10 +89,13 @@ async function launchPhase(launch: Bound, run: Run, work: Work): Promise<FinishR
   const id = phaseSessionId(launch.source.id, launch.requestId, run.id);
   const pending = waitForPhaseResult(id, PHASE_WAIT_MS);
   try {
+    // WP-84: each run reads the task as it is now, so an edit reaches the next phase. No words from the
+    // store is not a failed phase: the worker still gets the task's id.
+    const task = await taskTextFor(launch.source, work.taskId, launch.host);
     const started = launch.helpers.startLaunch(
       launch.source,
       {
-        prompt: phasePrompt(work, run, skillBody(run.skill), launch.source.cwd),
+        prompt: phasePrompt(task ? { ...work, task } : work, run, skillBody(run.skill), launch.source.cwd),
         title: run.phase,
         runtimeMode: "full-access",
         workspaceMode: "current",

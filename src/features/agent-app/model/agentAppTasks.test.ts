@@ -452,6 +452,13 @@ describe("tasks.delegate", () => {
 
   it("holds a hard task until the phase documents are accepted, and still starts a usual one", async () => {
     const hard = fixture();
+    // WP-84: the phase worker reads the task itself, not just its id.
+    hard.host.taskStore = vi.fn(async (_command, args) => ({
+      id: args.id,
+      projectId: PROJECT,
+      title: "Rework how saving works",
+      description: "The save drops the last line of a file that ends with CRLF.",
+    }));
     const held = await handleAgentApp(
       hard.source,
       "r-hard",
@@ -468,6 +475,11 @@ describe("tasks.delegate", () => {
     expect(prompts[0]).toContain("You are a research orchestrator helping to create research questions");
     expect(prompts[1].startsWith("Hivra runs this phase.")).toBe(true);
     expect(prompts[1]).toContain("Skill: research\n");
+    for (const prompt of prompts) {
+      expect(prompt).toContain("Task: task-hard");
+      expect(prompt).toContain("Title: Rework how saving works");
+      expect(prompt).toContain("The save drops the last line of a file that ends with CRLF.");
+    }
     expect(held).toMatchObject({ phased: true, taskId: null });
     const usual = fixture();
     await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-usual" }, usual.host);
@@ -506,7 +518,7 @@ describe("tasks.delegate", () => {
           { name: "questions", match: "Skill: research-questions", steps: [{ say: "Questions about the save path." }] },
           { name: "research", match: "Skill: research\\n", steps: [{ say: "The save drops the last line." }] },
           { name: "design", match: "Skill: design-discussion", steps: [{ say: "Keep the last line." }] },
-          { name: "outline", match: "Skill: implement-outline", times: 1, steps: [{ say: "Outline the save function." }] },
+          { name: "outline", match: "Skill: create-structure-outline", times: 1, steps: [{ say: "Outline the save function." }] },
           { name: "build", match: "Skill: implement-outline", steps: [{ say: "Build the save function." }] },
         ],
       }),

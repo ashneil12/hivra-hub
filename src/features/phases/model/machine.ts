@@ -12,14 +12,15 @@ const REVIEW = new Set<PhaseId>(["product", "research", "design"]);
 
 const SKILL: Record<PhaseId, string> = SKILL_FOR_PHASE;
 
-const ITERATE: Record<PhaseId, string> = {
+/** The skill a "Change this" runs on each phase's document. A build's document is the implementation plan. */
+export const ITERATE_SKILL_FOR_PHASE: Record<PhaseId, string> = {
   product: "iterate-product",
   technical: "iterate-technical",
   "research-questions": "iterate-research-questions",
   research: "iterate-research",
   design: "iterate-design",
   outline: "iterate-outline",
-  build: "iterate-outline",
+  build: "iterate-implementation",
 };
 
 export type Comment = { id: string; text: string; used: boolean };
@@ -160,7 +161,7 @@ function startRun(work: Work, phase: PhaseId, iterate: boolean, docNumber: numbe
   const run: Run = {
     id: ids(),
     phase,
-    skill: iterate ? ITERATE[phase] : SKILL[phase],
+    skill: iterate ? ITERATE_SKILL_FOR_PHASE[phase] : SKILL[phase],
     sessionId: ids(),
     modelRole: role,
     model: role === "search" ? work.settings.models.search : work.settings.models.judgment,
