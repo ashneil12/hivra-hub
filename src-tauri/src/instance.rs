@@ -66,7 +66,6 @@ pub const EXIT_NO_LOCK: i32 = 73;
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 const LOCK_RETRY: Duration = Duration::from_millis(100);
 const STAMP_PREFIX: &str = "MONOCODE-STAMP:";
-const DEV_TITLE: &str = "MonoCode Hub Dev";
 
 /// `MONOCODE-STAMP:{"sha","branch","dirty","builtAt"}` from build.rs, kept in the binary as one string.
 #[used]
@@ -857,9 +856,13 @@ pub fn stamp_label(stamp: &Stamp) -> String {
     )
 }
 
-/// A dev copy's window title: "MonoCode Hub Dev - <branch> @ <sha>".
+/// A dev copy's window title: "Hivra Dev - <branch> @ <sha>".
 pub fn dev_window_title(stamp: &Stamp) -> String {
-    format!("{DEV_TITLE} - {}", stamp_label(stamp))
+    format!(
+        "{} Dev - {}",
+        crate::display_name::DISPLAY_NAME,
+        stamp_label(stamp)
+    )
 }
 
 /// What the webview, `monocode version --json` and the `app.version` action report.
@@ -1405,7 +1408,7 @@ mod tests {
         );
         assert_eq!(
             dev_window_title(&parse_stamp(line).unwrap()),
-            "MonoCode Hub Dev - hub/x}y @ 0123456-dirty"
+            "Hivra Dev - hub/x}y @ 0123456-dirty"
         );
     }
 

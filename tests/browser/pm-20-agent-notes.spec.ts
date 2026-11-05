@@ -44,12 +44,13 @@ test("a single note, a folded group collapsed and expanded", async ({ page }) =>
   await page.screenshot({ path: `${SHOTS}/pm-20-notes-expanded.png` });
 });
 
-test("a stuck item's Open chat opens the Lead's chat, not the worker's", async ({ page }) => {
+test("a Needs you card's Open chat opens the Lead's chat, not the worker's", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.goto("/tests/browser/agent-notes.html?view=today");
-  const open = page.locator("[data-stuck-open]").first();
+  const open = page.locator("[data-hub-open-lead]").first();
   await expect(open).toBeVisible({ timeout: 60_000 });
-  await expect(open).toHaveAttribute("title", /EXO lead's chat/);
+  await expect(open).toHaveText("Open EXO lead's chat");
+  expect(await page.locator("body").innerText()).not.toMatch(/\bstuck\b/i);
   await page.screenshot({ path: `${SHOTS}/pm-20-stuck-before.png` });
   await open.click();
   await expect(page.locator("[data-opened]")).toHaveAttribute("data-opened", "owner:lead-chat");

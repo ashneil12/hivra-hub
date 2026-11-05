@@ -118,7 +118,7 @@ Phase 3, size S.
 
 Phase dev-setup, size M.
 
-**What Ash gets.** Running the Hub from any worktree opens 'MonoCode Hub Dev - <branch>' with its own data folder, its own port and a DEV ribbon, optionally on a cleaned copy of real chats. Several can run side by side, and none of them can touch the daily app's chats, habits, Keychain items or Ash OS. This is what makes developing the app from inside the app safe.
+**What Ash gets.** Running the Hub from any worktree opens 'Hivra Dev - <branch>' with its own data folder, its own port and a DEV ribbon, optionally on a cleaned copy of real chats. Several can run side by side, and none of them can touch the daily app's chats, habits, Keychain items or Ash OS. This is what makes developing the app from inside the app safe.
 
 **Why.** Verified at harvest (since replaced: `npm run hub:dev` now runs `scripts/hub-dev.mjs`, see How): npm run hub:dev was plain tauri dev under the live identifier (package.json:31; src-tauri/tauri.conf.json:5; DEV_BUNDLE_ID is pinned to com.ash.monocode-hub at src-tauri/src/macos.rs:831, with a test at :1020). The data dir comes from app_data_dir() (session_store.rs:77, 20 callers), and vite is pinned to port 1420 with strictPort. So a Lead testing a change opens Ash's live monocode.db, can resume his in-flight chats and run his habits a second time, and a second worktree cannot run at all. The WIP sandbox on fix/harness-continuation-06 @66ebaa3f is a start: identifier com.ash.monocode-hub.sandbox, feature test-copy, release builds only (a debug build panics at lib.rs:246).
 

@@ -1,4 +1,9 @@
-// WP-70: one task. A status list is not a board.
+// WP-70: one task. A status list is not a board. WP-71 adds the rest of the task, still in this panel.
+
+import { PRIORITY_LABEL, PRIORITY_ORDER } from "../vendor/taskMeta";
+import type { TaskPriority } from "../vendor/models";
+import { workingLabel } from "../model/working";
+import { MarkdownView } from "./MarkdownView";
 
 const STATUSES = ["Backlog", "Todo", "In progress", "In review", "Done", "Cancelled"] as const;
 
@@ -12,6 +17,13 @@ export type TaskDetailTask = {
   assignee: string | null;
   comments: readonly { id: string; body: string }[];
   activity: readonly { id: string; text: string }[];
+  priority?: string;
+  labels?: readonly string[];
+  delegationId?: string | null;
+  cli?: string | null;
+  workingSince?: number | null;
+  chatId?: string | null;
+  dueAt?: number | null;
   githubUrl?: string | null;
   githubPaused?: boolean;
   githubPulls?: readonly { title: string; url: string; state: string }[];
@@ -20,16 +32,28 @@ export type TaskDetailTask = {
 export function TaskDetail({
   task,
   note,
+  now = Date.now(),
+  parentTitle,
+  subtasks = [],
   onComment,
   onStatus,
+  onPriority,
   onAssign,
+  onOpenChat,
 }: {
   task: TaskDetailTask;
   note?: string | null;
+  now?: number;
+  parentTitle?: string | null;
+  subtasks?: readonly { number: number; title: string; status: string }[];
   onComment: (text: string) => void;
   onStatus?: (status: string) => void;
+  onPriority?: (priority: string) => void;
   onAssign?: (assignee: string) => void;
+  onOpenChat?: (chatId: string) => void;
 }) {
+  const followsWork = Boolean(task.delegationId);
+  const priority = (PRIORITY_ORDER as readonly string[]).includes(task.priority ?? "") ? task.priority ?? "none" : "none";
   return (
     <article aria-label={`Task ${task.number}`}>
       <h3 className="text-[13px] text-content">
@@ -38,7 +62,7 @@ export function TaskDetail({
       <p className="mt-1 text-[12px] text-content/70">{task.status}</p>
       {task.needsYou ? <p className="text-[12px] text-content">Needs you</p> : null}
       {task.failed ? <p className="text-[12px] text-content">Failed</p> : null}
-      {task.description ? <p className="mt-1 whitespace-pre-wrap text-[12px] text-content/80">{task.description}</p> : null}
+      {task.description ? <MarkdownView source={task.description} /> : null}
       {task.githubUrl ? (
         <>
           <a href={task.githubUrl} className="mt-1 block text-[12px] text-content">
@@ -69,12 +93,19 @@ export function TaskDetail({
         </section>
       ) : null}
       <p className="mt-1 text-[12px] text-content/70">{task.assignee ? `Assigned to ${task.assignee}` : "Unassigned"}</p>
+      {parentTitle ? <p className="text-[12px] text-content/70">Parent {parentTitle}</p> : null}
+      {task.labels && task.labels.length > 0 ? <p className="text-[12px] text-content/70">{task.labels.join(", ")}</p> : null}
+      {typeof task.dueAt === "number" ? <p className="text-[12px] text-content/70">Due {new Date(task.dueAt).toISOString().slice(0, 10)}</p> : null}
+      {task.cli ? <p className="text-[12px] text-content/70">{task.cli}</p> : null}
+      {typeof task.workingSince === "number" ? <p className="text-[12px] text-content/70">{workingLabel(task.workingSince, now)}</p> : null}
+      {followsWork ? <p className="text-[12px] text-content/70">This task follows its work.</p> : null}
       {note ? <p className="mt-1 text-[12px] text-content/70">{note}</p> : null}
       <label className="mt-2 block text-[12px] text-content/70">
         Status
         <select
           aria-label="Status"
           className="ml-2 bg-transparent text-content"
+          disabled={followsWork}
           value={STATUSES.includes(task.status as (typeof STATUSES)[number]) ? task.status : ""}
           onChange={(event) => onStatus?.(event.target.value)}
         >
@@ -86,6 +117,32 @@ export function TaskDetail({
           ))}
         </select>
       </label>
+      {onPriority ? (
+        <label className="mt-2 block text-[12px] text-content/70">
+          Priority
+          <select aria-label="Priority" className="ml-2 bg-transparent text-content" value={priority} onChange={(event) => onPriority(event.target.value)}>
+            {PRIORITY_ORDER.map((item) => (
+              <option key={item} value={item}>
+                {PRIORITY_LABEL[item as TaskPriority]}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      {subtasks.length > 0 ? (
+        <ul className="mt-2">
+          {subtasks.map((subtask) => (
+            <li key={`${subtask.number}-${subtask.title}`} className="text-[12px] text-content/70">
+              #{subtask.number} {subtask.title}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {task.chatId && onOpenChat ? (
+        <button type="button" className="mt-2 text-[12px] text-content/80" onClick={() => onOpenChat(task.chatId ?? "")}>
+          Open chat
+        </button>
+      ) : null}
       <ul className="mt-2 space-y-1">
         {task.activity.map((entry) => (
           <li key={entry.id} className="text-[12px] text-content/70">

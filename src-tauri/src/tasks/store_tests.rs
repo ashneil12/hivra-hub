@@ -817,3 +817,95 @@ fn tasks_and_their_links_are_still_there_after_the_file_is_opened_again() {
     );
     std::fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn an_agent_task_carries_its_cli_and_how_long_it_has_been_working() {
+    let store = mem();
+    let who = person("crew");
+    let task = make(&store, &who, "Brief", None);
+    assert_eq!(task.cli, None);
+    assert_eq!(task.working_since, None);
+    assert_eq!(task.finished_at, None);
+    assert_eq!(task.chat_id, None);
+    let conn = store.lock_conn().unwrap();
+    conn.execute(
+        "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+         VALUES ('chat-1', '/work/proj', 'claude', 'opus', 'chat', 'Worker', 1, 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO delegations (id, owner_session, root_id, child_session, request_id, state, delivery, created_at, updated_at)
+         VALUES ('del-1', 'owner', 'del-1', 'chat-1', 'req-1', 'running', 'keep', 5000, 5000)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE tasks SET delegation_id = 'del-1' WHERE id = ?1",
+        [&task.id],
+    )
+    .unwrap();
+    let running = get(&conn, &who, &task.id).unwrap();
+    assert_eq!(running.cli.as_deref(), Some("claude"));
+    assert_eq!(running.working_since, Some(5000));
+    assert_eq!(running.finished_at, None);
+    assert_eq!(running.chat_id.as_deref(), Some("chat-1"));
+    conn.execute(
+        "UPDATE delegations SET state = 'completed', settled_at = 9000 WHERE id = 'del-1'",
+        [],
+    )
+    .unwrap();
+    let done = get(&conn, &who, &task.id).unwrap();
+    assert_eq!(done.working_since, None);
+    assert_eq!(done.finished_at, Some(9000));
+    conn.execute(
+        "UPDATE tasks SET delegation_id = 'missing' WHERE id = ?1",
+        [&task.id],
+    )
+    .unwrap();
+    let gone = get(&conn, &who, &task.id).unwrap();
+    assert_eq!(gone.cli, None);
+    conn.execute("DROP TABLE delegations", []).unwrap();
+    let missing = get(&conn, &who, &task.id).unwrap();
+    assert_eq!(missing.chat_id, None);
+    let names: Vec<String> = statuses(&conn, &who)
+        .unwrap()
+        .into_iter()
+        .map(|status| status.id)
+        .collect();
+    assert!(names.contains(&"In progress".to_string()));
+    assert!(names
+        .iter()
+        .all(|name| names.iter().filter(|other| *other == name).count() == 1));
+}
+
+#[test]
+fn a_project_does_not_see_another_projects_statuses() {
+    let store = mem();
+    let conn = store.lock_conn().unwrap();
+    ensure_tables(&conn).unwrap();
+    let mine = person("my project");
+    let other = person("café");
+    statuses(&conn, &mine).unwrap();
+    statuses(&conn, &other).unwrap();
+    conn.execute(
+        "INSERT INTO task_statuses (id, project_id, name, category, position, color, version)
+         VALUES ('ts-blocked', 'café', 'Blocked', 'started', 9, NULL, 1)",
+        [],
+    )
+    .unwrap();
+    let rows = statuses(&conn, &mine).unwrap();
+    assert!(rows.iter().all(|row| row.project_id == "my project"));
+    assert!(rows.iter().all(|row| row.name != "Blocked"));
+    assert!(rows.iter().any(|row| row.name == "Todo"));
+    let theirs = statuses(&conn, &other).unwrap();
+    assert!(theirs.iter().all(|row| row.project_id == "café"));
+    assert!(theirs.iter().any(|row| row.name == "Blocked"));
+    let spaced = statuses(&conn, &person("  my project  ")).unwrap();
+    assert!(spaced.iter().all(|row| row.project_id == "my project"));
+    let windows = statuses(&conn, &person("C:\\Code\\Other")).unwrap();
+    assert!(windows
+        .iter()
+        .all(|row| row.project_id == "C:\\Code\\Other"));
+    assert!(windows.iter().all(|row| row.name != "Blocked"));
+}

@@ -35,7 +35,8 @@ describe("the start-workers nudge is only for his list, and only when nothing is
     const c = chat([ash(dump), said(listReply)]);
     const one = joinNudges(standingRuleNudge(c, new Set()), workerStartNudge(c, [], new Set()))!;
     expect(one.id).toBe("start-workers-u1");
-    expect(one.text).toContain('First save his standing rule ("and from now on always run npm test before u say anything is done.") in his words, in the project\'s ~/agent-memory/<project>/decisions.md');
+    expect(one.text).toContain('First save his standing rule ("and from now on always run npm test before u say anything is done.") in his words, in the project\'s decisions.md');
+    expect(one.text).not.toContain("~/agent-memory");
     expect(one.text).toContain("Then start them:");
   });
 });

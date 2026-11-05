@@ -5,6 +5,7 @@ mod mapping;
 pub(crate) mod mcp;
 pub(crate) mod store;
 pub(crate) mod sync;
+mod views;
 
 pub(crate) use store::ensure_tables;
 

@@ -115,9 +115,13 @@ const slotQuestion: UserQuestionPrompt = { requestId: 7, questions: [{ id: "layo
     setSession("w-d2", { pendingQuestion: slotQuestion });
     setRow("d2", { state: "question", pendingQuestion: "Three save slots or five?" });
   },
-  /** The build worker gets stuck: the app's watcher marks its row stalled (workerStall.ts), as every screen reads it. */
+  /** The build worker goes quiet: its Lead still has it, so it is not Needs you (r30). */
   workerStuck() {
     setRow("d3", { stallKind: "quiet", stallReason: "Still running npm run build", stalledAt: Date.now() - 12 * MIN });
+  },
+  /** A worker fails because the provider is out of credits: red Needs you (r30). It is already finished, so it can't be stopped. */
+  workerFailed() {
+    setDelegationRows([...delegationRows(), row("d5", "s-exo", "Ship the save fix", { state: "failed", errorClass: "billing", error: "402", settledAt: Date.now() })]);
   },
   /** Hivra lead ends its turn asking Ash (Waiting on you). */
   leadAsks() {
