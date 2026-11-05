@@ -153,6 +153,13 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
     Windows: `std::net`, `.localhost` and the registry work unchanged; the 0600 file mode is `#[cfg(unix)]`, with a
     Windows equivalent (an ACL grant to the owner) or a skipped test under `#[cfg(windows)]`.
 
+## Copy with credit
+
+portless and emulate are both Apache-2.0 (Copyright 2025 Vercel Inc. and Copyright 2025 Chris Tate).
+`docs/hivra/credits.json` already lists both components as planned ("Planned for WP-90, code not copied yet"). The
+licence header on each translated file and the `credits.json` component stay with the code; the `NOTICE` entry is
+added in the PR that copies the code, not before, so the file never claims code the tree does not have.
+
 ## Done when
 
 - [ ] Tests (portless's tests ported where it has them):

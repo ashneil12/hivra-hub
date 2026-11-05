@@ -142,8 +142,8 @@ WP-84 the design document supplies the goal and the check, and with WP-14 the ir
 
 ## Copy with credit
 
-oh-my-hermes is MIT (Copyright (c) 2026 oh-my-hermes contributors), read at `2676c33`. The licence header, the
-`NOTICE` entry and the `credits.json` component stay with the code.
+oh-my-hermes is MIT (Copyright (c) 2026 oh-my-hermes contributors), read at `2676c33`. The licence header and the
+`credits.json` component stay with the code; the `NOTICE` entry is added in the PR that copies the code, not before.
 
 - **Translate, line by line:** `src/plugin_bundle/omh/dag_core.py` (209 lines, pure standard library) to
   `src-tauri/src/goal_graph/topology.rs`; and the record rules in `dag_run.py` (validation, `settle`'s handoff refusal,
@@ -155,7 +155,8 @@ oh-my-hermes is MIT (Copyright (c) 2026 oh-my-hermes contributors), read at `267
   folding and wording only; `src/skills/dag_ulw_skill.py` informs the contract.
 - **Why translation and not the package:** it is Python, and the run record must be Hivra's existing orchestration
   record rather than a second one beside it.
-- Add one component to `docs/hivra/credits.json` and one `NOTICE` block, naming the two translated files and the commit.
+- `docs/hivra/credits.json` already lists this component as planned ("Planned for WP-91, code not copied yet"). The
+  PR that copies the code fills it in and adds the `NOTICE` block, naming the two translated files and the commit.
 
 ## Honest limits
 

@@ -424,7 +424,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Vercel Inc.",
       "where": "src-tauri/src/proxy/",
-      "how": "routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests (WP-90). TLS, the /etc/hosts sync and the sudo path are not included."
+      "how": "Planned for WP-90, code not copied yet: routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
     },
     {
       "name": "emulate's base URLs and file store",
@@ -432,7 +432,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Chris Tate",
       "where": "src-tauri/src/local_services/",
-      "how": "base-url.ts and persistence.ts translated to Rust with their tests (WP-90). The 14 emulators themselves run as a pinned npm package and are not copied."
+      "how": "Planned for WP-90, code not copied yet: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
     },
     {
       "name": "oh-my-hermes's dag-ulw planner",
@@ -440,7 +440,7 @@
       "licence": "MIT",
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
-      "how": "dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied."
+      "how": "Planned for WP-91, code not copied yet: dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33. The Hermes-only tool, scope hook and TUI are not copied."
     }
   ]
 }
