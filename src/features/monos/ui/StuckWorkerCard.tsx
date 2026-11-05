@@ -304,19 +304,7 @@ export function StuckWorkerCard({
             Take the pick
           </button>
         ) : null}
-        {/* A grey stall or failure still opens the Lead's chat (D5). A question has no such button: Ash answers it
-            here. A red Needs you has the link under its reason instead. */}
-        {!red && stuck.kind !== "asking" ? (
-          <button
-            type="button"
-            className={BTN}
-            data-stuck-open
-            title={`Opens ${lead}'s chat: you answer it there, and it passes the answer on`}
-            onClick={open}
-          >
-            Open {lead}'s chat
-          </button>
-        ) : null}
+        {/* Critiquito, Ash's call (r51): no "Open <Lead>'s chat" on a grey card; a red one has it under its reason. */}
         {stuck.kind === "failed" ? (
           <button type="button" className={BTN} data-stuck-dismiss onClick={() => dismissFailure(stuck)}>
             Dismiss

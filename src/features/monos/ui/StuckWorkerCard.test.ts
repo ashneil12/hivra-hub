@@ -186,14 +186,6 @@ describe("stuck workers in the Lead's chat", () => {
 
   it("tells a stalled worker what to do, stops it, or opens its chat under its Mono", async () => {
     const { card, host, actions } = setup();
-    // A stalled card opens the Lead's chat, not the worker's (D5). An asking card has no such button.
-    const openChat = card("w3")!.querySelector<HTMLButtonElement>("[data-stuck-open]")!;
-    expect(openChat.textContent).toBe("Open EXO lead's chat");
-    expect(openChat.title).toMatch(/EXO lead's chat/);
-    expect(card("w2")!.querySelector("[data-stuck-open]")).toBeNull();
-    act(() => openChat.click());
-    expect(actions.openOwner).toHaveBeenCalledWith("lead-chat");
-    expect(actions.openChild).not.toHaveBeenCalled();
     const input = card("w3")!.querySelector<HTMLInputElement>("[data-stuck-reply]")!;
     act(() => {
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
