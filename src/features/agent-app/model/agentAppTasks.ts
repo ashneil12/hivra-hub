@@ -47,6 +47,8 @@ import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
+import { benchCliRefusal } from "../../crew/model/benchCli";
+import { cliFallbackLine } from "../../crew/model/cliFallback";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
@@ -881,6 +883,12 @@ async function delegate(
   let chosenEffort = effort;
   let crewChose = false;
   let ranFrom: string | undefined;
+  // WP-89: a bench (verify_live.rs) starts only its own Claude wrapper. A worker routed to another CLI there is
+  // refused in the bench's words after the route, never quietly started on Claude instead.
+  let benchRefusal: string | undefined;
+  // WP-89: outside a bench the routed CLI may simply not be installed. The worker keeps the chat's own CLI so the
+  // work still starts, and this sentence says which CLI was asked for and what it runs on instead.
+  let cliFallback: string | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
@@ -913,11 +921,16 @@ async function delegate(
           chosenEffort = next.effort;
           if (answer) ranFrom = ranFromPhrase(answer);
         }
+      } else if (next.harness && next.harness !== baseline) {
+        const refused = benchCliRefusal(next.harness);
+        if (refused) benchRefusal = refused;
+        else cliFallback = cliFallbackLine(next.harness, baseline);
       }
     } catch {
       // A timeout is not a final failure: the model already chosen still starts.
     }
   }
+  if (benchRefusal) throw new Error(benchRefusal);
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
@@ -939,7 +952,8 @@ async function delegate(
       status: already.state,
       title: already.title ?? title,
       alreadyStarted: true,
-      note: "This task had already started; it was not started again. Its report comes back to you as its own turn.",
+      ...(cliFallback ? { cliFallback } : {}),
+      note: `${cliFallback ? `${cliFallback} ` : ""}This task had already started; it was not started again. Its report comes back to you as its own turn.`,
     };
   }
   // The workers this chat still has out: each holds a port, and one working in the same project shares its repo.
@@ -986,6 +1000,8 @@ async function delegate(
         ...(launchModel ? { model: launchModel } : {}),
         ...(chosenEffort !== undefined ? { effort: chosenEffort } : {}),
         ...(ranFrom ? { ranFrom } : {}),
+        // WP-89: the start card says when the CLI this Mono asked for isn't installed, and what it runs on instead.
+        ...(cliFallback ? { cliFallback } : {}),
         // Workers run with full access so a permission prompt never strands them with nobody watching; Ash's own
         // hooks (his red-line guards) still run, and their questions go to this Mono (docs/PHASE-2-DESIGN.md H4).
         runtimeMode: WORKER_RUNTIME_MODE,
@@ -1046,7 +1062,8 @@ async function delegate(
         ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
         ...(route && !crewChose ? { modelWhy: route.why } : {}),
         ...(heavy ? { heavy: true } : {}),
-        note: forUser`${admission.line}${admission.reason === "files" ? " If this work belongs with that job, cancel this one (task_cancel) and send that job a follow-up instead; otherwise leave it." : ""} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence), then end your turn.`,
+        ...(cliFallback ? { cliFallback } : {}),
+        note: forUser`${cliFallback ? `${cliFallback} ` : ""}${admission.line}${admission.reason === "files" ? " If this work belongs with that job, cancel this one (task_cancel) and send that job a follow-up instead; otherwise leave it." : ""} It starts by itself, in the order you asked, and reports back to you like any other task once it has run; there is nothing for you to do about it (task_cancel with its childSessionId as taskId takes it back). Tell Ash in one line what is running and what waits (in plain words: never a task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence), then end your turn.`,
       };
     }
   }
@@ -1087,6 +1104,8 @@ async function delegate(
     ...(launchModelName(launch) ? { modelName: launchModelName(launch) } : {}),
     // Why this model, when the app picked it from the job (E7): the Lead can pass it on in plain words.
     ...(route && !crewChose ? { modelWhy: route.why } : {}),
+    // WP-89: the CLI asked for isn't installed, so the worker runs on this chat's CLI; the Lead passes the line on.
+    ...(cliFallback ? { cliFallback } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? {
@@ -1108,8 +1127,8 @@ async function delegate(
     // Work of a Mono's own runs in its team: the worker's chat shows there, under the Mono's.
     ...(ownTeam ? { team: ownTeam.name } : {}),
     note: row
-      ? forUser`Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence) and end your turn; whenever he writes meanwhile, answer him at once.`
-      : "It started, but its task record could not be stored; its report still comes back to you.",
+      ? forUser`${cliFallback ? `${cliFallback} ` : ""}Running${ownTeam ? ` in ${ownTeam.name}, where its chat shows under yours` : ""}. Its report comes back to you as its own turn soon after it finishes. Start any other independent work now, tell Ash in one line what is running (in plain words: never its task id or a folder path; never the raw model id; r91: its model goes on a line of its own under that line, exactly as modelName says, never mid-sentence) and end your turn; whenever he writes meanwhile, answer him at once.`
+      : `${cliFallback ? `${cliFallback} ` : ""}It started, but its task record could not be stored; its report still comes back to you.`,
   };
 }
 

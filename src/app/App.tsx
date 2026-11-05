@@ -12428,6 +12428,8 @@ function Workspace({
       setHubSelection(selection);
     },
     startCodingTeamChat: (projectId, runtimeMode) => startCodingTeamChat(projectId, runtimeMode),
+    // A bench scene's own mode for a Mono's chat, set and put back by the run (dev copy only).
+    setRuntimeMode: (sessionId, runtimeMode) => onRuntimeModeChange(sessionId, runtimeMode),
     // Called after this render, so onApproval (declared below) is set by then.
     // bench: Allow, or Deny when the run refuses a permission card.
     approve: (sessionId, requestId, decision) => onApproval(sessionId, requestId, decision ?? "allow"),
@@ -12466,6 +12468,8 @@ function Workspace({
       showHub: (selection) => verifyDriverHost.current!.showHub(selection),
       startCodingTeamChat: (projectId, runtimeMode) =>
         verifyDriverHost.current!.startCodingTeamChat?.(projectId, runtimeMode) ?? null,
+      setRuntimeMode: (sessionId, runtimeMode) =>
+        verifyDriverHost.current!.setRuntimeMode?.(sessionId, runtimeMode),
       approve: (sessionId, requestId, decision) => verifyDriverHost.current!.approve?.(sessionId, requestId, decision),
       archive: async (sessionId) => (await verifyDriverHost.current!.archive?.(sessionId)) ?? false,
     });
@@ -13690,6 +13694,7 @@ function Workspace({
                   // WP-89: the start card names the effort and where the CLI, model and effort came from.
                   ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
                   ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
+                  ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                 });
               };
               const open = sessionsRef.current.find(
@@ -14299,6 +14304,7 @@ function Workspace({
                     // WP-89: a waiting worker's card names the effort and where it came from.
                     ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
                     ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
+                    ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
               briefLead: async (owner, mono, input) => {

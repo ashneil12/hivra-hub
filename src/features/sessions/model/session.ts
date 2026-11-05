@@ -68,6 +68,8 @@ export type MonoSpawnedSession = {
   effort?: string;
   /** WP-89: where its CLI, model and effort came from, in the words the settings line uses. */
   from?: string;
+  /** WP-89: the CLI it was asked to run on isn't installed here; the sentence says what it runs on instead. */
+  cliFallback?: string;
 };
 
 export type TaskListItemStatus =

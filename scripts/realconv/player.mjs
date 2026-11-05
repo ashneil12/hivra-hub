@@ -146,6 +146,17 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     return result;
   }
   const agentPoll = startSceneAgentPoll(ctx);
+  // A Mono chat's own mode before a scene set one (scene.runtimeMode), put back when the scene ends: the dev copy is
+  // shared with the scenes after this one.
+  const modeBacks = [];
+  const putModesBack = async () => {
+    for (const { session, runtimeMode } of modeBacks) {
+      const put = await act("runtimeMode", { session, runtimeMode }, 30_000).catch((error) => ({ ok: false, error: error.message }));
+      log(`  ${scene.id}: chat ${session} back to ${runtimeMode}${put.ok === false ? ` (FAILED: ${put.error})` : ""}`);
+      notes.push(`runtime mode: ${runtimeMode} back on chat ${session}${put.ok === false ? " (failed)" : ""}`);
+    }
+    modeBacks.length = 0;
+  };
   try {
   // Ash's real repos the scene works on, as throwaway copies (the book's `copies`).
   const copyMarks = (ctx.copies ?? []).map((copy) => ({ copy, mark: gitMark(copy.folder) }));
@@ -244,12 +255,16 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     }
   };
   const send = async (text, { verbatim }) => {
-    // A coding-team scene may start its chat in Full access (scene.runtimeMode; dev copy only, never Ash's default).
-    const mode = place.codingTeam && scene.runtimeMode ? { runtimeMode: scene.runtimeMode } : {};
+    // A coding-team scene or a Mono-chat scene may start its chat in Full access (scene.runtimeMode; dev copy only,
+    // never Ash's default). The driver sets it on the chat itself.
+    const mode = scene.runtimeMode && (place.codingTeam || place.mono) ? { runtimeMode: scene.runtimeMode } : {};
     const answer = await act("send", { to: place, text, ...mode }, 60_000).catch((error) => ({ ok: false, error: error.message }));
     const t = answer.at ?? Date.now();
     // A new coding-team chat: later lines go to that chat, not another new one.
     if (place.codingTeam && answer.session) place = { session: answer.session };
+    // The first line into a Mono's chat is where its mode was changed: keep what it was before, once.
+    if (place.mono && answer.session && answer.runtimeMode && typeof answer.previousRuntimeMode === "string" && !modeBacks.some((back) => back.session === answer.session))
+      modeBacks.push({ session: answer.session, runtimeMode: answer.previousRuntimeMode });
     ashLines.push({ t, text, verbatim, scripted: !!scriptedProblem(text), accepted: answer.ok !== false, error: answer.error ?? null });
     log(`  Ash -> ${place.room ?? place.mono ?? place.session}: ${text.slice(0, 90).replace(/\n/g, " ")}${answer.ok === false ? ` (NOT ACCEPTED: ${answer.error})` : ""}`);
     return t;
@@ -405,6 +420,8 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
 
   // -- evidence, checks, judge, verdict ------------------------------------------------------------------------------------
   async function finish({ invalid: why }) {
+    // The scene's own mode for a Mono chat goes back before its evidence is written (the finally covers a throw).
+    await putModesBack();
     await ctx.pump();
     await answerPermissionAsks();
     await shoot("end");
@@ -484,6 +501,7 @@ export async function runConversation(scene, ctx, { tester, judge, agentsReal, o
     return result;
   }
   } finally {
+    await putModesBack();
     await agentPoll.stop();
   }
 }
