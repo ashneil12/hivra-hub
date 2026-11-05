@@ -18,6 +18,8 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+// WP-85: show Claude sessions started in a terminal.
+import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -1062,6 +1064,11 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
+      </Group>
+
+      {/* WP-85: off until the person turns it on. */}
+      <Group title="Terminal" description="Claude sessions you start in a terminal, on this Mac.">
+        <TerminalSessionsSetting />
       </Group>
 
       <Group
