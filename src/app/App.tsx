@@ -6612,7 +6612,7 @@ function Workspace({
       const { name } = monoLook(mono);
       // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono). r30f: it says only what
       // happens (monoDelete.ts). WP-76: a running chat is stopped first, and the person has already been told.
-      const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId));
+      const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId), { undoable: true });
       if (!confirmed) return;
       try {
         const moved = await deleteMonoToTrash({

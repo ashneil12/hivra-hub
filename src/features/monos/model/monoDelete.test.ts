@@ -44,7 +44,7 @@ it("removing a Mono never asks the app to delete, move or archive its folder", a
 it("the App's Delete mono does what the copy says, and no more", () => {
   const app = src("src/app/App.tsx");
   const body = app.slice(app.indexOf("const onDeleteMono = useCallback("), app.indexOf("const onDeleteMonoChat = useCallback("));
-  expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\)\)/);
+  expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\), \{ undoable: true \}\)/);
   expect(body).toMatch(/onRemoveHistorySession\(\s*mono\.sessionId,\s*"delete"/);
   expect(body).toMatch(/removeMono\(monoId\)/);
   expect(body).toMatch(/forgetMonoTeam\(monoId\)/);
