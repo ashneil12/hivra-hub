@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { resolveDataDir } from "../../../../plugins/hivra-mirror/src/config.ts";
 import { applyMapped, attachSession, emptyBook, removeSession } from "../../../../plugins/hivra-mirror/src/book.ts";
-import { onHook } from "../../../../plugins/hivra-mirror/src/hook.ts";
+import { eventsEnvelope, onHook } from "../../../../plugins/hivra-mirror/src/hook.ts";
 import { commitPlan, defaultSetting, planChange, touchesPersonClaude } from "../../../../plugins/hivra-mirror/src/install.ts";
 import { mapEvent } from "../../../../plugins/hivra-mirror/src/mapper.ts";
 import { dailyDataDir, devConfigDir, personClaudeDir } from "../../../../plugins/hivra-mirror/src/paths.ts";
 import { discover, hivraStarted, shouldMirror } from "../../../../plugins/hivra-mirror/src/protocol.ts";
+import { waitForPermission } from "../../../../plugins/hivra-mirror/src/steer.ts";
 import { loadTranscript, transcriptEvents } from "../../../../plugins/hivra-mirror/src/transcript.ts";
 
 const home = "/Users/Ash Neil";
@@ -289,6 +290,78 @@ describe("the hook stays quiet", () => {
     });
     expect(reads).toBe(0);
     expect(quiet.silent).toBe(false);
+  });
+
+  it("gives a queued reply to the next turn, and a permission answer only to its own prompt", () => {
+    const base = {
+      env: {},
+      ancestors: [] as number[],
+      running: { pid: 4, mirrorPort: 9, mirrorHost: "127.0.0.1" },
+      alive: true,
+      readFile: () => "",
+    };
+    const stop = onHook({
+      ...base,
+      event: { hook_event_name: "Stop", session_id: "s" },
+      send: () => ({ ok: true, steers: [{ kind: "reply", text: "later" }] }),
+    });
+    expect(stop.silent).toBe(false);
+    expect(eventsEnvelope("Stop", [{ kind: "status", sessionId: "s" }])).toEqual({
+      type: "events",
+      hook: "Stop",
+      events: [{ kind: "status", sessionId: "s" }],
+    });
+    expect(JSON.parse(stop.output ?? "{}")).toMatchObject({ decision: "block", reason: "later" });
+    const prompt = onHook({
+      ...base,
+      event: { hook_event_name: "UserPromptSubmit", session_id: "s", prompt: "now" },
+      send: () => ({ ok: true, steers: [{ kind: "reply", text: "from before" }] }),
+    });
+    expect(JSON.parse(prompt.output ?? "{}")).toMatchObject({
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: "from before" },
+    });
+    const wrong = onHook({
+      ...base,
+      event: { hook_event_name: "PermissionRequest", session_id: "s", request_id: "ask-2", tool_name: "Bash" },
+      send: () => ({ ok: true, steers: [{ kind: "permission", requestId: "ask-1", allow: true }] }),
+    });
+    expect(wrong.output).toBeNull();
+    const right = onHook({
+      ...base,
+      event: { hook_event_name: "PermissionRequest", session_id: "s", request_id: "ask-2", tool_name: "Bash" },
+      send: () => ({ ok: true, steers: [{ kind: "permission", requestId: "ask-2", allow: false }] }),
+    });
+    expect(JSON.parse(right.output ?? "{}")).toMatchObject({
+      hookSpecificOutput: { decision: { behavior: "deny" } },
+    });
+  });
+
+  it("keeps asking until the matching permission answer, and one failed read is not the end", async () => {
+    const polls = [
+      async (): Promise<{ kind: "permission"; requestId: string; allow: boolean }[]> => {
+        throw new Error("down");
+      },
+      async () => [{ kind: "permission" as const, requestId: "ask-1", allow: true }],
+      async () => [{ kind: "permission" as const, requestId: "ask-2", allow: false }],
+    ];
+    let step = 0;
+    const got = await waitForPermission({
+      requestId: "ask-2",
+      attempts: 5,
+      poll: () => polls[step++]!(),
+      sleep: async () => undefined,
+    });
+    expect(got).toEqual([{ kind: "permission", requestId: "ask-2", allow: false }]);
+    await expect(
+      waitForPermission({
+        requestId: " ",
+        attempts: 3,
+        poll: async () => {
+          throw new Error("should not poll");
+        },
+        sleep: async () => undefined,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("treats a send that throws, or a port that does not answer, as silence rather than a failed session", () => {

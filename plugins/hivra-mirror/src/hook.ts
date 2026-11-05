@@ -3,7 +3,7 @@
 import { mapEvent } from "./mapper.ts";
 import { discover, hivraPid, hivraStarted } from "./protocol.ts";
 import { loadTranscript, transcriptEvents } from "./transcript.ts";
-import { permissionHookOutput, type Steer } from "./steer.ts";
+import { hookDecision, type Steer } from "./steer.ts";
 
 /** Mapped frames the loopback port stores. Unknown events are left out. */
 export function toWire(raw: unknown): unknown[] {
@@ -42,7 +42,7 @@ function asSteer(value: unknown): Steer | null {
   return null;
 }
 
-function sessionIdOf(event: unknown): string {
+export function sessionIdOf(event: unknown): string {
   if (!event || typeof event !== "object") return "";
   const row = event as { sessionId?: unknown; session_id?: unknown; id?: unknown; kind?: unknown; type?: unknown };
   const kind = typeof row.kind === "string" ? row.kind : typeof row.type === "string" ? row.type : "";
@@ -50,6 +50,26 @@ function sessionIdOf(event: unknown): string {
   if (typeof row.sessionId === "string") return row.sessionId;
   if (typeof row.session_id === "string") return row.session_id;
   return "";
+}
+
+/** The loopback message. The hook name is how a reply knows it is the next turn. */
+export function eventsEnvelope(hook: string, frames: unknown[]): { type: "events"; hook: string; events: unknown[] } {
+  return { type: "events", hook, events: frames };
+}
+
+export function requestIdOf(event: unknown): string {
+  if (!event || typeof event !== "object") return "";
+  const row = event as { requestId?: unknown; request_id?: unknown };
+  if (typeof row.requestId === "string" && row.requestId.trim()) return row.requestId.trim();
+  if (typeof row.request_id === "string" && row.request_id.trim()) return row.request_id.trim();
+  return "";
+}
+
+export function steersFrom(values: unknown[]): Steer[] {
+  return values.flatMap((item) => {
+    const steer = asSteer(item);
+    return steer ? [steer] : [];
+  });
 }
 
 function transcriptOf(event: unknown): string {
@@ -100,15 +120,10 @@ export function onHook(input: {
     return quiet;
   }
   if (!sent.ok) return quiet;
-  const steers = sent.steers.map(asSteer).filter((item): item is Steer => item != null);
-  const permission = steers.find((item) => item.kind === "permission");
+  const steers = steersFrom(sent.steers);
   const eventName =
     input.event && typeof input.event === "object"
       ? String((input.event as { hook_event_name?: unknown; type?: unknown }).hook_event_name ?? (input.event as { type?: unknown }).type ?? "")
       : "";
-  const output =
-    permission && eventName.toLowerCase().includes("permission")
-      ? permissionHookOutput({ allow: permission.allow })
-      : null;
-  return { silent: false, frames, output };
+  return { silent: false, frames, output: hookDecision(eventName, steers, requestIdOf(input.event)) };
 }

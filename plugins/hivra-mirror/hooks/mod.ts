@@ -5,9 +5,9 @@ import { readFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { kindFromEnv, resolveDataDir } from "../src/config.ts";
-import { onHook, toWire } from "../src/hook.ts";
+import { eventsEnvelope, onHook, requestIdOf, sessionIdOf, steersFrom, toWire } from "../src/hook.ts";
 import { RUNNING_FILE, isDevConfigDir, targetFile } from "../src/paths.ts";
-import { permissionHookOutput } from "../src/steer.ts";
+import { hookDecision, waitForPermission } from "../src/steer.ts";
 
 function readStdin(): string {
   try {
@@ -48,7 +48,7 @@ function alive(pid: number): boolean {
   }
 }
 
-function send(port: number, frames: unknown[]): Promise<{ ok: boolean; steers: unknown[] }> {
+function post(port: number, payload: unknown): Promise<{ ok: boolean; steers: unknown[] }> {
   return new Promise((resolve) => {
     const socket = net.connect({ host: "127.0.0.1", port });
     const timer = setTimeout(() => {
@@ -74,18 +74,9 @@ function send(port: number, frames: unknown[]): Promise<{ ok: boolean; steers: u
       }
     });
     socket.on("connect", () => {
-      socket.write(`${JSON.stringify({ type: "events", events: frames })}\n`);
+      socket.write(`${JSON.stringify(payload)}\n`);
     });
   });
-}
-
-function permissionAnswer(steers: unknown[]): { allow: boolean } | null {
-  for (const steer of steers) {
-    if (!steer || typeof steer !== "object") continue;
-    const row = steer as { kind?: unknown; allow?: unknown };
-    if (row.kind === "permission" && typeof row.allow === "boolean") return { allow: row.allow };
-  }
-  return null;
 }
 
 async function main(): Promise<number> {
@@ -138,16 +129,30 @@ async function main(): Promise<number> {
       ? (running as { mirrorPort?: unknown }).mirrorPort
       : null;
   if (typeof port !== "number") return 0;
-  const live = await send(port, result.frames.flatMap(toWire));
-  if (!live.ok) return 0;
   const name =
     event && typeof event === "object"
       ? String((event as { hook_event_name?: unknown }).hook_event_name ?? "")
       : "";
-  if (name.toLowerCase().includes("permission")) {
-    const output = permissionHookOutput(permissionAnswer(live.steers));
-    if (output) process.stdout.write(output);
+  const live = await post(port, eventsEnvelope(name, result.frames.flatMap(toWire)));
+  if (!live.ok) return 0;
+  let steers = steersFrom(live.steers);
+  const requestId = requestIdOf(event);
+  if (name.toLowerCase().includes("permission") && !hookDecision(name, steers, requestId)) {
+    const sessionId = sessionIdOf(event);
+    const waited = await waitForPermission({
+      requestId,
+      attempts: 100,
+      poll: async () => {
+        const again = await post(port, { type: "wait", sessionId, requestId });
+        if (!again.ok) throw new Error("down");
+        return steersFrom(again.steers);
+      },
+      sleep: () => new Promise((resolve) => setTimeout(resolve, 200)),
+    });
+    if (waited) steers = waited;
   }
+  const output = hookDecision(name, steers, requestId);
+  if (output) process.stdout.write(output);
   return 0;
 }
 
