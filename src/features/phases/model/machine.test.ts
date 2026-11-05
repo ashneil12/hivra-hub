@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { addComment, answer, begin, counter, currentFacts, finishRun, phaseBrief, removeTask, running, setPath } from "./machine";
+import { addComment, answer, begin, counter, currentFacts, finishRun, phaseBrief, phaseView, rearm, removeTask, running, setPath } from "./machine";
 import { choosePath, readSettings } from "./settings";
 
 function costly() {
@@ -66,8 +66,19 @@ it("runs the iterate skill on the same document when the person says change this
   expect(running(changed)?.docNumber).toBe(number);
   const again = finishRun(changed, changed.version, running(changed)!.id, { body: "Keep the last line, through the queue." }, ids).work;
   expect(again.docs).toHaveLength(before);
-  expect(again.docs.find((doc) => doc.number === number)?.body).toContain("use the queue");
+  expect(again.docs.find((doc) => doc.number === number)?.body).toBe("Keep the last line, through the queue.");
   expect(again.waiting?.phase).toBe("design");
+});
+
+it("writes the skill's document and does not append the person's words", () => {
+  const { work: researched, ids } = costly();
+  const agreed = answer(researched, researched.version, "Looks right", "", ids).work;
+  const held = finishRun(agreed, agreed.version, running(agreed)!.id, { body: "Keep the last line." }, ids).work;
+  const number = held.waiting?.docNumber;
+  const changed = answer(held, held.version, "Change this", "line", ids).work;
+  const again = finishRun(changed, changed.version, running(changed)!.id, { body: "Queue every save." }, ids).work;
+  expect(again.docs.find((doc) => doc.number === number)?.body).toBe("Queue every save.");
+  expect(running(changed)?.skill).toBe("iterate-design");
 });
 
 it("refuses an empty change and keeps the same version", () => {
@@ -185,4 +196,28 @@ it("treats an unreachable crew as something to retry", () => {
   const retried = finishRun(work, work.version, running(work)!.id, { unreachable: true }, ids).work;
   expect(retried.docs).toEqual([]);
   expect(retried.runs[0].status).toBe("retry");
+});
+
+it("gives a comment back when the crew times out, and the next run carries it", () => {
+  const ids = counter();
+  let work = begin("task-retry", { weight: "costly" }, {}, ids);
+  work = addComment(work, work.version, { kind: "task" }, "check the lock", "c-lock").work;
+  work = finishRun(work, work.version, running(work)!.id, { body: "Which line?" }, ids).work;
+  expect(work.taskComments[0]?.used).toBe(true);
+  const research = running(work);
+  if (!research) throw new Error("no research run");
+  expect(research.steering).toContain("check the lock");
+  work = finishRun(work, work.version, research.id, { timedOut: true }, ids).work;
+  expect(work.docs.map((doc) => doc.phase)).toEqual(["research-questions"]);
+  expect(work.waiting).toBeNull();
+  expect(work.taskComments[0]?.used).toBe(false);
+  work = rearm(work, ids);
+  expect(running(work)?.phase).toBe("research");
+  expect(running(work)?.steering).toContain("check the lock");
+});
+
+it("does not throw when a saved document is missing", () => {
+  const work = begin("task-bad", { weight: "small" }, {}, counter());
+  expect(() => phaseView({ ...work, docs: [null as unknown as (typeof work.docs)[number]] })).not.toThrow();
+  expect(phaseView({ ...work, docs: [null as unknown as (typeof work.docs)[number]] }).documents).toEqual([]);
 });

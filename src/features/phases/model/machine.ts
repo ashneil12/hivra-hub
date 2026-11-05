@@ -48,6 +48,8 @@ export type Run = {
   modelRole: "search" | "judgment";
   model: string;
   steering: string[];
+  /** Comment ids this run marked used. A retry gives them back. */
+  steeringIds?: string[];
   status: "running" | "done" | "retry";
   iterate: boolean;
   docNumber?: number;
@@ -68,6 +70,8 @@ export type Work = {
   removed: boolean;
   taskComments: Comment[];
   settings: PhaseSettings;
+  /** Set on each saved write, so two windows can tell equal versions apart. */
+  stamp?: string;
 };
 
 export type FinishResult = { body?: string; timedOut?: boolean; unreachable?: boolean };
@@ -129,25 +133,37 @@ function sameVersion(work: Work, expectedVersion: number): boolean {
 }
 
 /** Comments the next run has not seen yet. Marks them used on this copy only. */
-function takeSteering(work: Work): string[] {
+function takeSteering(work: Work): { texts: string[]; ids: string[] } {
   const texts: string[] = [];
-  for (const comment of work.taskComments) {
-    if (comment.used) continue;
+  const ids: string[] = [];
+  const take = (comment: Comment) => {
+    if (comment.used) return;
     comment.used = true;
     texts.push(comment.text);
-  }
+    ids.push(comment.id);
+  };
+  for (const comment of work.taskComments) take(comment);
   for (const doc of work.docs) {
-    for (const comment of doc.comments) {
-      if (comment.used) continue;
-      comment.used = true;
-      texts.push(comment.text);
-    }
+    if (!doc?.comments) continue;
+    for (const comment of doc.comments) take(comment);
   }
-  return texts;
+  return { texts, ids };
+}
+
+/** A run that wrote nothing did not use these comments. */
+function releaseSteering(work: Work, ids: readonly string[] | undefined): void {
+  if (!ids?.length) return;
+  const pending = new Set(ids);
+  for (const comment of work.taskComments) if (pending.has(comment.id)) comment.used = false;
+  for (const doc of work.docs) {
+    if (!doc?.comments) continue;
+    for (const comment of doc.comments) if (pending.has(comment.id)) comment.used = false;
+  }
 }
 
 function startRun(work: Work, phase: PhaseId, iterate: boolean, docNumber: number | undefined, extra: string[], ids: () => string): Work {
   const role = phase === "research" ? "search" : "judgment";
+  const steering = takeSteering(work);
   const run: Run = {
     id: ids(),
     phase,
@@ -155,7 +171,8 @@ function startRun(work: Work, phase: PhaseId, iterate: boolean, docNumber: numbe
     sessionId: ids(),
     modelRole: role,
     model: role === "search" ? work.settings.models.search : work.settings.models.judgment,
-    steering: [...extra, ...takeSteering(work)],
+    steering: [...extra, ...steering.texts],
+    steeringIds: steering.ids,
     status: "running",
     iterate,
     docNumber,
@@ -196,18 +213,19 @@ export function finishRun(work: Work, expectedVersion: number, runId: string, re
   const next = clone(work);
   const index = next.runs.findIndex((item) => item.id === runId);
   if (result.timedOut || result.unreachable) {
+    releaseSteering(next, next.runs[index].steeringIds);
     next.runs[index] = { ...next.runs[index], status: "retry" };
     return { stale: false, work: bump(next, work.version) };
   }
   const body = typeof result.body === "string" ? result.body.replace(/\r\n/g, "\n") : "";
   if (!body.trim() || next.path === "straight") {
-    next.runs[index] = { ...next.runs[index], status: body.trim() && next.path === "straight" ? "done" : "retry" };
+    const wrote = Boolean(body.trim() && next.path === "straight");
+    if (!wrote) releaseSteering(next, next.runs[index].steeringIds);
+    next.runs[index] = { ...next.runs[index], status: wrote ? "done" : "retry" };
     return { stale: false, work: bump(next, work.version) };
   }
   if (run.iterate && run.docNumber != null) {
-    const words = run.steering[0] ?? "";
-    const written = words && !body.includes(words) ? `${body}\n\n${words}` : body;
-    next.docs = next.docs.map((doc) => (doc.number === run.docNumber ? { ...doc, body: written } : doc));
+    next.docs = next.docs.map((doc) => (doc.number === run.docNumber ? { ...doc, body } : doc));
   } else {
     const number = next.docs.reduce((max, doc) => Math.max(max, doc.number), 0) + 1;
     next.docs = [...next.docs, { number, phase: run.phase, title: phaseTitle(run.phase), fileName: fileNameFor(number, run.phase), body, comments: [] }];
@@ -328,11 +346,23 @@ export function phaseView(work: Work): {
     pathLabel: pathLabel(work.path),
     why: work.why,
     pathId: work.path,
-    documents: [...work.docs].sort((a, b) => a.number - b.number).map((doc) => ({ number: doc.number, title: doc.title, body: doc.body })),
+    documents: (Array.isArray(work.docs) ? work.docs : [])
+      .filter((doc) => doc && Number.isInteger(doc.number))
+      .sort((a, b) => a.number - b.number)
+      .map((doc) => ({ number: doc.number, title: doc.title, body: doc.body })),
     waiting: work.waiting != null,
   };
 }
 
 export function running(work: Work): Run | undefined {
   return [...work.runs].reverse().find((run) => run.status === "running");
+}
+
+/** Starts the phase again after a timeout or a dead crew. A run that finished is left alone. */
+export function rearm(work: Work, ids: () => string): Work {
+  if (work.removed || work.waiting || running(work)) return work;
+  const last = work.runs[work.runs.length - 1];
+  if (!last || last.status !== "retry") return work;
+  const extra = last.iterate ? last.steering.slice(0, 1) : [];
+  return startRun(work, last.phase, last.iterate, last.docNumber, extra, ids);
 }
