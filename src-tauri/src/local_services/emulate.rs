@@ -112,8 +112,8 @@ pub const SERVICES: [&str; 14] = [
     "twilio",
 ];
 
-/// Hosts no crew run may reach through a declared service. A project that really needs one is
-/// marked `reaches: real` and is started by the person, never by a crew turn.
+/// The hosts this file can name in a sentence. The rule below is wider than this list; the
+/// list only turns `api.github.com` into "GitHub" in the message.
 pub const REAL_HOSTS: [&str; 14] = [
     "github.com",
     "api.github.com",
@@ -246,14 +246,117 @@ pub fn write_config(
     Ok((path, notice))
 }
 
-/// The hostname of a URL that belongs to a real outside service, if it does.
-pub fn real_host(url: &str) -> Option<&'static str> {
-    let parsed = url::Url::parse(url).ok()?;
-    let host = parsed.host_str()?.to_ascii_lowercase();
-    REAL_HOSTS
-        .iter()
-        .copied()
-        .find(|candidate| host == *candidate)
+/// The service a person calls this host, for the hosts this file knows by name.
+fn known_service(host: &str) -> Option<&'static str> {
+    match host {
+        "github.com" | "api.github.com" => Some("github"),
+        "api.stripe.com" => Some("stripe"),
+        "api.slack.com" | "slack.com" => Some("slack"),
+        "oauth2.googleapis.com" | "accounts.google.com" => Some("google"),
+        "graph.microsoft.com" | "login.microsoftonline.com" => Some("microsoft"),
+        "api.linear.app" => Some("linear"),
+        "api.twilio.com" => Some("twilio"),
+        "api.resend.com" => Some("resend"),
+        "api.clerk.com" => Some("clerk"),
+        "api.vercel.com" => Some("vercel"),
+        _ => None,
+    }
+}
+
+/// A plain-words name for a real host: "GitHub" for a host this file knows, else the host
+/// itself. Only the sentence uses this; the list no longer decides what is real.
+pub fn host_name(host: &str) -> String {
+    if !REAL_HOSTS.contains(&host) {
+        return host.to_string();
+    }
+    known_service(host)
+        .map(|service| display_name(service).to_string())
+        .unwrap_or_else(|| host.to_string())
+}
+
+/// The host a value names when that host is a real outside service: a URL's host, or a bare
+/// host such as `api.github.com`, unless it is loopback or a `.localhost` name. A value that
+/// is not a host at all (a number, a word, a `${...}` placeholder) names no real host.
+///
+/// Wider than the old list on purpose: a value that cannot be proven local is treated as
+/// real, so `www.googleapis.com` is caught whether or not it is listed.
+pub fn real_target(value: &str) -> Option<String> {
+    let host = host_in(value)?;
+    (!is_local_host(&host)).then_some(host)
+}
+
+fn host_in(value: &str) -> Option<String> {
+    let text = value.trim();
+    if text.is_empty() || text.len() > 2048 {
+        return None;
+    }
+    if let Ok(parsed) = url::Url::parse(text) {
+        if let Some(host) = parsed.host_str() {
+            let host = host
+                .trim_matches(['[', ']'])
+                .trim_end_matches('.')
+                .to_ascii_lowercase();
+            // `https://${HOST}/x` parses, but `${host}` is not a host to judge.
+            if host.parse::<std::net::IpAddr>().is_ok() || plausible_host(&host) {
+                return Some(host);
+            }
+            return None;
+        }
+    }
+    if text.contains("://") {
+        // A URL this cannot parse is not a value to read a host out of.
+        return None;
+    }
+    // No scheme: `api.github.com`, `api.github.com:443`, `user@api.github.com/path`.
+    let authority = text.split('/').next()?;
+    let authority = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, after)| after);
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        Some(_) => return None,
+        None => authority,
+    };
+    looks_like_host(host).then(|| host.to_ascii_lowercase())
+}
+
+fn plausible_host(host: &str) -> bool {
+    !host.is_empty()
+        && host.len() <= 253
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        })
+}
+
+/// A dotted name with a letter in its last label: `api.github.com` yes, `3000` or `build` no.
+fn looks_like_host(host: &str) -> bool {
+    if !plausible_host(host) {
+        return false;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    labels.len() >= 2
+        && labels
+            .last()
+            .is_some_and(|last| last.bytes().any(|byte| byte.is_ascii_alphabetic()))
+}
+
+fn is_local_host(host: &str) -> bool {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(&host);
+    if bare == "localhost" || bare.ends_with(".localhost") {
+        return true;
+    }
+    bare.parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_loopback())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -770,19 +873,36 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_real_host_is_recognised_and_a_lookalike_is_not() {
+    fn a_real_host_is_recognised_by_its_name_and_local_ones_are_not() {
         assert_eq!(
-            real_host("https://api.github.com/repos"),
+            real_target("https://api.github.com/repos").as_deref(),
             Some("api.github.com")
         );
+        // Not on the old list, and still real.
         assert_eq!(
-            real_host("https://api.stripe.com/v1"),
+            real_target("https://www.googleapis.com/oauth2").as_deref(),
+            Some("www.googleapis.com")
+        );
+        assert_eq!(
+            real_target("https://api.github.com.evil.example").as_deref(),
+            Some("api.github.com.evil.example")
+        );
+        assert_eq!(
+            real_target("api.stripe.com:443").as_deref(),
             Some("api.stripe.com")
         );
-        assert_eq!(real_host("https://api.github.com.evil.example"), None);
-        assert_eq!(real_host("http://github-shop-wp-90.localhost:7400"), None);
-        assert_eq!(real_host("http://127.0.0.1:22010"), None);
-        assert_eq!(real_host("not a url"), None);
+        assert_eq!(real_target("user@api.linear.app/x").as_deref(), Some("api.linear.app"));
+        assert_eq!(real_target("http://github-shop-wp-90.localhost:7400"), None);
+        assert_eq!(real_target("http://127.0.0.1:22010"), None);
+        assert_eq!(real_target("http://[::1]:3000"), None);
+        assert_eq!(real_target("http://localhost:3000"), None);
+        assert_eq!(real_target("postgres://127.0.0.1:5432/${DB}"), None);
+        assert_eq!(real_target("https://${HOST}/x"), None);
+        assert_eq!(real_target("not a url"), None);
+        assert_eq!(real_target("3000"), None);
+        assert_eq!(real_target(""), None);
+        assert_eq!(host_name("api.github.com"), "GitHub");
+        assert_eq!(host_name("www.googleapis.com"), "www.googleapis.com");
     }
 
     /// The four pins, checked as data: every one is a 64-hex hash of the registry's own file.

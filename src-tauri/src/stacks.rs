@@ -385,15 +385,14 @@ pub fn maybe_start(
     Ok(entry.env.into_iter().collect())
 }
 
-/// The first real outside host a stack's declared services reach, if any.
+/// The first real outside host a stack's declared services name, if any. Every service
+/// counts, emulated or not: a fake GitHub whose env also names a real host is still a stack
+/// that reaches the internet.
 fn real_service(stack: &StackDecl) -> Option<String> {
     for service in &stack.services {
-        if service.emulate.is_some() {
-            continue;
-        }
         for value in service.env.values() {
-            if let Some(host) = emulate::real_host(value) {
-                return Some(host.to_string());
+            if let Some(host) = emulate::real_target(value) {
+                return Some(emulate::host_name(&host));
             }
         }
     }
@@ -4142,6 +4141,53 @@ mod tests {
         let store = load(&registry_dir(&env.data_dir)).unwrap();
         assert!(store.stacks[0].reaches_real);
         assert_eq!(store.stacks[0].mode(), "Reaches the real internet");
+    }
+
+    #[test]
+    fn an_emulated_service_pointing_at_an_unlisted_real_host_is_refused() {
+        let fix = Fix::new();
+        let env = fix.env();
+        // The card would say "fake GitHub", but this value names a real Google host.
+        let stack: StackDecl = serde_json::from_str(
+            r#"{"services":[
+                 {"name":"web","ports":[{"env":"PORT","url":true}]},
+                 {"name":"git","emulate":"github","env":{"GITHUB_WEB":"https://www.googleapis.com"}}
+               ]}"#,
+        )
+        .unwrap();
+        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true)
+            .unwrap_err();
+        assert!(error.contains("real outside service"), "{error}");
+        assert!(error.contains("www.googleapis.com"), "{error}");
+    }
+
+    #[test]
+    fn loopback_and_localhost_values_are_not_real_hosts() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let stack: StackDecl = serde_json::from_str(
+            r#"{"services":[{"name":"web","ports":[{"env":"PORT","url":true}],
+                 "env":{"LOCAL_API":"http://127.0.0.1:3000",
+                        "SELF":"http://main-a.localhost:7400",
+                        "IPV6":"http://[::1]:3000"}}]}"#,
+        )
+        .unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
+    }
+
+    #[test]
+    fn an_emulated_service_on_its_named_local_url_still_starts() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let stack: StackDecl = serde_json::from_str(
+            r#"{"services":[
+                 {"name":"web","ports":[{"env":"PORT","url":true}]},
+                 {"name":"git","emulate":"github",
+                  "env":{"GITHUB_WEB":"http://github-a.localhost:7400"}}
+               ]}"#,
+        )
+        .unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
     }
 
     #[test]
