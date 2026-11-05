@@ -51,9 +51,18 @@ import { launchCatalog } from "../../crew/model/launchCatalog";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
 import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
 import { routeDefaults } from "../../crew/model/workerDefault";
+import {
+  crewRuleSentence,
+  describeInForce,
+  planWorkerChoice,
+  scopeClearLine,
+} from "../../crew/model/workerChoice";
+import { commitRoster, findMono } from "../../monos/model/mono";
 import type { AgentAppHost } from "./agentApp";
 import {
   limitsLine,
+  setProjectWorkerModel,
+  setSystemWorkerDefault,
   type Admission,
   type AdmitInput,
   type QueuedWorker,
@@ -133,7 +142,7 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
     ],
   ],
   ["tasks.accept", ["taskId", "accept", "reason"]],
-  ["tasks.workers", ["project", "workers", "heavy"]],
+  ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
@@ -1383,11 +1392,57 @@ async function answer(source: Session, input: Record<string, unknown>, host: Age
   return { taskId: id, ...(reply.kind === "skipped" ? { skipped: true } : { answered: true }) };
 }
 
+/** Who may set what workers run on: a Mono's own chat, never a worker, a habit run or the checker. */
+function modelCaller(source: Session, host: AgentAppHost) {
+  const mono =
+    host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
+  if (!mono || mono.id === CHECKER_MONO_ID)
+    throw new Error("Only a Mono sets what its workers run on, from its own chat.");
+  return mono;
+}
+
+function worksOn(projects: readonly string[], folder: string, projectId: string): boolean {
+  return projects.some(
+    (entry) =>
+      entry === projectId ||
+      entry === folder ||
+      pathKey(entry) === pathKey(folder) ||
+      pathKey(entry) === pathKey(projectId),
+  );
+}
+
+/** The Mono's own default, written only if the roster is still the one just read. */
+function saveMonoDefault(
+  id: string,
+  pick: { cli?: string; model?: string; effort?: string } | undefined,
+): void {
+  const commit = commitRoster((roster) => {
+    const index = roster.findIndex((mono) => mono.id === id);
+    if (index < 0) return null;
+    const next = { ...roster[index] };
+    if (pick) next.workerDefault = pick;
+    else delete next.workerDefault;
+    const copy = roster.slice();
+    copy[index] = next;
+    return copy;
+  });
+  if (commit === "missing") throw new Error("That Mono isn't on this Mac.");
+  if (commit === "lost") throw new Error("That change didn't stick. Try again.");
+}
+
 /**
  * tasks.workers: how many workers the chat's project runs at once, and how many of them on heavy tests. Without numbers
  * it reads them; with them (what Ash said: "let hivra run 20 workers today") it saves them, as the project's settings do.
+ * WP-89: scope, cli, model, effort and clear set what those workers run on.
  */
 function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
+  const choosing =
+    input.scope !== undefined ||
+    input.cli !== undefined ||
+    input.model !== undefined ||
+    input.effort !== undefined ||
+    input.clear !== undefined;
+  const setter = choosing ? modelCaller(source, host) : undefined;
   const { owner, tasks } = taskOwner(source, host);
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
   const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
@@ -1399,6 +1454,16 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
       throw new Error(`${field} must be a whole number from 1 to 30`);
     return value;
   };
+  const monoId = setter?.id ?? owner.mono?.id;
+  const storedMono = monoId ? findMono(monoId) : undefined;
+  const currentMono = storedMono?.workerDefault ?? owner.mono?.workerDefault;
+  const currentProject = tasks.pool.projectDefault?.(project);
+  const currentSystem = tasks.pool.systemDefault?.();
+  const current =
+    input.scope === "project" ? currentProject : input.scope === "system" ? currentSystem : currentMono;
+  const planned = choosing ? planWorkerChoice(input, current, launchCatalog()) : undefined;
+  if (planned?.scope === "project" && setter && !worksOn(setter.projects, folder, project))
+    throw new Error("This Mono doesn't work on that project.");
   const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
   const limits =
     next.workers === undefined && next.heavy === undefined
@@ -1407,7 +1472,74 @@ function workers(source: Session, input: Record<string, unknown>, host: AgentApp
           ...(next.workers !== undefined ? { workers: next.workers } : {}),
           ...(next.heavy !== undefined ? { heavy: next.heavy } : {}),
         });
-  return { project, ...limits, line: limitsLine(projectName(folder), limits) };
+  if (planned && setter) {
+    if (planned.scope === "mono") saveMonoDefault(setter.id, planned.pick);
+    else if (planned.scope === "project") {
+      setProjectWorkerModel(
+        project,
+        planned.pick?.model
+          ? {
+              model: planned.pick.model,
+              ...(planned.pick.cli ? { cli: planned.pick.cli } : {}),
+              ...(planned.pick.effort ? { effort: planned.pick.effort } : {}),
+            }
+          : undefined,
+      );
+    } else setSystemWorkerDefault(planned.pick);
+  }
+  const monoPick = (monoId ? findMono(monoId)?.workerDefault : undefined) ?? (planned?.scope === "mono" ? undefined : currentMono);
+  const projectPick = tasks.pool.projectDefault?.(project);
+  const systemPick = tasks.pool.systemDefault?.();
+  const rules = carriedMonoRules(storedMono?.crewRules ?? owner.mono?.crewRules);
+  const catalog = launchCatalog();
+  const changed = [planned && !planned.pick ? scopeClearLine(planned.scope) : "", planned?.dropped ?? ""]
+    .filter(Boolean)
+    .join(" ");
+  const force = describeInForce({
+    defaults: routeDefaults({ mono: monoPick, project: projectPick, system: systemPick }),
+    catalog,
+    rules,
+  });
+  const rulesLine = crewRuleSentence(rules, catalog);
+  const line = [limitsLine(projectName(folder), limits), changed, force.sentence, rulesLine].filter(Boolean).join(" ");
+  if (planned && setter) {
+    const previous = current?.cli || current?.model || current?.effort ? current : undefined;
+    host.postCard?.(source.id, {
+      type: "worker-default",
+      scope: planned.scope,
+      ...(planned.scope === "project" ? { project } : {}),
+      line,
+      ...(previous ? { previous } : {}),
+    });
+    host.noteActivity?.({
+      kind: "worker.default",
+      summary: line,
+      project: planned.scope === "system" ? "app" : project,
+      target: planned.scope,
+      actorId: setter.id,
+      actorName: setter.name ?? setter.id,
+    });
+  }
+  return {
+    project,
+    workers: limits.workers,
+    heavy: limits.heavy,
+    line,
+    inForce: {
+      cli: force.route.cli,
+      model: force.route.model,
+      effort: force.route.effort,
+      cliFrom: force.route.cliFrom,
+      modelFrom: force.route.modelFrom,
+      effortFrom: force.route.effortFrom,
+      skipped: force.route.skipped,
+    },
+    scopes: {
+      mono: monoPick ?? null,
+      project: projectPick ?? null,
+      system: systemPick ?? null,
+    },
+  };
 }
 
 /** Keep a task's gates. A miss is not a failed start: the same call again saves them. */

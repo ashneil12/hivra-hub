@@ -2,6 +2,7 @@ import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
 import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
+import { parseCard } from "../../monos/model/monoCards";
 import { sanitizeMonoSpawnedSessions } from "../../monos/model/monoSpawnedSessions";
 import { forgetWorkSession } from "../../monos/model/monoWorkSessions";
 import {
@@ -1091,6 +1092,13 @@ function sanitizeBlock(
       name: block.monoHabit.name,
       at: block.monoHabit.at,
     };
+  }
+  if (block.monoCard && typeof block.monoCard === "object") {
+    try {
+      next.monoCard = parseCard(block.monoCard as unknown as Record<string, unknown>);
+    } catch {
+      // A card that doesn't parse is dropped. The words stay.
+    }
   }
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;

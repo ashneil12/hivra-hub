@@ -267,6 +267,15 @@ export type AgentAppHost = {
   };
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
+  /** WP-89: one line in the activity log. Absent in a build that has no log. */
+  noteActivity?(entry: {
+    kind: string;
+    summary: string;
+    project: string;
+    target: string;
+    actorId: string;
+    actorName: string;
+  }): void;
   habits?: {
     load(monoId: string): Promise<Habit[]>;
     update<T>(

@@ -845,6 +845,47 @@ pub(crate) fn import_rows_at(conn: &Connection, rows: &[Value], now: i64) -> Res
     Ok(added)
 }
 
+/// One row from a Mono's own chat. A blank summary, or a summary or name over
+/// 500 characters, is refused. A locked database is not a failure: `note`
+/// keeps the caller's work.
+#[allow(clippy::too_many_arguments)]
+pub fn record_mono_note(
+    conn: &Connection,
+    kind: &str,
+    summary: &str,
+    project: &str,
+    target: &str,
+    actor_id: &str,
+    actor_name: &str,
+    at: i64,
+) -> Result<(), String> {
+    if !valid_kind(kind) {
+        return Err("The activity kind isn't one this log keeps.".into());
+    }
+    let summary = summary.trim();
+    if summary.is_empty() || summary.chars().count() > MAX_SUMMARY_CHARS {
+        return Err("The summary must be text under 500 characters.".into());
+    }
+    if project.chars().count() > MAX_FIELD_CHARS || target.chars().count() > MAX_FIELD_CHARS {
+        return Err("That name is too long.".into());
+    }
+    if actor_id.trim().is_empty() {
+        return Err("Say who did this.".into());
+    }
+    note(
+        conn,
+        kind,
+        &Who::mono(actor_id, actor_name),
+        &Who::person(),
+        project,
+        target,
+        summary,
+        "",
+        at,
+    );
+    Ok(())
+}
+
 #[tauri::command(async)]
 pub fn activity_list(
     store: State<'_, SessionStore>,
@@ -852,6 +893,32 @@ pub fn activity_list(
 ) -> Result<Page, String> {
     let conn = store.lock_conn()?;
     list(&conn, &query.unwrap_or_default(), now_millis())
+}
+
+/// WP-89: a Mono's chat records one activity row. The arguments are the row;
+/// the time is the app's clock.
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn activity_note(
+    store: State<'_, SessionStore>,
+    kind: String,
+    summary: String,
+    project: String,
+    target: String,
+    actor_id: String,
+    actor_name: String,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    record_mono_note(
+        &conn,
+        &kind,
+        &summary,
+        &project,
+        &target,
+        &actor_id,
+        &actor_name,
+        now_millis(),
+    )
 }
 
 #[cfg(test)]

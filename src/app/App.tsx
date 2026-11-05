@@ -842,6 +842,7 @@ import {
   subscribeMonos,
   type MonoState,
 } from "../features/monos/model/mono";
+import { holdRunCard, monoCardText } from "../features/monos/model/monoCards";
 import {
   codingTeamContext,
   loadMonoFiles,
@@ -9835,20 +9836,21 @@ function Workspace({
   /** Adds a block to a Mono's chat outside any turn, once no reply is streaming. */
   const appendToMono = (
     monoId: string,
-    block: Block,
+    block: Block | Block[],
     then?: (mono: Session) => void,
     attempt = 0,
   ) => {
+    const added = Array.isArray(block) ? block : [block];
     const mono = sessionsRef.current.find((session) => session.id === monoId);
     if (!mono) return;
     if (mono.busy && attempt < 120) {
       window.setTimeout(
-        () => appendToMono(monoId, block, then, attempt + 1),
+        () => appendToMono(monoId, added, then, attempt + 1),
         5_000,
       );
       return;
     }
-    const next: Session = { ...mono, blocks: [...mono.blocks, block] };
+    const next: Session = { ...mono, blocks: [...mono.blocks, ...added] };
     sessionsRef.current = sessionsRef.current.map((session) =>
       session.id === monoId ? next : session,
     );
@@ -9909,17 +9911,26 @@ function Workspace({
       );
       setSessions(sessionsRef.current);
     },
-    post: (monoId, habit, text, name, artifacts, launches) =>
+    post: (monoId, habit, text, name, artifacts, launches, cards) =>
       appendToMono(
         monoId,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          text,
-          monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
-          ...(artifacts?.length ? { artifactCards: artifacts } : {}),
-          ...(launches?.length ? { monoSpawnedSessions: launches } : {}),
-        },
+        [
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            text,
+            monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+            ...(artifacts?.length ? { artifactCards: artifacts } : {}),
+            ...(launches?.length ? { monoSpawnedSessions: launches } : {}),
+          },
+          ...(cards ?? []).map((card) => ({
+            id: crypto.randomUUID(),
+            role: "assistant" as const,
+            text: monoCardText(card),
+            monoCard: card,
+            monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
+          })),
+        ],
         (posted) => {
           monoReplies.noteReply(monoId);
           void announceSessionFinished(
@@ -14024,6 +14035,35 @@ function Workspace({
             },
             isMono: (id) => isMonoSession(id),
             isHabitRun: (id) => isHabitRun(id),
+            // WP-89: a worker-default change lands in this chat, and in the activity log.
+            postCard: (sessionId, card) => {
+              if (isHabitRun(sessionId)) {
+                holdRunCard(sessionId, card);
+                return;
+              }
+              const latest = sessionsRef.current.find((session) => session.id === sessionId);
+              if (!latest) return;
+              const updated = {
+                ...latest,
+                blocks: [
+                  ...latest.blocks,
+                  {
+                    id: crypto.randomUUID(),
+                    role: "assistant" as const,
+                    text: monoCardText(card),
+                    monoCard: card,
+                  },
+                ],
+              };
+              sessionsRef.current = sessionsRef.current.map((session) =>
+                session.id === sessionId ? updated : session,
+              );
+              setSessions(sessionsRef.current);
+              void upsertSession(updated);
+            },
+            noteActivity: (entry) => {
+              void invoke("activity_note", entry).catch(() => undefined);
+            },
             tree: {
               on: (monoId) => longChatOn(monoId),
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),

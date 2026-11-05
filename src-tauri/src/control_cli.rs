@@ -403,6 +403,12 @@ Actions:
                   How many workers your project runs at once, and how many of
                   them on heavy tests: {} reads them; numbers (1 to 30) save
                   what Ash asked for, as the project's settings do.
+                  What they run on: {"scope":"mono","model":"Opus","effort":"high"}
+                  or {"scope":"system","clear":true}. "for this Mono" is mono,
+                  "for this project" is project, "for everything" or
+                  "everywhere" is system. With no scope named, ask once
+                  ("just this Mono, or everything?") unless the chat's
+                  context makes it plain.
   tasks.list     {}  Tasks in this chat's project.
   tasks.get      {"id":"..."}  One task, with its comments and activity.
   tasks.create   {"title":"..."}  File a follow-up in this chat's project.
@@ -1011,6 +1017,8 @@ mod tests {
             assert!(app_help().contains(action), "help omits {action}");
         }
         assert!(app_help().contains("Mono only. Hand a job to a worker chat"));
+        assert!(app_help().contains("for this Mono"));
+        assert!(app_help().contains("everywhere"));
     }
 
     #[test]

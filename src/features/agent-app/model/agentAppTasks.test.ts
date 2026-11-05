@@ -36,6 +36,7 @@ import {
   type ProviderRoom,
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
+import { addMono, findMono, updateMono } from "../../monos/model/mono";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
@@ -1927,12 +1928,12 @@ describe("parallel workers per project, with throttling (H8)", () => {
   it("saves the limit when Ash tells the Lead (tasks.workers), and reads it back", async () => {
     const { source, host } = pooled();
     expect(await handleAgentApp(source, "w0", "tasks.workers", {}, host)).toMatchObject({ project: "vg-game", workers: 6, heavy: 2 });
-    expect(await handleAgentApp(source, "w1", "tasks.workers", { workers: 20, heavy: 4 }, host)).toEqual({
-      project: "vg-game",
-      workers: 20,
-      heavy: 4,
-      line: "vg-game runs up to 20 workers at once, 4 of them on heavy tests.",
-    });
+    const saved = await handleAgentApp(source, "w1", "tasks.workers", { workers: 20, heavy: 4 }, host) as {
+      line: string;
+    };
+    expect(saved).toMatchObject({ project: "vg-game", workers: 20, heavy: 4 });
+    expect(saved.line).toContain("vg-game runs up to 20 workers at once, 4 of them on heavy tests.");
+    expect(saved.line).toContain("Its workers use the usual model.");
     expect(workerLimits("vg-game")).toEqual({ workers: 20, heavy: 4 });
     await expect(handleAgentApp(source, "w2", "tasks.workers", { workers: 40 }, host)).rejects.toThrow("from 1 to 30");
   });
@@ -1973,6 +1974,154 @@ describe("parallel workers per project, with throttling (H8)", () => {
     expect(started.length).toBe(before);
     expect(store.jobs).toEqual([]);
     expect(queuedWorkers()).toEqual([]);
+  });
+
+  describe("what those workers run on (WP-89)", () => {
+    const efforts = (values: string[]) => [
+      {
+        id: "effort",
+        label: "Effort",
+        kind: "select" as const,
+        value: values[0],
+        options: values.map((value) => ({ value, label: value })),
+      },
+    ];
+
+    beforeEach(() => {
+      localStorage.removeItem("monocode:mono-roster");
+      setHarnessModels("claude", [
+        { id: "claude:opus-4-7", harness: "claude", name: "Opus 4.7", settings: efforts(["low", "high", "max"]) },
+        { id: "claude:sonnet-5", harness: "claude", name: "Sonnet", settings: efforts(["low", "medium", "high"]) },
+      ]);
+      setHarnessModels("cursor", [
+        { id: "composer", harness: "cursor", name: "Composer", settings: efforts(["medium", "high"]) },
+      ]);
+      setHarnessModels("grok", [
+        { id: "grok-4", harness: "grok", name: "Grok 4", settings: efforts(["low", "high"]) },
+      ]);
+      addMono({ id: "vg-game-lead", name: "EXO lead", mascot: "fox", color: "hsl(245 75% 65%)", projects: [PROJECT] });
+      addMono({ id: "other-lead", name: "Other", mascot: "fox", color: "hsl(245 75% 65%)", projects: ["/tmp/other"] });
+    });
+
+    afterEach(() => localStorage.removeItem("monocode:mono-roster"));
+
+    function lead(who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono") {
+      const f = pooled([], who === "team" ? "team" : "mono");
+      if (who !== "mono" && who !== "team") {
+        const again = fixture([], who);
+        again.api.pool = f.api.pool;
+        return again;
+      }
+      f.host.monoOf = () => {
+        const stored = findMono("vg-game-lead");
+        return {
+          id: "vg-game-lead",
+          name: stored?.name ?? "EXO lead",
+          projects: stored?.projects ?? [PROJECT],
+          ...(stored?.crewRules ? { crewRules: stored.crewRules } : {}),
+          ...(stored?.workerDefault ? { workerDefault: stored.workerDefault } : {}),
+        };
+      };
+      return f;
+    }
+
+    it("reads each scope and says what is in force", async () => {
+      updateMono("vg-game-lead", (mono) => ({
+        ...mono,
+        workerDefault: { cli: "claude", model: "claude:opus-4-7", effort: "high" },
+        crewRules: [{ labels: ["frontend"], paths: [], model: "claude:sonnet-5", source: "person" }],
+      }));
+      const { source, host } = lead();
+      setSystemWorkerDefault({ effort: "low" });
+      const read = await handleAgentApp(source, "w", "tasks.workers", {}, host) as {
+        line: string;
+        inForce: { model: string; modelFrom: string; effort: string };
+        scopes: { mono: { model: string }; system: { effort: string } };
+      };
+      expect(read).toMatchObject({ project: "vg-game", workers: 6, heavy: 2 });
+      expect(read.inForce).toMatchObject({ model: "claude:opus-4-7", modelFrom: "mono", effort: "high", effortFrom: "mono" });
+      expect(read.scopes.mono.model).toBe("claude:opus-4-7");
+      expect(read.scopes.system).toEqual({ effort: "low" });
+      expect(read.line).toContain("vg-game runs up to 6 workers at once, 2 of them on heavy tests.");
+      expect(read.line).toContain("Its workers use Opus 4.7 at high effort (set for this Mono).");
+      expect(read.line).toContain("Crew rules still send `frontend` work to Sonnet.");
+    });
+
+    it("sets and clears each scope, and a plain name resolves", async () => {
+      const { source, host } = lead();
+      const mono = await handleAgentApp(source, "m", "tasks.workers", { scope: "mono", model: "opus", effort: "high" }, host) as { line: string };
+      expect(findMono("vg-game-lead")?.workerDefault).toEqual({ cli: "claude", model: "claude:opus-4-7", effort: "high" });
+      expect(findMono("other-lead")?.workerDefault).toBeUndefined();
+      expect(mono.line).toContain("Its workers use Opus 4.7 at high effort (set for this Mono).");
+
+      const project = await handleAgentApp(source, "p", "tasks.workers", { scope: "project", model: "grok 4", effort: "low" }, host) as { line: string; scopes: { project: { cli: string; model: string } } };
+      expect(project.scopes.project).toEqual({ cli: "grok", model: "grok-4", effort: "low" });
+      expect(project.line).toContain("set for this Mono");
+
+      const cleared = await handleAgentApp(source, "c", "tasks.workers", { scope: "mono", clear: true }, host) as { line: string };
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+      expect(cleared.line).toContain("Cleared the Mono's worker default.");
+      expect(cleared.line).toContain("Grok 4");
+      expect(cleared.line).toContain("set for this project");
+
+      const everywhere = await handleAgentApp(source, "s", "tasks.workers", { scope: "system", effort: "high" }, host) as { scopes: { system: { effort: string } } };
+      expect(everywhere.scopes.system).toEqual({ effort: "high" });
+      await handleAgentApp(source, "sc", "tasks.workers", { scope: "system", clear: true }, host);
+      await handleAgentApp(source, "pc", "tasks.workers", { scope: "project", clear: true }, host);
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    it("refuses an unknown model, a wrong effort, and the callers who may not set it", async () => {
+      const { source, host } = lead();
+      await expect(handleAgentApp(source, "bad", "tasks.workers", { scope: "mono", model: "nope" }, host)).rejects.toThrow(
+        /No CLI offers "nope"/,
+      );
+      await expect(
+        handleAgentApp(source, "eff", "tasks.workers", { scope: "project", cli: "cursor", model: "composer", effort: "max" }, host),
+      ).rejects.toThrow(/Composer doesn't offer "max"/);
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+      expect(workerLimits("vg-game").model).toBeUndefined();
+
+      for (const who of ["worker", "habit", "team"] as const) {
+        const refused = lead(who);
+        await expect(
+          handleAgentApp(refused.source, who, "tasks.workers", { scope: "mono", model: "opus" }, refused.host),
+        ).rejects.toThrow("Only a Mono sets what its workers run on, from its own chat.");
+      }
+      const checker = lead("checker");
+      await expect(
+        handleAgentApp(checker.source, "checker", "tasks.workers", { scope: "mono", model: "opus" }, checker.host),
+      ).rejects.toThrow(/The checker only reads/);
+      await expect(
+        handleAgentApp(source, "proj", "tasks.workers", { scope: "project", project: "/tmp/other", model: "opus" }, host),
+      ).rejects.toThrow("This Mono doesn't work on that project.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
+    });
+
+    it("posts a card with the previous setting, and a line in the activity log", async () => {
+      updateMono("vg-game-lead", (mono) => ({ ...mono, workerDefault: { cli: "claude", model: "claude:sonnet-5", effort: "low" } }));
+      const { source, host } = lead();
+      const cards: unknown[] = [];
+      const notes: unknown[] = [];
+      host.postCard = (_id, card) => cards.push(card);
+      host.noteActivity = (entry) => notes.push(entry);
+      await handleAgentApp(source, "set", "tasks.workers", { scope: "mono", model: "opus", effort: "high" }, host);
+      expect(cards).toEqual([
+        expect.objectContaining({
+          type: "worker-default",
+          scope: "mono",
+          previous: { cli: "claude", model: "claude:sonnet-5", effort: "low" },
+        }),
+      ]);
+      expect(notes).toEqual([
+        expect.objectContaining({ kind: "worker.default", target: "mono", project: "vg-game", actorId: "vg-game-lead" }),
+      ]);
+      const limitsOnly = lead();
+      const quiet: unknown[] = [];
+      limitsOnly.host.postCard = () => quiet.push("card");
+      await handleAgentApp(limitsOnly.source, "lim", "tasks.workers", { workers: 8 }, limitsOnly.host);
+      expect(quiet).toEqual([]);
+    });
   });
 
   it("lets a coding-team chat's workers wait too, in its own project", async () => {

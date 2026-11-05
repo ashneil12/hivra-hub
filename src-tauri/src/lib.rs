@@ -1098,6 +1098,8 @@ pub fn run() {
             project_logo::forget_logo_file,
             // WP-78: Settings → Activity.
             activity::activity_list,
+            // WP-89: a worker-default change, beside the activity list.
+            activity::activity_note,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,
