@@ -188,6 +188,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/local_services/
   base-url.ts and persistence.ts translated to Rust with their tests (WP-90). The 14 emulators themselves run as a pinned npm package and are not copied.
 
+- oh-my-hermes's dag-ulw planner
+  Source: https://github.com/rlaope/oh-my-hermes
+  License: MIT
+  Copyright (c) 2026 oh-my-hermes contributors
+  Used in: src-tauri/src/goal_graph/
+  dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

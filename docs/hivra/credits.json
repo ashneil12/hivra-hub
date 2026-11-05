@@ -203,6 +203,18 @@
       "url": "https://github.com/vercel-labs/emulate",
       "licence": "Apache-2.0",
       "gave": "14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones, planned for Wave I"
+    },
+    {
+      "name": "oh-my-hermes",
+      "url": "https://github.com/rlaope/oh-my-hermes",
+      "licence": "MIT",
+      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
+    },
+    {
+      "name": "Aether",
+      "url": "https://runaether.dev",
+      "licence": "closed source",
+      "gave": "ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code"
     }
   ],
   "components": [
@@ -413,6 +425,14 @@
       "copyright": "Copyright 2025 Chris Tate",
       "where": "src-tauri/src/local_services/",
       "how": "base-url.ts and persistence.ts translated to Rust with their tests (WP-90). The 14 emulators themselves run as a pinned npm package and are not copied."
+    },
+    {
+      "name": "oh-my-hermes's dag-ulw planner",
+      "url": "https://github.com/rlaope/oh-my-hermes",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
+      "where": "src-tauri/src/goal_graph/",
+      "how": "dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied."
     }
   ]
 }
