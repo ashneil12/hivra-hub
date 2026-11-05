@@ -25,13 +25,13 @@
 // at the DeepSeek launcher by default (Ash, 27 Oct), and at the real Claude CLI only on `--agents claude`, so this
 // pass-through never reaches Ash's Claude subscription unless someone asks.
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { benchDenyRules } from "./bench-guard.mjs";
-import { agentCommand, appCliRead, isolatedHome, privateTempDir, privateTempEnv, sandboxCwd } from "./bench-sandbox.mjs";
+import { benchDenyRules, benchShellProbe } from "./bench-guard.mjs";
+import { agentCommand, appCliRead, isolatedHome, privateTempDir, privateTempEnv, sandboxCwd, worktreeDevBin } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -252,7 +252,9 @@ export function benchFenceEnv(env, state) {
       if (fs.existsSync(file)) continue;
       fs.writeFileSync(file, `#!/bin/sh\necho "${cli}: not available in the MonoCode test bench (no real accounts here; ask Ash)" >&2\nexit 1\n`, { mode: 0o755 });
     }
-    const app = appCliRead(env.REALTEST_APP_BIN, { realHome: env.REALTEST_REAL_HOME });
+    const app = env.REALTEST_WORKTREE
+      ? worktreeDevBin(env.REALTEST_APP_BIN, env.REALTEST_WORKTREE)
+      : appCliRead(env.REALTEST_APP_BIN, { realHome: env.REALTEST_REAL_HOME });
     if (app) {
       const link = path.join(bin, "monocode");
       const tmp = path.join(bin, `.monocode-${process.pid}`);
@@ -278,9 +280,65 @@ export function benchFenceEnv(env, state) {
       // not a home this run owns
     }
   }
-  const out = { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}`, BROWSER: "false" };
+  const inherited = String(env.PATH ?? "")
+    .split(path.delimiter)
+    .filter((entry) => entry && !foreignMonocodeEntry(entry));
+  const out = { ...env, PATH: [bin, ...inherited].join(path.delimiter), BROWSER: "false" };
   delete out.ZDOTDIR;
   return out;
+}
+
+/** A PATH entry that would resolve some other monocode, including the daily bundle. */
+function foreignMonocodeEntry(entry) {
+  if (entry.includes("MonoCode Hub.app")) return true;
+  try {
+    if (fs.realpathSync(entry).includes("/MonoCode Hub.app/")) return true;
+  } catch {
+    // not there: the name above is what the shell would use
+  }
+  try {
+    const st = fs.lstatSync(path.join(entry, "monocode"));
+    if (st.isFile() || st.isSymbolicLink()) return true;
+  } catch {
+    // no monocode in this directory
+  }
+  return false;
+}
+
+/**
+ * Before any scene: `echo probe` through the same seatbelt and PATH the agent's Bash tool gets,
+ * then `monocode version --json` must be a dev build. A string is the round's stop reason.
+ */
+export function probeBenchAgent(ctx, deps = {}) {
+  const state = ctx?.state;
+  const env = benchFenceEnv(
+    {
+      PATH: ctx?.path ?? "",
+      HOME: ctx?.home,
+      REALTEST_REAL_HOME: ctx?.realHome,
+      REALTEST_APP_BIN: ctx?.appBin,
+      REALTEST_WORKTREE: ctx?.worktree,
+      REALTEST_STATE: state,
+      REALTEST_ALLOWED: "[]",
+    },
+    state,
+  );
+  const exec = deps.exec ?? ((command) => probeExec(command, env));
+  return benchShellProbe(exec);
+}
+
+function probeExec(command, env) {
+  const cwd = env.HOME || process.cwd();
+  const launch = agentCommand("/bin/sh", ["-c", command], env, { cwd });
+  if (!launch.ok) return { status: 1, stdout: "", stderr: launch.reason ?? "" };
+  let run;
+  try {
+    run = spawnSync(launch.command, launch.args, { encoding: "utf8", timeout: 15000, env, cwd });
+  } catch (error) {
+    return { status: 1, stdout: "", stderr: String(error?.message ?? "") };
+  }
+  if (!run || run.error) return { status: 1, stdout: run?.stdout ?? "", stderr: run?.error?.message ?? run?.stderr ?? "" };
+  return { status: run.status ?? 1, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
 }
 
 /** Haiku test workers: every model is Haiku and no effort is sent (Haiku runs as the app runs its helper calls). */
@@ -381,7 +439,8 @@ function promptOf(message) {
 
 /** The real CLI, under the run's seatbelt profile. A missing sandbox or a bad profile does not spawn it. */
 function launchReal(args, env, stdio) {
-  const launch = agentCommand(REAL, args, env);
+  const cwd = sandboxCwd(process.cwd(), env);
+  const launch = agentCommand(REAL, args, env, { cwd });
   if (!launch.ok) return launch;
   const temp = privateTempDir(env);
   const spawned = { ...env, REALTEST_SANDBOX_PROFILE: launch.file };
@@ -394,7 +453,7 @@ function launchReal(args, env, stdio) {
       // a directory that isn't there is not where the CLI writes
     }
   }
-  return { ok: true, child: spawn(launch.command, launch.args, { env: spawned, stdio, cwd: sandboxCwd(process.cwd(), env) }) };
+  return { ok: true, child: spawn(launch.command, launch.args, { env: spawned, stdio, cwd }) };
 }
 
 function refuseStart(reason, { json = false } = {}) {

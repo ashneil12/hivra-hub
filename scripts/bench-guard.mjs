@@ -5,6 +5,7 @@ import { spawn, execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { kindOf } from "./hub-bundle.mjs";
 
 const PROCESS_NAMES = ["kill", "pkill", "killall", "osascript", "open", "shutdown", "reboot"];
 const SIGNAL_NAMES = new Set([...PROCESS_NAMES, "launchctl"]);
@@ -731,7 +732,53 @@ export function finishSceneApps(before, after, stopRun) {
 
 /** A stop that ends the round, including a run-wide look. Anything else can still run. */
 export function isHardStop(reason) {
-  return typeof reason === "string" && /^(touched a real app|unsandboxed agent|can't verify the sandbox)(:|$)/.test(reason);
+  return typeof reason === "string" && /^(touched a real app|unsandboxed agent|can't verify the sandbox|bench broken)(:|$)/.test(reason);
+}
+
+/** `echo probe` must print that one line, then `monocode version --json` must be this run's dev build. */
+export function benchShellProbe(run) {
+  let echo;
+  try {
+    echo = run("echo probe");
+  } catch {
+    return "bench broken: echo probe";
+  }
+  if (!probeEcho(echo)) return "bench broken: echo probe";
+  let version;
+  try {
+    version = run("monocode version --json");
+  } catch {
+    return "bench broken: monocode version";
+  }
+  if (!probeDevVersion(version)) return "bench broken: monocode version";
+  return null;
+}
+
+function probeEcho(result) {
+  if (!result || result.status !== 0) return false;
+  const lines = String(result.stdout ?? "").split(/\r?\n/).filter((line) => line.length > 0);
+  return lines.length === 1 && lines[0] === "probe";
+}
+
+function probeDevVersion(result) {
+  if (!result || result.status !== 0) return false;
+  const text = String(result.stdout ?? "").trim();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        parsed = JSON.parse(lines[i]);
+        break;
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+  return kindOf(parsed.identifier) === "dev";
 }
 
 export function exitCodeForStop(stopReason) {

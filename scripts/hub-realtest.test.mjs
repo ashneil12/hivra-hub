@@ -172,8 +172,15 @@ test("--agents grok-sub points at the Grok launcher and leaves the grader on Dee
   assert.match(script, /REALTEST_MODEL='sonnet'/);
   assert.doesNotMatch(script, /claude-fable-5/);
   assert.doesNotMatch(script, /REALTEST_APP_BIN/);
-  const withBin = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", appBin: "/tmp/state/monocode" });
+  assert.doesNotMatch(script, /REALTEST_WORKTREE/);
+  assert.doesNotMatch(script, /REALTEST_CLAUDE_HONOURS_TMPDIR/);
+  const withBin = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", appBin: "/tmp/state/monocode", worktree: "/tmp/worktree", honoursTmpdir: false });
   assert.match(withBin, /REALTEST_APP_BIN='\/tmp\/state\/monocode'/);
+  assert.match(withBin, /REALTEST_WORKTREE='\/tmp\/worktree'/);
+  assert.match(withBin, /REALTEST_CLAUDE_HONOURS_TMPDIR=0/);
+  const honoured = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", honoursTmpdir: true });
+  assert.match(honoured, /REALTEST_CLAUDE_HONOURS_TMPDIR=1/);
+  assert.doesNotMatch(honoured, /REALTEST_WORKTREE/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

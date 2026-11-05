@@ -145,7 +145,7 @@ function block(head, paths, extras = []) {
  * Writes are the run folders only. Shared temp dirs stay closed. Claude Code's shell temp follows CLAUDE_CODE_TMPDIR, which the run sets inside its own folder.
  * Outbound network is the named loopback ports only.
  */
-export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, appBin, network = [], systemTemps = [] } = {}) {
+export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, appBin, network = [], systemTemps = [], shellTemp = null } = {}) {
   const real = clean(realHome);
   if (!real || real === "/") throw new Error("the real home isn't a path the sandbox can close");
   const tempHome = clean(home);
@@ -225,6 +225,13 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
   if (firstWrite.length) lines.push(block("allow file-write*", firstWrite, ['(literal "/dev/null")', '(literal "/dev/tty")', '(literal "/dev/dtracehelper")']));
   lines.push(block("deny file-write*", [real]));
   if (runRoots.length) lines.push(block("allow file-write*", runRoots));
+  const shell = exactShellTemp(shellTemp);
+  if (shell) {
+    const rule = `(regex #"^${shell}(/|$)")`;
+    lines.push(";; This run's Claude shell temp, one slug. The parent and every other slug stay closed.");
+    lines.push(`(allow file-read*\n    ${rule}\n)`);
+    lines.push(`(allow file-write*\n    ${rule}\n)`);
+  }
   lines.push(";; Outbound network is closed. Loopback is closed too, except the ports named below.");
   lines.push("(deny network-outbound)");
   lines.push("(deny network*)");
@@ -401,6 +408,9 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
   let profile;
   try {
     const readOnly = deps.readOnly ?? cliReadOnlyPaths({ realHome: env.REALTEST_REAL_HOME, cli: bin, devConfig: env.REALTEST_CLAUDE_CONFIG });
+    const uid = Number.isInteger(deps.uid) ? deps.uid : process.getuid?.() ?? 0;
+    const shellTemp = env.REALTEST_CLAUDE_HONOURS_TMPDIR === "0" ? shellTempAllow(deps.cwd ?? process.cwd(), { honours: false, uid }) : null;
+    const namedApp = env.REALTEST_WORKTREE ? worktreeDevBin(env.REALTEST_APP_BIN, env.REALTEST_WORKTREE) : env.REALTEST_APP_BIN;
     profile = benchSandboxProfile({
       realHome: env.REALTEST_REAL_HOME,
       home: env.HOME,
@@ -410,8 +420,9 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
       readOnly,
       builtApp: env.REALTEST_BUILT_APP,
       cli: bin,
-      appBin: env.REALTEST_APP_BIN,
+      appBin: namedApp,
       network: deps.network ?? namedLoopbackPorts(env, deps),
+      shellTemp,
     });
   } catch (error) {
     return { ok: false, reason: plainFailure(error) };
@@ -492,6 +503,45 @@ export function claudeShellTemp(cwd, env = {}, { uid = process.getuid?.() ?? 0, 
   return `${resolved}/${String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-")}`;
 }
 
+/** True when this binary's bytes name CLAUDE_CODE_TMPDIR, false when they don't, null when there is nothing to read. */
+export function claudeHonoursCodeTmpdir(bytes) {
+  if (bytes == null) return null;
+  const buf = Buffer.isBuffer(bytes) ? bytes : null;
+  if (!buf || buf.length === 0) return null;
+  return buf.includes(Buffer.from("CLAUDE_CODE_TMPDIR"));
+}
+
+/**
+ * What the installed Claude at <home>/.local/bin/claude does. Null when the binary can't be read:
+ * unknown is not a reason to open /private/tmp.
+ */
+export function installedClaudeHonoursTmpdir(home = os.homedir(), read = fs.readFileSync, realpath = fs.realpathSync) {
+  try {
+    const bin = realpath(path.join(home, ".local", "bin", "claude"));
+    return claudeHonoursCodeTmpdir(read(bin));
+  } catch {
+    return null;
+  }
+}
+
+/** One Claude shell-temp slug: /private/tmp/claude-<uid>/<slug>. The parent, /tmp, and anything else is null. */
+export function exactShellTemp(abs) {
+  const file = clean(abs);
+  if (!file) return null;
+  if (!/^\/private\/tmp\/claude-\d+\/[A-Za-z0-9-][A-Za-z0-9-]*$/.test(file)) return null;
+  return file;
+}
+
+/** The slug allow, only when this Claude is known not to honour CLAUDE_CODE_TMPDIR. Otherwise null. */
+export function shellTempAllow(cwd, { honours, uid = process.getuid?.() ?? 0 } = {}) {
+  if (honours !== false) return null;
+  const id = Number(uid);
+  if (!Number.isInteger(id) || id < 0) return null;
+  const slug = String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-");
+  if (!slug) return null;
+  return exactShellTemp(`/private/tmp/claude-${id}/${slug}`);
+}
+
 /**
  * The one monocode file a bench agent may read. The name must be monocode. Under the real home it must sit in
  * Worktrees, never .ssh, .claude, Projects, agent-memory or Library. A /Users path outside this home is refused.
@@ -507,6 +557,25 @@ export function appCliRead(abs, { realHome } = {}) {
     if (top !== "Worktrees") return null;
   }
   return file;
+}
+
+/** A real `monocode` file inside <worktree>/target. A symlink out to the daily app, or anything else, is null. */
+export function worktreeDevBin(appBin, worktree) {
+  if (typeof appBin !== "string" || !appBin.startsWith("/") || typeof worktree !== "string" || !worktree.startsWith("/")) return null;
+  let file;
+  let root;
+  try {
+    file = fs.realpathSync(appBin);
+    root = fs.realpathSync(worktree);
+  } catch {
+    return null;
+  }
+  const abs = clean(file);
+  if (!abs || path.posix.basename(abs) !== "monocode") return null;
+  if (abs.includes("/MonoCode Hub.app/")) return null;
+  const base = clean(root);
+  if (!base || !abs.startsWith(`${base}/target/`)) return null;
+  return abs;
 }
 
 /** A home that is not the real one, so a login profile can be written there. Null when it isn't safe. */

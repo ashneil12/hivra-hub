@@ -7,8 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { agentCommand, appCliRead, benchSandboxProfile, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, forbiddenHomeRead, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
-import { benchFenceEnv } from "./hub-realtest-claude.mjs";
+import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { benchFenceEnv, probeBenchAgent } from "./hub-realtest-claude.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
@@ -699,6 +699,231 @@ exit 2
       assert.match(zsh.stdout, /\{"workers":\[\]\}/);
     }
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code's temp root is CLAUDE_CODE_TMPDIR, and the shared temp opens only for this run's slug when it is not", () => {
+  assert.equal(claudeHonoursCodeTmpdir(null), null);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.alloc(0)), null);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.from("CLAUDE_TMPDIR only")), false);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.from("xx CLAUDE_CODE_TMPDIR yy")), true);
+  const missing = installedClaudeHonoursTmpdir("/no/such/home", () => { throw new Error("gone"); }, (file) => file);
+  assert.equal(missing, null);
+  const read = (file) => {
+    assert.match(file, /\/\.local\/bin\/claude$/);
+    return Buffer.from("CLAUDE_CODE_TMPDIR");
+  };
+  assert.equal(installedClaudeHonoursTmpdir("/Users/example", read, (file) => file), true);
+  const cwd = "/private/tmp/monocode-realtest-GhKDHU/projects/tally";
+  const slug = "-private-tmp-monocode-realtest-GhKDHU-projects-tally";
+  const exact = `/private/tmp/claude-501/${slug}`;
+  assert.equal(shellTempAllow(cwd, { honours: true, uid: 501 }), null);
+  assert.equal(shellTempAllow(cwd, { honours: null, uid: 501 }), null);
+  assert.equal(shellTempAllow(cwd, { honours: false, uid: 501 }), exact);
+  assert.equal(exactShellTemp(`/private/tmp/claude-501`), null);
+  assert.equal(exactShellTemp(`${exact}-other`), `/private/tmp/claude-501/${slug}-other`);
+  assert.equal(exactShellTemp(`/tmp/claude-501/${slug}`), null);
+  const closed = benchSandboxProfile({ realHome: REAL, home: HOME });
+  assert.equal(closed.includes("regex"), false);
+  const opened = benchSandboxProfile({ realHome: REAL, home: HOME, shellTemp: exact });
+  assert.match(opened, new RegExp(`regex #"\\^/private/tmp/claude-501/${slug}\\(/\\|\\$\\)"`));
+  assert.equal(opened.includes(`${slug}-other`), false);
+  assert.equal(opened.includes(`/private/tmp/claude-501")`), false);
+  const wide = benchSandboxProfile({ realHome: REAL, home: HOME, shellTemp: "/private/tmp/claude-501" });
+  assert.equal(wide.includes("regex"), false);
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-shell-allow-"));
+  const stub = path.join(state, "stub-sandbox");
+  fs.writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  try {
+    const launch = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: REAL,
+      HOME: state,
+      REALTEST_STATE: state,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_CLAUDE_HONOURS_TMPDIR: "0",
+    }, { cwd, uid: 501 });
+    assert.equal(launch.ok, true, launch.reason);
+    const written = fs.readFileSync(path.join(state, "sandbox.sb"), "utf8");
+    assert.match(written, new RegExp(`regex #"\\^${exact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\(/\\|\\$\\)"`));
+    const kept = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: REAL,
+      HOME: state,
+      REALTEST_STATE: state,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_CLAUDE_HONOURS_TMPDIR: "1",
+    }, { cwd, uid: 501 });
+    assert.equal(kept.ok, true, kept.reason);
+    assert.equal(fs.readFileSync(path.join(state, "sandbox.sb"), "utf8").includes("regex"), false);
+  } finally {
+    fs.rmSync(state, { recursive: true, force: true });
+  }
+});
+
+test("the monocode on PATH is this worktree's dev build, and the daily bundle is not on PATH", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fence-worktree-"));
+  const real = path.join(root, "real");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const bin = path.join(worktree, "target", "debug", "monocode");
+  const dailyDir = path.join(real, "Applications", "MonoCode Hub.app", "Contents", "MacOS");
+  const dailyBin = path.join(dailyDir, "monocode");
+  const decoyDir = path.join(root, "decoy");
+  const linked = path.join(worktree, "target", "alias", "monocode");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.mkdirSync(path.dirname(linked), { recursive: true });
+  fs.mkdirSync(dailyDir, { recursive: true });
+  fs.mkdirSync(decoyDir, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho dev\n", { mode: 0o755 });
+  fs.writeFileSync(dailyBin, "#!/bin/sh\necho daily\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(decoyDir, "monocode"), "#!/bin/sh\necho decoy\n", { mode: 0o755 });
+  fs.symlinkSync(dailyBin, linked);
+  const dailyOnPath = `${dailyDir}${path.delimiter}${decoyDir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+  try {
+    const env = benchFenceEnv({
+      PATH: dailyOnPath,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: bin,
+      REALTEST_WORKTREE: worktree,
+    }, state);
+    const shim = path.join(state, "bench-bin", "monocode");
+    const resolved = fs.realpathSync(shim);
+    assert.equal(resolved.startsWith(`${fs.realpathSync(worktree)}/target/`), true, resolved);
+    assert.equal(resolved, fs.realpathSync(bin));
+    for (const entry of env.PATH.split(path.delimiter)) {
+      assert.equal(entry.includes("MonoCode Hub.app"), false, entry);
+    }
+    const which = spawnSync("/bin/sh", ["-c", "command -v monocode"], { env, encoding: "utf8" });
+    assert.equal(which.status, 0, which.stderr);
+    assert.equal(fs.realpathSync(which.stdout.trim()), fs.realpathSync(bin));
+    const stolen = path.join(home, "state-stolen");
+    const viaDaily = benchFenceEnv({
+      PATH: dailyOnPath,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: linked,
+      REALTEST_WORKTREE: worktree,
+    }, stolen);
+    assert.equal(fs.existsSync(path.join(stolen, "bench-bin", "monocode")), false);
+    for (const entry of viaDaily.PATH.split(path.delimiter)) assert.equal(entry.includes("MonoCode Hub.app"), false, entry);
+    const found = spawnSync("/bin/sh", ["-c", "command -v monocode || true"], { env: viaDaily, encoding: "utf8" });
+    assert.equal(found.stdout.includes("MonoCode Hub.app"), false, found.stdout);
+    assert.equal(found.stdout.trim().endsWith("/decoy/monocode"), false, found.stdout);
+    const stub = path.join(stolen, "stub-sandbox");
+    fs.writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const stolenLaunch = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: real,
+      HOME: home,
+      REALTEST_STATE: stolen,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_APP_BIN: linked,
+      REALTEST_WORKTREE: worktree,
+    });
+    assert.equal(stolenLaunch.ok, true, stolenLaunch.reason);
+    assert.equal(fs.readFileSync(path.join(stolen, "sandbox.sb"), "utf8").includes("MonoCode Hub.app"), false);
+    const outside = path.join(home, "state-outside");
+    benchFenceEnv({
+      PATH: `/usr/bin${path.delimiter}/bin`,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: path.join(root, "opt", "monocode"),
+      REALTEST_WORKTREE: worktree,
+    }, outside);
+    assert.equal(fs.existsSync(path.join(outside, "bench-bin", "monocode")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the scene probe reports which of the two checks failed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "probe-agent-"));
+  const real = path.join(root, "real");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const bin = path.join(worktree, "target", "debug", "monocode");
+  const dailyDir = path.join(real, "Applications", "MonoCode Hub.app", "Contents", "MacOS");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.mkdirSync(dailyDir, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho dev\n", { mode: 0o755 });
+  const ctx = {
+    home,
+    state,
+    appBin: bin,
+    worktree,
+    realHome: real,
+    path: `${dailyDir}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+  };
+  try {
+    const echoFail = probeBenchAgent(ctx, { exec: () => ({ status: 1, stdout: "", stderr: "EPERM" }) });
+    assert.equal(echoFail, "bench broken: echo probe");
+    let commands = [];
+    const versionFail = probeBenchAgent(ctx, {
+      exec: (command) => {
+        commands.push(command);
+        if (command === "echo probe") return { status: 0, stdout: "probe\n", stderr: "" };
+        return { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub" })}\n`, stderr: "" };
+      },
+    });
+    assert.equal(versionFail, "bench broken: monocode version");
+    assert.deepEqual(commands, ["echo probe", "monocode version --json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a slug allow does not open a sibling under /private/tmp/claude-<uid>", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing on macOS");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-slug-")));
+  const home = path.join(root, "home");
+  fs.mkdirSync(home, { recursive: true });
+  const uid = process.getuid();
+  const id = path.basename(root).replace(/[^a-zA-Z0-9]/g, "-");
+  const slug = `bench-slug-${id}`;
+  const exact = `/private/tmp/claude-${uid}/${slug}`;
+  const sibling = `/private/tmp/claude-${uid}/${slug}-other`;
+  const parent = path.dirname(exact);
+  const parentExisted = fs.existsSync(parent);
+  fs.mkdirSync(sibling, { recursive: true });
+  fs.writeFileSync(path.join(sibling, "keep"), "keep\n");
+  const profile = benchSandboxProfile({ realHome: os.homedir(), home, project: home, shellTemp: exact });
+  const file = path.join(home, "sandbox.sb");
+  fs.writeFileSync(file, profile);
+  const script = path.join(home, "run.sh");
+  fs.writeFileSync(script, `#!/bin/sh
+set +e
+mkdir -p "$EXACT" && echo ok > "$EXACT/probe.txt" && test -f "$EXACT/probe.txt" && echo slug_rw=ok || echo slug_rw=fail
+if echo x > "$SIBLING/nope"; then echo sib_write=ok; else echo sib_write=fail; fi
+if rm "$SIBLING/keep"; then echo sib_del=ok; else echo sib_del=fail; fi
+`, { mode: 0o755 });
+  try {
+    assert.match(profile, new RegExp(`regex #"\\^/private/tmp/claude-${uid}/${slug}\\(/\\|\\$\\)"`));
+    assert.equal(profile.includes(sibling), false);
+    const out = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", script], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { HOME: home, PATH: "/usr/bin:/bin", EXACT: exact, SIBLING: sibling },
+    });
+    assert.equal(out.status, 0, `${out.stderr}\n${out.stdout}`);
+    const report = Object.fromEntries(out.stdout.trim().split("\n").filter(Boolean).map((line) => line.split("=")));
+    assert.equal(report.slug_rw, "ok", out.stdout);
+    assert.equal(report.sib_write, "fail", out.stdout);
+    assert.equal(report.sib_del, "fail", out.stdout);
+    assert.equal(fs.readFileSync(path.join(sibling, "keep"), "utf8"), "keep\n");
+    assert.equal(fs.existsSync(path.join(sibling, "nope")), false);
+  } finally {
+    fs.rmSync(exact, { recursive: true, force: true });
+    fs.rmSync(sibling, { recursive: true, force: true });
+    if (!parentExisted) {
+      try { fs.rmdirSync(parent); } catch { /* the user's Claude sessions still have folders here */ }
+    }
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

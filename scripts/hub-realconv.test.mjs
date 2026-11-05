@@ -10,13 +10,23 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { SCENES_FILE, benchRunOptions, benchSpec, parseArgs, pickScenes, readCustomModel, runRealconv } from "./hub-realconv.mjs";
+import { SCENES_FILE, benchRunOptions, benchSpec, parseArgs, pickScenes, readCustomModel, realconvExitCode, runRealconv } from "./hub-realconv.mjs";
 import { nextAshMove, scriptedProblem } from "./realconv/ash.mjs";
 import { hardChecks, isAckOnly } from "./realconv/checks.mjs";
 import { replyScores, verdict } from "./realconv/judge.mjs";
 import { makeClient, providerSpec } from "./realconv/llm.mjs";
 
 const book = JSON.parse(fs.readFileSync(SCENES_FILE, "utf8"));
+
+test("a bench that never proved its shell is not a pass, even when every scene was skipped", () => {
+  const skipped = [{ verdict: "SKIPPED" }, { verdict: "SKIPPED" }];
+  assert.equal(realconvExitCode(skipped, "bench broken: echo probe"), 1);
+  assert.equal(realconvExitCode(skipped, "bench broken: monocode version"), 1);
+  assert.equal(realconvExitCode(skipped, "budget spent"), 0);
+  assert.equal(realconvExitCode([{ verdict: "PASS" }], null), 0);
+  assert.equal(realconvExitCode([{ verdict: "FAIL" }], null), 1);
+  assert.equal(realconvExitCode([{ verdict: "PASS" }], "bench broken: echo probe"), 1);
+});
 const tmp = () => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "realconv-test-")));
 
 // ---- providers ------------------------------------------------------------------------------------------------------

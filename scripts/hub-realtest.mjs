@@ -34,9 +34,10 @@ import os from "node:os";
 import path from "node:path";
 
 import { appsFromPs, benchDenyRules, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
-import { privateTempDir, privateTempEnv } from "./bench-sandbox.mjs";
+import { installedClaudeHonoursTmpdir, privateTempDir, privateTempEnv } from "./bench-sandbox.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
+import { probeBenchAgent } from "./hub-realtest-claude.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
 import { benchAccounts, claudeConfigArgs, latestReadings, limitedFiles, startCheck, watchAccounts, writeAccounts } from "./hub-realtest-accounts.mjs";
 
@@ -227,7 +228,7 @@ export function planFlags(options) {
 }
 
 /** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
-export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings, appBin }) {
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings, appBin, worktree, honoursTmpdir }) {
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     "#!/bin/sh",
@@ -244,6 +245,9 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     ...(devData ? [`export REALTEST_DEV_DATA=${quote(devData)}`] : []),
     ...(benchSettings ? [`export REALTEST_BENCH_SETTINGS=${quote(benchSettings)}`] : []),
     ...(appBin ? [`export REALTEST_APP_BIN=${quote(appBin)}`] : []),
+    ...(worktree ? [`export REALTEST_WORKTREE=${quote(worktree)}`] : []),
+    ...(honoursTmpdir === false ? ["export REALTEST_CLAUDE_HONOURS_TMPDIR=0"] : []),
+    ...(honoursTmpdir === true ? ["export REALTEST_CLAUDE_HONOURS_TMPDIR=1"] : []),
     `exec ${quote(node)} ${quote(script)} "$@"`,
     "",
   ].join("\n");
@@ -568,6 +572,7 @@ export async function runBench(options, hooks = {}) {
     // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
     const binary = path.join(ROOT, "target/debug/monocode");
+    const claudeHonours = installedClaudeHonoursTmpdir();
     const claude = path.join(bin, "claude");
     fs.writeFileSync(
       claude,
@@ -587,6 +592,8 @@ export async function runBench(options, hooks = {}) {
         devData: dataDir,
         benchSettings: settingsFile,
         appBin: binary,
+        worktree: ROOT,
+        honoursTmpdir: claudeHonours,
       }),
       { mode: 0o755 },
     );
@@ -942,6 +949,11 @@ export async function runBench(options, hooks = {}) {
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
     if (hooks.afterReady) await hooks.afterReady(ctx);
+    const shellBroken = probeBenchAgent({ home, state, appBin: binary, worktree: ROOT, realHome: REAL_HOME, path: process.env.PATH ?? "" });
+    if (shellBroken) {
+      stopRun(shellBroken);
+      log(shellBroken);
+    }
     if (hooks.play) {
       results = await hooks.play(ctx, { runScenario, stopped: () => stopReason });
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));

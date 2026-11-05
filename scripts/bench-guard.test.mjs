@@ -21,6 +21,7 @@ import {
   finishSceneAgents,
   finishSceneApps,
   isHardStop,
+  benchShellProbe,
   sceneAgents,
   startSceneAgentPoll,
   underProfile,
@@ -745,6 +746,40 @@ test("the scene book names no real app, and the scanner catches one", () => {
   assert.ok(scanSceneText("grok bot transcripts").some((hit) => hit.why === "Grok Bot"));
   const hits = scanSceneBook(sceneBookFiles(path.join(HERE, "..")));
   assert.deepEqual(hits, [], hits.map((hit) => `${hit.file}: ${hit.why}`).join("; "));
+});
+
+test("a scene probe stops the round when the shell or the dev binary fails", () => {
+  const dev = { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.slot" })}\n`, stderr: "" };
+  const echoOk = { status: 0, stdout: "probe\n", stderr: "" };
+  const calls = [];
+  const run = (script) => (command) => {
+    calls.push(command);
+    return script(command, calls.length);
+  };
+  assert.equal(benchShellProbe(run((command) => (command === "monocode version --json" ? dev : echoOk))), null);
+  assert.deepEqual(calls, ["echo probe", "monocode version --json"]);
+  calls.length = 0;
+  assert.equal(benchShellProbe(run(() => ({ status: 1, stdout: "", stderr: "EPERM" }))), "bench broken: echo probe");
+  assert.deepEqual(calls, ["echo probe"]);
+  assert.equal(benchShellProbe(() => { throw new Error("timed out"); }), "bench broken: echo probe");
+  assert.equal(benchShellProbe(run((command) => (command === "echo probe" ? { status: 0, stdout: "\n", stderr: "" } : dev))), "bench broken: echo probe");
+  assert.equal(benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 127, stdout: "", stderr: "not found" }))), "bench broken: monocode version");
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub" })}\n`, stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: "not json", stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(
+    benchShellProbe(run((command) => (command === "echo probe" ? echoOk : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev." })}\n`, stderr: "" }))),
+    "bench broken: monocode version",
+  );
+  assert.equal(isHardStop("bench broken: echo probe"), true);
+  assert.equal(isHardStop("bench broken: monocode version"), true);
+  assert.equal(exitCodeForStop("bench broken: echo probe"), 1);
+  assert.equal(isHardStop("bench brokenish"), false);
 });
 
 test("a relative path after cd resolves against that directory", () => {
