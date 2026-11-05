@@ -73,6 +73,10 @@ export type QuickLaunch = {
   worktreeCwd?: string;
   /** Bring the new session forward instead of starting it quietly. */
   reveal: boolean;
+  /** WP-89: where this launch's CLI, model and effort came from, in the settings line's words. */
+  ranFrom?: string;
+  /** WP-89: the effort in the words the card shows, only when this launch set one. */
+  ranEffort?: string;
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */
