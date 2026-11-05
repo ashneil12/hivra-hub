@@ -240,6 +240,8 @@ async function main() {
  *  - evidenceDir: where under the repo the run's folder goes (default evidence/realtest);
  *  - routedAgents: the agents run on a custom model through the hub's router, so the Claude login is only needed for
  *    the app's helper calls and its account limits don't gate the run (they are still read and logged when reachable);
+ *  - beforeReady({act, log}): before the ready wait, once the window's driver answers (put a team on the fresh copy:
+ *    since WP-05 a fresh copy has no team, so its leadership room is never seated until one is added);
  *  - afterReady(ctx): once the hub is ready and its defaults are set (add a custom model, pick it);
  *  - play(ctx, {runScenario, stopped}): replaces the scenario loop and returns the results; the realtest grader is not
  *    run (the caller judges).
@@ -675,6 +677,13 @@ export async function runBench(options, hooks = {}) {
       }
     }, 1_500);
 
+    if (hooks.beforeReady) await hooks.beforeReady({ act, log });
+    else if ((spec.team ?? "ash") === "ash") {
+      // The scenarios play Ash's own Monos, and a fresh copy has no team since WP-05: pre-load his before the ready wait.
+      const team = await act("teamPack", { pack: "ash" });
+      if (!team.ok) throw new Error(`the hub wouldn't pre-load Ash's team: ${team.error ?? team.pack}`);
+      log(`team: Ash's pre-load (souls written: ${(team.wrote ?? []).join(", ") || "none"})`);
+    }
     // Ready: the project's Lead exists and its leadership room is seated.
     const leadId = `${spec.project.id}-lead`;
     const roomId = `${spec.project.id}:leadership`;
