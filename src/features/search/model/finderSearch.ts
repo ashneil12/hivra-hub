@@ -1,5 +1,6 @@
 // WP-74: one search across the index and the search the app already has.
-// A failed or timed-out load keeps the hits already on screen. A late load is dropped.
+// A failed or timed-out load keeps the hits stored for this same query. Another
+// query's hits are not shown, including before its load returns. A late load is dropped.
 
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -31,10 +32,12 @@ import {
   assembleFinder,
   hitsFromIndex,
   parseFinderQuery,
-  settle,
+  rowsForQuery,
+  storeHeld,
   toggleFinderScope,
   type FinderHit,
   type FinderScope,
+  type HeldRows,
 } from "./finder";
 import { cancelProjectSearch, searchProject } from "./search";
 
@@ -124,10 +127,10 @@ export function useFinderSearch(
   const [hits, setHits] = useState<FinderHit[]>([]);
   const [scope, setScope] = useState<FinderScope>("project");
   const generation = useRef(0);
-  const indexedRef = useRef<FinderHit[]>([]);
-  const remoteRef = useRef<AppSearchHit[]>([]);
-  const contentRef = useRef<AppSearchHit[]>([]);
-  const fileRef = useRef<AppSearchHit[]>([]);
+  const indexedRef = useRef<HeldRows<FinderHit>>({ query: "", rows: [] });
+  const remoteRef = useRef<HeldRows<AppSearchHit>>({ query: "", rows: [] });
+  const contentRef = useRef<HeldRows<AppSearchHit>>({ query: "", rows: [] });
+  const fileRef = useRef<HeldRows<AppSearchHit>>({ query: "", rows: [] });
   const historyRef = useRef(input.history);
   const sessionsRef = useRef(input.sessions);
   const recentsRef = useRef(input.recents);
@@ -162,7 +165,7 @@ export function useFinderSearch(
           scope,
           project: cwd,
           keys,
-          indexed: indexedRef.current,
+          indexed: rowsForQuery(indexedRef.current, text),
           app: [
             ...searchConversationTitles(
               historyRef.current.map((row) => ({
@@ -186,9 +189,9 @@ export function useFinderSearch(
               text,
             ),
             ...searchRecentProjects([...recentsRef.current], text),
-            ...remoteRef.current,
-            ...contentRef.current,
-            ...fileRef.current,
+            ...rowsForQuery(remoteRef.current, text),
+            ...rowsForQuery(contentRef.current, text),
+            ...rowsForQuery(fileRef.current, text),
           ],
           monos: io.monos(),
         }),
@@ -206,10 +209,10 @@ export function useFinderSearch(
           attempt(() => io.content(cwd, text, searchId)),
         ]);
         if (cancelled || stopped || !acceptGeneration(generation.current, mine)) return;
-        indexedRef.current = settle(indexedRef.current, indexed);
-        remoteRef.current = settle(remoteRef.current, remote);
-        fileRef.current = settle(fileRef.current, files);
-        contentRef.current = settle(contentRef.current, body);
+        indexedRef.current = storeHeld(indexedRef.current, text, indexed);
+        remoteRef.current = storeHeld(remoteRef.current, text, remote);
+        fileRef.current = storeHeld(fileRef.current, text, files);
+        contentRef.current = storeHeld(contentRef.current, text, body);
         publish();
       })();
     }, 40);

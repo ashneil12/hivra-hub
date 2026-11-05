@@ -63,6 +63,9 @@ describe("useFinderSearch", () => {
         <button type="button" onClick={() => setQuery("later")}>
           later
         </button>
+        <button type="button" onClick={() => search.toggleScope()}>
+          scope
+        </button>
         <ul>
           {search.hits.map((hit) => (
             <li key={hit.id}>{hit.id}</li>
@@ -94,7 +97,7 @@ describe("useFinderSearch", () => {
     });
   }
 
-  it("keeps the hits on screen when the next search fails, and drops a late one", async () => {
+  it("drops another query's hits when that search fails, and drops a late one", async () => {
     await act(async () => {
       root.render(createElement(Probe));
     });
@@ -107,11 +110,12 @@ describe("useFinderSearch", () => {
     await act(async () => {
       container.querySelector("button")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    expect(container.textContent).not.toContain("task:notes");
     await tick();
     await act(async () => {
       pending.get("other")?.reject(new Error("timed out"));
     });
-    expect(container.textContent).toContain("task:notes");
+    expect(container.textContent).not.toContain("task:notes");
     const held = deferred<FinderHit[]>();
     pending.set("held", held);
     await act(async () => {
@@ -135,5 +139,27 @@ describe("useFinderSearch", () => {
     });
     expect(container.textContent).toContain("task:later");
     expect(container.textContent).not.toContain("task:stale");
+  });
+
+  it("keeps this query's hits when the same search fails again", async () => {
+    await act(async () => {
+      root.render(createElement(Probe));
+    });
+    await tick();
+    await act(async () => {
+      pending.get("notes")?.resolve([task("task:notes")]);
+    });
+    expect(container.textContent).toContain("task:notes");
+
+    await act(async () => {
+      [...container.querySelectorAll("button")].find((button) => button.textContent === "scope")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await tick();
+    await act(async () => {
+      pending.get("notes")?.reject(new Error("timed out"));
+    });
+    expect(container.textContent).toContain("task:notes");
   });
 });
