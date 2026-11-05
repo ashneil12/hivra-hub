@@ -158,6 +158,18 @@ first mate.
 | [88](work/WP-88-chief-of-staff.md) | The Chief of Staff knows every project | M | 51, 70, 72, 73, 78 | yes |
 | [89](work/WP-89-worker-model.md) | Change what your workers run on, anywhere, in one step | M | 13 | yes |
 
+### Wave I: secrets that never reach the model (Ash, 5 Nov)
+
+Ash asked for the thing he does by hand today: an agent that needs a key asks for it, the person pastes it once into a
+form card in the chat, and it goes straight into the Mac's keychain. Later the agent names it ("use my Stripe key"),
+the app hands it to one approved command for one run, and the agent sees only output with the value taken out. It
+replaces the current "Needs Ash (provide)" paste, which writes the key into the transcript. It starts now, and takes
+WP-14's asking mechanics when they merge.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [92](work/WP-92-secret-vault.md) | Agents ask for a secret and use it without ever seeing it | L | none | no |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this
