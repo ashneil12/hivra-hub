@@ -981,6 +981,84 @@ describe("claude assistant message boundaries", () => {
       { type: "message.delta", text: update },
     ]);
   });
+
+  it("keeps a start-ack and the answer in one message as two paragraphs of one post", async () => {
+    const { events, turn } = await startTurn("s1");
+    const ack = "Starting with the hourly checker, then the rest.";
+    const answer = "Six asks. Here's what's true.";
+    for (const [index, text] of [ack, answer].entries()) {
+      emit({
+        type: "stream_event",
+        session_id: "sess_1",
+        event: {
+          type: "content_block_start",
+          index,
+          content_block: { type: "text", text: "" },
+        },
+      });
+      emit({
+        type: "stream_event",
+        session_id: "sess_1",
+        event: {
+          type: "content_block_delta",
+          index,
+          delta: { type: "text_delta", text },
+        },
+      });
+    }
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          { type: "text", text: ack },
+          { type: "text", text: answer },
+        ],
+      },
+    });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+
+    const session = events.reduce(
+      applyHarnessEvent,
+      newSession("claude", "/repo"),
+    );
+    const posted = session.blocks
+      .filter((block) => block.role === "assistant" && block.text.trim())
+      .map((block) => block.text.trim())
+      .join("\n\n");
+    expect(posted).toContain("then the rest.\n\nSix asks.");
+    expect(posted.match(/Six asks/g)).toEqual(["Six asks"]);
+  });
+
+  it("joins two text blocks that arrive only on the finished message", async () => {
+    const { events, turn } = await startTurn("s1");
+    const ack = "Starting with the hourly checker, then the rest.";
+    const answer = "Six asks. Here's what's true.";
+    emit({
+      type: "assistant",
+      session_id: "sess_1",
+      message: {
+        content: [
+          { type: "text", text: ack },
+          { type: "text", text: answer },
+        ],
+      },
+    });
+    emit({ type: "result", subtype: "success", session_id: "sess_1" });
+    await turn;
+
+    const session = events.reduce(
+      applyHarnessEvent,
+      newSession("claude", "/repo"),
+    );
+    expect(
+      session.blocks
+        .filter((block) => block.role === "assistant")
+        .map((block) => block.text)
+        .join("\n\n"),
+    ).toContain("then the rest.\n\nSix asks.");
+  });
 });
 
 describe("claude model switching", () => {

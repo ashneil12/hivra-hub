@@ -33,6 +33,7 @@ import {
   askUserQuestionAllowInput,
   asRecord,
   assistantMessageId,
+  assistantMessageText,
   assistantTextBlocks,
   assistantThinkingBlocks,
   assistantToolUses,
@@ -74,6 +75,8 @@ import {
   statusTextFromSystem,
   streamDeltaFromEvent,
   stringField,
+  textBlockGap,
+  textBlockStartFromEvent,
   summarizeToolRequest,
   approvalCall,
   toClaudePermissionResult,
@@ -1327,6 +1330,20 @@ function handleStreamEvent(live: Live, rec: Record<string, unknown>): void {
     return;
   }
 
+  // A later text block in this same message is the next paragraph. The gap has
+  // to land before its tokens, or the finished snapshot (which keeps the same
+  // break) no longer matches what was streamed and the whole reply is appended
+  // again.
+  if (textBlockStartFromEvent(rec)) {
+    if (subagent) return;
+    const gap = textBlockGap(live.emittedAssistant);
+    if (gap) {
+      live.emittedAssistant += gap;
+      live.onEvent({ type: "message.delta", text: gap });
+    }
+    return;
+  }
+
   const started = toolStartFromEvent(rec);
   if (started) {
     if (subagent) {
@@ -1431,9 +1448,19 @@ function handleAssistant(live: Live, rec: Record<string, unknown>): void {
     live.onEvent({ type: "context", used });
   }
 
-  const snapshot = assistantTextBlocks(rec).join("");
+  const snapshot = assistantMessageText(rec);
   if (snapshot) closePendingAssistantMessage(live);
-  const extra = snapshotRemainder(live.emittedAssistant, snapshot);
+  let extra = snapshotRemainder(live.emittedAssistant, snapshot);
+  // Same words, but the snapshot has the paragraph breaks the stream missed.
+  // Appending it would post the reply twice. The streamed copy stands.
+  if (
+    extra &&
+    extra === snapshot &&
+    live.emittedAssistant &&
+    extra.replace(/\s+/g, "") === live.emittedAssistant.replace(/\s+/g, "")
+  ) {
+    extra = "";
+  }
   if (extra) {
     live.emittedAssistant = joinStreamText(live.emittedAssistant, extra);
     live.onEvent({ type: "message.delta", text: extra });

@@ -962,6 +962,33 @@ export function assistantTextBlocks(rec: Record<string, unknown>): string[] {
   });
 }
 
+/**
+ * One assistant message's text, each text block its own paragraph.
+ * A start-ack and the answer often share one message; joining the blocks with
+ * nothing reads as "rest.Six".
+ */
+export function assistantMessageText(rec: Record<string, unknown>): string {
+  return assistantTextBlocks(rec).join("\n\n");
+}
+
+/**
+ * The blank line a later text block in the same message needs before it.
+ * Nothing before the first block, and nothing when the break is already there.
+ */
+export function textBlockGap(already: string): string {
+  if (!already) return "";
+  if (already.endsWith("\n\n")) return "";
+  if (already.endsWith("\n")) return "\n";
+  return "\n\n";
+}
+
+/** A content_block_start for prose, not a tool. The break between two paragraphs of one message. */
+export function textBlockStartFromEvent(rec: Record<string, unknown>): boolean {
+  const event = asRecord(rec.event);
+  if (!event || stringField(event, "type") !== "content_block_start") return false;
+  return stringField(asRecord(event.content_block), "type") === "text";
+}
+
 /** Reasoning a message carries, used to mirror a subagent's thinking. */
 export function assistantThinkingBlocks(rec: Record<string, unknown>): string[] {
   const message = asRecord(rec.message);

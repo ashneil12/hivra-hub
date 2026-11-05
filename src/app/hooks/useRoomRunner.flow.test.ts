@@ -179,6 +179,34 @@ it("a reply written in two parts around a tool call keeps them apart in the room
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe("Nothing for you yet. Briefing the Tally lead now.\n\nThe Tally lead has the brief.");
 });
 
+it("a start-ack and the answer are two paragraphs of one room post", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "what's true");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const cos = chatOf("ada");
+  const ack = "Starting with the hourly checker, then the rest.";
+  const answer = "Six asks. Here's what's true.";
+  setSessions(
+    sessionsRef.current.map((s) =>
+      s.id === cos
+        ? {
+            ...s,
+            blocks: [
+              { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: submitted[0].options.appRequestId as string },
+              { id: "a1", role: "assistant", text: ack },
+              { id: "a2", role: "assistant", text: answer },
+            ],
+          }
+        : s,
+    ),
+  );
+  // The turn's own reply text runs the two parts together. The room post keeps the break.
+  settle.get(cos)!(ack + answer);
+  await chat.roomIdle(room.id);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toContain("then the rest.\n\nSix asks.");
+});
+
 it("a seat's room turn carries no project memory block: nothing outside the app reads one since Ash OS is retired (WP-04)", async () => {
   const { chat, room, submitted, settle, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "wat now");
