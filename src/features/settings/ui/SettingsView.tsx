@@ -6,6 +6,8 @@ import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingThe
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
+// WP-79: Settings → Connected apps.
+import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
@@ -697,6 +699,10 @@ export function SettingsView({
               {section === "activity" ? (
                 // WP-78: Settings → Activity.
                 <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
+              {section === "connected" ? (
+                // WP-79: Settings → Connected apps.
+                <ConnectedApps />
               ) : null}
               {section === "dashboards" ? <DashboardsPage /> : null}
               {section === "portable" ? <PortablePage /> : null}
