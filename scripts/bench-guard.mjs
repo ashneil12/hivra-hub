@@ -994,8 +994,9 @@ function descendedFrom(pid, rootPid, byPid) {
 /**
  * An agent CLI descended from the dev app that the kernel does not have in a sandbox.
  * The wrapper's sh, bash and node launchers are not agents. Null when ps can't be read, the app pid
- * isn't known, or every such agent is sandboxed. A helper that can't run, or a pid whose answer isn't 1,
- * counts as unsandboxed and stops the round. Nothing passes because the check was skipped.
+ * isn't known, or every such agent is sandboxed. A helper that can't run stops the round as
+ * `can't verify the sandbox`. A pid whose answer isn't 1 stops it as an unsandboxed agent.
+ * Nothing passes because the check was skipped.
  */
 export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile } = {}) {
   if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
@@ -1014,7 +1015,7 @@ export function unsandboxedAgents(text, { rootPid, wrapper, sandboxOf, execFile 
     candidates.map((item) => item.pid),
     { execFile, sandboxOf },
   );
-  if (!status.ok) return { fail: true, reason: `unsandboxed agent: ${candidates[0].name}` };
+  if (!status.ok) return { fail: true, reason: `can't verify the sandbox: ${candidates[0].name}` };
   for (const item of candidates) {
     if (status.byPid?.get(item.pid) !== true) return { fail: true, reason: `unsandboxed agent: ${item.name}` };
   }

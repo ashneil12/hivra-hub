@@ -274,25 +274,26 @@ test("a hosted agent is checked: an interpreter's script, or node running a know
   assert.equal(denied("/usr/local/bin/node /private/var/bench/bin/../bin/claude"), null);
 });
 
-test("a sandbox helper that can't answer counts the agent as unsandboxed, and the scene asks once", () => {
+test("a sandbox helper that can't answer is its own stop, and a real answer of not-1 stays unsandboxed", () => {
   const wrapper = "/private/var/bench/bin/claude";
   const row = "  240 100 /usr/bin/claude";
   const stopped = [];
   const hit = finishSceneAgents(row, { rootPid: 100, wrapper, execFile: () => { throw new Error("no python"); } }, (why) => stopped.push(why));
-  assert.equal(hit.reason, "unsandboxed agent: claude");
+  assert.equal(hit.reason, "can't verify the sandbox: claude");
   assert.equal(isHardStop(hit.reason), true);
   assert.equal(exitCodeForStop(hit.reason), 1);
-  assert.deepEqual(stopped, ["unsandboxed agent: claude"]);
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude"]);
   assert.equal(isHardStop("can't verify the sandbox"), true);
+  assert.equal(isHardStop("can't verify the sandbox: claude"), true);
   assert.equal(
     sceneAgents({
       listAgents: () => row,
       agentWatch: () => ({ rootPid: 100, wrapper, execFile: () => "not-json" }),
       stopRun: (why) => stopped.push(why),
     }).reason,
-    "unsandboxed agent: claude",
+    "can't verify the sandbox: claude",
   );
-  assert.deepEqual(stopped, ["unsandboxed agent: claude", "unsandboxed agent: claude"]);
+  assert.deepEqual(stopped, ["can't verify the sandbox: claude", "can't verify the sandbox: claude"]);
   let calls = 0;
   const retried = unsandboxedAgents(row, {
     rootPid: 100,
@@ -326,20 +327,20 @@ test("a sandbox helper that can't answer counts the agent as unsandboxed, and th
   assert.equal(underProfile([0]).ok, false);
   assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) }), null);
   assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: true }) }).reason, "unsandboxed agent: claude");
-  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, sandboxOf: () => { throw new Error("down"); } }).reason, "unsandboxed agent: claude");
+  assert.equal(unsandboxedAgents(row, { rootPid: 100, wrapper, sandboxOf: () => { throw new Error("down"); } }).reason, "can't verify the sandbox: claude");
 });
 
-test("a helper that is missing, errors, or returns anything but 0 or 1 counts that pid as unsandboxed and stops the round", () => {
+test("a helper that is missing or errors can't be verified, and any answer but 1 is unsandboxed; both stop the round", () => {
   const wrapper = "/private/var/bench/bin/claude";
   const row = "  240 100 /usr/bin/claude";
   const watch = (execFile) => ({ rootPid: 100, wrapper, execFile });
-  const stop = (execFile) => {
+  const stop = (execFile, reason = "unsandboxed agent: claude") => {
     const stopped = [];
     const hit = finishSceneAgents(row, watch(execFile), (why) => stopped.push(why));
-    assert.equal(hit.reason, "unsandboxed agent: claude");
+    assert.equal(hit.reason, reason);
     assert.equal(isHardStop(hit.reason), true);
     assert.equal(exitCodeForStop(hit.reason), 1);
-    assert.deepEqual(stopped, ["unsandboxed agent: claude"]);
+    assert.deepEqual(stopped, [reason]);
     const status = underProfile([240], { execFile });
     assert.notEqual(status.byPid?.get(240), true);
     assert.equal(status.byPid.get(240), false);
@@ -359,16 +360,17 @@ test("a helper that is missing, errors, or returns anything but 0 or 1 counts th
   assert.equal(missingCalls, 2);
   assert.equal(missed.ok, false);
   assert.equal(missed.byPid.get(240), false);
-  stop(missing);
+  const unverified = "can't verify the sandbox: claude";
+  stop(missing, unverified);
   const timedOut = Object.assign(new Error("spawnSync python3 ETIMEDOUT"), { code: "ETIMEDOUT" });
   stop(() => {
     throw timedOut;
-  });
+  }, unverified);
   stop(() => {
     throw new Error("dyld: Library not loaded");
-  });
-  stop(() => "not-json");
-  stop(() => "");
+  }, unverified);
+  stop(() => "not-json", unverified);
+  stop(() => "", unverified);
   for (const value of [2, -1, null, "1", "0", false, 0]) {
     stop(() => JSON.stringify({ 240: value }));
   }
