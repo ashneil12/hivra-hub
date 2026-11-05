@@ -81,8 +81,33 @@ let settingsCopy: {
  * copy; it must not put that copy back over a write that landed while it was reading.
  */
 let settingsGeneration = 0;
+/**
+ * The settings writes this window has started and not finished. A refresh waits for
+ * these before it reads, so a save that has not reached the store yet is not put back.
+ */
+let settingsEpoch: Promise<void> = Promise.resolve();
+/**
+ * Bumped when this window changes its own queue. A refresh that already read the
+ * store must not put that list back over a job this window added or removed.
+ */
+let queueRevision = 0;
 function wroteSettings(): void {
   settingsGeneration += 1;
+}
+function noteQueueEdit(): void {
+  queueRevision += 1;
+}
+function noteSettingsWrite(work: Promise<unknown>): void {
+  const tracked = settingsEpoch.then(() => work.then(() => undefined, () => undefined));
+  settingsEpoch = tracked;
+}
+async function whenSettingsSettled(): Promise<void> {
+  let epoch = settingsEpoch;
+  await epoch;
+  while (epoch !== settingsEpoch) {
+    epoch = settingsEpoch;
+    await epoch;
+  }
 }
 
 const clampCount = (n: unknown, fallback: number) =>
@@ -111,9 +136,11 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
     limits: { ...settingsCopy.limits, [project]: { ...settingsCopy.limits[project], workers, heavy } },
   };
   changed();
-  void backend
-    .setLimits(project, { workers, heavy })
-    .catch((error: unknown) => console.warn("Could not save the project's worker limits", error));
+  noteSettingsWrite(
+    backend
+      .setLimits(project, { workers, heavy })
+      .catch((error: unknown) => console.warn("Could not save the project's worker limits", error)),
+  );
   return {
     workers,
     heavy,
@@ -151,9 +178,11 @@ export function setSystemWorkerDefault(choice: WorkerPick | undefined): void {
   wroteSettings();
   settingsCopy = { ...settingsCopy, workerDefault: clean };
   changed();
-  void backend
-    .setWorkerDefault(clean)
-    .catch((error: unknown) => console.warn("Could not save the worker default", error));
+  noteSettingsWrite(
+    backend
+      .setWorkerDefault(clean)
+      .catch((error: unknown) => console.warn("Could not save the worker default", error)),
+  );
 }
 
 /** Saves (or clears, with undefined) one project's own worker model; its limits are left as they are. */
@@ -173,9 +202,11 @@ export function setProjectWorkerModel(
     },
   };
   changed();
-  void backend
-    .setModel(project, choice)
-    .catch((error: unknown) => console.warn("Could not save the project's worker model", error));
+  noteSettingsWrite(
+    backend
+      .setModel(project, choice)
+      .catch((error: unknown) => console.warn("Could not save the project's worker model", error)),
+  );
 }
 
 /**
@@ -200,7 +231,9 @@ export function markHeavy(childSession: string): void {
   wroteSettings();
   settingsCopy = { ...settingsCopy, heavy: new Set([...settingsCopy.heavy, childSession]) };
   changed();
-  void backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error));
+  noteSettingsWrite(
+    backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error)),
+  );
 }
 export function isHeavy(childSession: string): boolean {
   return settingsCopy.heavy.has(childSession);
@@ -461,6 +494,7 @@ let loading: Promise<void> | undefined;
 export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   unsubscribe?.();
   backend = next;
+  noteQueueEdit();
   copy = [];
   wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
@@ -513,7 +547,16 @@ export function loadWorkerQueue(): Promise<void> {
 export async function refreshWorkerQueue(): Promise<void> {
   const seen = settingsGeneration;
   try {
+    // A save bumps the generation before the store has it. Wait, then read both together.
+    await whenSettingsSettled();
+    const revision = queueRevision;
     const [jobs, settings] = await Promise.all([backend.list(), backend.settings()]);
+    // This window added or removed a job while that list was being read. The list is
+    // already behind the local queue, so keep the local one. The edit's own refresh reads again.
+    if (revision !== queueRevision) {
+      changed();
+      return;
+    }
     copy = jobs;
     // A save landed while this read was in flight. Keep that save; this copy is older.
     if (seen !== settingsGeneration) {
@@ -539,6 +582,7 @@ export function claimWorker(id: string): Promise<boolean> {
 /** It started (or its start was refused): out of the queue, if this window still holds it. */
 export function finishWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
+    noteQueueEdit();
     copy = copy.filter((q) => q.id !== id);
     changed();
   }
@@ -558,6 +602,7 @@ export function queuedWorker(id: string): QueuedWorker | undefined {
 /** Waits in order; asking again with the same request keeps its place. */
 export function enqueueWorker(job: QueuedWorker): Promise<void> {
   if (!copy.some((q) => q.id === job.id)) {
+    noteQueueEdit();
     copy = [...copy, job];
     changed();
   }
@@ -569,6 +614,7 @@ export function enqueueWorker(job: QueuedWorker): Promise<void> {
 /** Out of the queue (it started, or was taken back). Resolves true when this call removed it from the store. */
 export function dequeueWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
+    noteQueueEdit();
     copy = copy.filter((q) => q.id !== id);
     changed();
   }
@@ -834,7 +880,9 @@ export function resetWorkerPool(): void {
   unsubscribe?.();
   unsubscribe = undefined;
   backend = memoryWorkerQueue();
+  noteQueueEdit();
   copy = [];
+  settingsEpoch = Promise.resolve();
   wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
