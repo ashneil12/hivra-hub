@@ -41,6 +41,10 @@ impl Frame {
         }
     }
 
+    pub fn tag(&self) -> &str {
+        &self.tag
+    }
+
     /// One value from GitHub, framed and defused. An empty value carries nothing and needs no frame.
     pub fn wrap(&self, value: &str) -> String {
         if value.is_empty() {

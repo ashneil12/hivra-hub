@@ -795,6 +795,15 @@ fn trash_subtree(
     Ok(())
 }
 
+/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line.
+fn pickup_text(source: &str, number: i64, title: &str, description: &str) -> String {
+    if source == "github" {
+        crate::github_issues::brief::pickup(number, title, description)
+    } else {
+        format!("pick up task #{number}")
+    }
+}
+
 fn wake(conn: &Connection, owner: &str, key: &str, text: &str, now: i64) -> Result<(), String> {
     if owner == "person" || !crate::watcher::queue::session_ok(owner) {
         return Ok(());
@@ -1115,7 +1124,7 @@ pub(crate) fn create_in(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &format!("pick up task #{number}"),
+                &pickup_text(&row.source, number, &row.title, &row.description),
                 now,
             )?;
         }
@@ -1335,7 +1344,12 @@ pub(crate) fn update_in(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &format!("pick up task #{number}"),
+                &pickup_text(
+                    &source_read(&row.source),
+                    number,
+                    &next_title,
+                    &next_description,
+                ),
                 now,
             )?;
         }

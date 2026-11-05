@@ -1,6 +1,7 @@
 //! WP-77: a project's labelled GitHub issues and pull requests become tasks.
 //! Reads only. A dev copy uses the `gh` stand-in and never a real account.
 
+pub(crate) mod brief;
 mod gh;
 mod rules;
 mod sync;
