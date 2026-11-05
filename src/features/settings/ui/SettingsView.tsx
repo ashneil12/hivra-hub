@@ -20,6 +20,7 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -1035,6 +1036,16 @@ function GeneralPage({
           description="Leave it empty and they say “the user”."
         >
           <UserNameField />
+        </Row>
+      </Group>
+      {/* WP-88: the morning note under the chat on Home. */}
+      <Group title="Home" description="The morning note under the chat.">
+        <Row
+          id="morning-summary"
+          label="Morning summary"
+          description="A few lines in the morning, when there is something to say."
+        >
+          <DailySummarySetting />
         </Row>
       </Group>
       <Group

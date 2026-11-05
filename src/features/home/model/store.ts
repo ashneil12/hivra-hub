@@ -27,6 +27,8 @@ export type HomeDoc = {
   arrangement: HomeArrangement;
   recent: HomeChat[];
   savedAt: number;
+  /** WP-88: only an explicit false turns the morning summary off. */
+  dailySummary?: false;
 };
 
 export type HomeStorage = {
@@ -73,7 +75,7 @@ export function parseHomeDoc(raw: unknown): HomeDoc {
     }
   }
   const savedAt = typeof rec.savedAt === "number" && Number.isFinite(rec.savedAt) ? rec.savedAt : arrangement.savedAt;
-  return { arrangement, recent, savedAt };
+  return { arrangement, recent, savedAt, ...(rec.dailySummary === false ? { dailySummary: false as const } : {}) };
 }
 
 export function withChat(doc: HomeDoc, chat: HomeChat): HomeDoc {
@@ -87,12 +89,20 @@ function stamp(doc: HomeDoc, now: number): HomeDoc {
     arrangement: { ...doc.arrangement, savedAt: now },
     recent: doc.recent,
     savedAt: now,
+    ...(doc.dailySummary === false ? { dailySummary: false as const } : {}),
   };
 }
 
 function sameBody(a: HomeDoc, b: HomeDoc): boolean {
-  return JSON.stringify({ arrangement: { order: a.arrangement.order, hidden: a.arrangement.hidden }, recent: a.recent })
-    === JSON.stringify({ arrangement: { order: b.arrangement.order, hidden: b.arrangement.hidden }, recent: b.recent });
+  return JSON.stringify({
+    arrangement: { order: a.arrangement.order, hidden: a.arrangement.hidden },
+    recent: a.recent,
+    dailySummary: a.dailySummary === false,
+  }) === JSON.stringify({
+    arrangement: { order: b.arrangement.order, hidden: b.arrangement.hidden },
+    recent: b.recent,
+    dailySummary: b.dailySummary === false,
+  });
 }
 
 function mirrorOf(storage: HomeStorage): HomeDoc | null {
