@@ -10,7 +10,7 @@ This is a plan only; I changed nothing. Cut every package from `hub/next` once P
 | | Daily app | Dev copy ("slot") |
 |---|---|---|
 | Identifier | `com.ash.monocode-hub` | `com.ash.monocode-hub.dev.<slot>` (slot = worktree folder name; a 4-character path hash is added only on a clash) |
-| Window | MonoCode Hub | "MonoCode Hub Dev - <branch> @ <sha>" with a DEV ribbon |
+| Window | Hivra | "Hivra Dev - <branch> @ <sha>" with a DEV ribbon |
 | Data folder | `~/Library/Application Support/com.ash.monocode-hub` | `…/com.ash.monocode-hub.dev.<slot>` (its own browser storage and settings too) |
 | Port | none | 1430 + 10 × (hash mod 50); the next free one if taken |
 

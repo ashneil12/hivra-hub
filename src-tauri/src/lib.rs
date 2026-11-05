@@ -51,6 +51,8 @@ mod memory_review;
 mod hub_plugin;
 mod inbox_media;
 pub mod instance;
+// WP-07: the name a person reads. Not the bundle name.
+mod display_name;
 mod jira;
 mod jsonc;
 mod land;
