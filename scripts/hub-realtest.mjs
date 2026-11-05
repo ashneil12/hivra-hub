@@ -33,6 +33,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { appsFromPs, benchDenyRules, exitCodeForStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
@@ -225,7 +226,7 @@ export function planFlags(options) {
 }
 
 /** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
-export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script }) {
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings }) {
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     "#!/bin/sh",
@@ -237,6 +238,10 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     ...(grok ? ["export REALTEST_GROK_SUB=1"] : []),
     `export REALTEST_EFFORT=${quote(effort)}`,
     `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
+    ...(realHome ? [`export REALTEST_REAL_HOME=${quote(realHome)}`] : []),
+    ...(allowed ? [`export REALTEST_ALLOWED=${quote(JSON.stringify(allowed))}`] : []),
+    ...(devData ? [`export REALTEST_DEV_DATA=${quote(devData)}`] : []),
+    ...(benchSettings ? [`export REALTEST_BENCH_SETTINGS=${quote(benchSettings)}`] : []),
     `exec ${quote(node)} ${quote(script)} "$@"`,
     "",
   ].join("\n");
@@ -305,8 +310,8 @@ async function main() {
     const { gradeRun } = await import("./hub-realtest-grade.mjs");
     return gradeRun(path.resolve(options.gradeOnly), { claudeConfig: DEV_CLAUDE_CONFIG, ...graderVia(options) });
   }
-  await runBench(options);
-  return 0;
+  const outcome = await runBench(options);
+  return exitCodeForStop(outcome?.stopReason);
 }
 
 /**
@@ -372,9 +377,14 @@ export async function runBench(options, hooks = {}) {
     clearInterval(pumpTimer);
     // No new turns from here on: the wrapper refuses them once this file exists.
     try {
-      fs.writeFileSync(path.join(state, "stop"), "run ended\n");
+      if (!String(stopReason ?? "").startsWith("touched a real app")) fs.writeFileSync(path.join(state, "stop"), "run ended\n");
     } catch {
       // gone
+    }
+    try {
+      stopDummy(state);
+    } catch {
+      // the dummy was already gone
     }
     if (app && alive(app.pid)) {
       try {
@@ -533,6 +543,25 @@ export async function runBench(options, hooks = {}) {
     }
     fs.cpSync(memoryDir, path.join(evidence, "memory-before"), { recursive: true });
 
+    // Bench denies live in a settings file under the temporary HOME. The shared dev config is never written.
+    const allowedRoots = [scratch, home, project, projects, memoryDir];
+    const settingsFile = path.join(home, ".monocode-hub-bench", "settings.json");
+    writeBenchSettings(settingsFile, {
+      rules: benchDenyRules({ realHome: REAL_HOME, allowed: allowedRoots }),
+      node: process.execPath,
+      hook: path.join(ROOT, "scripts/bench-guard-hook.mjs"),
+      realHome: REAL_HOME,
+      devData: dataDir,
+      allowed: allowedRoots,
+      home,
+      devConfig: DEV_CLAUDE_CONFIG,
+    });
+    try {
+      startDummy(state);
+    } catch (error) {
+      log(`bench dummy did not start: ${error.message}`);
+    }
+
     // -- the claude wrapper -----------------------------------------------------------------------------------------------
     // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
@@ -550,6 +579,10 @@ export async function runBench(options, hooks = {}) {
         grok: !!options.grokSub,
         node: process.execPath,
         script: path.join(ROOT, "scripts/hub-realtest-claude.mjs"),
+        realHome: REAL_HOME,
+        allowed: allowedRoots,
+        devData: dataDir,
+        benchSettings: settingsFile,
       }),
       { mode: 0o755 },
     );
@@ -747,7 +780,7 @@ export async function runBench(options, hooks = {}) {
         watched.stop && !(unmetered && !Object.keys(limitedNow).length) ? watched.stop
         : now.turns >= budget.maxTurns || now.requests >= budget.maxRequests ? `budget spent: ${now.turns} turns, ${now.requests} requests`
         : Date.now() > deadline ? "time budget spent" : null;
-      if (why && !fs.existsSync(path.join(state, "stop"))) {
+      if (why && !fs.existsSync(path.join(state, "stop")) && !String(stopReason ?? "").startsWith("touched a real app")) {
         fs.writeFileSync(path.join(state, "stop"), `${why}\n`);
         stopReason = why;
         log(`STOP: ${why}: the claude wrapper now refuses new turns and the remaining scenarios are skipped`);
@@ -872,7 +905,24 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, home, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
+    const stopRun = (why) => {
+      const text = String(why ?? "").trim();
+      if (!text || String(stopReason ?? "").startsWith("touched a real app")) return;
+      stopReason = text;
+      try {
+        fs.writeFileSync(path.join(state, "stop"), `${text}\n`);
+      } catch {
+        // the run folder went away
+      }
+    };
+    const listApps = () => {
+      try {
+        return appsFromPs(execFileSync("ps", ["-ax", "-ww", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }), REAL_HOME);
+      } catch {
+        return null;
+      }
+    };
+    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, home, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate, stopRun, listApps, readDummy: () => readDummy(state), realHome: REAL_HOME, allowed: allowedRoots };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");
@@ -882,7 +932,7 @@ export async function runBench(options, hooks = {}) {
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
     }
     for (const scenario of scenarios) {
-      if (stopReason && scenario.since !== "run") {
+      if (stopReason && (scenario.since !== "run" || String(stopReason).startsWith("touched a real app"))) {
         results.push({ id: scenario.id, title: scenario.title, skipped: stopReason });
         continue;
       }
@@ -905,7 +955,7 @@ export async function runBench(options, hooks = {}) {
         results.push({ id: scenario.id, title: scenario.title, error: error.message });
       }
       fs.writeFileSync(path.join(evidence, "results.json"), JSON.stringify(results, null, 2));
-      if (usage().turns >= budget.maxTurns || usage().requests >= budget.maxRequests) fs.writeFileSync(path.join(state, "stop"), "budget spent\n");
+      if ((usage().turns >= budget.maxTurns || usage().requests >= budget.maxRequests) && !String(stopReason ?? "").startsWith("touched a real app")) fs.writeFileSync(path.join(state, "stop"), "budget spent\n");
     }
 
     // -- the end ------------------------------------------------------------------------------------------------------------------
