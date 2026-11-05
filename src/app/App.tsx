@@ -102,6 +102,8 @@ import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { ensureMorningHabit } from "../features/chief/model/habit";
+import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
@@ -9558,7 +9560,15 @@ function Workspace({
                 : team
                   ? `${team.id}-lead`
                   : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt);
+            // WP-88: a Mono that reads every project recalls every mate's reviewed memory.
+            // The soul file counts, the same way the tools do. A timeout still recalls nothing.
+            const recallWide = (await turnRecallWide(monoForSession(sessionId), async () => {
+              if (!agentFiles) throw new Error("unread");
+              return agentFiles.soul;
+            }))
+              ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
+              : undefined;
+            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
           }
           await sendTurn(sendText);
@@ -14164,6 +14174,18 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-88: projects on this copy, the activity log, and reviewed memory.
+            knownProjects: () => hubData().listProjects().map((project) => ({
+              id: project.id,
+              name: project.name,
+              folder: project.folder ?? null,
+            })),
+            activityList: (query) => invoke("activity_list", { query }),
+            memoryDoc: async () => {
+              const loaded = await invoke<{ doc?: unknown } | null>("memory_review_load");
+              return loaded?.doc ?? null;
+            },
+            mateIds: () => listMonos().map((item) => item.id),
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
@@ -14188,6 +14210,8 @@ function Workspace({
                     : {}),
                   // WP-21: this Mono's crew rules go with the route.
                   ...(mono.crewRules?.length ? { crewRules: mono.crewRules } : {}),
+                  ...(mono.instructions ? { instructions: mono.instructions } : {}),
+                  ...(mono.everyProject === true ? { everyProject: true } : {}),
                   // WP-89: this Mono's worker default goes with the route.
                   ...(mono.workerDefault ? { workerDefault: mono.workerDefault } : {}),
                 }
@@ -14200,7 +14224,20 @@ function Workspace({
               const mono = findMono(monoId);
               return mono ? monoLook(mono).name : undefined;
             },
-            habits: { load: loadHabits, update: updateHabits },
+            habits: {
+              load: async (monoId: string) => {
+                const list = await loadHabits(monoId);
+                // WP-88: the morning note is one habit. An edited one is left alone. A timeout keeps the old list.
+                if (!readsEveryProject(findMono(monoId))) return list;
+                try {
+                  await ensureMorningHabit(monoId, loadHabits, async (id, change) => updateHabits(id, change), Date.now());
+                } catch {
+                  return list;
+                }
+                return loadHabits(monoId).catch(() => list);
+              },
+              update: updateHabits,
+            },
             tasks: delegationTasksHost({
               backend: tauriDelegations,
               firstMate: steering,

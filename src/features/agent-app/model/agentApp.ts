@@ -117,6 +117,7 @@ import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppT
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
+import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
@@ -247,6 +248,9 @@ export type AgentAppHost = {
     team?: string;
     /** WP-21: crew rules stored on this Mono. */
     crewRules?: CrewRule[];
+    /** WP-88: the soul text and the person's switch. Scope stays off unless both say yes. */
+    instructions?: string;
+    everyProject?: boolean;
     /** WP-89: the worker default stored on this Mono. */
     workerDefault?: WorkerPick;
   } | undefined;
@@ -320,6 +324,14 @@ export type AgentAppHost = {
   codingTeamOf?(sessionId: string): { project: string; name: string; folder: string } | undefined;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat or a coding-team chat only. */
   tasks?: AgentAppTasksHost;
+  /** WP-88: projects on this copy. A Mono that reads every project cannot name one that is not here. */
+  knownProjects?: () => readonly { id: string; name: string; folder: string | null }[];
+  /** WP-88: the activity log. The handler sets the project; the model cannot widen it. */
+  activityList?: (query: Record<string, unknown>) => Promise<unknown>;
+  /** WP-88: reviewed memory for recall. Writes stay on memory.add. */
+  memoryDoc?: () => Promise<unknown>;
+  /** WP-88: mate ids on this copy, for a wide recall. */
+  mateIds?: () => readonly string[];
   /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
   taskStore?(
     command: "tasks_list" | "tasks_get" | "tasks_create" | "tasks_update",
@@ -398,6 +410,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["souls.merge", ["mono", "text", "expectedHash"]],
   ["memory.read", ["topic"]],
   ["memory.search", ["query", "since"]],
+  // WP-88: reviewed memory across this copy, read only.
+  ["memory.recall", ["query"]],
   ["memory.add", ["fact", "topic", "until"]],
   ["memory.replace", ["find", "fact", "topic", "until"]],
   ["memory.remove", ["find", "topic"]],
@@ -422,6 +436,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
+  // WP-88: the activity log, read only.
+  ["activity.list", ["project", "agent", "kind", "search", "before", "limit"]],
 ]);
 
 /**
@@ -1530,6 +1546,8 @@ export async function handleAgentApp(
       host.now?.() ?? new Date(),
     );
   }
+  if (action === "activity.list") return handleActivity(source, input, host);
+  if (action === "memory.recall") return handleMemoryRecall(source, input, host);
   if (action.startsWith("memory."))
     return handleMemory(source, action, input, host);
   if (action.startsWith("skills."))
