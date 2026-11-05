@@ -2102,6 +2102,19 @@ export class Orchestrator {
             )
           )
             continue;
+          // WP-91: an irreversible step waits for the person's decision before any checkout or process is made, and
+          // the question is raised as soon as its task is ready rather than when a worker slot frees up.
+          if (task.irreversible && !task.irreversibleAnswered) {
+            const gate = await this.gateIrreversible(run.leadId, task);
+            if (gate === "sent-back") {
+              void this.refreshGoalReport(run.leadId);
+              continue;
+            }
+            if (gate === "wait") {
+              this.sync();
+              continue;
+            }
+          }
           if (
             run.tasks.some(
               (entry) =>
@@ -2112,18 +2125,6 @@ export class Orchestrator {
           if (!this.host.session(run.leadId)) {
             await this.stopRun(run.leadId);
             break;
-          }
-          // WP-91: an irreversible step waits for the person's decision before any checkout or process is made.
-          if (task.irreversible && !task.irreversibleAnswered) {
-            const gate = await this.gateIrreversible(run.leadId, task);
-            if (gate === "sent-back") {
-              await this.refreshGoalReport(run.leadId);
-              continue;
-            }
-            if (gate === "wait") {
-              this.sync();
-              continue;
-            }
           }
           const retryAt = task.poolRetryAt;
           if (

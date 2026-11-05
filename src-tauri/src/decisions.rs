@@ -467,6 +467,23 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
+/// WP-91: the decision keys only the person may answer, whatever path asked.
+///
+/// An irreversible step of an orchestration run is parked under `irreversible/<lead>/<task>`. A person answers it in
+/// the app (`by` absent or `"user"`); a chat answering on a first mate's behalf (`chat:<session>`) and autopilot both
+/// count as a machine, and are refused here rather than trusted to hold it.
+pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
+    if !key.starts_with("irreversible/") {
+        return None;
+    }
+    match by.map(str::trim).filter(|word| !word.is_empty()) {
+        None | Some("user") | Some("person") => None,
+        Some(other) => Some(format!(
+            "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
+        )),
+    }
+}
+
 pub fn answer(
     conn: &mut Connection,
     project: &str,
@@ -494,6 +511,11 @@ pub fn answer(
             released: Vec::new(),
             released_tasks: Vec::new(),
         });
+    }
+    // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
+    // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked.
+    if let Some(refusal) = person_only(decision.decision_key.trim(), by.as_deref()) {
+        return Err(refusal);
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
