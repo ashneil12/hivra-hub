@@ -171,6 +171,9 @@ test("--agents grok-sub points at the Grok launcher and leaves the grader on Dee
   assert.match(script, /REALTEST_GROK_SUB=1/);
   assert.match(script, /REALTEST_MODEL='sonnet'/);
   assert.doesNotMatch(script, /claude-fable-5/);
+  assert.doesNotMatch(script, /REALTEST_APP_BIN/);
+  const withBin = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", appBin: "/tmp/state/monocode" });
+  assert.match(withBin, /REALTEST_APP_BIN='\/tmp\/state\/monocode'/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

@@ -142,10 +142,10 @@ function block(head, paths, extras = []) {
 
 /**
  * The profile for this run. realHome is closed for reads except the run folders and the listed read-only files.
- * Writes are the run folders only. Shared temp dirs stay closed; the run sets TMPDIR inside its own folder.
+ * Writes are the run folders only. Shared temp dirs stay closed. Claude Code's shell temp follows CLAUDE_CODE_TMPDIR, which the run sets inside its own folder.
  * Outbound network is the named loopback ports only.
  */
-export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, network = [], systemTemps = [] } = {}) {
+export function benchSandboxProfile({ realHome, home, project, allowed = [], devData, readOnly = [], builtApp, cli, appBin, network = [], systemTemps = [] } = {}) {
   const real = clean(realHome);
   if (!real || real === "/") throw new Error("the real home isn't a path the sandbox can close");
   const tempHome = clean(home);
@@ -177,6 +177,7 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
     if (abs.startsWith("/Users/") && !inside(abs, real) && !runRoots.some((root) => inside(abs, root))) continue;
     extras.push({ path: abs, reason });
   }
+  const appFile = appCliRead(appBin, { realHome: real });
   const temps = unique(systemTemps.map((item) => clean(item)).filter((abs) => abs && abs !== "/"));
   const reads = unique(SYSTEM_READS.map((item) => clean(item)).filter((abs) => abs && abs !== "/"));
   const lines = [];
@@ -215,7 +216,11 @@ export function benchSandboxProfile({ realHome, home, project, allowed = [], dev
     lines.push(`;; ${item.reason}`);
     lines.push(block("allow file-read*", [item.path]));
   }
-  lines.push(";; Writes: this run's folders only, including the real path when /tmp or /var/folders is a symlink. The shared temp dirs themselves stay closed. The run sets TMPDIR inside its own folder. No other path there is allowed: no CLI spawn has shown it needs one.");
+  if (appFile) {
+    lines.push(";; This run's monocode, one file, so the agent shell can run it. The worktree around it stays closed.");
+    lines.push(`(allow file-read*\n    (literal ${quote(appFile)})\n)`);
+  }
+  lines.push(";; Writes: this run's folders only, including the real path when /tmp or /var/folders is a symlink. The shared temp dirs themselves stay closed. Claude Code's shell temp is join(CLAUDE_CODE_TMPDIR or /tmp, claude-<uid>, the cwd with non-letters replaced by dashes). It does not read TMPDIR. The run sets CLAUDE_CODE_TMPDIR inside its own folder, so /private/tmp/claude-<uid> stays closed: the user's own Claude sessions use that parent.");
   const firstWrite = unique([...runRoots, ...temps]);
   if (firstWrite.length) lines.push(block("allow file-write*", firstWrite, ['(literal "/dev/null")', '(literal "/dev/tty")', '(literal "/dev/dtracehelper")']));
   lines.push(block("deny file-write*", [real]));
@@ -405,6 +410,7 @@ export function agentCommand(bin, args, env = {}, deps = {}) {
       readOnly,
       builtApp: env.REALTEST_BUILT_APP,
       cli: bin,
+      appBin: env.REALTEST_APP_BIN,
       network: deps.network ?? namedLoopbackPorts(env, deps),
     });
   } catch (error) {
@@ -459,6 +465,59 @@ export function privateTempDir(env = {}) {
   return "";
 }
 
+/** Temp variables for one run. Empty is omitted: Claude Code treats an empty CLAUDE_CODE_TMPDIR as unset and uses /tmp. */
+export function privateTempEnv(dir) {
+  if (!dir) return {};
+  return { TMPDIR: dir, TMP: dir, TEMP: dir, CLAUDE_TMPDIR: dir, CLAUDE_CODE_TMPDIR: dir };
+}
+
+/**
+ * Claude Code's shell temp for this cwd. Np() returns CLAUDE_CODE_TMPDIR when it is set, otherwise /tmp.
+ * It does not read TMPDIR. The shell directory is that root, then claude-<uid>, then the cwd with every
+ * non-alphanumeric replaced by "-". A slug longer than 200 also grows a hash; the directory is still under this root.
+ */
+export function claudeShellTemp(cwd, env = {}, { uid = process.getuid?.() ?? 0, resolve = true } = {}) {
+  const given = typeof env.CLAUDE_CODE_TMPDIR === "string" ? env.CLAUDE_CODE_TMPDIR.trim() : "";
+  const root = given.startsWith("/") ? given.replace(/\/+$/, "") || "/" : "/tmp";
+  const base = `${root}/claude-${uid}`;
+  let resolved = base;
+  if (resolve) {
+    try {
+      const real = fs.realpathSync(base);
+      if (typeof real === "string" && real.startsWith("/")) resolved = real;
+    } catch {
+      // not there yet: the path above is the one Claude would mkdir
+    }
+  }
+  return `${resolved}/${String(cwd ?? "").replace(/[^a-zA-Z0-9]/g, "-")}`;
+}
+
+/**
+ * The one monocode file a bench agent may read. The name must be monocode. Under the real home it must sit in
+ * Worktrees, never .ssh, .claude, Projects, agent-memory or Library. A /Users path outside this home is refused.
+ */
+export function appCliRead(abs, { realHome } = {}) {
+  const file = clean(abs);
+  if (!file || file === "/" || path.posix.basename(file) !== "monocode") return null;
+  const home = clean(realHome);
+  if (home && home !== "/" && (file === home || ancestorOf(file, home))) return null;
+  if (file.startsWith("/Users/") && (!home || !inside(file, home))) return null;
+  if (home && inside(file, home)) {
+    const top = file.slice(home.length + 1).split("/")[0];
+    if (top !== "Worktrees") return null;
+  }
+  return file;
+}
+
+/** A home that is not the real one, so a login profile can be written there. Null when it isn't safe. */
+export function isolatedHome(home, realHome) {
+  const h = clean(home);
+  const r = clean(realHome);
+  if (!h || h === "/" || !r || r === "/") return null;
+  if (h === r || inside(h, r) || ancestorOf(h, r)) return null;
+  return h;
+}
+
 /** A home and a state dir that are not the real home, so a grader or tester can use the same profile. */
 export function cliSandboxEnv(env = {}) {
   const real = clean(env.REALTEST_REAL_HOME) || clean(os.homedir());
@@ -478,10 +537,7 @@ export function cliSandboxEnv(env = {}) {
   return {
     ...env,
     HOME: home,
-    TMPDIR: temp,
-    TMP: temp,
-    TEMP: temp,
-    CLAUDE_TMPDIR: temp,
+    ...(temp ? privateTempEnv(temp) : { TMPDIR: "", TMP: "", TEMP: "", CLAUDE_TMPDIR: "" }),
     REALTEST_REAL_HOME: real,
     REALTEST_STATE: state,
     REALTEST_CLAUDE_CONFIG: env.REALTEST_CLAUDE_CONFIG || env.CLAUDE_CONFIG_DIR || "",

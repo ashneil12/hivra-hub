@@ -31,7 +31,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { benchDenyRules } from "./bench-guard.mjs";
-import { agentCommand, privateTempDir, sandboxCwd } from "./bench-sandbox.mjs";
+import { agentCommand, appCliRead, isolatedHome, privateTempDir, privateTempEnv, sandboxCwd } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -237,7 +237,12 @@ export function prepareBenchSpawn(args, env = {}) {
   return { ok: true, args: guarded };
 }
 
-/** The shim folder (made once per run) and the env that puts it first and stops browser opens. */
+/**
+ * The shim folder (made once per run) and the env that puts it first and stops browser opens.
+ * This run's monocode, when it names one, is linked here. A login shell resets PATH, so the temporary
+ * home gets a profile that puts this folder first again. Nothing is written when that home is the real one.
+ * The app's own login PATH is cached at startup, before a chat writes that profile.
+ */
 export function benchFenceEnv(env, state) {
   const bin = path.join(state, "bench-bin");
   try {
@@ -247,10 +252,35 @@ export function benchFenceEnv(env, state) {
       if (fs.existsSync(file)) continue;
       fs.writeFileSync(file, `#!/bin/sh\necho "${cli}: not available in the MonoCode test bench (no real accounts here; ask Ash)" >&2\nexit 1\n`, { mode: 0o755 });
     }
+    const app = appCliRead(env.REALTEST_APP_BIN, { realHome: env.REALTEST_REAL_HOME });
+    if (app) {
+      const link = path.join(bin, "monocode");
+      const tmp = path.join(bin, `.monocode-${process.pid}`);
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // not there
+      }
+      fs.symlinkSync(app, tmp);
+      fs.renameSync(tmp, link);
+    }
   } catch {
     // the run's folder went away: the deny rules still hold
   }
-  return { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}`, BROWSER: "false" };
+  const home = isolatedHome(env.HOME, env.REALTEST_REAL_HOME);
+  if (home) {
+    try {
+      if (fs.statSync(home).isDirectory()) {
+        const line = `export PATH='${bin.replace(/'/g, "'\\''")}':"$PATH"\n`;
+        for (const name of [".zprofile", ".bash_profile", ".profile"]) fs.writeFileSync(path.join(home, name), line);
+      }
+    } catch {
+      // not a home this run owns
+    }
+  }
+  const out = { ...env, PATH: `${bin}${path.delimiter}${env.PATH ?? ""}`, BROWSER: "false" };
+  delete out.ZDOTDIR;
+  return out;
 }
 
 /** Haiku test workers: every model is Haiku and no effort is sent (Haiku runs as the app runs its helper calls). */
@@ -355,13 +385,11 @@ function launchReal(args, env, stdio) {
   if (!launch.ok) return launch;
   const temp = privateTempDir(env);
   const spawned = { ...env, REALTEST_SANDBOX_PROFILE: launch.file };
+  delete spawned.ZDOTDIR;
   if (temp) {
     try {
       fs.mkdirSync(temp, { recursive: true });
-      spawned.TMPDIR = temp;
-      spawned.TMP = temp;
-      spawned.TEMP = temp;
-      spawned.CLAUDE_TMPDIR = temp;
+      Object.assign(spawned, privateTempEnv(temp));
     } catch {
       // a directory that isn't there is not where the CLI writes
     }

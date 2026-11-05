@@ -34,7 +34,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { appsFromPs, benchDenyRules, exitCodeForStop, isHardStop, readDummy, startDummy, stopDummy, writeBenchSettings } from "./bench-guard.mjs";
-import { privateTempDir } from "./bench-sandbox.mjs";
+import { privateTempDir, privateTempEnv } from "./bench-sandbox.mjs";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { cleanupOnExit, mergePatch, readNdjson } from "./hub-verify-live.mjs";
@@ -227,7 +227,7 @@ export function planFlags(options) {
 }
 
 /** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
-export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings }) {
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script, realHome, allowed, devData, benchSettings, appBin }) {
   const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
   return [
     "#!/bin/sh",
@@ -243,6 +243,7 @@ export function claudeWrapperScript({ state, realClaude, config, model, effort, 
     ...(allowed ? [`export REALTEST_ALLOWED=${quote(JSON.stringify(allowed))}`] : []),
     ...(devData ? [`export REALTEST_DEV_DATA=${quote(devData)}`] : []),
     ...(benchSettings ? [`export REALTEST_BENCH_SETTINGS=${quote(benchSettings)}`] : []),
+    ...(appBin ? [`export REALTEST_APP_BIN=${quote(appBin)}`] : []),
     `exec ${quote(node)} ${quote(script)} "$@"`,
     "",
   ].join("\n");
@@ -566,6 +567,7 @@ export async function runBench(options, hooks = {}) {
     // -- the claude wrapper -----------------------------------------------------------------------------------------------
     // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
+    const binary = path.join(ROOT, "target/debug/monocode");
     const claude = path.join(bin, "claude");
     fs.writeFileSync(
       claude,
@@ -584,6 +586,7 @@ export async function runBench(options, hooks = {}) {
         allowed: allowedRoots,
         devData: dataDir,
         benchSettings: settingsFile,
+        appBin: binary,
       }),
       { mode: 0o755 },
     );
@@ -598,7 +601,6 @@ export async function runBench(options, hooks = {}) {
     registerSlot(slot, home);
     writeSlotConfig(slot);
     const config = mergePatch(readJson(path.join(ROOT, "src-tauri/tauri.hub.conf.json")), readJson(slot.configFile));
-    const binary = path.join(ROOT, "target/debug/monocode");
     if (options.build) {
       log("building the dev copy (cargo build, shared cache) ...");
       const buildLog = fs.openSync(path.join(evidence, "build.log"), "w");
@@ -661,8 +663,9 @@ export async function runBench(options, hooks = {}) {
       MONOCODE_VERIFY_LIVE: planFile,
       MONOCODE_DEV_APP_NAME: `${DEV_PRODUCT} ${slot.slot}`,
       ...BENCH_GIT_ENV,
-      ...(runTmp ? { TMPDIR: runTmp, TMP: runTmp, TEMP: runTmp, CLAUDE_TMPDIR: runTmp } : {}),
+      ...(runTmp ? privateTempEnv(runTmp) : {}),
     });
+    delete appEnv.ZDOTDIR;
     // The run's own launch, and (r98, B5) its reopen after Ash's Quit: the same binary, HOME and data, in the background
     // (MONOCODE_HUB_BACKGROUND: an accessory app that never activates or comes forward, like `open -g`).
     let launches = 0;
