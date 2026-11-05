@@ -2,7 +2,7 @@
 // says what is in force. Nothing here writes. A value that isn't usable is refused
 // without being repeated.
 
-import { CLI_ORDER, cliLabel, isCli, isEffort } from "./clis";
+import { CLI_ORDER, EFFORTS, cliLabel, isCli, isEffort } from "./clis";
 import {
   resolveRoute,
   type Catalog,
@@ -93,7 +93,16 @@ function lookup(query: string, catalog: Catalog, cli?: string): { cli: string; m
         `${cliLabel(cli)} doesn't offer "${query}". It offers ${names.length ? joinAnd(names) : "nothing"}.`,
       );
     }
-    throw new Error(`No CLI offers "${query}".`);
+    const offeredNames: string[] = [];
+    for (const id of CLI_ORDER) {
+      for (const model of catalog[id] ?? []) {
+        const name = modelDisplay(model);
+        if (name && !offeredNames.includes(name)) offeredNames.push(name);
+      }
+    }
+    throw new Error(
+      `No CLI offers "${query}". They offer ${offeredNames.length ? joinAnd(offeredNames) : "nothing"}.`,
+    );
   }
   const where = [...new Set(top.map((hit) => hit.cli))];
   if (!cli && where.length > 1) {
@@ -130,11 +139,16 @@ function effortFits(model: CatalogModel | undefined, effort: string): boolean {
 }
 
 function checkEffort(effort: string, model: CatalogModel | undefined): void {
-  if (!isEffort(effort)) throw new Error(`"${effort}" isn't an effort.`);
-  if (model && model.efforts.length > 0 && !model.efforts.includes(effort)) {
-    throw new Error(
-      `${modelDisplay(model)} doesn't offer "${effort}". It offers ${joinAnd([...model.efforts])}.`,
-    );
+  if (model && model.efforts.length > 0) {
+    if (!model.efforts.includes(effort)) {
+      throw new Error(
+        `${modelDisplay(model)} doesn't offer "${effort}". It offers ${joinAnd([...model.efforts])}.`,
+      );
+    }
+    return;
+  }
+  if (!isEffort(effort)) {
+    throw new Error(`"${effort}" isn't an effort. The efforts are ${joinAnd([...EFFORTS])}.`);
   }
 }
 
@@ -305,6 +319,15 @@ export function crewRuleSentence(rules: readonly CrewRule[], catalog: Catalog): 
   }
   if (!notes.length) return "";
   return `Crew rules still send ${joinAnd(notes)}.`;
+}
+
+const ACTIVITY_SUMMARY_MAX = 500;
+
+/** The activity log refuses a summary over 500 characters. The chat card keeps the whole line. */
+export function activityNoteSummary(line: string): string {
+  const chars = Array.from(line);
+  if (chars.length <= ACTIVITY_SUMMARY_MAX) return line;
+  return chars.slice(0, ACTIVITY_SUMMARY_MAX).join("");
 }
 
 export function scopeClearLine(scope: Scope): string {

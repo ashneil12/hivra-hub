@@ -52,7 +52,7 @@ describe("a plain model name", () => {
 
   it("refuses a name no CLI offers, and one the named CLI doesn't, without saving", () => {
     expect(() => planWorkerChoice({ scope: "mono", model: "nope" }, undefined, catalog)).toThrow(
-      'No CLI offers "nope".',
+      'No CLI offers "nope". They offer Opus 4.7, Sonnet, Composer and Grok 4.',
     );
     expect(() => planWorkerChoice({ scope: "mono", cli: "cursor", model: "nope" }, undefined, catalog)).toThrow(
       'Cursor doesn\'t offer "nope". It offers Composer.',
@@ -75,7 +75,10 @@ describe("a plain model name", () => {
       planWorkerChoice({ scope: "project", cli: "cursor", model: "composer", effort: "max" }, undefined, catalog),
     ).toThrow('Composer doesn\'t offer "max". It offers medium and high.');
     expect(() => planWorkerChoice({ scope: "mono", model: "opus", effort: "huge" }, undefined, catalog)).toThrow(
-      '"huge" isn\'t an effort.',
+      'Opus 4.7 doesn\'t offer "huge". It offers low, high and max.',
+    );
+    expect(() => planWorkerChoice({ scope: "mono", effort: "huge" }, undefined, catalog)).toThrow(
+      '"huge" isn\'t an effort. The efforts are low, medium, high, xhigh and max.',
     );
   });
 
