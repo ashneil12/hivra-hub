@@ -11,7 +11,17 @@ export const HOME_DOC_KEY = "home";
 export const HOME_SETTING_KEY = "monocode:home";
 
 const TRIES = 5;
+const NOTE_TRIES = 4;
+const NOTE_WAIT_MS = 2000;
 const CHAT_CAP = 20;
+
+/** The store did not answer. Not an empty home. */
+export class HomeStoreUnavailable extends Error {
+  constructor() {
+    super("unavailable");
+    this.name = "HomeStoreUnavailable";
+  }
+}
 
 export type HomeDoc = {
   arrangement: HomeArrangement;
@@ -105,7 +115,7 @@ function remember(storage: HomeStorage, doc: HomeDoc): void {
 
 /**
  * Read, change, write on that revision. A null write is another window: read again and apply on top.
- * A throw (the store timed out, or it is not there) writes nothing and returns null. The caller keeps what it showed.
+ * A timeout is tried again. After the tries, nothing is written and the caller keeps what it showed.
  */
 export async function changeHome(
   disk: LocalHubDisk,
@@ -118,7 +128,8 @@ export async function changeHome(
     try {
       current = await disk.readDoc(HOME_DOC_KEY);
     } catch {
-      return null;
+      // A timeout is not a final failure. Try the read again.
+      continue;
     }
     const base = parseHomeDoc(current.value);
     let next: HomeDoc;
@@ -133,7 +144,8 @@ export async function changeHome(
     try {
       rev = await disk.write(HOME_DOC_KEY, stamped, current.rev);
     } catch {
-      return null;
+      // A timeout is not a saved failure. Try again on a fresh read.
+      continue;
     }
     if (rev == null) continue;
     remember(storage, stamped);
@@ -150,40 +162,59 @@ export async function readHome(
   disk: LocalHubDisk,
   storage: HomeStorage,
   now: () => number = Date.now,
-): Promise<{ doc: HomeDoc; rev: number }> {
+): Promise<{ doc: HomeDoc; rev: number; unavailable: boolean }> {
   let current: { value: unknown; rev: number };
   try {
     current = await disk.readDoc(HOME_DOC_KEY);
   } catch {
-    return { doc: emptyHomeDoc(), rev: 0 };
+    // A timeout is not an empty home. The mirror is what we can still show, and the caller tries the store again.
+    const mirror = mirrorOf(storage);
+    if (mirror && mirror.savedAt > 0) return { doc: mirror, rev: 0, unavailable: true };
+    throw new HomeStoreUnavailable();
   }
   const doc = parseHomeDoc(current.value);
   const mirror = mirrorOf(storage);
-  if (!mirror || mirror.savedAt <= doc.savedAt) return { doc, rev: current.rev };
+  if (!mirror || mirror.savedAt <= doc.savedAt) return { doc, rev: current.rev, unavailable: false };
   for (let attempt = 0; attempt < TRIES; attempt++) {
     let latest: { value: unknown; rev: number };
     try {
       latest = await disk.readDoc(HOME_DOC_KEY);
     } catch {
-      return { doc, rev: current.rev };
+      return { doc, rev: current.rev, unavailable: true };
     }
     const parsed = parseHomeDoc(latest.value);
-    if (mirror.savedAt <= parsed.savedAt) return { doc: parsed, rev: latest.rev };
+    if (mirror.savedAt <= parsed.savedAt) return { doc: parsed, rev: latest.rev, unavailable: false };
     const stamped = stamp(mirror, now());
     let rev: number | null;
     try {
       rev = await disk.write(HOME_DOC_KEY, stamped, latest.rev);
     } catch {
-      return { doc, rev: current.rev };
+      return { doc, rev: current.rev, unavailable: true };
     }
     if (rev == null) continue;
     remember(storage, stamped);
-    return { doc: stamped, rev };
+    return { doc: stamped, rev, unavailable: false };
   }
-  return { doc, rev: current.rev };
+  return { doc, rev: current.rev, unavailable: false };
 }
 
-/** Remember a chat the person opened. A failure leaves Recent as it was. */
-export function noteOpenedChat(chat: HomeChat, disk: LocalHubDisk = tauriLocalHubDisk, storage: HomeStorage = browserStorage()): Promise<{ doc: HomeDoc; rev: number } | null> {
-  return changeHome(disk, storage, (doc) => withChat(doc, chat)).catch(() => null);
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/** Remember a chat the person opened. A timeout is tried again. A failure leaves Recent as it was. */
+export async function noteOpenedChat(
+  chat: HomeChat,
+  disk: LocalHubDisk = tauriLocalHubDisk,
+  storage: HomeStorage = browserStorage(),
+  wait: (ms: number) => Promise<void> = delay,
+): Promise<{ doc: HomeDoc; rev: number } | null> {
+  for (let attempt = 0; attempt < NOTE_TRIES; attempt++) {
+    const written = await changeHome(disk, storage, (doc) => withChat(doc, chat)).catch(() => null);
+    if (written) return written;
+    if (attempt + 1 < NOTE_TRIES) await wait(NOTE_WAIT_MS);
+  }
+  return null;
 }

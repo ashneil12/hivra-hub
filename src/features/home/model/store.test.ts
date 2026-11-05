@@ -85,8 +85,64 @@ it("a timeout writes nothing and is not an empty home", async () => {
   expect(writes).toBe(0);
   expect(box.values.get(HOME_SETTING_KEY)).toContain("c1");
   const read = await readHome(disk, box, () => 9);
-  expect(read.doc.savedAt).toBe(0);
+  expect(read.unavailable).toBe(true);
+  expect(read.doc.savedAt).toBe(5);
+  expect(read.doc.recent.map((item) => item.id)).toEqual(["c1"]);
   expect(read.rev).toBe(0);
+  expect(writes).toBe(0);
+});
+
+it("a timed-out read with no mirror is a failure, not an empty home", async () => {
+  const disk = {
+    async readDoc() {
+      throw new Error("timeout");
+    },
+    async read() {
+      throw new Error("timeout");
+    },
+    async write() {
+      return 1;
+    },
+  };
+  await expect(readHome(disk, storage(), () => 9)).rejects.toThrow(/unavailable/);
+});
+
+it("tries a timed-out read again, and a chat survives a full pass of failures", async () => {
+  let reads = 0;
+  const recovering = {
+    async readDoc() {
+      reads += 1;
+      if (reads < 3) throw new Error("timeout");
+      return { value: { savedAt: 1, recent: [], arrangement: { order: [], hidden: [], savedAt: 1 } }, rev: 2 };
+    },
+    async read() {
+      return null;
+    },
+    async write() {
+      return 4;
+    },
+  };
+  const recovered = await changeHome(recovering, storage(), (doc) => withChat(doc, chat), () => 8);
+  expect(recovered?.doc.recent.map((item) => item.id)).toEqual(["c1"]);
+  expect(reads).toBe(3);
+
+  let stubborn = 0;
+  const disk = {
+    async readDoc() {
+      stubborn += 1;
+      if (stubborn <= 5) throw new Error("timeout");
+      return { value: null, rev: 0 };
+    },
+    async read() {
+      return null;
+    },
+    async write() {
+      return 1;
+    },
+  };
+  const noted = await noteOpenedChat(chat, disk, storage(), async () => undefined);
+  expect(noted?.doc.recent.map((item) => item.id)).toEqual(["c1"]);
+  expect(stubborn).toBeGreaterThan(5);
 });
 
 it("five refused writes give up without a mirror, and a thrown change writes nothing", async () => {
