@@ -27,6 +27,8 @@ pub struct Snapshot {
     pub kind: String,
     pub state: String,
     pub labels: Vec<String>,
+    /// GitHub login of whoever opened it. Empty when the row didn't say.
+    pub author: String,
 }
 
 /// A row `gh` returned that we will not sync and will not treat as "label removed".
@@ -56,6 +58,10 @@ pub trait IssuesGh {
     fn list(&mut self, kind: &str, repo: &str, search: &str) -> Result<String, String>;
     fn view_pr(&mut self, repo: &str, number: i64) -> Result<String, String>;
     fn view_repo(&mut self, cwd: &str) -> Result<String, String>;
+    /// `gh api user` → `.login`. A failure is not a login.
+    fn current_login(&mut self) -> Result<String, String>;
+    /// `gh api repos/{owner}/{repo}/collaborators/{login}/permission` → `.permission`.
+    fn collaborator_permission(&mut self, repo: &str, login: &str) -> Result<String, String>;
 }
 
 /// `gh issue list` / `gh pr list`, matching the Inbox's flags. `kind` is `issue` or `pr`.
@@ -66,9 +72,9 @@ pub fn list_args(kind: &str, repo: &str, search: &str) -> Vec<String> {
         "issue"
     };
     let fields = if gh_kind == "pr" {
-        "number,title,body,state,labels,mergedAt"
+        "number,title,body,state,author,labels,mergedAt"
     } else {
-        "number,title,body,state,labels"
+        "number,title,body,state,author,labels"
     };
     vec![
         gh_kind.to_string(),
@@ -159,7 +165,27 @@ fn read_item(row: &Value, kind: &str) -> ItemRead {
         kind: kind.to_string(),
         state,
         labels,
+        author: author_of(row),
     })
+}
+
+/// `author.login`, then a string `author`, then `user.login`. Missing is empty, not unreadable.
+fn author_of(row: &Value) -> String {
+    login_value(row.get("author"))
+        .or_else(|| login_value(row.get("user")))
+        .unwrap_or_default()
+}
+
+fn login_value(value: Option<&Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(_) => value
+            .get("login")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        _ => None,
+    }
 }
 
 /// Pull requests: `merged` when GitHub says so (the bool, or `mergedAt`). Otherwise closed or open.
@@ -203,6 +229,27 @@ pub fn parse_pull_view(json: &str, number: i64) -> Result<PullView, String> {
         title,
         url,
     })
+}
+
+pub fn parse_login(json: &str) -> Result<String, String> {
+    let row: Value =
+        serde_json::from_str(json).map_err(|_| "Couldn't read the GitHub login.".to_string())?;
+    let login = row.get("login").and_then(Value::as_str).unwrap_or("");
+    if rules::login_ok(login) {
+        Ok(login.to_string())
+    } else {
+        Err("Couldn't read the GitHub login.".into())
+    }
+}
+
+pub fn parse_permission(json: &str) -> Result<String, String> {
+    let row: Value =
+        serde_json::from_str(json).map_err(|_| "Couldn't read that permission.".to_string())?;
+    let permission = row.get("permission").and_then(Value::as_str).unwrap_or("");
+    if permission.is_empty() {
+        return Err("Couldn't read that permission.".into());
+    }
+    Ok(permission.to_string())
 }
 
 pub fn parse_repo(json: &str) -> Result<String, String> {
@@ -281,5 +328,73 @@ impl IssuesGh for CliGh {
             "nameWithOwner".into(),
         ];
         self.run(Some(cwd), &args)
+    }
+
+    fn current_login(&mut self) -> Result<String, String> {
+        let json = self.run(None, &["api".into(), "user".into()])?;
+        parse_login(&json)
+    }
+
+    fn collaborator_permission(&mut self, repo: &str, login: &str) -> Result<String, String> {
+        let repo = rules::repo_ok(repo)?;
+        if !rules::login_ok(login) {
+            return Err("That login can't be checked.".into());
+        }
+        let path = format!("repos/{repo}/collaborators/{login}/permission");
+        let json = self.run(None, &["api".into(), path])?;
+        parse_permission(&json)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_author_is_a_login_and_a_missing_one_is_still_an_item() {
+        let with_author = serde_json::json!({
+            "number": 1, "title": "T", "body": "", "state": "OPEN", "labels": [],
+            "author": { "login": "Ada" }
+        });
+        match read_item(&with_author, "issue") {
+            ItemRead::Item(item) => assert_eq!(item.author, "Ada"),
+            other => panic!("{other:?}"),
+        }
+        let with_user = serde_json::json!({
+            "number": 2, "title": "T", "body": "", "state": "OPEN", "labels": [],
+            "user": { "login": "bob" }
+        });
+        match read_item(&with_user, "issue") {
+            ItemRead::Item(item) => assert_eq!(item.author, "bob"),
+            other => panic!("{other:?}"),
+        }
+        let as_text = serde_json::json!({
+            "number": 3, "title": "T", "body": "", "state": "OPEN", "labels": [],
+            "author": "cara"
+        });
+        match read_item(&as_text, "issue") {
+            ItemRead::Item(item) => assert_eq!(item.author, "cara"),
+            other => panic!("{other:?}"),
+        }
+        let missing = serde_json::json!({
+            "number": 4, "title": "T", "state": "OPEN", "labels": []
+        });
+        match read_item(&missing, "issue") {
+            ItemRead::Item(item) => assert_eq!(item.author, ""),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_login_or_permission_that_does_not_parse_is_a_failure() {
+        assert!(parse_login(r#"{"login":"ash"}"#).is_ok());
+        assert!(parse_login(r#"{"login":"../ash"}"#).is_err());
+        assert!(parse_login("not json").is_err());
+        assert_eq!(
+            parse_permission(r#"{"permission":"write"}"#).unwrap(),
+            "write"
+        );
+        assert!(parse_permission(r#"{}"#).is_err());
+        assert!(parse_permission("not json").is_err());
     }
 }

@@ -168,6 +168,39 @@ pub fn choose_gh(kind: Kind, stand_in: Option<&str>) -> GhChoice {
     GhChoice::Installed
 }
 
+/// A GitHub login: 1–39 ASCII letters, digits or `-`, not starting or ending with `-`.
+/// `../`, a slash, or a bot suffix never reaches `gh`.
+pub fn login_ok(value: &str) -> bool {
+    let value = value.trim();
+    let len = value.chars().count();
+    (1..=39).contains(&len)
+        && !value.starts_with('-')
+        && !value.ends_with('-')
+        && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// `admin`, `maintain` and `write` may change the repo. Anything else, including a blank, does not.
+pub fn writes(permission: &str) -> bool {
+    matches!(
+        permission.trim().to_ascii_lowercase().as_str(),
+        "admin" | "maintain" | "write"
+    )
+}
+
+/// The coding team may pick the item up on its own only when the author is the signed-in person
+/// or the permission read said they can write. A missing or failed read is not a yes.
+pub fn may_auto_brief(person: Option<&str>, author: &str, permission: Option<&str>) -> bool {
+    if !login_ok(author) {
+        return false;
+    }
+    if let Some(person) = person.map(str::trim).filter(|login| login_ok(login)) {
+        if person.eq_ignore_ascii_case(author.trim()) {
+            return true;
+        }
+    }
+    permission.is_some_and(writes)
+}
+
 /// `https://github.com/{repo}/issues|pull/{n}`. Orbit uses `pull`, not `pulls`.
 pub fn work_url(repo: &str, kind: &str, number: i64) -> Option<String> {
     let repo = repo_ok(repo).ok()?;
@@ -290,6 +323,42 @@ mod tests {
             GhChoice::DevWithoutStandIn
         );
         assert_eq!(choose_gh(Kind::Dev, None), GhChoice::DevWithoutStandIn);
+    }
+
+    #[test]
+    fn a_login_is_a_github_name_and_nothing_that_could_change_the_path() {
+        assert!(login_ok("ash"));
+        assert!(login_ok("Ada-9"));
+        assert!(login_ok(&"a".repeat(39)));
+        assert!(!login_ok(&"a".repeat(40)));
+        assert!(!login_ok(""));
+        assert!(!login_ok("-ash"));
+        assert!(!login_ok("ash-"));
+        assert!(!login_ok("../ada"));
+        assert!(!login_ok("app/dependabot"));
+        assert!(!login_ok("dependabot[bot]"));
+        assert!(!login_ok("a b"));
+        assert!(!login_ok("café"));
+    }
+
+    #[test]
+    fn only_write_access_or_the_person_may_auto_brief() {
+        assert!(writes("admin"));
+        assert!(writes("maintain"));
+        assert!(writes("WRITE"));
+        assert!(!writes("read"));
+        assert!(!writes("triage"));
+        assert!(!writes("none"));
+        assert!(!writes(""));
+        assert!(may_auto_brief(Some("Ash"), "ash", None));
+        assert!(may_auto_brief(Some("ash"), "ada", Some("write")));
+        assert!(may_auto_brief(None, "ada", Some("admin")));
+        assert!(!may_auto_brief(Some("ash"), "ada", Some("read")));
+        assert!(!may_auto_brief(Some("ash"), "ada", Some("triage")));
+        assert!(!may_auto_brief(Some("ash"), "ada", None));
+        assert!(!may_auto_brief(None, "ada", None));
+        assert!(!may_auto_brief(Some("ash"), "../ada", Some("admin")));
+        assert!(!may_auto_brief(Some("not a login"), "not a login", None));
     }
 
     #[test]

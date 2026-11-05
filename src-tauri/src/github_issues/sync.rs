@@ -3,7 +3,7 @@
 // only its own row in `github_pull_links`: a crew pull request on a different task has to stay, so
 // that pull request's merge can complete the issue. See the root NOTICE.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
@@ -372,6 +372,8 @@ pub fn poll(
     assignees: &[Assignee],
 ) -> Result<Report, String> {
     let mut report = Report::default();
+    // One login and one permission answer per poll, shared by every project in this call.
+    let mut access = Access::default();
     {
         let conn = store.lock_conn()?;
         ensure_tables(&conn).map_err(|e| e.to_string())?;
@@ -404,6 +406,8 @@ pub fn poll(
         };
         match read_labelled(gh, &saved.label, &repo) {
             Ok(board) => {
+                // Outside the database lock: a slow `gh` must not hold it.
+                let trust = trust_of(&mut access, gh, &repo, &board);
                 let pulls = {
                     let conn = store.lock_conn()?;
                     open_pulls(&conn, &repo)?
@@ -424,6 +428,7 @@ pub fn poll(
                     &board.issues,
                     &board.prs,
                     &views,
+                    &trust,
                     board.truncated,
                     now,
                 )?;
@@ -471,10 +476,12 @@ fn fill_assignee(
     now: i64,
     changed: &mut Vec<String>,
 ) -> Result<(), String> {
+    // WP-77: a task in Needs you waits for the person, not for the team to arrive.
     let mut stmt = conn
         .prepare(
             "SELECT id, version FROM tasks
-             WHERE project_id = ?1 AND source = 'github' AND assignee IS NULL AND trashed_at IS NULL",
+             WHERE project_id = ?1 AND source = 'github' AND assignee IS NULL
+               AND needs_you = 0 AND trashed_at IS NULL",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt
@@ -568,6 +575,67 @@ struct Board {
     truncated: bool,
 }
 
+/// Answers from `gh api` for one poll. A failure is cached too, so the same login is not asked twice,
+/// and the next poll asks again.
+#[derive(Default)]
+struct Access {
+    login: Option<Result<String, ()>>,
+    permissions: HashMap<(String, String), Result<String, ()>>,
+}
+
+impl Access {
+    fn person(&mut self, gh: &mut dyn IssuesGh) -> Option<String> {
+        if self.login.is_none() {
+            self.login = Some(gh.current_login().map_err(|_| ()));
+        }
+        self.login.clone().and_then(Result::ok)
+    }
+
+    fn permission(&mut self, gh: &mut dyn IssuesGh, repo: &str, login: &str) -> Option<String> {
+        let key = (repo.to_string(), login.to_ascii_lowercase());
+        if let Some(cached) = self.permissions.get(&key) {
+            return cached.clone().ok();
+        }
+        let got = gh.collaborator_permission(repo, login).map_err(|_| ());
+        let answer = got.as_ref().ok().cloned();
+        self.permissions.insert(key, got);
+        answer
+    }
+
+    fn allows(&mut self, gh: &mut dyn IssuesGh, repo: &str, author: &str) -> bool {
+        let author = author.trim();
+        if !rules::login_ok(author) {
+            return false;
+        }
+        let person = self.person(gh);
+        if person
+            .as_deref()
+            .is_some_and(|login| login.eq_ignore_ascii_case(author))
+        {
+            return true;
+        }
+        let permission = self.permission(gh, repo, author);
+        rules::may_auto_brief(person.as_deref(), author, permission.as_deref())
+    }
+}
+
+fn trust_of(
+    access: &mut Access,
+    gh: &mut dyn IssuesGh,
+    repo: &str,
+    board: &Board,
+) -> HashMap<(String, i64), bool> {
+    let mut trust = HashMap::new();
+    for item in board.issues.iter().chain(board.prs.iter()) {
+        let ItemRead::Item(snapshot) = item else {
+            continue;
+        };
+        let allowed = access.allows(gh, repo, &snapshot.author);
+        trust.insert((snapshot.kind.clone(), snapshot.number), allowed);
+    }
+    trust
+}
+
 fn read_labelled(gh: &mut dyn IssuesGh, label: &str, repo: &str) -> Result<Board, String> {
     let issues = gh.list("issue", repo, &rules::search_query("issue", label)?)?;
     let prs = gh.list("pr", repo, &rules::search_query("pull_request", label)?)?;
@@ -651,12 +719,14 @@ fn push(changed: &mut Vec<String>, id: &str) {
     }
 }
 
+#[allow(clippy::too_many_arguments)] // trust is the extra argument; the rest is the read being applied
 fn apply(
     conn: &mut Connection,
     read: &Saved,
     issues: &[ItemRead],
     prs: &[ItemRead],
     views: &[PullView],
+    trust: &HashMap<(String, i64), bool>,
     truncated: bool,
     now: i64,
 ) -> Result<Vec<String>, String> {
@@ -703,6 +773,7 @@ fn apply(
                     &current,
                     snapshot,
                     &projects,
+                    trust,
                     now,
                     &mut Marks {
                         seen: &mut seen,
@@ -748,6 +819,7 @@ fn consider(
     setting: &Saved,
     item: &Snapshot,
     projects: &[(String, String)],
+    trust: &HashMap<(String, i64), bool>,
     now: i64,
     marks: &mut Marks<'_>,
 ) -> Result<(), String> {
@@ -772,6 +844,7 @@ fn consider(
             Ok(())
         }
         Ok((title, description)) => {
+            let trusted = trust.get(&key).copied().unwrap_or(false);
             marks.seen.insert(key);
             sync_item(
                 conn,
@@ -779,6 +852,7 @@ fn consider(
                 item,
                 &title,
                 &description,
+                trusted,
                 now,
                 marks.changed,
             )
@@ -786,12 +860,14 @@ fn consider(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // trusted is the extra argument
 fn sync_item(
     conn: &Connection,
     setting: &Saved,
     item: &Snapshot,
     title: &str,
     description: &str,
+    trusted: bool,
     now: i64,
     changed: &mut Vec<String>,
 ) -> Result<(), String> {
@@ -804,7 +880,16 @@ fn sync_item(
                 [&link.task_id],
             )
             .map_err(|e| e.to_string())?;
-            return create_linked(conn, setting, item, title, description, now, changed);
+            return create_linked(
+                conn,
+                setting,
+                item,
+                title,
+                description,
+                trusted,
+                now,
+                changed,
+            );
         };
         if task.project_id != setting.project_id
             || link.project_id != setting.project_id
@@ -856,14 +941,27 @@ fn sync_item(
         )
         .map_err(|e| e.to_string())?;
         drop_own_pull_link(conn, &repo, item)?;
+        if let Some(fresh) = task_row(conn, &task.id)? {
+            offer_pickup(conn, setting, &fresh, trusted, now, changed)?;
+        }
         return Ok(());
     }
-    create_linked(conn, setting, item, title, description, now, changed)
+    create_linked(
+        conn,
+        setting,
+        item,
+        title,
+        description,
+        trusted,
+        now,
+        changed,
+    )
 }
 
 fn task_row(conn: &Connection, id: &str) -> Result<Option<TaskBits>, String> {
     conn.query_row(
-        "SELECT id, project_id, status_id, parent_id, trashed_at FROM tasks WHERE id = ?1",
+        "SELECT id, project_id, status_id, parent_id, trashed_at, assignee, needs_you, version
+         FROM tasks WHERE id = ?1",
         [id],
         |row| {
             Ok(TaskBits {
@@ -872,6 +970,9 @@ fn task_row(conn: &Connection, id: &str) -> Result<Option<TaskBits>, String> {
                 status_id: row.get(2)?,
                 parent_id: row.get(3)?,
                 trashed_at: row.get(4)?,
+                assignee: row.get(5)?,
+                needs_you: row.get(6)?,
+                version: row.get(7)?,
             })
         },
     )
@@ -885,6 +986,68 @@ struct TaskBits {
     status_id: String,
     parent_id: Option<String>,
     trashed_at: Option<i64>,
+    assignee: Option<String>,
+    needs_you: i64,
+    version: i64,
+}
+
+/// A labelled item that is not the person's, and whose author cannot write, stays unassigned.
+/// Trust is checked again on the next poll, so a failed read is not final. An assignee already
+/// set is left alone.
+fn offer_pickup(
+    conn: &Connection,
+    setting: &Saved,
+    task: &TaskBits,
+    trusted: bool,
+    now: i64,
+    changed: &mut Vec<String>,
+) -> Result<(), String> {
+    if task.trashed_at.is_some() || task.assignee.is_some() {
+        return Ok(());
+    }
+    let team = setting
+        .assignee
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| session_ok(value));
+    if trusted {
+        let mut version = task.version;
+        if task.needs_you != 0 {
+            let cleared = conn
+                .execute(
+                    "UPDATE tasks SET needs_you = 0, updated_at = ?2, version = version + 1
+                     WHERE id = ?1 AND assignee IS NULL AND needs_you != 0",
+                    params![task.id, now],
+                )
+                .map_err(|e| e.to_string())?;
+            if cleared == 0 {
+                return Ok(());
+            }
+            version += 1;
+            push(changed, &task.id);
+        }
+        if let Some(assignee) = team {
+            let written =
+                assign_unlinked(conn, &setting.project_id, &task.id, version, assignee, now)?;
+            if !written.stale {
+                push(changed, &task.id);
+            }
+        }
+        return Ok(());
+    }
+    if task.needs_you == 0 {
+        let held = conn
+            .execute(
+                "UPDATE tasks SET needs_you = 1, updated_at = ?2, version = version + 1
+                 WHERE id = ?1 AND assignee IS NULL AND needs_you = 0",
+                params![task.id, now],
+            )
+            .map_err(|e| e.to_string())?;
+        if held > 0 {
+            push(changed, &task.id);
+        }
+    }
+    Ok(())
 }
 
 fn parent_live(conn: &Connection, id: &str) -> Result<bool, String> {
@@ -942,18 +1105,25 @@ fn drop_own_pull_link(conn: &Connection, repo: &str, item: &Snapshot) -> Result<
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // trusted is the extra argument
 fn create_linked(
     conn: &Connection,
     setting: &Saved,
     item: &Snapshot,
     title: &str,
     description: &str,
+    trusted: bool,
     now: i64,
     changed: &mut Vec<String>,
 ) -> Result<(), String> {
     let repo = setting.repo.clone().unwrap_or_default();
     let status = rules::status_name(rules::status_category(&item.kind, &item.state));
-    let assignee = setting.assignee.clone().filter(|value| session_ok(value));
+    // WP-77: anyone else's issue is a task in Needs you, with no brief.
+    let assignee = if trusted {
+        setting.assignee.clone().filter(|value| session_ok(value))
+    } else {
+        None
+    };
     let written = store::create_in(
         conn,
         &person(&setting.project_id),
@@ -964,6 +1134,7 @@ fn create_linked(
             labels: vec!["GitHub".into()],
             assignee,
             source: Some("github".into()),
+            needs_you: !trusted,
             ..Default::default()
         },
         now,

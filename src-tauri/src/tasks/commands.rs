@@ -164,6 +164,7 @@ pub fn tasks_create(
                 due_at: input.due_at,
                 project: input.project,
                 source: input.source,
+                needs_you: false,
             },
             now_millis(),
         )?

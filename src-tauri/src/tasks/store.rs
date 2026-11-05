@@ -115,6 +115,8 @@ pub struct CreateInput {
     pub due_at: Option<i64>,
     pub project: Option<String>,
     pub source: Option<String>,
+    /// WP-77: set when a GitHub item must wait for the person. Not a brief.
+    pub needs_you: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1092,7 +1094,7 @@ pub(crate) fn create_in(
         source,
         created_by: actor.id.trim().to_string(),
         delegation_id: None,
-        needs_you: 0,
+        needs_you: i64::from(input.needs_you),
         failed: 0,
         created_at: now,
         updated_at: now,
@@ -1105,7 +1107,8 @@ pub(crate) fn create_in(
             close_ancestors(conn, parent, now, &mut changed, false)?;
         }
     }
-    if actor.kind == "person" {
+    // WP-77: a GitHub task that is waiting on the person is not a brief.
+    if actor.kind == "person" && !input.needs_you {
         if let Some(assignee) = &assignee {
             let id = &row.id;
             wake(
@@ -1318,6 +1321,14 @@ pub(crate) fn update_in(
     }
     if actor.kind == "person" && assignee_changed {
         if let Some(assignee) = &next_assignee {
+            // WP-77: the person picking up a GitHub task ends the hold.
+            if source_read(&row.source) == "github" {
+                conn.execute(
+                    "UPDATE tasks SET needs_you = 0 WHERE id = ?1 AND needs_you != 0",
+                    [&row.id],
+                )
+                .map_err(|e| e.to_string())?;
+            }
             let id = &row.id;
             let number = row.number;
             wake(
