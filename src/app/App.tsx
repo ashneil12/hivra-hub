@@ -228,6 +228,7 @@ import {
 import "../features/hub/model/stripBackdrop";
 import {
   NO_PROJECT,
+  currentHubSelection,
   hubSurfaceOpen,
   monoTeamInView,
   monoTeamItem,
@@ -245,6 +246,11 @@ import {
   type CodingTeamTarget,
   type MonoTeamTarget,
 } from "../features/hub/model/hubNav";
+import { openDocsMode } from "../features/docs/docsMode";
+import { queueHomeDoc, queueHomeTask } from "../features/home/model/pending";
+import { setHomeOpener } from "../features/home/model/opener";
+import { noteOpenedChat } from "../features/home/model/store";
+import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -5742,6 +5748,13 @@ function Workspace({
       setInboxViewOpen(false);
       setNotesViewOpen(false);
       setAutomationsViewOpen(false);
+      // WP-73: a chat the person opened is Recent on Home. An inbox ask and a Mono's chat returned above.
+      void noteOpenedChat({
+        id: session.id,
+        title: session.title,
+        projectId: currentHubSelection().project,
+        openedAt: Date.now(),
+      });
       if (looksLikeProject(session.cwd))
         setProjectCwd(normalizeProjectPath(session.cwd));
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
@@ -16414,6 +16427,36 @@ function Workspace({
     // cannot come back over it (leadOpenMayShow). The latest coding-team open bumps the request again and wins.
     closeMonoView();
   };
+  // WP-73: one look when the app opens, and a line on Home opens the screen it names.
+  const homeOpenRef = useRef({ onOpenNotes, onSelectHistorySession, openCodingTeam, closeChromeViews });
+  homeOpenRef.current = { onOpenNotes, onSelectHistorySession, openCodingTeam, closeChromeViews };
+  useHomeOnOpen();
+  useEffect(() => setHomeOpener((target) => {
+    const now = homeOpenRef.current;
+    if (target.kind === "inbox") {
+      now.closeChromeViews();
+      setInboxViewOpen(true);
+      return;
+    }
+    if (target.kind === "task") {
+      now.closeChromeViews();
+      queueHomeTask(target.id);
+      now.openCodingTeam(target.projectId);
+      return;
+    }
+    if (target.kind === "doc") {
+      queueHomeDoc(target.id);
+      openDocsMode();
+      now.onOpenNotes();
+      return;
+    }
+    if (target.kind === "chat") {
+      void now.onSelectHistorySession(target.id);
+      return;
+    }
+    now.closeChromeViews();
+    now.openCodingTeam(target.projectId);
+  }), []);
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
   // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
   // project's items, so one nav row is ever active.

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { hubData } from "../../hub/model/hubData";
+import { takeHomeTask } from "../../home/model/pending";
 import { nextDetail, nextTasks } from "../model/keep";
 import { taskProjectKeys } from "../model/projects";
 import { TaskDetail, type TaskDetailTask } from "./TaskDetail";
@@ -97,6 +98,15 @@ export function TaskPane({ project }: { project: string }) {
       void pending.then((done) => done());
     };
   }, [load, refreshOpen]);
+
+  // WP-73: a task opened from Home waits until this list has it. The wrong pane, or a failed list, does not drop it.
+  useEffect(() => {
+    if (!tasks) return;
+    const id = takeHomeTask(tasks.map((task) => task.id));
+    if (!id) return;
+    const task = tasks.find((item) => item.id === id);
+    if (task) setOpen(task);
+  }, [tasks]);
 
   async function create(title: string, assignee: string) {
     const keys = taskProjectKeys(project, hubData().listProjects());

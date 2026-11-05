@@ -2,6 +2,7 @@
 // editor goes idle or the page closes. A timeout leaves the text where it is.
 
 import { useEffect, useRef, useState } from "react";
+import { takeHomeDoc } from "../../home/model/pending";
 import { inProjectScope } from "../../projects/model/projectScope";
 import type { DocsGateway, DocRecord, DocVersionRecord } from "../gateway";
 import { markdownOf } from "../gateway";
@@ -197,6 +198,12 @@ export function DocsScreen({
       timers.clear();
     };
   }, []);
+
+  // WP-73: a doc opened from Home waits until this list has it.
+  useEffect(() => {
+    const id = takeHomeDoc(pages.map((page) => page.id));
+    if (id) setSelectedId(id);
+  }, [pages]);
 
   useEffect(() => {
     void refresh().catch((err: unknown) => {

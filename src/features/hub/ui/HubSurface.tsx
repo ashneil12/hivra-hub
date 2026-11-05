@@ -14,6 +14,7 @@ import { useTemplatesVersion } from "../model/templates";
 import { ProposalView } from "./ProposalView";
 import { ProjectPagesView } from "./ProjectPagesView";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
+import { HomeView } from "../../home/ui/HomeView";
 
 /**
  * Main area for the hub views that are not a project's workspace: rooms, Pages, a new project, restore, autopilot.
@@ -37,6 +38,8 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   useEffect(() => {
     if (home && first) openCodingTeam(first);
   }, [home, first]);
+  // WP-73: Home, before the no-project redirect and before a project's own item.
+  if (selection.item === "home") return <HomeView />;
   if (selection.item === "new-project") return <NewProjectView />;
   if (selection.item === "restore") return <RestorePreview />;
   if (selection.item === "autopilot") return <AutopilotView />;
