@@ -233,6 +233,47 @@ test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a 
   assert.deepEqual(stopped, ["unsandboxed agent: codex", "unsandboxed agent: hermes"]);
 });
 
+test("a hosted agent is checked: an interpreter's script, or node running a known package", () => {
+  const wrapper = "/private/var/bench/bin/claude";
+  const row = (pid, ppid, command) => `  ${pid} ${ppid} ${command}`;
+  const denied = (command) =>
+    unsandboxedAgents(row(240, 100, command), {
+      rootPid: 100,
+      wrapper,
+      sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, 0])) }),
+    });
+  const allowed = (command) => unsandboxedAgents(row(240, 100, command), { rootPid: 100, wrapper, execFile: () => JSON.stringify({ 240: 1 }) });
+  const hosted = [
+    ["/usr/local/bin/node /opt/homebrew/bin/gemini", "gemini"],
+    ["/usr/local/bin/node /Users/ash/.npm/_npx/x/node_modules/@anthropic-ai/claude-code/cli.js", "claude"],
+    ["/usr/local/bin/node /Users/ash/.npm/_npx/x/node_modules/@openai/codex/bin/codex.js", "codex"],
+    ["/opt/homebrew/bin/node /opt/homebrew/lib/node_modules/@google/gemini-cli/dist/index.js", "gemini"],
+    ["/usr/bin/python3 /opt/homebrew/bin/hermes", "hermes"],
+    ["/usr/bin/python3.11 /opt/homebrew/bin/hermes", "hermes"],
+    ["/usr/bin/python3.12.1 /opt/homebrew/bin/grok", "grok"],
+    ["/usr/local/bin/bun /opt/homebrew/bin/grok", "grok"],
+    ["/usr/local/bin/deno /opt/homebrew/bin/pi", "pi"],
+    ["/bin/zsh /opt/homebrew/bin/codex", "codex"],
+    ["/bin/bash /opt/homebrew/bin/opencode", "opencode"],
+    ["/bin/sh /opt/homebrew/bin/codex", "codex"],
+    ["FOO=1 /usr/local/bin/node --experimental-vm-modules /opt/homebrew/bin/gemini --prompt hi", "gemini"],
+  ];
+  for (const [command, name] of hosted) {
+    assert.equal(denied(command)?.reason, `unsandboxed agent: ${name}`, command);
+    assert.equal(allowed(command), null, command);
+  }
+  assert.equal(denied("/usr/local/bin/node /tmp/not-an-agent.js"), null);
+  assert.equal(denied("/usr/bin/python2 /opt/homebrew/bin/hermes"), null);
+  assert.equal(denied("/usr/local/bin/node"), null);
+  assert.equal(denied("/usr/bin/python3 /x/node_modules/@anthropic-ai/claude-code/cli.js"), null);
+  assert.equal(denied("/usr/local/bin/node -r /tmp/preload.js /opt/homebrew/bin/gemini"), null);
+  // The plan's wrapper stays skipped when an interpreter's first real argument is that exact path.
+  assert.equal(denied("/usr/local/bin/node --check /private/var/bench/bin/claude"), null);
+  assert.equal(denied("/bin/zsh /private/var/bench/bin/claude"), null);
+  assert.equal(denied("node /private/var/bench/bin/claude"), null);
+  assert.equal(denied("/usr/local/bin/node /private/var/bench/bin/../bin/claude"), null);
+});
+
 test("a sandbox helper that can't answer counts the agent as unsandboxed, and the scene asks once", () => {
   const wrapper = "/private/var/bench/bin/claude";
   const row = "  240 100 /usr/bin/claude";

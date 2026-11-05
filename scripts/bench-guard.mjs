@@ -756,7 +756,13 @@ const AGENT_BASENAMES = new Set([
   "devin",
   "agy_acp_server.par",
 ]);
-const WRAPPER_HOSTS = new Set(["sh", "bash", "node"]);
+/** A process whose next real argument is the program, not the program itself. `python3.11` counts; `python2` does not. */
+const INTERPRETERS = new Set(["node", "bun", "deno", "python", "sh", "bash", "zsh"]);
+const NODE_PACKAGES = [
+  ["@anthropic-ai/claude-code", "claude"],
+  ["@openai/codex", "codex"],
+  ["@google/gemini-cli", "gemini"],
+];
 
 function commandTokens(command) {
   return String(command ?? "").match(/[^\s]+/g) ?? [];
@@ -784,18 +790,50 @@ function samePath(left, right) {
   return !!a && a === b;
 }
 
+function isInterpreter(name) {
+  return INTERPRETERS.has(name) || /^python3(\.\d+)*$/.test(name);
+}
+
+/** The first argument that isn't a flag. `node --experimental-vm-modules /path/gemini` yields the path. */
+function firstNonFlag(argv) {
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (typeof arg === "string" && arg.startsWith("-")) continue;
+    return arg ?? null;
+  }
+  return null;
+}
+
+/** Node's package path, when the script is that package rather than a basename we already know. */
+function nodePackage(arg) {
+  const text = String(arg ?? "").replaceAll("\\", "/");
+  for (const [pkg, name] of NODE_PACKAGES) {
+    if (text.endsWith(pkg) || text.includes(`${pkg}/`)) return name;
+  }
+  return null;
+}
+
 function agentCommandName(command) {
-  const exe = argvOf(command)[0];
+  const argv = argvOf(command);
+  const exe = argv[0];
   if (!exe) return null;
   const name = baseName(exe);
   if (AGENT_BASENAMES.has(name)) return name;
   if (name === "agent" && String(command).includes("cursor-agent")) return "cursor-agent";
-  return null;
+  if (!isInterpreter(name)) return null;
+  const script = firstNonFlag(argv);
+  if (!script) return null;
+  if (name === "node") {
+    const packaged = nodePackage(script);
+    if (packaged) return packaged;
+  }
+  const scriptName = baseName(script);
+  return AGENT_BASENAMES.has(scriptName) ? scriptName : null;
 }
 
 /**
  * The plan's wrapper, not an agent CLI.
- * The executable path is the wrapper script, or it is sh, bash or node and the next argument is that script.
+ * The executable path is the wrapper script, or an interpreter's first real argument is that script.
  * Matched by path. A program merely named claude is not this.
  */
 function isPlanWrapper(command, wrapper) {
@@ -803,10 +841,8 @@ function isPlanWrapper(command, wrapper) {
   const argv = argvOf(command);
   if (!argv.length) return false;
   if (samePath(argv[0], wrapper)) return true;
-  const exe = argv[0];
-  if (!exe.startsWith("/")) return false;
-  if (!WRAPPER_HOSTS.has(baseName(exe))) return false;
-  return samePath(argv[1], wrapper);
+  if (!isInterpreter(baseName(argv[0]))) return false;
+  return samePath(firstNonFlag(argv), wrapper);
 }
 
 /** `sandbox_check(pid, NULL, SANDBOX_FILTER_NONE)`. The raw code: 1 sandboxed, 0 not. Anything else is left as a number so the caller can refuse it. */
