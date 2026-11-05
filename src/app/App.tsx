@@ -102,7 +102,7 @@ import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
-import { readsEveryProject } from "../features/chief/model/scope";
+import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
@@ -9556,8 +9556,12 @@ function Workspace({
                 : team
                   ? `${team.id}-lead`
                   : undefined;
-            // WP-88: a Mono that reads every project recalls every mate's reviewed memory. A timeout still recalls nothing.
-            const recallWide = readsEveryProject(monoForSession(sessionId))
+            // WP-88: a Mono that reads every project recalls every mate's reviewed memory.
+            // The soul file counts, the same way the tools do. A timeout still recalls nothing.
+            const recallWide = (await turnRecallWide(monoForSession(sessionId), async () => {
+              if (!agentFiles) throw new Error("unread");
+              return agentFiles.soul;
+            }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
             const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);

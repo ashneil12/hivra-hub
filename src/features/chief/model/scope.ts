@@ -37,3 +37,14 @@ export async function scopeOpen(
     return false;
   }
 }
+
+/**
+ * The turn's memory fence. The roster copy is not the only grant: the soul file counts,
+ * the same way the tools do. A timeout does not open it, and does not close one the roster already asked for.
+ */
+export async function turnRecallWide(
+  mono: ScopeMono | null | undefined,
+  readSoul?: () => Promise<string | null | undefined>,
+): Promise<boolean> {
+  return scopeOpen(mono, readSoul);
+}

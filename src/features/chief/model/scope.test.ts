@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { EVERY_PROJECT_LINE, readsEveryProject, scopeOpen, soulAsks } from "./scope";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { EVERY_PROJECT_LINE, readsEveryProject, scopeOpen, soulAsks, turnRecallWide } from "./scope";
 
 const ASKING = `# Soul\n\n${EVERY_PROJECT_LINE}\n`;
 
@@ -37,5 +40,31 @@ describe("readsEveryProject", () => {
       throw new Error("timed out");
     })).resolves.toBe(true);
     await expect(scopeOpen({ instructions: ASKING, everyProject: false })).resolves.toBe(false);
+  });
+});
+
+describe("turnRecallWide", () => {
+  it("follows the soul file when the roster copy does not ask", async () => {
+    const mono = { instructions: "# Soul\n", everyProject: true as const };
+    await expect(turnRecallWide(mono, async () => ASKING)).resolves.toBe(true);
+    await expect(turnRecallWide(mono, async () => "# Soul\n")).resolves.toBe(false);
+    await expect(turnRecallWide(mono, async () => `See ${EVERY_PROJECT_LINE} now`)).resolves.toBe(false);
+    await expect(turnRecallWide(mono, async () => {
+      throw new Error("timed out");
+    })).resolves.toBe(false);
+    await expect(turnRecallWide({ instructions: ASKING, everyProject: true }, async () => {
+      throw new Error("timed out");
+    })).resolves.toBe(true);
+    await expect(turnRecallWide({ instructions: ASKING, everyProject: false }, async () => ASKING)).resolves.toBe(false);
+    await expect(turnRecallWide(undefined, async () => ASKING)).resolves.toBe(false);
+  });
+
+  it("is what the turn fence calls", () => {
+    const app = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../app/App.tsx"), "utf8");
+    const at = app.indexOf("WP-88: a Mono that reads every project");
+    expect(at).toBeGreaterThan(-1);
+    const block = app.slice(at, app.indexOf("recalledFence", at));
+    expect(block).toContain("turnRecallWide");
+    expect(block).not.toContain("readsEveryProject");
   });
 });
