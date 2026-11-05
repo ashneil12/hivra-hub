@@ -372,7 +372,12 @@ pub fn harness_resolve_cursor() -> Result<CursorBinary, String> {
         .map(|path| CursorBinary {
             path: path.to_string_lossy().into_owned(),
         })
-        .ok_or_else(|| "Cursor CLI not found. Install it and run `agent login`, then retry.".into())
+        .ok_or_else(|| {
+            bench_or_missing(
+                "cursor",
+                "Cursor CLI not found. Install it and run `agent login`, then retry.",
+            )
+        })
 }
 
 /// Resolve the Codex CLI (`codex`).
@@ -383,8 +388,10 @@ pub fn harness_resolve_codex() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Codex CLI not found. Install it from https://developers.openai.com/codex/cli and run `codex login`, then retry."
-                .into()
+            bench_or_missing(
+                "codex",
+                "Codex CLI not found. Install it from https://developers.openai.com/codex/cli and run `codex login`, then retry.",
+            )
         })
 }
 
@@ -396,8 +403,10 @@ pub fn harness_resolve_opencode() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "OpenCode CLI not found. Install it from https://opencode.ai and run `opencode auth login`, then retry."
-                .into()
+            bench_or_missing(
+                "opencode",
+                "OpenCode CLI not found. Install it from https://opencode.ai and run `opencode auth login`, then retry.",
+            )
         })
 }
 
@@ -448,8 +457,10 @@ pub fn harness_resolve_claude() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Claude Code CLI not found. Install it from https://claude.com/product/claude-code and run `claude auth login`, then retry."
-                .into()
+            bench_or_missing(
+                "claude",
+                "Claude Code CLI not found. Install it from https://claude.com/product/claude-code and run `claude auth login`, then retry.",
+            )
         })
 }
 
@@ -460,7 +471,7 @@ fn resolve_mcp_binary(provider: &str, binary_path: Option<&str>) -> Result<PathB
     match binary_path {
         Some(path) => resolve_harness_binary_override(provider, path),
         None => resolve_harness_binary_default(provider)
-            .ok_or_else(|| format!("{provider} CLI not found")),
+            .ok_or_else(|| bench_or_missing(provider, &format!("{provider} CLI not found"))),
     }
 }
 
@@ -821,8 +832,10 @@ pub fn harness_resolve_pi() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Pi CLI not found. Install it with `npm install -g @earendil-works/pi-coding-agent` and authenticate, then retry."
-                .into()
+            bench_or_missing(
+                "pi",
+                "Pi CLI not found. Install it with `npm install -g @earendil-works/pi-coding-agent` and authenticate, then retry.",
+            )
         })
 }
 
@@ -834,8 +847,10 @@ pub fn harness_resolve_omp() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "omp CLI not found. Install it with `curl -fsSL https://omp.sh/install | sh` and authenticate, then retry."
-                .into()
+            bench_or_missing(
+                "omp",
+                "omp CLI not found. Install it with `curl -fsSL https://omp.sh/install | sh` and authenticate, then retry.",
+            )
         })
 }
 
@@ -847,7 +862,10 @@ pub fn harness_resolve_fx() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "fx CLI not found. Install it from https://fx.sh and run `fx login`, then retry.".into()
+            bench_or_missing(
+                "fx",
+                "fx CLI not found. Install it from https://fx.sh and run `fx login`, then retry.",
+            )
         })
 }
 
@@ -859,7 +877,10 @@ pub fn harness_resolve_grok() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Grok Build CLI not found. Install it with `curl -fsSL https://x.ai/cli/install.sh | bash` and run `grok login`, then retry.".into()
+            bench_or_missing(
+                "grok",
+                "Grok Build CLI not found. Install it with `curl -fsSL https://x.ai/cli/install.sh | bash` and run `grok login`, then retry.",
+            )
         })
 }
 
@@ -871,8 +892,10 @@ pub fn harness_resolve_hermes() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Hermes Agent CLI not found. Install it from https://hermes-agent.nousresearch.com, run `hermes model`, then retry."
-                .into()
+            bench_or_missing(
+                "hermes",
+                "Hermes Agent CLI not found. Install it from https://hermes-agent.nousresearch.com, run `hermes model`, then retry.",
+            )
         })
 }
 
@@ -884,8 +907,10 @@ pub fn harness_resolve_devin() -> Result<CursorBinary, String> {
             path: path.to_string_lossy().into_owned(),
         })
         .ok_or_else(|| {
-            "Devin CLI not found. Install it with `curl -fsSL https://cli.devin.ai/install.sh | bash` (Windows: `irm https://static.devin.ai/cli/setup.ps1 | iex`) and run `devin auth login`, then retry."
-                .into()
+            bench_or_missing(
+                "devin",
+                "Devin CLI not found. Install it with `curl -fsSL https://cli.devin.ai/install.sh | bash` (Windows: `irm https://static.devin.ai/cli/setup.ps1 | iex`) and run `devin auth login`, then retry.",
+            )
         })
 }
 
@@ -898,7 +923,10 @@ pub fn harness_resolve_antigravity() -> Result<AntigravityBinary, String> {
             args: antigravity_args(),
         })
         .ok_or_else(|| {
-            "Antigravity ACP server (agy_acp_server.par) not found. Install Antigravity and run `agy` once in Terminal.".into()
+            bench_or_missing(
+                "antigravity",
+                "Antigravity ACP server (agy_acp_server.par) not found. Install Antigravity and run `agy` once in Terminal.",
+            )
         })
 }
 
@@ -930,6 +958,12 @@ pub fn harness_spawn(
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
 ) -> Result<u32, String> {
+    // A bench starts only the plan's wrapper. Before the resolved-binary check, which can itself spawn a probe.
+    crate::verify_live::provider_start_allowed(
+        crate::verify_live::plan(),
+        binary_provider.as_deref(),
+        &command,
+    )?;
     let workdir = expand_home(&cwd);
     if !workdir.is_dir() {
         return Err(format!(
@@ -1576,6 +1610,11 @@ pub async fn harness_exec(
         return Err("harness_exec: unsupported arguments".into());
     }
     tauri::async_runtime::spawn_blocking(move || {
+        crate::verify_live::provider_start_allowed(
+            crate::verify_live::plan(),
+            binary_provider.as_deref(),
+            &command,
+        )?;
         if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref())
         {
             return Err("harness_exec: not a resolved harness CLI".to_string());
@@ -1613,6 +1652,7 @@ pub(crate) fn exec_output(
     cwd: Option<&str>,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
+    crate::verify_live::provider_start_allowed(crate::verify_live::plan(), None, command)?;
     let mut cmd = Command::new(command);
     cmd.args(args)
         .stdin(Stdio::null())
@@ -2154,7 +2194,37 @@ fn parse_proc_ppid(stat: &str) -> Option<u32> {
         .ok()
 }
 
+/// Under a bench plan, skip PATH. Claude is only the plan's wrapper. Every other provider is absent, so a `--help`
+/// probe never starts. `None` means there is no plan: search as usual.
+fn bench_plan_resolve(provider: &str) -> Option<Option<PathBuf>> {
+    let plan = crate::verify_live::plan()?;
+    if provider == "claude" {
+        Some(plan.claude_binary.as_deref().map(PathBuf::from))
+    } else {
+        Some(None)
+    }
+}
+
+/// The plain bench refusal when a plan is loaded, otherwise the ordinary "not found" line.
+fn bench_or_missing(provider: &str, fallback: &str) -> String {
+    crate::verify_live::provider_start_allowed(crate::verify_live::plan(), Some(provider), "")
+        .err()
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn bench_refuses_path(path: &Path) -> bool {
+    crate::verify_live::provider_start_allowed(
+        crate::verify_live::plan(),
+        None,
+        &path.to_string_lossy(),
+    )
+    .is_err()
+}
+
 fn resolve_cursor_agent() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("cursor") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2256,6 +2326,11 @@ fn resolve_harness_binary_override_with(
     binary_path: &str,
     version_timeout: Duration,
 ) -> Result<PathBuf, String> {
+    crate::verify_live::provider_start_allowed(
+        crate::verify_live::plan(),
+        Some(provider),
+        binary_path,
+    )?;
     if provider == "antigravity" && cfg!(windows) {
         return Err("Antigravity ACP server overrides are not supported on Windows.".into());
     }
@@ -2435,6 +2510,9 @@ fn validate_configured_harness_binary_identity(
 /// `resolve_claude`. Trying `~/.local/bin/codex` first picks the ChatGPT app's
 /// wrapper, pinned to an older bundled CLI, over a newer Homebrew or npm install.
 fn resolve_codex() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("codex") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2467,6 +2545,9 @@ fn resolve_codex() -> Option<PathBuf> {
 }
 
 fn resolve_opencode() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("opencode") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2496,6 +2577,9 @@ fn resolve_opencode() -> Option<PathBuf> {
 /// their PATH, and the app then runs a different, older CLI than the terminal
 /// does — with features the newer one has simply absent.
 fn resolve_claude() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("claude") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2519,6 +2603,9 @@ fn resolve_claude() -> Option<PathBuf> {
 }
 
 fn resolve_pi() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("pi") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2548,6 +2635,9 @@ fn resolve_pi() -> Option<PathBuf> {
 }
 
 fn resolve_omp() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("omp") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2585,6 +2675,9 @@ fn is_omp_agent(path: &Path) -> bool {
 }
 
 fn resolve_fx() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("fx") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2609,6 +2702,9 @@ fn resolve_fx() -> Option<PathBuf> {
 }
 
 fn resolve_grok() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("grok") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2632,6 +2728,9 @@ fn resolve_grok() -> Option<PathBuf> {
 }
 
 fn resolve_hermes() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("hermes") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2664,6 +2763,9 @@ fn resolve_hermes() -> Option<PathBuf> {
 }
 
 fn resolve_devin() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("devin") {
+        return found;
+    }
     let home = dirs_home().map(PathBuf::from);
     let mut candidates: Vec<PathBuf> = Vec::new();
 
@@ -2688,6 +2790,9 @@ fn resolve_devin() -> Option<PathBuf> {
 }
 
 fn resolve_antigravity() -> Option<PathBuf> {
+    if let Some(found) = bench_plan_resolve("antigravity") {
+        return found;
+    }
     // The .par wrapper is a POSIX self-extracting archive — Antigravity ships
     // no Windows ACP binary, so report the provider unavailable there instead
     // of probing paths that can never be executable.
@@ -2735,6 +2840,9 @@ fn file_mentions_pi_coding_agent(path: &Path) -> bool {
 }
 
 fn help_mentions_rpc_mode(path: &Path) -> bool {
+    if bench_refuses_path(path) {
+        return false;
+    }
     let mut cmd = Command::new(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
@@ -2826,6 +2934,9 @@ fn file_mentions_fx_agent(path: &Path) -> bool {
 }
 
 fn fx_help_mentions_acp(path: &Path) -> bool {
+    if bench_refuses_path(path) {
+        return false;
+    }
     let mut cmd = Command::new(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
@@ -2889,6 +3000,9 @@ fn file_mentions_grok_agent(path: &Path) -> bool {
 }
 
 fn grok_help_mentions_agent(path: &Path) -> bool {
+    if bench_refuses_path(path) {
+        return false;
+    }
     let mut cmd = Command::new(path);
     cmd.arg("--help")
         .stdin(Stdio::null())

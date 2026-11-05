@@ -26,6 +26,11 @@ describe("Claude Code on the DeepSeek launcher", () => {
     expect(claudeBridgeKind("/tmp/run/bin/claude", { deepseek: true })).toBe("deepseek");
   });
 
+  it("lets a Grok bench skip the Claude sign-in without renaming models to DeepSeek", () => {
+    expect(claudeRunsOnSubscriptionBridge("/tmp/run/bin/claude", { launcher: true })).toBe(true);
+    expect(claudeBridgeKind("/tmp/run/bin/claude", { launcher: true })).toBeUndefined();
+  });
+
   it("leaves the plain Claude Code, a retired launcher name, and no path off it", () => {
     expect(claudeRunsOnSubscriptionBridge("/Users/ash/.local/bin/claude", undefined)).toBe(false);
     expect(claudeRunsOnSubscriptionBridge(null, undefined)).toBe(false);
