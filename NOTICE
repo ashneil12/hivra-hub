@@ -146,6 +146,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/vendor/agentZeroMemories.ts
   The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51).
 
+- Orbit's MCP door
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src-tauri/src/outside
+  Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
