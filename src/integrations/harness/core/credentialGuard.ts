@@ -131,6 +131,8 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
   "Bash(op read:*)",
   "Bash(op inject:*)",
   "Bash(op item get:*)",
+  // WP-92: the launcher is the app's own, signed call; a worker cannot run it itself.
+  "Bash(*monocode secret-run*)",
   "Bash(*infisical run*)",
   "Bash(*infisical export*)",
   "Bash(*dotenv run*)",
