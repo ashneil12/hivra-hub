@@ -61,6 +61,8 @@ export type DriverHost = {
   openSession(sessionId: string, owner?: string): void;
   /** A new chat in a project's coding team (App.tsx startCodingTeamChat): its id, or null when it has no code folder. */
   startCodingTeamChat?(projectId: string, runtimeMode?: RuntimeMode): string | null;
+  /** Hold a chat's next turns to a runtime mode (a bench scene's own; a verify dev copy only). */
+  setRuntimeMode?(sessionId: string, runtimeMode: RuntimeMode): void;
   /** Ash's Allow or Deny on one permission card (the bench's `approve` step; a verify dev copy only). */
   approve?(sessionId: string, requestId: number, decision?: "allow" | "deny"): void;
   /**
@@ -120,8 +122,13 @@ export async function cleanup(action: DriverAction, host: DriverHost): Promise<C
   return result;
 }
 
-/** Runtime modes a bench send may start a coding-team chat in. Anything else keeps the app's default. */
+/** Runtime modes a bench send may start a chat in. Anything else keeps the app's default. */
 const BENCH_MODES: readonly RuntimeMode[] = ["supervised", "auto-accept-edits", "auto", "full-access"];
+
+/** The mode a bench action names, or undefined for one it doesn't know (the app's own default then). */
+function benchMode(value: unknown): RuntimeMode | undefined {
+  return BENCH_MODES.find((mode) => mode === value);
+}
 
 /** The permission cards a chat is waiting on Ash for: undecided approval blocks, oldest first. */
 export function pendingApprovals(session: Session | undefined): number[] {
@@ -509,7 +516,7 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if ("room" in to) return { ok: true, at: Date.now(), ...sendToRoom(to.room, text, action.fresh === true) };
       if ("codingTeam" in to) {
         // A bench scene may start its chat in Full access (a coding-team scene that must run tools without a card).
-        const mode = BENCH_MODES.find((m) => m === action.runtimeMode);
+        const mode = benchMode(action.runtimeMode);
         const sessionId = host.startCodingTeamChat?.(to.codingTeam, mode) ?? null;
         if (!sessionId) throw new Error(`send: no coding team for ${to.codingTeam}`);
         await wait(50);
@@ -517,9 +524,29 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       }
       const sessionId = "mono" in to ? await host.openMono(to.mono) : to.session;
       if (!sessionId) throw new Error(`send: no chat for ${JSON.stringify(to)}`);
+      // A Mono-chat scene's mode (scripts/realconv/player.mjs scene.runtimeMode) takes the same path as a coding
+      // team's: set on that Mono's chat before Ash's line goes in, and its earlier mode handed back so the scene
+      // can put it back when it ends.
+      const mode = "mono" in to ? benchMode(action.runtimeMode) : undefined;
+      let changed: { runtimeMode: RuntimeMode; previousRuntimeMode: RuntimeMode | null } | undefined;
+      if (mode && host.setRuntimeMode) {
+        const before = host.sessions().find((session) => session.id === sessionId)?.runtimeMode ?? null;
+        host.setRuntimeMode(sessionId, mode);
+        changed = { runtimeMode: mode, previousRuntimeMode: before };
+      }
       if ("session" in to && action.open !== false) host.openSession(sessionId, typeof action.owner === "string" ? action.owner : undefined);
       const accepted = host.submit(sessionId, text);
-      return { ok: accepted, at: Date.now(), session: sessionId };
+      return { ok: accepted, at: Date.now(), session: sessionId, ...(changed ?? {}) };
+    }
+    case "runtimeMode": {
+      // A scene that set a Mono chat's mode puts that chat's earlier mode back when it ends (scripts/realconv/player.mjs).
+      const mode = benchMode(action.runtimeMode);
+      if (!mode) return { ok: false, error: `runtimeMode: unknown mode ${JSON.stringify(action.runtimeMode)}` };
+      const sessionId = typeof action.session === "string" ? action.session : "";
+      if (!sessionId || !host.sessions().some((session) => session.id === sessionId)) throw new Error("runtimeMode: no chat");
+      if (!host.setRuntimeMode) return { ok: false, error: "runtimeMode: this window can't change a chat's mode" };
+      host.setRuntimeMode(sessionId, mode);
+      return { ok: true, at: Date.now(), session: sessionId, runtimeMode: mode };
     }
     case "stop": {
       const sessionId = typeof action.session === "string" ? action.session : typeof action.mono === "string" ? (listMonos().find((m) => m.id === action.mono)?.sessionId ?? null) : null;

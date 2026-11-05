@@ -1,6 +1,9 @@
 // @vitest-environment happy-dom
 // The delegate tool's app actions (agentAppTasks.ts): who may call them, what a delegation starts and records, and that
 // a chat only ever sees and moves its own tasks. The store is a stand-in with delegations.rs's owner rule.
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
@@ -9,6 +12,10 @@ import {
   setHarnessModels,
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
+import { askFakeClaude, fakeClaudeLaunch } from "../../phases/model/fakeClaude";
+import { begin, counter } from "../../phases/model/machine";
+import { deliverPhaseResult } from "../../phases/model/phaseBridge";
+import { loadPhaseSettings, savePhaseSettings, seedWork, taskForCrew, workFor } from "../../phases/model/store";
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
 import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
@@ -218,6 +225,7 @@ function benchIdentity() {
 function fixture(
   rows: Delegation[] = [],
   who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono",
+  onPhase?: (launch: { prompt: string }, id: string) => Promise<void>,
 ) {
   const source: Session = {
     ...newSession("claude", PROJECT, "claude:opus-5-5"),
@@ -229,12 +237,18 @@ function fixture(
     start: vi.fn(async (...args: unknown[]) => {
       started.push(args);
       const [launch, id, , notify, meta] = args as [
-        { prompt: string },
+        { prompt: string; cwd?: string },
         string,
         unknown,
         string,
-        { title: string },
+        { title?: string; project?: string } | undefined,
       ];
+      // WP-84: a phase worker's reply is the document. It is not a coding-worker row.
+      if (id.includes("-phase-")) {
+        if (onPhase) await onPhase(launch, id);
+        else deliverPhaseResult(id, { body: "A fact about the code." });
+        return;
+      }
       // As the app records it: the hub project id, else the folder the worker runs in.
       rows.push(
         row({
@@ -242,9 +256,9 @@ function fixture(
           ownerSession: notify,
           childSession: id,
           requestId: id,
-          title: meta.title,
+          title: meta?.title ?? "",
           brief: launch.prompt,
-          project: (meta as { project?: string }).project ?? (launch as { cwd?: string }).cwd ?? null,
+          project: meta?.project ?? launch.cwd ?? null,
         }),
       );
     }),
@@ -453,6 +467,113 @@ describe("tasks.delegate", () => {
     same.host.taskStore = vi.fn(async () => ({ projectId: PROJECT }));
     await handleAgentApp(same.source, "r-same", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-abc" }, same.host);
     expect(same.started[0]?.[4]).toMatchObject({ taskId: "task-abc" });
+  });
+
+  it("holds a hard task until the phase documents are accepted, and still starts a usual one", async () => {
+    const hard = fixture();
+    // WP-84: the phase worker reads the task itself, not just its id.
+    hard.host.taskStore = vi.fn(async (_command, args) => ({
+      id: args.id,
+      projectId: PROJECT,
+      title: "Rework how saving works",
+      description: "The save drops the last line of a file that ends with CRLF.",
+    }));
+    const held = await handleAgentApp(
+      hard.source,
+      "r-hard",
+      "tasks.delegate",
+      { brief: "Rework how saving works.", taskId: "task-hard", hard: true },
+      hard.host,
+    );
+    const phaseStarts = hard.started.filter((args) => String(args[1]).includes("-phase-"));
+    expect(phaseStarts).toHaveLength(2);
+    expect(hard.started.some((args) => args[1] === "app-mono-exo-r-hard")).toBe(false);
+    const prompts = phaseStarts.map((args) => (args[0] as { prompt: string }).prompt);
+    expect(prompts[0].startsWith("Hivra runs this phase.")).toBe(true);
+    expect(prompts[0]).toContain("Skill: research-questions");
+    expect(prompts[0]).toContain("You are a research orchestrator helping to create research questions");
+    expect(prompts[1].startsWith("Hivra runs this phase.")).toBe(true);
+    expect(prompts[1]).toContain("Skill: research\n");
+    for (const prompt of prompts) {
+      expect(prompt).toContain("Task: task-hard");
+      expect(prompt).toContain("Title: Rework how saving works");
+      expect(prompt).toContain("The save drops the last line of a file that ends with CRLF.");
+    }
+    expect(held).toMatchObject({ phased: true, taskId: null });
+    const usual = fixture();
+    await handleAgentApp(usual.source, "r-usual", "tasks.delegate", { brief: "Pick up the save bug.", taskId: "task-usual" }, usual.host);
+    expect(usual.started[0]?.[4]).toMatchObject({ taskId: "task-usual" });
+  });
+
+  it("starts the coding worker once the phases have reached building", async () => {
+    const ready = fixture();
+    const phase = begin("task-ready", { weight: "costly" }, {}, counter());
+    seedWork({
+      ...phase,
+      building: true,
+      waiting: null,
+      cursor: "done",
+      runs: phase.runs.map((run) => ({ ...run, status: "done" as const })),
+    });
+    const result = (await handleAgentApp(
+      ready.source,
+      "r-ready",
+      "tasks.delegate",
+      { brief: "Pick up the save bug.", taskId: "task-ready", hard: true },
+      ready.host,
+    )) as { taskId?: string | null };
+    expect(ready.started[0]?.[4]).toMatchObject({ taskId: "task-ready" });
+    expect(taskForCrew(String(result.taskId))).toBe("task-ready");
+  });
+
+  it("walks research, plan and build to done with the fake Claude", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hivra-phase-walk-"));
+    const scenario = join(dir, "rules.json");
+    writeFileSync(
+      scenario,
+      JSON.stringify({
+        version: 1,
+        rules: [
+          { name: "questions", match: "Skill: research-questions", steps: [{ say: "Questions about the save path." }] },
+          { name: "research", match: "Skill: research\\n", steps: [{ say: "The save drops the last line." }] },
+          { name: "design", match: "Skill: design-discussion", steps: [{ say: "Keep the last line." }] },
+          { name: "outline", match: "Skill: create-structure-outline", times: 1, steps: [{ say: "Outline the save function." }] },
+          { name: "build", match: "Skill: implement-outline", steps: [{ say: "Build the save function." }] },
+        ],
+      }),
+    );
+    const previous = loadPhaseSettings(PROJECT);
+    savePhaseSettings(PROJECT, { ...previous, continueWithoutWaiting: true });
+    try {
+      const { source, host, started } = fixture([], "mono", async (launch, id) => {
+        const reply = await askFakeClaude(launch.prompt, fakeClaudeLaunch(scenario, join(dir, "state"), id), 8_000);
+        deliverPhaseResult(id, reply);
+      });
+      const result = await handleAgentApp(
+        source,
+        "r-walk",
+        "tasks.delegate",
+        { brief: "Rework how saving works.", taskId: "task-walk", hard: true },
+        host,
+      );
+      const work = workFor("task-walk");
+      expect(work?.docs.map((doc) => doc.phase)).toEqual(["research-questions", "research", "design", "outline", "build"]);
+      expect(work?.docs.map((doc) => doc.body)).toEqual([
+        "Questions about the save path.",
+        "The save drops the last line.",
+        "Keep the last line.",
+        "Outline the save function.",
+        "Build the save function.",
+      ]);
+      expect(work?.cursor).toBe("done");
+      expect(work?.building).toBe(true);
+      expect(started.filter((args) => String(args[1]).includes("-phase-"))).toHaveLength(5);
+      expect(started.some((args) => args[1] === "app-mono-exo-r-walk")).toBe(true);
+      expect(result).toMatchObject({ childSessionId: "app-mono-exo-r-walk" });
+    } finally {
+      savePhaseSettings(PROJECT, previous);
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("starts a worker nested under the Mono, monitored, with a signed brief and a row that carries the job", async () => {

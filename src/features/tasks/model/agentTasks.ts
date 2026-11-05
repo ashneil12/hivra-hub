@@ -2,6 +2,7 @@
 
 import type { Session } from "../../sessions/model/session";
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
+import type { TaskText } from "../../phases/model/phasePrompt";
 import { copyProjects, readKeys, resolveProject, sameProject, type CopyProject } from "../../chief/model/reads";
 import { scopeOpen } from "../../chief/model/scope";
 
@@ -61,6 +62,83 @@ const NOT_THIS = "That project isn't this chat's.";
 const NOT_COPY = "Not a project on this copy.";
 const NOT_FOUND = "No task with that id.";
 
+/** WP-84: how long a phase run waits for the task's words before it starts without them. */
+const TASK_TEXT_WAIT_MS = 5_000;
+const TASK_TITLE_MAX = 200;
+const TASK_DESCRIPTION_MAX = 60_000;
+
+function taskWord(value: unknown, max: number): string {
+  return typeof value === "string" ? value.replace(/\r\n?/g, "\n").trim().slice(0, max) : "";
+}
+
+/** The projects a task read may name: this chat's own, or every project it reads (WP-88), as tasks.get does. */
+function readProjects(source: Pick<Session, "id">, host: Pick<AgentAppHost, "codingTeamOf" | "monoOf" | "knownProjects">): string[] {
+  try {
+    return [taskProjectOf(source, host)];
+  } catch {
+    const known = copyProjects(host.knownProjects?.());
+    const keys: string[] = [];
+    for (const project of host.monoOf?.(source.id)?.projects ?? []) {
+      if (typeof project !== "string" || !project.trim()) continue;
+      const match = resolveProject(project, known);
+      keys.push(...(match ? readKeys(match) : [project.trim()]));
+    }
+    return [...new Set(keys)];
+  }
+}
+
+function taskWordsOf(found: unknown): TaskText | undefined {
+  if (!found || typeof found !== "object" || Array.isArray(found)) return undefined;
+  const record = found as Record<string, unknown>;
+  const title = taskWord(record.title, TASK_TITLE_MAX);
+  const description = taskWord(record.description, TASK_DESCRIPTION_MAX);
+  if (!title && !description) return undefined;
+  return { title, description };
+}
+
+/**
+ * WP-84: what a task asks, for a phase worker's brief. The task text is data the worker reads.
+ * A store that is missing, slow, unreachable or answers with something else is no words at all:
+ * the phase still starts, from the task's id alone.
+ */
+export async function taskTextFor(
+  source: Pick<Session, "id">,
+  taskId: string,
+  host: Pick<AgentAppHost, "codingTeamOf" | "monoOf" | "knownProjects" | "taskStore">,
+  waitMs = TASK_TEXT_WAIT_MS,
+): Promise<TaskText | undefined> {
+  if (!host.taskStore) return undefined;
+  const id = typeof taskId === "string" ? taskId.trim() : "";
+  if (!id || id.length > 80) return undefined;
+  const store = host.taskStore;
+  const read = (async () => {
+    try {
+      for (const project of readProjects(source, host)) {
+        try {
+          const words = taskWordsOf(await store("tasks_get", { actor: actorFor(source, project), id }));
+          if (words) return words;
+        } catch {
+          // Another project's key may be the one this task is filed under.
+        }
+      }
+    } catch {
+      // A host that cannot even name its projects gives no task text.
+    }
+    return undefined;
+  })();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), waitMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 function namedProject(input: Record<string, unknown>, project: string, known: readonly CopyProject[]): void {
   if (input.project === undefined) return;
   if (typeof input.project !== "string" || !sameProject(input.project, project, known)) {
@@ -84,7 +162,7 @@ function mustKnown(value: unknown, known: readonly CopyProject[]): CopyProject {
   return match;
 }
 
-function actorFor(source: Session, project: string) {
+function actorFor(source: Pick<Session, "id">, project: string) {
   return { id: source.id, project, kind: "agent" as const };
 }
 
