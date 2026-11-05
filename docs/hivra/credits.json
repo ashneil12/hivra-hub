@@ -191,6 +191,30 @@
       "url": "https://github.com/mattpocock/skills",
       "licence": "MIT",
       "gave": "the diagnosing-bugs, tdd and grill-me skills, copied into the research, plan and build pack, planned for Wave G"
+    },
+    {
+      "name": "portless",
+      "url": "https://github.com/vercel-labs/portless",
+      "licence": "Apache-2.0",
+      "gave": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove, planned for Wave I"
+    },
+    {
+      "name": "emulate",
+      "url": "https://github.com/vercel-labs/emulate",
+      "licence": "Apache-2.0",
+      "gave": "14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones, planned for Wave I"
+    },
+    {
+      "name": "oh-my-hermes",
+      "url": "https://github.com/rlaope/oh-my-hermes",
+      "licence": "MIT",
+      "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
+    },
+    {
+      "name": "Aether",
+      "url": "https://runaether.dev",
+      "licence": "closed source",
+      "gave": "ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code"
     }
   ],
   "components": [
@@ -379,6 +403,14 @@
       "how": "The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51)"
     },
     {
+      "name": "HumanLayer's worktree stacks",
+      "url": "https://github.com/humanlayer/humanlayer",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright HumanLayer and the HumanLayer contributors",
+      "where": "src-tauri/src/stacks.rs, src-tauri/src/stack_decl.rs, src/features/stacks",
+      "how": "Translated to Rust from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included (WP-87)"
+    },
+    {
       "name": "backpass",
       "url": "https://github.com/kunchenguid/backpass",
       "licence": "MIT",
@@ -393,6 +425,30 @@
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "src-tauri/src/outside",
       "how": "Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored."
+    },
+    {
+      "name": "portless's route registry, labels and proxy",
+      "url": "https://github.com/vercel-labs/portless",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Vercel Inc.",
+      "where": "src-tauri/src/proxy/",
+      "how": "Planned for WP-90, code not copied yet: routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
+    },
+    {
+      "name": "emulate's base URLs and file store",
+      "url": "https://github.com/vercel-labs/emulate",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Chris Tate",
+      "where": "src-tauri/src/local_services/",
+      "how": "Planned for WP-90, code not copied yet: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
+    },
+    {
+      "name": "oh-my-hermes's dag-ulw planner",
+      "url": "https://github.com/rlaope/oh-my-hermes",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
+      "where": "src-tauri/src/goal_graph/",
+      "how": "Planned for WP-91, code not copied yet: dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33. The Hermes-only tool, scope hook and TUI are not copied."
     }
   ]
 }

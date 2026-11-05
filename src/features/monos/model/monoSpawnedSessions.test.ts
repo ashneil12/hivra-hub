@@ -60,6 +60,18 @@ it("a waiting card follows a start on the usual model and drops the old source",
   expect(waitingCardAfterStart(launch, { ...launch, model: "other" })).toBeUndefined();
 });
 
+it("a waiting card follows the CLI fallback line a start carries, and drops it when nothing fell back", () => {
+  const line = "Codex isn't installed here, so this worker runs on Claude Code.";
+  const card: MonoSpawnedSession = { ...launch, harness: "claude", model: "claude:sonnet-5", cliFallback: line };
+  // A retried start now finds Codex installed: the line must not linger on the card.
+  const installed: MonoSpawnedSession = { ...card, harness: "codex", model: "gpt-6" };
+  delete installed.cliFallback;
+  expect(waitingCardAfterStart(card, installed)).toEqual(installed);
+  // And the other way: a card without it gains the line when the start falls back.
+  const fresh: MonoSpawnedSession = { ...launch, harness: "claude", model: "claude:sonnet-5" };
+  expect(waitingCardAfterStart(fresh, card)).toEqual(card);
+});
+
 function receipt(command = "monocode app sessions.start", ok = true): Block {
   return {
     id: "call",
@@ -258,6 +270,20 @@ it("sanitizes saved references and strips extra fields", () => {
     ["bad-from", undefined],
     ["unknown-from", undefined],
     ["mixed", undefined],
+  ]);
+  const line = "Codex isn't installed here, so this worker runs on Claude Code.";
+  expect(
+    sanitizeMonoSpawnedSessions([
+      { ...launch, sessionId: "fallback", cliFallback: line },
+      { ...launch, sessionId: "bad-fallback", cliFallback: "Codex isn't installed here." },
+      { ...launch, sessionId: "fallback-tail", cliFallback: `${line} rm -rf /` },
+      { ...launch, sessionId: "not-a-string", cliFallback: 42 },
+    ]).map((entry) => [entry.sessionId, entry.cliFallback]),
+  ).toEqual([
+    ["fallback", line],
+    ["bad-fallback", undefined],
+    ["fallback-tail", undefined],
+    ["not-a-string", undefined],
   ]);
 });
 

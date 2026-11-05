@@ -24,6 +24,7 @@ import {
 } from "../../sessions/model/models";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import type { CrewRule } from "../../crew/model/rules";
+import { cleanCliFallback } from "../../crew/model/cliFallback";
 import { cleanRanFrom } from "../../crew/model/workerChoice";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { isCustomModelId } from "../../sessions/model/customModels";
@@ -836,18 +837,20 @@ function startLaunch(
   };
 }
 
-/** The source line and effort a start card shows. An unknown source is left off. */
+/** The source line, effort and CLI fallback a start card shows. An unknown source or line is left off. */
 function launchCard(
   input: Record<string, unknown>,
   model: ReturnType<typeof resolveModel>,
   settings: Record<string, unknown>,
-): { ranFrom?: string; ranEffort?: string } {
+): { ranFrom?: string; ranEffort?: string; cliFallback?: string } {
   const ranFrom = cleanRanFrom(input.ranFrom);
   const ranEffort =
     input.effort !== undefined ? modelEffortLabel(model, settings as Record<string, string>) : undefined;
+  const cliFallback = cleanCliFallback(input.cliFallback);
   return {
     ...(ranFrom ? { ranFrom } : {}),
     ...(ranEffort ? { ranEffort } : {}),
+    ...(cliFallback ? { cliFallback } : {}),
   };
 }
 
