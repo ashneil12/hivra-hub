@@ -10,7 +10,7 @@
 // The grader runs where the bench's agents ran (hub-realtest.mjs graderVia): DeepSeek by default, never Claude unless named.
 
 import { asksSection } from "./hub-realtest-asks.mjs";
-import { spawnSync } from "node:child_process";
+import { sandboxedCliSync } from "./bench-sandbox.mjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -104,7 +104,7 @@ export function gradeScenario(dir, { claudeConfig, claude = path.join(os.homedir
     transcript,
   ].join("\n");
   const ask = (input) =>
-    spawnSync(
+    sandboxedCliSync(
     claude,
     ["-p", "--model", model, "--effort", effort, "--tools", "", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}', "--setting-sources", "user", "--no-session-persistence", "--output-format", "json", "--system-prompt", SYSTEM],
     {
