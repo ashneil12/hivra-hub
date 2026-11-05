@@ -30,6 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { benchDenyRules } from "./bench-guard.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -54,6 +55,7 @@ const FIXTURES = path.join(HERE, "../src/integrations/harness/providers/claude/f
 const FIXTURE_FILES = { 529: "529-overloaded.ndjson", 402: "402-billing.ndjson", 429: "503-gateway-429-limit.ndjson" };
 const MEMORY_DIR = process.env.REALTEST_MEMORY_DIR;
 const MEMORY_MCP = path.join(HERE, "hub-realtest-memory-mcp.mjs");
+const BENCH_MCP = path.join(HERE, "bench-dummy-mcp.mjs");
 const KEEP_MODELS = /haiku/i;
 const HAIKU_TEST = process.env.REALTEST_HAIKU_TEST === "1";
 /** The process environment variable Ash keeps the Anthropic test key in (28 Oct; launchd sets it, not the shell). */
@@ -188,6 +190,52 @@ export function benchFenceArgs(args) {
   return out;
 }
 
+function attachBenchGuard(args, { settings, rules }) {
+  const out = [...args];
+  const have = [];
+  const seen = new Set();
+  const add = (rule) => {
+    if (!rule || seen.has(rule)) return;
+    seen.add(rule);
+    have.push(rule);
+  };
+  const at = out.indexOf("--disallowedTools");
+  if (at >= 0) for (const rule of String(out[at + 1] ?? "").split(",")) add(rule);
+  for (const rule of rules) add(rule);
+  const joined = have.join(",");
+  if (at >= 0) out[at + 1] = joined;
+  else out.push("--disallowedTools", joined);
+  if (settings && !out.includes("--settings")) out.push("--settings", settings);
+  return out;
+}
+
+/**
+ * A bench chat's real arguments. A conversation with no bench settings file, or without every deny rule, is refused
+ * and must not be spawned. `--version` and other non-chats are unchanged.
+ */
+export function prepareBenchSpawn(args, env = {}) {
+  const conversation = args.includes("--input-format") || args.includes("-p") || args.includes("--print");
+  const fenced = benchFenceArgs(args);
+  if (!conversation) return { ok: true, args: fenced };
+  let allowed = [];
+  try {
+    const parsed = JSON.parse(env.REALTEST_ALLOWED ?? "[]");
+    if (Array.isArray(parsed)) allowed = parsed;
+  } catch {
+    allowed = [];
+  }
+  const rules = benchDenyRules({ realHome: env.REALTEST_REAL_HOME ?? "", allowed });
+  const settings = env.REALTEST_BENCH_SETTINGS ?? "";
+  const guarded = attachBenchGuard(fenced, { settings, rules });
+  const at = guarded.indexOf("--disallowedTools");
+  const have = new Set(String(guarded[at + 1] ?? "").split(",").filter(Boolean));
+  const missing = rules.filter((rule) => !have.has(rule));
+  if (missing.length || !settings || !fs.existsSync(settings)) {
+    return { ok: false, args: guarded, reason: "bench chat refused: the deny rules or the bench settings file are missing" };
+  }
+  return { ok: true, args: guarded };
+}
+
 /** The shim folder (made once per run) and the env that puts it first and stops browser opens. */
 export function benchFenceEnv(env, state) {
   const bin = path.join(state, "bench-bin");
@@ -251,6 +299,28 @@ export function withMemory(args, { memoryDir = MEMORY_DIR, state = process.env.R
   const allowed = out.indexOf("--allowedTools");
   if (allowed >= 0 && allowed + 1 < out.length) out[allowed + 1] = `${out[allowed + 1]},mcp__memory__ash_recall,mcp__memory__ash_remember`;
   else out.push("--allowedTools", "mcp__memory__ash_recall,mcp__memory__ash_remember");
+  return out;
+}
+
+/** The bench dummy's stop tool, beside memory. Helper calls with no MCP config are left alone. */
+export function withBench(args, { state = process.env.REALTEST_STATE, node = process.execPath } = {}) {
+  if (!state) return args;
+  const at = args.indexOf("--mcp-config");
+  if (at < 0 || at + 1 >= args.length) return args;
+  let config;
+  try {
+    config = JSON.parse(args[at + 1]);
+  } catch {
+    return args;
+  }
+  if (!config?.mcpServers) return args;
+  config.mcpServers.bench = { command: node, args: [BENCH_MCP], env: { REALTEST_STATE: state } };
+  const out = [...args];
+  out[at + 1] = JSON.stringify(config);
+  const tool = "mcp__bench__stop_bench_dummy";
+  const allowed = out.indexOf("--allowedTools");
+  if (allowed >= 0 && allowed + 1 < out.length) out[allowed + 1] = `${out[allowed + 1]},${tool}`;
+  else out.push("--allowedTools", tool);
   return out;
 }
 
@@ -327,7 +397,14 @@ function main() {
   };
   const routed = isRouted(process.env);
   env = childEnv(benchFenceEnv(env, STATE));
-  const realArgs = benchFenceArgs(withMemory(rewriteArgs(args, { routed })));
+  const prepared = prepareBenchSpawn(withBench(withMemory(rewriteArgs(args, { routed }))), process.env);
+  if (!prepared.ok) {
+    log({ dir: "refused", reason: prepared.reason });
+    usage({ kind: "refused" });
+    process.stdout.write(`${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: prepared.reason, duration_ms: 0, num_turns: 0, total_cost_usd: 0 })}\n`);
+    process.exit(2);
+  }
+  const realArgs = prepared.args;
   log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
   // A chat resumed after the bench moved to another account: bring its transcript to the active account first.
