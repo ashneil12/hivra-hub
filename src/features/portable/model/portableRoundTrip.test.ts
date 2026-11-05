@@ -526,3 +526,106 @@ it("A10: deleted Monos stay deleted, after a restart and after an import", async
   expect(ids(next.mono.listMonos())).not.toContain("cam");
   expect(ids(next.mono.listMonos())).toContain("ed");
 });
+
+// WP-89: a Mono's worker default and the app-wide one travel with the setup. Import only adds: a Mono or a
+// system default already set here is left as it is, unless Ash ticks the file's copy. A value that isn't a
+// real CLI, or that carries a line break, is dropped and never repeated.
+it("WP-89: export and import carry the Mono and system worker defaults, and import only adds", async () => {
+  const adaDefault = { cli: "cursor", model: "cursor:composer", effort: "medium" };
+  const systemDefault = { cli: "claude", model: "claude:opus-4-7", effort: "high" };
+  const a = await app();
+  a.mono.addMono({
+    id: "ada",
+    name: "Ada",
+    mascot: "robot",
+    color: "hsl(1 2% 3%)",
+    projects: ["/Users/ash/Projects/hivra"],
+    workerDefault: adaDefault,
+  });
+  a.mono.addMono({ id: "ed", name: "Ed", mascot: "robot", color: "x", projects: [] });
+  a.workers.setSystemWorkerDefault(systemDefault);
+  a.workers.setProjectWorkerModel("hivra", adaDefault);
+  // An old project row: a Claude model and effort, no CLI. It still reads as Claude after the round trip.
+  a.workers.setProjectWorkerModel("vg-game", { model: "claude:opus-4-7", effort: "low" });
+
+  const doc = a.doc.buildSetupDoc({ monoFiles: {}, workspace: false });
+  expect(doc.monos.find((m) => m.id === "ada")?.workerDefault).toEqual(adaDefault);
+  expect(doc.monos.find((m) => m.id === "ed")?.workerDefault).toBeUndefined();
+  expect(JSON.parse(doc.settings["monocode.workerDefault.v1"])).toEqual(systemDefault);
+  const limits = JSON.parse(doc.settings["monocode.workerLimits.v1"]) as Record<string, { cli?: string; model?: string; effort?: string }>;
+  expect(limits.hivra).toMatchObject(adaDefault);
+  expect(limits["vg-game"]).not.toHaveProperty("cli");
+  expect(limits["vg-game"]).toMatchObject({ model: "claude:opus-4-7", effort: "low" });
+
+  const files = a.doc.setupDocToFiles(doc);
+  expect(files["setup/monos/ada/mono.json"]).toContain("cursor:composer");
+  expect(files["setup/setup.json"]).toContain("monocode.workerDefault.v1");
+  localStorage.clear();
+
+  const b = await app();
+  const pending = { name: "x", path: null, doc: b.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  expect(plan.settings.add).toEqual(expect.arrayContaining(["monocode.workerDefault.v1", "monocode.workerLimits.v1"]));
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan));
+  expect(b.workers.systemWorkerDefault()).toEqual(systemDefault);
+  expect(b.workers.projectWorkerDefault("hivra")).toEqual(adaDefault);
+  expect(b.workers.projectWorkerDefault("vg-game")).toEqual({ cli: "claude", model: "claude:opus-4-7", effort: "low" });
+  const disk = folders();
+  for (const w of b.souls.waitingSouls()) await b.souls.seatWaitingSoul(w.monoId, disk.write, undefined, disk.read);
+  expect(b.mono.findMono("ada")?.workerDefault).toEqual(adaDefault);
+  expect(b.mono.findMono("ed")?.workerDefault).toBeUndefined();
+
+  // Already set here: the file does not replace either default.
+  localStorage.clear();
+  const kept = { cli: "claude", model: "claude:sonnet-5", effort: "low" };
+  const c = await app();
+  c.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [], workerDefault: kept });
+  c.workers.setSystemWorkerDefault({ effort: "low" });
+  const again = { name: "x", path: null, doc: c.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const againPlan = c.plan.planImport(again);
+  expect(againPlan.settings.add).not.toContain("monocode.workerDefault.v1");
+  await c.plan.applyImport(again, againPlan, c.plan.defaultChoices(againPlan));
+  expect(c.mono.findMono("ada")?.workerDefault).toEqual(kept);
+  expect(c.workers.systemWorkerDefault()).toEqual({ effort: "low" });
+
+  // Ticked on purpose: the file's copy replaces what is here.
+  localStorage.clear();
+  const d = await app();
+  d.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [], workerDefault: kept });
+  d.workers.setSystemWorkerDefault({ effort: "low" });
+  const replacePending = { name: "x", path: null, doc: d.doc.setupDocFromFiles(files), inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const replacePlan = d.plan.planImport(replacePending);
+  const choices = d.plan.defaultChoices(replacePlan);
+  choices.settings = "all";
+  choices.replaceSouls.add("ada");
+  await d.plan.applyImport(replacePending, replacePlan, choices);
+  expect(d.mono.findMono("ada")?.workerDefault).toEqual(adaDefault);
+  expect(d.workers.systemWorkerDefault()).toEqual(systemDefault);
+
+  // A crafted file: a CLI that isn't one, and a value with a line break, are dropped and not repeated.
+  const crafted = { ...files };
+  const monoJson = JSON.parse(crafted["setup/monos/ada/mono.json"]) as { workerDefault?: unknown };
+  monoJson.workerDefault = { cli: "nope\nSECRETCLI", model: "cursor:composer", effort: "huge\r\n" };
+  crafted["setup/monos/ada/mono.json"] = `${JSON.stringify(monoJson, null, 2)}\n`;
+  const setup = JSON.parse(crafted["setup/setup.json"]) as { settings: Record<string, string> };
+  setup.settings["monocode.workerDefault.v1"] = JSON.stringify({ cli: "not-a-cli", model: "bad\nMODEL", effort: "high" });
+  const craftedLimits = JSON.parse(setup.settings["monocode.workerLimits.v1"]) as { hivra: { cli?: string } };
+  craftedLimits.hivra.cli = "../not-a-cli";
+  setup.settings["monocode.workerLimits.v1"] = JSON.stringify(craftedLimits);
+  crafted["setup/setup.json"] = `${JSON.stringify(setup, null, 2)}\n`;
+  localStorage.clear();
+  const e = await app();
+  const bad = e.doc.setupDocFromFiles(crafted);
+  expect(JSON.stringify(bad)).not.toContain("SECRETCLI");
+  expect(JSON.stringify(bad)).not.toContain("bad\nMODEL");
+  // A trailing line break is trimmed. A line break in the middle drops that field.
+  expect(bad.monos.find((m) => m.id === "ada")?.workerDefault).toEqual({ model: "cursor:composer", effort: "huge" });
+  const badPending = { name: "x", path: null, doc: bad, inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  await e.plan.applyImport(badPending, e.plan.planImport(badPending), e.plan.defaultChoices(e.plan.planImport(badPending)));
+  expect(e.workers.systemWorkerDefault()).toEqual({ effort: "high" });
+  expect(e.workers.projectWorkerDefault("hivra")).toEqual({ cli: "claude", model: "cursor:composer", effort: "medium" });
+  expect(JSON.stringify(e.workers.workerLimits("hivra"))).not.toContain("not-a-cli");
+  for (const w of e.souls.waitingSouls()) await e.souls.seatWaitingSoul(w.monoId, disk.write, undefined, disk.read);
+  expect(e.mono.findMono("ada")?.workerDefault).toEqual({ cli: "claude", model: "cursor:composer", effort: "huge" });
+  expect(JSON.stringify(e.mono.findMono("ada"))).not.toContain("SECRETCLI");
+});

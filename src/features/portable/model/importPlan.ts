@@ -15,11 +15,15 @@ import { addMockProject } from "../../hub/model/mockData";
 import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../../hub/model/setupSouls";
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
-import { isPortableSetting, MONO_TEAMS_KEY, settingLooksSecret, workerLimitsSetting, WORKER_LIMITS_KEY, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { isPortableSetting, MONO_TEAMS_KEY, settingLooksSecret, workerDefaultSetting, workerLimitsSetting, WORKER_DEFAULT_KEY, WORKER_LIMITS_KEY, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { isCli } from "../../crew/model/clis";
+import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import {
   savedWorkerLimits,
   setProjectWorkerModel,
+  setSystemWorkerDefault,
   setWorkerLimits,
+  systemWorkerDefault,
   type WorkerLimits,
 } from "../../monos/model/workerPool";
 import { ensureMonoTeam, monoTeam, type MakeTeamFolder } from "../../hub/model/monoTeams";
@@ -105,6 +109,8 @@ export function hereNow(): Here {
     setting: (key) => {
       // The worker limits live in the app database, not storage: what this Mac runs with is the pool's own copy.
       if (key === WORKER_LIMITS_KEY) return workerLimitsSetting();
+      // WP-89: the app-wide worker default lives in the pool, not storage.
+      if (key === WORKER_DEFAULT_KEY) return workerDefaultSetting();
       try {
         return localStorage.getItem(key);
       } catch {
@@ -424,6 +430,7 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     engine: mono.engine,
     projects: folders,
     ...(Object.keys(topics).length ? { topics } : {}),
+    ...(mono.workerDefault ? { workerDefault: mono.workerDefault } : {}),
   };
 }
 
@@ -489,6 +496,9 @@ async function applyOwnedSetting(
       if (typeof saved.workers === "number") next.workers = saved.workers;
       if (typeof saved.heavy === "number") next.heavy = saved.heavy;
       const model = typeof saved.model === "string" && saved.model.trim() ? saved.model : undefined;
+      const rawCli = typeof saved.cli === "string" ? saved.cli.trim() : "";
+      // A CLI that isn't one is dropped. An old row with none still imports, and reads as Claude.
+      const cli = rawCli && isCli(rawCli) ? rawCli : undefined;
       if (next.workers === undefined && next.heavy === undefined && !model) continue;
       if (next.workers !== undefined || next.heavy !== undefined) setWorkerLimits(project, next);
       // The project's own worker model (E7) travels with its limits.
@@ -496,9 +506,17 @@ async function applyOwnedSetting(
         setProjectWorkerModel(project, {
           model,
           ...(typeof saved.effort === "string" && saved.effort ? { effort: saved.effort } : {}),
+          ...(cli ? { cli } : {}),
         });
       applied = true;
     }
+  } else if (key === WORKER_DEFAULT_KEY) {
+    // Import only adds, unless Ash ticked the file's settings. A broken value is dropped.
+    if (!replace && systemWorkerDefault()) return 0;
+    const clean = cleanStoredDefault(parsed as { cli?: string; model?: string; effort?: string });
+    if (!clean) return 0;
+    setSystemWorkerDefault(clean);
+    applied = true;
   } else if (key === MONO_TEAMS_KEY) {
     for (const [monoId, raw] of Object.entries(parsed as Record<string, unknown>)) {
       // Only a Mono that is here or coming in: a folder for anyone else would be a team nobody asked for.
@@ -659,7 +677,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
 
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
-    const owned = [WORKER_LIMITS_KEY, MONO_TEAMS_KEY];
+    const owned = [WORKER_LIMITS_KEY, MONO_TEAMS_KEY, WORKER_DEFAULT_KEY];
     let set = 0;
     for (const key of keys) {
       // Checked again where it is written: only a real preference, and never one that looks like a secret.

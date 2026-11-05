@@ -3,6 +3,8 @@
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
 import { addMono, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
+import { cleanStoredDefault } from "../../crew/model/workerDefault";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { ROLE_NAMES } from "./roleNames";
 
 export type SetupSoul = {
@@ -30,6 +32,8 @@ export type SetupSoul = {
   projects?: string[];
   /** memory/<name>.md notes, by name. Only when memory was ticked. */
   topics?: Record<string, string>;
+  /** WP-89: what its workers run on. Import only adds: a seated Mono that already has one keeps it. */
+  workerDefault?: WorkerPick;
 };
 
 function roster(): { id: string; name?: string; mascot?: string }[] {
@@ -163,6 +167,7 @@ export async function writeSoulFiles(
 export async function seatWaitingSoul(monoId: string, write: Writer = writeAgentFile, folders?: string[], read: Read = readAgentFile): Promise<string[]> {
   const soul = readWaiting().find((s) => s.monoId === monoId);
   if (!soul) return [];
+  const workerDefault = cleanStoredDefault(soul.workerDefault);
   if (!isSeated(monoId)) {
     addMono({
       id: soul.monoId,
@@ -173,7 +178,11 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       color: soul.color ?? "hsl(210 8% 58%)",
       projects: folders ?? soul.projects ?? [],
       ...engineFieldsOf(soul.engine),
+      ...(workerDefault ? { workerDefault } : {}),
     });
+  } else if (workerDefault && !findMono(monoId)?.workerDefault) {
+    // Seated while this was waiting, with no default of its own: add the file's. One already set stays.
+    updateMono(monoId, (m) => (m.workerDefault ? m : { ...m, workerDefault }));
   }
   const { problems } = await writeSoulFiles(monoId, soulFiles(soul), { write, read });
   if (!problems.length) saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
@@ -196,11 +205,13 @@ export async function mergeIntoSeated(
   const mono = findMono(soul.monoId);
   if (!mono) return { written: [], kept: [], problems: [] };
   const engine = engineFieldsOf(soul.engine);
+  const workerDefault = cleanStoredDefault(soul.workerDefault);
   updateMono(mono.id, (m) => ({
     ...m,
     projects: [...m.projects, ...(soul.projects ?? [])],
     ...(engine.engine && (!m.engine || replace) ? engine : {}),
     ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
+    ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),
   }));
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}), ...(stale ? { stale } : {}) });
 }

@@ -19,7 +19,9 @@ import type { GroupChat, HubProject } from "../../hub/model/types";
 import type { ProjectIconChoice } from "../../hub/model/projectPrefs";
 import { findSecrets, isSecretKey, redactText, redactValue } from "./secrets";
 import { forYou } from "../../hub/model/userName";
-import { savedWorkerLimits, type WorkerLimits } from "../../monos/model/workerPool";
+import { savedWorkerLimits, systemWorkerDefault, type WorkerLimits } from "../../monos/model/workerPool";
+import { cleanStoredDefault } from "../../crew/model/workerDefault";
+import type { Pick as WorkerPick } from "../../crew/model/resolve";
 
 export const SETUP_FORMAT = "monocode-hub-setup";
 /** The setup part's version: 1 was the single .json file; 2 lives in an export folder or archive. */
@@ -56,6 +58,8 @@ export type PortableMono = {
   waiting?: boolean;
   showStartedSessionsInSidebar?: boolean;
   useSidebarFolders?: boolean;
+  /** WP-89: the CLI, model and effort its workers use. Absent when this Mono sets none. */
+  workerDefault?: WorkerPick;
 };
 
 /** A team is a project's group chat and who is in it. Its conversations are workspace, not setup. */
@@ -95,6 +99,8 @@ export type SetupDoc = {
  */
 /** A project's worker limits (workerPool.ts), as one setting: `{ "hivra": { workers, heavy } }`. */
 export const WORKER_LIMITS_KEY = "monocode.workerLimits.v1";
+/** WP-89: the worker default for every project, as one setting: `{ cli?, model?, effort? }`. */
+export const WORKER_DEFAULT_KEY = "monocode.workerDefault.v1";
 /** Each Mono's own team on this Mac, by Mono id (hub/model/monoTeams.ts). */
 export const MONO_TEAMS_KEY = "monocode:mono-teams";
 
@@ -176,6 +182,9 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   // (importPlan.ts), never by writing this key. A Mono's own team travels by Mono id: its folder is this Mac's, and
   // the import makes the local one instead of taking another Mac's path.
   WORKER_LIMITS_KEY,
+  // WP-89: the app-wide worker default. It lives in the app database, like the limits, so an export writes it from
+  // the worker pool and an import puts it back through the pool. It is not part of the limits JSON.
+  WORKER_DEFAULT_KEY,
   MONO_TEAMS_KEY,
 ];
 const PORTABLE = new Set(PORTABLE_SETTINGS);
@@ -242,9 +251,40 @@ export function workerLimitsSetting(limits: Record<string, WorkerLimits> = saved
   return JSON.stringify(Object.fromEntries(projects.map((project) => [project, limits[project]])));
 }
 
+/** The app-wide worker default, as the setting an export carries. Nothing set: the key is left out. */
+export function workerDefaultSetting(stored: WorkerPick | null | undefined = systemWorkerDefault()): string | null {
+  const clean = cleanStoredDefault(stored ?? undefined);
+  return clean ? JSON.stringify(clean) : null;
+}
+
 function withWorkerLimits(settings: Record<string, string>): Record<string, string> {
   const limits = workerLimitsSetting();
-  return limits ? { ...settings, [WORKER_LIMITS_KEY]: limits } : settings;
+  const workerDefault = workerDefaultSetting();
+  return {
+    ...settings,
+    ...(limits ? { [WORKER_LIMITS_KEY]: limits } : {}),
+    ...(workerDefault ? { [WORKER_DEFAULT_KEY]: workerDefault } : {}),
+  };
+}
+
+/** A worker default read from a file. A field that isn't usable is dropped, and never repeated. */
+function readWorkerDefault(value: unknown): WorkerPick | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return cleanStoredDefault(value as WorkerPick);
+}
+
+/** The app-wide default as it will be stored. A broken file yields nothing, and the broken text is not kept. */
+function cleanedWorkerDefaultSetting(value: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+  const clean = readWorkerDefault(parsed);
+  if (!clean) return null;
+  const text = JSON.stringify(clean);
+  return settingLooksSecret(WORKER_DEFAULT_KEY, text) ? null : text;
 }
 
 // ---- building the document from this Mac ------------------------------------------------------------------------------
@@ -307,6 +347,7 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
   if (s.workflows) files["habits.json"] = s.workflows;
   if (s.memory) files["MEMORY.md"] = s.memory;
   for (const [name, text] of Object.entries(s.topics ?? {})) files[`memory/${name}.md`] = text;
+  const workerDefault = readWorkerDefault(s.workerDefault);
   return {
     id: s.monoId,
     name: s.name,
@@ -323,6 +364,7 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
     skillRefs: s.skills.map((name) => ({ name, path: null, source: null })),
     files,
     waiting: true,
+    ...(workerDefault ? { workerDefault } : {}),
   };
 }
 
@@ -339,6 +381,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
     const name = m.name?.trim() || defaultMonoName(m.mascot);
     const rules = files["SOUL.md"] ?? "";
     const skills = skillsOf(rules);
+    const workerDefault = readWorkerDefault(m.workerDefault);
     return {
       id: m.id,
       name,
@@ -356,6 +399,7 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       files,
       ...(m.showStartedSessionsInSidebar !== undefined ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
       ...(m.useSidebarFolders ? { useSidebarFolders: true } : {}),
+      ...(workerDefault ? { workerDefault } : {}),
     };
   });
   const seatedIds = new Set(seated.map((m) => m.id));
@@ -544,6 +588,7 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
       })
     : [];
   const team = m.team === "lead" || m.team === "leadership" ? m.team : "member";
+  const workerDefault = readWorkerDefault(m.workerDefault);
   return {
     id: m.id,
     name,
@@ -562,6 +607,7 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     ...(m.waiting === true ? { waiting: true } : {}),
     ...(typeof m.showStartedSessionsInSidebar === "boolean" ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
     ...(m.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
+    ...(workerDefault ? { workerDefault } : {}),
   };
 }
 
@@ -605,9 +651,17 @@ export function setupDocFromFiles(files: Record<string, string>): SetupDoc {
   const prefs = record(setup.projectPrefs);
   // Only real preferences, and none that looks like a secret: a crafted file can't set this install's state or a key.
   const settings = Object.fromEntries(
-    Object.entries(record(setup.settings)).filter(
-      (e): e is [string, string] => typeof e[1] === "string" && e[1].length <= SETTING_MAX && isPortableSetting(e[0]) && !settingLooksSecret(e[0], e[1]),
-    ),
+    Object.entries(record(setup.settings)).flatMap((entry): [string, string][] => {
+      const [key, value] = entry;
+      if (typeof value !== "string" || value.length > SETTING_MAX || !isPortableSetting(key)) return [];
+      // WP-89: clean this one before the secret check, so a broken field is dropped and not repeated.
+      if (key === WORKER_DEFAULT_KEY) {
+        const clean = cleanedWorkerDefaultSetting(value);
+        return clean ? [[key, clean]] : [];
+      }
+      if (settingLooksSecret(key, value)) return [];
+      return [[key, value]];
+    }),
   );
   const customModels = (Array.isArray(setup.customModels) ? setup.customModels : []).filter(
     (m): m is CustomModel => !!m && typeof m === "object" && typeof (m as CustomModel).id === "string" && typeof (m as CustomModel).name === "string" && typeof (m as CustomModel).modelId === "string",
