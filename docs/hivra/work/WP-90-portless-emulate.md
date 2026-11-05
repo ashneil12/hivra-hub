@@ -81,7 +81,9 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    `pruneStaleRoutes()`. Port its tests. One registry per copy, in `<data>/proxy/routes.json`, with a lock file and
    the writer's pid; a second window sees the proxy already running and uses it instead of starting another.
    Why a translation and not the package: the proxy has to outlive the window and the registry is written by WP-87's
-   Rust. It is about 600 lines, and its TypeScript cannot run in Rust's process.
+   Rust, and portless's TypeScript cannot run inside Rust's process. Those five files total about 3,000 lines; only
+   the registry, the label and port helpers and the routing core are taken, roughly 1,200, and the rest (TLS, the
+   hosts file, the CLI's app launcher) is left out.
 2. **Labels.** `sanitizeForHostname` and `truncateLabel` (63 characters, a `-` and six hex digits of the SHA-256 when
    shortened) carried over as they are. The label comes from the **stack id** (WP-87), not from the branch, so a pool
    slot keeps its name when re-leased; a stack outside the pool falls back to its worktree's branch. Portless's

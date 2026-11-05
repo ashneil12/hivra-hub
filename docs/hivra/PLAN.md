@@ -206,7 +206,7 @@ what is missing, so any of them can become a package when Ash says. None has a W
    (`src-tauri/src/harness_updates.rs`). Missing: every machine as a card (Mac, VPS, Proxmox hosts, phone), Cursor and
    Gemini in the harness list, a harness × machine version matrix, and one-click Update that reaches a machine other
    than this one.
-3. **Agents as bots.** Hivra has Monos with a persona (WP-05, WP-21), a provider and model per Mono (`MonoEngine`), a
+3. **Agents as bots.** Hivra has Monos with a persona (WP-05, WP-21), a harness and model per Mono (`MonoEngine`), a
    worker default per Mono, project and app (WP-89), crew rules that reroute after a failure (WP-13), and skills and
    commands that come with plugins (WP-30, WP-41). The teaser's per-bot settings are role, provider and model, an
    ordered fallback list of provider and model, effort from Low to Max, fast mode, and the bot's own Commands and
