@@ -132,6 +132,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/finder.rs, src/features/search/model/finder.ts
   The FTS5 schema, fts_query, split_marks, the bm25 and snippet query, and the integrity-check confirmation, translated from migrations/0027_page_search_fts.sql, apps/server/src/repositories/pages.rs and crates/platform/src/integrity.rs (WP-74).
 
+- Orbit's GitHub label sync
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src-tauri/src/github_issues
+  The label match and sync_github_work_item rules, translated from the GitHub webhook onto rusqlite and a poll (WP-77). A title over 300 characters or a description over 12,000 is rejected, not stored. A labelled pull request drops only its own row in github_pull_links, so a crew pull request on a different task can still complete that task.
+
 - Raven's chat importer
   Source: https://github.com/EverMind-AI/Raven
   License: Apache-2.0
