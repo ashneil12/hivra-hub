@@ -852,6 +852,7 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         "modelName",
         "effort",
         "modelWhy",
+        "cliFallback",
     ] {
         if let Some(value) = started.get(key) {
             out[key] = value.clone();
@@ -1434,6 +1435,23 @@ mod tests {
             json!({ "brief": "Add GET /health", "title": "API health and negative bump" }),
         );
         assert_eq!(outcome.unwrap()["title"], "API health and negative bump");
+    }
+
+    #[test]
+    fn a_delegation_says_when_the_cli_it_asked_for_is_not_installed() {
+        let line = "Codex isn't installed here, so this worker runs on Claude Code.";
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, move |_, _, _| {
+            Ok(json!({
+                "taskId": "t-1",
+                "childSessionId": "c",
+                "status": "running",
+                "harness": "claude",
+                "cliFallback": line,
+            }))
+        });
+        let (outcome, _) = run_tool(&app, "delegate_task", json!({ "brief": "Build the title" }));
+        assert_eq!(outcome.unwrap()["cliFallback"], line);
     }
 
     #[test]

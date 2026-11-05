@@ -26,6 +26,24 @@ for (const width of [260, 300, 360, 480, 700]) {
   });
 }
 
+// WP-89 follow-up: the CLI a Mono asked for isn't installed here, so the card says which one and what the worker runs
+// on instead, beside the line that names the CLI it did start on.
+test("worker card says when the CLI it asked for isn't installed, and what it runs on", async ({ page }) => {
+  await page.goto("/tests/browser/launched-card.html?f=1");
+  const card = page.locator("[data-launched-session]");
+  await expect(card).toBeVisible();
+  await expect(card.locator("[data-launched-ran]")).toHaveText(
+    "Runs on Claude Code, Sonnet 5, High effort (set for this Mono)",
+  );
+  await expect(card.locator("[data-launched-fallback]")).toHaveText(
+    "Codex isn't installed here, so this worker runs on Claude Code.",
+  );
+  await expect(card).toHaveAttribute(
+    "title",
+    /Codex isn't installed here, so this worker runs on Claude Code\./,
+  );
+});
+
 // r95 (PM, worker card a): no engine chip, and the job's name is never cut off: at narrow widths a long one wraps onto
 // a second line, whole, inside the card.
 const LONG = "Reject a negative bump and show the tally count";

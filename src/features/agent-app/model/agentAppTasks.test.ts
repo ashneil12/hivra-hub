@@ -51,7 +51,8 @@ import {
 import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
 
 // `onlyClaude` is a bench plan (src-tauri/src/verify_live.rs): no CLI but the run's own Claude wrapper resolves.
-const probe = vi.hoisted(() => ({ probed: true, runs: 0, onlyClaude: false }));
+// `codexOff` is a Mac without the Codex CLI: the setting is in force, the binary simply isn't installed.
+const probe = vi.hoisted(() => ({ probed: true, runs: 0, onlyClaude: false, codexOff: false }));
 // The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
 const bridge = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../integrations/harness/providers/claude/claudeDeepseekBridge", async (actual) => {
@@ -69,7 +70,8 @@ vi.mock("../../../integrations/harness/core/availability", () => ({
   // Before the first probe ends every harness reads as missing. A bench plan resolves only the Claude wrapper.
   isHarnessAvailable: (id: string) =>
     probe.probed &&
-    (id === "claude" || (!probe.onlyClaude && (id === "codex" || (bridge.on && id === "grok")))),
+    (id === "claude" ||
+      (!probe.onlyClaude && ((id === "codex" && !probe.codexOff) || (bridge.on && id === "grok")))),
   hasProbedHarnessAvailability: () => probe.probed,
   probeHarnessAvailability: async () => {
     probe.runs += 1;
@@ -1804,10 +1806,14 @@ describe("parallel workers per project, with throttling (H8)", () => {
     resetWorkerPool();
     const f = fixture(rows, who);
     const cards: Array<{ id: string; cwd: string; title: string }> = [];
+    const cardLaunches: Array<Record<string, unknown>> = [];
     f.api.pool = workerPoolHost({
       openRows: () => rows.filter(isOpenDelegation),
       room: () => room(),
-      card: (job, launch) => cards.push({ id: job.id, cwd: launch.cwd, title: job.title }),
+      card: (job, launch) => {
+        cards.push({ id: job.id, cwd: launch.cwd, title: job.title });
+        cardLaunches.push({ ...launch });
+      },
     });
     // What App.tsx's pump does: ask the same delegate_task again, under the same request.
     const pump = () =>
@@ -1816,7 +1822,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
         room: () => room(),
         start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
       });
-    return { ...f, cards, pump };
+    return { ...f, cards, cardLaunches, pump };
   }
 
   it("runs Ash's 20 workers at once in a project he set to 20; the 21st waits visibly and starts by itself", async () => {
@@ -2302,9 +2308,14 @@ describe("parallel workers per project, with throttling (H8)", () => {
         inForce: { cli: string; cliFrom: string };
       };
       expect(set.inForce).toMatchObject({ cli: "codex", cliFrom: "mono" });
-      await handleAgentApp(source, "r-codex", "tasks.delegate", { brief: "Build the title." }, host);
+      const result = (await handleAgentApp(source, "r-codex", "tasks.delegate", { brief: "Build the title." }, host)) as {
+        cliFallback?: string;
+      };
+      // Installed: the setting applies, so nothing fell back and neither the result nor the card says otherwise.
+      expect(result).not.toHaveProperty("cliFallback");
       expect(started).toHaveLength(1);
       expect(started[0][0]).toMatchObject({ harness: "codex", model: "codex:gpt-5" });
+      expect(started[0][0]).not.toHaveProperty("cliFallback");
     });
 
     it("carries the model and effort this chat set for its Mono's workers", async () => {
@@ -2332,6 +2343,62 @@ describe("parallel workers per project, with throttling (H8)", () => {
         model: "codex:gpt-5",
         modelSettings: { effort: "high" },
       });
+    });
+
+    it("says plainly when the CLI a Mono's workers were set to isn't installed, and what they run on instead", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const { source, host, started, api } = lead();
+      // The setting is in force (the route still answers codex); only the binary itself is missing on this Mac.
+      api.crewRoute = realCrewRoute(["claude"]);
+      probe.codexOff = true;
+      const line = "Codex isn't installed here, so this worker runs on Claude Code.";
+      try {
+        const set = (await handleAgentApp(source, "m-codex", "tasks.workers", { scope: "mono", cli: "codex" }, host)) as {
+          inForce: { cli: string; cliFrom: string };
+        };
+        expect(set.inForce).toMatchObject({ cli: "codex", cliFrom: "mono" });
+        const result = (await handleAgentApp(source, "r-codex", "tasks.delegate", { brief: "Build the title." }, host)) as {
+          cliFallback?: string;
+          note: string;
+        };
+        expect(result.cliFallback).toBe(line);
+        expect(result.note).toContain(line);
+        // The fallback keeps the work moving: the worker starts on the chat's own CLI, and its card says why.
+        expect(started).toHaveLength(1);
+        expect(started[0][0]).toMatchObject({ harness: "claude", cliFallback: line });
+      } finally {
+        probe.codexOff = false;
+      }
+    });
+
+    it("says it on a waiting worker's card too, and again when that worker starts", async () => {
+      setHarnessModels("codex", [{ id: "codex:gpt-5", harness: "codex", name: "GPT-5", settings: [] }]);
+      const rows: Delegation[] = [];
+      const { source, host, started, api, cards, cardLaunches, pump } = lead("mono", rows);
+      api.crewRoute = realCrewRoute(["claude"]);
+      probe.codexOff = true;
+      const line = "Codex isn't installed here, so this worker runs on Claude Code.";
+      try {
+        await handleAgentApp(source, "m-codex", "tasks.workers", { scope: "mono", cli: "codex" }, host);
+        setWorkerLimits("vg-game", { workers: 1 });
+        await handleAgentApp(source, "r-one", "tasks.delegate", { brief: "One." }, host);
+        const waiting = (await handleAgentApp(source, "r-two", "tasks.delegate", { brief: "Two." }, host)) as {
+          status: string;
+          cliFallback?: string;
+          note: string;
+        };
+        expect(waiting).toMatchObject({ status: "waiting", cliFallback: line });
+        expect(waiting.note).toContain(line);
+        expect(cards).toHaveLength(1);
+        expect(cardLaunches[0]).toMatchObject({ harness: "claude", cliFallback: line });
+        // It starts by itself later, still on the chat's CLI, with the same line.
+        rows[0].state = "completed";
+        await pump();
+        expect(started).toHaveLength(2);
+        expect(started[1][0]).toMatchObject({ harness: "claude", cliFallback: line });
+      } finally {
+        probe.codexOff = false;
+      }
     });
 
     it("refuses a worker routed off the wrapper in a bench, instead of quietly running it on Claude", async () => {
