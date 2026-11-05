@@ -392,3 +392,74 @@ test("the Tally routes check fails on an unsigned DELETE with Ash's note, and pa
   assert.equal(gate(["--signed-off", "DELETE /tallies/:id"]).status, 0);
   fsm.rmSync(copy, { recursive: true, force: true });
 });
+
+// WP-05: a fresh copy seats nobody, so the ready wait only passes once teamPack has put the team in the room.
+test("runBench's ready wait passes once the room is seated", async () => {
+  const { waitForSeatedRoom } = await import("./hub-realtest.mjs");
+  const spec = { project: { id: "tally" }, team: "ash" };
+  let members = [];
+  const calls = [];
+  const act = async (op, payload = {}) => {
+    calls.push({ op, ...payload });
+    if (op === "teamPack") {
+      if (payload.pack === "ash" && payload.project === "tally") members = ["mono-coordinator"];
+      return {
+        ok: payload.pack === "ash" && payload.project === "tally",
+        pack: payload.pack,
+        wrote: [],
+        monos: members.map((id) => ({ id, name: "Coordinator" })),
+        error: payload.project ? undefined : "teamPack: no project",
+      };
+    }
+    if (op === "snapshot") {
+      return {
+        monos: [{ id: "tally-lead", name: "Tally lead" }],
+        rooms: [{ id: "tally:leadership", memberIds: [...members] }],
+      };
+    }
+    return { ok: true };
+  };
+  const once = async (read) => read();
+  const { ready } = await waitForSeatedRoom({ act, log: () => {}, spec, until: once });
+  assert.equal(ready.monos.find((mono) => mono.id === "tally-lead")?.id, "tally-lead");
+  assert.ok(ready.rooms.find((room) => room.id === "tally:leadership").memberIds.length >= 1);
+  assert.ok(calls.some((call) => call.op === "teamPack" && call.project === "tally"));
+
+  members = [];
+  await assert.rejects(
+    () => waitForSeatedRoom({
+      act: async (op) => (op === "snapshot"
+        ? { monos: [{ id: "tally-lead" }], rooms: [{ id: "tally:leadership", memberIds: [] }] }
+        : { ok: true, pack: "ash", wrote: [], monos: [] }),
+      log: () => {},
+      spec,
+      until: once,
+    }),
+    /seated tally:leadership/,
+  );
+});
+
+test("an old persona id resolves to the Mono the pre-load added, by name", async () => {
+  const { monoIdFor, isTeamSeat, speakerName } = await import("./realconv/seats.mjs");
+  const team = [
+    { id: "id-coord", name: "Coordinator" },
+    { id: "id-plan", name: "Planner" },
+    { id: "id-frank", name: "Record keeper" },
+    { id: "id-alf", name: "Team steward" },
+    { id: "id-design", name: "Design review" },
+  ];
+  assert.equal(monoIdFor("chief-of-staff", team, "tally-lead"), "id-coord");
+  assert.equal(monoIdFor("frank", team, "tally-lead"), "id-frank");
+  assert.equal(monoIdFor("Coordinator", team, "tally-lead"), "id-coord");
+  assert.equal(monoIdFor("lead", team, "tally-lead"), "tally-lead");
+  assert.equal(monoIdFor("nobody", team, "tally-lead"), "nobody");
+  assert.equal(monoIdFor("chief-of-staff", [], "tally-lead"), "chief-of-staff");
+  assert.equal(isTeamSeat("worker-uuid", team), false);
+  assert.equal(isTeamSeat("id-frank", team), true);
+  assert.equal(isTeamSeat("frank", []), true);
+  assert.equal(isTeamSeat("ash", []), true);
+  assert.equal(isTeamSeat("tally-lead", team), false);
+  assert.equal(speakerName("id-frank", team), "Record keeper");
+  assert.equal(speakerName("frank", team), "Record keeper");
+  assert.equal(speakerName("frank", []), "frank");
+});
