@@ -77,6 +77,8 @@ export type QuickLaunch = {
   ranFrom?: string;
   /** WP-89: the effort in the words the card shows, only when this launch set one. */
   ranEffort?: string;
+  /** WP-89: the CLI asked for isn't installed here; the sentence says which one and what it runs on instead. */
+  cliFallback?: string;
 };
 
 /** The panel exists on macOS only; elsewhere the shortcut is never claimed. */

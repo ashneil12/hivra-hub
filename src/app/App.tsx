@@ -13694,6 +13694,7 @@ function Workspace({
                   // WP-89: the start card names the effort and where the CLI, model and effort came from.
                   ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
                   ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
+                  ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                 });
               };
               const open = sessionsRef.current.find(
@@ -14303,6 +14304,7 @@ function Workspace({
                     // WP-89: a waiting worker's card names the effort and where it came from.
                     ...(launch.ranEffort ? { effort: launch.ranEffort } : {}),
                     ...(launch.ranFrom ? { from: launch.ranFrom } : {}),
+                    ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
               briefLead: async (owner, mono, input) => {

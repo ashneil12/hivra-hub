@@ -714,6 +714,12 @@ pub fn give_back(env: &PoolEnv, repo: &Path, path: &Path) -> Result<HandBack, St
     if !path_in(&paths.slots_dir, path) {
         return Err("That worktree is outside this copy's pool, so it was left in place.".into());
     }
+    // WP-87: stop this slot's stack before the slot is returned. A failure keeps the lease.
+    if let Err(error) = crate::stacks::stop_for_worktree(&env.data_dir, path) {
+        store.leases[index].reason = Some(error.clone());
+        save_store(&paths.state_dir, &store)?;
+        return Err(error);
+    }
     let launch = resolve_launch(env)?;
     let lease_id = store.leases[index].lease_id.clone();
     let lease_path = store.leases[index].path.clone();
@@ -1232,6 +1238,48 @@ mod tests {
         assert_eq!(
             std::fs::read(second.join("target").join("keep")).unwrap(),
             b"build"
+        );
+        fix.marker_ok();
+    }
+
+    #[test]
+    fn returning_a_slot_stops_its_stack_first() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (path, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let stacks = fix.data.join("worktree-stacks");
+        std::fs::create_dir_all(&stacks).unwrap();
+        std::fs::write(stacks.join("stand-in"), b"ok").unwrap();
+        crate::stacks::remember_running(&fix.data, &path, "hivra-s0123abcd", true);
+        give_back(&env, &fix.repo, &path).unwrap();
+        let log = std::fs::read_to_string(stacks.join("log")).unwrap();
+        assert!(log.contains("down hivra-s0123abcd"), "{log}");
+        assert!(!log.contains("up "), "{log}");
+        let again = acquire(&env, &fix.repo, "mc/orch-bbbb", "crew-b").unwrap();
+        let (reused, _) = slot(again);
+        assert_eq!(normalize(&path), normalize(&reused));
+        fix.marker_ok();
+    }
+
+    #[test]
+    fn a_stack_that_will_not_stop_keeps_the_lease() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (path, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let stacks = fix.data.join("worktree-stacks");
+        std::fs::create_dir_all(&stacks).unwrap();
+        std::fs::write(stacks.join("stand-in"), b"fail").unwrap();
+        crate::stacks::remember_running(&fix.data, &path, "hivra-s0123abcd", true);
+        let error = give_back(&env, &fix.repo, &path).unwrap_err();
+        assert!(error.contains("refused"), "{error}");
+        assert!(
+            !argv_log(&env).contains("return"),
+            "the slot must stay leased"
+        );
+        let held = leased_protections(&fix.data).unwrap();
+        assert!(
+            held.iter().any(|(leased, _)| same_path(leased, &path)),
+            "{held:?}"
         );
         fix.marker_ok();
     }
