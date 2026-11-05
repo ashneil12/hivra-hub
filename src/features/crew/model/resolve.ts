@@ -1,13 +1,40 @@
 import { cliLabel, isCli, isEffort } from "./clis";
 import { firstMatch, type CrewRule } from "./rules";
 
-export type FieldSource = "override" | "brief" | "rule" | "default" | "none";
+export type FieldSource = "override" | "brief" | "rule" | "mono" | "project" | "system" | "default" | "none";
 
 /** A CLI, model or effort from one place. Empty fields are unset, not a blank string. */
 export type Pick = {
   cli?: string;
   model?: string;
   effort?: string;
+};
+
+/** WP-89: a default for one scope. Each field is optional, and a blank one is unset. */
+export type RouteDefaults = {
+  mono?: Pick;
+  project?: Pick;
+  system?: Pick;
+  /** The app's usual model and effort, applied last. The usual CLI stays `defaultCli`. */
+  usual?: Pick;
+};
+
+/** One model a CLI offers, and the efforts that model offers. */
+export type CatalogModel = {
+  id: string;
+  name?: string;
+  efforts: readonly string[];
+};
+
+/** Models by CLI. Absent: a model stays a free string and an effort stays the effort list. */
+export type Catalog = Readonly<Record<string, readonly CatalogModel[]>>;
+
+/** A model or effort a source set that this CLI's catalog doesn't offer. */
+export type SkippedField = {
+  field: "model" | "effort";
+  from: FieldSource;
+  value: string;
+  reason: string;
 };
 
 export type Presence = {
@@ -32,6 +59,8 @@ export type Route = {
   effortFrom: FieldSource;
   /** Index into the merged rule list, when a rule matched. */
   ruleIndex: number | null;
+  /** Models and efforts a source set that were skipped, in the order they were tried. */
+  skipped: SkippedField[];
 };
 
 export type Role = "plan" | "verdict" | "work";
@@ -63,18 +92,81 @@ function field(value: string | undefined, kind: "cli" | "model" | "effort"): str
   return cleanModel(text);
 }
 
-function pickField(
-  kind: "cli" | "model" | "effort",
-  override: Pick | undefined,
-  brief: Pick | undefined,
-  rule: CrewRule | undefined,
+type Kind = "cli" | "model" | "effort";
+
+type Source = { from: FieldSource; pick?: Pick };
+
+function rawOf(pick: Pick | undefined, kind: Kind): string | undefined {
+  return pick?.[kind];
+}
+
+/**
+ * Precedence, one field at a time: the person's override, then the brief, then
+ * the first matching rule, then the Mono's default, the project's, the system's,
+ * then the usual pick. A field a higher source leaves empty stays open for the
+ * next source. The usual CLI is the signed-in default, not `usual.cli`.
+ */
+function sources(override: Pick | undefined, brief: Pick | undefined, rule: CrewRule | undefined, defaults: RouteDefaults | undefined): Source[] {
+  return [
+    { from: "override", pick: override },
+    { from: "brief", pick: brief },
+    { from: "rule", pick: rule },
+    { from: "mono", pick: defaults?.mono },
+    { from: "project", pick: defaults?.project },
+    { from: "system", pick: defaults?.system },
+  ];
+}
+
+function pickCli(rows: readonly Source[], present: readonly Presence[]): { value: string | undefined; from: FieldSource } {
+  for (const row of rows) {
+    const value = field(rawOf(row.pick, "cli"), "cli");
+    if (value) return { value, from: row.from };
+  }
+  const fallback = defaultCli(present);
+  return { value: fallback ?? undefined, from: fallback ? "default" : "none" };
+}
+
+function pickModel(
+  rows: readonly Source[],
+  usual: Pick | undefined,
+  cli: string | undefined,
+  catalog: Catalog | undefined,
+  skipped: SkippedField[],
 ): { value: string | undefined; from: FieldSource } {
-  const overrideValue = field(override?.[kind], kind);
-  if (overrideValue) return { value: overrideValue, from: "override" };
-  const briefValue = field(brief?.[kind], kind);
-  if (briefValue) return { value: briefValue, from: "brief" };
-  const ruleValue = field(rule?.[kind], kind);
-  if (ruleValue) return { value: ruleValue, from: "rule" };
+  const offers = cli && catalog ? catalog[cli] : undefined;
+  const who = cli ? cliLabel(cli) : "The CLI";
+  for (const row of [...rows, { from: "default" as const, pick: usual }]) {
+    const value = field(rawOf(row.pick, "model"), "model");
+    if (!value) continue;
+    if (!catalog) return { value, from: row.from };
+    if (offers?.some((model) => model.id === value)) return { value, from: row.from };
+    skipped.push({ field: "model", from: row.from, value, reason: `${who} doesn't offer "${value}".` });
+  }
+  return { value: undefined, from: "none" };
+}
+
+function pickEffort(
+  rows: readonly Source[],
+  usual: Pick | undefined,
+  model: CatalogModel | undefined,
+  catalog: Catalog | undefined,
+  skipped: SkippedField[],
+): { value: string | undefined; from: FieldSource } {
+  const name = model?.name || model?.id;
+  for (const row of [...rows, { from: "default" as const, pick: usual }]) {
+    const raw = rawOf(row.pick, "effort");
+    const text = raw?.trim();
+    if (!text || text.length > 200 || /[\r\n]/.test(text)) continue;
+    if (!isEffort(text)) {
+      if (catalog) skipped.push({ field: "effort", from: row.from, value: text, reason: `"${text}" isn't an effort.` });
+      continue;
+    }
+    if (catalog && model && !model.efforts.includes(text)) {
+      skipped.push({ field: "effort", from: row.from, value: text, reason: `${name} doesn't offer "${text}".` });
+      continue;
+    }
+    return { value: text, from: row.from };
+  }
   return { value: undefined, from: "none" };
 }
 
@@ -92,36 +184,34 @@ export function defaultLine(present: readonly Presence[]): string {
 }
 
 /**
- * Precedence, one field at a time: the person's override, then the brief, then
- * the first matching rule, then the default CLI. A field a higher source leaves
- * empty stays open for the next source. An unknown CLI or effort is skipped.
+ * Precedence, one field at a time. A model or effort the catalog doesn't offer
+ * for the chosen CLI is skipped, with the reason, and the next source is tried.
+ * With no catalog, a model stays a free string and an unknown effort is skipped
+ * quietly, as before. Omit `options` and nothing below a rule changes.
  */
-export function resolveRoute(task: RouteTask, rules: readonly CrewRule[], present: readonly Presence[]): Route {
+export function resolveRoute(
+  task: RouteTask,
+  rules: readonly CrewRule[],
+  present: readonly Presence[],
+  options?: { defaults?: RouteDefaults; catalog?: Catalog },
+): Route {
   const ruleIndex = firstMatch(rules, task.labels, task.paths);
   const rule = ruleIndex == null ? undefined : rules[ruleIndex];
-  const cli = pickField("cli", task.override, task.brief, rule);
-  const model = pickField("model", task.override, task.brief, rule);
-  const effort = pickField("effort", task.override, task.brief, rule);
-  if (!cli.value) {
-    const fallback = defaultCli(present);
-    return {
-      cli: fallback,
-      model: model.value ?? null,
-      effort: effort.value ?? null,
-      cliFrom: fallback ? "default" : "none",
-      modelFrom: model.value ? model.from : "none",
-      effortFrom: effort.value ? effort.from : "none",
-      ruleIndex,
-    };
-  }
+  const rows = sources(task.override, task.brief, rule, options?.defaults);
+  const skipped: SkippedField[] = [];
+  const cli = pickCli(rows, present);
+  const model = pickModel(rows, options?.defaults?.usual, cli.value, options?.catalog, skipped);
+  const chosen = cli.value && options?.catalog ? options.catalog[cli.value]?.find((row) => row.id === model.value) : undefined;
+  const effort = pickEffort(rows, options?.defaults?.usual, chosen, options?.catalog, skipped);
   return {
-    cli: cli.value,
+    cli: cli.value ?? null,
     model: model.value ?? null,
     effort: effort.value ?? null,
-    cliFrom: cli.from,
+    cliFrom: cli.value ? cli.from : "none",
     modelFrom: model.value ? model.from : "none",
     effortFrom: effort.value ? effort.from : "none",
     ruleIndex,
+    skipped,
   };
 }
 
