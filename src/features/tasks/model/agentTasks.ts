@@ -144,9 +144,19 @@ export async function handleTaskStore(
   const known = knownOf(host);
   // A write still uses this chat's own project. Filing is the one that may name another.
   if (action === "tasks.update") {
-    const project = taskProjectOf(source, host);
-    namedProject(input, project, known);
-    return host.taskStore("tasks_update", { actor: actorFor(source, project), input });
+    const own = taskProjectOf(source, host);
+    namedProject(input, own, known);
+    // Create stores the hub id. This chat's own project may also be the folder. Try both, and only for a miss.
+    const match = resolveProject(own, known);
+    const keys = match ? readKeys(match) : [own];
+    for (const project of keys) {
+      try {
+        return await host.taskStore("tasks_update", { actor: actorFor(source, project), input });
+      } catch (error) {
+        if (!missing(error)) throw error;
+      }
+    }
+    throw new Error(NOT_FOUND);
   }
   if (action === "tasks.create") {
     const project = input.project === undefined

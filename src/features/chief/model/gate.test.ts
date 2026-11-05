@@ -39,7 +39,7 @@ describe("cross-project reads", () => {
   it("reads every project, refuses a write, and files into a named one", async () => {
     const taskStore = vi.fn(async (command: string, args: { actor: { project: string }; id?: string }) => {
       if (command === "tasks_update") {
-        if (args.actor.project !== "/work/crew") throw new Error("wrong project");
+        if (args.actor.project === "site" || args.actor.project === "/work/site") throw new Error("wrong project");
         throw new Error("No task with that id.");
       }
       if (command === "tasks_get") {
@@ -65,8 +65,8 @@ describe("cross-project reads", () => {
     await expect(handleAgentApp(source, "r5", "tasks.update", { id: "t-site", version: 1, comment: "no" }, wide)).rejects.toThrow(
       "No task with that id.",
     );
-    const update = taskStore.mock.calls.find((call) => call[0] === "tasks_update");
-    expect(update?.[1]).toMatchObject({ actor: { project: "/work/crew" } });
+    const updates = taskStore.mock.calls.filter((call) => call[0] === "tasks_update");
+    expect(updates.map((call) => call[1].actor.project)).toEqual(["crew", "/work/crew"]);
   });
 
   it("reads pages across projects and refuses to write one", async () => {
@@ -149,5 +149,53 @@ describe("cross-project reads", () => {
     const own = await handleAgentApp(source, "r", "memory.recall", { query: "notes" }, off);
     expect(JSON.stringify(own)).toContain("Crew keeps the notes.");
     expect(JSON.stringify(own)).not.toContain("Site uses the notes.");
+  });
+
+  it("updates a task filed under the hub id, and still one filed under the folder", async () => {
+    const rows = new Map<string, string>([["task-old", "/work/crew"]]);
+    const taskStore = vi.fn(async (command: string, args: { actor: { project: string }; input?: { id?: string; project?: string } }) => {
+      if (command === "tasks_create") {
+        const project = args.actor.project;
+        rows.set("task-new", project);
+        return { id: "task-new" };
+      }
+      if (command === "tasks_update") {
+        const id = args.input?.id ?? "";
+        if (rows.get(id) !== args.actor.project) throw new Error("No task with that id.");
+        return { id };
+      }
+      return [];
+    });
+    const wide = host({ taskStore });
+    await handleAgentApp(source, "c", "tasks.create", { title: "Write the notes", project: "crew" }, wide);
+    expect(rows.get("task-new")).toBe("crew");
+    await expect(handleAgentApp(source, "u1", "tasks.update", { id: "task-new", version: 1, title: "Write the notes" }, wide)).resolves.toEqual({
+      id: "task-new",
+    });
+    await expect(handleAgentApp(source, "u3", "tasks.update", { id: "task-old", version: 1, title: "Old" }, wide)).resolves.toEqual({
+      id: "task-old",
+    });
+    const updates = taskStore.mock.calls.filter((call) => call[0] === "tasks_update");
+    expect(updates.some((call) => call[1].actor.project === "site" || call[1].actor.project === "/work/site")).toBe(false);
+  });
+
+  it("refuses to update a task into another project, and a timeout is not a miss", async () => {
+    let updates = 0;
+    const taskStore = vi.fn(async (command: string) => {
+      if (command === "tasks_update") {
+        updates += 1;
+        throw new Error("timed out");
+      }
+      return [];
+    });
+    const wide = host({ taskStore });
+    await expect(handleAgentApp(source, "r", "tasks.update", { id: "task-new", version: 1, project: "site" }, wide)).rejects.toThrow(
+      "Unknown tasks.update fields: project",
+    );
+    expect(updates).toBe(0);
+    await expect(handleAgentApp(source, "r", "tasks.update", { id: "task-new", version: 1, title: "Again" }, wide)).rejects.toThrow(
+      "timed out",
+    );
+    expect(updates).toBe(1);
   });
 });
