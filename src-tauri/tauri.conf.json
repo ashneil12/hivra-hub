@@ -53,7 +53,8 @@
     ],
     "resources": {
       "macos/Assets.car": "Assets.car",
-      "../docs/hub/README.md": "hub-docs/README.md"
+      "../docs/hub/README.md": "hub-docs/README.md",
+      "../plugins/hivra-mirror": "hivra-mirror"
     },
     "macOS": {
       "entitlements": "Entitlements.plist",
