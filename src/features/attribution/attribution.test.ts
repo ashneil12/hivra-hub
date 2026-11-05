@@ -261,12 +261,20 @@ function snapshot(repo: string, env: NodeJS.ProcessEnv): string {
 }
 
 describe("the prepare-commit-msg hook", () => {
-  it("does not call git config", () => {
+  it("reads hooksPath and does not write git config", () => {
     const code = hookScript()
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
-    expect(code).not.toMatch(/\bgit[ \t]+config\b/);
+    const calls = code.match(/\bgit[ \t]+config\b[^\n]*/g) ?? [];
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/^git[ \t]+config[ \t]+--get[ \t]+core\.hooksPath\b/);
+    const readAt = code.indexOf(calls[0]);
+    expect(code.indexOf('unset "GIT_CONFIG_KEY_$i"')).toBeGreaterThanOrEqual(0);
+    expect(code.indexOf('unset "GIT_CONFIG_KEY_$i"')).toBeLessThan(readAt);
+    expect(code.indexOf('unset "GIT_CONFIG_VALUE_$i"')).toBeLessThan(readAt);
+    expect(code.indexOf("unset GIT_CONFIG_COUNT")).toBeLessThan(readAt);
+    expect(code).not.toMatch(/\bgit[ \t]+config\b[^\n]*--(unset|add|replace-all|unset-all)\b/);
     expect(hookScript()).toContain("Hivra-Chat:");
     expect(hookScript()).toContain("Hivra-Task:");
   });

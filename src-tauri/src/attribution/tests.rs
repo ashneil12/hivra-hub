@@ -802,3 +802,509 @@ fn an_older_ledger_gains_its_columns_in_place() {
     assert_eq!(crate::session_store::schema_version(&conn).unwrap(), 19);
     assert_eq!(crate::session_store::SCHEMA_VERSION, 19);
 }
+
+/// Every name githooks(5) documents. A missing file is a repo hook that
+/// silently stops firing while a crew's git is pointed at this folder.
+const GITHOOKS: &[&str] = &[
+    "applypatch-msg",
+    "commit-msg",
+    "fsmonitor-watchman",
+    "p4-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+    "p4-prepare-changelist",
+    "post-applypatch",
+    "post-checkout",
+    "post-commit",
+    "post-index-change",
+    "post-merge",
+    "post-receive",
+    "post-rewrite",
+    "post-update",
+    "pre-applypatch",
+    "pre-auto-gc",
+    "pre-commit",
+    "pre-merge-commit",
+    "pre-push",
+    "pre-rebase",
+    "pre-receive",
+    "prepare-commit-msg",
+    "proc-receive",
+    "push-to-checkout",
+    "reference-transaction",
+    "sendemail-validate",
+    "update",
+];
+
+fn mark_executable(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(path, perms).unwrap();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+}
+
+fn write_hook(path: &Path, body: &str) {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let script = if body.starts_with("#!") {
+        body.to_string()
+    } else {
+        format!("#!/bin/sh\n{body}")
+    };
+    fs::write(path, script.replace("\r\n", "\n")).unwrap();
+    mark_executable(path);
+}
+
+fn sh_quote(path: &Path) -> String {
+    let text = path.to_str().unwrap();
+    assert!(
+        !text.contains('\''),
+        "hook path cannot be quoted safely: {text}"
+    );
+    format!("'{text}'")
+}
+
+struct Armed {
+    count: String,
+    key: String,
+    value_name: String,
+    hooks_path: String,
+}
+
+fn arm(data: &Path) -> Armed {
+    fs::create_dir_all(data).unwrap();
+    let hooks = super::hooks::install_hooks(data).unwrap();
+    let hooks_path = hooks.to_str().unwrap().to_string();
+    let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
+    Armed {
+        count,
+        key,
+        value_name,
+        hooks_path,
+    }
+}
+
+fn crew_pairs<'a>(base: &[(&'a str, &'a str)], armed: &'a Armed) -> Vec<(&'a str, &'a str)> {
+    let mut crew = base.to_vec();
+    crew.push(("HIVRA_CHAT", "chat-1"));
+    crew.push(("HIVRA_TASK", "task-1"));
+    crew.push(("GIT_CONFIG_COUNT", armed.count.as_str()));
+    crew.push((armed.key.as_str(), "core.hooksPath"));
+    crew.push((armed.value_name.as_str(), armed.hooks_path.as_str()));
+    crew
+}
+
+fn git_reading_system(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
+    let mut cmd = crate::delivery::child("git");
+    cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
+    cmd.env("GIT_TERMINAL_PROMPT", "0");
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    super::git::run_limited(cmd, std::time::Duration::from_secs(20))
+        .map_err(|_| "git didn't answer".to_string())
+}
+
+#[test]
+fn every_githooks_name_is_installed() {
+    let scratch = Scratch::new();
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let dir = super::hooks::install_hooks(&data).unwrap();
+    for name in GITHOOKS {
+        let path = dir.join(name);
+        assert!(path.is_file(), "missing hook {name}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode();
+            assert!(mode & 0o111 != 0, "{name} is not executable");
+        }
+    }
+}
+
+#[test]
+fn a_failing_pre_commit_blocks_a_crew_commit() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let head = git(&made.repo, &base, &["rev-parse", "HEAD"]).unwrap();
+    let ran = scratch.path().join("pre-commit-ran");
+    write_hook(
+        &made.repo.join(".git").join("hooks").join("pre-commit"),
+        &format!("printf 'ran\\n' > {}\nexit 1\n", sh_quote(&ran)),
+    );
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
+    let global_before = fs::read(&made.global).unwrap();
+    fs::write(made.repo.join("next.txt"), "next\n").unwrap();
+    git(&made.repo, &crew, &["add", "next.txt"]).unwrap();
+    assert!(git(&made.repo, &crew, &["commit", "-m", "should not land"]).is_err());
+    assert!(ran.is_file(), "the repo pre-commit did not run");
+    assert_eq!(
+        git(&made.repo, &base, &["rev-parse", "HEAD"]).unwrap(),
+        head
+    );
+    assert_eq!(
+        fs::read(made.repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(fs::read(&made.global).unwrap(), global_before);
+}
+
+#[test]
+fn a_husky_repo_runs_pre_commit_and_commit_msg() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+
+    let husky = made.repo.join(".husky").join("_");
+    let pre = scratch.path().join("husky-pre");
+    let msg = scratch.path().join("husky-msg");
+    write_hook(
+        &husky.join("pre-commit"),
+        &format!("printf 'pre\\n' > {}\n", sh_quote(&pre)),
+    );
+    write_hook(
+        &husky.join("commit-msg"),
+        &format!(
+            "printf 'Husky-Msg: yes\\n' >> \"$1\"\nprintf 'msg\\n' > {}\n",
+            sh_quote(&msg)
+        ),
+    );
+    let decoy = scratch.path().join("decoy-ran");
+    write_hook(
+        &made.repo.join(".git").join("hooks").join("pre-commit"),
+        &format!("printf 'decoy\\n' > {}\nexit 1\n", sh_quote(&decoy)),
+    );
+    let global_hooks = scratch.path().join("global hooks");
+    fs::create_dir_all(&global_hooks).unwrap();
+    let global_ran = scratch.path().join("global-ran");
+    write_hook(
+        &global_hooks.join("pre-commit"),
+        &format!("printf 'global\\n' > {}\n", sh_quote(&global_ran)),
+    );
+    git(
+        &made.repo,
+        &base,
+        &[
+            "config",
+            "--global",
+            "core.hooksPath",
+            global_hooks.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    git(&made.repo, &base, &["config", "core.hooksPath", ".husky/_"]).unwrap();
+
+    let armed = arm(&scratch.path().join("data dir"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
+    let global_before = fs::read(&made.global).unwrap();
+    fs::write(made.repo.join("note.txt"), "husky note\n").unwrap();
+    git(&made.repo, &crew, &["add", "note.txt"]).unwrap();
+    git(&made.repo, &crew, &["commit", "-m", "through husky"]).unwrap();
+
+    assert!(pre.is_file(), "husky pre-commit did not run");
+    assert!(msg.is_file(), "husky commit-msg did not run");
+    assert!(!decoy.exists(), "the common-dir hook ran instead of husky");
+    assert!(
+        !global_ran.exists(),
+        "the global hooks path beat the local one"
+    );
+    let body = git(&made.repo, &base, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
+    assert!(body.contains("Hivra-Task: task-1"), "{body}");
+    assert!(body.contains("Husky-Msg: yes"), "{body}");
+    assert_eq!(
+        fs::read(made.repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(fs::read(&made.global).unwrap(), global_before);
+    assert!(
+        git(
+            &made.repo,
+            &base,
+            &["config", "--local", "--get", "core.hooksPath"]
+        )
+        .unwrap()
+        .trim()
+        .ends_with(".husky/_")
+            || git(
+                &made.repo,
+                &base,
+                &["config", "--local", "--get", "core.hooksPath"]
+            )
+            .unwrap()
+            .trim()
+                == ".husky/_"
+    );
+}
+
+#[test]
+fn a_global_hooks_path_is_used_when_the_repo_sets_none() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let hooks = scratch.path().join("hook dir");
+    fs::create_dir_all(&hooks).unwrap();
+    let ran = scratch.path().join("global-pre");
+    write_hook(
+        &hooks.join("pre-commit"),
+        &format!("printf 'global\\n' > {}\n", sh_quote(&ran)),
+    );
+    git(
+        &made.repo,
+        &base,
+        &[
+            "config",
+            "--global",
+            "core.hooksPath",
+            hooks.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
+    fs::write(made.repo.join("note.txt"), "note\n").unwrap();
+    git(&made.repo, &crew, &["add", "note.txt"]).unwrap();
+    git(&made.repo, &crew, &["commit", "-m", "via global hooks"]).unwrap();
+    assert!(ran.is_file(), "the global hooks path was not used");
+    let body = git(&made.repo, &base, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
+    assert_eq!(
+        fs::read(made.repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+}
+
+#[test]
+fn a_system_hooks_path_is_used_when_nothing_closer_sets_one() {
+    let scratch = Scratch::new();
+    let repo = scratch.path().join("repo");
+    let home = scratch.path().join("home");
+    let global = scratch.path().join("gitconfig");
+    let system = scratch.path().join("system-gitconfig");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&home).unwrap();
+    fs::write(
+        &global,
+        "[user]\n\tname = Dev\n\temail = dev@example.com\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n",
+    )
+    .unwrap();
+    fs::write(&system, "[core]\n\tautocrlf = false\n").unwrap();
+    let base = [
+        ("HOME", home.to_str().unwrap()),
+        ("GIT_CONFIG_GLOBAL", global.to_str().unwrap()),
+        ("GIT_CONFIG_SYSTEM", system.to_str().unwrap()),
+    ];
+    git_reading_system(&repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(repo.join("keep.txt"), "base\n").unwrap();
+    git_reading_system(&repo, &base, &["add", "keep.txt"]).unwrap();
+    git_reading_system(&repo, &base, &["commit", "-m", "base"]).unwrap();
+    let hooks = scratch.path().join("system hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let ran = scratch.path().join("system-pre");
+    write_hook(
+        &hooks.join("pre-commit"),
+        &format!("printf 'system\\n' > {}\n", sh_quote(&ran)),
+    );
+    let hooks_text = hooks.to_str().unwrap().replace('\\', "/");
+    fs::write(
+        &system,
+        format!("[core]\n\tautocrlf = false\n\thooksPath = \"{hooks_text}\"\n"),
+    )
+    .unwrap();
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(repo.join(".git").join("config")).unwrap();
+    let system_before = fs::read(&system).unwrap();
+    fs::write(repo.join("note.txt"), "note\n").unwrap();
+    git_reading_system(&repo, &crew, &["add", "note.txt"]).unwrap();
+    git_reading_system(&repo, &crew, &["commit", "-m", "via system hooks"]).unwrap();
+    assert!(ran.is_file(), "the system hooks path was not used");
+    let body = git_reading_system(&repo, &base, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
+    assert!(body.contains("Hivra-Task: task-1"), "{body}");
+    assert_eq!(
+        fs::read(repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+    assert_eq!(fs::read(&system).unwrap(), system_before);
+}
+
+#[test]
+fn pre_push_is_forwarded_with_stdin_args_and_exit_code() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let bare = scratch.path().join("bare.git");
+    git(
+        &made.repo,
+        &base,
+        &["init", "--bare", "-b", "main", bare.to_str().unwrap()],
+    )
+    .unwrap();
+    git(
+        &made.repo,
+        &base,
+        &["remote", "add", "origin", bare.to_str().unwrap()],
+    )
+    .unwrap();
+    let stdin_path = scratch.path().join("pre-push-stdin");
+    let args_path = scratch.path().join("pre-push-args");
+    write_hook(
+        &made.repo.join(".git").join("hooks").join("pre-push"),
+        &format!(
+            "printf '%s\\n' \"$1\" \"$2\" > {}\ncat > {}\nexit 1\n",
+            sh_quote(&args_path),
+            sh_quote(&stdin_path)
+        ),
+    );
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
+    assert!(git(&made.repo, &crew, &["push", "origin", "HEAD"]).is_err());
+    let stdin_text = fs::read_to_string(&stdin_path).unwrap_or_default();
+    assert!(
+        stdin_text.contains("refs/"),
+        "pre-push stdin was not forwarded: {stdin_text:?}"
+    );
+    let args_text = fs::read_to_string(&args_path).unwrap_or_default();
+    let mut lines = args_text.lines();
+    assert_eq!(lines.next(), Some("origin"), "{args_text}");
+    let url = lines.next().unwrap_or("");
+    assert!(url.contains("bare.git"), "{args_text}");
+    assert_eq!(
+        fs::read(made.repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+}
+
+#[test]
+fn a_worktree_commit_runs_the_common_dir_pre_commit() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let ran = scratch.path().join("common-pre");
+    write_hook(
+        &made.repo.join(".git").join("hooks").join("pre-commit"),
+        &format!("printf 'common\\n' > {}\nexit 1\n", sh_quote(&ran)),
+    );
+    let wt = scratch.path().join("wt dir");
+    git(
+        &made.repo,
+        &base,
+        &["worktree", "add", "-b", "feature", wt.to_str().unwrap()],
+    )
+    .unwrap();
+    let head = git(&wt, &base, &["rev-parse", "HEAD"]).unwrap();
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    fs::write(wt.join("next.txt"), "next\n").unwrap();
+    git(&wt, &crew, &["add", "next.txt"]).unwrap();
+    assert!(git(&wt, &crew, &["commit", "-m", "from the worktree"]).is_err());
+    assert!(
+        ran.is_file(),
+        "the common dir hook did not run for the worktree"
+    );
+    assert_eq!(git(&wt, &base, &["rev-parse", "HEAD"]).unwrap(), head);
+}
+
+#[test]
+fn the_repo_prepare_commit_msg_runs_before_the_trailers() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    write_hook(
+        &made
+            .repo
+            .join(".git")
+            .join("hooks")
+            .join("prepare-commit-msg"),
+        "printf 'rewritten by repo\\n' > \"$1\"\n",
+    );
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
+    fs::write(made.repo.join("note.txt"), "note\n").unwrap();
+    git(&made.repo, &crew, &["add", "note.txt"]).unwrap();
+    git(&made.repo, &crew, &["commit", "-m", "will be rewritten"]).unwrap();
+    let body = git(&made.repo, &base, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("rewritten by repo"), "{body}");
+    assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
+    assert!(body.contains("Hivra-Task: task-1"), "{body}");
+    let chat_at = body.find("Hivra-Chat:").unwrap();
+    let rewritten_at = body.find("rewritten by repo").unwrap();
+    assert!(
+        rewritten_at < chat_at,
+        "trailers were stamped before the repo hook rewrote the message: {body}"
+    );
+    assert_eq!(
+        fs::read(made.repo.join(".git").join("config")).unwrap(),
+        config_before
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_executable_pre_commit_does_not_block() {
+    use std::os::unix::fs::PermissionsExt;
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let ran = scratch.path().join("disabled-ran");
+    let hook = made.repo.join(".git").join("hooks").join("pre-commit");
+    fs::write(
+        &hook,
+        format!("#!/bin/sh\nprintf 'ran\\n' > {}\nexit 1\n", sh_quote(&ran)),
+    )
+    .unwrap();
+    let mut perms = fs::metadata(&hook).unwrap().permissions();
+    perms.set_mode(0o644);
+    fs::set_permissions(&hook, perms).unwrap();
+    let armed = arm(&scratch.path().join("data"));
+    let crew = crew_pairs(&base, &armed);
+    fs::write(made.repo.join("next.txt"), "next\n").unwrap();
+    git(&made.repo, &crew, &["add", "next.txt"]).unwrap();
+    git(&made.repo, &crew, &["commit", "-m", "past a disabled hook"]).unwrap();
+    assert!(!ran.exists(), "a non-executable hook ran");
+    let body = git(&made.repo, &base, &["log", "-1", "--format=%B"]).unwrap();
+    assert!(body.contains("Hivra-Chat: chat-1"), "{body}");
+}

@@ -6,8 +6,52 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-const SCRIPT: &str = include_str!("prepare-commit-msg.sh");
+const SCRIPT: &str = include_str!("hook.sh");
 const REFUSAL: &str = "The hooks folder isn't inside this copy's data.";
+
+/// Every name githooks(5) documents. One missing file is a repository hook that
+/// never runs while a crew's git is pointed at this folder.
+const HOOK_NAMES: &[&str] = &[
+    "applypatch-msg",
+    "commit-msg",
+    "fsmonitor-watchman",
+    "p4-changelist",
+    "p4-post-changelist",
+    "p4-pre-submit",
+    "p4-prepare-changelist",
+    "post-applypatch",
+    "post-checkout",
+    "post-commit",
+    "post-index-change",
+    "post-merge",
+    "post-receive",
+    "post-rewrite",
+    "post-update",
+    "pre-applypatch",
+    "pre-auto-gc",
+    "pre-commit",
+    "pre-merge-commit",
+    "pre-push",
+    "pre-rebase",
+    "pre-receive",
+    "prepare-commit-msg",
+    "proc-receive",
+    "push-to-checkout",
+    "reference-transaction",
+    "sendemail-validate",
+    "update",
+];
+
+fn hook_name_ok(name: &str) -> bool {
+    let mut chars = name.chars();
+    if !matches!(chars.next(), Some(c) if c.is_ascii_lowercase()) {
+        return false;
+    }
+    (2..=64).contains(&name.len())
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
 
 fn contained(root: &Path, child: &Path) -> bool {
     child.starts_with(root) && child != root
@@ -105,9 +149,42 @@ fn publish_hook(root: &Path, dir: &Path, dest: &Path, script: &str) -> Result<()
     }
 }
 
-/// Install `prepare-commit-msg` under `data_dir/attribution/hooks`.
+fn install_one(root: &Path, dir: &Path, name: &str, script: &str) -> Result<(), String> {
+    if !hook_name_ok(name) {
+        return Err(REFUSAL.into());
+    }
+    let dest = dir.join(name);
+    if !contained(root, &dest) {
+        return Err(REFUSAL.into());
+    }
+    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
+        if meta.file_type().is_symlink() || !meta.is_file() {
+            return Err(REFUSAL.into());
+        }
+        let installed = crate::fs::canonical(&dest).map_err(|_| REFUSAL.to_string())?;
+        if !contained(root, &installed) {
+            return Err(REFUSAL.into());
+        }
+    }
+    let same = std::fs::read(&dest)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .is_some_and(|current| current.replace("\r\n", "\n") == script);
+    if !same {
+        publish_hook(root, dir, &dest, script)?;
+    }
+    mark_executable(&dest).map_err(|_| REFUSAL.to_string())?;
+    let installed = crate::fs::canonical(&dest).map_err(|_| REFUSAL.to_string())?;
+    if !contained(root, &installed) {
+        return Err(REFUSAL.into());
+    }
+    Ok(())
+}
+
+/// Install a forwarder for every git hook under `data_dir/attribution/hooks`.
 /// The path is refused unless it stays inside the data directory. A symlink is
-/// refused rather than followed. Matching bytes are not rewritten.
+/// refused rather than followed. Matching bytes are not rewritten. One failed
+/// file fails the install, so git is not pointed at a half-written folder.
 pub fn install_hooks(data_dir: &Path) -> Result<PathBuf, String> {
     let root = crate::fs::canonical(data_dir).map_err(|_| REFUSAL.to_string())?;
     if !root.is_dir() {
@@ -118,31 +195,9 @@ pub fn install_hooks(data_dir: &Path) -> Result<PathBuf, String> {
     if !contained(&root, &dir) {
         return Err(REFUSAL.into());
     }
-    let dest = dir.join("prepare-commit-msg");
-    if !contained(&root, &dest) {
-        return Err(REFUSAL.into());
-    }
-    if let Ok(meta) = std::fs::symlink_metadata(&dest) {
-        if meta.file_type().is_symlink() || !meta.is_file() {
-            return Err(REFUSAL.into());
-        }
-        let installed = crate::fs::canonical(&dest).map_err(|_| REFUSAL.to_string())?;
-        if !contained(&root, &installed) {
-            return Err(REFUSAL.into());
-        }
-    }
     let script = SCRIPT.replace("\r\n", "\n");
-    let same = std::fs::read(&dest)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
-        .is_some_and(|current| current.replace("\r\n", "\n") == script);
-    if !same {
-        publish_hook(&root, &dir, &dest, &script)?;
-    }
-    mark_executable(&dest).map_err(|_| REFUSAL.to_string())?;
-    let installed = crate::fs::canonical(&dest).map_err(|_| REFUSAL.to_string())?;
-    if !contained(&root, &installed) {
-        return Err(REFUSAL.into());
+    for name in HOOK_NAMES {
+        install_one(&root, &dir, name, &script)?;
     }
     Ok(dir)
 }

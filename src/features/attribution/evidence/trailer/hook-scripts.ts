@@ -6,7 +6,7 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-const SCRIPT = path.resolve("src-tauri/src/attribution/prepare-commit-msg.sh");
+const SCRIPT = path.resolve("src-tauri/src/attribution/hook.sh");
 
 export function hookScript(): string {
   return readFileSync(SCRIPT, "utf8").replace(/\r\n/g, "\n");
