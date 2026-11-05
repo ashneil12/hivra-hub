@@ -171,6 +171,16 @@ test("--agents grok-sub points at the Grok launcher and leaves the grader on Dee
   assert.match(script, /REALTEST_GROK_SUB=1/);
   assert.match(script, /REALTEST_MODEL='sonnet'/);
   assert.doesNotMatch(script, /claude-fable-5/);
+  assert.doesNotMatch(script, /REALTEST_APP_BIN/);
+  assert.doesNotMatch(script, /REALTEST_WORKTREE/);
+  assert.doesNotMatch(script, /REALTEST_CLAUDE_HONOURS_TMPDIR/);
+  const withBin = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", appBin: "/tmp/state/monocode", worktree: "/tmp/worktree", honoursTmpdir: false });
+  assert.match(withBin, /REALTEST_APP_BIN='\/tmp\/state\/monocode'/);
+  assert.match(withBin, /REALTEST_WORKTREE='\/tmp\/worktree'/);
+  assert.match(withBin, /REALTEST_CLAUDE_HONOURS_TMPDIR=0/);
+  const honoured = claudeWrapperScript({ state: "/tmp/state", realClaude: launcher, config: "/tmp/cfg", model: "sonnet", effort: "medium", memoryDir: "/tmp/mem", node: "/usr/bin/node", script: "/tmp/wrap.mjs", honoursTmpdir: true });
+  assert.match(honoured, /REALTEST_CLAUDE_HONOURS_TMPDIR=1/);
+  assert.doesNotMatch(honoured, /REALTEST_WORKTREE/);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -259,13 +269,55 @@ test("an unsandboxed agent before a scenario is not played, and it stops the rou
       return { sessions: [], rooms: [] };
     },
     listAgents: () => "  200 100 /opt/homebrew/bin/codex\n",
-    agentWatch: () => ({ rootPid: 100, profile: "/private/var/bench/state/sandbox.sb", wrapper: "/private/var/bench/bin/claude" }),
+    agentWatch: () => ({
+      rootPid: 100,
+      profile: "/private/var/bench/state/sandbox.sb",
+      wrapper: "/private/var/bench/bin/claude",
+      sandboxOf: (pids) => ({ ok: true, byPid: new Map(pids.map((pid) => [pid, false])) }),
+    }),
     stopRun: (why) => stopped.push(why),
   });
   assert.equal(result.verdict, "FAIL");
   assert.equal(result.fail, "unsandboxed agent: codex");
   assert.deepEqual(calls, []);
   assert.deepEqual(stopped, ["unsandboxed agent: codex"]);
+});
+
+test("a scenario that names clis does not pass while one was neither refused nor seen", async () => {
+  const { runScenario } = await import("./hub-realtest-scenarios.mjs");
+  const evidence = fs.mkdtempSync(path.join(os.tmpdir(), "realtest-canary-"));
+  const refusal = "This bench only starts the run's own Claude wrapper. It won't start codex.";
+  const result = await runScenario({
+    id: "canary",
+    title: "canary",
+    minutes: 1,
+    canaryClis: ["codex", "grok", "hermes", "claude"],
+    steps: [{ send: { room: "room" }, text: "echo hi" }],
+  }, {
+    runStarted: Date.now(), memoryCalls: () => [], events: [], log: () => undefined, evidence, state: evidence,
+    leadId: "tally-lead", roomId: "tally:leadership", project: "/tmp/projects/tally", spec: { project: { id: "tally" } },
+    deadline: Date.now() + 60_000, budget: {}, pump: async () => undefined,
+    usage: () => ({ turns: 0, requests: 0, helperTurns: 0, faults: 0, refused: 0, models: [], outputTokens: 0 }),
+    act: async (kind) => (kind === "send" ? { ok: true, at: Date.now(), session: "chat-1" } : { sessions: [], rooms: [] }),
+    monoSession: async () => null, delegationRows: async () => [], sessionBlocks: async () => [],
+    claudeTexts: async () => [{ session: "chat-1", text: refusal, t: Date.now() }],
+    screenshot: async () => ({ ok: false, why: "test" }),
+  });
+  assert.equal(result.verdict, "NOT PROVEN");
+  assert.match(result.fail, /not proven: grok, hermes, claude/);
+  assert.deepEqual(result.canary.map((row) => [row.cli, row.verdict]), [
+    ["codex", "PASS"],
+    ["grok", "NOT PROVEN"],
+    ["hermes", "NOT PROVEN"],
+    ["claude", "NOT PROVEN"],
+  ]);
+  const written = JSON.parse(fs.readFileSync(path.join(evidence, "scenarios", "canary", "evidence.json"), "utf8"));
+  assert.equal(written.verdict, "NOT PROVEN");
+  assert.equal(written.canary[0].why, "the plan gate refused the start");
+  const transcript = fs.readFileSync(path.join(evidence, "scenarios", "canary", "transcript.md"), "utf8");
+  assert.match(transcript, /## Canary/);
+  assert.match(transcript, /\| claude \| NOT PROVEN \|/);
+  fs.rmSync(evidence, { recursive: true, force: true });
 });
 
 test("a coding-team step can start in Full access, and an approve step taps Allow in that chat", async () => {

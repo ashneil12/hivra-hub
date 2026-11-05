@@ -5,6 +5,7 @@ import { spawn, execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { kindOf } from "./hub-bundle.mjs";
 
 const PROCESS_NAMES = ["kill", "pkill", "killall", "osascript", "open", "shutdown", "reboot"];
 const SIGNAL_NAMES = new Set([...PROCESS_NAMES, "launchctl"]);
@@ -731,7 +732,97 @@ export function finishSceneApps(before, after, stopRun) {
 
 /** A stop that ends the round, including a run-wide look. Anything else can still run. */
 export function isHardStop(reason) {
-  return typeof reason === "string" && /^(touched a real app|unsandboxed agent)(:|$)/.test(reason);
+  return typeof reason === "string" && /^(touched a real app|unsandboxed agent|can't verify the sandbox|bench broken)(:|$)/.test(reason);
+}
+
+/** The env names the app hands an agent its control endpoint in (control.rs `configure_child`). */
+export const CONTROL_ENDPOINT_KEYS = ["MONOCODE_APP_ENDPOINT", "MONOCODE_CONTROL_ENDPOINT"];
+
+/** True when this spawn env hands the agent a control endpoint, so the agent's shell has to be able to reach it. */
+export function hasControlEndpoint(env = {}) {
+  return CONTROL_ENDPOINT_KEYS.some((key) => typeof env[key] === "string" && env[key].trim() !== "");
+}
+
+/**
+ * `echo probe` must print that one line, then `monocode version --json` must be this run's dev build, then (when the
+ * agent was handed this copy's control endpoint) `monocode app app.version` must answer over it. A string is the
+ * round's stop reason.
+ */
+export function benchShellProbe(run, { control = false } = {}) {
+  let echo;
+  try {
+    echo = run("echo probe");
+  } catch {
+    return "bench broken: echo probe";
+  }
+  if (!probeEcho(echo)) return "bench broken: echo probe";
+  let version;
+  try {
+    version = run("monocode version --json");
+  } catch {
+    return "bench broken: monocode version";
+  }
+  if (!probeDevVersion(version)) return "bench broken: monocode version";
+  if (!control) return null;
+  let app;
+  try {
+    app = run("monocode app app.version");
+  } catch {
+    return "bench broken: control port";
+  }
+  if (!probeAppVersion(app)) return "bench broken: control port";
+  return null;
+}
+
+function probeAppVersion(result) {
+  if (!result || result.status !== 0) return false;
+  const lines = String(result.stdout ?? "").split(/\r?\n/).filter((line) => line.length > 0);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    try {
+      const parsed = JSON.parse(lines[i]);
+      if (parsed && typeof parsed === "object") return parsed.ok === true;
+    } catch {
+      // not the answer line
+    }
+  }
+  return false;
+}
+
+/** The wrapper's word that the agent's shell can't reach this copy's control port, or null. Written once per run. */
+export function benchBroken(state) {
+  try {
+    const text = fs.readFileSync(path.join(state, "bench-broken"), "utf8").trim();
+    return text || null;
+  } catch {
+    return null;
+  }
+}
+
+function probeEcho(result) {
+  if (!result || result.status !== 0) return false;
+  const lines = String(result.stdout ?? "").split(/\r?\n/).filter((line) => line.length > 0);
+  return lines.length === 1 && lines[0] === "probe";
+}
+
+function probeDevVersion(result) {
+  if (!result || result.status !== 0) return false;
+  const text = String(result.stdout ?? "").trim();
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      try {
+        parsed = JSON.parse(lines[i]);
+        break;
+      } catch {
+        parsed = null;
+      }
+    }
+  }
+  if (!parsed || typeof parsed !== "object") return false;
+  return kindOf(parsed.identifier) === "dev";
 }
 
 export function exitCodeForStop(stopReason) {
@@ -756,7 +847,13 @@ const AGENT_BASENAMES = new Set([
   "devin",
   "agy_acp_server.par",
 ]);
-const WRAPPER_HOSTS = new Set(["sh", "bash", "node"]);
+/** A process whose next real argument is the program, not the program itself. `python3.11` counts; `python2` does not. */
+const INTERPRETERS = new Set(["node", "bun", "deno", "python", "sh", "bash", "zsh"]);
+const NODE_PACKAGES = [
+  ["@anthropic-ai/claude-code", "claude"],
+  ["@openai/codex", "codex"],
+  ["@google/gemini-cli", "gemini"],
+];
 
 function commandTokens(command) {
   return String(command ?? "").match(/[^\s]+/g) ?? [];
@@ -784,46 +881,202 @@ function samePath(left, right) {
   return !!a && a === b;
 }
 
+function isInterpreter(name) {
+  return INTERPRETERS.has(name) || /^python3(\.\d+)*$/.test(name);
+}
+
+/** The first argument that isn't a flag. `node --experimental-vm-modules /path/gemini` yields the path. */
+function firstNonFlag(argv) {
+  for (let i = 1; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (typeof arg === "string" && arg.startsWith("-")) continue;
+    return arg ?? null;
+  }
+  return null;
+}
+
+/** Node's package path, when the script is that package rather than a basename we already know. */
+function nodePackage(arg) {
+  const text = String(arg ?? "").replaceAll("\\", "/");
+  for (const [pkg, name] of NODE_PACKAGES) {
+    if (text.endsWith(pkg) || text.includes(`${pkg}/`)) return name;
+  }
+  return null;
+}
+
 function agentCommandName(command) {
-  const exe = argvOf(command)[0];
+  const argv = argvOf(command);
+  const exe = argv[0];
   if (!exe) return null;
   const name = baseName(exe);
   if (AGENT_BASENAMES.has(name)) return name;
   if (name === "agent" && String(command).includes("cursor-agent")) return "cursor-agent";
-  return null;
+  if (!isInterpreter(name)) return null;
+  const script = firstNonFlag(argv);
+  if (!script) return null;
+  if (name === "node") {
+    const packaged = nodePackage(script);
+    if (packaged) return packaged;
+  }
+  const scriptName = baseName(script);
+  return AGENT_BASENAMES.has(scriptName) ? scriptName : null;
 }
 
-/** The run's own wrapper: the plan path itself, or sh, bash or node running that path. */
+/**
+ * The plan's wrapper, not an agent CLI.
+ * The executable path is the wrapper script, or an interpreter's first real argument is that script.
+ * Matched by path. A program merely named claude is not this.
+ */
 function isPlanWrapper(command, wrapper) {
   if (!wrapper) return false;
   const argv = argvOf(command);
   if (!argv.length) return false;
   if (samePath(argv[0], wrapper)) return true;
-  if (!WRAPPER_HOSTS.has(baseName(argv[0]))) return false;
-  return argv.slice(1).some((arg) => samePath(arg, wrapper));
+  if (!isInterpreter(baseName(argv[0]))) return false;
+  return samePath(firstNonFlag(argv), wrapper);
 }
 
-/** `REALTEST_SANDBOX_PROFILE=<profile>` with a boundary, so a longer name (`profile-evil`) does not count. */
-function envMarksProfile(command, profile) {
-  const needle = `REALTEST_SANDBOX_PROFILE=${profile}`;
-  let from = 0;
-  while (from <= command.length) {
-    const at = command.indexOf(needle, from);
-    if (at < 0) return false;
-    const next = command[at + needle.length];
-    if (next === undefined || next === " " || next === "\t" || next === "'" || next === '"') return true;
-    from = at + needle.length;
+/** `sandbox_check(pid, NULL, SANDBOX_FILTER_NONE)`. The raw code: 1 sandboxed, 0 not. Anything else is left as a number so the caller can refuse it. */
+const SANDBOX_CHECK_PY = [
+  "import sys",
+  "sys.path = [p for p in sys.path if p not in ('', '.')]",
+  "import ctypes, json",
+  "lib = ctypes.CDLL('/usr/lib/libSystem.dylib')",
+  "fn = lib.sandbox_check",
+  "fn.restype = ctypes.c_int",
+  "fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int]",
+  "out = {}",
+  "for raw in sys.argv[1:]:",
+  "    pid = int(raw)",
+  "    rc = int(fn(pid, None, 0))",
+  "    out[str(pid)] = rc",
+  "json.dump(out, sys.stdout)",
+].join("\n");
+
+const SANDBOX_HELPER_ENV = {
+  PATH: "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+  PYTHONNOUSERSITE: "1",
+  PYTHONDONTWRITEBYTECODE: "1",
+  PYTHONSAFEPATH: "1",
+  LC_ALL: "C",
+  LANG: "C",
+};
+
+/** The helper's answer. Only the kernel's 1 is sandboxed. 0 and every other value are not. */
+function kernelSandboxed(value) {
+  return value === 1;
+}
+
+/** A test double may say yes with boolean true or with 1. Anything else is not sandboxed. */
+function doubleSandboxed(value) {
+  return value === true || value === 1;
+}
+
+/** The kernel's numeric code, or null when the answer wasn't a number. */
+function kernelCode(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** A test double's code: boolean true is 1, boolean false is 0, a number is itself. */
+function doubleCode(value) {
+  if (value === true) return 1;
+  if (value === false) return 0;
+  return kernelCode(value);
+}
+
+/** No reading. Every pid is unsandboxed. `ok: false` is never a pass. */
+function noneSandboxed(pids) {
+  return {
+    ok: false,
+    byPid: new Map(pids.map((pid) => [pid, false])),
+    codeByPid: new Map(pids.map((pid) => [pid, null])),
+  };
+}
+
+function checkPids(pids) {
+  if (!Array.isArray(pids)) return null;
+  const out = [];
+  const seen = new Set();
+  for (const pid of pids) {
+    if (!Number.isInteger(pid) || pid <= 0 || pid > 0x7fffffff) return null;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
   }
-  return false;
+  return out;
 }
 
-/** This command is sandbox-exec with the profile as its own argument, or it carries the profile marker. */
-function commandShowsProfile(command, profile) {
-  if (!profile || !command) return false;
-  if (envMarksProfile(command, profile)) return true;
-  const argv = argvOf(command);
-  if (!argv.some((token) => baseName(token) === "sandbox-exec")) return false;
-  return argv.some((token) => samePath(token, profile));
+function answerFromMap(pids, byPid) {
+  if (!(byPid instanceof Map)) return noneSandboxed(pids);
+  const out = new Map();
+  const codeByPid = new Map();
+  for (const pid of pids) {
+    const value = byPid.get(pid);
+    out.set(pid, doubleSandboxed(value));
+    codeByPid.set(pid, doubleCode(value));
+  }
+  return { ok: true, byPid: out, codeByPid };
+}
+
+function answerFromJson(pids, text) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(text ?? ""));
+  } catch {
+    return { ok: false };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { ok: false };
+  const byPid = new Map();
+  const codeByPid = new Map();
+  for (const pid of pids) {
+    const value = Object.prototype.hasOwnProperty.call(parsed, String(pid)) ? parsed[String(pid)] : undefined;
+    byPid.set(pid, kernelSandboxed(value));
+    codeByPid.set(pid, kernelCode(value));
+  }
+  return { ok: true, byPid, codeByPid };
+}
+
+function kernelSandbox(pids, execFile) {
+  const run = () =>
+    execFile("python3", ["-I", "-c", SANDBOX_CHECK_PY, ...pids.map((pid) => String(pid))], {
+      encoding: "utf8",
+      timeout: 10000,
+      cwd: "/",
+      env: SANDBOX_HELPER_ENV,
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024,
+    });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const parsed = answerFromJson(pids, run());
+      if (parsed.ok) return parsed;
+    } catch {
+      // missing interpreter, a load error, a timeout, or a non-zero exit: try once more, then fail closed
+    }
+  }
+  return noneSandboxed(pids);
+}
+
+/**
+ * One question to the kernel for every pid: is that process sandboxed?
+ * Only an answer of 1 is sandboxed. 0, any other value, a missing pid, or a helper that can't run is not:
+ * that pid is false. A helper that can't run is `{ ok: false, byPid }` with every pid false. Never a silent yes.
+ * A caller may pass `sandboxOf` or `execFile` in tests. A scene does not.
+ */
+export function underProfile(pids, { execFile = execFileSync, sandboxOf } = {}) {
+  const list = checkPids(pids);
+  if (!list) return { ok: false };
+  if (!list.length) return { ok: true, byPid: new Map() };
+  if (typeof sandboxOf === "function") {
+    try {
+      const answer = sandboxOf(list);
+      if (!answer || answer.ok === false) return noneSandboxed(list);
+      return answerFromMap(list, answer.byPid);
+    } catch {
+      return noneSandboxed(list);
+    }
+  }
+  return kernelSandbox(list, execFile);
 }
 
 function parsePs(text) {
@@ -852,39 +1105,52 @@ function descendedFrom(pid, rootPid, byPid) {
   return false;
 }
 
-function underProfile(pid, byPid, profile) {
-  if (!profile) return false;
-  const seen = new Set();
-  let cur = pid;
-  while (cur && !seen.has(cur)) {
-    seen.add(cur);
-    const row = byPid.get(cur);
-    if (!row) return false;
-    if (commandShowsProfile(row.command, profile)) return true;
-    if (!row.ppid || row.ppid === cur) return false;
-    cur = row.ppid;
+/**
+ * One sample. Every agent CLI under the dev app, plus a hit when one isn't sandboxed.
+ * `kernel` is the kernel's number, or null when the helper can't answer or the answer wasn't a number.
+ * `answered` is false only when the helper can't answer.
+ */
+function readAgentSample(text, watch, at) {
+  if (typeof text !== "string" || watch?.rootPid == null || watch.rootPid === "") return { hit: null, agents: [] };
+  const rows = parsePs(text);
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  const candidates = [];
+  for (const row of rows) {
+    if (!descendedFrom(row.pid, watch.rootPid, byPid)) continue;
+    if (isPlanWrapper(row.command, watch.wrapper)) continue;
+    const name = agentCommandName(row.command);
+    if (!name) continue;
+    candidates.push({ pid: row.pid, name, command: row.command });
   }
-  return false;
+  if (!candidates.length) return { hit: null, agents: [] };
+  const status = underProfile(
+    candidates.map((item) => item.pid),
+    { execFile: watch.execFile, sandboxOf: watch.sandboxOf },
+  );
+  const agents = candidates.map((item) => ({
+    pid: item.pid,
+    command: item.command,
+    name: item.name,
+    firstSeen: at,
+    kernel: status.ok ? (status.codeByPid?.get(item.pid) ?? null) : null,
+    answered: status.ok === true,
+  }));
+  if (!status.ok) return { hit: { fail: true, reason: `can't verify the sandbox: ${candidates[0].name}` }, agents };
+  for (const item of candidates) {
+    if (status.byPid?.get(item.pid) !== true) return { hit: { fail: true, reason: `unsandboxed agent: ${item.name}` }, agents };
+  }
+  return { hit: null, agents };
 }
 
 /**
- * An agent CLI descended from the dev app that is not under this run's sandbox profile.
- * Null when ps can't be read, the app pid isn't known, or every agent is the wrapper or sandboxed.
- * The reason is `unsandboxed agent: <cmd>`.
+ * An agent CLI descended from the dev app that the kernel does not have in a sandbox.
+ * The wrapper's sh, bash and node launchers are not agents. Null when ps can't be read, the app pid
+ * isn't known, or every such agent is sandboxed. A helper that can't run stops the round as
+ * `can't verify the sandbox`. A pid whose answer isn't 1 stops it as an unsandboxed agent.
+ * Nothing passes because the check was skipped.
  */
-export function unsandboxedAgents(text, { rootPid, profile, wrapper } = {}) {
-  if (typeof text !== "string" || rootPid == null || rootPid === "") return null;
-  const rows = parsePs(text);
-  const byPid = new Map(rows.map((row) => [row.pid, row]));
-  for (const row of rows) {
-    if (!descendedFrom(row.pid, rootPid, byPid)) continue;
-    if (isPlanWrapper(row.command, wrapper)) continue;
-    const name = agentCommandName(row.command);
-    if (!name) continue;
-    if (underProfile(row.pid, byPid, profile)) continue;
-    return { fail: true, reason: `unsandboxed agent: ${name}` };
-  }
-  return null;
+export function unsandboxedAgents(text, watch = {}) {
+  return readAgentSample(text, watch, null).hit;
 }
 
 export function finishSceneAgents(text, watch, stopRun) {
@@ -910,6 +1176,181 @@ export function sceneAgents(ctx) {
     return null;
   }
   return finishSceneAgents(text, watch, ctx.stopRun);
+}
+
+function pollInterval(ms) {
+  const n = Number(ms);
+  return Number.isFinite(n) && n >= 0 ? n : 1000;
+}
+
+/**
+ * Sample ps and the kernel about once a second while a scene runs.
+ * The first unsandboxed hit stops the round. `stop` takes one last sample if nothing has failed yet,
+ * and returns every agent pid seen, with its command, the time it was first seen, and the kernel's answer.
+ * No lister: a no-op. `stop` is safe to call twice.
+ */
+export function startSceneAgentPoll(ctx, { intervalMs, now, sleep } = {}) {
+  const interval = pollInterval(intervalMs ?? ctx?.agentPollMs);
+  const clock = now ?? ctx?.agentPollNow ?? Date.now;
+  if (!ctx || typeof ctx.listAgents !== "function") {
+    return { stop: async () => ({ hit: null, agents: [] }) };
+  }
+  const seen = new Map();
+  let hit = null;
+  let halt = false;
+  let cached = null;
+  let wake = () => {};
+  let abort = () => {};
+  const untilAbort = new Promise((resolve) => {
+    abort = resolve;
+  });
+  const defaultSleep = (ms) =>
+    new Promise((resolve) => {
+      const timer = setTimeout(resolve, ms);
+      timer.unref?.();
+      wake = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+    });
+  const pause = (ms) => Promise.race([untilAbort, (sleep ?? ctx.agentPollSleep ?? defaultSleep)(ms)]);
+  const sample = () => {
+    if (hit) return;
+    let text = null;
+    try {
+      text = ctx.listAgents();
+    } catch {
+      return;
+    }
+    let watch = {};
+    try {
+      watch = typeof ctx.agentWatch === "function" ? ctx.agentWatch() ?? {} : {};
+    } catch {
+      return;
+    }
+    const found = readAgentSample(text, watch, clock());
+    for (const agent of found.agents) {
+      const prior = seen.get(agent.pid);
+      if (!prior) seen.set(agent.pid, agent);
+      else if (prior.kernel === 1 && agent.kernel !== 1) seen.set(agent.pid, { ...prior, kernel: agent.kernel, answered: agent.answered });
+    }
+    if (found.hit && !hit) {
+      hit = found.hit;
+      try {
+        ctx.stopRun?.(hit.reason);
+      } catch {
+        // the stop file is best-effort
+      }
+    }
+  };
+  const task = (async () => {
+    sample();
+    while (!halt && !hit) {
+      await pause(interval);
+      if (halt || hit) break;
+      sample();
+    }
+    if (!hit && halt) sample();
+  })();
+  return {
+    async stop() {
+      if (cached) return cached;
+      halt = true;
+      wake();
+      abort();
+      await task;
+      cached = { hit, agents: [...seen.values()] };
+      return cached;
+    },
+  };
+}
+
+/** The plan gate's refusal, as verify_live.rs writes it. The name is the provider label, not a path. */
+export function planRefusal(cli) {
+  return `This bench only starts the run's own Claude wrapper. It won't start ${cli}.`;
+}
+
+function evidenceBlob(evidence) {
+  const parts = [];
+  const walk = (value) => {
+    if (typeof value === "string") parts.push(value);
+    else if (Array.isArray(value)) for (const item of value) walk(item);
+    else if (value && typeof value === "object") {
+      for (const [key, item] of Object.entries(value)) {
+        if (key === "canary" || key === "canaryClis") continue;
+        walk(item);
+      }
+    }
+  };
+  if (Array.isArray(evidence)) for (const item of evidence) walk(item);
+  else walk(evidence);
+  return parts.join("\n");
+}
+
+/**
+ * One row per named CLI. PASS is a plan refusal with no such process, or a process seen alive whose kernel
+ * answered 1. An unsandboxed process is a hard stop. Anything else is NOT PROVEN, which is not a pass.
+ */
+export function canaryReport(clis, { agents = [], evidence = "", hit = null } = {}) {
+  const list = Array.isArray(clis) ? clis.filter((cli) => typeof cli === "string" && cli.trim()) : [];
+  if (!list.length) return null;
+  const text = evidenceBlob(evidence);
+  const seen = new Map();
+  for (const agent of agents ?? []) {
+    if (!agent?.name) continue;
+    if (!seen.has(agent.name)) seen.set(agent.name, []);
+    seen.get(agent.name).push(agent);
+  }
+  const rows = list.map((cli) => {
+    const name = cli.trim();
+    const procs = seen.get(name) ?? [];
+    if (procs.some((proc) => proc.kernel !== 1)) {
+      const measured = procs.some((proc) => proc.kernel !== 1 && proc.answered !== false);
+      return { cli: name, verdict: "FAIL", why: measured ? `unsandboxed agent: ${name}` : `can't verify the sandbox: ${name}` };
+    }
+    if (procs.some((proc) => proc.kernel === 1)) return { cli: name, verdict: "PASS", why: "seen alive, kernel answered 1" };
+    if (text.includes(planRefusal(name))) return { cli: name, verdict: "PASS", why: "the plan gate refused the start" };
+    return { cli: name, verdict: "NOT PROVEN", why: "neither a plan refusal nor a sandboxed process was seen" };
+  });
+  const failed = rows.find((row) => row.verdict === "FAIL");
+  const missing = rows.filter((row) => row.verdict === "NOT PROVEN");
+  return {
+    rows,
+    hardStop: hit?.reason ?? (failed ? failed.why : null),
+    unproven: missing.length ? `not proven: ${missing.map((row) => row.cli).join(", ")}` : null,
+  };
+}
+
+/** A hard stop fails the scene. Any NOT PROVEN row keeps a pass from standing, including a fake run's would-be pass. */
+export function applyCanary(scored, report) {
+  if (!report) return scored;
+  const next = { ...scored, canary: report.rows };
+  if (report.hardStop) {
+    next.verdict = "FAIL";
+    const rest = (next.reasons ?? []).filter((reason) => reason !== report.hardStop);
+    next.reasons = [report.hardStop, ...rest];
+    if (next.wouldBe === "PASS") next.wouldBe = "FAIL";
+    return next;
+  }
+  if (report.unproven) {
+    if (next.verdict === "PASS") {
+      next.verdict = "NOT PROVEN";
+      next.reasons = [report.unproven, ...(next.reasons ?? [])];
+    } else if (next.wouldBe === "PASS") {
+      next.wouldBe = "NOT PROVEN";
+      next.reasons = [report.unproven, ...(next.reasons ?? [])];
+    } else {
+      const rest = (next.reasons ?? []).filter((reason) => reason !== report.unproven);
+      next.reasons = [...rest, report.unproven];
+    }
+  }
+  return next;
+}
+
+export function canaryTable(rows) {
+  if (!rows?.length) return "";
+  const line = (row) => `| ${row.cli} | ${row.verdict} | ${String(row.why ?? "").replaceAll("|", "/")} |`;
+  return ["| CLI | Verdict | Why |", "| --- | --- | --- |", ...rows.map(line)].join("\n");
 }
 
 export function readDummy(state) {
@@ -983,7 +1424,12 @@ export function scanSceneText(text, file = "") {
 function walkStrings(value, visit) {
   if (typeof value === "string") visit(value);
   else if (Array.isArray(value)) for (const item of value) walkStrings(item, visit);
-  else if (value && typeof value === "object") for (const item of Object.values(value)) walkStrings(item, visit);
+  else if (value && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (key === "canaryClis") continue;
+      walkStrings(item, visit);
+    }
+  }
 }
 
 /** Hits in the scene book. A non-empty list fails the bench. */
