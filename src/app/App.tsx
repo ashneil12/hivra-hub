@@ -12595,6 +12595,8 @@ function Workspace({
               : await createOrchestrationWorktree(
                   leadCheckoutCwd,
                   orchestrationWorktreeBranchName(task.id),
+                  // WP-82: the crew id is the lease holder.
+                  task.id,
                 ).then((tree) =>
                   workspaceIdentity(
                     projectCwd,

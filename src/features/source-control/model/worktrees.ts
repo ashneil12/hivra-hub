@@ -28,6 +28,8 @@ export type Worktree = {
   sessionIds: string[];
   /** The project's setup, started right after `git worktree add` (.monocode/project.json). */
   setup?: WorktreeSetup;
+  /** Said once, when this checkout was a plain git worktree because the pool was off or not installed. */
+  poolNotice?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 
@@ -60,10 +62,12 @@ export async function createWorktree(
 export async function createOrchestrationWorktree(
   cwd: string,
   branch: string,
+  leaseHolder?: string,
 ) {
   const tree = await invoke<Worktree>("git_orchestration_worktree_create", {
     cwd,
     branch,
+    ...(leaseHolder ? { leaseHolder } : {}),
   });
   notifyGitChanged();
   if (tree.setup?.hold && tree.setup.run) {

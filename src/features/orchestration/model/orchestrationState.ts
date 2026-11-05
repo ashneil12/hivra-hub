@@ -91,6 +91,10 @@ export type OrchestrationTask = {
   activeDispatchId?: string;
   lastDispatchId?: string;
   acceptedDispatchId?: string;
+  /** Plain note while a full worktree pool keeps this task queued. */
+  poolNote?: string;
+  /** Epoch ms. A finite future value must not start this task again yet. */
+  poolRetryAt?: number;
 };
 
 export type OrchestrationRun = {
