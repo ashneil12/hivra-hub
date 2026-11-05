@@ -6,7 +6,7 @@
 use std::io::{Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::instance::Kind;
@@ -381,7 +381,16 @@ fn task_count(door: &Outside) -> i64 {
 
 #[test]
 fn the_door_is_off_until_this_copy_turns_it_on() {
-    let door = Outside::open_memory().unwrap();
+    // Ports this test holds, outside the ephemeral range, so another test's
+    // bind(0) cannot be given one of them between release and the check.
+    let mut mine = HeldPort::reserve();
+    let mut theirs = HeldPort::reserve();
+    let port = mine.port;
+    let other_port = theirs.port;
+    mine.release();
+    theirs.release();
+
+    let door = Outside::open_memory_on(&[port]).unwrap();
     let status = door.status().unwrap();
     assert!(!status.enabled);
     assert!(status.url.is_none());
@@ -390,18 +399,16 @@ fn the_door_is_off_until_this_copy_turns_it_on() {
     let on = door.set_enabled(true).unwrap();
     assert!(on.enabled);
     let url = on.url.unwrap();
-    let port: u16 = url
-        .trim_start_matches("http://127.0.0.1:")
-        .trim_end_matches("/mcp")
-        .parse()
-        .unwrap();
+    assert_eq!(door.port(), Some(port));
+    assert!(url.contains(&format!(":{port}/")), "{url}");
     assert_eq!(
         door.set_enabled(true).unwrap().url.as_deref(),
         Some(url.as_str())
     );
 
-    let other = Outside::open_memory().unwrap();
-    let other_port = other.start().unwrap();
+    let other = Outside::open_memory_on(&[other_port]).unwrap();
+    other.set_enabled(true).unwrap();
+    assert_eq!(other.port(), Some(other_port));
     assert_ne!(port, other_port);
     let crossed = send(
         port,
@@ -417,7 +424,11 @@ fn the_door_is_off_until_this_copy_turns_it_on() {
     door.set_enabled(false).unwrap();
     assert!(!door.status().unwrap().enabled);
     assert!(door.port().is_none());
-    assert!(super::port_is_free(port));
+    // Binding it and keeping it proves the door let go. A probe that binds and
+    // drops would race with every other test in the process.
+    let released = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
+        .unwrap_or_else(|err| panic!("the door still holds {port}: {err}"));
+    let _keep = released;
 }
 
 #[test]
@@ -1706,16 +1717,25 @@ impl Drop for Scratch {
     }
 }
 
-/// Tests that bind the real daily or dev range take this, so they don't take
-/// each other's ports. A test with a port of its own does not.
-fn claim_ranges() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+/// Ports a test owns. Above the dev range (ends at 27400) and below Linux's
+/// ephemeral floor (32768), so a `bind(0)` in another test cannot be handed one
+/// of them. Each call takes the next port and holds a listener on it.
+const OWNED_PORTS: std::ops::Range<u16> = 27400..30000;
+
+fn next_owned_port() -> u16 {
+    static NEXT: AtomicU16 = AtomicU16::new(OWNED_PORTS.start);
+    let port = NEXT.fetch_add(1, Ordering::Relaxed);
+    assert!(
+        OWNED_PORTS.contains(&port),
+        "ran out of ports this process owns"
+    );
+    assert!(!super::DAILY_PORTS.contains(&port) && !super::DEV_PORTS.contains(&port));
+    port
 }
 
-/// One port this test owns. Bound to port 0, so it is not a fixed daily or dev
-/// port and not another test's. Hold the listener to keep the port taken, or
-/// release it before the door should bind it.
+/// One port this test owns. The listener stays bound until `release`, so the
+/// port is taken for that whole time. Nothing in the process asks the OS for
+/// "any free port" and then hopes this one is still free.
 struct HeldPort {
     port: u16,
     listener: Option<TcpListener>,
@@ -1723,21 +1743,20 @@ struct HeldPort {
 
 impl HeldPort {
     fn reserve() -> Self {
-        for _ in 0..16 {
-            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-                .unwrap_or_else(|err| panic!("reserve: {err}"));
-            let port = listener
-                .local_addr()
-                .unwrap_or_else(|err| panic!("reserved port: {err}"))
-                .port();
-            if !super::DAILY_PORTS.contains(&port) && !super::DEV_PORTS.contains(&port) {
-                return Self {
-                    port,
-                    listener: Some(listener),
-                };
+        for _ in 0..32 {
+            let port = next_owned_port();
+            match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+                Ok(listener) => {
+                    return Self {
+                        port,
+                        listener: Some(listener),
+                    };
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => continue,
+                Err(err) => panic!("reserve {port}: {err}"),
             }
         }
-        panic!("could not reserve a port outside the fixed ranges");
+        panic!("could not reserve a port");
     }
 
     fn release(&mut self) {
@@ -1745,8 +1764,8 @@ impl HeldPort {
     }
 }
 
-fn must_init_ports(path: PathBuf, ports: &[u16]) -> Outside {
-    match super::init_ports(path, ports) {
+fn must_init_ports(path: PathBuf, kind: Kind, ports: &[u16]) -> Outside {
+    match super::init_ports(path, kind, ports) {
         Ok(door) => door,
         Err(err) => panic!("startup returned an error: {err}"),
     }
@@ -1754,7 +1773,8 @@ fn must_init_ports(path: PathBuf, ports: &[u16]) -> Outside {
 
 /// Save `port` and leave the door switched on, without binding it.
 fn remember_port(path: &Path, port: u16) {
-    let door = Outside::open(path.to_path_buf()).unwrap_or_else(|err| panic!("open: {err}"));
+    let door = Outside::open(path.to_path_buf(), Kind::Daily, &[])
+        .unwrap_or_else(|err| panic!("open: {err}"));
     door.with_conn(|conn| {
         super::store::set_enabled(conn, true)?;
         if !super::store::insert_port_if_empty(conn, port)? {
@@ -1774,7 +1794,8 @@ fn must_init(path: PathBuf, kind: Kind) -> Outside {
 }
 
 fn saved_port(path: &Path) -> Option<String> {
-    let door = Outside::open(path.to_path_buf()).unwrap_or_else(|err| panic!("open: {err}"));
+    let door = Outside::open(path.to_path_buf(), Kind::Daily, &[])
+        .unwrap_or_else(|err| panic!("open: {err}"));
     door.with_conn(|conn| super::store::raw_setting(conn, "port"))
         .unwrap_or_else(|err| panic!("read: {err}"))
         .unwrap_or_else(|err| panic!("setting: {err}"))
@@ -1791,7 +1812,6 @@ fn init_still_opens_when_the_database_cannot() {
     let blocker = scratch.0.join("not a directory");
     std::fs::write(&blocker, b"x").unwrap();
     let db = blocker.join("monocode.db");
-    let place = db.display().to_string();
     let door = must_init(db, Kind::Daily);
     let status = problem_of(&door);
     let problem = status.problem.expect("the door should say why");
@@ -1801,10 +1821,7 @@ fn init_still_opens_when_the_database_cannot() {
     assert!(status.url.is_none());
     assert!(!status.port_taken);
     assert!(door.port().is_none());
-    assert!(
-        super::noted_for(&place, "couldn't start"),
-        "the failure should be logged"
-    );
+    assert!(door.noted("couldn't start"), "the failure should be logged");
 }
 
 /// Startup must not fail when the saved port is already taken. The door names it.
@@ -1814,8 +1831,7 @@ fn init_still_opens_when_the_port_cannot_be_bound() {
     let scratch = Scratch::new();
     let db = scratch.db();
     remember_port(&db, held.port);
-    let place = db.display().to_string();
-    let door = must_init_ports(db.clone(), &[held.port]);
+    let door = must_init_ports(db.clone(), Kind::Daily, &[held.port]);
     let status = problem_of(&door);
     let problem = status.problem.expect("the door should say why");
     assert!(problem.starts_with("couldn't start: "), "{problem}");
@@ -1828,10 +1844,7 @@ fn init_still_opens_when_the_port_cannot_be_bound() {
         saved_port(&db).as_deref(),
         Some(held.port.to_string()).as_deref()
     );
-    assert!(
-        super::noted_for(&place, "couldn't start"),
-        "the failure should be logged"
-    );
+    assert!(door.noted("couldn't start"), "the failure should be logged");
 }
 
 /// The address given to `claude mcp add` survives a restart.
@@ -1843,14 +1856,14 @@ fn the_door_uses_the_same_port_after_a_restart() {
     held.release();
     let scratch = Scratch::new();
     let db = scratch.db();
-    let first = Outside::open(db.clone()).unwrap();
-    let status = first.set_enabled_ports(true, &ports).unwrap();
+    let first = Outside::open(db.clone(), Kind::Daily, &ports).unwrap();
+    let status = first.set_enabled(true).unwrap();
     assert_eq!(first.port(), Some(port));
     let url = status.url.expect("an enabled door has an address");
     assert!(url.contains(&format!(":{port}/")), "{url}");
     drop(first);
 
-    let second = must_init_ports(db.clone(), &ports);
+    let second = must_init_ports(db.clone(), Kind::Daily, &ports);
     assert_eq!(second.port(), Some(port));
     let again = problem_of(&second);
     assert_eq!(again.url.as_deref(), Some(url.as_str()));
@@ -1870,13 +1883,13 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     let ports = [port];
     held.release();
     let scratch = Scratch::new();
-    let door = Outside::open(scratch.db()).unwrap();
-    door.set_enabled_ports(true, &ports).unwrap();
+    let door = Outside::open(scratch.db(), Kind::Daily, &ports).unwrap();
+    door.set_enabled(true).unwrap();
     assert_eq!(door.port(), Some(port));
-    door.set_enabled_ports(false, &ports).unwrap();
+    door.set_enabled(false).unwrap();
     assert!(door.port().is_none());
     assert!(problem_of(&door).url.is_none());
-    door.set_enabled_ports(true, &ports).unwrap();
+    door.set_enabled(true).unwrap();
     assert_eq!(door.port(), Some(port));
     assert_eq!(
         saved_port(&scratch.db()).as_deref(),
@@ -1884,32 +1897,42 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     );
 }
 
-/// A dev copy picks from its own range, and never the daily app's, even after a restart.
+/// A dev copy is given the dev range, which does not meet the daily app's.
+/// Opening the door does not bind: the range is recorded, not probed.
 #[test]
 fn a_dev_copy_never_binds_the_daily_range() {
-    let _ranges = claim_ranges();
     let scratch = Scratch::new();
-    let db = scratch.db();
-    let first = Outside::open(db.clone()).unwrap();
-    first.set_enabled_in(true, Kind::Dev).unwrap();
-    let port = first.port().unwrap();
-    assert!(super::DEV_PORTS.contains(&port), "{port}");
-    assert!(!super::DAILY_PORTS.contains(&port), "{port}");
-    drop(first);
-
-    let second = must_init(db, Kind::Dev);
-    assert_eq!(second.port(), Some(port));
-    assert!(super::DEV_PORTS.contains(&port));
+    let door = must_init(scratch.db(), Kind::Dev);
+    assert_eq!(door.kind(), Kind::Dev);
+    assert_eq!(door.ports(), super::ports_for(Kind::Dev).as_slice());
+    assert!(door.port().is_none(), "a door that is off binds nothing");
+    assert!(!door.ports().is_empty());
+    for port in door.ports() {
+        assert!(super::DEV_PORTS.contains(port), "{port}");
+        assert!(!super::DAILY_PORTS.contains(port), "{port}");
+    }
+    let daily_scratch = Scratch::new();
+    let daily = must_init(daily_scratch.db(), Kind::Daily);
+    assert_eq!(daily.ports(), super::ports_for(Kind::Daily).as_slice());
+    for port in daily.ports() {
+        assert!(super::DAILY_PORTS.contains(port), "{port}");
+        assert!(!super::DEV_PORTS.contains(port), "{port}");
+    }
 }
 
-/// A port saved from the daily range is not bound by a dev copy.
+/// A port saved from the daily range is not bound by a dev copy. The dev copy
+/// binds a port it owns, then the same one again after a restart.
 #[test]
 fn a_dev_copy_does_not_bind_a_saved_daily_port() {
-    let _ranges = claim_ranges();
+    let mut own = HeldPort::reserve();
+    let port = own.port;
+    own.release();
     let scratch = Scratch::new();
     let db = scratch.db();
     let daily_port = super::DAILY_PORTS.start;
-    let door = Outside::open(db.clone()).unwrap();
+    assert!(super::DAILY_PORTS.contains(&daily_port));
+    assert!(!super::DEV_PORTS.contains(&daily_port));
+    let door = Outside::open(db.clone(), Kind::Dev, &[port]).unwrap();
     door.with_conn(|conn| {
         super::store::set_enabled(conn, true)?;
         if !super::store::insert_port_if_empty(conn, daily_port)? {
@@ -1921,26 +1944,32 @@ fn a_dev_copy_does_not_bind_a_saved_daily_port() {
     .unwrap();
     drop(door);
 
-    let started = must_init(db.clone(), Kind::Dev);
-    let port = started
+    let started = must_init_ports(db.clone(), Kind::Dev, &[port]);
+    let bound = started
         .port()
         .expect("a dev copy still starts on its own port");
-    assert_ne!(port, daily_port);
-    assert!(super::DEV_PORTS.contains(&port), "{port}");
-    assert!(!super::DAILY_PORTS.contains(&port), "{port}");
+    assert_eq!(bound, port);
+    assert_ne!(bound, daily_port);
+    assert!(!super::DAILY_PORTS.contains(&bound), "{bound}");
     assert_eq!(
         saved_port(&db).as_deref(),
-        Some(port.to_string()).as_deref()
+        Some(bound.to_string()).as_deref()
     );
+    drop(started);
+
+    let again = must_init_ports(db.clone(), Kind::Dev, &[port]);
+    assert_eq!(again.port(), Some(port));
 }
 
 /// A value that is not a port in range is not bound. A real port is chosen instead.
 #[test]
 fn a_garbage_saved_port_is_not_bound() {
-    let _ranges = claim_ranges();
+    let mut own = HeldPort::reserve();
+    let port = own.port;
+    own.release();
     let scratch = Scratch::new();
     let db = scratch.db();
-    let door = Outside::open(db.clone()).unwrap();
+    let door = Outside::open(db.clone(), Kind::Daily, &[port]).unwrap();
     door.with_conn(|conn| {
         super::store::set_enabled(conn, true)?;
         conn.execute(
@@ -1954,14 +1983,15 @@ fn a_garbage_saved_port_is_not_bound() {
     .unwrap();
     drop(door);
 
-    let started = must_init(db.clone(), Kind::Daily);
-    let port = started
+    let started = must_init_ports(db.clone(), Kind::Daily, &[port]);
+    let bound = started
         .port()
         .expect("a garbage port is replaced, not fatal");
-    assert!(super::DAILY_PORTS.contains(&port), "{port}");
+    assert_eq!(bound, port);
+    assert!(!super::DAILY_PORTS.contains(&bound) && !super::DEV_PORTS.contains(&bound));
     assert_eq!(
         saved_port(&db).as_deref(),
-        Some(port.to_string()).as_deref()
+        Some(bound.to_string()).as_deref()
     );
     assert!(problem_of(&started).problem.is_none());
 }
@@ -1978,7 +2008,7 @@ fn a_taken_port_stays_put_until_a_new_one_is_asked_for() {
     let ports = [taken.port, free.port];
     remember_port(&db, taken.port);
 
-    let door = must_init_ports(db.clone(), &ports);
+    let door = must_init_ports(db.clone(), Kind::Daily, &ports);
     assert!(problem_of(&door).port_taken);
     assert_eq!(
         saved_port(&db).as_deref(),
@@ -1989,7 +2019,7 @@ fn a_taken_port_stays_put_until_a_new_one_is_asked_for() {
     // Released only once we ask. Until then the door has nowhere else to go,
     // and it must not take this port on its own.
     free.release();
-    let moved = door.pick_new_ports(&ports).unwrap();
+    let moved = door.pick_new_port().unwrap();
     let next = door.port().expect("the new port is bound");
     assert_eq!(next, free.port);
     assert_ne!(next, taken.port);
@@ -2012,10 +2042,10 @@ fn asking_for_a_new_port_does_nothing_while_this_one_works() {
     let ports = [port];
     held.release();
     let scratch = Scratch::new();
-    let door = Outside::open(scratch.db()).unwrap();
-    door.set_enabled_ports(true, &ports).unwrap();
+    let door = Outside::open(scratch.db(), Kind::Daily, &ports).unwrap();
+    door.set_enabled(true).unwrap();
     assert_eq!(door.port(), Some(port));
-    let status = door.pick_new_ports(&ports).unwrap();
+    let status = door.pick_new_port().unwrap();
     assert_eq!(door.port(), Some(port));
     assert!(status.problem.is_none());
     assert!(!status.port_taken);
@@ -2034,11 +2064,11 @@ fn a_second_door_does_not_take_the_port_from_the_first() {
     held.release();
     let scratch = Scratch::new();
     let db = scratch.db();
-    let first = Outside::open(db.clone()).unwrap();
-    first.set_enabled_ports(true, &ports).unwrap();
+    let first = Outside::open(db.clone(), Kind::Daily, &ports).unwrap();
+    first.set_enabled(true).unwrap();
     assert_eq!(first.port(), Some(port));
 
-    let second = must_init_ports(db.clone(), &ports);
+    let second = must_init_ports(db.clone(), Kind::Daily, &ports);
     let status = problem_of(&second);
     assert!(status.port_taken, "{status:?}");
     assert!(status.problem.unwrap().contains(&port.to_string()));
@@ -2058,13 +2088,13 @@ fn no_free_port_is_reported_without_failing_startup() {
     let held = HeldPort::reserve();
     let scratch = Scratch::new();
     let db = scratch.db();
-    let door = Outside::open(db.clone()).unwrap();
+    let door = Outside::open(db.clone(), Kind::Daily, &[held.port]).unwrap();
     door.with_conn(|conn| super::store::set_enabled(conn, true))
         .unwrap()
         .unwrap();
     drop(door);
 
-    let started = must_init_ports(db.clone(), &[held.port]);
+    let started = must_init_ports(db.clone(), Kind::Daily, &[held.port]);
     let status = problem_of(&started);
     let problem = status.problem.expect("the door should say why");
     assert!(problem.starts_with("couldn't start: "), "{problem}");

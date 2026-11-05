@@ -106,6 +106,10 @@ fn accept_loop(
     redirects: super::Redirects,
     port: u16,
 ) {
+    // Joined before this function returns. A detached handler keeps its accepted
+    // socket, and on macOS that socket holds the port: the listener can be closed
+    // and a new one still cannot bind. Turning the door off has to let the port go.
+    let mut handlers: Vec<JoinHandle<()>> = Vec::new();
     while !stop.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((stream, addr)) => {
@@ -120,9 +124,10 @@ fn accept_loop(
                 }
                 let db = Arc::clone(&db);
                 let redirects = Arc::clone(&redirects);
-                thread::spawn(move || {
+                handlers.retain(|handle| !handle.is_finished());
+                handlers.push(thread::spawn(move || {
                     let _ = handle_client(stream, addr, &db, &redirects, port);
-                });
+                }));
             }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 thread::sleep(Duration::from_millis(20));
@@ -130,6 +135,10 @@ fn accept_loop(
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
+    }
+    drop(listener);
+    for handle in handlers {
+        let _ = handle.join();
     }
 }
 

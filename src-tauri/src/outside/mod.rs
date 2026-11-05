@@ -12,8 +12,6 @@ mod security;
 mod store;
 
 use std::collections::HashMap;
-#[cfg(test)]
-use std::net::{Ipv4Addr, TcpListener};
 use std::ops::Range;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +61,27 @@ fn now_ms() -> i64 {
 struct Run {
     port: u16,
     stop: Arc<AtomicBool>,
-    thread: JoinHandle<()>,
+    /// Joined on drop, so a door that is replaced or forgotten cannot leave its
+    /// listener running. Taken out before join so drop doesn't join twice.
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Run {
+    fn finish(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 
 /// The daily app's ports. A dev copy never binds one.
@@ -96,31 +114,6 @@ enum Choice {
     Replace(String),
 }
 
-fn note(place: &str, message: &str) {
-    eprintln!("outside: {message} [{place}]");
-    #[cfg(test)]
-    {
-        if let Ok(mut notes) = NOTES.lock() {
-            notes.push((place.to_string(), message.to_string()));
-        }
-    }
-}
-
-#[cfg(test)]
-static NOTES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
-
-#[cfg(test)]
-pub(crate) fn noted_for(place: &str, fragment: &str) -> bool {
-    NOTES
-        .lock()
-        .map(|notes| {
-            notes
-                .iter()
-                .any(|(at, message)| at == place && message.contains(fragment))
-        })
-        .unwrap_or(false)
-}
-
 /// A saved port is a number in 1..=65535, nothing else. `0` would mean "any port".
 fn parse_saved_port(raw: &str) -> Option<u16> {
     let raw = raw.trim();
@@ -132,8 +125,7 @@ fn parse_saved_port(raw: &str) -> Option<u16> {
 }
 
 fn shutdown(run: Run) {
-    run.stop.store(true, Ordering::SeqCst);
-    let _ = run.thread.join();
+    run.finish();
 }
 
 pub(crate) struct PendingRedirect {
@@ -152,74 +144,137 @@ pub struct Outside {
     fault: Mutex<Option<DoorFault>>,
     /// Where a failure is logged. Not shown in Connected apps.
     place: String,
+    /// This copy, fixed when the door is opened. Not read from the process again.
+    /// Read from tests; production binds `ports`, which were chosen from this.
+    #[cfg_attr(not(test), allow(dead_code))]
+    kind: crate::instance::Kind,
+    /// Ports this door may bind, fixed when it is opened. Empty means the OS
+    /// picks (a memory door in a test). Never recomputed from the process kind.
+    ports: Vec<u16>,
+    /// Lines this door has logged. Per door, so one test cannot see another's.
+    #[cfg(test)]
+    log: Mutex<Vec<String>>,
 }
 
 impl Outside {
-    pub(crate) fn open(path: PathBuf) -> Result<Self, String> {
+    fn assemble(
+        db: Option<Arc<DbInner>>,
+        place: String,
+        kind: crate::instance::Kind,
+        ports: Vec<u16>,
+        fault: Option<DoorFault>,
+    ) -> Self {
+        #[cfg(test)]
+        let seeded = fault.as_ref().map(|fault| fault.message.clone());
+        if let Some(fault) = &fault {
+            eprintln!("outside: {} [{place}]", fault.message);
+        }
+        Self {
+            db,
+            run: Mutex::new(None),
+            redirects: Arc::new(Mutex::new(HashMap::new())),
+            fault: Mutex::new(fault),
+            place,
+            kind,
+            ports,
+            #[cfg(test)]
+            log: Mutex::new(seeded.into_iter().collect()),
+        }
+    }
+
+    /// `kind` and `ports` belong to this door. Later calls do not ask the process
+    /// which copy it is, or which ports that copy may use.
+    pub(crate) fn open(
+        path: PathBuf,
+        kind: crate::instance::Kind,
+        ports: &[u16],
+    ) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)
                 .map_err(|err| format!("couldn't open {}: {err}", dir.display()))?;
         }
         let place = path.display().to_string();
-        let door = Self {
-            db: Some(Arc::new(DbInner::File(path.clone()))),
-            run: Mutex::new(None),
-            redirects: Arc::new(Mutex::new(HashMap::new())),
-            fault: Mutex::new(None),
+        let door = Self::assemble(
+            Some(Arc::new(DbInner::File(path.clone()))),
             place,
-        };
+            kind,
+            ports.to_vec(),
+            None,
+        );
         door.with_conn(|conn| store::ensure(conn))
             .map_err(|err| format!("couldn't open {}: {err}", path.display()))??;
         Ok(door)
     }
 
     /// A door that could not be opened. Connected apps can still show why.
-    fn unavailable(place: &str, reason: &str) -> Self {
+    fn unavailable(place: &str, kind: crate::instance::Kind, ports: &[u16], reason: &str) -> Self {
         let message = if reason.starts_with("couldn't start: ") {
             reason.to_string()
         } else {
             format!("couldn't start: {reason}")
         };
-        Self {
-            db: None,
-            run: Mutex::new(None),
-            redirects: Arc::new(Mutex::new(HashMap::new())),
-            fault: Mutex::new(Some(DoorFault {
+        Self::assemble(
+            None,
+            place.to_string(),
+            kind,
+            ports.to_vec(),
+            Some(DoorFault {
                 message,
                 port_taken: false,
-            })),
-            place: place.to_string(),
-        }
+            }),
+        )
     }
 
     #[cfg(test)]
     pub(crate) fn open_memory() -> Result<Self, String> {
+        Self::open_memory_on(&[])
+    }
+
+    /// A memory door that binds `ports` instead of an OS-chosen port. An empty
+    /// list still lets the OS pick. The kind is not consulted for the bind.
+    #[cfg(test)]
+    pub(crate) fn open_memory_on(ports: &[u16]) -> Result<Self, String> {
         let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
         conn.busy_timeout(std::time::Duration::from_secs(5))
             .map_err(|e| e.to_string())?;
         store::ensure(&conn)?;
-        Ok(Self {
-            db: Some(Arc::new(DbInner::Memory(Mutex::new(conn)))),
-            run: Mutex::new(None),
-            redirects: Arc::new(Mutex::new(HashMap::new())),
-            fault: Mutex::new(None),
-            place: "memory".to_string(),
-        })
+        Ok(Self::assemble(
+            Some(Arc::new(DbInner::Memory(Mutex::new(conn)))),
+            "memory".to_string(),
+            crate::instance::Kind::Daily,
+            ports.to_vec(),
+            None,
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ports(&self) -> &[u16] {
+        &self.ports
+    }
+
+    #[cfg(test)]
+    pub(crate) fn kind(&self) -> crate::instance::Kind {
+        self.kind
+    }
+
+    #[cfg(test)]
+    pub(crate) fn noted(&self, fragment: &str) -> bool {
+        self.log
+            .lock()
+            .map(|notes| notes.iter().any(|message| message.contains(fragment)))
+            .unwrap_or(false)
+    }
+
+    fn note_here(&self, message: &str) {
+        eprintln!("outside: {message} [{}]", self.place);
+        #[cfg(test)]
+        if let Ok(mut notes) = self.log.lock() {
+            notes.push(message.to_string());
+        }
     }
 
     fn has_db(&self) -> bool {
         self.db.is_some()
-    }
-
-    fn is_memory(&self) -> bool {
-        #[cfg(test)]
-        {
-            matches!(self.db.as_deref(), Some(DbInner::Memory(_)))
-        }
-        #[cfg(not(test))]
-        {
-            false
-        }
     }
 
     pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> Result<T, String> {
@@ -244,7 +299,7 @@ impl Outside {
     }
 
     fn remember(&self, message: &str, port_taken: bool) {
-        note(&self.place, message);
+        self.note_here(message);
         let mut fault = match self.fault.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -274,17 +329,12 @@ impl Outside {
             .and_then(|run| run.as_ref().map(|run| run.port))
     }
 
-    /// Memory doors in tests bind an ephemeral port. File doors go through
-    /// [`Self::ensure_running`], which production reaches from `init` and
-    /// `set_enabled` instead.
+    /// Bind this door's own ports. An empty list lets the OS pick, which is how
+    /// a memory door runs beside the others. The process copy kind is not read.
     #[cfg(test)]
     pub(crate) fn start(&self) -> Result<u16, String> {
-        if self.is_memory() {
-            self.start_ephemeral()?;
-        } else {
-            let ports = ports_for(crate::instance::kind());
-            self.ensure_running(&ports)?;
-        }
+        let ports = self.ports.clone();
+        self.ensure_running(&ports)?;
         self.port()
             .ok_or_else(|| "The door didn't start.".to_string())
     }
@@ -309,10 +359,10 @@ impl Outside {
     }
 
     /// Bind the saved port, or pick one of `ports` and store it when none is saved.
-    /// A saved port that is taken is left where it is. `ports` is this copy's range,
-    /// or the ports a test reserved for itself.
+    /// A saved port that is taken is left where it is. `ports` is this door's list,
+    /// fixed when it was opened. Empty lets the OS pick.
     fn ensure_running(&self, ports: &[u16]) -> Result<(), String> {
-        if self.is_memory() {
+        if ports.is_empty() {
             self.start_ephemeral()?;
             self.clear_fault();
             return Ok(());
@@ -331,7 +381,7 @@ impl Outside {
             Some(raw) => match parse_saved_port(raw).filter(|port| ports.contains(port)) {
                 Some(port) => Choice::Exact(port),
                 None => {
-                    note(&self.place, "the saved port is outside this copy's range");
+                    self.note_here("the saved port is outside this copy's range");
                     Choice::Replace(raw.to_string())
                 }
             },
@@ -357,7 +407,11 @@ impl Outside {
             Arc::clone(&self.redirects),
             listen,
         )?;
-        Ok(Run { port, stop, thread })
+        Ok(Run {
+            port,
+            stop,
+            thread: Some(thread),
+        })
     }
 
     fn bind_exact(&self, run: &mut Option<Run>, port: u16) -> Result<(), String> {
@@ -457,8 +511,7 @@ impl Outside {
             run.take()
         };
         if let Some(run) = taken {
-            run.stop.store(true, Ordering::SeqCst);
-            let _ = run.thread.join();
+            run.finish();
         }
     }
 
@@ -484,15 +537,7 @@ impl Outside {
     }
 
     pub(crate) fn set_enabled(&self, on: bool) -> Result<DoorStatus, String> {
-        self.set_enabled_in(on, crate::instance::kind())
-    }
-
-    pub(crate) fn set_enabled_in(
-        &self,
-        on: bool,
-        kind: crate::instance::Kind,
-    ) -> Result<DoorStatus, String> {
-        let ports = ports_for(kind);
+        let ports = self.ports.clone();
         self.set_enabled_ports(on, &ports)
     }
 
@@ -522,8 +567,8 @@ impl Outside {
 
     /// Bind a different port in this copy's range. Does nothing unless the saved
     /// port is the one that failed, so a working address never moves on its own.
-    pub(crate) fn pick_new_port(&self, kind: crate::instance::Kind) -> Result<DoorStatus, String> {
-        let ports = ports_for(kind);
+    pub(crate) fn pick_new_port(&self) -> Result<DoorStatus, String> {
+        let ports = self.ports.clone();
         self.pick_new_ports(&ports)
     }
 
@@ -599,21 +644,22 @@ impl Drop for Outside {
 /// and kept on the door. This always returns a door, so startup can carry on.
 pub(crate) fn init_at(path: PathBuf, kind: crate::instance::Kind) -> Result<Outside, String> {
     let ports = ports_for(kind);
-    init_ports(path, &ports)
+    init_ports(path, kind, &ports)
 }
 
 /// Open the door and start it on `ports` when the person left it on.
-/// `ports` is the copy's range, or the ports a test reserved.
-fn init_ports(path: PathBuf, ports: &[u16]) -> Result<Outside, String> {
+/// `ports` is the copy's range, or the ports a test reserved. Both are stored
+/// on the door; nothing here reads the process kind or the environment.
+pub(crate) fn init_ports(
+    path: PathBuf,
+    kind: crate::instance::Kind,
+    ports: &[u16],
+) -> Result<Outside, String> {
     let place = path.display().to_string();
-    let door = match Outside::open(path) {
+    let door = match Outside::open(path, kind, ports) {
         Ok(door) => door,
         Err(err) => {
-            let door = Outside::unavailable(&place, &err);
-            if let Some(message) = door.fault_view().0 {
-                note(&place, &message);
-            }
-            return Ok(door);
+            return Ok(Outside::unavailable(&place, kind, ports, &err));
         }
     };
     match door.enabled_flag() {
@@ -627,15 +673,15 @@ fn init_ports(path: PathBuf, ports: &[u16]) -> Result<Outside, String> {
 }
 
 pub fn init(app: &AppHandle) -> Result<(), String> {
+    // The only place the process copy is read. The door keeps that kind and its
+    // port range; switching them later is not something another caller can do.
+    let kind = crate::instance::kind();
+    let ports = ports_for(kind);
     let door = match app.path().app_data_dir() {
-        Ok(dir) => init_at(dir.join("monocode.db"), crate::instance::kind())?,
+        Ok(dir) => init_at(dir.join("monocode.db"), kind)?,
         Err(err) => {
             let place = err.to_string();
-            let door = Outside::unavailable(&place, &place);
-            if let Some(message) = door.fault_view().0 {
-                note(&place, &message);
-            }
-            door
+            Outside::unavailable(&place, kind, &ports, &place)
         }
     };
     app.manage(door);
@@ -908,13 +954,7 @@ pub fn outside_deny(door: State<'_, Outside>, request_id: String) -> Result<Cons
 
 #[tauri::command]
 pub fn outside_pick_new_port(door: State<'_, Outside>) -> Result<DoorStatus, String> {
-    door.pick_new_port(crate::instance::kind())
-}
-
-/// Bind a port and drop it, so a test can see that nothing of ours stayed there.
-#[cfg(test)]
-fn port_is_free(port: u16) -> bool {
-    TcpListener::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    door.pick_new_port()
 }
 
 #[cfg(test)]
