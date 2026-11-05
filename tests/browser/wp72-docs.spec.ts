@@ -20,6 +20,9 @@ test("create a nested page, mention a task, and restore an older version", async
   await page.getByRole("button", { name: "Heading", exact: true }).click();
   await editor.fill("Hello");
   await page.keyboard.press("Enter");
+  // The new block takes focus in an effect after Enter. On a slow runner "@" could land in "Hello" ("Hello@"), which is
+  // not a mention, so wait for the new block before typing it.
+  await expect(page.locator("[data-block-editor] textarea").nth(1)).toBeFocused();
   await page.keyboard.type("@");
   await page.getByRole("button", { name: "Write the spec" }).click();
   await page.clock.fastForward(250);

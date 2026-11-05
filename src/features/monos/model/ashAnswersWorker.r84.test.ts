@@ -32,7 +32,8 @@ describe("Ash's answer in the worker's chat reaches the Lead at once", () => {
     expect(note.waitForIdle).toBe(true);
     expect(note.text.startsWith(ASH_ANSWERED_PREFIX)).toBe(true);
     expect(note.text).toContain('"keep them 30 days so i can undo, then gone for good"');
-    expect(note.text).toContain("~/agent-memory/<project>/decisions.md, in his words");
+    expect(note.text).toContain("in his words, in the project's decisions.md");
+    expect(note.text).not.toContain("~/agent-memory");
     expect(note.text).not.toContain("ash_remember");
     expect(note.text).toContain("not from any pick of yours");
   });

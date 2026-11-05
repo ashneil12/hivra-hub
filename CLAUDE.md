@@ -68,7 +68,7 @@ only reaches that copy's own control port. The PR watch (`src-tauri/src/pr_watch
 the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
 only) points it at a stand-in. The orphan reaper, phone access, habits, automations, reminders, auto-resume, the notification prompt and
 the quick composer's global shortcut are off. The app's own file commands won't open, move or remove the lock file. A DEV ribbon, the window title
-(`MonoCode Hub Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
+(`Hivra Dev - <branch> @ <sha>`) and the Settings footer say which build is running.
 
 **Never launch a build of this app with the real HOME to prove something.** To exercise a refusal or the lock, run
 the binary with `HOME` set to a fresh temporary folder and `MONOCODE_NO_ALERT=1` (refusal on stderr only, same
@@ -157,7 +157,7 @@ file is only read) and reports whether this build can open it.
 git fetch upstream && git checkout upstream/main -- src-tauri/tauri.conf.json
 jq '.productName="MonoCode Hub" | .identifier="com.ash.monocode-hub"
   | .build.beforeBuildCommand="VITE_MONOCODE_HUB=1 npm run build"
-  | .app.windows[0].title="MonoCode Hub"' src-tauri/tauri.conf.json > /tmp/t && mv /tmp/t src-tauri/tauri.conf.json
+  | .app.windows[0].title="Hivra"' src-tauri/tauri.conf.json > /tmp/t && mv /tmp/t src-tauri/tauri.conf.json
 npm run hub:build && npm run hub:verify
 ```
 
@@ -193,7 +193,7 @@ npm run hub:clean -- --yes        # reap exactly that: no running copy, no uncom
 ```
 
 **Dev slots (`scripts/hub-dev.mjs`).** Every worktree runs its own dev copy, side by side with the others and with the
-daily app. Its window says `MonoCode Hub Dev - <branch> @ <sha>` and carries a DEV ribbon.
+daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribbon.
 - **Slot:** the worktree folder's name (`~/Worktrees/hub-x` → `hub-x`; `--slot hub/x` → `hub-x`). If a different
   worktree that still exists already has that name, a 4-character hash of this worktree's path is added. Remembered in
   `~/.monocode-hub-dev/slots.json`. The identifier is `com.ash.monocode-hub.dev.<slot>`, so the slot has its own data

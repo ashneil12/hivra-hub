@@ -148,7 +148,7 @@
       "name": "Orbit",
       "url": "https://github.com/coollabsio/orbit",
       "licence": "Apache-2.0",
-      "gave": "tasks and boards, docs, home, a search palette, checked backups, trash, GitHub issue sync and a safe MCP door, planned for Wave E"
+      "gave": "tasks and boards, docs, a search palette (the finder, WP-74), checked backups and trash. The home column and entrance landed in WP-73. GitHub issue sync and a safe MCP door are still planned for Wave E"
     },
     {
       "name": "no-mistakes",
@@ -320,7 +320,23 @@
       "licence": "Apache-2.0",
       "copyright": "The upstream files have no file-level copyright line. See src/features/tasks/vendor/LICENSE.",
       "where": "src/features/tasks/vendor, src-tauri/src/tasks",
-      "how": "tasksLib.ts, taskMeta.ts, subIssuesLib.ts, bulkUpdates.ts and relationsLib.ts copied with their tests (WP-70). The parent check, the auto-close rule and the version check are translated from the Rust repositories to rusqlite. Hivra does not close descendants, store relations, or add a duplicate status category."
+      "how": "tasksLib.ts, taskMeta.ts, subIssuesLib.ts, bulkUpdates.ts and relationsLib.ts copied with their tests (WP-70). The view files viewState, grouping, filterTree, filterFields, layoutGroups, taskTree, nestDrop, useCollapsedGroups, autosave, displayMeta and timelineLib, and their tests, are copied from apps/web/src/features/views (WP-71). viewActions is rewritten because Hivra has no toast or workspace switch. The parent check, the auto-close rule and the version check are translated from the Rust repositories to rusqlite. Saved views are translated from views.rs. Hivra does not close descendants, store relations, or add a duplicate status category."
+    },
+    {
+      "name": "Orbit home layout",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files have no file-level copyright line. See src/features/tasks/vendor/LICENSE.",
+      "where": "src/features/home/vendor, src/features/home/ui/home.css",
+      "how": "The home column width (960), the card limit (7) and the view-bar-enter timing (180ms, the same ease, a 4px rise, sections staggered by 40ms), copied from apps/web/src/features/home/pages/HomePage.tsx and apps/web/src/index.css. HomePage.tsx shows counters, status icons and view-all links that WP-73 forbids, so it was not vendored whole (WP-73)."
+    },
+    {
+      "name": "Orbit's search index",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/finder.rs, src/features/search/model/finder.ts",
+      "how": "The FTS5 schema, fts_query, split_marks, the bm25 and snippet query, and the integrity-check confirmation are translated from migrations/0027_page_search_fts.sql, apps/server/src/repositories/pages.rs and crates/platform/src/integrity.rs onto rusqlite (WP-74). The title weight, the 24-token snippet and the 16-term cap are Orbit's. A 200-character cap is Hivra's, from Orbit's feature notes, and is not in pages.rs."
     },
     {
       "name": "Raven's chat importer",

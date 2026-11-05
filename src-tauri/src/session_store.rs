@@ -1310,6 +1310,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-74: the task and doc search index, after both tables exist.
+    crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
     crate::watcher::ensure_tables(conn)?;
     // Hivra WP-14: steering messages and decisions.

@@ -10,7 +10,7 @@ type Proof = {
   stops: { kind: string; id: string }[];
 };
 const proof = (page: Page) => page.evaluate(() => (window as unknown as { proof: Proof }).proof);
-const move = (page: Page, what: "workerAsks" | "workerStuck" | "leadAsks") =>
+const move = (page: Page, what: "workerAsks" | "workerStuck" | "workerFailed" | "leadAsks") =>
   page.evaluate((w) => (window as unknown as { fixture: Record<string, () => void> }).fixture[w](), what);
 
 const SHOTS = process.env.AGENTS_PAGE_PROOF_DIR;
@@ -34,20 +34,32 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(frame.locator('[data-section="attention"]')).toBeHidden();
   await shot(page, "agents-1-working");
 
-  // Live: a worker asks its Lead, another gets stuck. Both rise to Needs you without a reload.
+  // Live: a worker asks its Lead, another goes quiet (its Lead's), and one fails for credits (Ash's).
   await move(page, "workerAsks");
   await move(page, "workerStuck");
+  await move(page, "workerFailed");
   const asking = frame.locator('[data-list="attention"] [data-item="w:d2"]');
-  const stuck = frame.locator('[data-list="attention"] [data-item="w:d3"]');
+  const failed = frame.locator('[data-list="attention"] [data-item="w:d5"]');
+  const quiet = frame.locator('[data-list="working"] [data-worker="d3"]');
   await expect(asking).toBeVisible();
   await expect(asking.locator(".question")).toHaveText("Three save slots or five?");
   await expect(asking.locator(".pick")).toHaveText("Suggested: Three slots");
   await expect(asking.locator(".status")).toContainText("Asking");
-  await expect(stuck.locator(".status")).toContainText("Stuck");
-  await expect(stuck.locator(".pick")).toContainText("No output for 12 min · still running npm run build");
+  // r30c: a quiet stall stays under its Lead, grey "With <Lead>", with the plain reason. It is not Needs you.
+  await expect(frame.locator('[data-list="attention"] [data-item="w:d3"]')).toHaveCount(0);
+  await expect(quiet.locator(".status")).toContainText("With EXO lead");
+  await expect(quiet.locator(".status")).not.toHaveClass(/\bred\b/);
+  // PM-6 (Critiquito, 21 Oct: "still running npm test" is jargon): the page says the command in plain words.
+  await expect(quiet.locator(".doing")).toContainText("No output for 12 min · still running the build");
+  // A failed worker Ash must sort is red Needs you, with the plain reason. r30c's button on this page is "Open".
+  await expect(failed.locator(".status")).toContainText("Needs you");
+  await expect(failed.locator(".status")).toHaveClass(/\bred\b/);
+  await expect(failed.locator(".pick")).toHaveText("Out of credits");
+  await expect(failed.getByRole("button", { name: "Open" })).toBeVisible();
   await expect(frame.locator("[data-summary]")).toHaveText("2 need you · 2 working · 4 idle");
-  // Asking first, then stuck.
-  await expect(frame.locator('[data-list="attention"] [data-item]')).toHaveText([/Pick the save slot layout/, /Build 0.15 for the playtest/]);
+  // Asking first, then the one that needs Ash.
+  await expect(frame.locator('[data-list="attention"] [data-item]')).toHaveText([/Pick the save slot layout/, /Ship the save fix/]);
+  expect(await frame.locator("body").innerText()).not.toMatch(/\bstuck\b/i);
   await shot(page, "agents-2-stuck-and-asking-on-top");
 
   // A page can't act by itself: a tap its own code makes with no click from Ash (here: a timer, once the last gesture
@@ -77,11 +89,15 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(exo.locator(".worker", { hasText: "Pick the save slot layout" }).locator(".status")).toContainText("Working");
   await expect(page.locator("[data-page-activity]")).toContainText("Answered “Pick the save slot layout”: “Three, and label them by date” · from the Agents page · just now");
 
-  // Stop the stuck one: the delegation tree's own Stop for that work.
-  await stuck.getByRole("button", { name: "Stop" }).click();
-  await expect.poll(async () => (await proof(page)).stops).toEqual([{ kind: "stopRow", id: "d3" }]);
-  await expect(stuck).toHaveCount(0);
-  await expect(exo.locator(".worker", { hasText: "Build 0.15 for the playtest" }).locator(".status")).toContainText("Stopped");
+  // Stop the save worker from its row: it is still running, so the delegation tree's own Stop takes it. The one that
+  // needs Ash already finished (out of credits); Stop there says so and does not pretend it stopped.
+  const save = exo.locator(".worker", { hasText: "Fix the save bug" });
+  await save.getByRole("button", { name: "Stop" }).click();
+  await expect.poll(async () => (await proof(page)).stops).toEqual([{ kind: "stopRow", id: "d1" }]);
+  await expect(save.locator(".status")).toContainText("Stopped");
+  await failed.getByRole("button", { name: "Stop" }).click();
+  await expect(failed.locator(".note")).toHaveText("That work already finished.");
+  await expect(failed).toBeVisible();
 
   // A Lead asks Ash (Waiting on you): Take it answers with its pick through Waiting on you, and it moves on.
   await move(page, "leadAsks");
@@ -89,7 +105,9 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect(hivra.locator(".question")).toHaveText("send it to the waitlist today or wait for the new headline?");
   await shot(page, "agents-4-lead-asks");
   await hivra.getByRole("button", { name: "Take it" }).click();
-  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: send it today\n\n(sent from the Agents page)" }]);
+  // r97 (g): the pick reads as its option. "My pick: send it today" names "Send it to the waitlist today"
+  // (chatQuestions.ts optionForPick; pageSources.test.ts: "the pick reads as its option").
+  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: Send it to the waitlist today\n\n(sent from the Agents page)" }]);
   await expect(hivra).toHaveCount(0);
   await expect(frame.locator('[data-list="working"] [data-item="a:hivra-lead"] .row .doing')).toHaveText("Shipping to the testers");
 
@@ -138,7 +156,7 @@ test("every button stays on one line, and rows still fit, from a wide page to a 
   await move(page, "workerAsks");
   await move(page, "workerStuck");
   await move(page, "leadAsks");
-  // The widest row: a worker asking its Lead (Take it, Answer, Open, Stop); a Lead asking Ash; the stuck one; working Monos.
+  // The widest row: a worker asking its Lead (Take it, Answer, Open, Stop); a Lead asking Ash; a quiet one under its Lead.
   await expect(frame.locator('[data-list="attention"] [data-item="w:d2"]').getByRole("button", { name: "Take it" })).toBeVisible();
   await expect(frame.locator('[data-list="attention"] [data-item="a:hivra-lead"]')).toBeVisible();
   const inner = () => page.frames().find((f) => f !== page.mainFrame())!;

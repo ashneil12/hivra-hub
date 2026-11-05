@@ -3,8 +3,9 @@
 pub(crate) mod commands;
 mod mapping;
 pub(crate) mod mcp;
-mod store;
+pub(crate) mod store;
 pub(crate) mod sync;
+mod views;
 
 pub(crate) use store::ensure_tables;
 // WP-79: the outside door reads and writes tasks through the store.

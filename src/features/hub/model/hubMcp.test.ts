@@ -11,7 +11,7 @@ import {
   MONOCODE_ALLOWED_TOOLS,
   setHubDocsDir,
   MONOCODE_TOOL_TIMEOUT_MS,
-  MONO_HOME_FENCE,
+  monoHomeFence,
   monoHomeDeniedTools,
   registeredHubMcpArgs,
   setMonoHomeRoot,
@@ -292,10 +292,21 @@ describe("the fence round the Monos' home (decided 20 Oct: only the app writes t
   });
 
   it("is in every worker's brief and every brief to a Lead, in plain words", () => {
-    expect(workerRules(41000)).toContain(MONO_HOME_FENCE);
-    expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain(`Fence: ${MONO_HOME_FENCE}`);
-    expect(MONO_HOME_FENCE).toContain("~/agent-memory/monos/");
-    expect(MONO_HOME_FENCE).toMatch(/never write, move or delete/);
+    try {
+      const unset = monoHomeFence();
+      expect(unset).not.toContain("~/agent-memory");
+      expect(workerRules(41000)).toContain(unset);
+      expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain(`Fence: ${unset}`);
+      setMonoHomeRoot("/tmp/bench-home/monos");
+      const fence = monoHomeFence();
+      expect(fence).toContain("/tmp/bench-home/monos/");
+      expect(fence).not.toContain("~/agent-memory");
+      expect(workerRules(41000)).toContain("/tmp/bench-home/monos/");
+      expect(leadBriefPrompt("Chief of Staff", "Fix the save bug.")).toContain("Fence: The Monos' home (/tmp/bench-home/monos/)");
+      expect(fence).toMatch(/never write, move or delete/);
+    } finally {
+      setMonoHomeRoot(undefined);
+    }
   });
 });
 
