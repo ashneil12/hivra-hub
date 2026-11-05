@@ -54,6 +54,17 @@ pub struct DeliverInput {
     /// The base branch; the remote's default when left out.
     #[serde(default)]
     pub base: Option<String>,
+    /// WP-84: research and design documents to link from the pull request. Empty for a straight build.
+    #[serde(default)]
+    pub phase_docs: Vec<PhaseLink>,
+}
+
+/// One phase document named in a pull request body.
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhaseLink {
+    pub title: String,
+    pub href: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -271,7 +282,7 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// The pull request's body: the brief, then the worker's report as evidence, with its opinion of its own work kept
-/// apart and labelled as that.
+/// apart and labelled as that. A straight build uses this and nothing else.
 pub fn pr_body(mode: Mode, brief: Option<&str>, report_text: Option<&str>) -> String {
     let mut body = String::new();
     if let Some(brief) = brief.filter(|b| !b.trim().is_empty()) {
@@ -343,6 +354,53 @@ pub fn pr_body(mode: Mode, brief: Option<&str>, report_text: Option<&str>) -> St
         }
     ));
     body
+}
+
+/// As `pr_body`, plus links to the phase documents when a phased task has them.
+/// An empty list, or links that cannot be written safely, is `pr_body` unchanged.
+pub fn pr_body_with(
+    mode: Mode,
+    brief: Option<&str>,
+    report_text: Option<&str>,
+    phases: &[PhaseLink],
+) -> String {
+    let body = pr_body(mode, brief, report_text);
+    let mut section = String::new();
+    for phase in phases {
+        let title = phase
+            .title
+            .replace(['\n', '\r', '[', ']'], " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let href = phase.href.trim();
+        if title.is_empty()
+            || href.is_empty()
+            || href
+                .chars()
+                .any(|c| c.is_whitespace() || c == '(' || c == ')')
+        {
+            continue;
+        }
+        if section.is_empty() {
+            section.push_str("## Phase documents\n\n");
+        }
+        section.push_str(&format!("- [{title}]({href})\n"));
+    }
+    if section.is_empty() {
+        return body;
+    }
+    section.push('\n');
+    // The Hivra footer is always last. The links go in front of it.
+    const FOOTER: &str = "---\nOpened by Hivra (";
+    match body.rfind(FOOTER) {
+        Some(at) => {
+            let mut linked = body;
+            linked.insert_str(at, &section);
+            linked
+        }
+        None => body + &section,
+    }
 }
 
 /// `owner/name/pull/<n>` from what `gh pr create` printed (or the "already exists" error, which names it too).
@@ -540,10 +598,11 @@ pub fn deliver(
             }
             if gate_on {
                 gated = true;
-                let body = pr_body(
+                let body = pr_body_with(
                     effective.mode,
                     input.brief.as_deref(),
                     input.report.as_deref(),
+                    &input.phase_docs,
                 );
                 let title = input
                     .title
@@ -609,10 +668,11 @@ pub fn deliver(
                         now,
                     );
                 }
-                let body = pr_body(
+                let body = pr_body_with(
                     effective.mode,
                     input.brief.as_deref(),
                     input.report.as_deref(),
+                    &input.phase_docs,
                 );
                 let body_file =
                     std::env::temp_dir().join(format!("hivra-pr-body-{}.md", delivery.id));
@@ -713,4 +773,41 @@ pub fn owner_of(conn: &Connection, delivery: &Delivery) -> Result<Option<String>
         .into_iter()
         .find(|row| &row.id == id)
         .map(|row| row.owner_session))
+}
+
+#[cfg(test)]
+mod phase_docs {
+    use super::{pr_body, pr_body_with, PhaseLink};
+    use crate::delivery::settings::Mode;
+
+    #[test]
+    fn a_phased_pull_request_links_its_documents_and_a_plain_one_does_not() {
+        let plain = pr_body(Mode::Pr, Some("Fix it."), None);
+        let same = pr_body_with(Mode::Pr, Some("Fix it."), None, &[]);
+        assert_eq!(plain, same);
+        assert!(!plain.contains("Phase documents"));
+        let linked = pr_body_with(
+            Mode::Pr,
+            Some("Fix it."),
+            None,
+            &[
+                PhaseLink {
+                    title: "Research".into(),
+                    href: "02-research.md".into(),
+                },
+                PhaseLink {
+                    title: "Design".into(),
+                    href: "03-design.md".into(),
+                },
+                PhaseLink {
+                    title: " ".into(),
+                    href: "nope.md".into(),
+                },
+            ],
+        );
+        assert!(linked.contains("[Research](02-research.md)"), "{linked}");
+        assert!(linked.contains("[Design](03-design.md)"), "{linked}");
+        assert!(!linked.contains("nope.md"), "{linked}");
+        assert!(linked.contains("## Brief"), "{linked}");
+    }
 }
