@@ -125,6 +125,13 @@ Third-party components Hivra adds:
   Used in: src/features/home/vendor, src/features/home/ui/home.css
   The home column width (960), the card limit (7) and the view-bar-enter timing (180ms, the same ease, a 4px rise, sections staggered by 40ms), copied from apps/web/src/features/home/pages/HomePage.tsx and apps/web/src/index.css (view-bar-enter). HomePage.tsx shows counters, status icons and view-all links that WP-73 forbids, so it was not vendored whole.
 
+- Orbit's search index
+  Source: https://github.com/coollabsio/orbit
+  License: Apache-2.0
+  The upstream files do not carry a separate copyright line (Apache-2.0)
+  Used in: src-tauri/src/finder.rs, src/features/search/model/finder.ts
+  The FTS5 schema, fts_query, split_marks, the bm25 and snippet query, and the integrity-check confirmation, translated from migrations/0027_page_search_fts.sql, apps/server/src/repositories/pages.rs and crates/platform/src/integrity.rs (WP-74).
+
 - Raven's chat importer
   Source: https://github.com/EverMind-AI/Raven
   License: Apache-2.0

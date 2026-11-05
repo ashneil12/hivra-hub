@@ -1,10 +1,11 @@
 // WP-71: board, list and timeline for one project, and for every project. A failed load keeps the list.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { pathKey } from "../../../shared/lib/paths";
 import { takeHomeTask } from "../../home/model/pending";
+import { peekTaskFocus, subscribeTaskFocus } from "../../search/model/finderOpen";
 import { hubData } from "../../hub/model/hubData";
 import { setHubSelection } from "../../hub/model/hubNav";
 import { nextDetail, nextTasks } from "../model/keep";
@@ -195,6 +196,8 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [now, setNow] = useState(() => Date.now());
   const generation = useRef(0);
   const detailGeneration = useRef(0);
+  const seenFocus = useRef(0);
+  const focus = useSyncExternalStore(subscribeTaskFocus, peekTaskFocus, () => null);
   const bulkGeneration = useRef(0);
   const tasksRef = useRef(tasks);
   const openRef = useRef(open);
@@ -285,6 +288,13 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
       if (gen === detailGeneration.current) setNote("Couldn't load tasks. Trying again.");
     }
   }, []);
+
+  // WP-74: the finder asks for a task. A request made before this pane was mounted still opens.
+  useEffect(() => {
+    if (!focus || focus.token === seenFocus.current) return;
+    seenFocus.current = focus.token;
+    void refreshOpen(focus.id, focus.project);
+  }, [focus, refreshOpen]);
 
   useEffect(() => {
     void load();
