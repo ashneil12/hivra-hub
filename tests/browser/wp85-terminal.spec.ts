@@ -18,6 +18,12 @@ test("a terminal session appears live and can be attached to a task", async ({ p
   await page.getByRole("combobox", { name: "Task" }).selectOption({ label: "#1 Write" });
   await page.getByRole("button", { name: "Attach to task" }).click();
   await expect(page.getByRole("article", { name: "Task 1" })).toContainText("Terminal session");
+  const attached = await page.evaluate(() =>
+    (window as unknown as { __mirrorCalls: { command: string; args: { sessionId?: string; taskId?: string } }[] }).__mirrorCalls.filter(
+      (call) => call.command === "terminal_mirror_attach",
+    ),
+  );
+  expect(attached).toEqual([{ command: "terminal_mirror_attach", args: { sessionId: "s1", taskId: "task-1" } }]);
 });
 
 test("turning sessions on shows what it adds before it installs", async ({ page }) => {
