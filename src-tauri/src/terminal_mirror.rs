@@ -2413,6 +2413,22 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn the_default_runner_searches_where_the_app_finds_its_binaries() {
+        // A Finder launch only has a bare PATH. The runner the setting uses has to search the
+        // login shell's PATH and the usual install folders, or `claude` in ~/.local/bin or
+        // Homebrew's bin is missed and turning the setting on fails with "Couldn't run claude."
+        let runner = ClaudeRunner::new();
+        assert_eq!(runner.search_path(), crate::harness::gui_search_path());
+        assert!(std::env::split_paths(&runner.search_path())
+            .any(|dir| dir == Path::new("/usr/bin") || dir == Path::new("/bin")));
+        assert!(
+            runner.resolve("sh").is_some(),
+            "the default runner finds a binary through the app's search path"
+        );
+    }
+
     #[test]
     fn a_shipped_bundle_is_used_when_the_source_tree_is_gone() {
         let root = scratch("bundle");
