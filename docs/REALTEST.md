@@ -281,4 +281,6 @@ FAIL on 010dfbcf (`evidence/verify-live-base/`). The browser proof (`tests/brows
 every chat, helper call, tester, judge and the grader on DeepSeek V4.1 Flash through `~/.local/bin/claude-deepseek`
 (`--deepseek-sub`, `--agents deepseek-sub`). The Claude login is used only on an explicit `--agents claude` (realtest) or
 `--agents claude:<model>` (realconv). Haiku test workers (`--agents haiku-test`) use the Anthropic test key; their grader
-still runs on the DeepSeek launcher.
+still runs on the DeepSeek launcher. `--agents grok-sub` points the chats at `~/.local/bin/claude-grok` (Claude Code on
+Grok through the local gateway). The grader stays on the DeepSeek launcher. That launcher is started with no
+`ANTHROPIC_*` or `CLAUDE_CODE_*` credential variables from the caller. DeepSeek stays the default.

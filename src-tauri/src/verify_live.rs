@@ -59,6 +59,10 @@ pub struct Plan {
     /// Only with `claudeBinary`.
     #[serde(default)]
     pub deepseek: bool,
+    /// The bench's Claude Code runs on some other local gateway launcher (`--agents grok-sub`). No Claude sign-in
+    /// holds workers, and models are not rewritten to DeepSeek. Only with `claudeBinary`.
+    #[serde(default)]
+    pub launcher: bool,
     /// Old plans set this for a launcher this app no longer runs. Parsed so those plans still start, then ignored.
     #[serde(default, rename = "grok", skip_serializing)]
     pub retired_bridge: bool,
@@ -114,6 +118,11 @@ pub fn parse(text: &str) -> Result<Plan, String> {
     if plan.deepseek && plan.claude_binary.is_none() {
         return Err(
             "verify plan: deepseek needs claudeBinary (the bench's Claude on the launcher)".into(),
+        );
+    }
+    if plan.launcher && plan.claude_binary.is_none() {
+        return Err(
+            "verify plan: launcher needs claudeBinary (the bench's Claude on the launcher)".into(),
         );
     }
     if plan.goals && plan.claude_binary.is_none() {
@@ -226,6 +235,9 @@ pub fn window_info(plan: &Plan) -> Value {
     }
     if plan.deepseek {
         info["deepseek"] = Value::Bool(true);
+    }
+    if plan.launcher {
+        info["launcher"] = Value::Bool(true);
     }
     if !plan.projects.is_empty() {
         info["projects"] = Value::Array(plan.projects.clone());
@@ -421,6 +433,23 @@ mod tests {
         assert!(parse(r#"{"version":1,"runId":"a","deepseek":true}"#)
             .unwrap_err()
             .contains("deepseek"));
+    }
+
+    #[test]
+    fn a_bench_on_a_gateway_launcher_says_so_without_calling_it_deepseek() {
+        let plan = parse(&with_claude(
+            r#"{"version":1,"runId":"a","claudeBinary":"/tmp/run/bin/claude","launcher":true}"#,
+        ))
+        .unwrap();
+        assert!(plan.launcher);
+        assert!(!plan.deepseek);
+        assert!(!plan.retired_bridge);
+        assert_eq!(window_info(&plan)["launcher"], true);
+        assert!(window_info(&plan).get("deepseek").is_none());
+        assert!(window_info(&plan).get("grok").is_none());
+        assert!(parse(r#"{"version":1,"runId":"a","launcher":true}"#)
+            .unwrap_err()
+            .contains("launcher"));
     }
 
     #[test]

@@ -91,6 +91,19 @@ export function deepseekBridge(file = DEEPSEEK_BRIDGE) {
   }
 }
 
+/** Ash's launcher for Claude Code on Grok through his local gateway. Presence only: the file is never read. */
+export const GROK_BRIDGE = path.join(REAL_HOME, ".local/bin/claude-grok");
+
+/** The Grok launcher's path, or a plain-words error when this Mac doesn't have it. Presence only. */
+export function grokBridge(file = GROK_BRIDGE) {
+  try {
+    fs.accessSync(file, fs.constants.X_OK);
+    return file;
+  } catch {
+    throw new Error(`--agents grok-sub needs the Grok launcher at ${file} (Claude Code on Grok through the local gateway); it isn't there`);
+  }
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const iso = (ms) => new Date(ms).toISOString();
 const secs = (ms) => Math.round(ms / 100) / 10;
@@ -167,30 +180,66 @@ export function parseArgs(argv) {
   };
 }
 
-/** The retired agents choice, built so this file does not spell the old flag. */
-const RETIRED_AGENTS = `${"grok"}-sub`;
-
-/** Which model the agents (and the grader) run on: DeepSeek by default, Claude only when named. */
+/** Which model the agents (and the grader) run on: DeepSeek by default, Claude or Grok only when named. */
 export function benchAgents(argv, named = null) {
-  if (argv.includes(`--${RETIRED_AGENTS}`) || named === RETIRED_AGENTS) {
-    throw new Error("that agents choice is retired; the bench runs on DeepSeek unless you pass --agents claude");
-  }
   if (named !== null && !BENCH_AGENTS.includes(named)) throw new Error(`--agents is ${BENCH_AGENTS.join(", ")}, not "${named}"`);
   const claude = named === "claude";
   const haikuTest = named === "haiku-test";
-  const deepseekSub = argv.includes("--deepseek-sub") || named === "deepseek-sub" || (!claude && !haikuTest);
-  if ((claude || haikuTest) && deepseekSub) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
-  return { deepseekSub, ...(haikuTest ? { haikuTest } : {}) };
+  const grokSub = named === "grok-sub";
+  const deepseekNamed = argv.includes("--deepseek-sub") || named === "deepseek-sub";
+  if ((claude || haikuTest || grokSub) && deepseekNamed) throw new Error(`--agents ${named} and a subscription bridge are two different agents' models; pass one`);
+  const deepseekSub = deepseekNamed || (!claude && !haikuTest && !grokSub);
+  return { deepseekSub, grokSub, ...(haikuTest ? { haikuTest } : {}) };
 }
 /** haiku-test: every chat on Haiku with Ash's Anthropic test key (ANTHROPIC_TEST_API_KEY), never a Claude login. */
-export const BENCH_AGENTS = ["deepseek-sub", "claude", "haiku-test"];
+export const BENCH_AGENTS = ["deepseek-sub", "claude", "haiku-test", "grok-sub"];
+
+/** True when the grader stays on the DeepSeek launcher (the default, Haiku test workers, and Grok agents). */
+export function graderUsesDeepSeek(options) {
+  return !!(options.deepseekSub || options.haikuTest || options.grokSub);
+}
 
 /** The grader's CLI and model: through the DeepSeek launcher, so grading never spends Claude unless asked. */
 export function graderVia(options) {
-  if (options.deepseekSub) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
-  // Haiku test workers use the test key. The grader does not: it runs on the DeepSeek launcher.
-  if (options.haikuTest) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
+  if (graderUsesDeepSeek(options)) return { claude: deepseekBridge(), model: DEEPSEEK_BRIDGE_MODEL };
   return {};
+}
+
+/**
+ * The model the bench's claude wrapper asks for. Grok keeps the book's model (the launcher maps it). DeepSeek uses
+ * the gateway's alias. Haiku test workers are Haiku.
+ */
+export function wrapperModel({ grokSub = false, deepseekSub = false, haikuTest = false, specModel = "sonnet" } = {}) {
+  if (haikuTest) return "haiku";
+  if (grokSub) return specModel || "sonnet";
+  if (deepseekSub) return DEEPSEEK_BRIDGE_MODEL;
+  return specModel || "sonnet";
+}
+
+/** Plan flags the window reads. Grok is `launcher` (no Claude sign-in) and never `deepseek` (that would rename models). */
+export function planFlags(options) {
+  return {
+    ...(options.deepseekSub ? { deepseek: true } : {}),
+    ...(options.grokSub ? { launcher: true } : {}),
+  };
+}
+
+/** The throwaway `claude` the dev copy runs. A Grok run sets REALTEST_GROK_SUB so the wrapper strips caller credentials. */
+export function claudeWrapperScript({ state, realClaude, config, model, effort, memoryDir, haiku = false, grok = false, node, script }) {
+  const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+  return [
+    "#!/bin/sh",
+    `export REALTEST_STATE=${quote(state)}`,
+    `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
+    `export REALTEST_CLAUDE_CONFIG=${quote(config)}`,
+    `export REALTEST_MODEL=${quote(model)}`,
+    ...(haiku ? ["export REALTEST_HAIKU_TEST=1"] : []),
+    ...(grok ? ["export REALTEST_GROK_SUB=1"] : []),
+    `export REALTEST_EFFORT=${quote(effort)}`,
+    `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
+    `exec ${quote(node)} ${quote(script)} "$@"`,
+    "",
+  ].join("\n");
 }
 
 export function runId(now = new Date()) {
@@ -276,9 +325,8 @@ async function main() {
  */
 export async function runBench(options, hooks = {}) {
   const spec = hooks.spec ?? readJson(options.scenarios);
-  // On the DeepSeek launcher no chat spends Claude: limits are logged, not enforced, as for routed agents.
-  const bridge = options.deepseekSub ? deepseekBridge() : null;
-  const bridgeModel = DEEPSEEK_BRIDGE_MODEL;
+  // On a gateway launcher no chat spends Claude: limits are logged, not enforced, as for routed agents.
+  const bridge = options.deepseekSub ? deepseekBridge() : options.grokSub ? grokBridge() : null;
   const unmetered = !!hooks.routedAgents || !!bridge;
   const budget = {
     maxTurns: options.maxTurns ?? spec.budget?.maxTurns ?? 300,
@@ -448,7 +496,9 @@ export async function runBench(options, hooks = {}) {
       return login.loggedIn ? { loggedIn: true, ...accountUse(home, account.config) } : { loggedIn: false, at: new Date().toISOString(), status: null, fiveHour: null, sevenDay: null };
     });
     const status = { loggedIn: readings.some((r) => r.loggedIn) };
-    if (bridge) log(`every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`);
+    if (bridge) log(options.grokSub
+      ? `every chat and helper call on Grok through the local gateway launcher (${bridge}); no Claude login used`
+      : `every chat and helper call on DeepSeek V4.1 Flash through the local gateway launcher (${bridge}); no Claude login used`);
     if (!status.loggedIn && !unmetered) throw new Error("no dev Claude login is reachable under the temporary HOME (claude auth status says logged out for every account)");
     if (!status.loggedIn && !bridge) log("no Claude login is reachable: the agents run on the custom model, but the app's Haiku helper calls (titles, the room's gate) will fail");
     const use = readings[0];
@@ -487,26 +537,26 @@ export async function runBench(options, hooks = {}) {
     // A bridge launcher is passed as itself (it maps the model to its gateway's alias by its own name), never resolved.
     const realClaude = bridge ?? fs.realpathSync(path.join(REAL_HOME, ".local/bin/claude"));
     const claude = path.join(bin, "claude");
-    const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
     fs.writeFileSync(
       claude,
-      [
-        "#!/bin/sh",
-        `export REALTEST_STATE=${quote(state)}`,
-        `export REALTEST_REAL_CLAUDE=${quote(realClaude)}`,
-        `export REALTEST_CLAUDE_CONFIG=${quote(DEV_CLAUDE_CONFIG)}`,
-        `export REALTEST_MODEL=${quote(bridge ? bridgeModel : options.haikuTest ? "haiku" : (spec.model ?? "sonnet"))}`,
-        ...(options.haikuTest ? ["export REALTEST_HAIKU_TEST=1"] : []),
-        `export REALTEST_EFFORT=${quote(spec.effort ?? "medium")}`,
-        `export REALTEST_MEMORY_DIR=${quote(memoryDir)}`,
-        `exec ${quote(process.execPath)} ${quote(path.join(ROOT, "scripts/hub-realtest-claude.mjs"))} "$@"`,
-        "",
-      ].join("\n"),
+      claudeWrapperScript({
+        state,
+        realClaude,
+        config: DEV_CLAUDE_CONFIG,
+        model: wrapperModel({ grokSub: !!options.grokSub, deepseekSub: !!options.deepseekSub, haikuTest: !!options.haikuTest, specModel: spec.model ?? "sonnet" }),
+        effort: spec.effort ?? "medium",
+        memoryDir,
+        haiku: !!options.haikuTest,
+        grok: !!options.grokSub,
+        node: process.execPath,
+        script: path.join(ROOT, "scripts/hub-realtest-claude.mjs"),
+      }),
       { mode: 0o755 },
     );
     const planFile = path.join(scratch, "verify-plan.json");
-    // On the DeepSeek launcher the window knows it (plan `deepseek`): no Claude account's sign-in or limit holds workers.
-    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...(options.deepseekSub ? { deepseek: true } : {}) };
+    // On a gateway launcher the window knows it: no Claude account's sign-in or limit holds workers.
+    // Grok sets `launcher` only. `deepseek` would rename every model, which the Grok gateway would reject.
+    const plan = { version: 1, runId: id, claudeBinary: claude, autoResume: true, driver, ...planFlags(options) };
     fs.writeFileSync(planFile, `${JSON.stringify(plan, null, 2)}\n`);
     fs.writeFileSync(path.join(evidence, "plan.json"), `${JSON.stringify({ ...plan, scenarios: options.scenarios, budget }, null, 2)}\n`);
 
@@ -822,7 +872,7 @@ export async function runBench(options, hooks = {}) {
         tree: fs.existsSync(path.join(dir, "memory/tree")) ? { messages: records(path.join(dir, "memory/tree/main")), nodes: records(path.join(dir, "memory/tree/tree")) } : null,
       };
     };
-    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
+    const ctx = { runStarted: started, restart, memoryCalls, monoFiles, act, events, usage, monoSession, delegationRows, sessionBlocks, claudeTexts, screenshot, log, evidence, state, leadId, roomId, team, project, home, copies, spec, deadline, budget, pump, dataDir, appGate: !!options.appGate };
 
     // -- the scenarios ------------------------------------------------------------------------------------------------------------
     const { runScenario } = await import("./hub-realtest-scenarios.mjs");

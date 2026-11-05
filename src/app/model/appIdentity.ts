@@ -44,6 +44,8 @@ export type VerifyPlan = {
   driver?: boolean;
   /** The real bench's Claude Code runs on DeepSeek through the local gateway launcher (`--deepseek-sub`). */
   deepseek?: boolean;
+  /** The real bench's Claude Code runs on another local gateway launcher (`--agents grok-sub`). Not a DeepSeek model rewrite. */
+  launcher?: boolean;
   /** Hub projects the copy's local store starts with (added once; the bench's projects used to come from a stub). */
   projects?: Array<{ id: string; name: string; folder?: string }>;
 };
@@ -69,6 +71,7 @@ function readVerifyPlan(value: unknown): VerifyPlan | undefined {
     ...(typeof value.stallMs === "number" && value.stallMs >= 1_000 && value.stallMs <= 600_000 ? { stallMs: value.stallMs } : {}),
     ...(value.driver === true ? { driver: true } : {}),
     ...(value.deepseek === true ? { deepseek: true } : {}),
+    ...(value.launcher === true ? { launcher: true } : {}),
     ...(Array.isArray(value.projects)
       ? {
           projects: value.projects

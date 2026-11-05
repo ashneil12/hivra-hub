@@ -60,6 +60,26 @@ const HAIKU_TEST = process.env.REALTEST_HAIKU_TEST === "1";
 export const TEST_KEY_ENV = "ANTHROPIC_TEST_API_KEY";
 /** Anything that could sign a Haiku test worker in some other way (a login, a subscription token, another endpoint). */
 const OTHER_AUTH = ["ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY", "ANTHROPIC_CUSTOM_HEADERS"];
+const GROK_SUB = process.env.REALTEST_GROK_SUB === "1";
+
+/**
+ * A variable that would hand the Grok launcher one of the caller's credentials. Every ANTHROPIC_* name, a
+ * CLAUDE_CODE_* name that is a key or a token, and the other ways a Claude process signs in. A stray one makes the
+ * local gateway answer 401. CLAUDE_CODE_SUBAGENT_MODEL is a model name, not a credential, and stays.
+ */
+export function isLauncherCredential(name) {
+  if (OTHER_AUTH.includes(name) || name === TEST_KEY_ENV) return true;
+  if (name.startsWith("ANTHROPIC_")) return true;
+  return name.startsWith("CLAUDE_CODE_") && /KEY|TOKEN|SECRET|AUTH|CREDENTIAL|PASSWORD/i.test(name);
+}
+
+/** The environment a child of the Grok launcher gets: the caller's credential variables removed. Other runs are unchanged. */
+export function childEnv(env, { grok = GROK_SUB } = {}) {
+  if (!grok) return env;
+  const out = { ...env };
+  for (const name of Object.keys(out)) if (isLauncherCredential(name)) delete out[name];
+  return out;
+}
 
 /** The test key from this process or launchd's environment, or null. Never printed. */
 export function testKey(env = process.env, launchctl = () => execFileSync("launchctl", ["getenv", TEST_KEY_ENV], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })) {
@@ -284,7 +304,7 @@ function main() {
     }
   }
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
-    const child = spawn(REAL, args, { env, stdio: "inherit" });
+    const child = spawn(REAL, args, { env: childEnv(env), stdio: "inherit" });
     child.on("exit", (code) => process.exit(code ?? 1));
     return;
   }
@@ -306,7 +326,7 @@ function main() {
     }
   };
   const routed = isRouted(process.env);
-  env = benchFenceEnv(env, STATE);
+  env = childEnv(benchFenceEnv(env, STATE));
   const realArgs = benchFenceArgs(withMemory(rewriteArgs(args, { routed })));
   log({ dir: "start", routed, account: account.n, cwd: process.cwd(), args: args.map((a) => (a.length > 400 ? `${a.slice(0, 400)}…` : a)), realArgs: realArgs.map((a) => (a.length > 600 ? `${a.slice(0, 600)}…` : a)) });
   const helper = args.includes("--no-session-persistence");
