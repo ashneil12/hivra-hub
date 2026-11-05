@@ -247,7 +247,7 @@ export function useMonoHabits(
           look.name,
           artifacts,
           launches,
-          cards.length ? cards : undefined,
+          ...(cards.length ? [cards] : []),
         );
       await updateHabits(monoId, (habits) => ({
         habits: habits.map((entry) =>
