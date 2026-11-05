@@ -339,6 +339,14 @@
       "how": "The FTS5 schema, fts_query, split_marks, the bm25 and snippet query, and the integrity-check confirmation are translated from migrations/0027_page_search_fts.sql, apps/server/src/repositories/pages.rs and crates/platform/src/integrity.rs onto rusqlite (WP-74). The title weight, the 24-token snippet and the 16-term cap are Orbit's. A 200-character cap is Hivra's, from Orbit's feature notes, and is not in pages.rs."
     },
     {
+      "name": "Orbit's GitHub label sync",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/github_issues",
+      "how": "The label match and sync_github_work_item rules, translated from the GitHub webhook onto rusqlite and a poll (WP-77). A title over 300 characters or a description over 12,000 is rejected, not stored. A labelled pull request drops only its own row in github_pull_links, so a crew pull request on a different task can still complete that task."
+    },
+    {
       "name": "Raven's chat importer",
       "url": "https://github.com/EverMind-AI/Raven",
       "licence": "Apache-2.0",
@@ -385,6 +393,14 @@
       "copyright": "Copyright 2026 Ashneil Lanelle",
       "where": "plugins/hivra-rpi/skills/diagnosing-bugs, plugins/hivra-rpi/skills/tdd, plugins/hivra-rpi/skills/grill-me",
       "how": "The names are Matt Pocock's. The LICENSE file was not in the checkout, so the text is Hivra's and the skills are called by name only (WP-84)"
+    },
+    {
+      "name": "Orbit's MCP door",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/outside",
+      "how": "Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored."
     }
   ]
 }

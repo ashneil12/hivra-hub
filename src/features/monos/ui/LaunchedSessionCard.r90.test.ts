@@ -23,6 +23,30 @@ it("names DeepSeek V4.1 Flash and the effort in the card's tooltip, with no engi
   expect(card.getAttribute("title")).not.toMatch(/key|provider|bridge/i);
 });
 
+it("names the CLI, the model, the effort and where they came from, and still has no engine chip", async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  r = createRoot(host);
+  const launch = {
+    sessionId: "w5",
+    cwd: "/repo/tally",
+    title: "Show tally count",
+    harness: "claude" as const,
+    model: "claude:opus",
+    effort: "High",
+    from: "set for this Mono",
+  };
+  await act(async () =>
+    r!.render(createElement(LaunchedSessionCard, { launch, view: { state: "done", title: launch.title }, onOpen: () => undefined })),
+  );
+  const card = host.querySelector("[data-launched-session]")!;
+  expect(host.querySelector("[data-launched-model]")).toBeNull();
+  expect(card.getAttribute("title")).toBe("Done · Runs on Opus, High effort · set for this Mono");
+  expect(host.querySelector("[data-launched-ran]")?.textContent).toBe(
+    "Runs on Claude Code, Opus, High effort (set for this Mono)",
+  );
+});
+
 it("r92/r95 (s15 dcf4): squeezed beside 'Stalled', the card clips and the title wraps instead of being cut", async () => {
   const host = document.createElement("div");
   document.body.append(host);

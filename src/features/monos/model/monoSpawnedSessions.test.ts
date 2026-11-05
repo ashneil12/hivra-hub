@@ -9,6 +9,7 @@ import {
   monoSpawnedSessions,
   recordMonoSpawnedSession,
   sanitizeMonoSpawnedSessions,
+  waitingCardAfterStart,
 } from "./monoSpawnedSessions";
 
 const launch: MonoSpawnedSession = {
@@ -35,6 +36,28 @@ it("attaches accepted launches to their originating turn without mutating or dup
   expect(recordMonoSpawnedSession(updated, "first", launch)).toBe(updated);
   expect(recordMonoSpawnedSession(mono, "missing", launch)).toBe(mono);
   expect(recordMonoSpawnedSession(mono, "reply", launch)).toBe(mono);
+});
+
+it("a waiting card follows a start on the usual model and drops the old source", () => {
+  const card: MonoSpawnedSession = {
+    ...launch,
+    model: "claude:opus-4-7",
+    harness: "claude",
+    effort: "high",
+    from: "set for every worker",
+  };
+  const usual: MonoSpawnedSession = { ...card, model: "claude:sonnet-5" };
+  delete usual.effort;
+  delete usual.from;
+  const next = waitingCardAfterStart(card, usual);
+  expect(next?.model).toBe("claude:sonnet-5");
+  expect(next?.harness).toBe("claude");
+  expect(next).not.toHaveProperty("effort");
+  expect(next).not.toHaveProperty("from");
+  const moved = waitingCardAfterStart(card, { ...usual, from: "set for this project" });
+  expect(moved?.from).toBe("set for this project");
+  expect(moved).not.toHaveProperty("effort");
+  expect(waitingCardAfterStart(launch, { ...launch, model: "other" })).toBeUndefined();
 });
 
 function receipt(command = "monocode app sessions.start", ok = true): Block {
@@ -221,6 +244,21 @@ it("sanitizes saved references and strips extra fields", () => {
     ]),
   ).toEqual([{ ...launch, title: "Review" }]);
   expect(sanitizeMonoSpawnedSessions({})).toEqual([]);
+  expect(
+    sanitizeMonoSpawnedSessions([
+      { ...launch, sessionId: "sourced", from: "set for this Mono" },
+      { ...launch, sessionId: "joined", from: "set for this Mono, set for every worker" },
+      { ...launch, sessionId: "bad-from", from: "from a script\nset for this Mono" },
+      { ...launch, sessionId: "unknown-from", from: "guessed" },
+      { ...launch, sessionId: "mixed", from: "set for this Mono, guessed" },
+    ]).map((entry) => [entry.sessionId, entry.from]),
+  ).toEqual([
+    ["sourced", "set for this Mono"],
+    ["joined", "set for this Mono, set for every worker"],
+    ["bad-from", undefined],
+    ["unknown-from", undefined],
+    ["mixed", undefined],
+  ]);
 });
 
 it("reads a launched session's state for its card", () => {

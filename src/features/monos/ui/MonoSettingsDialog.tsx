@@ -34,6 +34,7 @@ import { LongChatView } from "./LongChatView";
 import { MemoryPage, SoulPage, useMonoFiles } from "./MonoFilePages";
 import { MonoProjects } from "./MonoProjects";
 import { ColorPicker, MascotPicker, SwitchRow } from "./monoPanelParts";
+import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 
 export type MonoSettingsSection = "general" | "soul" | "memory";
 
@@ -214,6 +215,14 @@ function GeneralSection({
             variant="plain"
           />
         </SettingRow>
+      </SettingGroup>
+
+      {/* WP-89: what the workers this Mono starts run on. */}
+      <GroupHeading title="Model for its workers" description="What the workers it starts run on." />
+      <SettingGroup>
+        <div className="px-3 py-2">
+          <WorkerDefaultControl scope="mono" monoId={monoId} />
+        </div>
       </SettingGroup>
 
       <GroupHeading

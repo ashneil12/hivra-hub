@@ -26,6 +26,9 @@ export type TaskDetailTask = {
   workingSince?: number | null;
   chatId?: string | null;
   dueAt?: number | null;
+  githubUrl?: string | null;
+  githubPaused?: boolean;
+  githubPulls?: readonly { title: string; url: string; state: string }[];
 };
 
 export function TaskDetail({
@@ -87,6 +90,35 @@ export function TaskDetail({
           onPath={onPhasePath}
           onDocComment={onPhaseDocComment}
         />
+      ) : null}
+      {task.githubUrl ? (
+        <>
+          <a href={task.githubUrl} className="mt-1 block text-[12px] text-content">
+            {task.githubUrl}
+          </a>
+          <p className="mt-1 text-[12px] text-content/70">
+            This task's title and description are read-only while it is linked to GitHub.
+          </p>
+        </>
+      ) : null}
+      {task.githubPaused ? (
+        <>
+          <p className="mt-1 text-[12px] text-content">GitHub sync paused</p>
+          <p className="text-[12px] text-content/70">
+            Add the project label to the GitHub issue or pull request again to resume updates.
+          </p>
+        </>
+      ) : null}
+      {(task.githubPulls ?? []).some((pull) => pull.url !== task.githubUrl) ? (
+        <section aria-label="GitHub links" className="mt-2">
+          {(task.githubPulls ?? [])
+            .filter((pull) => pull.url !== task.githubUrl)
+            .map((pull) => (
+              <a key={pull.url} href={pull.url} className="block text-[12px] text-content">
+                {pull.title || pull.url}
+              </a>
+            ))}
+        </section>
       ) : null}
       <p className="mt-1 text-[12px] text-content/70">{task.assignee ? `Assigned to ${task.assignee}` : "Unassigned"}</p>
       {parentTitle ? <p className="text-[12px] text-content/70">Parent {parentTitle}</p> : null}
