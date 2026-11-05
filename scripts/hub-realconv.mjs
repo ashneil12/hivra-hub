@@ -101,6 +101,7 @@ export function benchSpec(book, scenes, options) {
     version: 1,
     about: book.about,
     project: book.project,
+    team: book.team ?? "ash",
     copies: book.copies ?? [],
     memory: book.memory,
     leak: book.leak,
@@ -157,13 +158,14 @@ export async function runRealconv(options, { bench, clients } = {}) {
       evidenceDir: options.out ?? "evidence/realconv",
       routedAgents: !!custom,
       async beforeReady({ act, log }) {
-        // The scenes play Ash's own Monos: a fresh dev copy starts with no team (WP-05), so pick his pre-load before the
-        // bench waits for a seated leadership room.
-        if ((book.team ?? "ash") === "ash") {
-          const team = await act("teamPack", { pack: "ash" });
-          if (!team.ok) throw new Error(`the hub wouldn't pre-load Ash's team: ${team.error ?? team.pack}`);
-          log(`team: Ash's pre-load (souls written: ${(team.wrote ?? []).join(", ") || "none"})`);
-        }
+        // The scenes play Ash's own Monos: a fresh dev copy starts with no team (WP-05), so pick his pre-load and seat
+        // it in this project's room before the bench waits. Returning it keeps the bench from loading the team twice.
+        if ((book.team ?? "ash") !== "ash") return null;
+        const team = await act("teamPack", { pack: "ash", project: spec.project.id });
+        if (!team.ok) throw new Error(`the hub wouldn't pre-load Ash's team: ${team.error ?? team.pack}`);
+        const names = (team.monos ?? []).map((mono) => mono.name).filter(Boolean).join(", ");
+        log(`team: Ash's pre-load (${names || "none"}; souls written: ${(team.wrote ?? []).join(", ") || "none"})`);
+        return team;
       },
       async afterReady(ctx) {
         out = ctx.evidence;
