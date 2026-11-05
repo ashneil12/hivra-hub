@@ -45,4 +45,12 @@ test("the three places show what is in force, and clearing falls back", async ({
   await expect(line(system)).toHaveText("Its workers use the usual model.");
   await expect(line(mono)).toHaveText(`Its workers use the usual model. ${CREW}`);
   await expect(line(project)).toHaveText(`Its workers use the usual model. ${CREW}`);
+
+  await expect(page.locator("[data-launched-ran]")).toHaveText(
+    "Runs on Claude Code, Opus 4.7, High effort (set for every worker)",
+  );
+  await expect(page.locator("[data-launched-model]")).toHaveCount(0);
+  await page.getByRole("button", { name: "Undo" }).click();
+  await expect(page.getByRole("button", { name: "Undone" })).toBeVisible();
+  await expect(line(system)).toHaveText(everywhere);
 });

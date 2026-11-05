@@ -1,6 +1,8 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { WorkerDefaultUndo } from "../../src/features/crew/ui/WorkerDefaultUndo";
 import { WorkerDefaultControl } from "../../src/features/crew/ui/WorkerDefaultControl";
+import { LaunchedSessionCard } from "../../src/features/monos/ui/LaunchedSessionCard";
 import { CrewRulesPage } from "../../src/features/crew/ui/CrewRulesPage";
 import { ProjectWorkers } from "../../src/features/hub/ui/ProjectMenu";
 import type { HubProject } from "../../src/features/hub/model/types";
@@ -73,10 +75,32 @@ addMono({
   crewRules: [{ labels: ["frontend"], paths: [], model: "claude:sonnet-5", source: "person" }],
 });
 
+const started = {
+  sessionId: "w-started",
+  cwd: "/Users/ash/harness/hivra",
+  title: "Show the tally",
+  harness: "claude" as const,
+  model: "claude:opus-4-7",
+  effort: "High",
+  from: "set for every worker",
+};
+
 function Page() {
   const [anchor, setAnchor] = useState<HTMLButtonElement | null>(null);
   return (
     <>
+      <section aria-label="Start card" className="px-4 pt-4">
+        <LaunchedSessionCard launch={started} view={{ state: "done", title: started.title }} onOpen={() => undefined} />
+        <WorkerDefaultUndo
+          card={{
+            type: "worker-default",
+            scope: "system",
+            mono: "ada",
+            line: "Put back the earlier default.",
+            previous: { cli: "claude", model: "claude:opus-4-7", effort: "high" },
+          }}
+        />
+      </section>
       <CrewRulesPage
         initial={{
           rules: [],
