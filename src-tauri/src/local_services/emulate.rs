@@ -548,14 +548,11 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(errors));
+    // The stand-in gets nothing from this app by inheritance: not a shell's GH_TOKEN, not a
+    // model key, not the control endpoint. Only the allow-list below is set.
+    command.env_clear();
     for (key, value) in child_env(request.path_env.as_deref()) {
         command.env(key, value);
-    }
-    // The stand-in gets nothing from this app: no control endpoint, no model key.
-    for name in std::env::vars_os().filter_map(|(name, _)| name.into_string().ok()) {
-        if name.starts_with("MONOCODE_CONTROL_") || name.starts_with("MONOCODE_APP_") {
-            command.env_remove(&name);
-        }
     }
     #[cfg(unix)]
     {
@@ -1288,14 +1285,62 @@ pub(crate) mod tests {
         assert!(!safe_link(None));
     }
 
+    /// The spawned stand-in's own view of its environment, not the helper's list: the fake
+    /// `node` prints `env` to the log `start` gives it.
+    #[cfg(unix)]
     #[test]
     fn the_child_gets_an_allow_listed_environment() {
-        let env = child_env(Some("/usr/bin:/bin"));
-        let keys: Vec<&str> = env.iter().map(|(key, _)| key.as_str()).collect();
-        assert!(keys.contains(&"PATH"));
-        assert!(keys.contains(&"NO_COLOR"));
-        assert!(!keys.iter().any(|key| key.starts_with("MONOCODE_")));
-        assert!(!keys.contains(&"HOME") || cfg!(not(windows)));
+        use std::os::unix::fs::PermissionsExt;
+        let temp = Temp::new("env");
+        let bin = temp.0.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let node = bin.join("node");
+        // `set` prints every variable the shell was given; PATH holds only this bin, so a
+        // separate `env` command would not be found.
+        std::fs::write(&node, "#!/bin/sh\nset\n").unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let tool = temp.0.join("index.js");
+        std::fs::write(&tool, "").unwrap();
+        let config = temp.0.join("emulate.config.json");
+        std::fs::write(&config, "{}").unwrap();
+        let stack = temp.0.join("stack");
+
+        // Hivra launched from a shell that had these exported.
+        std::env::set_var("GH_TOKEN", "secret-from-the-shell");
+        std::env::set_var("ANTHROPIC_API_KEY", "secret-from-the-shell");
+        let started = start(&StartRequest {
+            stack_dir: stack.clone(),
+            config,
+            tool,
+            path_env: Some(bin.to_string_lossy().into_owned()),
+        });
+        std::env::remove_var("GH_TOKEN");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        started.unwrap();
+
+        let log = stack.join("emulate.log");
+        let mut text = String::new();
+        for _ in 0..100 {
+            text = std::fs::read_to_string(&log).unwrap_or_default();
+            if text.lines().any(|line| line.starts_with("NO_COLOR=")) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let keys: Vec<&str> = text
+            .lines()
+            .filter_map(|line| line.split_once('=').map(|(key, _)| key))
+            .collect();
+        assert!(keys.contains(&"PATH"), "{text}");
+        assert!(keys.contains(&"NO_COLOR"), "{text}");
+        assert!(
+            !keys.contains(&"GH_TOKEN"),
+            "a shell token reached the stand-in: {text}"
+        );
+        assert!(
+            !keys.contains(&"ANTHROPIC_API_KEY"),
+            "a model key reached the stand-in: {text}"
+        );
     }
 
     #[test]
