@@ -88,16 +88,32 @@ pub fn ensure_running(
             skip.insert(daily);
         }
     }
-    let port = next_free_from(DEFAULT_PROXY_PORT, &skip, |candidate| {
-        TcpListener::bind((Ipv4Addr::LOCALHOST, candidate)).is_ok()
-    })
-    .ok_or("No free loopback port is left for the proxy.")?;
     let _ = store.prune_stale_routes();
-    let bound = start(store.clone(), port, proxy_dir(data_dir).join("proxy.log"))?;
-    debug_assert!(bound.loopback_only());
-    store.write_port(bound.port)?;
-    store.write_pid()?;
-    Ok(bound.port)
+    for _ in 0..5 {
+        let Some(port) = next_free_from(DEFAULT_PROXY_PORT, &skip, |candidate| {
+            TcpListener::bind((Ipv4Addr::LOCALHOST, candidate)).is_ok()
+        }) else {
+            break;
+        };
+        match start(store.clone(), port, proxy_dir(data_dir).join("proxy.log")) {
+            Ok(bound) => {
+                debug_assert!(bound.loopback_only());
+                store.write_port(bound.port)?;
+                store.write_pid()?;
+                return Ok(bound.port);
+            }
+            Err(_) if running(port) => {
+                // Another window started it in the moment between the probe and our bind.
+                store.write_port(port)?;
+                return Ok(port);
+            }
+            Err(_) => {
+                // The port was taken by something else; try the next one.
+                skip.insert(port);
+            }
+        }
+    }
+    Err("No free loopback port is left for the proxy.".into())
 }
 
 pub fn proxy_dir(data_dir: &Path) -> PathBuf {
@@ -295,19 +311,32 @@ fn serve(mut client: TcpStream, store: &RouteStore, log_path: &Path) {
     log(log_path, &hostname, &head.method, status, started);
 }
 
+/// One header line, never more than the bytes left in the head budget. A peer that sends no
+/// newline cannot make the proxy allocate past `MAX_HEAD`.
+fn read_line_limited(reader: &mut BufReader<TcpStream>, left: usize) -> Result<String, u16> {
+    if left == 0 {
+        return Err(431);
+    }
+    let mut bytes = Vec::new();
+    let read = reader
+        .by_ref()
+        .take(left as u64)
+        .read_until(b'\n', &mut bytes)
+        .map_err(|_| 400u16)?;
+    if read == 0 {
+        return Err(400);
+    }
+    if !bytes.ends_with(b"\n") {
+        return Err(431);
+    }
+    String::from_utf8(bytes).map_err(|_| 400)
+}
+
 fn read_head(reader: &mut BufReader<TcpStream>) -> Result<RequestHead, u16> {
     let mut raw = Vec::new();
     loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => return Err(400),
-            Ok(_) => {}
-            Err(_) => return Err(400),
-        }
+        let line = read_line_limited(reader, MAX_HEAD - raw.len())?;
         raw.extend_from_slice(line.as_bytes());
-        if raw.len() > MAX_HEAD {
-            return Err(431);
-        }
         if line == "\r\n" || line == "\n" {
             break;
         }
@@ -367,6 +396,13 @@ fn check_request(head: &RequestHead) -> Result<(), u16> {
         return Err(505);
     }
     if head.values("host").count() != 1 {
+        return Err(400);
+    }
+    // Two framings for one body is request smuggling, not a request.
+    if head.values("content-length").count() > 1 {
+        return Err(400);
+    }
+    if head.value("transfer-encoding").is_some() && head.value("content-length").is_some() {
         return Err(400);
     }
     let host = head.value("host").unwrap_or("");
@@ -465,21 +501,16 @@ fn copy_body(
 
 fn copy_chunked(reader: &mut BufReader<TcpStream>, upstream: &mut TcpStream) -> Result<(), u16> {
     loop {
-        let mut line = String::new();
-        reader.read_line(&mut line).map_err(|_| 400u16)?;
-        if line.is_empty() {
-            return Err(400);
-        }
+        let line = read_line_limited(reader, 8 * 1024)?;
         upstream.write_all(line.as_bytes()).map_err(|_| 502u16)?;
         let size_text = line.split(';').next().unwrap_or("").trim();
         let size = u64::from_str_radix(size_text, 16).map_err(|_| 400u16)?;
         if size == 0 {
             // Trailer headers end with an empty line.
             loop {
-                let mut trailer = String::new();
-                reader.read_line(&mut trailer).map_err(|_| 400u16)?;
+                let trailer = read_line_limited(reader, 8 * 1024)?;
                 upstream.write_all(trailer.as_bytes()).map_err(|_| 502u16)?;
-                if trailer == "\r\n" || trailer == "\n" || trailer.is_empty() {
+                if trailer == "\r\n" || trailer == "\n" {
                     return Ok(());
                 }
             }
@@ -758,6 +789,8 @@ mod tests {
             "GET / HTTP/1.1\r\nHost: shop-one.localhost\r\nHost: shop-one.localhost\r\n\r\n",
             "GET / HTTP/1.1\r\nHost: shop-one.localhost/path\r\n\r\n",
             "CONNECT shop-one.localhost:443 HTTP/1.1\r\nHost: shop-one.localhost\r\n\r\n",
+            "POST / HTTP/1.1\r\nHost: shop-one.localhost\r\nContent-Length: 3\r\nContent-Length: 4\r\n\r\nabc",
+            "POST / HTTP/1.1\r\nHost: shop-one.localhost\r\nContent-Length: 3\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n",
         ] {
             let reply = request(&bound, raw);
             assert!(reply.starts_with("HTTP/1.1 400"), "{raw:?} -> {reply}");
