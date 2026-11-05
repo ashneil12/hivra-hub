@@ -15,9 +15,61 @@ import {
 import { newSession } from "../../sessions/model/session";
 import type { OrchestrationProposal } from "./orchestrationPlan";
 import { normalizeOrchestrationRun } from "./orchestrationState";
+import type { GoalGraphBackend, GoalRunView } from "./orchestrationGoal";
 import { previewFromToolPart } from "../../../integrations/harness/providers/opencode/opencodeProtocol";
 
+/**
+ * WP-91: the goal graph's rules live in Rust (`src-tauri/src/goal_graph`) and are tested there. The webview's tests
+ * stand in for that boundary, so what they exercise is the wiring — which rules the app asks for, and what it does
+ * with the answer — and never a second copy of a rule.
+ */
+export function stubGoals(
+  overrides: Partial<GoalGraphBackend> = {},
+): GoalGraphBackend {
+  return {
+    checkPlan: vi.fn(async () => ({
+      verify: "verify",
+      layers: [],
+      criticalPath: [],
+      bottlenecks: [],
+      lint: [],
+    })),
+    report: vi.fn(async (run: GoalRunView) => ({
+      report: {
+        goal: run.goal,
+        verdict: "unverified" as const,
+        reasons: ["tasks_open"],
+        layers: [],
+        criticalPath: [],
+        bottlenecks: [],
+        lint: [],
+        ready: [],
+        cyclesLeft: {},
+        replan: [],
+        extendsLeft: 2,
+      },
+    })),
+    runCheck: vi.fn(async () => ({
+      outcome: "failed" as const,
+      exitCode: 1,
+      output: "1 failing",
+      layer: "app",
+      at: 1,
+    })),
+    readHandoff: vi.fn(async (checkout: string, taskId: string) => ({
+      path: `${checkout}/.hivra/handoff/${taskId}.md`,
+      sha256: "0".repeat(64),
+      bytes: 12,
+      text: "## Changed\nok",
+      headings: ["Changed"],
+      missing: ["Files", "Checked", "Left"],
+    })),
+    ...overrides,
+  };
+}
+
 function setup() {
+  const goals = stubGoals();
   const saved = new Map<string, OrchestrationRun>();
   const store = {
     save: vi.fn(async (run: OrchestrationRun) => {
@@ -33,7 +85,7 @@ function setup() {
     ),
     resolvePath: vi.fn(async (path: string) => path),
   };
-  const manager = new Orchestrator(store);
+  const manager = new Orchestrator(store, goals);
   const lead = { ...newSession("claude", "/repo"), id: "lead", busy: true };
   const sessions = [lead];
   const completions = new Map<string, (outcome: ControlOutcome) => void>();
@@ -102,6 +154,7 @@ function setup() {
   return {
     manager,
     store,
+    goals,
     host,
     lead,
     saved,
@@ -196,6 +249,9 @@ describe("local orchestration", () => {
     status: "ready",
     title: "Settings",
     summary: "Split the work",
+    // WP-91: a run states its goal and the finish line the app runs itself.
+    goal: "The settings screen saves and reloads",
+    check: { command: "npm test", expectExit: 0 },
     tasks: [
       {
         id: "ui",
@@ -215,6 +271,16 @@ describe("local orchestration", () => {
         files: ["src/types"],
         dependsOn: [],
       },
+      {
+        id: "verify",
+        title: "Check the goal",
+        prompt: "Verify the settings screen",
+        harness: "codex",
+        model: "codex:test",
+        role: "verify",
+        files: [],
+        dependsOn: ["ui", "types"],
+      },
     ],
   });
   it("starts exactly the approved assignments and preserves forward dependencies", async () => {
@@ -227,7 +293,12 @@ describe("local orchestration", () => {
     await vi.waitFor(() =>
       expect(f.host.createWorker).toHaveBeenCalledTimes(1),
     );
-    expect(f.tasks().map((task) => task.status)).toEqual(["queued", "running"]);
+    // WP-91: the plan's own verify task is queued behind the producers, and starts nothing by itself.
+    expect(f.tasks().map((task) => task.status)).toEqual([
+      "queued",
+      "running",
+      "queued",
+    ]);
     expect(f.tasks()[0].prompt).toBe("User edited instructions");
     expect(f.tasks()[0].dependsOn).toEqual([f.tasks()[1].id]);
     expect(f.tasks()[1].modelSettings).toEqual({
@@ -240,7 +311,7 @@ describe("local orchestration", () => {
       }),
     );
     expect(f.manager.run("lead")?.proposalId).toBe("card");
-    expect(f.saved.get("lead")?.tasks).toHaveLength(2);
+    expect(f.saved.get("lead")?.tasks).toHaveLength(3);
     const workerPrompt = vi
       .mocked(f.host.submit)
       .mock.calls.find(
@@ -392,7 +463,8 @@ describe("local orchestration", () => {
       results.filter((result) => result.status === "fulfilled"),
     ).toHaveLength(1);
     expect(f.store.enable).toHaveBeenCalledTimes(1);
-    expect(f.tasks()).toHaveLength(2);
+    // The plan's two producers and its own verify task: confirmed once, queued once.
+    expect(f.tasks()).toHaveLength(3);
   });
   it("ignores unavailable unused catalog models but blocks an unavailable assignment", async () => {
     const f = setup();

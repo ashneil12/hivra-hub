@@ -8706,6 +8706,9 @@ function Workspace({
             status: "planning",
             title: "Orchestration plan",
             summary: "",
+            // WP-91: the model fills these from the request; a plan without a finish line is refused.
+            goal: "",
+            check: { command: "", expectExit: 0 },
             tasks: [],
           }
         : undefined;
@@ -9613,6 +9616,9 @@ function Workspace({
               () =>
                 turnGen.current.get(sessionId) === gen &&
                 !isProviderFailureText(nativeProposalText || proposalText),
+              // WP-91: the graph is checked as the plan is read, so two tasks that could run at once on the same
+              // files, or a plan with no verify task, are refused with the fix named.
+              (nodes) => orchestrator.checkPlan(nodes),
             );
           }
           if (turnGen.current.get(sessionId) !== gen) return;

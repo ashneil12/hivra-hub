@@ -1,6 +1,12 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
+import type {
+  GoalCheck,
+  GoalCheckRun,
+  GoalNodeReport,
+  TaskHandoff,
+} from "./orchestrationGoal";
 
 export type TaskStatus =
   | "queued"
@@ -95,6 +101,21 @@ export type OrchestrationTask = {
   poolNote?: string;
   /** Epoch ms. A finite future value must not start this task again yet. */
   poolRetryAt?: number;
+  /** WP-91: the plain `build` role, or the run's one `verify` task. */
+  role?: "build" | "verify";
+  /** WP-91: a step that cannot be undone, so the person approves it before it starts. */
+  irreversible?: boolean;
+  irreversibleReason?: string;
+  /** The WP-14 decision's stable key, and whether the person has answered it. */
+  irreversibleKey?: string;
+  irreversibleAnswered?: boolean;
+  /** The failed task this one repairs, and which cycle it is (2 is the re-plan). */
+  repairs?: string;
+  cycle?: number;
+  /** WP-91: the worker's handoff file, recorded when the lead accepts the task. */
+  handoff?: TaskHandoff;
+  /** WP-40's gates, when something ran them on this task. Nothing sets it on an orchestration run today. */
+  gateOutcome?: "passed" | "failed" | "notRun" | "held";
 };
 
 export type OrchestrationRun = {
@@ -117,6 +138,19 @@ export type OrchestrationRun = {
   continuations: number;
   lastPauseReason?: string;
   requests: Record<string, { signature: string; result: unknown }>;
+  /** WP-91: the one line the run is for, and the finish line that proves it. */
+  goal?: string;
+  check?: GoalCheck;
+  /** The check's run on the untouched base, before any worker started. */
+  baseline?: GoalCheckRun;
+  /** Every run of the check the app itself made, newest last. A command is run once per layer (WP-81). */
+  checkRuns?: GoalCheckRun[];
+  /** The rules' answer about this run, refreshed whenever the record changes. */
+  goalReport?: GoalNodeReport;
+  /** Repair cycles taken per failed root; each entry is one cycle's task ids. */
+  repairCycles?: Record<string, string[][]>;
+  /** Extend rounds taken, for a re-plan that adds nodes. */
+  extends?: number;
 };
 
 export function workspaceIdentity(
