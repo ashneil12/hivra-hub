@@ -53,7 +53,7 @@ test("an OpenAI-compatible provider is called for real, and one that refuses rea
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    const env = { MY_TEST_KEY: "test-key-123" };
+    const env = { MY_TEST_KEY: "test-key-123", REALTEST_GATEWAY: `127.0.0.1:${server.address().port}` };
     const spec = providerSpec({ provider: "custom", model: "m1", baseUrl: `http://127.0.0.1:${server.address().port}/v1/`, keyEnv: "MY_TEST_KEY", effort: "high" }, env);
     const client = makeClient(spec, { env });
     const answer = await client.complete({ system: "sys", prompt: "hi" });
@@ -68,6 +68,14 @@ test("an OpenAI-compatible provider is called for real, and one that refuses rea
   } finally {
     server.close();
   }
+});
+
+test("a model call to a port this run did not name is refused before any request", async () => {
+  const env = { K: "test-key", REALTEST_GATEWAY: "127.0.0.1:8317" };
+  const denied = makeClient(providerSpec({ provider: "custom", model: "m", baseUrl: "http://127.0.0.1:9/v1", keyEnv: "K" }, env), { env });
+  await assert.rejects(denied.complete({ system: "s", prompt: "p" }), /not a loopback port/);
+  const outside = makeClient(providerSpec({ provider: "custom", model: "m", baseUrl: "http://203.0.113.1:9/v1", keyEnv: "K" }, env), { env });
+  await assert.rejects(outside.complete({ system: "s", prompt: "p" }), /not a loopback port/);
 });
 
 test("a provider's error never prints the key", async () => {

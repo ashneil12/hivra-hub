@@ -31,6 +31,7 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { benchDenyRules } from "./bench-guard.mjs";
+import { agentCommand, sandboxCwd } from "./bench-sandbox.mjs";
 import { accountConfigs, activeAccount, carryTranscript, limitedFile } from "./hub-realtest-accounts.mjs";
 
 /**
@@ -348,6 +349,19 @@ function promptOf(message) {
   return "";
 }
 
+/** The real CLI, under the run's seatbelt profile. A missing sandbox or a bad profile does not spawn it. */
+function launchReal(args, env, stdio) {
+  const launch = agentCommand(REAL, args, env);
+  if (!launch.ok) return launch;
+  return { ok: true, child: spawn(launch.command, launch.args, { env, stdio, cwd: sandboxCwd(process.cwd(), env) }) };
+}
+
+function refuseStart(reason, { json = false } = {}) {
+  process.stderr.write(`hub-realtest-claude: ${reason}\n`);
+  if (json) process.stdout.write(`${JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: reason, duration_ms: 0, num_turns: 0, total_cost_usd: 0 })}\n`);
+  process.exit(2);
+}
+
 function main() {
   if (!REAL || !CONFIG || !STATE) {
     process.stderr.write("hub-realtest-claude: REALTEST_REAL_CLAUDE, REALTEST_CLAUDE_CONFIG and REALTEST_STATE are required\n");
@@ -374,8 +388,9 @@ function main() {
     }
   }
   if (args.length === 1 && (args[0] === "--version" || args[0] === "-v")) {
-    const child = spawn(REAL, args, { env: childEnv(env), stdio: "inherit" });
-    child.on("exit", (code) => process.exit(code ?? 1));
+    const launched = launchReal(args, childEnv(env), "inherit");
+    if (!launched.ok) refuseStart(launched.reason);
+    launched.child.on("exit", (code) => process.exit(code ?? 1));
     return;
   }
   const logDir = path.join(STATE, "claude");
@@ -413,7 +428,13 @@ function main() {
     const from = carryTranscript([CONFIG, ...accountConfigs(STATE)], account.config, resumed);
     if (from) log({ dir: "carry", session: resumed, from, to: account.config });
   }
-  const child = spawn(REAL, realArgs, { env, stdio: ["pipe", "pipe", "pipe"] });
+  const launched = launchReal(realArgs, env, ["pipe", "pipe", "pipe"]);
+  if (!launched.ok) {
+    log({ dir: "refused", reason: launched.reason });
+    usage({ kind: "refused" });
+    refuseStart(launched.reason, { json: true });
+  }
+  const child = launched.child;
   const named = (flag) => (args.indexOf(flag) >= 0 ? args[args.indexOf(flag) + 1] : null);
   let session = named("--resume") ?? named("--session-id");
   let model = realArgs[realArgs.indexOf("--model") + 1] ?? MODEL;

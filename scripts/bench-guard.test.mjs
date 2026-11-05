@@ -196,6 +196,32 @@ test("the scene book names no real app, and the scanner catches one", () => {
   assert.deepEqual(hits, [], hits.map((hit) => `${hit.file}: ${hit.why}`).join("; "));
 });
 
+test("a relative path after cd resolves against that directory", () => {
+  const memory = "agent-memory/ash/MEMORY.md";
+  assert.equal(commandBlocked(`cat ${memory}`, ctx), false);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.realHome}; cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.realHome}\ncat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`cd "${ctx.realHome}" && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} && cd agent-memory && cat ash/MEMORY.md`, ctx), true);
+  assert.equal(commandBlocked(`FOO=1 cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`command cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`command -p cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`builtin cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`env cd ${ctx.realHome} && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} && rm notes.txt`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.cwd} && rm notes.txt`, ctx), false);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} && echo hi > notes.txt`, ctx), true);
+  assert.equal(commandBlocked(`cd ${ctx.cwd} && echo hi > notes.txt`, ctx), false);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} || cat ${memory}`, ctx), false);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} | cat ${memory}`, ctx), false);
+  assert.equal(commandBlocked(`cd ${ctx.realHome} & cat ${memory}`, ctx), false);
+  assert.equal(commandBlocked(`echo "cd ${ctx.realHome} && cat ${memory}"`, ctx), false);
+  assert.equal(commandBlocked(`cd - && cat ${memory}`, ctx), true);
+  assert.equal(commandBlocked("cd -", ctx), false);
+  assert.equal(commandBlocked(`cd && cat ${memory}`, ctx), false);
+});
+
 test("the hook denies a real-home read and a kill, and allows a command inside the bench", () => {
   const hook = path.join(HERE, "bench-guard-hook.mjs");
   const args = [hook, ctx.realHome, ctx.devData, JSON.stringify(ctx.allowed), ctx.home];
@@ -203,6 +229,8 @@ test("the hook denies a real-home read and a kill, and allows a command inside t
   assert.equal(deny.status, 2);
   const kill = spawnSync(process.execPath, args, { input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "kill 1" } }), encoding: "utf8", cwd: fs.realpathSync(os.tmpdir()) });
   assert.equal(kill.status, 2);
+  const moved = spawnSync(process.execPath, args, { input: JSON.stringify({ tool_name: "Bash", tool_input: { command: `cd ${ctx.realHome} && cat agent-memory/ash/MEMORY.md` } }), encoding: "utf8", cwd: fs.realpathSync(os.tmpdir()) });
+  assert.equal(moved.status, 2);
   const allow = spawnSync(process.execPath, args, { input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo hi" } }), encoding: "utf8", cwd: fs.realpathSync(os.tmpdir()) });
   assert.equal(allow.status, 0);
   const bad = spawnSync(process.execPath, [hook, ctx.realHome, ctx.devData, "not-json", ctx.home], { input: JSON.stringify({ tool_name: "Bash", tool_input: { command: "echo hi" } }), encoding: "utf8" });

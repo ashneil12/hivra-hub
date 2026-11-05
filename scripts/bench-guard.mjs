@@ -266,6 +266,11 @@ function splitCompound(command) {
   const parts = [];
   let cur = "";
   let quote = null;
+  const push = (sep) => {
+    const text = cur.trim();
+    cur = "";
+    if (text) parts.push({ text, sep });
+  };
   for (let i = 0; i < command.length; i += 1) {
     const c = command[i];
     if (quote) {
@@ -279,30 +284,61 @@ function splitCompound(command) {
       continue;
     }
     if (c === ";" || c === "\n") {
-      parts.push(cur);
-      cur = "";
+      push(";");
       continue;
     }
     if ((c === "&" && command[i + 1] === "&") || (c === "|" && command[i + 1] === "|")) {
-      parts.push(cur);
-      cur = "";
+      push(c === "&" ? "&&" : "||");
       i += 1;
       continue;
     }
     if (c === "&" && command[i + 1] !== ">" && command[i - 1] !== ">") {
-      parts.push(cur);
-      cur = "";
+      push("&");
       continue;
     }
     if (c === "|" && command[i + 1] !== "|") {
-      parts.push(cur);
-      cur = "";
+      push("|");
       continue;
     }
     cur += c;
   }
-  if (cur.trim()) parts.push(cur);
-  return parts.map((part) => part.trim()).filter(Boolean);
+  push(null);
+  return parts;
+}
+
+/** Where `cd` in this simple command would leave a later `&&` or `;` command. `||`, `|` and `&` do not change it. */
+function cdChange(part, cwd, ctx) {
+  const tokens = tokenize(stripSubstitutions(part));
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i += 1;
+  let base = basename(tokens[i] ?? "");
+  if (base === "command" || base === "builtin") {
+    i += 1;
+    if (tokens[i] === "-p") i += 1;
+    base = basename(tokens[i] ?? "");
+  }
+  if (base === "env") {
+    const start = i;
+    i += 1;
+    while (i < tokens.length && (tokens[i]?.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? ""))) {
+      if (tokens[i] === "-u" || tokens[i] === "--unset") i += 2;
+      else i += 1;
+    }
+    if (i <= start) return { kind: "none" };
+    base = basename(tokens[i] ?? "");
+  }
+  if (base !== "cd") return { kind: "none" };
+  i += 1;
+  while (i < tokens.length && tokens[i]?.startsWith("-") && tokens[i] !== "-" && tokens[i] !== "--") i += 1;
+  if (tokens[i] === "--") i += 1;
+  const dest = tokens[i];
+  if (dest == null || dest === "") {
+    const home = ctx?.home ? lexicalPosix(String(ctx.home).replace(/\/+$/, "") || "/") : null;
+    return home ? { kind: "path", abs: home } : { kind: "unknown" };
+  }
+  if (dest === "-") return { kind: "unknown" };
+  const abs = resolvePath(dest, cwd, ctx);
+  return abs ? { kind: "path", abs } : { kind: "unknown" };
 }
 
 function isSignalToken(token) {
@@ -489,7 +525,21 @@ export function commandBlocked(command, ctx = {}, depth = 0) {
     if (commandBlocked(sub, ctx, depth + 1)) return true;
     if (whichOfSignal(tokenize(sub))) return true;
   }
-  return splitCompound(stripGrouping(stripSubstitutions(text))).some((part) => partBlocked(part, ctx, depth));
+  const parts = splitCompound(stripGrouping(stripSubstitutions(text)));
+  let cwd = ctx.cwd ?? null;
+  for (let n = 0; n < parts.length; n += 1) {
+    const part = parts[n];
+    if (partBlocked(part.text, { ...ctx, cwd }, depth)) return true;
+    if (part.sep !== "&&" && part.sep !== ";") continue;
+    const change = cdChange(part.text, cwd, ctx);
+    if (change.kind === "none") continue;
+    if (change.kind === "unknown" || !change.abs) {
+      if (n + 1 < parts.length) return true;
+      continue;
+    }
+    cwd = change.abs;
+  }
+  return false;
 }
 
 function toolPaths(call) {
