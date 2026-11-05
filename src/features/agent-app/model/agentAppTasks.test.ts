@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { newSession, type Session } from "../../sessions/model/session";
 import {
+  nativeModelId,
   resetHarnessModelOverlays,
   setHarnessModels,
 } from "../../sessions/model/models";
@@ -38,6 +39,15 @@ import {
 import { isOpenDelegation } from "../../monos/model/delegations";
 import { addMono, findMono, updateMono } from "../../monos/model/mono";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
+import { launchCatalog } from "../../crew/model/launchCatalog";
+import { resolveRoute } from "../../crew/model/resolve";
+import type { CrewRouteQuery } from "../../crew/model/taskRoute";
+import {
+  buildClaudeSpawnArgs,
+  normalizeClaudeCliEffort,
+  resolveClaudeApiModelId,
+} from "../../../integrations/harness/providers/claude/claudeProtocol";
+import { parseCliArgs } from "../../../../scripts/fake-claude.mjs";
 
 const probe = vi.hoisted(() => ({ probed: true, runs: 0 }));
 // The DeepSeek launcher can be on or off for a case. The Grok CLI stays available either way.
@@ -2005,8 +2015,8 @@ describe("parallel workers per project, with throttling (H8)", () => {
 
     afterEach(() => localStorage.removeItem("monocode:mono-roster"));
 
-    function lead(who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono") {
-      const f = pooled([], who === "team" ? "team" : "mono");
+    function lead(who: "mono" | "plain" | "habit" | "checker" | "worker" | "team" = "mono", rows: Delegation[] = []) {
+      const f = pooled(rows, who === "team" ? "team" : "mono");
       if (who !== "mono" && who !== "team") {
         const again = fixture([], who);
         again.api.pool = f.api.pool;
@@ -2121,6 +2131,74 @@ describe("parallel workers per project, with throttling (H8)", () => {
       limitsOnly.host.postCard = () => quiet.push("card");
       await handleAgentApp(limitsOnly.source, "lim", "tasks.workers", { workers: 8 }, limitsOnly.host);
       expect(quiet).toEqual([]);
+    });
+
+    it("starts a worker on the default set before it, leaves a running one, and a queued one takes the change", async () => {
+      const rows: Delegation[] = [];
+      const { source, host, started, api, pump } = lead("mono", rows);
+      // The command's route, without Tauri: a stored default is what the next start sees.
+      api.crewRoute = vi.fn(async (query: CrewRouteQuery) =>
+        resolveRoute(
+          {
+            labels: query.labels,
+            paths: query.paths,
+            ...(query.override ? { override: query.override } : {}),
+          },
+          query.monoRules ?? [],
+          [
+            { cli: "claude", installed: true, signedIn: true },
+            { cli: "codex", installed: true, signedIn: true },
+          ],
+          {
+            ...(query.defaults ? { defaults: query.defaults } : {}),
+            catalog: query.catalog ?? launchCatalog(),
+          },
+        ),
+      );
+      const seen = (launch: { model?: string; modelSettings?: { effort?: string } }) => {
+        const native = launch.model ? nativeModelId(launch.model) : undefined;
+        const effort = normalizeClaudeCliEffort(launch.modelSettings?.effort, native);
+        return parseCliArgs(
+          buildClaudeSpawnArgs({
+            ...(native ? { model: resolveClaudeApiModelId(native) } : {}),
+            ...(effort ? { effort } : {}),
+          }),
+        );
+      };
+
+      setSystemWorkerDefault({ cli: "claude", model: "claude:opus-4-7", effort: "high" });
+      await handleAgentApp(source, "after", "tasks.delegate", { brief: "Build the title." }, host);
+      const first = started[0][0] as { model: string; modelSettings?: { effort?: string } };
+      expect(first).toMatchObject({ harness: "claude", model: "claude:opus-4-7", modelSettings: { effort: "high" } });
+      expect(seen(first)).toMatchObject({ model: "claude-opus-4-7", effort: "high" });
+
+      // Changed while it runs. Asked again, and pumped, it is not started over.
+      setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "low" });
+      const again = await handleAgentApp(source, "after", "tasks.delegate", { brief: "Build the title." }, host);
+      await pump();
+      expect(again).toMatchObject({ alreadyStarted: true, status: "running" });
+      expect(started).toHaveLength(1);
+      expect(started[0][0]).toMatchObject({ model: "claude:opus-4-7", modelSettings: { effort: "high" } });
+
+      setWorkerLimits("vg-game", { workers: 1 });
+      const waiting = (await handleAgentApp(source, "queued", "tasks.delegate", { brief: "Then the rest." }, host)) as {
+        status: string;
+      };
+      expect(waiting.status).toBe("waiting");
+      expect(started).toHaveLength(1);
+      setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+      // The queue's own refresh, started while the old default was still saved, must not put it back.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await pump();
+      expect(started).toHaveLength(1);
+
+      rows[0].state = "completed";
+      await pump();
+      expect(started).toHaveLength(2);
+      const second = started[1][0] as { model: string; modelSettings?: { effort?: string } };
+      expect(second).toMatchObject({ harness: "claude", model: "claude:sonnet-5", modelSettings: { effort: "medium" } });
+      expect(seen(second)).toMatchObject({ model: "claude-sonnet-5", effort: "medium" });
+      expect(started[0][0]).toMatchObject({ model: "claude:opus-4-7", modelSettings: { effort: "high" } });
     });
   });
 

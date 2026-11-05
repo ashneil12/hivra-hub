@@ -76,6 +76,14 @@ let settingsCopy: {
   /** WP-89: the worker default for every project, when one is set. */
   workerDefault?: WorkerPick;
 } = { limits: {}, heavy: new Set() };
+/**
+ * Bumped on every local settings write. A refresh that started earlier read the old
+ * copy; it must not put that copy back over a write that landed while it was reading.
+ */
+let settingsGeneration = 0;
+function wroteSettings(): void {
+  settingsGeneration += 1;
+}
 
 const clampCount = (n: unknown, fallback: number) =>
   typeof n === "number" && Number.isFinite(n) ? Math.min(MAX_WORKERS, Math.max(1, Math.round(n))) : fallback;
@@ -97,6 +105,7 @@ export function setWorkerLimits(project: string, next: Partial<WorkerLimits>): W
   const now = workerLimits(project);
   const workers = next.workers === undefined ? now.workers : clampCount(next.workers, now.workers);
   const heavy = Math.min(workers, next.heavy === undefined ? now.heavy : clampCount(next.heavy, now.heavy));
+  wroteSettings();
   settingsCopy = {
     ...settingsCopy,
     limits: { ...settingsCopy.limits, [project]: { ...settingsCopy.limits[project], workers, heavy } },
@@ -139,6 +148,7 @@ export function systemWorkerDefault(): WorkerPick | undefined {
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
 export function setSystemWorkerDefault(choice: WorkerPick | undefined): void {
   const clean = cleanStoredDefault(choice);
+  wroteSettings();
   settingsCopy = { ...settingsCopy, workerDefault: clean };
   changed();
   void backend
@@ -152,6 +162,7 @@ export function setProjectWorkerModel(
   choice: { cli?: string; model: string; effort?: string } | undefined,
 ): void {
   const saved = settingsCopy.limits[project] ?? {};
+  wroteSettings();
   settingsCopy = {
     ...settingsCopy,
     limits: {
@@ -186,6 +197,7 @@ export function limitsLine(projectName: string, limits: WorkerLimits): string {
 /** The Lead said this worker's job is heavy (it runs full test suites, e2e or builds). */
 export function markHeavy(childSession: string): void {
   if (settingsCopy.heavy.has(childSession)) return;
+  wroteSettings();
   settingsCopy = { ...settingsCopy, heavy: new Set([...settingsCopy.heavy, childSession]) };
   changed();
   void backend.markHeavy(childSession).catch((error: unknown) => console.warn("Could not note a heavy worker", error));
@@ -450,6 +462,7 @@ export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   unsubscribe?.();
   backend = next;
   copy = [];
+  wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
@@ -498,9 +511,15 @@ export function loadWorkerQueue(): Promise<void> {
 
 /** Read the store again (another window changed it). */
 export async function refreshWorkerQueue(): Promise<void> {
+  const seen = settingsGeneration;
   try {
     const [jobs, settings] = await Promise.all([backend.list(), backend.settings()]);
     copy = jobs;
+    // A save landed while this read was in flight. Keep that save; this copy is older.
+    if (seen !== settingsGeneration) {
+      changed();
+      return;
+    }
     settingsCopy = {
       limits: settings.limits ?? {},
       heavy: new Set(settings.heavy ?? []),
@@ -816,6 +835,7 @@ export function resetWorkerPool(): void {
   unsubscribe = undefined;
   backend = memoryWorkerQueue();
   copy = [];
+  wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set() };
   loading = undefined;
   changed();

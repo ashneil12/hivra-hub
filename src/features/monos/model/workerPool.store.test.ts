@@ -125,4 +125,31 @@ describe("the waiting queue in the app's store", () => {
     await again.setWorkerQueueBackend(store);
     expect(ids(again)).toEqual(["q1"]);
   });
+
+  it("a refresh that started earlier does not put back a worker default set while it was reading", async () => {
+    const pool = await window();
+    const store = pool.memoryWorkerQueue();
+    await pool.setWorkerQueueBackend(store);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const read = store.settings.bind(store);
+    let reads = 0;
+    store.settings = async () => {
+      const value = await read();
+      reads += 1;
+      if (reads === 1) await gate;
+      return value;
+    };
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "low" });
+    await Promise.resolve();
+    await Promise.resolve();
+    pool.setSystemWorkerDefault({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+    await Promise.resolve();
+    await Promise.resolve();
+    release();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pool.systemWorkerDefault()).toEqual({ cli: "claude", model: "claude:sonnet-5", effort: "medium" });
+  });
 });
