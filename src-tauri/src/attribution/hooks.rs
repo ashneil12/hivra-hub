@@ -3,6 +3,8 @@
 // has its own data folder, so it never writes the daily app's hooks.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 const SCRIPT: &str = include_str!("prepare-commit-msg.sh");
 const REFUSAL: &str = "The hooks folder isn't inside this copy's data.";
@@ -36,15 +38,71 @@ fn ensure_child(root: &Path, rel: &str) -> Result<PathBuf, String> {
         Ok(meta) if meta.file_type().is_symlink() => return Err(REFUSAL.into()),
         Ok(meta) if !meta.is_dir() => return Err(REFUSAL.into()),
         Ok(_) => {}
-        Err(_) => {
-            std::fs::create_dir(&next).map_err(|_| REFUSAL.to_string())?;
-        }
+        Err(_) => match std::fs::create_dir(&next) {
+            Ok(()) => {}
+            // The other crew made the folder between the check and the create.
+            Err(_) => {
+                let meta = std::fs::symlink_metadata(&next).map_err(|_| REFUSAL.to_string())?;
+                if meta.file_type().is_symlink() || !meta.is_dir() {
+                    return Err(REFUSAL.into());
+                }
+            }
+        },
     }
     let canon = crate::fs::canonical(&next).map_err(|_| REFUSAL.to_string())?;
     if !contained(root, &canon) {
         return Err(REFUSAL.into());
     }
     Ok(canon)
+}
+
+static HOOK_TMP: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh path for every install. Two crews in one process must not share a file.
+pub(crate) fn hook_temp(dir: &Path) -> PathBuf {
+    let n = HOOK_TMP.fetch_add(1, Ordering::Relaxed);
+    dir.join(format!(
+        ".prepare-commit-msg.{}.{n}.tmp",
+        std::process::id()
+    ))
+}
+
+fn script_text(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    Some(text.replace("\r\n", "\n"))
+}
+
+/// Publish the hook. A lost rename is not a failure when the installed file is
+/// already this script: the other crew got there first. Only our temp file is removed.
+fn publish_hook(root: &Path, dir: &Path, dest: &Path, script: &str) -> Result<(), String> {
+    for attempt in 0..8 {
+        let tmp = hook_temp(dir);
+        if !contained(root, &tmp) {
+            return Err(REFUSAL.into());
+        }
+        if std::fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.file_type().is_symlink()) {
+            return Err(REFUSAL.into());
+        }
+        if std::fs::write(&tmp, script.as_bytes()).is_err() {
+            return Err(REFUSAL.into());
+        }
+        if std::fs::rename(&tmp, dest).is_ok() {
+            return Ok(());
+        }
+        let _ = std::fs::remove_file(&tmp);
+        if script_text(dest).as_deref() == Some(script) {
+            return Ok(());
+        }
+        if attempt + 1 < 8 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+    if script_text(dest).as_deref() == Some(script) {
+        Ok(())
+    } else {
+        Err(REFUSAL.into())
+    }
 }
 
 /// Install `prepare-commit-msg` under `data_dir/attribution/hooks`.
@@ -79,18 +137,7 @@ pub fn install_hooks(data_dir: &Path) -> Result<PathBuf, String> {
         .and_then(|bytes| String::from_utf8(bytes).ok())
         .is_some_and(|current| current.replace("\r\n", "\n") == script);
     if !same {
-        let tmp = dir.join(format!(".prepare-commit-msg.{}.tmp", std::process::id()));
-        if !contained(&root, &tmp) {
-            return Err(REFUSAL.into());
-        }
-        if std::fs::symlink_metadata(&tmp).is_ok_and(|meta| meta.file_type().is_symlink()) {
-            return Err(REFUSAL.into());
-        }
-        std::fs::write(&tmp, script.as_bytes()).map_err(|_| REFUSAL.to_string())?;
-        if std::fs::rename(&tmp, &dest).is_err() {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(REFUSAL.into());
-        }
+        publish_hook(&root, &dir, &dest, &script)?;
     }
     mark_executable(&dest).map_err(|_| REFUSAL.to_string())?;
     let installed = crate::fs::canonical(&dest).map_err(|_| REFUSAL.to_string())?;
