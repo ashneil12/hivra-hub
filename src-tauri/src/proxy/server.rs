@@ -39,6 +39,13 @@ pub struct BoundProxy {
     pub v6: Option<SocketAddr>,
 }
 
+impl BoundProxy {
+    /// Both listeners are loopback. The v6 one may be absent on a machine without IPv6.
+    pub fn loopback_only(&self) -> bool {
+        self.v4.ip().is_loopback() && self.v6.is_none_or(|address| address.ip().is_loopback())
+    }
+}
+
 /// Start a proxy on `port`, loopback only. The listener threads live for the process.
 pub fn start(store: Arc<RouteStore>, port: u16, log_path: PathBuf) -> Result<BoundProxy, String> {
     let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
@@ -86,10 +93,11 @@ pub fn ensure_running(
     })
     .ok_or("No free loopback port is left for the proxy.")?;
     let _ = store.prune_stale_routes();
-    start(store.clone(), port, proxy_dir(data_dir).join("proxy.log"))?;
-    store.write_port(port)?;
+    let bound = start(store.clone(), port, proxy_dir(data_dir).join("proxy.log"))?;
+    debug_assert!(bound.loopback_only());
+    store.write_port(bound.port)?;
     store.write_pid()?;
-    Ok(port)
+    Ok(bound.port)
 }
 
 pub fn proxy_dir(data_dir: &Path) -> PathBuf {
@@ -813,6 +821,73 @@ mod tests {
     }
 
     #[test]
+    fn a_cookie_set_for_one_name_is_not_sent_to_the_other() {
+        // The proxy is host-transparent: each backend sees only the Cookie its own origin sent.
+        fn echo_cookie() -> u16 {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            std::thread::spawn(move || {
+                for _ in 0..2 {
+                    let (mut stream, _) = listener.accept().unwrap();
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut cookie = String::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                            break;
+                        }
+                        if let Some(value) = line.to_ascii_lowercase().strip_prefix("cookie:") {
+                            cookie = value.trim().to_string();
+                        }
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let body = if cookie.is_empty() {
+                        "no-cookie".to_string()
+                    } else {
+                        cookie
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(reply.as_bytes());
+                }
+            });
+            port
+        }
+        let one = echo_cookie();
+        let two = echo_cookie();
+        let dir = Guard::new("cookies");
+        let store = Arc::new(RouteStore::new(dir.path()));
+        store
+            .add_route("shop-one.localhost", one, std::process::id(), false)
+            .unwrap();
+        store
+            .add_route("shop-two.localhost", two, std::process::id(), false)
+            .unwrap();
+        let bound = start(store, 0, dir.path().join("proxy.log")).unwrap();
+        let signed_in = request(
+            &bound,
+            "GET / HTTP/1.1\r\nHost: shop-one.localhost\r\nCookie: sid=one\r\nConnection: close\r\n\r\n",
+        );
+        assert!(signed_in.ends_with("sid=one"), "{signed_in}");
+        let other = request(
+            &bound,
+            "GET / HTTP/1.1\r\nHost: shop-two.localhost\r\nConnection: close\r\n\r\n",
+        );
+        assert!(other.ends_with("no-cookie"), "{other}");
+        // The same cookie sent to the other name would be a different origin's cookie; the
+        // proxy forwards whatever it is given and invents nothing.
+        let forwarded = request(
+            &bound,
+            "GET / HTTP/1.1\r\nHost: shop-two.localhost\r\nCookie: sid=one\r\nConnection: close\r\n\r\n",
+        );
+        assert!(forwarded.ends_with("sid=one"), "{forwarded}");
+    }
+
+    #[test]
     fn the_bound_addresses_are_loopback_only() {
         let (a, _) = backend("app-one", 0);
         let (dir, bound) = proxy_with(&[("shop-one.localhost", a)], "one");
@@ -884,6 +959,20 @@ mod tests {
             bound.port
         );
         drop(dir);
+    }
+
+    #[test]
+    fn a_dev_copy_reads_the_daily_port_so_it_can_avoid_it() {
+        let root = Guard::new("daily-port");
+        let daily = root.path().join("com.ash.monocode-hub");
+        let dev = root.path().join("com.ash.monocode-hub.dev.mine");
+        std::fs::create_dir_all(daily.join("proxy")).unwrap();
+        std::fs::create_dir_all(&dev).unwrap();
+        std::fs::write(daily.join("proxy").join("proxy.port"), "7400\n").unwrap();
+        assert_eq!(daily_proxy_port(&dev), Some(7400));
+        // The daily copy itself does not skip a port: it owns it.
+        assert_eq!(daily_proxy_port(&daily), None);
+        assert_eq!(daily_proxy_port(&root.path().join("elsewhere")), None);
     }
 
     #[test]

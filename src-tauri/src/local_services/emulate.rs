@@ -9,7 +9,6 @@
 //! stack's env block names its URL. If Node is missing or too old the stack still starts, and
 //! the named URLs then fail closed (connection refused) instead of reaching the real service.
 
-use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -66,6 +65,27 @@ pub fn is_service(name: &str) -> bool {
     SERVICES.contains(&name)
 }
 
+/// The service's name as a person writes it.
+pub fn display_name(service: &str) -> &str {
+    match service {
+        "github" => "GitHub",
+        "google" => "Google",
+        "slack" => "Slack",
+        "microsoft" => "Microsoft",
+        "okta" => "Okta",
+        "aws" => "AWS",
+        "resend" => "Resend",
+        "stripe" => "Stripe",
+        "mongoatlas" => "MongoDB Atlas",
+        "clerk" => "Clerk",
+        "linear" => "Linear",
+        "twilio" => "Twilio",
+        "apple" => "Apple",
+        "vercel" => "Vercel",
+        other => other,
+    }
+}
+
 /// One emulated service's port from the stack block and the name its base URL uses.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServicePort {
@@ -103,7 +123,7 @@ pub fn config(services: &[ServicePort]) -> Value {
 /// file falls back to the default seed and returns one sentence saying so.
 pub fn seed_or_default(path: &Path, services: &[ServicePort]) -> (Value, Option<String>) {
     let fallback = config(services);
-    let Some(text) = std::fs::read_to_string(path).ok() else {
+    let Ok(text) = store::read(path) else {
         return (
             fallback,
             Some("There was no seed file, so the stand-in starts from its default seed.".into()),
@@ -435,14 +455,6 @@ pub fn env_name(service: &str) -> String {
     }
     out.push_str("_BASE_URL");
     out
-}
-
-/// The per-service ports as a map keyed by service, for the stack's registry row.
-pub fn ports(services: &[ServicePort]) -> BTreeMap<String, u16> {
-    services
-        .iter()
-        .map(|service| (service.service.clone(), service.port))
-        .collect()
 }
 
 #[cfg(test)]

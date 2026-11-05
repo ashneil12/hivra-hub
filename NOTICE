@@ -167,6 +167,20 @@ Third-party components Hivra adds:
   Used in: src/features/memory/vendor/agentZeroMemories.ts
   The memories prompt copied word for word and placed inside the turn, not the system prompt (WP-51).
 
+- portless's route registry, labels and proxy
+  Source: https://github.com/vercel-labs/portless
+  License: Apache-2.0
+  Copyright 2025 Vercel Inc.
+  Used in: src-tauri/src/proxy/
+  routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync, the sudo path and the CLI's app launcher are not included (WP-90).
+
+- emulate's base URLs and file store
+  Source: https://github.com/vercel-labs/emulate
+  License: Apache-2.0
+  Copyright 2025 Chris Tate
+  Used in: src-tauri/src/local_services/
+  base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as emulate's pinned Node package and are not copied (WP-90).
+
 - HumanLayer's worktree stacks
   Source: https://github.com/humanlayer/humanlayer
   License: Apache-2.0

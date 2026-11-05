@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 
+use crate::local_services::emulate::{self, ServicePort};
+use crate::proxy::labels::{stack_label, MAX_LABEL};
 use crate::stack_decl::StackDecl;
 
 const BLOCK: u16 = 10;
@@ -46,6 +48,55 @@ pub struct StackEnv {
     /// Shared port claims. Dev copies of one machine use one directory so they
     /// cannot take the same block. None means this registry is the only writer.
     pub claims_dir: Option<PathBuf>,
+    /// WP-90: the name registry and the port of the proxy that answers those names.
+    pub names: Option<Arc<dyn NameRegistry>>,
+    pub proxy_port: Option<u16>,
+    /// WP-90: the fake outside services one stack runs.
+    pub stand_in: Option<Arc<dyn StandIn>>,
+    pub path_env: Option<String>,
+}
+
+/// The name registry, as the stack code sees it. Tests pass a memory list.
+pub trait NameRegistry: Send + Sync {
+    fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String>;
+    fn remove(&self, hostname: &str, pid: u32) -> Result<(), String>;
+}
+
+/// The real registry, in `<data>/proxy/routes.json`.
+pub struct RouteNames {
+    pub store: crate::proxy::routes::RouteStore,
+}
+
+impl NameRegistry for RouteNames {
+    fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String> {
+        self.store
+            .add_route(hostname, port, pid, true)
+            .map_err(|error| error.to_string())
+    }
+
+    fn remove(&self, hostname: &str, pid: u32) -> Result<(), String> {
+        self.store.remove_route(hostname, Some(pid))
+    }
+}
+
+/// What a stack asks a stand-in to run.
+pub struct StandInRequest {
+    /// Seeds and state live here, not in the worktree, so a returned pool slot keeps them.
+    pub stack_dir: PathBuf,
+    pub services: Vec<ServicePort>,
+    pub path_env: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StandInOutcome {
+    pub pid: Option<u32>,
+    /// One sentence when the stand-in did not start. The stack still runs.
+    pub note: Option<String>,
+}
+
+pub trait StandIn: Send + Sync {
+    fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String>;
+    fn stop(&self, stack_dir: &Path) -> Result<(), String>;
 }
 
 pub trait ComposeRunner: Send + Sync {
@@ -98,6 +149,40 @@ struct Entry {
     env: BTreeMap<String, String>,
     url: Option<String>,
     running: bool,
+    /// WP-90: the worktree's name, its published hostnames, and the process that added them.
+    #[serde(default)]
+    label: String,
+    #[serde(default)]
+    names: Vec<Published>,
+    #[serde(default)]
+    emulated: Vec<Emulated>,
+    #[serde(default)]
+    owner_pid: u32,
+    #[serde(default)]
+    proxy_port: Option<u16>,
+    #[serde(default)]
+    reaches_real: bool,
+    /// One sentence about a stand-in that could not start. Cleared on a good start.
+    #[serde(default)]
+    note: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct Published {
+    hostname: String,
+    port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    service: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct Emulated {
+    service: String,
+    env: String,
+    port: u16,
+    base_url: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,6 +203,25 @@ pub struct StackRow {
     pub url: Option<String>,
     pub running: bool,
     pub stale: bool,
+    /// WP-90: every published name and the URL it opens.
+    pub names: Vec<NamedRow>,
+    pub emulated: Vec<String>,
+    /// One line: "Tests use fake GitHub and Stripe", "Reaches the real internet", or neither.
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamedRow {
+    pub hostname: String,
+    pub url: String,
+    pub port: u16,
+    /// A fake service's name, or none for the app itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<String>,
+    pub emulated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -126,6 +230,10 @@ pub struct StatusView {
     pub declared: bool,
     pub url: Option<String>,
     pub stacks: Vec<StackRow>,
+    /// The mode line for the app this checkout would open.
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub proxy_port: Option<u16>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -147,12 +255,28 @@ pub fn env_from_app(app: &AppHandle) -> Result<StackEnv, String> {
     } else {
         None
     };
+    let data_dir = crate::project_file::data_dir(app)?;
+    // WP-90: this copy's proxy is already running (lib.rs starts it). A failure here leaves
+    // the stack on its local URL rather than stopping it.
+    let proxy_port = crate::proxy::server::ensure_running(&data_dir, dev, &HashSet::new()).ok();
+    let names = proxy_port.map(|_| {
+        Arc::new(RouteNames {
+            store: crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(
+                &data_dir,
+            )),
+        }) as Arc<dyn NameRegistry>
+    });
+    let path_env = Some(crate::harness::cached_gui_search_path());
     Ok(StackEnv {
         dev,
-        data_dir: crate::project_file::data_dir(app)?,
+        data_dir: data_dir.clone(),
         compose: None,
         probe: None,
         claims_dir,
+        names,
+        proxy_port,
+        stand_in: Some(Arc::new(EmulateStandIn { data_dir })),
+        path_env,
     })
 }
 
@@ -164,6 +288,8 @@ pub fn maybe_start(
     worktree: &Path,
     long_running: bool,
     stack: Option<&StackDecl>,
+    reaches_real: bool,
+    person: bool,
 ) -> Result<Vec<(String, String)>, String> {
     let Some(stack) = stack else {
         return Ok(Vec::new());
@@ -172,6 +298,25 @@ pub fn maybe_start(
         return Ok(Vec::new());
     }
     crate::stack_decl::validate(stack)?;
+    // WP-90: a declared service that names a real outside account needs the project's word,
+    // and then only the person starts it. A crew's tests always meet the stand-in.
+    if reaches_real && !person {
+        return Err(
+            "This stack reaches the real internet, so only the person can start it.".into(),
+        );
+    }
+    if let Some(real) = real_service(stack) {
+        if !reaches_real {
+            return Err(format!(
+                "{real} is a real outside service. Mark the project reaches: real to use it."
+            ));
+        }
+        if !person {
+            return Err(format!(
+                "{real} is a real outside service, so only the person can start this stack."
+            ));
+        }
+    }
     let worktree = canonical(worktree)?;
     let project = canonical(project)?;
     let compose_file = compose_file(stack, &worktree)?;
@@ -195,9 +340,13 @@ pub fn maybe_start(
             &worktree,
             stack,
             compose_file.as_deref(),
+            reaches_real,
         )
     })?;
     write_env_file(&worktree, &entry)?;
+    // A name is published before anything starts: a clash is a refusal, not a wrong address.
+    publish_names(env, &entry)?;
+    let note = start_stand_in(env, &entry)?;
     if entry.has_compose {
         let Some(compose_file) = compose_file else {
             return Err("The compose file is missing, so nothing was started.".into());
@@ -220,10 +369,26 @@ pub fn maybe_start(
             .find(|item| item.id == id && keys_eq(&item.key, &key))
         {
             found.running = true;
+            found.note = note;
         }
         Ok(())
     })?;
     Ok(entry.env.into_iter().collect())
+}
+
+/// The first real outside host a stack's declared services reach, if any.
+fn real_service(stack: &StackDecl) -> Option<String> {
+    for service in &stack.services {
+        if service.emulate.is_some() {
+            continue;
+        }
+        for value in service.env.values() {
+            if let Some(host) = emulate::real_host(value) {
+                return Some(host.to_string());
+            }
+        }
+    }
+    None
 }
 
 pub fn down(env: &StackEnv, worktree: &Path) -> Result<(), String> {
@@ -247,6 +412,28 @@ pub fn down(env: &StackEnv, worktree: &Path) -> Result<(), String> {
     })
 }
 
+/// WP-90: put this stack's stand-in back to its seed between runs. Names and ports stay.
+pub fn reset(env: &StackEnv, worktree: &Path) -> Result<(), String> {
+    let dir = registry_dir(&env.data_dir);
+    let key = path_key(worktree);
+    let store = load(&dir)?;
+    let Some(entry) = store
+        .stacks
+        .iter()
+        .find(|item| keys_eq(&item.key, &key))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let note = start_stand_in(env, &entry)?;
+    update(&dir, |store| {
+        if let Some(found) = store.stacks.iter_mut().find(|item| item.id == entry.id) {
+            found.note = note;
+        }
+        Ok(())
+    })
+}
+
 /// Stop the stack for a pool slot, before the slot is returned. No registry means nothing to stop.
 pub fn stop_for_worktree(data_dir: &Path, worktree: &Path) -> Result<(), String> {
     let env = StackEnv {
@@ -255,6 +442,14 @@ pub fn stop_for_worktree(data_dir: &Path, worktree: &Path) -> Result<(), String>
         compose: None,
         probe: None,
         claims_dir: None,
+        names: Some(Arc::new(RouteNames {
+            store: crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(data_dir)),
+        })),
+        proxy_port: None,
+        stand_in: Some(Arc::new(EmulateStandIn {
+            data_dir: data_dir.to_path_buf(),
+        })),
+        path_env: None,
     };
     down(&env, worktree)
 }
@@ -299,6 +494,11 @@ pub fn remove_stale(env: &StackEnv, id: &str) -> Result<(), String> {
     if let Some(claims) = &env.claims_dir {
         release_claim(claims, &path_key(&env.data_dir), &entry.key)?;
     }
+    // Its stand-in is stopped and its names are gone; the seeds go with the stack.
+    let dir = stack_dir(&env.data_dir, &entry.id);
+    if path_inside(&registry_dir(&env.data_dir), &dir) {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     Ok(())
 }
 
@@ -328,14 +528,55 @@ pub fn status_for(env: &StackEnv, cwd: &Path) -> Result<StatusView, String> {
             url: entry.url.as_deref().and_then(local_url),
             running: entry.running,
             stale: missing(Path::new(&entry.worktree)),
+            names: entry
+                .names
+                .iter()
+                .filter_map(|name| {
+                    let url = named_url(&name.hostname, entry.proxy_port)?;
+                    Some(NamedRow {
+                        hostname: name.hostname.clone(),
+                        url,
+                        port: name.port,
+                        service: name.service.clone(),
+                        emulated: name.service.is_some(),
+                    })
+                })
+                .collect(),
+            emulated: entry
+                .emulated
+                .iter()
+                .map(|service| service.service.clone())
+                .collect(),
+            mode: entry.mode(),
+            note: entry.note.clone(),
         })
         .collect();
     let url = task_url(&cwd_key, &stacks);
+    let mode = stacks
+        .iter()
+        .find(|row| row.running && keys_eq(&path_key(Path::new(&row.worktree)), &cwd_key))
+        .or_else(|| (stacks.len() == 1).then(|| &stacks[0]))
+        .map(|row| row.mode.clone())
+        .unwrap_or_default();
     Ok(StatusView {
         declared,
         url,
         stacks,
+        mode,
+        proxy_port: env.proxy_port.or_else(|| {
+            load(&registry_dir(&env.data_dir))
+                .ok()?
+                .stacks
+                .iter()
+                .find_map(|entry| entry.proxy_port)
+        }),
     })
+}
+
+fn named_url(hostname: &str, proxy_port: Option<u16>) -> Option<String> {
+    let port = proxy_port?;
+    let url = format!("http://{hostname}:{port}");
+    local_url(&url)
 }
 
 fn task_url(cwd_key: &str, rows: &[StackRow]) -> Option<String> {
@@ -354,26 +595,55 @@ fn task_url(cwd_key: &str, rows: &[StackRow]) -> Option<String> {
     None
 }
 
-/// `http://127.0.0.1:<port>` or `http://localhost:<port>`, and nothing else.
+/// A loopback URL, or one published name (`http://shop-wp-90.localhost:7400`), and nothing else.
 pub fn local_url(url: &str) -> Option<String> {
-    let rest = url.strip_prefix("http://")?;
-    let (host, port) = rest.split_once(':')?;
-    if host != "127.0.0.1" && host != "localhost" {
+    if url.len() > 300 || !url.starts_with("http://") {
         return None;
     }
-    if port.is_empty() || port.len() > 5 || !port.chars().all(|c| c.is_ascii_digit()) {
+    let rest = url.strip_prefix("http://")?;
+    let (host, port) = rest.split_once(':')?;
+    if port.is_empty()
+        || port.len() > 5
+        || !port.chars().all(|c| c.is_ascii_digit())
+        || port.contains('/')
+    {
         return None;
     }
     let number: u16 = port.parse().ok()?;
     if number == 0 {
         return None;
     }
-    Some(url.to_string())
+    if host == "127.0.0.1" || host == "localhost" {
+        return Some(url.to_string());
+    }
+    // `.localhost` resolves to loopback by itself (RFC 6761); anything else is not ours.
+    let label = host.strip_suffix(".localhost")?;
+    crate::proxy::labels::valid_hostname(host).then_some(())?;
+    (!label.is_empty()).then(|| url.to_string())
 }
 
 fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
+    // WP-90: the stand-in and this stack's names go first, whatever runs in Compose.
+    let mut failure = None;
+    if let Some(stand_in) = &env.stand_in {
+        if let Err(error) = stand_in.stop(&stack_dir(&env.data_dir, &entry.id)) {
+            failure = Some(error);
+        }
+    }
+    if let Some(names) = &env.names {
+        for name in &entry.names {
+            let owner = if entry.owner_pid == 0 {
+                std::process::id()
+            } else {
+                entry.owner_pid
+            };
+            if let Err(error) = names.remove(&name.hostname, owner) {
+                failure.get_or_insert(error);
+            }
+        }
+    }
     if !entry.has_compose {
-        return Ok(());
+        return failure.map_or(Ok(()), Err);
     }
     if !valid_compose_project(&entry.compose_project) {
         return Err(
@@ -381,7 +651,20 @@ fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
         );
     }
     let file = compose_file_for_stop(entry);
-    with_retry(|| compose_of(env).down(&entry.compose_project, file.as_deref()))
+    with_retry(|| compose_of(env).down(&entry.compose_project, file.as_deref()))?;
+    failure.map_or(Ok(()), Err)
+}
+
+/// `<data>/worktree-stacks/stacks/<id>`: seeds and stand-in state, kept with the stack.
+///
+/// An id read from disk is untrusted: only one this app made can name a folder.
+fn stack_dir(data_dir: &Path, id: &str) -> PathBuf {
+    let base = registry_dir(data_dir).join("stacks");
+    if valid_stack_id(id) {
+        base.join(id)
+    } else {
+        base.join("invalid")
+    }
 }
 
 /// A compose path from the registry is untrusted. Only a real file inside the
@@ -393,6 +676,151 @@ fn compose_file_for_stop(entry: &Entry) -> Option<PathBuf> {
     path_inside(&root, &file).then_some(file)
 }
 
+/// WP-90: publish every name for this stack, and take back the ones already added if one clashes.
+fn publish_names(env: &StackEnv, entry: &Entry) -> Result<(), String> {
+    let Some(names) = &env.names else {
+        return Ok(());
+    };
+    let pid = std::process::id();
+    let mut added: Vec<&str> = Vec::new();
+    for name in &entry.names {
+        if let Err(error) = names.add(&name.hostname, name.port, pid) {
+            for hostname in added {
+                let _ = names.remove(hostname, pid);
+            }
+            return Err(error);
+        }
+        added.push(&name.hostname);
+    }
+    Ok(())
+}
+
+/// Start this stack's stand-in. A missing or old Node is a note, not a failed stack: the named
+/// base URLs then fail closed (connection refused) rather than reaching the real service.
+fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, String> {
+    let Some(stand_in) = &env.stand_in else {
+        return Ok(None);
+    };
+    let dir = stack_dir(&env.data_dir, &entry.id);
+    stand_in.stop(&dir)?;
+    if entry.emulated.is_empty() {
+        return Ok(None);
+    }
+    let services = entry
+        .emulated
+        .iter()
+        .map(|service| ServicePort {
+            service: service.service.clone(),
+            port: service.port,
+            base_url: service.base_url.clone(),
+        })
+        .collect();
+    let outcome = stand_in.start(&StandInRequest {
+        stack_dir: dir,
+        services,
+        path_env: env.path_env.clone(),
+    })?;
+    Ok(outcome.note)
+}
+
+struct EmulateStandIn {
+    data_dir: PathBuf,
+}
+
+impl StandIn for EmulateStandIn {
+    fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String> {
+        match emulate::probe_node(request.path_env.clone()) {
+            emulate::NodeStatus::Ready { .. } => {}
+            emulate::NodeStatus::Unavailable(note) => {
+                return Ok(StandInOutcome {
+                    pid: None,
+                    note: Some(note),
+                })
+            }
+        }
+        let tool = match emulate::installed(&self.data_dir) {
+            Some(tool) => tool,
+            None => {
+                // A tarball left by the downloader is installed now, against its pin.
+                let tarball = emulate::tool_dir(&self.data_dir).join("package.tgz");
+                match emulate::install_from_tarball(&self.data_dir, &tarball) {
+                    Ok(tool) => tool,
+                    Err(_) => {
+                        return Ok(StandInOutcome {
+                            pid: None,
+                            note: Some(
+                                "The stand-in isn't installed, so the tests use the named URLs with nothing behind them."
+                                    .into(),
+                            ),
+                        })
+                    }
+                }
+            }
+        };
+        // emulate's own precedence: this stack's named URL wins over any environment value.
+        let emulate_env = std::env::var("EMULATE_BASE_URL").ok();
+        let services: Vec<emulate::ServicePort> = request
+            .services
+            .iter()
+            .map(|service| emulate::ServicePort {
+                base_url: crate::local_services::base_url::resolve(
+                    crate::local_services::base_url::BaseUrlOptions {
+                        service: &service.service,
+                        port: service.port,
+                        base_url: None,
+                        seed_base_url: Some(&service.base_url),
+                        emulate_env: emulate_env.as_deref(),
+                        portless_env: None,
+                    },
+                ),
+                ..service.clone()
+            })
+            .collect();
+        let (config, notice) = emulate::write_config(&request.stack_dir, &services)?;
+        match emulate::start(&emulate::StartRequest {
+            stack_dir: request.stack_dir.clone(),
+            config,
+            tool,
+            path_env: request.path_env.clone(),
+        }) {
+            Ok(pid) => Ok(StandInOutcome {
+                pid: Some(pid),
+                note: notice,
+            }),
+            Err(error) => Ok(StandInOutcome {
+                pid: None,
+                note: Some(format!("The stand-in didn't start: {error}")),
+            }),
+        }
+    }
+
+    fn stop(&self, stack_dir: &Path) -> Result<(), String> {
+        match emulate::installed(&self.data_dir) {
+            Some(tool) => emulate::stop(stack_dir, &tool),
+            None => {
+                let _ = std::fs::remove_file(stack_dir.join("emulate.pid"));
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The worktree's branch, or none when git cannot answer (detached, missing, or slow).
+fn git_branch(worktree: &Path) -> Option<String> {
+    git_line(worktree, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .ok()
+        .map(|branch| branch.trim().to_string())
+        .filter(|branch| !branch.is_empty())
+}
+
+/// A pool slot lives under a `worktree-pool` folder. Its name comes from its stack id, so a
+/// return and a new lease keep the same hostnames and the stand-in's state.
+fn is_pool_slot(worktree: &Path) -> bool {
+    worktree
+        .ancestors()
+        .any(|path| path.file_name().is_some_and(|name| name == "worktree-pool"))
+}
+
 fn reserve(
     env: &StackEnv,
     store: &mut Store,
@@ -400,26 +828,54 @@ fn reserve(
     worktree: &Path,
     stack: &StackDecl,
     compose_path: Option<&Path>,
+    reaches_real: bool,
 ) -> Result<Entry, String> {
     let has_file = compose_path.is_some();
     let key = path_key(worktree);
     let project_key = path_key(project);
     let names = port_names(stack);
+    let emulated_services: Vec<String> = crate::stack_decl::emulated(stack)
+        .into_iter()
+        .filter_map(|service| service.emulate.clone())
+        .collect();
     if let Some(existing) = store
         .stacks
         .iter_mut()
         .find(|item| keys_eq(&item.key, &key))
     {
-        if existing.ports.iter().map(|port| &port.env).eq(names.iter()) {
+        let same_ports = existing.ports.iter().map(|port| &port.env).eq(names.iter());
+        let same_services = existing
+            .emulated
+            .iter()
+            .map(|service| &service.service)
+            .eq(emulated_services.iter());
+        if same_ports && same_services {
             let assigned: Vec<(String, u16)> = existing
                 .ports
                 .iter()
                 .map(|port| (port.env.clone(), port.port))
                 .collect();
-            let (values, url) = materialise(stack, &assigned)?;
+            let emulated_ports: Vec<(String, u16)> = existing
+                .emulated
+                .iter()
+                .map(|service| (service.service.clone(), service.port))
+                .collect();
+            let (values, url, published, emulated, label) = layout(
+                env,
+                project,
+                worktree,
+                &existing.id,
+                stack,
+                &assigned,
+                &emulated_ports,
+            )?;
             if let Some(dir) = &env.claims_dir {
                 let _lock = Lock::acquire(dir)?;
-                let ports: Vec<u16> = assigned.iter().map(|(_, port)| *port).collect();
+                let ports: Vec<u16> = assigned
+                    .iter()
+                    .chain(emulated_ports.iter())
+                    .map(|(_, port)| *port)
+                    .collect();
                 store_claim(dir, &path_key(&env.data_dir), &key, &ports)?;
             }
             existing.project = project_key;
@@ -428,6 +884,12 @@ fn reserve(
             existing.compose_file = compose_path.map(|path| path.to_string_lossy().into_owned());
             existing.env = values;
             existing.url = url;
+            existing.label = label;
+            existing.names = published;
+            existing.emulated = emulated;
+            existing.owner_pid = std::process::id();
+            existing.proxy_port = env.proxy_port;
+            existing.reaches_real = reaches_real;
             existing.running = !has_file;
             return Ok(existing.clone());
         }
@@ -441,8 +903,20 @@ fn reserve(
     if !valid_compose_project(&compose_project) {
         return Err("The Compose name could not be made, so nothing was started.".into());
     }
-    let (block, assigned) = assign_ports(env, store, &key, &names)?;
-    let (values, url) = materialise(stack, &assigned)?;
+    let (block, assigned, emulated_ports) =
+        assign_ports(env, store, &key, names.len(), emulated_services.len())?;
+    let assigned: Vec<(String, u16)> = names.into_iter().zip(assigned).collect();
+    let emulated_ports: Vec<(String, u16)> =
+        emulated_services.into_iter().zip(emulated_ports).collect();
+    let (values, url, published, emulated, label) = layout(
+        env,
+        project,
+        worktree,
+        &id,
+        stack,
+        &assigned,
+        &emulated_ports,
+    )?;
     let entry = Entry {
         id,
         key,
@@ -462,6 +936,13 @@ fn reserve(
         env: values,
         url,
         running: !has_file,
+        label,
+        names: published,
+        emulated,
+        owner_pid: std::process::id(),
+        proxy_port: env.proxy_port,
+        reaches_real,
+        note: None,
     };
     if let Some(pos) = store
         .stacks
@@ -475,13 +956,113 @@ fn reserve(
     Ok(entry)
 }
 
+/// The env block, the app URL, the published names, the fake services, and the label.
+type Layout = (
+    BTreeMap<String, String>,
+    Option<String>,
+    Vec<Published>,
+    Vec<Emulated>,
+    String,
+);
+
+/// The env block, the app URL, and the names and services this stack publishes.
+fn layout(
+    env: &StackEnv,
+    project: &Path,
+    worktree: &Path,
+    id: &str,
+    stack: &StackDecl,
+    assigned: &[(String, u16)],
+    emulated_ports: &[(String, u16)],
+) -> Result<Layout, String> {
+    let (mut values, _) = materialise(stack, assigned)?;
+    let label = stack_label(id, git_branch(worktree).as_deref(), is_pool_slot(worktree))
+        .filter(|label| label.len() <= MAX_LABEL)
+        .ok_or("This worktree's name could not be made, so nothing was started.")?;
+    let project_label = project
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "project".into());
+    let app_port = stack
+        .services
+        .iter()
+        .flat_map(|service| service.ports.iter())
+        .find(|port| port.url)
+        .and_then(|port| {
+            assigned
+                .iter()
+                .find(|(name, _)| *name == port.env)
+                .map(|(_, port)| *port)
+        })
+        .or_else(|| assigned.first().map(|(_, port)| *port));
+    let app_url = match (
+        app_port,
+        env.proxy_port,
+        crate::proxy::labels::app_hostname(&project_label, &label),
+    ) {
+        (Some(_port), Some(proxy), Some(host)) => format!("http://{host}:{proxy}"),
+        (Some(port), _, _) => format!("http://127.0.0.1:{port}"),
+        (None, _, _) => return Err("This stack publishes no port, so nothing was started.".into()),
+    };
+    let url = local_url(&app_url);
+    values.insert("PUBLIC_URL".into(), app_url.clone());
+
+    let mut published = Vec::new();
+    if let (Some(app_port), Some(_), Some(host)) = (
+        app_port,
+        env.proxy_port,
+        crate::proxy::labels::app_hostname(&project_label, &label),
+    ) {
+        published.push(Published {
+            hostname: host,
+            port: app_port,
+            service: None,
+        });
+    }
+    let mut emulated = Vec::new();
+    for service in crate::stack_decl::emulated(stack) {
+        let Some(name) = service.emulate.clone() else {
+            continue;
+        };
+        let Some((_, port)) = emulated_ports.iter().find(|(service, _)| *service == name) else {
+            continue;
+        };
+        let base_url = match (
+            env.proxy_port,
+            crate::proxy::labels::service_hostname(&name, &label),
+        ) {
+            (Some(proxy), Some(host)) => {
+                published.push(Published {
+                    hostname: host.clone(),
+                    port: *port,
+                    service: Some(name.clone()),
+                });
+                format!("http://{host}:{proxy}")
+            }
+            _ => format!("http://127.0.0.1:{port}"),
+        };
+        let env_name = crate::stack_decl::base_url_env(service)
+            .ok_or("An emulated service has no URL variable, so nothing was started.")?;
+        values.insert(env_name.clone(), base_url.clone());
+        emulated.push(Emulated {
+            service: name,
+            env: env_name,
+            port: *port,
+            base_url,
+        });
+    }
+    Ok((values, url, published, emulated, label))
+}
+
 fn assign_ports(
     env: &StackEnv,
     store: &Store,
     key: &str,
-    names: &[String],
-) -> Result<(u16, Vec<(String, u16)>), String> {
-    if names.len() > usize::from(BLOCK) {
+    declared: usize,
+    emulated: usize,
+) -> Result<(u16, Vec<u16>, Vec<u16>), String> {
+    let count = declared + emulated;
+    if count > usize::from(BLOCK) {
         return Err("This stack asks for more ports than one block holds.".into());
     }
     let base = if env.dev { DEV_BASE } else { DAILY_BASE };
@@ -508,19 +1089,23 @@ fn assign_ports(
         {
             continue;
         }
-        if range.iter().any(|port| !probe.free(*port)) {
+        if !crate::proxy::ports::block_is_usable(start, BLOCK, &HashSet::new())
+            || range.iter().any(|port| !probe.free(*port))
+        {
             continue;
         }
-        let assigned: Vec<(String, u16)> = names
-            .iter()
-            .enumerate()
-            .map(|(index, name)| (name.clone(), start + u16::try_from(index).unwrap_or(0)))
+        let ports: Vec<u16> = (0..count)
+            .map(|index| start + u16::try_from(index).unwrap_or(0))
             .collect();
         if let Some(dir) = &env.claims_dir {
-            let ports: Vec<u16> = assigned.iter().map(|(_, port)| *port).collect();
             store_claim(dir, &owner, key, &ports)?;
         }
-        return Ok((index, assigned));
+        // Declared port names come first, then one port per emulated service.
+        return Ok((
+            index,
+            ports[..declared].to_vec(),
+            ports[declared..].to_vec(),
+        ));
     }
     Err("No free port block is left, so nothing was started.".into())
 }
@@ -536,6 +1121,22 @@ fn taken(store: &Store, self_key: &str, port: u16) -> bool {
 }
 
 impl Entry {
+    /// One line for the stack card: fake services, the real internet, or neither.
+    fn mode(&self) -> String {
+        if !self.emulated.is_empty() {
+            let names: Vec<&str> = self
+                .emulated
+                .iter()
+                .map(|service| emulate::display_name(&service.service))
+                .collect();
+            return format!("Tests use fake {}", names.join(" and "));
+        }
+        if self.reaches_real {
+            return "Reaches the real internet".into();
+        }
+        "No outside services".into()
+    }
+
     fn block_ports(&self) -> Vec<u16> {
         // A stored block is untrusted. Only 0..600 is a real block; anything else
         // contributes no ports, so a wild value cannot panic or look taken.
@@ -1138,22 +1739,11 @@ fn probe_of(env: &StackEnv) -> Arc<dyn PortProbe> {
 
 struct BindProbe;
 
-/// Docker publishes on 0.0.0.0, and a port taken on another address must count
-/// as taken. HumanLayer's isPortAvailable listens on 0.0.0.0 for the same reason.
-fn probe_addr() -> std::net::Ipv4Addr {
-    std::net::Ipv4Addr::UNSPECIFIED
-}
-
-fn bindable(port: u16, addr: std::net::Ipv4Addr) -> bool {
-    std::net::TcpListener::bind((addr, port)).is_ok()
-}
-
 impl PortProbe for BindProbe {
     fn free(&self, port: u16) -> bool {
-        // BSD lets a wildcard bind coexist with a listener on one specific
-        // address, so the wildcard bind alone would miss a dev server or the
-        // app's phone door that listens only on 127.0.0.1. Check both.
-        bindable(port, probe_addr()) && bindable(port, std::net::Ipv4Addr::LOCALHOST)
+        // WP-90: the four-address probe portless uses. BSD lets a wildcard bind coexist with a
+        // listener on one address, and the proxy dials both loopback families.
+        crate::proxy::ports::probe_free(port)
     }
 }
 
@@ -1594,6 +2184,13 @@ pub(crate) fn remember_running(
             env: BTreeMap::new(),
             url: None,
             running: true,
+            label: String::new(),
+            names: Vec::new(),
+            emulated: Vec::new(),
+            owner_pid: 0,
+            proxy_port: None,
+            reaches_real: false,
+            note: None,
         });
         Ok(())
     })
@@ -1616,6 +2213,21 @@ pub async fn stack_down(app: AppHandle, cwd: String) -> Result<(), String> {
     let outcome = tauri::async_runtime::spawn_blocking(move || {
         let cwd = crate::fs::expand_home(&cwd);
         down(&env_from_app(&app_for_work)?, &cwd)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if outcome.is_ok() {
+        let _ = app.emit(STACKS_CHANGED, ());
+    }
+    outcome
+}
+
+#[tauri::command(async)]
+pub async fn stack_reset(app: AppHandle, cwd: String) -> Result<(), String> {
+    let app_for_work = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        let cwd = crate::fs::expand_home(&cwd);
+        reset(&env_from_app(&app_for_work)?, &cwd)
     })
     .await
     .map_err(|error| error.to_string())?;
@@ -1804,7 +2416,84 @@ mod tests {
                 compose: Some(self.runner.clone()),
                 probe: Some(Arc::new(AllFree)),
                 claims_dir: None,
+                names: None,
+                proxy_port: None,
+                stand_in: None,
+                path_env: None,
             }
+        }
+
+        /// WP-90: the same stack, with a memory name registry, a proxy port and a stand-in.
+        fn named_env(
+            &self,
+            names: Arc<MemoryNames>,
+            proxy_port: u16,
+            stand_in: Arc<MemoryStandIn>,
+        ) -> StackEnv {
+            StackEnv {
+                names: Some(names),
+                proxy_port: Some(proxy_port),
+                stand_in: Some(stand_in),
+                ..self.env()
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryNames {
+        routes: Mutex<Vec<(String, u16, u32)>>,
+    }
+
+    impl NameRegistry for MemoryNames {
+        fn add(&self, hostname: &str, port: u16, pid: u32) -> Result<(), String> {
+            let mut routes = self.routes.lock().unwrap();
+            if routes
+                .iter()
+                .any(|(name, _, owner)| name == hostname && *owner != pid)
+            {
+                return Err(format!(
+                    "{hostname} is already a name used by a running process"
+                ));
+            }
+            routes.retain(|(name, _, _)| name != hostname);
+            routes.push((hostname.to_string(), port, pid));
+            Ok(())
+        }
+
+        fn remove(&self, hostname: &str, pid: u32) -> Result<(), String> {
+            self.routes
+                .lock()
+                .unwrap()
+                .retain(|(name, _, owner)| name != hostname || *owner != pid);
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct MemoryStandIn {
+        started: Mutex<Vec<(String, Vec<ServicePort>)>>,
+        stopped: Mutex<Vec<String>>,
+        note: Mutex<Option<String>>,
+    }
+
+    impl StandIn for MemoryStandIn {
+        fn start(&self, request: &StandInRequest) -> Result<StandInOutcome, String> {
+            self.started.lock().unwrap().push((
+                crate::fs::path_to_js(&request.stack_dir),
+                request.services.clone(),
+            ));
+            Ok(StandInOutcome {
+                pid: Some(42),
+                note: self.note.lock().unwrap().clone(),
+            })
+        }
+
+        fn stop(&self, stack_dir: &Path) -> Result<(), String> {
+            self.stopped
+                .lock()
+                .unwrap()
+                .push(crate::fs::path_to_js(stack_dir));
+            Ok(())
         }
     }
 
@@ -1856,8 +2545,18 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         let stack = decl();
-        let first = maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        let second = maybe_start(&env, &fix.main, &fix.second, true, Some(&stack)).unwrap();
+        let first =
+            maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
+        let second = maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         let port = |pairs: &[(String, String)], name: &str| {
             pairs.iter().find(|(key, _)| key == name).unwrap().1.clone()
         };
@@ -1893,8 +2592,8 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         let stack = decl();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
         let started = calls(&fix);
         assert_eq!(started.len(), 2, "{started:?}");
         assert_eq!(started[0], started[1]);
@@ -1908,8 +2607,17 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         let stack = decl();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        maybe_start(&env, &fix.main, &fix.second, true, Some(&stack)).unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         down(&env, &fix.first).unwrap();
         down(&env, &fix.tmp.root.join("missing")).unwrap();
         let log = calls(&fix);
@@ -1940,8 +2648,17 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         let stack = decl();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        maybe_start(&env, &fix.main, &fix.second, true, Some(&stack)).unwrap();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         let id = load(&registry_dir(&env.data_dir))
             .unwrap()
             .stacks
@@ -1981,8 +2698,17 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         let stack = decl();
-        let none = maybe_start(&env, &fix.main, &fix.first, true, None).unwrap();
-        let quiet = maybe_start(&env, &fix.main, &fix.first, false, Some(&stack)).unwrap();
+        let none = maybe_start(&env, &fix.main, &fix.first, true, None, false, true).unwrap();
+        let quiet = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            false,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         assert!(none.is_empty());
         assert!(quiet.is_empty());
         assert!(!registry_path(&registry_dir(&env.data_dir)).exists());
@@ -1999,7 +2725,16 @@ mod tests {
             .lock()
             .unwrap()
             .extend([Script::Timeout, Script::Timeout]);
-        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap_err();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
         assert_eq!(error, DOCKER_LATER);
         assert_eq!(calls(&fix).len(), 2);
         let store = load(&registry_dir(&env.data_dir)).unwrap();
@@ -2007,7 +2742,16 @@ mod tests {
         assert!(!store.stacks[0].running);
         let id = store.stacks[0].id.clone();
         fix.runner.script.lock().unwrap().clear();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         let store = load(&registry_dir(&env.data_dir)).unwrap();
         assert_eq!(store.stacks[0].id, id);
         assert!(store.stacks[0].running);
@@ -2018,7 +2762,16 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         fix.runner.script.lock().unwrap().push(Script::Fail);
-        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap_err();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
         assert!(error.contains("compose failed"), "{error}");
         assert_eq!(calls(&fix).len(), 1);
         let store = load(&registry_dir(&env.data_dir)).unwrap();
@@ -2035,7 +2788,16 @@ mod tests {
             .lock()
             .unwrap()
             .extend([Script::Unreachable, Script::Ok]);
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         assert_eq!(calls(&fix).len(), 2);
         assert!(load(&registry_dir(&env.data_dir)).unwrap().stacks[0].running);
     }
@@ -2047,7 +2809,16 @@ mod tests {
         let dir = registry_dir(&env.data_dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(registry_path(&dir), b"{").unwrap();
-        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap_err();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
         assert!(error.contains("left as it was"), "{error}");
         assert_eq!(std::fs::read(registry_path(&dir)).unwrap(), b"{");
         assert!(calls(&fix).is_empty());
@@ -2097,7 +2868,16 @@ mod tests {
         file.set_times(std::fs::FileTimes::new().set_modified(old))
             .unwrap();
         drop(file);
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         assert!(!lock.exists(), "the dead owner's lock was left behind");
     }
 
@@ -2106,7 +2886,16 @@ mod tests {
         let fix = Fix::new();
         let mut env = fix.env();
         env.dev = true;
-        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         let port: u16 = pairs
             .iter()
             .find(|(key, _)| key == "PORT")
@@ -2128,7 +2917,16 @@ mod tests {
         let start = DAILY_BASE + index * BLOCK;
         let busy: std::collections::HashSet<u16> = (start..start + BLOCK).collect();
         env.probe = Some(Arc::new(Busy(busy)));
-        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let port: u16 = pairs
             .iter()
             .find(|(name, _)| name == "PORT")
@@ -2159,11 +2957,27 @@ mod tests {
                 env: BTreeMap::new(),
                 url: None,
                 running: false,
+                label: String::new(),
+                names: Vec::new(),
+                emulated: Vec::new(),
+                owner_pid: 0,
+                proxy_port: None,
+                reaches_real: false,
+                note: None,
             });
             Ok(())
         })
         .unwrap();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let store = load(&registry_dir(&env.data_dir)).unwrap();
         let grown = store
             .stacks
@@ -2178,8 +2992,26 @@ mod tests {
     fn several_running_stacks_do_not_guess_a_url() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
-        maybe_start(&env, &fix.main, &fix.second, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let from_main = status_for(&env, &fix.main).unwrap();
         assert!(from_main.url.is_none(), "{:?}", from_main.url);
         let from_first = status_for(&env, &fix.first).unwrap();
@@ -2196,7 +3028,16 @@ mod tests {
         assert!(local_url("http://127.0.0.1.evil:80").is_none());
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         update(&registry_dir(&env.data_dir), |store| {
             store.stacks[0].url = Some("http://evil.example/steal".into());
             Ok(())
@@ -2212,7 +3053,16 @@ mod tests {
         let fix = Fix::new();
         let env = fix.env();
         std::fs::remove_file(fix.first.join("docker-compose.yml")).unwrap();
-        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap_err();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
         assert!(error.contains("not in this worktree"), "{error}");
         assert!(!registry_path(&registry_dir(&env.data_dir)).exists());
         assert!(calls(&fix).is_empty());
@@ -2222,7 +3072,16 @@ mod tests {
     fn ports_only_never_calls_docker() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         assert!(calls(&fix).is_empty());
         down(&env, &fix.first).unwrap();
         assert!(calls(&fix).is_empty());
@@ -2251,6 +3110,13 @@ mod tests {
                         env: BTreeMap::new(),
                         url: None,
                         running: false,
+                        label: String::new(),
+                        names: Vec::new(),
+                        emulated: Vec::new(),
+                        owner_pid: 0,
+                        proxy_port: None,
+                        reaches_real: false,
+                        note: None,
                     });
                     Ok(())
                 })
@@ -2273,6 +3139,13 @@ mod tests {
                         env: BTreeMap::new(),
                         url: None,
                         running: false,
+                        label: String::new(),
+                        names: Vec::new(),
+                        emulated: Vec::new(),
+                        owner_pid: 0,
+                        proxy_port: None,
+                        reaches_real: false,
+                        note: None,
                     });
                     Ok(())
                 })
@@ -2305,13 +3178,24 @@ mod tests {
     fn dropping_the_compose_file_stops_the_old_stack_and_starts() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         let again = maybe_start(
             &env,
             &fix.main,
             &fix.first,
             true,
             Some(&same_ports_no_compose()),
+            false,
+            true,
         )
         .unwrap();
         assert!(again.iter().any(|(key, _)| key == "PORT"));
@@ -2321,6 +3205,8 @@ mod tests {
             &fix.first,
             true,
             Some(&same_ports_no_compose()),
+            false,
+            true,
         )
         .unwrap();
         let log = calls(&fix);
@@ -2344,7 +3230,16 @@ mod tests {
     fn dropping_compose_keeps_the_flag_when_docker_will_not_stop() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         fix.runner
             .script
             .lock()
@@ -2356,6 +3251,8 @@ mod tests {
             &fix.first,
             true,
             Some(&same_ports_no_compose()),
+            false,
+            true,
         )
         .unwrap_err();
         assert_eq!(error, DOCKER_LATER);
@@ -2403,8 +3300,26 @@ mod tests {
         right.data_dir = fix.tmp.root.join("data-b");
         right.claims_dir = Some(claims);
         let stack = ports_only();
-        let first = maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        let second = maybe_start(&right, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let first = maybe_start(
+            &left,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
+        let second = maybe_start(
+            &right,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         let port = |pairs: &[(String, String)]| {
             pairs
                 .iter()
@@ -2434,10 +3349,37 @@ mod tests {
         right.data_dir = fix.tmp.root.join("data-b");
         right.claims_dir = Some(claims.clone());
         let stack = ports_only();
-        let first = maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let first = maybe_start(
+            &left,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         std::fs::remove_file(claims.join("claims.json")).unwrap();
-        maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
-        let second = maybe_start(&right, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        maybe_start(
+            &left,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
+        let second = maybe_start(
+            &right,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&stack),
+            false,
+            true,
+        )
+        .unwrap();
         let port = |pairs: &[(String, String)]| {
             pairs
                 .iter()
@@ -2472,11 +3414,27 @@ mod tests {
                 env: BTreeMap::new(),
                 url: None,
                 running: false,
+                label: String::new(),
+                names: Vec::new(),
+                emulated: Vec::new(),
+                owner_pid: 0,
+                proxy_port: None,
+                reaches_real: false,
+                note: None,
             });
             Ok(())
         })
         .unwrap();
-        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let port: u16 = pairs
             .iter()
             .find(|(name, _)| name == "PORT")
@@ -2491,7 +3449,16 @@ mod tests {
     fn down_ignores_a_compose_file_outside_the_worktree() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         down(&env, &fix.first).unwrap();
         let root = crate::fs::canonical(&fix.first).unwrap();
         let first = fix.runner.files.lock().unwrap().last().cloned().unwrap();
@@ -2516,7 +3483,16 @@ mod tests {
     fn remove_stale_ignores_a_compose_file_outside_the_worktree() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&decl()),
+            false,
+            true,
+        )
+        .unwrap();
         let outside = fix.tmp.root.join("elsewhere.yml");
         std::fs::write(&outside, "services: {}\n").unwrap();
         let id = {
@@ -2543,7 +3519,8 @@ mod tests {
                "env":{"DATABASE_URL":"postgres://user:s3cret@127.0.0.1:${DATABASE_PORT}/app"}}]}"#,
         )
         .unwrap();
-        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let pairs =
+            maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap();
         let url = &pairs
             .iter()
             .find(|(key, _)| key == "DATABASE_URL")
@@ -2724,18 +3701,20 @@ mod tests {
     /// checked.
     #[test]
     fn the_port_probe_checks_the_wildcard_and_loopback_addresses() {
-        assert_eq!(probe_addr(), std::net::Ipv4Addr::UNSPECIFIED);
-        for addr in [probe_addr(), std::net::Ipv4Addr::LOCALHOST] {
+        // WP-90: the probe checks every address the proxy might dial, not just the wildcard.
+        for addr in [
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        ] {
             let listener = std::net::TcpListener::bind((addr, 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
             assert!(!BindProbe.free(port), "{addr}:{port} is taken");
             drop(listener);
         }
-        // Another process on this machine can take the port in the instant after
-        // it is released, so try a few: one of them will still be free.
         let mut saw_free = false;
         for _ in 0..20 {
-            let listener = std::net::TcpListener::bind((probe_addr(), 0)).unwrap();
+            let listener =
+                std::net::TcpListener::bind((std::net::Ipv4Addr::UNSPECIFIED, 0)).unwrap();
             let port = listener.local_addr().unwrap().port();
             drop(listener);
             if BindProbe.free(port) {
@@ -2752,7 +3731,16 @@ mod tests {
         use std::os::unix::fs::{symlink, PermissionsExt};
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let path = fix.first.join(".monocode").join("stack.env");
         let meta = std::fs::symlink_metadata(&path).unwrap();
         assert!(meta.file_type().is_file());
@@ -2764,8 +3752,16 @@ mod tests {
         let elsewhere = fix.tmp.root.join("elsewhere.env");
         std::fs::write(&elsewhere, "SECRET=1\n").unwrap();
         symlink(&elsewhere, linked.join("stack.env")).unwrap();
-        let error =
-            maybe_start(&env, &fix.main, &fix.second, true, Some(&ports_only())).unwrap_err();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap_err();
         assert!(error.contains("link"), "{error}");
         assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "SECRET=1\n");
     }
@@ -2775,10 +3771,329 @@ mod tests {
     fn the_env_file_is_a_regular_file() {
         let fix = Fix::new();
         let env = fix.env();
-        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
         let path = fix.first.join(".monocode").join("stack.env");
         let meta = std::fs::symlink_metadata(&path).unwrap();
         assert!(meta.is_file());
         assert!(!meta.file_type().is_symlink());
+    }
+
+    // WP-90 ---------------------------------------------------------------------------------
+
+    fn emulated_decl() -> StackDecl {
+        serde_json::from_str(
+            r#"{
+              "services": [
+                {"name": "web", "ports": [{"env": "PORT", "url": true}]},
+                {"name": "git", "emulate": "github"},
+                {"name": "pay", "emulate": "stripe", "urlEnv": "STRIPE_URL"}
+              ]
+            }"#,
+        )
+        .unwrap()
+    }
+
+    fn real_decl() -> StackDecl {
+        serde_json::from_str(
+            r#"{"services":[{"name":"web","ports":[{"env":"PORT","url":true}],
+                 "env":{"GITHUB_API":"https://api.github.com"}}]}"#,
+        )
+        .unwrap()
+    }
+
+    fn pair<'a>(pairs: &'a [(String, String)], name: &str) -> &'a str {
+        pairs
+            .iter()
+            .find(|(key, _)| key == name)
+            .unwrap_or_else(|| panic!("{name} missing from {pairs:?}"))
+            .1
+            .as_str()
+    }
+
+    #[test]
+    fn a_named_stack_publishes_its_app_and_fake_services_with_the_blocks_ports() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        // The app is named after the project and this worktree's branch.
+        assert_eq!(pair(&pairs, "PUBLIC_URL"), "http://main-a.localhost:7400");
+        assert_eq!(
+            pair(&pairs, "GITHUB_BASE_URL"),
+            "http://github-a.localhost:7400"
+        );
+        assert_eq!(pair(&pairs, "STRIPE_URL"), "http://stripe-a.localhost:7400");
+        // The stand-in got one port per service from the same block, none of them the app's.
+        let started = stand_in.started.lock().unwrap();
+        assert_eq!(started.len(), 1);
+        let services = &started[0].1;
+        assert_eq!(services.len(), 2);
+        let app_port: u16 = pair(&pairs, "PORT").parse().unwrap();
+        let mut ports: Vec<u16> = services.iter().map(|service| service.port).collect();
+        assert!(!ports.contains(&app_port), "{ports:?}");
+        ports.sort_unstable();
+        ports.dedup();
+        assert_eq!(ports.len(), 2);
+
+        let names = names.routes.lock().unwrap();
+        let hosts: Vec<&str> = names.iter().map(|(host, _, _)| host.as_str()).collect();
+        assert!(hosts.contains(&"main-a.localhost"));
+        assert!(hosts.contains(&"github-a.localhost"));
+        assert!(hosts.contains(&"stripe-a.localhost"));
+
+        let status = status_for(&env, &fix.first).unwrap();
+        let row = &status.stacks[0];
+        assert_eq!(row.url.as_deref(), Some("http://main-a.localhost:7400"));
+        assert_eq!(row.names.len(), 3);
+        assert_eq!(row.emulated, vec!["github", "stripe"]);
+        assert_eq!(row.mode, "Tests use fake GitHub and Stripe");
+    }
+
+    #[test]
+    fn down_removes_only_this_stacks_names_and_stops_its_stand_in() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.second,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        down(&env, &fix.first).unwrap();
+        let routes = names.routes.lock().unwrap();
+        assert!(
+            routes.iter().all(|(host, _, _)| !host.contains("-a.")),
+            "{routes:?}"
+        );
+        assert!(
+            routes.iter().any(|(host, _, _)| host.contains("-b.")),
+            "{routes:?}"
+        );
+        let first_id = load(&registry_dir(&env.data_dir))
+            .unwrap()
+            .stacks
+            .iter()
+            .find(|entry| keys_eq(&entry.key, &path_key(&fix.first)))
+            .unwrap()
+            .id
+            .clone();
+        let stopped = stand_in.stopped.lock().unwrap();
+        assert!(
+            stopped.iter().any(|dir| dir.ends_with(&first_id)),
+            "{stopped:?}"
+        );
+    }
+
+    #[test]
+    fn reset_puts_the_stand_in_back_without_moving_its_names() {
+        let fix = Fix::new();
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let before = names.routes.lock().unwrap().clone();
+        let started = stand_in.started.lock().unwrap().len();
+        reset(&env, &fix.first).unwrap();
+        assert_eq!(stand_in.started.lock().unwrap().len(), started + 1);
+        assert_eq!(*names.routes.lock().unwrap(), before);
+        assert!(stand_in
+            .stopped
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|dir| dir.contains('s')));
+    }
+
+    #[test]
+    fn a_pool_slot_keeps_its_name_and_state_across_a_return_and_a_new_lease() {
+        let fix = Fix::new();
+        let pool = fix
+            .tmp
+            .root
+            .join("worktree-pool")
+            .join("slots")
+            .join("repo-slot1");
+        std::fs::create_dir_all(pool.parent().unwrap()).unwrap();
+        git(
+            &fix.main,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "pool-branch",
+                pool.to_str().unwrap(),
+            ],
+        );
+        let stand_in = Arc::new(MemoryStandIn::default());
+        let names = Arc::new(MemoryNames::default());
+        let env = fix.named_env(Arc::clone(&names), 7400, Arc::clone(&stand_in));
+        let first = maybe_start(
+            &env,
+            &fix.main,
+            &pool,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        let first_url = pair(&first, "PUBLIC_URL").to_string();
+        // The slot's state lives with the stack and survives a return.
+        let dir = load(&registry_dir(&env.data_dir)).unwrap().stacks[0]
+            .id
+            .clone();
+        let state = stack_dir(&env.data_dir, &dir);
+        std::fs::create_dir_all(&state).unwrap();
+        down(&env, &pool).unwrap();
+        assert!(state.is_dir());
+        let second = maybe_start(
+            &env,
+            &fix.main,
+            &pool,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(pair(&second, "PUBLIC_URL"), first_url);
+        // Its name is the stack id, so a branch change cannot move it.
+        assert!(first_url.contains(&dir), "{first_url}");
+    }
+
+    #[test]
+    fn a_declared_real_host_refuses_without_reaches_real_and_a_crew_never_starts_one() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&real_decl()),
+            false,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("reaches: real"), "{error}");
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&real_decl()),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("only the person"), "{error}");
+        // The person may start it once the project says so.
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&real_decl()),
+            true,
+            true,
+        )
+        .unwrap();
+        let store = load(&registry_dir(&env.data_dir)).unwrap();
+        assert!(store.stacks[0].reaches_real);
+        assert_eq!(store.stacks[0].mode(), "Reaches the real internet");
+    }
+
+    #[test]
+    fn a_dev_stack_takes_ports_from_the_dev_range_only() {
+        let fix = Fix::new();
+        let mut env = fix.env();
+        env.dev = true;
+        let pairs = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&ports_only()),
+            false,
+            true,
+        )
+        .unwrap();
+        let port: u16 = pair(&pairs, "PORT").parse().unwrap();
+        assert!((DEV_BASE..DEV_BASE + SPAN).contains(&port), "{port}");
+        for reserved in [80, 443, 1420, 1421, 1430, 1919] {
+            assert_ne!(port, reserved);
+        }
+    }
+
+    #[test]
+    fn a_returned_pool_slot_has_its_names_removed_from_the_real_registry() {
+        let fix = Fix::new();
+        let routes =
+            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&fix.data));
+        let env = StackEnv {
+            names: Some(Arc::new(RouteNames {
+                store: routes.clone(),
+            })),
+            proxy_port: Some(7400),
+            stand_in: Some(Arc::new(MemoryStandIn::default())),
+            ..fix.env()
+        };
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(routes.load_routes_raw().unwrap().len(), 3);
+        stop_for_worktree(&fix.data, &fix.first).unwrap();
+        assert!(routes.load_routes_raw().unwrap().is_empty());
     }
 }

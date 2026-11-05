@@ -552,6 +552,8 @@ pub(crate) fn run_action(
             &checkout,
             true,
             file.stack.as_ref(),
+            file.reaches.as_deref() == Some("real"),
+            trigger == "app",
         );
         // A failed start can still have cleared `running`. The task card refetches either way.
         let _ = app.emit(crate::stacks::STACKS_CHANGED, ());

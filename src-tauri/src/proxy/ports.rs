@@ -97,6 +97,10 @@ pub fn next_free_from(from: u16, extra: &HashSet<u16>, probe: impl Fn(u16) -> bo
 
 /// portless's `allocatePorts`: keep a stored port while it is still ours or free, otherwise
 /// scan from `start_at` for one that is neither taken in this batch, reserved, nor in use.
+///
+/// WP-87's block owns a stack's ports; this is the translated allocator, exercised by its tests
+/// and kept for a caller that has keys to place rather than a block to fill.
+#[allow(dead_code, clippy::too_many_arguments)]
 pub fn allocate_ports(
     keys: &[String],
     stored: &BTreeMap<String, u16>,

@@ -33,6 +33,10 @@ pub fn save(path: &Path, data: &[u8]) -> std::io::Result<()> {
 
 /// Write `data` only if `path` does not exist yet, then return whatever the file holds. A
 /// second caller reads the first writer's file instead of replacing it.
+///
+/// Kept translated for a seed this app creates once; the stack's own seed may need merging,
+/// so today only its tests drive it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn initialize(path: &Path, data: &[u8]) -> std::io::Result<String> {
     let dir = parent(path)?;
     std::fs::create_dir_all(&dir)?;

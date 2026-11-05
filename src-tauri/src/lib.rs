@@ -436,6 +436,16 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
+            // keeps its own registry and takes the next free port above 7400.
+            let dev_copy = identity.kind != instance::Kind::Daily;
+            if let Err(error) = proxy::server::ensure_running(
+                &claim.data_dir,
+                dev_copy,
+                &std::collections::HashSet::new(),
+            ) {
+                eprintln!("WP-90: the named-app proxy did not start: {error}");
+            }
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
             // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
@@ -807,6 +817,7 @@ pub fn run() {
             worktree_pool::worktree_pool_prune,
             stacks::stack_status,
             stacks::stack_down,
+            stacks::stack_reset,
             stacks::stack_stale,
             stacks::stack_remove_stale,
             project_file::project_file_status,

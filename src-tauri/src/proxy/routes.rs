@@ -111,15 +111,12 @@ impl RouteStore {
     }
 
     /// Tests only: shorten the waits. Production always uses [`RouteStore::new`].
+    #[cfg(test)]
     pub fn with_policy(dir: impl Into<PathBuf>, policy: LockPolicy) -> Self {
         Self {
             dir: dir.into(),
             policy,
         }
-    }
-
-    pub fn dir(&self) -> &Path {
-        &self.dir
     }
 
     pub fn routes_path(&self) -> PathBuf {

@@ -14086,6 +14086,8 @@ function Workspace({
             createWorktree: (cwd, branch, base, existing, options) =>
               createWorktree(cwd, branch, base, existing, options),
             projectActions: (cwd) => listProjectActions(cwd),
+            // WP-90: a crew reads the stack's names and fake services, never starts a real one.
+            stacks: (cwd) => invoke("stack_status", { cwd }),
             runProjectAction: (checkoutCwd, actionId) =>
               runProjectAction(checkoutCwd, actionId, "agent"),
             waitProjectAction: (runId, timeoutMs) =>
