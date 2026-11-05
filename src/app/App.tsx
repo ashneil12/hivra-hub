@@ -12428,6 +12428,8 @@ function Workspace({
       setHubSelection(selection);
     },
     startCodingTeamChat: (projectId, runtimeMode) => startCodingTeamChat(projectId, runtimeMode),
+    // A bench scene's own mode for a Mono's chat, set and put back by the run (dev copy only).
+    setRuntimeMode: (sessionId, runtimeMode) => onRuntimeModeChange(sessionId, runtimeMode),
     // Called after this render, so onApproval (declared below) is set by then.
     // bench: Allow, or Deny when the run refuses a permission card.
     approve: (sessionId, requestId, decision) => onApproval(sessionId, requestId, decision ?? "allow"),
@@ -12466,6 +12468,8 @@ function Workspace({
       showHub: (selection) => verifyDriverHost.current!.showHub(selection),
       startCodingTeamChat: (projectId, runtimeMode) =>
         verifyDriverHost.current!.startCodingTeamChat?.(projectId, runtimeMode) ?? null,
+      setRuntimeMode: (sessionId, runtimeMode) =>
+        verifyDriverHost.current!.setRuntimeMode?.(sessionId, runtimeMode),
       approve: (sessionId, requestId, decision) => verifyDriverHost.current!.approve?.(sessionId, requestId, decision),
       archive: async (sessionId) => (await verifyDriverHost.current!.archive?.(sessionId)) ?? false,
     });

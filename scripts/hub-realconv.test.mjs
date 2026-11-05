@@ -411,6 +411,58 @@ test("S5 runs its coding-team chat in Full access; no other scene changes the mo
   assert.deepEqual(modes, [["S5", "full-access"]]);
 });
 
+test("a Mono-chat scene sets its runtime mode on that Mono's chat and puts it back when the scene ends", async () => {
+  const { runConversation } = await import("./realconv/player.mjs");
+  const dir = tmp();
+  const calls = [];
+  const scene = { id: "M1", title: "a Mono that runs commands", card: "", place: { mono: "frank" }, opening: "run the tests n tell me", minutes: 0, runtimeMode: "full-access", expect: {} };
+  const judge = makeClient({ provider: "fake", model: "fake" }, { script: () => JSON.stringify({ grade: "FAIL", replies: [], realConversation: false, summary: "nothing was proven", sceneChecks: [], autoFails: [] }) });
+  const tester = makeClient({ provider: "fake", model: "fake" }, { script: () => '{"action":"done"}' });
+  await runConversation(scene, {
+    act: async (op, args) => {
+      calls.push({ op, args: JSON.parse(JSON.stringify(args ?? {})) });
+      if (op === "send") return { ok: true, at: Date.now(), session: "frank-chat", runtimeMode: args?.runtimeMode, previousRuntimeMode: "auto" };
+      if (op === "snapshot") return { ok: true, sessions: [{ id: "frank-chat", title: "frank", mono: "frank" }], monos: [], rooms: [], dom: { elements: [] } };
+      return { ok: true };
+    },
+    events: [], evidence: dir, project: dir, log: () => {}, pump: async () => {}, usage: () => ({ turns: 0, requests: 0 }),
+    claudeTexts: async () => [], delegationRows: async () => [], monoSession: async () => "frank-chat", sessionBlocks: async () => [],
+    leadId: "tally-lead", roomId: "tally:leadership", spec: { project: { id: "tally" }, leak: [] }, deadline: Date.now() + 60_000,
+    state: dir, team: [], home: "/tmp/bench-home", dataDir: "/tmp/bench-data", copies: [],
+  }, { tester, judge, agentsReal: false, out: dir, rubric: "" });
+  const send = calls.filter((c) => c.op === "send");
+  assert.deepEqual(send[0].args.to, { mono: "frank" });
+  assert.equal(send[0].args.runtimeMode, "full-access");
+  const back = calls.filter((c) => c.op === "runtimeMode");
+  assert.deepEqual(back, [{ op: "runtimeMode", args: { session: "frank-chat", runtimeMode: "auto" } }]);
+  assert.ok(calls.indexOf(back[0]) > calls.indexOf(send[0]), "the chat's earlier mode goes back after the scene's sends");
+});
+
+test("a Mono-chat scene cut by an error still puts the chat's earlier runtime mode back", async () => {
+  const { runConversation } = await import("./realconv/player.mjs");
+  const dir = tmp();
+  const calls = [];
+  const scene = { id: "M2", title: "a Mono scene that breaks", card: "", place: { mono: "frank" }, opening: "run the tests n tell me", minutes: 1, runtimeMode: "full-access", expect: {} };
+  const judge = makeClient({ provider: "fake", model: "fake" }, { script: () => JSON.stringify({ grade: "FAIL", replies: [], realConversation: false, summary: "n/a", sceneChecks: [], autoFails: [] }) });
+  const tester = makeClient({ provider: "fake", model: "fake" }, { script: () => '{"action":"done"}' });
+  await assert.rejects(
+    runConversation(scene, {
+      act: async (op, args) => {
+        calls.push({ op, args: JSON.parse(JSON.stringify(args ?? {})) });
+        if (op === "send") return { ok: true, at: Date.now(), session: "frank-chat", runtimeMode: args?.runtimeMode, previousRuntimeMode: "auto" };
+        if (op === "snapshot") return { ok: true, sessions: [{ id: "frank-chat", title: "frank", mono: "frank" }], monos: [], rooms: [], dom: { elements: [] } };
+        return { ok: true };
+      },
+      events: [], evidence: dir, project: dir, log: () => {}, pump: async () => { throw new Error("the window went away"); }, usage: () => ({ turns: 0, requests: 0 }),
+      claudeTexts: async () => [], delegationRows: async () => [], monoSession: async () => "frank-chat", sessionBlocks: async () => [],
+      leadId: "tally-lead", roomId: "tally:leadership", spec: { project: { id: "tally" }, leak: [] }, deadline: Date.now() + 120_000,
+      state: dir, team: [], home: "/tmp/bench-home", dataDir: "/tmp/bench-data", copies: [],
+    }, { tester, judge, agentsReal: false, out: dir, rubric: "" }),
+    /the window went away/,
+  );
+  assert.deepEqual(calls.filter((c) => c.op === "runtimeMode"), [{ op: "runtimeMode", args: { session: "frank-chat", runtimeMode: "auto" } }]);
+});
+
 test("an ask still open when the scene ends is stuck on that permission, not a plain fail", async () => {
   const { runConversation } = await import("./realconv/player.mjs");
   const dir = tmp();
