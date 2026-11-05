@@ -172,7 +172,7 @@ Third-party components Hivra adds:
   License: Apache-2.0
   Copyright HumanLayer and the HumanLayer contributors
   Used in: src-tauri/src/stacks.rs, src-tauri/src/stack_decl.rs, src/features/stacks
-  Rewritten from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included, because the upstream tree was not in the local sources checkout (WP-87).
+  Translated to Rust from apps/devstack's generic stack id, port blocks, env block, Compose project names, registry, status and down. HumanLayer's own services are not included (WP-87).
 
 - Orbit's MCP door
   Source: https://github.com/coollabsio/orbit

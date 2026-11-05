@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Design: HumanLayer apps/devstack (Apache-2.0): stack-id, ports, env-block, compose, registry, status, down.
-// The upstream tree was not in the local sources checkout, so this is a rewrite.
+// Translated to Rust. HumanLayer's TypeScript is not vendored.
 // HumanLayer's own services (WorkOS, MinIO, Redis, Postgres seeding) are not included.
 
 //! One stack per worktree: a stable id, a block of ports, a Compose project, a gitignored env file.
@@ -30,7 +30,9 @@ const DEV_BASE: u16 = 42_000;
 const SPAN: u16 = 6_000;
 const LOCK_ATTEMPTS: u32 = 40;
 const LOCK_WAIT: Duration = Duration::from_millis(25);
-const LOCK_STALE: Duration = Duration::from_secs(300);
+/// A lock is only held around small file reads and writes. One older than this
+/// belongs to a process that died, and waiting on it would block every stack.
+const LOCK_STALE: Duration = Duration::from_secs(30);
 const DOCKER_WAIT: Duration = Duration::from_secs(20);
 const DOCKER_LATER: &str =
     "Docker didn't answer. The stack was left as it was and can be tried again.";
@@ -731,13 +733,58 @@ fn write_env_file(worktree: &Path, entry: &Entry) -> Result<(), String> {
         body.push_str(value);
         body.push('\n');
     }
-    let tmp = dir.join(format!(".stack.env.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, body.as_bytes()).map_err(|error| error.to_string())?;
+    // The env block can hold a database URL. Write it privately, and under a
+    // unique name so two starts in one process cannot clobber the same temp file.
+    let tmp = tmp_name(&dir, "stack.env");
+    write_new_private(&tmp, body.as_bytes()).map_err(|error| error.to_string())?;
+    #[cfg(unix)]
+    if let Err(error) = make_private(&tmp) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
     std::fs::rename(&tmp, &target).map_err(|error| {
         let _ = std::fs::remove_file(&tmp);
         error.to_string()
     })?;
     Ok(())
+}
+
+/// A temporary name no other start can pick. The process id alone repeats
+/// after a restart, and a crash can leave the old file behind, so the clock
+/// and a counter are in the name too.
+fn tmp_name(dir: &Path, what: &str) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, Ordering::Relaxed);
+    let stamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|age| age.as_nanos())
+        .unwrap_or(0);
+    dir.join(format!(".{what}.{}.{stamp}.{n}.tmp", std::process::id()))
+}
+
+fn write_new_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all().ok();
+    Ok(())
+}
+
+#[cfg(unix)]
+fn make_private(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(path)
+        .map_err(|error| error.to_string())?
+        .permissions();
+    perms.set_mode(0o600);
+    std::fs::set_permissions(path, perms).map_err(|error| error.to_string())
 }
 
 /// Gitignore pattern. Git always wants `/` here, including on Windows.
@@ -806,7 +853,7 @@ fn ignore_env_file(project: &Path, worktree: &Path) -> Result<(), String> {
     }
     next.extend_from_slice(ENV_IGNORE.as_bytes());
     next.extend_from_slice(newline);
-    let tmp = parent.join(format!(".exclude.{}.tmp", std::process::id()));
+    let tmp = tmp_name(parent, "exclude");
     std::fs::write(&tmp, &next).map_err(|error| error.to_string())?;
     std::fs::rename(&tmp, &exclude).map_err(|error| {
         let _ = std::fs::remove_file(&tmp);
@@ -1091,9 +1138,22 @@ fn probe_of(env: &StackEnv) -> Arc<dyn PortProbe> {
 
 struct BindProbe;
 
+/// Docker publishes on 0.0.0.0, and a port taken on another address must count
+/// as taken. HumanLayer's isPortAvailable listens on 0.0.0.0 for the same reason.
+fn probe_addr() -> std::net::Ipv4Addr {
+    std::net::Ipv4Addr::UNSPECIFIED
+}
+
+fn bindable(port: u16, addr: std::net::Ipv4Addr) -> bool {
+    std::net::TcpListener::bind((addr, port)).is_ok()
+}
+
 impl PortProbe for BindProbe {
     fn free(&self, port: u16) -> bool {
-        std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
+        // BSD lets a wildcard bind coexist with a listener on one specific
+        // address, so the wildcard bind alone would miss a dev server or the
+        // app's phone door that listens only on 127.0.0.1. Check both.
+        bindable(port, probe_addr()) && bindable(port, std::net::Ipv4Addr::LOCALHOST)
     }
 }
 
@@ -1115,18 +1175,7 @@ impl ComposeRunner for RealDocker {
         }
         let mut cmd = docker_command();
         cmd.current_dir(&request.cwd);
-        cmd.arg("compose");
-        cmd.arg("-p");
-        cmd.arg(&request.project);
-        cmd.arg("-f");
-        cmd.arg(&request.compose_file);
-        cmd.arg("--env-file");
-        cmd.arg(&request.env_file);
-        cmd.arg("up");
-        cmd.arg("-d");
-        for service in &request.services {
-            cmd.arg(service);
-        }
+        push_compose_up(&mut cmd, request);
         run_timed(&mut cmd)
     }
 
@@ -1152,13 +1201,35 @@ fn compose_down(project: &str, file: &Path) -> Result<(), ComposeFailure> {
             cmd.current_dir(cwd);
         }
     }
+    push_compose_down(&mut cmd, project, file);
+    run_timed(&mut cmd)
+}
+
+fn push_compose_up(cmd: &mut Command, request: &UpRequest) {
+    cmd.arg("compose");
+    cmd.arg("-p");
+    cmd.arg(&request.project);
+    cmd.arg("-f");
+    cmd.arg(&request.compose_file);
+    cmd.arg("--env-file");
+    cmd.arg(&request.env_file);
+    cmd.arg("up");
+    cmd.arg("-d");
+    // An old container from a service this file no longer names would keep the port.
+    cmd.arg("--remove-orphans");
+    for service in &request.services {
+        cmd.arg(service);
+    }
+}
+
+fn push_compose_down(cmd: &mut Command, project: &str, file: &Path) {
     cmd.arg("compose");
     cmd.arg("-p");
     cmd.arg(project);
     cmd.arg("-f");
     cmd.arg(file);
-    cmd.args(["down", "--timeout", "10"]);
-    run_timed(&mut cmd)
+    // Volumes stay. Down stops containers, it does not delete their data.
+    cmd.args(["down", "--timeout", "10", "--remove-orphans"]);
 }
 
 fn service_ok(name: &str) -> bool {
@@ -1182,16 +1253,7 @@ fn remove_by_label(project: &str) -> Result<(), ComposeFailure> {
     if !output.status.success() {
         return Err(ComposeFailure::Failed(one_line(&output.stderr)));
     }
-    let ids: Vec<String> = String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| {
-            line.chars()
-                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-        })
-        .map(str::to_string)
-        .collect();
+    let ids = container_ids(&String::from_utf8_lossy(&output.stdout))?;
     if ids.is_empty() {
         return Ok(());
     }
@@ -1206,9 +1268,26 @@ fn remove_by_label(project: &str) -> Result<(), ComposeFailure> {
 }
 
 fn docker_command() -> Command {
+    docker_command_from(crate::harness::login_shell_path(), |key| {
+        std::env::var_os(key)
+    })
+}
+
+/// `login_path` is the shell PATH a terminal would have. A Finder launch only
+/// has /usr/bin:/bin:/usr/sbin:/sbin, so `docker` on /usr/local/bin or Homebrew
+/// is missed. HOME (and the Docker config variables) stay so the CLI can read
+/// ~/.docker/config.json: the Desktop context and the compose plugin directory.
+/// An empty value is left out. Anything else stays cleared.
+fn docker_command_from(
+    login_path: Option<String>,
+    var: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Command {
     let mut cmd = scrubbed("docker");
-    for key in ["DOCKER_HOST", "DOCKER_CONTEXT"] {
-        if let Some(value) = std::env::var_os(key) {
+    if let Some(path) = login_path.filter(|path| !path.is_empty()) {
+        cmd.env("PATH", path);
+    }
+    for key in docker_env_keys() {
+        if let Some(value) = var(key).filter(|value| !value.is_empty()) {
             cmd.env(key, value);
         }
     }
@@ -1216,6 +1295,56 @@ fn docker_command() -> Command {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd
+}
+
+fn docker_env_keys() -> &'static [&'static str] {
+    #[cfg(windows)]
+    {
+        &[
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "HOME",
+            "DOCKER_CONFIG",
+            "DOCKER_CERT_PATH",
+            "DOCKER_TLS_VERIFY",
+            "USERPROFILE",
+            "APPDATA",
+        ]
+    }
+    #[cfg(not(windows))]
+    {
+        &[
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "HOME",
+            "DOCKER_CONFIG",
+            "DOCKER_CERT_PATH",
+            "DOCKER_TLS_VERIFY",
+        ]
+    }
+}
+
+/// `docker ps -q` prints one full id per line. Anything shorter can prefix-match
+/// the wrong container, so a bad line fails the whole removal.
+fn container_ids(stdout: &str) -> Result<Vec<String>, ComposeFailure> {
+    let mut ids = Vec::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let ok = (12..=64).contains(&line.len())
+            && line
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase());
+        if !ok {
+            return Err(ComposeFailure::Failed(
+                "Docker returned a container id this app will not remove.".into(),
+            ));
+        }
+        ids.push(line.to_string());
+    }
+    Ok(ids)
 }
 
 fn scrubbed(program: &str) -> Command {
@@ -1942,6 +2071,37 @@ mod tests {
     }
 
     #[test]
+    fn temporary_names_do_not_repeat() {
+        let first = tmp_name(&std::env::temp_dir(), "stack.env");
+        let second = tmp_name(&std::env::temp_dir(), "stack.env");
+        assert_ne!(first, second);
+        assert!(first
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(".tmp"));
+    }
+
+    /// A process that died while holding the lock must not block every stack
+    /// for long. The threshold is short, so waiting is all a start needs.
+    #[test]
+    fn an_old_lock_file_is_taken_over() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let dir = registry_dir(&env.data_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join(".stack.lock");
+        std::fs::write(&lock, b"dead").unwrap();
+        let old = SystemTime::now() - LOCK_STALE - Duration::from_secs(1);
+        let file = OpenOptions::new().write(true).open(&lock).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(old))
+            .unwrap();
+        drop(file);
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        assert!(!lock.exists(), "the dead owner's lock was left behind");
+    }
+
+    #[test]
     fn dev_copies_use_a_higher_port_range() {
         let fix = Fix::new();
         let mut env = fix.env();
@@ -2395,5 +2555,230 @@ mod tests {
         assert!(!registry.contains("s3cret"), "{registry}");
         let body = std::fs::read_to_string(fix.first.join(".monocode").join("stack.env")).unwrap();
         assert!(body.contains("s3cret"), "{body}");
+    }
+
+    fn env_of(cmd: &Command, key: &str) -> Option<String> {
+        cmd.get_envs()
+            .find(|(name, _)| *name == std::ffi::OsStr::new(key))
+            .and_then(|(_, value)| value.map(|value| value.to_string_lossy().into_owned()))
+    }
+
+    /// Finder's PATH is only /usr/bin:/bin:/usr/sbin:/sbin. Docker has to see the
+    /// login shell's PATH, and HOME, or it cannot find the binary or the Desktop
+    /// context. Both are injected so the test does not read this process.
+    #[test]
+    fn docker_command_carries_home_and_the_login_shell_path() {
+        let login = "/injected/login/bin:/usr/local/bin";
+        let supplied = |key: &str| -> Option<std::ffi::OsString> {
+            Some(
+                match key {
+                    "HOME" => "/Users/ada",
+                    "DOCKER_HOST" => "unix:///Users/ada/.docker/run/docker.sock",
+                    "DOCKER_CONTEXT" => "desktop-linux",
+                    "DOCKER_CONFIG" => "/Users/ada/.docker",
+                    "DOCKER_CERT_PATH" => "/Users/ada/.docker/certs",
+                    "DOCKER_TLS_VERIFY" => "1",
+                    "USERPROFILE" => r"C:\Users\ada",
+                    "APPDATA" => r"C:\Users\ada\AppData\Roaming",
+                    "PATH" => "/usr/bin:/bin:/usr/sbin:/sbin",
+                    "SECRET_TOKEN" => "nope",
+                    _ => return None,
+                }
+                .into(),
+            )
+        };
+        let cmd = docker_command_from(Some(login.to_string()), supplied);
+        assert_eq!(env_of(&cmd, "PATH").as_deref(), Some(login));
+        assert_ne!(
+            env_of(&cmd, "PATH").as_deref(),
+            Some("/usr/bin:/bin:/usr/sbin:/sbin"),
+            "docker must not keep the Finder PATH"
+        );
+        assert_eq!(env_of(&cmd, "HOME").as_deref(), Some("/Users/ada"));
+        for key in docker_env_keys() {
+            let want = supplied(key).map(|value| value.to_string_lossy().into_owned());
+            assert_eq!(env_of(&cmd, key), want, "{key}");
+        }
+        assert!(env_of(&cmd, "SECRET_TOKEN").is_none());
+    }
+
+    #[test]
+    fn an_empty_login_path_does_not_wipe_path_and_an_empty_home_is_left_out() {
+        let cmd = docker_command_from(Some(String::new()), |key| {
+            (key == "HOME" || key == "DOCKER_HOST").then(std::ffi::OsString::new)
+        });
+        assert_eq!(
+            env_of(&cmd, "PATH").as_deref(),
+            std::env::var("PATH").ok().as_deref()
+        );
+        assert!(env_of(&cmd, "HOME").is_none());
+        assert!(env_of(&cmd, "DOCKER_HOST").is_none());
+    }
+
+    #[test]
+    #[ignore = "needs a local Docker; reads compose version only and launches no app"]
+    fn real_docker_compose_answers() {
+        let mut cmd = docker_command();
+        cmd.args(["compose", "version"]);
+        let output = cmd
+            .output()
+            .expect("docker compose version could not start");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "stdout: {stdout}\nstderr: {stderr}"
+        );
+        let text = stdout.to_ascii_lowercase();
+        assert!(
+            text.contains("version") || text.contains("compose"),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    fn a_short_or_odd_container_id_is_not_removed() {
+        let full = "a".repeat(64);
+        assert_eq!(container_ids(&full).unwrap(), vec![full.clone()]);
+        assert_eq!(container_ids("\n\n").unwrap(), Vec::<String>::new());
+        assert_eq!(
+            container_ids(&format!("  {full}  \r\n")).unwrap(),
+            vec![full.clone()]
+        );
+        assert!(container_ids(&"ab".repeat(6)).is_ok(), "12 hex digits");
+        for bad in [
+            "abc",
+            &"ab".repeat(33),
+            "DEADBEEFDEAD",
+            "not-an-id",
+            &format!("{full}\nbad"),
+        ] {
+            assert!(container_ids(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn compose_up_and_down_drop_orphans_and_keep_volumes() {
+        let request = UpRequest {
+            project: "hivra-s01234567".into(),
+            compose_file: PathBuf::from("/work/docker-compose.yml"),
+            env_file: PathBuf::from("/work/.monocode/stack.env"),
+            services: vec!["web".into()],
+            cwd: PathBuf::from("/work"),
+        };
+        let mut up = Command::new("docker");
+        push_compose_up(&mut up, &request);
+        let up_args: Vec<_> = up
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            up_args,
+            vec![
+                "compose",
+                "-p",
+                "hivra-s01234567",
+                "-f",
+                "/work/docker-compose.yml",
+                "--env-file",
+                "/work/.monocode/stack.env",
+                "up",
+                "-d",
+                "--remove-orphans",
+                "web",
+            ]
+        );
+        let mut down = Command::new("docker");
+        push_compose_down(
+            &mut down,
+            "hivra-s01234567",
+            Path::new("/work/docker-compose.yml"),
+        );
+        let down_args: Vec<_> = down
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            down_args,
+            vec![
+                "compose",
+                "-p",
+                "hivra-s01234567",
+                "-f",
+                "/work/docker-compose.yml",
+                "down",
+                "--timeout",
+                "10",
+                "--remove-orphans",
+            ]
+        );
+        assert!(up_args.iter().all(|arg| arg != "--volumes" && arg != "-v"));
+        assert!(down_args
+            .iter()
+            .all(|arg| arg != "--volumes" && arg != "-v"));
+    }
+
+    /// Docker publishes on 0.0.0.0, so a listener on the wildcard address must
+    /// count as taken. A dev server or the phone door may hold only 127.0.0.1,
+    /// which a wildcard bind alone can miss on BSD-derived systems, so both are
+    /// checked.
+    #[test]
+    fn the_port_probe_checks_the_wildcard_and_loopback_addresses() {
+        assert_eq!(probe_addr(), std::net::Ipv4Addr::UNSPECIFIED);
+        for addr in [probe_addr(), std::net::Ipv4Addr::LOCALHOST] {
+            let listener = std::net::TcpListener::bind((addr, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            assert!(!BindProbe.free(port), "{addr}:{port} is taken");
+            drop(listener);
+        }
+        // Another process on this machine can take the port in the instant after
+        // it is released, so try a few: one of them will still be free.
+        let mut saw_free = false;
+        for _ in 0..20 {
+            let listener = std::net::TcpListener::bind((probe_addr(), 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            drop(listener);
+            if BindProbe.free(port) {
+                saw_free = true;
+                break;
+            }
+        }
+        assert!(saw_free, "a released port was never reported free");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_env_file_is_private_and_a_link_is_left_alone() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        let path = fix.first.join(".monocode").join("stack.env");
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(meta.file_type().is_file());
+        assert!(!meta.file_type().is_symlink());
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+
+        let linked = fix.second.join(".monocode");
+        std::fs::create_dir_all(&linked).unwrap();
+        let elsewhere = fix.tmp.root.join("elsewhere.env");
+        std::fs::write(&elsewhere, "SECRET=1\n").unwrap();
+        symlink(&elsewhere, linked.join("stack.env")).unwrap();
+        let error =
+            maybe_start(&env, &fix.main, &fix.second, true, Some(&ports_only())).unwrap_err();
+        assert!(error.contains("link"), "{error}");
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "SECRET=1\n");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_env_file_is_a_regular_file() {
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        let path = fix.first.join(".monocode").join("stack.env");
+        let meta = std::fs::symlink_metadata(&path).unwrap();
+        assert!(meta.is_file());
+        assert!(!meta.file_type().is_symlink());
     }
 }

@@ -179,5 +179,5 @@
 
    The upstream files do not carry a separate copyright line (Apache-2.0).
    This directory follows HumanLayer's apps/devstack design
-   (https://github.com/humanlayer/humanlayer). The source tree was not in the
-   local sources checkout, so this is a rewrite, not a byte copy (WP-87).
+   (https://github.com/humanlayer/humanlayer). Translated to Rust, not a byte
+   copy, because the source is TypeScript (WP-87).

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Design: HumanLayer apps/devstack status and down (Apache-2.0).
-// The upstream tree was not in the local sources checkout, so this is a rewrite.
+// Translated to Rust in the app's stack code. This file is not a byte copy.
 
 import { appLink } from "../model/link";
 

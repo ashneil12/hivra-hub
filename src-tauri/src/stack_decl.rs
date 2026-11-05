@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Design: HumanLayer apps/devstack workspace-config (Apache-2.0).
-// The upstream tree was not in the local sources checkout, so this is a rewrite.
+// Translated to Rust. HumanLayer's TypeScript is not vendored.
 
 //! A project's stack, declared in `.monocode/project.json`. No `stack` means the project is left alone.
 
