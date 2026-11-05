@@ -65,6 +65,7 @@ static HOME_LOCK: Mutex<()> = Mutex::new(());
 
 struct TempHome {
     previous_home: Option<std::ffi::OsString>,
+    previous_profile: Option<std::ffi::OsString>,
     previous_monos: Option<std::ffi::OsString>,
     previous_memory: Option<std::ffi::OsString>,
     _guard: MutexGuard<'static, ()>,
@@ -75,13 +76,17 @@ fn temp_home(home: &Path) -> TempHome {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let previous_home = std::env::var_os("HOME");
+    // Windows finds the home folder through USERPROFILE before HOME (dirs_home), so set both.
+    let previous_profile = std::env::var_os("USERPROFILE");
     let previous_monos = std::env::var_os(crate::mono_home::HOME_ENV);
     let previous_memory = std::env::var_os("MONOCODE_HUB_MEMORY_ROOT");
     std::env::set_var("HOME", home);
+    std::env::set_var("USERPROFILE", home);
     std::env::remove_var(crate::mono_home::HOME_ENV);
     std::env::remove_var("MONOCODE_HUB_MEMORY_ROOT");
     TempHome {
         previous_home,
+        previous_profile,
         previous_monos,
         previous_memory,
         _guard: guard,
@@ -91,6 +96,7 @@ fn temp_home(home: &Path) -> TempHome {
 impl Drop for TempHome {
     fn drop(&mut self) {
         restore_env("HOME", &self.previous_home);
+        restore_env("USERPROFILE", &self.previous_profile);
         restore_env(crate::mono_home::HOME_ENV, &self.previous_monos);
         restore_env("MONOCODE_HUB_MEMORY_ROOT", &self.previous_memory);
     }
@@ -1095,7 +1101,12 @@ fn a_held_roster_lock_is_not_written_over() {
     let before = fs::read(&roster).unwrap();
     fs::write(
         roots.monos_root.join("MONOS.json.lock"),
-        format!("{{\"pid\":{},\"at\":0}}", std::process::id()),
+        // Fresh as well as ours: Windows judges a lock by its age (stale after two days), not its pid.
+        format!(
+            "{{\"pid\":{},\"at\":{}}}",
+            std::process::id(),
+            snapshot::now_millis()
+        ),
     )
     .unwrap();
     let listing = names(&roots.monos_root);
