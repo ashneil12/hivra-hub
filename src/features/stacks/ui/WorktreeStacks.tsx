@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StackList, type StackView } from "./StackList";
 
 type StackStatus = {
@@ -16,6 +16,8 @@ export function WorktreeStacks({ cwd }: { cwd: string }) {
   const [status, setStatus] = useState<StackStatus>();
   const [error, setError] = useState<string>();
   const [tick, setTick] = useState(0);
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
 
   useEffect(() => {
     setStatus(undefined);
@@ -47,9 +49,14 @@ export function WorktreeStacks({ cwd }: { cwd: string }) {
   }
 
   const stop = (worktree: string) => {
+    const requested = cwd;
     invoke("stack_down", { cwd: worktree }).then(
-      () => setTick((value) => value + 1),
-      (reason) => setError(String(reason)),
+      () => {
+        if (cwdRef.current === requested) setTick((value) => value + 1);
+      },
+      (reason) => {
+        if (cwdRef.current === requested) setError(String(reason));
+      },
     );
   };
 
