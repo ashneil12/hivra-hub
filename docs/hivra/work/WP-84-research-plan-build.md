@@ -39,6 +39,11 @@ the skill index a session reads: the first mate calls them, and Ash never types 
    a `NOTICE` entry and credits.json. Keep each skill's text. Change only what must change: Linear tickets become
    Hivra tasks, `.humanlayer/tasks/<slug>/` becomes the task's folder, and slash-command wording becomes "the first
    mate runs this phase". Leave out `ci-commit`, `configure-workspaces` and `setup-worktree` (Hivra has its own).
+   Add three of [Matt Pocock's skills](https://github.com/mattpocock/skills) (MIT, credit him the same way):
+   `diagnosing-bugs` (the loop for a hard bug), `tdd` (test first) and `grill-me` (an interview that sharpens a plan
+   with the person before a big build). Same rule: called by name by the first mate, never in the always-on index.
+   Ash, 4 Nov: these are the default, not a mode; the first mate decides how much process a task needs, and a small
+   task gets none of it.
 2. **Three paths.** The first mate picks one when it turns a task into work, and says which and why on the task:
    - **Straight build** (HumanLayer's Oneshot): clear and small. Today's behaviour.
    - **Research, plan, build** (RPI): research questions, research, a design discussion, a structure outline, then

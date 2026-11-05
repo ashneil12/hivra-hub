@@ -145,6 +145,16 @@ for WP-61 and WP-80. 84 starts when 70 and 72 merge, 85 and 86 when 70 (and 78) 
 | [86](work/WP-86-commit-attribution.md) | Every commit says which agent, chat and task made it | M | 70, 78 | yes |
 | [87](work/WP-87-worktree-stacks.md) | Each worktree runs its own copy of the project without clashes | M | 82 | yes |
 
+### Wave H: one place to see everything (Ash, 5 Nov)
+
+Before the first ship, Ash asked what would tie everything together: a Home overview he can arrange, and one agent
+that knows every project. Home (73) now takes pinned panels and a chosen order; 88 gives the existing Chief of Staff
+a read-only view across projects and puts its chat on Home. 88 starts when 51, 70, 72, 73 and 78 have merged.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [88](work/WP-88-chief-of-staff.md) | The Chief of Staff knows every project | M | 51, 70, 72, 73, 78 | yes |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this

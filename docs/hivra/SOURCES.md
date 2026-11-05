@@ -59,6 +59,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [kun](https://github.com/kunchenguid/kun) | no licence | A person's OPINIONS.md and VOICE.md refreshed from what they said, read by agents; thin skills that load detail on demand | Ideas only | 83 |
 | [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles) | MIT-0 | One AGENTS.md shared by every agent CLI | Ideas | 83 |
 | [HumanLayer](https://github.com/humanlayer/humanlayer) | Apache-2.0 | Research, Plan, Implement phases with short documents reviewed before code, and its 22 skills; a Claude Code plugin that mirrors terminal sessions live with reply, stop and permission answers; commit attribution by session trailer and line-hash overlap; a full local stack per worktree; tasks that group sessions and their documents. Its cloud sync (Postgres and Electric) is a reference for 61 and 80 | Copy with credit; swap its cloud transport for Hivra's local control port | 84, 85, 86, 87 |
+| [Matt Pocock's skills](https://github.com/mattpocock/skills) | MIT | Small skills a first mate calls by name: a diagnosis loop for hard bugs, test-first building, and an interview that sharpens a plan with the person | Copy three with credit, called by name only | 84 |
 
 ## Vision to packages
 

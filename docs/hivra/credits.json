@@ -185,6 +185,12 @@
       "url": "https://github.com/humanlayer/humanlayer",
       "licence": "Apache-2.0",
       "gave": "research and plan before building, terminal sessions mirrored into the app, commit attribution and a local stack per worktree, planned for Wave G"
+    },
+    {
+      "name": "Matt Pocock's skills",
+      "url": "https://github.com/mattpocock/skills",
+      "licence": "MIT",
+      "gave": "the diagnosing-bugs, tdd and grill-me skills, copied into the research, plan and build pack, planned for Wave G"
     }
   ],
   "components": [

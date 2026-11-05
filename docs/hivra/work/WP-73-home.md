@@ -28,13 +28,19 @@ This is their replacement and has to be the opposite: a few plain lines, each on
      it, live from `tasks://changed`.
    - **Recent**: the last few docs and chats the person opened.
 3. **Empty state**: one line ("All quiet.") and a box to start a chat with a project's coding team.
-4. **Opening the app**: Home when something needs the person, otherwise where they were.
-5. No counters, charts, badges or status chips. Plain words and links only.
+   Once WP-88 lands, that box is the Chief of Staff's chat, and it stays at the top of Home.
+4. **The person can arrange Home** (Ash, 5 Nov: "a general overview of all your projects that you can customize").
+   Each section can be moved up or down and hidden, and any panel (WP-33) can be pinned to Home as one more section,
+   including one an agent built for the person. The arrangement is kept in the app's own store, so it survives a
+   restart and an export. Nothing is pinned by default.
+5. **Opening the app**: Home when something needs the person, otherwise where they were.
+6. No counters, charts, badges or status chips. Plain words and links only.
 
 Port Orbit's layout and entrance animation, restyled in Hivra's theme.
 
 ## Done when
 
 - [ ] Browser specs with seeded data: each section shows and hides; a task moving changes Moving now live; clicking
-      a line opens the right place; the empty state. Screenshots in the PR.
+      a line opens the right place; the empty state; a section moved, hidden and a panel pinned, all kept after a
+      reload. Screenshots in the PR.
 - [ ] `npm run check` passes.
