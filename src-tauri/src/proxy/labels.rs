@@ -79,8 +79,9 @@ pub fn valid_label(name: &str) -> bool {
         .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
 }
 
-/// Whether `host` is a full hostname of valid labels. `.localhost` names are one label plus the
-/// suffix; the suffix itself is checked too.
+/// Whether `host` is a name this app publishes: one or more valid labels and the `.localhost`
+/// suffix. Nothing else is handed to the proxy, so a `routes.json` naming another domain is
+/// refused rather than becoming a route.
 pub fn valid_hostname(host: &str) -> bool {
     if host.is_empty() || host.len() > MAX_HOSTNAME {
         return false;
@@ -88,7 +89,10 @@ pub fn valid_hostname(host: &str) -> bool {
     if host.contains("..") || host.contains(['/', '\\', '*', '@', ':']) {
         return false;
     }
-    host.split('.').all(valid_label)
+    let Some(labels) = host.strip_suffix(".localhost") else {
+        return false;
+    };
+    !labels.is_empty() && labels.split('.').all(valid_label)
 }
 
 /// The label a stack publishes: the stack id for a pool slot (stable across a return and a
@@ -233,6 +237,11 @@ mod tests {
             "shop.localhost:7400",
             ".localhost",
             "shop.localhost.",
+            // Hivra publishes nothing outside `.localhost`; a hand-edited registry entry for
+            // another domain is not a name this app made.
+            "shop.example",
+            "www.googleapis.com",
+            "localhost",
         ] {
             assert!(!valid_hostname(bad), "{bad:?} must be refused");
         }
