@@ -103,6 +103,7 @@ import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
@@ -9571,6 +9572,9 @@ function Workspace({
               : undefined;
             const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
+            // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
+            const profile = await profileNote(turnPrompt);
+            if (profile) sendText = `${sendText}\n\n${profile}`;
           }
           await sendTurn(sendText);
           if (teamHanded && teamPlan?.soul && !providerLost) {

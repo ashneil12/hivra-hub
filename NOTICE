@@ -181,6 +181,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/plugins/hivra-rpi/skills/diagnosing-bugs, src-tauri/plugins/hivra-rpi/skills/rpi-tdd, src-tauri/plugins/hivra-rpi/skills/grill-me, src-tauri/plugins/hivra-rpi/skills/grilling
   Copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d. Hivra's copy of tdd is named rpi-tdd so pstack's tdd stays. grill-me only points at grilling, so that skill is copied too. Called by name only (WP-84).
 
+- backpass
+  Source: https://github.com/kunchenguid/backpass
+  License: MIT
+  Copyright (c) 2026 Kun Chen
+  Used in: src/features/memory/backpass, src-tauri/src/learn_stores
+  The quote, ledger, rejection, budget and diff rules copied as TypeScript. The pi, grok, opencode and Cursor readers translated line by line into Rust (WP-83).
+
 - Orbit's MCP door
   Source: https://github.com/coollabsio/orbit
   License: Apache-2.0
