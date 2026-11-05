@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
-import { LateHomeLoad, createHomeLoader, fetchHome, loadNeedsYouCount, type HomeSource } from "./load";
+import { LateHomeLoad, createHomeLoader, fetchHome, loadNeedsYouCount, mergeHomeLoad, type HomeSource } from "./load";
 import type { HomeStorage } from "./store";
 
 function source(over: Partial<HomeSource> = {}): HomeSource {
@@ -69,6 +69,34 @@ it("reads every project key, drops a late result, and does not turn a timeout in
   }
   expect(shown.tasks.map((task) => task.id)).toEqual(["m1", "folder"]);
   await expect(loadNeedsYouCount(source({ decisions: async () => { throw new Error("timeout"); } }))).rejects.toThrow(/timeout/);
+
+  const down = {
+    async readDoc() {
+      throw new Error("timeout");
+    },
+    async read() {
+      throw new Error("timeout");
+    },
+    async write() {
+      return 1;
+    },
+  };
+  const mirror = {
+    get: (key: string) => (key === "monocode:home" ? JSON.stringify({ savedAt: 5, recent: [{ id: "c1", title: "Lead chat", projectId: "crew", openedAt: 4 }] }) : null),
+    set: () => undefined,
+  };
+  const kept = await fetchHome(source({ disk: down, storage: mirror }), () => 8);
+  expect(kept.storeUnavailable).toBe(true);
+  expect(kept.chats.map((chat) => chat.id)).toEqual(["c1"]);
+  expect(kept.decisions).toHaveLength(1);
+  await expect(fetchHome(source({ disk: down }), () => 8)).rejects.toThrow(/unavailable/);
+
+  const settled = { ...kept, storeUnavailable: false, chats: [{ id: "newer", title: "Newer", projectId: "crew", openedAt: 9 }] };
+  const merged = mergeHomeLoad(settled, kept);
+  expect(merged.retry).toBe(true);
+  expect(merged.snap.chats.map((chat) => chat.id)).toEqual(["newer"]);
+  expect(merged.snap.decisions).toHaveLength(1);
+  expect(mergeHomeLoad(null, { ...kept, storeUnavailable: false }).retry).toBe(false);
 });
 
 it("counts needs you only after a real list, and a removed task is not counted", async () => {

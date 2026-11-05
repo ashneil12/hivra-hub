@@ -40,6 +40,8 @@ export type HomeSnapshot = {
   catalog: CatalogPanel[];
   arrangement: HomeArrangement;
   rev: number;
+  /** The arrangement store did not answer. The snapshot is a mirror or the last good read, and it should be tried again. */
+  storeUnavailable: boolean;
 };
 
 export type HomeSource = {
@@ -86,7 +88,22 @@ export async function fetchHome(source: HomeSource, now: () => number = Date.now
     catalog: readCatalog(catalogRaw),
     arrangement: home.doc.arrangement,
     rev: home.rev,
+    storeUnavailable: home.unavailable,
   };
+}
+
+/**
+ * A store timeout is tried again. It does not replace a home we already showed, and it is not a quiet empty home.
+ */
+export function mergeHomeLoad(prev: HomeSnapshot | null, next: HomeSnapshot): { snap: HomeSnapshot; retry: boolean } {
+  if (!next.storeUnavailable) return { snap: next, retry: false };
+  if (prev && !prev.storeUnavailable) {
+    return {
+      snap: { ...next, arrangement: prev.arrangement, chats: prev.chats, rev: prev.rev, storeUnavailable: true },
+      retry: true,
+    };
+  }
+  return { snap: next, retry: true };
 }
 
 /** How many lines need the person. A throw is "not known yet", never zero. */
