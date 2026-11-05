@@ -9,14 +9,20 @@ import type { HubDataSource } from "../../hub/model/types";
 import { defaultViewState } from "../vendor/views/viewState";
 import { TasksScreen } from "./TasksScreen";
 
-const bridge = vi.hoisted(() => ({ changed: undefined as undefined | (() => void) }));
+const bridge = vi.hoisted(() => ({
+  changed: undefined as undefined | (() => void),
+  stacks: undefined as undefined | (() => void),
+}));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async (_name: string, handler: () => void) => {
-    bridge.changed = handler;
+  listen: vi.fn(async (name: string, handler: () => void) => {
+    if (name === "stacks://changed") bridge.stacks = handler;
+    else bridge.changed = handler;
     return () => {
-      if (bridge.changed === handler) bridge.changed = undefined;
+      if (name === "stacks://changed") {
+        if (bridge.stacks === handler) bridge.stacks = undefined;
+      } else if (bridge.changed === handler) bridge.changed = undefined;
     };
   }),
 }));
@@ -89,6 +95,7 @@ function unmount() {
 
 beforeEach(() => {
   bridge.changed = undefined;
+  bridge.stacks = undefined;
   localStorage.clear();
   vi.mocked(invoke).mockReset();
   setHubDataSource({
@@ -329,4 +336,49 @@ it("says when a bulk status change cannot move an agent card", async () => {
   });
   await until(() => (host?.textContent ?? "").includes("This task follows its work."));
   expect(calls("tasks_update").map((call) => call[1].input?.id)).toEqual(["task-1"]);
+});
+
+it("refreshes the running app link when a stack changes and drops a late one", async () => {
+  let url: string | null = null;
+  let holdRepo = false;
+  let releaseHeld: (value: unknown) => void = () => undefined;
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: { cwd?: string }) => {
+    if (command === "tasks_list") return [person];
+    if (command === "tasks_get") return person;
+    if (command === "tasks_statuses") return [{ projectId: "crew", name: "Todo", category: "unstarted", position: 0, color: "" }];
+    if (command === "tasks_views_list") return [view("list", 1)];
+    if (command === "stack_status") {
+      if (holdRepo && args?.cwd === "/repo") {
+        return new Promise((resolve) => {
+          releaseHeld = resolve;
+        });
+      }
+      return { url: args?.cwd === "/repo" ? url : null, stacks: [] };
+    }
+    return null;
+  });
+  await render();
+  await until(() => (host?.textContent ?? "").includes("#1 Write the notes"));
+  await act(async () => {
+    [...(host?.querySelectorAll("button") ?? [])].find((button) => button.textContent === "#1 Write the notes")?.click();
+  });
+  await until(() => calls("stack_status").length >= 1);
+  expect(host?.textContent ?? "").not.toContain("Open the running app");
+  expect(bridge.stacks).toBeTypeOf("function");
+  url = "http://127.0.0.1:22010";
+  await act(async () => {
+    bridge.stacks?.();
+  });
+  await until(() => (host?.textContent ?? "").includes("Open the running app"));
+  holdRepo = true;
+  await act(async () => {
+    bridge.stacks?.();
+  });
+  await act(async () => {
+    root?.render(createElement(TasksScreen, { cwd: "/else" }));
+  });
+  await act(async () => {
+    releaseHeld({ url: "http://127.0.0.1:22999", stacks: [] });
+  });
+  expect(host?.querySelector("a[href='http://127.0.0.1:22999']")).toBeNull();
 });
