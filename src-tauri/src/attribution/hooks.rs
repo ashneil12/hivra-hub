@@ -16,6 +16,10 @@ const GIT_REFUSAL: &str = "git didn't answer";
 /// The line in hook.sh where the repository's own prepare-commit-msg path is
 /// baked in. The frontend mirror replaces the same line.
 const REAL_HOOK_LINE: &str = "real_hook=''";
+/// The line in hook.sh that says what makes the repository's own hook runnable.
+/// Unix uses the executable bit; Windows has none, so an existing file counts,
+/// as it does for git. The frontend mirror replaces the same line.
+const HOOK_TEST_LINE: &str = "hook_test='-x'";
 
 const PREPARE: &str = "prepare-commit-msg";
 
@@ -386,11 +390,22 @@ fn real_hooks(dir: &Path) -> Result<Vec<RealHook>, String> {
     Ok(found)
 }
 
+/// What makes the repository's own hook runnable. Git for Windows has no
+/// executable bit, so a hook file that exists is one git runs.
+fn hook_test() -> &'static str {
+    if cfg!(windows) {
+        "-f"
+    } else {
+        "-x"
+    }
+}
+
 fn prepare_script(real: Option<&str>) -> Result<String, String> {
     let template = SCRIPT.replace("\r\n", "\n");
-    if !template.contains(REAL_HOOK_LINE) {
+    if !template.contains(REAL_HOOK_LINE) || !template.contains(HOOK_TEST_LINE) {
         return Err(REFUSAL.into());
     }
+    let template = template.replacen(HOOK_TEST_LINE, &format!("hook_test='{}'", hook_test()), 1);
     let Some(real) = real else {
         return Ok(template);
     };
@@ -407,10 +422,11 @@ fn forwarder_script(real: &str) -> Result<String, String> {
          # the crew started. A hook added or changed during the run is picked up on\n\
          # the next run.\n\
          real_hook={quoted}\n\
-         if [ -x \"$real_hook\" ]; then\n\
+         if [ {test} \"$real_hook\" ]; then\n\
          \texec \"$real_hook\" \"$@\"\n\
          fi\n\
-         exit 0\n"
+         exit 0\n",
+        test = hook_test()
     ))
 }
 
@@ -448,7 +464,8 @@ fn prune(root: &Path, dir: &Path, keep: &BTreeSet<String>) -> Result<(), String>
 }
 
 /// Regenerate the folder for this repository: prepare-commit-msg, plus a
-/// forwarder for each executable hook the repository has at spawn. Every file
+/// forwarder for each hook git would run at spawn (the executable bit on Unix,
+/// existence on Windows). Every file
 /// is published atomically, one at a time, and the path is refused unless it
 /// stays inside the data directory. One failed file fails the install, so git
 /// is not pointed at a half-written folder; the crew then runs with no

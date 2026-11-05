@@ -8,8 +8,13 @@
 # Design: HumanLayer packages/git-attribution (Apache-2.0).
 
 real_hook=''
+# The test for whether the repository's own hook can run. On Unix the
+# executable bit decides. Windows has no executable bit, so there an existing
+# file counts, as it does for git itself. The app writes this line for its
+# platform when it installs the hook.
+hook_test='-x'
 
-if [ -n "$real_hook" ] && [ -x "$real_hook" ]; then
+if [ -n "$real_hook" ] && [ "$hook_test" "$real_hook" ]; then
   "$real_hook" "$@"
   status=$?
   if [ "$status" -ne 0 ]; then

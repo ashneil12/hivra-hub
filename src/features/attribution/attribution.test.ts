@@ -193,9 +193,20 @@ describe("trailers, overlap and the ledger", () => {
     expect(hooksDir("/tmp/data/../../etc")).toBeNull();
     const dir = hooksDir(path.join("/tmp", "hivra data"));
     expect(dir?.endsWith(path.join("hivra data", "attribution", "hooks"))).toBe(true);
-    expect(repoHook("/common", "/git", true)?.endsWith(path.join("hooks", "prepare-commit-msg"))).toBe(true);
-    expect(repoHook("", "/git", false)).toBeNull();
-    expect(repoHook("", "", true)).toBeNull();
+    expect(repoHook("/common", "/git", { exists: true, executable: true })?.endsWith(path.join("hooks", "prepare-commit-msg"))).toBe(true);
+    expect(repoHook("   ", "/git", { exists: true, executable: true })?.endsWith(path.join("hooks", "prepare-commit-msg"))).toBe(true);
+    expect(repoHook("", "/git", { exists: false, executable: false })).toBeNull();
+    expect(repoHook("", "", { exists: true, executable: true })).toBeNull();
+  });
+
+  it("counts a hook on Windows when it exists, and elsewhere only when it is executable", () => {
+    const present = { exists: true, executable: false };
+    const executable = { exists: true, executable: true };
+    const missing = { exists: false, executable: false };
+    expect(repoHook("/common", "/git", present, "win32")).not.toBeNull();
+    expect(repoHook("/common", "/git", present, "linux")).toBeNull();
+    expect(repoHook("/common", "/git", missing, "win32")).toBeNull();
+    expect(repoHook("/common", "/git", executable, "linux")).not.toBeNull();
   });
 
   it("says who committed, on one line, without the message", () => {
@@ -276,6 +287,21 @@ describe("the prepare-commit-msg hook", () => {
     expect(hookScript("/tmp/it's a repo/hook")).toContain("real_hook='/tmp/it'\\''s a repo/hook'");
     expect(hookScript()).toContain("Hivra-Chat:");
     expect(hookScript()).toContain("Hivra-Task:");
+    // Git for Windows has no executable bit: a hook file that exists is one git
+    // runs. Elsewhere the executable bit decides, so the generator bakes the
+    // test for the platform it is writing on.
+    expect(hookScript(undefined, "linux")).toContain("hook_test='-x'");
+    expect(hookScript(undefined, "win32")).toContain("hook_test='-f'");
+    // A Windows path is one POSIX shell word: forward slashes, quoted, with a
+    // space or an apostrophe left intact.
+    expect(hookScript("C:\\Users\\Ash\\a b\\repo\\.git\\hooks\\prepare-commit-msg", "win32")).toContain(
+      "real_hook='C:/Users/Ash/a b/repo/.git/hooks/prepare-commit-msg'",
+    );
+    expect(hookScript("C:\\Users\\O'Brien\\repo\\.git\\hooks\\prepare-commit-msg", "win32")).toContain(
+      "real_hook='C:/Users/O'\\''Brien/repo/.git/hooks/prepare-commit-msg'",
+    );
+    // The generated file is LF on every platform, including a Windows one.
+    expect(hookScript(undefined, "win32")).not.toContain("\r");
   });
 
   it("stamps both trailers once, runs the repo hook, and leaves config and hooks alone", () => {
@@ -310,10 +336,17 @@ describe("the prepare-commit-msg hook", () => {
     expect(body).toContain("Repo-Ran: yes");
     expect(snapshot(repo, crew)).toBe(before);
     expect(localConfig(repo, "core.hooksPath", crew)).toBeNull();
-    expect(statSync(installed).mode & 0o111).not.toBe(0);
+    expect(readFileSync(installed, "utf8")).toBe(hookScript(hook));
+    expect(readFileSync(installed, "utf8")).not.toContain("\r");
+    if (process.platform === "win32") {
+      // Git for Windows has no executable bit. Git runs the hook because it exists.
+      expect(statSync(installed).isFile()).toBe(true);
+    } else {
+      expect(statSync(installed).mode & 0o111).not.toBe(0);
+    }
   });
 
-  it("does not run a hook that is not executable, and ignores a bad id", () => {
+  it("runs a repo hook only when git would, and ignores a bad id", () => {
     const root = tempRoot();
     const repo = path.join(root, "repo");
     mkdirSync(repo);
@@ -338,7 +371,13 @@ describe("the prepare-commit-msg hook", () => {
     run(repo, ["commit", "-m", "No stamp"], crew);
     const body = run(repo, ["log", "-1", "--format=%B"], crew);
     expect(body).not.toContain("Hivra-");
-    expect(body).not.toContain("Sample-Ran");
+    // Git for Windows has no executable bit, so a hook file that exists is one
+    // git runs. On Unix, a hook without the executable bit is not a hook.
+    if (process.platform === "win32") {
+      expect(body).toContain("Sample-Ran: yes");
+    } else {
+      expect(body).not.toContain("Sample-Ran");
+    }
     expect(snapshot(repo, crew)).toBe(before);
   });
 

@@ -967,6 +967,23 @@ fn git_reading_system(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Resul
         .map_err(|_| "git didn't answer".to_string())
 }
 
+/// Git's own rule: the executable bit on Unix, existence on Windows.
+fn hook_test() -> &'static str {
+    if cfg!(windows) {
+        "-f"
+    } else {
+        "-x"
+    }
+}
+
+fn hook_test_line() -> &'static str {
+    if cfg!(windows) {
+        "hook_test='-f'"
+    } else {
+        "hook_test='-x'"
+    }
+}
+
 /// Every executable hook the repository has at spawn gets a forwarder, and the
 /// three names that would change git get none, even when the repository has them.
 #[test]
@@ -1007,12 +1024,21 @@ fn every_executable_repo_hook_is_forwarded_and_three_are_never_written() {
                 !text.contains("real_hook=''"),
                 "prepare did not bake the repository's own hook"
             );
+            assert!(
+                text.contains(hook_test_line()),
+                "{name} has the wrong hook test: {text}"
+            );
         } else {
             assert!(
                 text.contains("exec \"$real_hook\" \"$@\""),
                 "{name} is not a forwarder: {text}"
             );
+            assert!(
+                text.contains(&format!("if [ {test} \"$real_hook\" ]", test = hook_test())),
+                "{name} has the wrong hook test: {text}"
+            );
         }
+        assert!(!text.contains('\r'), "{name} must use LF line endings");
     }
     for name in HOOKS_NOT_INSTALLED {
         assert!(!dir.join(name).exists(), "{name} must not be installed");
@@ -1037,6 +1063,8 @@ fn a_repo_with_no_hooks_gets_only_prepare_commit_msg() {
     let script = fs::read_to_string(dir.join("prepare-commit-msg")).unwrap();
     assert!(script.contains("real_hook=''"));
     assert!(script.contains("Hivra-Chat:"));
+    assert!(script.contains(hook_test_line()));
+    assert!(!script.contains('\r'), "the hook must use LF line endings");
 }
 
 /// The folder is rebuilt at each spawn, so a hook that appears during a run is
