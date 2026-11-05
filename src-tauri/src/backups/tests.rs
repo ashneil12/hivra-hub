@@ -1,7 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 
 use rusqlite::{params, Connection};
+use serde_json::Value;
 use sha2::Digest;
 use time::{Date, Month, OffsetDateTime, PrimitiveDateTime, Time};
 
@@ -54,6 +56,72 @@ fn millis(year: i32, month: Month, day: u8, hour: u8) -> i64 {
 
 fn open_store(path: &Path) -> SessionStore {
     SessionStore::open(path.to_path_buf()).unwrap()
+}
+
+/// `cargo test` shares one process. Setting `HOME` is serialized here and put back afterwards, so a test that
+/// finishes a restore cannot write the real home. It does not stop some other crate's test from reading `HOME`
+/// during that window.
+static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+struct TempHome {
+    previous_home: Option<std::ffi::OsString>,
+    previous_monos: Option<std::ffi::OsString>,
+    previous_memory: Option<std::ffi::OsString>,
+    _guard: MutexGuard<'static, ()>,
+}
+
+fn temp_home(home: &Path) -> TempHome {
+    let guard = HOME_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let previous_home = std::env::var_os("HOME");
+    let previous_monos = std::env::var_os(crate::mono_home::HOME_ENV);
+    let previous_memory = std::env::var_os("MONOCODE_HUB_MEMORY_ROOT");
+    std::env::set_var("HOME", home);
+    std::env::remove_var(crate::mono_home::HOME_ENV);
+    std::env::remove_var("MONOCODE_HUB_MEMORY_ROOT");
+    TempHome {
+        previous_home,
+        previous_monos,
+        previous_memory,
+        _guard: guard,
+    }
+}
+
+impl Drop for TempHome {
+    fn drop(&mut self) {
+        restore_env("HOME", &self.previous_home);
+        restore_env(crate::mono_home::HOME_ENV, &self.previous_monos);
+        restore_env("MONOCODE_HUB_MEMORY_ROOT", &self.previous_memory);
+    }
+}
+
+fn restore_env(key: &str, previous: &Option<std::ffi::OsString>) {
+    match previous {
+        Some(value) => std::env::set_var(key, value),
+        None => std::env::remove_var(key),
+    }
+}
+
+fn names(dir: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn mono_snapshot(roots: &Roots, backup: &Path) -> snapshot::Snapshot {
+    let mono = roots.monos_root.join("ada");
+    fs::create_dir_all(mono.join("memory")).unwrap();
+    fs::write(mono.join("SOUL.md"), "name: Ada\nASH_MONO_ID=ada\n").unwrap();
+    fs::write(
+        roots.monos_root.join("MONOS.json"),
+        r#"{"version":1,"monos":[{"id":"ada","name":"Ada"}]}"#,
+    )
+    .unwrap();
+    snapshot::create(roots, backup).unwrap()
 }
 
 fn insert_session(conn: &Connection, id: &str, title: &str, blocks: &str) {
@@ -572,7 +640,8 @@ fn a_changed_mono_list_is_not_overwritten() {
 
 #[test]
 fn a_full_restore_puts_the_data_back_and_keeps_a_copy() {
-    let (_tmp, roots, backup) = fixture("full");
+    let (tmp, roots, backup) = fixture("full");
+    let _home = temp_home(&tmp.dir);
     let store = open_store(&roots.db_path);
     insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
     drop(store);
@@ -631,6 +700,7 @@ fn a_full_restore_puts_the_data_back_and_keeps_a_copy() {
 #[test]
 fn a_full_restore_puts_monos_back_when_they_live_inside_memory() {
     let (tmp, mut roots, backup) = fixture("nested");
+    let _home = temp_home(&tmp.dir);
     let memory = tmp.dir.join("agent-memory");
     let monos = memory.join("monos");
     fs::create_dir_all(&monos).unwrap();
@@ -665,6 +735,7 @@ fn a_full_restore_puts_monos_back_when_they_live_inside_memory() {
 #[test]
 fn a_full_restore_of_a_monos_folder_outside_the_data_folder_puts_it_back() {
     let (tmp, mut roots, backup) = fixture("home");
+    let _home = temp_home(&tmp.dir);
     let home = tmp.dir.join("agent-memory").join("monos");
     fs::create_dir_all(&home).unwrap();
     roots.monos_root = home.clone();
@@ -681,7 +752,8 @@ fn a_full_restore_of_a_monos_folder_outside_the_data_folder_puts_it_back() {
 
 #[test]
 fn a_bad_checksum_refuses_the_restore_and_leaves_the_live_files() {
-    let (_tmp, roots, backup) = fixture("badsum");
+    let (tmp, roots, backup) = fixture("badsum");
+    let _home = temp_home(&tmp.dir);
     let store = open_store(&roots.db_path);
     insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
     drop(store);
@@ -808,6 +880,7 @@ fn a_failed_backup_does_not_move_the_last_good_time() {
 #[test]
 fn a_dev_copy_does_not_restore_a_mono_folder_outside_its_own() {
     let (tmp, mut roots, backup) = fixture("devout");
+    let _home = temp_home(&tmp.dir);
     roots.dev = true;
     let outside = tmp.dir.join("outside-monos");
     fs::create_dir_all(&outside).unwrap();
@@ -819,8 +892,12 @@ fn a_dev_copy_does_not_restore_a_mono_folder_outside_its_own() {
     let snapshot = snapshot::create(&roots, &backup).unwrap();
     fs::write(outside.join("SOUL.md"), "mine").unwrap();
     restore::stage_full_restore(&roots, &snapshot).unwrap();
-    assert!(restore::finish_pending(&roots.data_dir).is_err());
+    let _ = restore::finish_pending(&roots.data_dir);
     assert_eq!(fs::read_to_string(outside.join("SOUL.md")).unwrap(), "mine");
+    assert_eq!(
+        fs::read_to_string(tmp.dir.join("agent-memory").join("monos").join("SOUL.md")).unwrap(),
+        "hello"
+    );
 }
 
 #[test]
@@ -843,4 +920,358 @@ fn a_backup_with_no_tasks_table_says_so() {
     let err = restore::restore_item(&roots, &store.lock_conn().unwrap(), &snapshot, "task", "t1")
         .unwrap_err();
     assert!(matches!(err, BackupError::Missing(_)));
+}
+
+#[test]
+fn a_row_committed_after_staging_is_in_the_kept_copy() {
+    let (tmp, roots, backup) = fixture("walkeep");
+    let _home = temp_home(&tmp.dir);
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
+    drop(store);
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let pending = restore::stage_full_restore(&roots, &snapshot).unwrap();
+    {
+        let conn = Connection::open(&roots.db_path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;")
+            .unwrap();
+        insert_session(&conn, "after-stage", "After", "[]");
+    }
+    restore::finish_pending(&roots.data_dir).unwrap();
+    let kept = Connection::open(pending.replaced.join("monocode.db")).unwrap();
+    let kept_title: String = kept
+        .query_row(
+            "SELECT title FROM sessions WHERE id = 'after-stage'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept_title, "After");
+    let store = open_store(&roots.db_path);
+    let conn = store.lock_conn().unwrap();
+    let old: String = conn
+        .query_row(
+            "SELECT title FROM sessions WHERE id = 'keep-me'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old, "Old");
+    let gone = conn.query_row::<String, _, _>(
+        "SELECT id FROM sessions WHERE id = 'after-stage'",
+        [],
+        |row| row.get(0),
+    );
+    assert!(gone.is_err());
+}
+
+#[test]
+fn a_failed_helper_does_not_restore_on_the_next_start() {
+    let (tmp, roots, backup) = fixture("spawnfail");
+    let _home = temp_home(&tmp.dir);
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
+    drop(store);
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let started =
+        restore::arm_full_restore(
+            &roots,
+            &snapshot,
+            |_| Err("the helper did not start".into()),
+        );
+    assert!(started.is_err());
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "still-here", "Live", "[]");
+    drop(store);
+    assert!(
+        !restore::finish_pending(&roots.data_dir).unwrap(),
+        "a helper that never started must not restore on the next launch"
+    );
+    let store = open_store(&roots.db_path);
+    let title: String = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT title FROM sessions WHERE id = 'still-here'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "Live");
+    let pending = restore::pending_path(&roots.data_dir);
+    if pending.is_file() {
+        let text = fs::read_to_string(&pending).unwrap();
+        assert!(text.contains("\"failed\": true"), "{text}");
+    }
+}
+
+#[test]
+fn a_tampered_pending_file_cannot_move_a_folder_outside() {
+    let (tmp, roots, backup) = fixture("tamper");
+    let _home = temp_home(&tmp.dir);
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
+    drop(store);
+    fs::write(roots.memory_root.join("note.md"), "note\n").unwrap();
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let mut pending = restore::stage_full_restore(&roots, &snapshot).unwrap();
+    let stolen = tmp.dir.join("stolen-memory");
+    fs::create_dir_all(&stolen).unwrap();
+    fs::write(stolen.join("keep.txt"), "mine").unwrap();
+    pending.memory_root = stolen.clone();
+    pending.monos_root = stolen.join("monos");
+    pending.dev = false;
+    fs::write(
+        restore::pending_path(&roots.data_dir),
+        serde_json::to_vec_pretty(&pending).unwrap(),
+    )
+    .unwrap();
+    let _ = restore::finish_pending(&roots.data_dir);
+    assert!(stolen.join("keep.txt").is_file());
+    assert_eq!(fs::read_to_string(stolen.join("keep.txt")).unwrap(), "mine");
+}
+
+#[test]
+fn a_ship_record_that_names_another_folder_is_refused() {
+    let (tmp, roots, backup) = fixture("shipdir");
+    let _home = temp_home(&tmp.dir);
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "keep-me", "Old", "[]");
+    drop(store);
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let store = open_store(&roots.db_path);
+    insert_session(&store.lock_conn().unwrap(), "new-one", "New", "[]");
+    drop(store);
+    let pending = restore::stage_full_restore(&roots, &snapshot).unwrap();
+    let stolen = tmp.dir.join("stolen-data");
+    fs::create_dir_all(&stolen).unwrap();
+    fs::write(stolen.join("marker.txt"), "mine").unwrap();
+    let state_path = pending.ship_dir.join("state.json");
+    let mut doc: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    doc["dataDir"] = Value::String(stolen.to_string_lossy().into_owned());
+    fs::write(&state_path, serde_json::to_vec_pretty(&doc).unwrap()).unwrap();
+    assert!(restore::finish_pending(&roots.data_dir).is_err());
+    assert_eq!(
+        fs::read_to_string(stolen.join("marker.txt")).unwrap(),
+        "mine"
+    );
+    assert!(!stolen.join("monocode.db").exists());
+    let store = open_store(&roots.db_path);
+    let title: String = store
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT title FROM sessions WHERE id = 'new-one'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(title, "New");
+}
+
+#[test]
+fn a_failed_mono_restore_leaves_no_new_folder() {
+    let (_tmp, roots, backup) = fixture("halfmono");
+    let snapshot = mono_snapshot(&roots, &backup);
+    fs::write(roots.monos_root.join("MONOS.json"), b"not json").unwrap();
+    let before = names(&roots.monos_root);
+    let store = open_store(&roots.db_path);
+    let err = restore::restore_item(
+        &roots,
+        &store.lock_conn().unwrap(),
+        &snapshot,
+        "mono",
+        "ada",
+    );
+    assert!(err.is_err());
+    assert_eq!(names(&roots.monos_root), before);
+}
+
+#[test]
+fn a_held_roster_lock_is_not_written_over() {
+    let (_tmp, roots, backup) = fixture("rosterlock");
+    let snapshot = mono_snapshot(&roots, &backup);
+    let roster = roots.monos_root.join("MONOS.json");
+    let before = fs::read(&roster).unwrap();
+    fs::write(
+        roots.monos_root.join("MONOS.json.lock"),
+        format!("{{\"pid\":{},\"at\":0}}", std::process::id()),
+    )
+    .unwrap();
+    let listing = names(&roots.monos_root);
+    let store = open_store(&roots.db_path);
+    let err = restore::restore_item(
+        &roots,
+        &store.lock_conn().unwrap(),
+        &snapshot,
+        "mono",
+        "ada",
+    );
+    assert!(err.is_err());
+    assert_eq!(fs::read(&roster).unwrap(), before);
+    assert_eq!(names(&roots.monos_root), listing);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_roster_lock_left_by_a_dead_process_can_be_taken() {
+    let (_tmp, roots, backup) = fixture("rosters tale");
+    let snapshot = mono_snapshot(&roots, &backup);
+    let lock = roots.monos_root.join("MONOS.json.lock");
+    fs::write(&lock, "{\"pid\":99999999,\"at\":0}").unwrap();
+    let store = open_store(&roots.db_path);
+    let restored = restore::restore_item(
+        &roots,
+        &store.lock_conn().unwrap(),
+        &snapshot,
+        "mono",
+        "ada",
+    )
+    .unwrap();
+    assert!(!lock.exists());
+    assert!(roots
+        .monos_root
+        .join(&restored.id)
+        .join("SOUL.md")
+        .is_file());
+}
+
+#[cfg(not(unix))]
+#[test]
+fn a_roster_lock_older_than_two_days_can_be_taken() {
+    let (_tmp, roots, backup) = fixture("rosterold");
+    let snapshot = mono_snapshot(&roots, &backup);
+    let lock = roots.monos_root.join("MONOS.json.lock");
+    fs::write(&lock, "{\"pid\":1,\"at\":0}").unwrap();
+    let store = open_store(&roots.db_path);
+    let restored = restore::restore_item(
+        &roots,
+        &store.lock_conn().unwrap(),
+        &snapshot,
+        "mono",
+        "ada",
+    )
+    .unwrap();
+    assert!(!lock.exists());
+    assert!(roots
+        .monos_root
+        .join(&restored.id)
+        .join("SOUL.md")
+        .is_file());
+}
+
+#[test]
+fn a_database_backup_scrubs_secrets_and_leaves_the_live_row() {
+    let (_tmp, roots, backup) = fixture("dbsecret");
+    let secret = "sk-ant-abcdefghijklmnopqrst";
+    let store = open_store(&roots.db_path);
+    insert_session(
+        &store.lock_conn().unwrap(),
+        "chat-1",
+        "Hi",
+        &format!("[\"{secret}\"]"),
+    );
+    drop(store);
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let copy = Connection::open(snapshot.path.join(DATABASE_FILE)).unwrap();
+    let blocks: String = copy
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = 'chat-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(blocks.contains("[secret removed]"), "{blocks}");
+    assert!(!blocks.contains(secret), "{blocks}");
+    let live = open_store(&roots.db_path);
+    let live_blocks: String = live
+        .lock_conn()
+        .unwrap()
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = 'chat-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(live_blocks.contains(secret));
+}
+
+#[test]
+fn a_stale_settings_save_does_not_overwrite_a_newer_one() {
+    let (_tmp, roots, _backup) = fixture("staleset");
+    let path = roots.data_dir.join("backup-settings.json");
+    fs::write(&path, b"{\n  \"schedule\": \"daily\"\n}").unwrap();
+    let loaded = super::snapshot_settings(&roots);
+    assert_eq!(loaded.settings.schedule, Schedule::Daily);
+    fs::write(&path, b"{\n  \"schedule\": \"hourly\"\n}").unwrap();
+    let mut settings = loaded.settings;
+    settings.schedule = Schedule::Off;
+    let saved = super::save_settings(&roots, &settings, loaded.existed, &loaded.hash);
+    assert!(
+        saved.is_err(),
+        "a stale save must not replace the newer file"
+    );
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("hourly"), "{text}");
+    assert!(!text.contains("off"), "{text}");
+    assert!(!roots.data_dir.join(".backup-settings.json.tmp").exists());
+    assert!(!roots.data_dir.join("backup-settings.json.tmp").exists());
+}
+
+#[test]
+fn a_deleted_chat_comes_back_as_a_new_row() {
+    let (_tmp, roots, backup) = fixture("deleted");
+    let store = open_store(&roots.db_path);
+    {
+        let conn = store.lock_conn().unwrap();
+        insert_session(&conn, "keep-me", "Keep", "[]");
+        insert_session(&conn, "gone", "Ship plan", "[\"body\"]");
+    }
+    drop(store);
+    let snapshot = snapshot::create(&roots, &backup).unwrap();
+    let store = open_store(&roots.db_path);
+    store
+        .lock_conn()
+        .unwrap()
+        .execute("DELETE FROM sessions WHERE id = 'gone'", [])
+        .unwrap();
+    let restored = restore::restore_item(
+        &roots,
+        &store.lock_conn().unwrap(),
+        &snapshot,
+        "chat",
+        "gone",
+    )
+    .unwrap();
+    assert_eq!(restored.title, "Ship plan (restored)");
+    let conn = store.lock_conn().unwrap();
+    let (title, provider): (String, Option<String>) = conn
+        .query_row(
+            "SELECT title, provider_session_id FROM sessions WHERE id = ?1",
+            [&restored.id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(title, "Ship plan (restored)");
+    assert!(provider.is_none());
+    let keep: String = conn
+        .query_row(
+            "SELECT title FROM sessions WHERE id = 'keep-me'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(keep, "Keep");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(count, 2);
+    let old_provider: String = conn
+        .query_row(
+            "SELECT provider_session_id FROM sessions WHERE id = 'keep-me'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(old_provider, "live-provider");
 }

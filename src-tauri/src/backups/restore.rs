@@ -417,9 +417,16 @@ fn restore_mono(roots: &Roots, snapshot: &Snapshot, item_id: &str) -> Result<Ite
         ));
     }
     let new_id = uuid::Uuid::new_v4().to_string();
-    let to = roots.monos_root.join(&new_id);
-    copy_raw(&from, &to)?;
-    rewrite_soul(&to.join("SOUL.md"), item_id, &new_id)?;
+    let published = roots.monos_root.join(&new_id);
+    let staging = roots.monos_root.join(format!(".{new_id}.tmp"));
+    if staging.exists() {
+        remove_tree_inside(&roots.monos_root, &staging)?;
+    }
+    copy_raw(&from, &staging)?;
+    if let Err(error) = rewrite_soul(&staging.join("SOUL.md"), item_id, &new_id) {
+        let _ = remove_tree_inside(&roots.monos_root, &staging);
+        return Err(error);
+    }
     let name = roster_name(snapshot, item_id).unwrap_or_else(|| item_id.to_owned());
     let title = restored_title(&name);
     let mut entry = roster_entry(snapshot, item_id).unwrap_or_else(|| json!({ "id": item_id }));
@@ -428,7 +435,16 @@ fn restore_mono(roots: &Roots, snapshot: &Snapshot, item_id: &str) -> Result<Ite
         object.insert("name".into(), json!(title));
         object.remove("sessionId");
     }
-    cas_roster(&roots.monos_root.join(ROSTER_FILE), entry)?;
+    let roster = roots.monos_root.join(ROSTER_FILE);
+    if let Err(error) = cas_roster(&roster, entry) {
+        let _ = remove_tree_inside(&roots.monos_root, &staging);
+        return Err(error);
+    }
+    if let Err(error) = fs::rename(&staging, &published) {
+        let _ = drop_roster_entry(&roster, &new_id);
+        let _ = remove_tree_inside(&roots.monos_root, &staging);
+        return Err(snapshot_io(&published, error));
+    }
     Ok(Item {
         kind: "mono".into(),
         id: new_id,
@@ -481,7 +497,10 @@ fn rewrite_soul(path: &Path, old_id: &str, new_id: &str) -> Result<(), BackupErr
 }
 
 /// Write the roster only when it still matches what was read. One retry, then a conflict.
+/// The lock covers the read and the rename, so two restores cannot drop each other's entry.
 pub fn cas_roster(path: &Path, entry: Value) -> Result<(), BackupError> {
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let _lock = acquire_roster_lock(root)?;
     for _ in 0..2 {
         let existed = path.is_file();
         let original = if existed {
@@ -512,6 +531,89 @@ pub fn cas_roster(path: &Path, entry: Value) -> Result<(), BackupError> {
         }
     }
     Err(BackupError::RosterChanged)
+}
+
+struct RosterLock {
+    path: PathBuf,
+}
+
+impl Drop for RosterLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+/// Hold `MONOS.json.lock` for the whole read and rename. A lock whose process is gone (or, on Windows, older than
+/// two days) is taken. A live lock is a conflict after a short wait, not an overwrite.
+fn acquire_roster_lock(root: &Path) -> Result<RosterLock, BackupError> {
+    fs::create_dir_all(root).map_err(|source| snapshot_io(root, source))?;
+    let path = root.join("MONOS.json.lock");
+    let started = std::time::Instant::now();
+    loop {
+        match super::write_lock(&path) {
+            Ok(()) => return Ok(RosterLock { path }),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                if super::lock_is_stale(&path) && fs::remove_file(&path).is_ok() {
+                    continue;
+                }
+                if started.elapsed() >= std::time::Duration::from_millis(200) {
+                    return Err(BackupError::RosterChanged);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(source) => return Err(snapshot_io(&path, source)),
+        }
+    }
+}
+
+/// Take the new Mono out of the roster when its folder could not be published. Two tries, then a conflict.
+fn drop_roster_entry(path: &Path, id: &str) -> Result<(), BackupError> {
+    let root = path.parent().unwrap_or_else(|| Path::new("."));
+    let _lock = acquire_roster_lock(root)?;
+    for _ in 0..2 {
+        if !path.is_file() {
+            return Ok(());
+        }
+        let original = fs::read(path).map_err(|source| snapshot_io(path, source))?;
+        let hash = sha256(&original);
+        let mut doc: Value = serde_json::from_slice(&original).map_err(|error| {
+            BackupError::InvalidSnapshot(format!("MONOS.json isn't JSON: {error}"))
+        })?;
+        let Some(monos) = doc.get_mut("monos").and_then(Value::as_array_mut) else {
+            return Ok(());
+        };
+        monos.retain(|mono| mono.get("id").and_then(Value::as_str) != Some(id));
+        let bytes = serde_json::to_vec_pretty(&doc)
+            .map_err(|error| BackupError::InvalidSnapshot(error.to_string()))?;
+        if replace_if_unchanged(path, true, &hash, &bytes)? {
+            return Ok(());
+        }
+    }
+    Err(BackupError::RosterChanged)
+}
+
+/// Delete `target` only when it is a real child of `root`. A symlink is removed as a link, not followed.
+fn remove_tree_inside(root: &Path, target: &Path) -> Result<(), BackupError> {
+    let root = snapshot::canonicalize_future_path(root)?;
+    let target_real = snapshot::canonicalize_future_path(target)?;
+    if target_real == root || !target_real.starts_with(&root) {
+        return Err(BackupError::InvalidSnapshot(
+            "Refusing to delete a folder outside the Mono list.".into(),
+        ));
+    }
+    let meta = match fs::symlink_metadata(target) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(source) => return Err(snapshot_io(target, source)),
+    };
+    if meta.file_type().is_symlink() {
+        return fs::remove_file(target).map_err(|source| snapshot_io(target, source));
+    }
+    if meta.is_dir() {
+        fs::remove_dir_all(target).map_err(|source| snapshot_io(target, source))
+    } else {
+        fs::remove_file(target).map_err(|source| snapshot_io(target, source))
+    }
 }
 
 /// Replace `path` only when its bytes still hash to `expected` (or it is still missing, when `existed` is false).
@@ -623,6 +725,30 @@ pub fn stage_full_restore(
     Ok(pending)
 }
 
+/// Stage the restore, then start the helper. If the helper does not start, the pending file is removed.
+/// A failed removal is marked failed, so the next launch does not apply a restore nobody started.
+pub fn arm_full_restore(
+    roots: &Roots,
+    snapshot: &Snapshot,
+    spawn: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<(), String> {
+    stage_full_restore(roots, snapshot).map_err(|error| error.to_string())?;
+    if let Err(error) = spawn(&roots.data_dir) {
+        let path = pending_path(&roots.data_dir);
+        if fs::remove_file(&path).is_err() {
+            if let Ok(pending) = read_pending(&path) {
+                mark_failed(
+                    &path,
+                    &pending,
+                    "The restore couldn't start, so it was cancelled.",
+                );
+            }
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn vacuum_copy(db: &Path, destination: &Path) -> Result<(), BackupError> {
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(|source| snapshot_io(parent, source))?;
@@ -650,15 +776,7 @@ pub fn finish_pending(data_dir: &Path) -> Result<bool, String> {
     if pending.failed {
         return Ok(false);
     }
-    if !inside(data_dir, &pending.ship_dir) || !inside(data_dir, &pending.replaced) {
-        mark_failed(
-            &path,
-            &pending,
-            "the staged restore points outside the data folder",
-        );
-        return Err("The staged restore points outside the data folder.".into());
-    }
-    match finish(&pending) {
+    match finish(data_dir, &pending) {
         Ok(()) => {
             let _ = fs::remove_file(&path);
             Ok(true)
@@ -670,51 +788,134 @@ pub fn finish_pending(data_dir: &Path) -> Result<bool, String> {
     }
 }
 
-fn finish(pending: &PendingRestore) -> Result<(), String> {
-    let ship = Ship::load(&pending.ship_dir)?;
+fn finish(data_dir: &Path, pending: &PendingRestore) -> Result<(), String> {
+    let id = pending.snapshot_id.as_str();
+    if !snapshot::valid_snapshot_id(id) {
+        return Err("That backup name isn't safe.".into());
+    }
+    let roots = super::derived_roots(data_dir);
+    let ship_dir = data_dir.join(ship::SHIP_DIR).join(id);
+    let replaced = data_dir.join("backups").join("replaced").join(id);
+    if !inside(data_dir, &ship_dir) || !inside(data_dir, &replaced) {
+        return Err("The staged restore points outside the data folder.".into());
+    }
+    let ship = Ship::load(&ship_dir)?;
+    if !same_dir(&ship.data_dir(), data_dir) {
+        return Err("The staged restore points outside the data folder.".into());
+    }
+    let settings = super::load_settings(&roots);
+    let backup_root = super::chosen_root(&roots, &settings).map_err(|error| error.to_string())?;
+    let snapshot = snapshot::find(&backup_root, id).map_err(|error| error.to_string())?;
+    snapshot::verify_snapshot(&snapshot).map_err(|error| error.to_string())?;
+    // The copy taken at stage misses commits that landed in the WAL afterwards, and restore_db then deletes that WAL.
+    refresh_kept_database(&roots.db_path, &replaced)?;
     ship::restore_db(&ship)?;
     // Memory is installed before Monos: the daily memory folder contains the Monos folder, and the snapshot's
     // memory tree leaves that child out. Putting Monos back afterwards puts them in the restored memory folder.
     install_checked(
-        pending,
-        &pending.snapshot_path.join("memory"),
-        &pending.memory_root,
-        "displaced-memory",
+        roots.dev,
+        data_dir,
+        &snapshot.path.join("memory"),
+        &roots.memory_root,
+        &replaced.join("displaced-memory"),
     )?;
     install_checked(
-        pending,
-        &pending.snapshot_path.join("notes"),
-        &pending.notes_root,
-        "displaced-notes",
+        roots.dev,
+        data_dir,
+        &snapshot.path.join("notes"),
+        &roots.notes_root,
+        &replaced.join("displaced-notes"),
     )?;
     install_checked(
-        pending,
-        &pending.snapshot_path.join("docs"),
-        &pending.docs_root,
-        "displaced-docs",
+        roots.dev,
+        data_dir,
+        &snapshot.path.join("docs"),
+        &roots.docs_root,
+        &replaced.join("displaced-docs"),
     )?;
-    let data_monos = ship.data_dir().join(ship::MONOS);
-    if pending.monos_root != data_monos {
+    let data_monos = data_dir.join(ship::MONOS);
+    if roots.monos_root != data_monos {
         install_checked(
-            pending,
-            &pending.snapshot_path.join("monos"),
-            &pending.monos_root,
-            "displaced-monos",
+            roots.dev,
+            data_dir,
+            &snapshot.path.join("monos"),
+            &roots.monos_root,
+            &replaced.join("displaced-monos"),
         )?;
     }
     Ok(())
 }
 
+fn same_dir(left: &Path, right: &Path) -> bool {
+    match (
+        snapshot::canonicalize_future_path(left),
+        snapshot::canonicalize_future_path(right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
+/// Replace the kept database with a fresh copy of the live one. A copy whose `data_version` moved during the
+/// vacuum is deleted and tried again. If it never settles, the live database is left as it is.
+fn refresh_kept_database(live: &Path, replaced: &Path) -> Result<(), String> {
+    if !live.is_file() {
+        return Ok(());
+    }
+    fs::create_dir_all(replaced).map_err(|error| error.to_string())?;
+    let staging = replaced.join(".monocode.db.keeping");
+    let destination = replaced.join("monocode.db");
+    for _ in 0..3 {
+        let _ = fs::remove_file(&staging);
+        let conn = Connection::open(live).map_err(|error| error.to_string())?;
+        let _ = conn.busy_timeout(std::time::Duration::from_secs(30));
+        let before: i64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap_or(0);
+        conn.execute("VACUUM INTO ?1", [staging.to_string_lossy().to_string()])
+            .map_err(|error| error.to_string())?;
+        let after: i64 = conn
+            .query_row("PRAGMA data_version", [], |row| row.get(0))
+            .unwrap_or(0);
+        drop(conn);
+        if before == after {
+            return swap_kept_database(&staging, &destination);
+        }
+        let _ = fs::remove_file(&staging);
+    }
+    let _ = fs::remove_file(&staging);
+    Err("The database changed while it was being kept. Nothing was replaced.".into())
+}
+
+fn swap_kept_database(staging: &Path, destination: &Path) -> Result<(), String> {
+    let previous = destination.with_file_name(".monocode.db.previous");
+    let _ = fs::remove_file(&previous);
+    if destination.exists() {
+        fs::rename(destination, &previous).map_err(|error| error.to_string())?;
+    }
+    if let Err(error) = fs::rename(staging, destination) {
+        let _ = fs::rename(&previous, destination);
+        return Err(error.to_string());
+    }
+    let _ = fs::remove_file(&previous);
+    if let Some(parent) = destination.parent() {
+        let _ = fs::remove_file(parent.join("monocode.db-wal"));
+        let _ = fs::remove_file(parent.join("monocode.db-shm"));
+    }
+    Ok(())
+}
+
 fn install_checked(
-    pending: &PendingRestore,
+    dev: bool,
+    data_dir: &Path,
     source: &Path,
     live: &Path,
-    aside_name: &str,
+    aside: &Path,
 ) -> Result<(), String> {
-    if pending.dev && !inside(&pending.data_dir, live) {
+    if dev && !inside(data_dir, live) {
         return Err("A dev copy never restores into a folder outside its own.".into());
     }
-    install_tree(source, live, &pending.replaced.join(aside_name))
+    install_tree(source, live, aside)
 }
 
 /// Put `source` in place of `live` when the snapshot has that tree. The earlier copy in `replaced/` is left as it is.

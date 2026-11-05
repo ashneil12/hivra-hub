@@ -9,7 +9,7 @@ mod reader;
 mod restore;
 mod snapshot;
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -196,6 +196,50 @@ pub(crate) fn roots_for(data_dir: &Path) -> Roots {
     }
 }
 
+/// The folders a restore may write. Paths in `pending-restore.json` are not used: that file is untrusted.
+/// `resolved_root` is not called here. It caches one folder for the process and can copy Monos into the home directory.
+pub(crate) fn derived_roots(data_dir: &Path) -> Roots {
+    let dev = crate::instance::kind() == crate::instance::Kind::Dev;
+    let home = crate::dirs_home().map(PathBuf::from);
+    let configured = std::env::var_os("MONOCODE_HUB_MEMORY_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let memory_root = configured.unwrap_or_else(|| {
+        if dev {
+            data_dir.join("agent-memory")
+        } else {
+            home.clone().unwrap_or_default().join("agent-memory")
+        }
+    });
+    let mut protected = Vec::new();
+    if dev {
+        if let Some(home) = &home {
+            protected.push(home.join("agent-memory"));
+            protected.push(home.join("Library/Application Support/com.ash.monocode-hub"));
+            protected.push(home.join(".claude"));
+        }
+    }
+    let override_root = std::env::var_os(crate::mono_home::HOME_ENV)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute());
+    Roots {
+        monos_root: crate::mono_home::choose_root(
+            !dev,
+            home.as_deref(),
+            override_root.as_deref(),
+            data_dir,
+        ),
+        db_path: data_dir.join("monocode.db"),
+        notes_root: data_dir.join("note-assets"),
+        docs_root: data_dir.join("docs"),
+        daily_data_dir: crate::instance::data_dir(crate::instance::DAILY_IDENTIFIER),
+        data_dir: data_dir.to_path_buf(),
+        memory_root,
+        dev,
+        protected,
+    }
+}
+
 fn chosen_root(roots: &Roots, settings: &Settings) -> Result<PathBuf, BackupError> {
     match &settings.folder {
         Some(folder) => match snapshot::confine(roots, folder) {
@@ -209,26 +253,48 @@ fn chosen_root(roots: &Roots, settings: &Settings) -> Result<PathBuf, BackupErro
     }
 }
 
-fn load_settings(roots: &Roots) -> Settings {
+struct SettingsSnapshot {
+    settings: Settings,
+    existed: bool,
+    hash: String,
+}
+
+fn snapshot_settings(roots: &Roots) -> SettingsSnapshot {
     let path = roots.data_dir.join(SETTINGS_FILE);
-    let Ok(bytes) = fs::read(&path) else {
+    match fs::read(&path) {
+        Ok(bytes) => SettingsSnapshot {
+            settings: parse_settings(&bytes, roots.dev),
+            existed: true,
+            hash: format!("{:x}", sha2::Sha256::digest(&bytes)),
+        },
+        Err(_) => SettingsSnapshot {
+            settings: Settings {
+                schedule: default_schedule(roots.dev),
+                folder: None,
+            },
+            existed: false,
+            hash: format!("{:x}", sha2::Sha256::digest(b"")),
+        },
+    }
+}
+
+fn parse_settings(bytes: &[u8], dev: bool) -> Settings {
+    let Ok(file) = serde_json::from_slice::<SettingsFile>(bytes) else {
         return Settings {
-            schedule: default_schedule(roots.dev),
+            schedule: default_schedule(dev),
             folder: None,
         };
     };
-    let Ok(file) = serde_json::from_slice::<SettingsFile>(&bytes) else {
-        return Settings {
-            schedule: default_schedule(roots.dev),
-            folder: None,
-        };
-    };
-    let schedule = Schedule::parse(&file.schedule).unwrap_or_else(|| default_schedule(roots.dev));
+    let schedule = Schedule::parse(&file.schedule).unwrap_or_else(|| default_schedule(dev));
     let folder = file.folder.and_then(|folder| {
         let path = PathBuf::from(folder);
         (!path.as_os_str().is_empty() && path.is_absolute()).then_some(path)
     });
     Settings { schedule, folder }
+}
+
+fn load_settings(roots: &Roots) -> Settings {
+    snapshot_settings(roots).settings
 }
 
 fn load_state(data_dir: &Path) -> StateFile {
@@ -273,7 +339,12 @@ fn record_last_good(data_dir: &Path, id: &str, created_at: i64) -> Result<(), Ba
     Err(BackupError::RosterChanged)
 }
 
-fn save_settings(roots: &Roots, settings: &Settings) -> Result<(), BackupError> {
+fn save_settings(
+    roots: &Roots,
+    settings: &Settings,
+    existed: bool,
+    expected: &str,
+) -> Result<(), BackupError> {
     let path = roots.data_dir.join(SETTINGS_FILE);
     let file = SettingsFile {
         schedule: settings.schedule.as_str().to_owned(),
@@ -284,17 +355,9 @@ fn save_settings(roots: &Roots, settings: &Settings) -> Result<(), BackupError> 
     };
     let bytes = serde_json::to_vec_pretty(&file)
         .map_err(|error| BackupError::InvalidSnapshot(error.to_string()))?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|source| io_error(parent, source))?;
+    if !restore::replace_if_unchanged(&path, existed, expected, &bytes)? {
+        return Err(BackupError::Conflict);
     }
-    let tmp = path.with_extension("json.tmp");
-    {
-        let mut out = File::create(&tmp).map_err(|source| io_error(&tmp, source))?;
-        out.write_all(&bytes)
-            .and_then(|()| out.sync_all())
-            .map_err(|source| io_error(&tmp, source))?;
-    }
-    fs::rename(&tmp, &path).map_err(|source| io_error(&path, source))?;
     Ok(())
 }
 
@@ -415,15 +478,18 @@ pub fn backups_set_schedule(app: AppHandle, schedule: String) -> Result<(), Stri
     let roots = roots_for(&data_dir(&app)?);
     let parsed =
         Schedule::parse(&schedule).ok_or_else(|| "Schedule is off, hourly or daily.".to_owned())?;
-    let mut settings = load_settings(&roots);
+    let loaded = snapshot_settings(&roots);
+    let mut settings = loaded.settings;
     settings.schedule = parsed;
-    save_settings(&roots, &settings).map_err(|error| error.to_string())
+    save_settings(&roots, &settings, loaded.existed, &loaded.hash)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub fn backups_set_folder(app: AppHandle, folder: Option<String>) -> Result<(), String> {
     let roots = roots_for(&data_dir(&app)?);
-    let mut settings = load_settings(&roots);
+    let loaded = snapshot_settings(&roots);
+    let mut settings = loaded.settings;
     settings.folder = match folder {
         None => None,
         Some(folder) => {
@@ -435,7 +501,8 @@ pub fn backups_set_folder(app: AppHandle, folder: Option<String>) -> Result<(), 
             Some(path)
         }
     };
-    save_settings(&roots, &settings).map_err(|error| error.to_string())
+    save_settings(&roots, &settings, loaded.existed, &loaded.hash)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command(async)]
@@ -503,8 +570,7 @@ pub fn backups_restore_item(
 pub fn backups_restore_all(app: AppHandle, id: String) -> Result<(), String> {
     let roots = roots_for(&data_dir(&app)?);
     let snapshot = open_snapshot(&app, &id)?;
-    restore::stage_full_restore(&roots, &snapshot).map_err(|error| error.to_string())?;
-    spawn_helper(&roots.data_dir)?;
+    restore::arm_full_restore(&roots, &snapshot, spawn_helper)?;
     crate::window::confirm_quit(app);
     Ok(())
 }

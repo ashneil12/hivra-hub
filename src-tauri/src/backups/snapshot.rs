@@ -108,6 +108,7 @@ pub enum BackupError {
     Confined(String),
     Busy,
     RosterChanged,
+    Conflict,
     Missing(String),
 }
 
@@ -139,6 +140,7 @@ impl std::fmt::Display for BackupError {
             Self::Confined(message) => write!(f, "{message}"),
             Self::Busy => write!(f, "A backup is already running."),
             Self::RosterChanged => write!(f, "The Mono list changed. Try again."),
+            Self::Conflict => write!(f, "Those settings changed. They were reloaded."),
             Self::Missing(message) => write!(f, "{message}"),
         }
     }
@@ -193,7 +195,9 @@ pub fn create(roots: &Roots, backup_root: &Path) -> Result<Snapshot, BackupError
     let result = (|| {
         let schema_version = read_schema(&roots.db_path)?;
         if roots.db_path.is_file() {
-            vacuum_into(&roots.db_path, &temporary.join(DATABASE_FILE))?;
+            let database = temporary.join(DATABASE_FILE);
+            vacuum_into(&roots.db_path, &database)?;
+            scrub_database(&database)?;
         }
         let mut files = Vec::new();
         let mut omitted = Vec::new();
@@ -509,6 +513,192 @@ fn vacuum_into(db: &Path, destination: &Path) -> Result<(), BackupError> {
     conn.execute("VACUUM INTO ?1", [destination])
         .map(|_| ())
         .map_err(|error| BackupError::OnlineBackup(error.to_string()))
+}
+
+fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn is_text_type(declared: &str) -> bool {
+    let upper = declared.to_ascii_uppercase();
+    upper.contains("TEXT")
+        || upper.contains("CHAR")
+        || upper.contains("CLOB")
+        || upper.contains("JSON")
+}
+
+/// Redact text columns in the snapshot copy only. The live database is not opened for writing.
+fn scrub_database(path: &Path) -> Result<(), BackupError> {
+    let conn =
+        Connection::open(path).map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+    let _ = conn.busy_timeout(Duration::from_secs(30));
+    let tables = {
+        let mut statement = conn
+            .prepare(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?
+    };
+    let redactor = scrubber();
+    for (table, sql) in tables {
+        let without_rowid = sql
+            .unwrap_or_default()
+            .to_ascii_uppercase()
+            .contains("WITHOUT ROWID");
+        scrub_table(&conn, &table, without_rowid, redactor)?;
+    }
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    drop(conn);
+    if let (Some(parent), Some(name)) = (
+        path.parent(),
+        path.file_name().and_then(|name| name.to_str()),
+    ) {
+        for suffix in ["-wal", "-shm", "-journal"] {
+            let _ = fs::remove_file(parent.join(format!("{name}{suffix}")));
+        }
+    }
+    Ok(())
+}
+
+fn scrub_table(
+    conn: &Connection,
+    table: &str,
+    without_rowid: bool,
+    redactor: &crate::portable::Scrubber,
+) -> Result<(), BackupError> {
+    let mut info = conn
+        .prepare(&format!("PRAGMA table_info({})", quote_ident(table)))
+        .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+    let columns = info
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(|error| BackupError::OnlineBackup(error.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+    drop(info);
+    let text_names: Vec<String> = columns
+        .iter()
+        .filter(|(_, declared, _)| is_text_type(declared))
+        .map(|(name, _, _)| name.clone())
+        .collect();
+    if text_names.is_empty() {
+        return Ok(());
+    }
+    let mut key_names: Vec<String> = Vec::new();
+    if without_rowid {
+        let mut keyed: Vec<(i64, String)> = columns
+            .iter()
+            .filter(|(_, _, pk)| *pk > 0)
+            .map(|(name, _, pk)| (*pk, name.clone()))
+            .collect();
+        keyed.sort_by_key(|(pk, _)| *pk);
+        key_names = keyed.into_iter().map(|(_, name)| name).collect();
+        if key_names.is_empty() {
+            return Ok(());
+        }
+    }
+    let mut selected = Vec::new();
+    if without_rowid {
+        selected.extend(key_names.iter().map(|name| quote_ident(name)));
+    } else {
+        selected.push("rowid".to_owned());
+    }
+    selected.extend(text_names.iter().map(|name| quote_ident(name)));
+    let query = format!("SELECT {} FROM {}", selected.join(", "), quote_ident(table));
+    let key_count = if without_rowid { key_names.len() } else { 1 };
+    let mut pending: Vec<(Vec<rusqlite::types::Value>, Vec<Option<String>>)> = Vec::new();
+    {
+        let mut statement = conn
+            .prepare(&query)
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+        let mut rows = statement
+            .query([])
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+        while let Some(row) = rows
+            .next()
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?
+        {
+            let mut keys = Vec::with_capacity(key_count);
+            for index in 0..key_count {
+                keys.push(
+                    row.get(index)
+                        .map_err(|error| BackupError::OnlineBackup(error.to_string()))?,
+                );
+            }
+            let mut changed = false;
+            let mut texts = Vec::with_capacity(text_names.len());
+            for offset in 0..text_names.len() {
+                let value = row
+                    .get_ref(key_count + offset)
+                    .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+                let text = match value {
+                    rusqlite::types::ValueRef::Text(bytes) => {
+                        Some(String::from_utf8_lossy(bytes).into_owned())
+                    }
+                    _ => None,
+                };
+                match text {
+                    Some(text) => {
+                        let (redacted, count) = redactor.redact_text(&text);
+                        if count > 0 && redacted != text {
+                            changed = true;
+                            texts.push(Some(redacted));
+                        } else {
+                            texts.push(Some(text));
+                        }
+                    }
+                    None => texts.push(None),
+                }
+            }
+            if changed {
+                pending.push((keys, texts));
+            }
+        }
+    }
+    for (keys, texts) in pending {
+        let set = text_names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| format!("{} = ?{}", quote_ident(name), index + 1))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let where_sql = if without_rowid {
+            key_names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| {
+                    format!("{} = ?{}", quote_ident(name), text_names.len() + 1 + index)
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        } else {
+            format!("rowid = ?{}", text_names.len() + 1)
+        };
+        let update = format!("UPDATE {} SET {set} WHERE {where_sql}", quote_ident(table));
+        let mut values: Vec<rusqlite::types::Value> = texts
+            .into_iter()
+            .map(|text| match text {
+                Some(text) => rusqlite::types::Value::Text(text),
+                None => rusqlite::types::Value::Null,
+            })
+            .collect();
+        values.extend(keys);
+        conn.execute(&update, rusqlite::params_from_iter(values.iter()))
+            .map_err(|error| BackupError::OnlineBackup(error.to_string()))?;
+    }
+    Ok(())
 }
 
 /// When `memory/` contains the Monos folder, that child is skipped so a Mono isn't stored twice.
