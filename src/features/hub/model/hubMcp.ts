@@ -45,7 +45,14 @@ export function checkerToolArgs(): string[] {
  * that changed under them.
  */
 export const MONO_HOME = "~/agent-memory/monos";
-export const MONO_HOME_FENCE = `The Monos' home (${MONO_HOME}/) is read-only for you: read a Mono's soul or memory there if it helps, but never write, move or delete anything in it, with any tool or shell command. Only the app changes it.`;
+/**
+ * The fence a brief reads. The path is this copy's own home once `mono_home_info` has reported it (`activeHome`),
+ * never "~/agent-memory": a model expands that to the real user. Before the home is known, the sentence names no path.
+ */
+export function monoHomeFence(): string {
+  const where = activeHome ? `${activeHome}/` : "this copy's Monos folder";
+  return `The Monos' home (${where}) is read-only for you: read a Mono's soul or memory there if it helps, but never write, move or delete anything in it, with any tool or shell command. Only the app changes it.`;
+}
 let extraHome: string | undefined;
 /** The Monos' home this copy uses, absolute (mono_home_info), for telling whose home a chat works in. */
 let activeHome: string | undefined;

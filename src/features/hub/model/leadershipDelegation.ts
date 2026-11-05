@@ -14,7 +14,7 @@
 //   report-back path to the briefing Mono's chat and its project's Leadership room (roomReports.ts). Meanwhile the
 //   briefing Mono's chat shows one live line for the brief (monos/model/briefedTeams.ts), never the Lead's workers.
 // The delegate tool reaches it with `delegate_task {lead}` (agent-app/model/agentAppTasks.ts).
-import { MONO_HOME_FENCE } from "./hubMcp";
+import { monoHomeFence } from "./hubMcp";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { CHECKER_MONO_ID } from "./hubMcp";
 import { leadFor, leadMono, leadSpecFor } from "./hubLeads";
@@ -115,7 +115,7 @@ export function leadBriefPrompt(from: string, brief: string, done?: string): str
     brief.trim(),
     ...(done ? [`Done looks like: ${done.trim()}`] : []),
     `How: you are this project's Lead. Hand the work to your own workers with delegate_task (async) and review their reports. Your reply once they have all reported is what goes back to ${from}: lead with the outcome, then the evidence (the commit, the check that ran, a screenshot or served URL) and what is not verified.`,
-    `Fence: ${MONO_HOME_FENCE}`,
+    `Fence: ${monoHomeFence()}`,
   ].join("\n\n");
 }
 
