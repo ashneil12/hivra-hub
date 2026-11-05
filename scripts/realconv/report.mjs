@@ -3,7 +3,9 @@
 import fs from "node:fs";
 import path from "node:path";
 
-const MARK = { PASS: "PASS", PARTIAL: "PARTIAL", FAIL: "FAIL", "NOT-TRIGGERED": "NOT-TRIGGERED", "NOT-REAL": "NOT-REAL (no real model)", INVALID: "INVALID (tester)", UNGRADED: "UNGRADED", SKIPPED: "SKIPPED", ERROR: "ERROR" };
+import { canaryTable } from "../bench-guard.mjs";
+
+const MARK = { PASS: "PASS", PARTIAL: "PARTIAL", FAIL: "FAIL", "NOT PROVEN": "NOT PROVEN", "NOT-TRIGGERED": "NOT-TRIGGERED", "NOT-REAL": "NOT-REAL (no real model)", INVALID: "INVALID (tester)", UNGRADED: "UNGRADED", SKIPPED: "SKIPPED", ERROR: "ERROR" };
 
 export function writeReport(out, results, meta) {
   const counts = {};
@@ -36,6 +38,7 @@ export function writeReport(out, results, meta) {
       ...(r.hard?.misses?.length ? ["", "Expectations the hub's state doesn't show:", ...r.hard.misses.map((m) => `- ${m}`)] : []),
       ...(r.judged?.summary ? ["", `Judge: ${r.judged.summary}`] : []),
       ...(r.judged?.problems?.length ? ["", "Problems:", ...r.judged.problems.map((p) => `- ${p}`)] : []),
+      ...(r.canary?.length ? ["", "Canary:", "", canaryTable(r.canary), ""] : []),
       "",
     ]),
   ].filter((l) => l !== null);

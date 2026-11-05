@@ -7,7 +7,9 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { agentCommand, benchSandboxProfile, cliReadOnlyPaths, cliSandboxEnv, forbiddenHomeRead, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, sandboxCwd, sandboxedCliSync, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { agentCommand, appCliRead, benchSandboxProfile, claudeHonoursCodeTmpdir, claudeShellTemp, cliReadOnlyPaths, cliSandboxEnv, ControlEndpointRefused, controlEndpoints, DAILY_CONTROL_PORTS, dailyControlPorts, exactShellTemp, forbiddenHomeRead, installedClaudeHonoursTmpdir, isSharedTemp, modelUrlAllowed, namedLoopbackPorts, parseGatewayListens, privateTempDir, privateTempEnv, sandboxCwd, sandboxedCliSync, shellTempAllow, SANDBOX_BAD_CONTROL, SANDBOX_DAILY_CONTROL, SANDBOX_DIDNT_LOAD, SANDBOX_UNAVAILABLE } from "./bench-sandbox.mjs";
+import { benchFenceEnv, benchProbeOnce, probeBenchAgent } from "./hub-realtest-claude.mjs";
+import { benchDenyRules, writeBenchSettings } from "./bench-guard.mjs";
 
 const HERE = path.dirname(new URL(import.meta.url).pathname);
 
@@ -208,13 +210,13 @@ test("outbound is only the named loopback ports, and the daily hub port is never
       { host: "127.0.0.1", port: 8317, reason: "the local model gateway the launcher uses" },
       { host: "127.0.0.1", port: 18767, reason: "the daily hub bridge" },
       { host: "10.0.0.1", port: 80, reason: "not loopback" },
-      { host: "127.0.0.1", port: 43111, reason: "this dev copy's own control port" },
+      { host: "127.0.0.1", port: 43111, reason: "this dev copy's control port" },
       { host: "127.0.0.1", port: 44000, reason: "this run's stub hub port" },
     ],
   });
   assert.match(profile, /the local model gateway the launcher uses/);
   assert.match(profile, /remote ip "localhost:8317"/);
-  assert.match(profile, /this dev copy's own control port/);
+  assert.match(profile, /this dev copy's control port/);
   assert.match(profile, /this run's stub hub port/);
   assert.match(profile, /remote ip "localhost:43111"/);
   assert.match(profile, /remote ip "localhost:44000"/);
@@ -253,6 +255,190 @@ test("the named ports come from the gateway, the control endpoint and the stub h
   assert.equal(modelUrlAllowed("http://127.0.0.1:18767/v1/chat/completions", { MONOCODE_HUB_PORT: "18767" }), false);
 });
 
+test("the control endpoint the app hands the agent is the one port that opens; the daily app's ports are refused", () => {
+  // The canary's bug (PR #77): a chat holding only an app grant got no control port, so every `monocode app` said
+  // "Operation not permitted".
+  assert.deepEqual(namedLoopbackPorts({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, { observe: false }), [
+    { host: "127.0.0.1", port: 57965, reason: "this dev copy's control port" },
+  ]);
+  // Both names, the same port: one rule. Two ports: both open, nothing else does.
+  assert.deepEqual(
+    namedLoopbackPorts({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965", MONOCODE_CONTROL_ENDPOINT: "http://127.0.0.1:57965/" }, { observe: false }).map((item) => item.port),
+    [57965],
+  );
+  assert.deepEqual(
+    controlEndpoints({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965", MONOCODE_CONTROL_ENDPOINT: "[::1]:57966" }),
+    [{ host: "127.0.0.1", port: 57965 }, { host: "::1", port: 57966 }],
+  );
+  assert.deepEqual(controlEndpoints({ MONOCODE_APP_ENDPOINT: "  ", MONOCODE_CONTROL_ENDPOINT: "" }), []);
+
+  // Not a loopback host:port: no agent is started with it.
+  for (const value of ["10.0.0.5:57965", "0.0.0.0:57965", "http://example.com:57965/", "not a port", "127.0.0.1"]) {
+    assert.throws(
+      () => controlEndpoints({ MONOCODE_APP_ENDPOINT: value }),
+      (error) => error instanceof ControlEndpointRefused && error.message === SANDBOX_BAD_CONTROL,
+      value,
+    );
+  }
+  // The daily app's fixed hub port is never opened, whichever name carries it.
+  for (const key of ["MONOCODE_APP_ENDPOINT", "MONOCODE_CONTROL_ENDPOINT"]) {
+    assert.throws(() => controlEndpoints({ [key]: "127.0.0.1:18767" }), (error) => error.message === SANDBOX_DAILY_CONTROL);
+  }
+  // The daily app's control port is chosen at start, so the bench's own entry env names it. Refused too.
+  assert.deepEqual(dailyControlPorts({ [DAILY_CONTROL_PORTS]: "57965, 127.0.0.1:57966" }), [57965, 57966]);
+  assert.deepEqual(dailyControlPorts({}), []);
+  assert.throws(
+    () => controlEndpoints({ [DAILY_CONTROL_PORTS]: "57965", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }),
+    (error) => error instanceof ControlEndpointRefused && error.message === SANDBOX_DAILY_CONTROL,
+  );
+  assert.throws(
+    () => controlEndpoints({ [DAILY_CONTROL_PORTS]: "57966", MONOCODE_CONTROL_ENDPOINT: "localhost:57966" }),
+    (error) => error.message === SANDBOX_DAILY_CONTROL,
+  );
+  // A daily port named, a dev endpoint on another port: the dev one opens and the daily one is not in the list.
+  assert.deepEqual(controlEndpoints({ [DAILY_CONTROL_PORTS]: "57966", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }), [{ host: "127.0.0.1", port: 57965 }]);
+
+  // An in-process model call has no agent to refuse: a bad control env only keeps its ports out.
+  const env = { REALTEST_GATEWAY: "127.0.0.1:8317", MONOCODE_APP_ENDPOINT: "10.0.0.5:1" };
+  assert.equal(modelUrlAllowed("http://127.0.0.1:8317/v1/chat/completions", env), true);
+  assert.equal(modelUrlAllowed("http://127.0.0.1:57965/v1/chat/completions", { MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }), true);
+});
+
+test("the agent is not started when its control endpoint is not loopback or names the daily app", () => {
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-sandbox-control-"));
+  const stub = path.join(state, "stub-sandbox");
+  fs.writeFileSync(stub, "#!/bin/sh\nshift 2\nexec \"$@\"\n", { mode: 0o755 });
+  const base = { REALTEST_REAL_HOME: REAL, HOME: state, REALTEST_STATE: state, REALTEST_ALLOWED: "[]", REALTEST_SANDBOX_EXEC: stub };
+  const bad = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_APP_ENDPOINT: "10.0.0.5:57965" });
+  assert.equal(bad.ok, false);
+  assert.equal(bad.reason, SANDBOX_BAD_CONTROL);
+  const daily = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_CONTROL_ENDPOINT: "127.0.0.1:18767" });
+  assert.equal(daily.ok, false);
+  assert.equal(daily.reason, SANDBOX_DAILY_CONTROL);
+  const dailyPort = agentCommand("/bin/echo", ["hi"], { ...base, [DAILY_CONTROL_PORTS]: "57965", MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" });
+  assert.equal(dailyPort.ok, false);
+  assert.equal(dailyPort.reason, SANDBOX_DAILY_CONTROL);
+  // No profile was written for any refusal: nothing could start with one.
+  assert.equal(fs.existsSync(path.join(state, "sandbox.sb")), false);
+
+  // The dev copy's own app endpoint is written into the profile, and nothing else is opened for it.
+  const ok = agentCommand("/bin/echo", ["hi"], { ...base, MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, { observe: false });
+  assert.equal(ok.ok, true, ok.reason);
+  assert.match(ok.profile, /this dev copy's control port \(127\.0\.0\.1:57965\)/);
+  assert.match(ok.profile, /remote ip "localhost:57965"/);
+  assert.equal((ok.profile.match(/remote ip "localhost:/g) ?? []).length, 1);
+  assert.equal(ok.profile.includes(":18767"), false);
+  fs.rmSync(state, { recursive: true, force: true });
+});
+
+test("the wrapper probes the control port once per run and writes the round's stop", () => {
+  const good = (command) =>
+    command === "echo probe"
+      ? { status: 0, stdout: "probe\n", stderr: "" }
+      : command === "monocode app app.version"
+        ? { status: 0, stdout: '{"ok":true}\n', stderr: "" }
+        : { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub.dev.probe" })}\n`, stderr: "" };
+  const bad = (command) =>
+    command === "monocode app app.version" ? { status: 1, stdout: "", stderr: "EPERM" } : good(command);
+
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-once-"));
+  try {
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, state, { run: good }), null);
+    assert.equal(fs.existsSync(path.join(state, "bench-broken")), false);
+    // The second chat does not probe again, so a different answer cannot change the run.
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, state, { run: bad }), null);
+    assert.equal(fs.existsSync(path.join(state, "bench-broken")), false);
+
+    // A spawn with no control endpoint (a helper call, or the scene probe) has nothing to prove.
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-none-"));
+    let ran = false;
+    assert.equal(
+      benchProbeOnce({}, other, {
+        run: () => {
+          ran = true;
+          return good("");
+        },
+      }),
+      null,
+    );
+    assert.equal(ran, false);
+    fs.rmSync(other, { recursive: true, force: true });
+  } finally {
+    fs.rmSync(state, { recursive: true, force: true });
+  }
+
+  const failing = fs.mkdtempSync(path.join(os.tmpdir(), "bench-probe-broken-"));
+  try {
+    assert.equal(benchProbeOnce({ MONOCODE_APP_ENDPOINT: "127.0.0.1:57965" }, failing, { run: bad }), "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(failing, "bench-broken"), "utf8").trim(), "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(failing, "stop"), "utf8").trim(), "bench broken: control port");
+  } finally {
+    fs.rmSync(failing, { recursive: true, force: true });
+  }
+});
+
+test("a chat whose shell cannot reach the control port refuses to start, and the run reads why", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bench-control-refusal-"));
+  const realHome = path.join(root, "real-home");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const appBin = path.join(worktree, "target", "debug", "monocode");
+  fs.mkdirSync(path.dirname(appBin), { recursive: true });
+  fs.mkdirSync(path.join(realHome, "Applications", "MonoCode Hub.app", "Contents", "MacOS"), { recursive: true });
+  fs.writeFileSync(
+    appBin,
+    [
+      "#!/bin/sh",
+      'case "$1" in',
+      `  version) echo '{"identifier":"com.ash.monocode-hub.dev.probe"}'; exit 0 ;;`,
+      `  app) echo '{"ok":false,"error":"Cannot connect to MonoCode at 127.0.0.1:57965: Operation not permitted (os error 1)"}'; exit 1 ;;`,
+      "esac",
+      "exit 1",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const sandbox = path.join(state, "stub-sandbox-exec");
+  fs.mkdirSync(state, { recursive: true });
+  fs.writeFileSync(sandbox, "#!/bin/sh\nshift 2\nexec \"$@\"\n", { mode: 0o755 });
+  const marker = path.join(state, "real-claude-ran");
+  const fakeClaude = path.join(state, "real-claude");
+  fs.writeFileSync(fakeClaude, `#!/bin/sh\ntouch '${marker}'\n`, { mode: 0o755 });
+  const settings = path.join(state, "settings.json");
+  fs.writeFileSync(settings, "{}\n");
+  const env = {
+    PATH: process.env.PATH,
+    HOME: home,
+    REALTEST_STATE: state,
+    REALTEST_REAL_CLAUDE: fakeClaude,
+    REALTEST_CLAUDE_CONFIG: state,
+    REALTEST_REAL_HOME: realHome,
+    REALTEST_ALLOWED: "[]",
+    REALTEST_BENCH_SETTINGS: settings,
+    REALTEST_SANDBOX_EXEC: sandbox,
+    REALTEST_APP_BIN: appBin,
+    REALTEST_WORKTREE: worktree,
+    MONOCODE_APP_ENDPOINT: "127.0.0.1:57965",
+  };
+  try {
+    const out = spawnSync(process.execPath, [path.join(HERE, "hub-realtest-claude.mjs"), "--input-format", "stream-json", "-p"], { env, encoding: "utf8", timeout: 30_000 });
+    assert.equal(out.status, 2, `${out.stderr}`);
+    assert.match(`${out.stderr}`, /bench broken: control port/);
+    const answer = JSON.parse(String(out.stdout).trim().split("\n").pop());
+    assert.equal(answer.is_error, true);
+    assert.equal(answer.result, "bench broken: control port");
+    assert.equal(fs.readFileSync(path.join(state, "bench-broken"), "utf8").trim(), "bench broken: control port");
+    assert.equal(fs.existsSync(path.join(state, "stop")), true);
+    // The real CLI was never started: the chat did not reach the model.
+    assert.equal(fs.existsSync(marker), false);
+    // The profile the probe ran under names the one control port.
+    assert.match(fs.readFileSync(path.join(state, "sandbox.sb"), "utf8"), /remote ip "localhost:57965"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a shared temp dir is not this run's TMPDIR", () => {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-own-tmp-")));
   const shared = fs.realpathSync(os.tmpdir());
@@ -265,6 +451,9 @@ test("a shared temp dir is not this run's TMPDIR", () => {
     assert.equal(env.TMP, env.TMPDIR);
     assert.equal(env.TEMP, env.TMPDIR);
     assert.equal(env.CLAUDE_TMPDIR, env.TMPDIR);
+    assert.equal(env.CLAUDE_CODE_TMPDIR, env.TMPDIR);
+    assert.deepEqual(privateTempEnv(""), {});
+    assert.deepEqual(privateTempEnv(env.TMPDIR), { TMPDIR: env.TMPDIR, TMP: env.TMPDIR, TEMP: env.TMPDIR, CLAUDE_TMPDIR: env.TMPDIR, CLAUDE_CODE_TMPDIR: env.TMPDIR });
     assert.equal(fs.existsSync(env.TMPDIR), true);
     assert.equal(privateTempDir({ HOME: "/private/var/bench/home", TMPDIR: "/private/var/bench/home/work", REALTEST_REAL_HOME: "/Users/example" }), "/private/var/bench/home/work");
     assert.equal(privateTempDir({ HOME: "/private/var/bench/home", TMPDIR: "/private/tmp", REALTEST_REAL_HOME: "/Users/example" }), "/private/var/bench/home/tmp");
@@ -524,6 +713,401 @@ if rm "$PRE_T"; then echo t_del=ok; else echo t_del=fail; fi
       } catch {
         // already gone, or we never created it
       }
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code's shell temp follows CLAUDE_CODE_TMPDIR, not TMPDIR", () => {
+  const cwd = "/private/tmp/monocode-realtest-GhKDHU/projects/tally";
+  const slug = "-private-tmp-monocode-realtest-GhKDHU-projects-tally";
+  assert.equal(claudeShellTemp(cwd, {}, { uid: 501, resolve: false }), `/tmp/claude-501/${slug}`);
+  assert.equal(claudeShellTemp(cwd, { CLAUDE_CODE_TMPDIR: "" }, { uid: 501, resolve: false }), `/tmp/claude-501/${slug}`);
+  assert.equal(claudeShellTemp(cwd, { CLAUDE_CODE_TMPDIR: "relative", TMPDIR: "/var/should-not-be-used" }, { uid: 501, resolve: false }), `/tmp/claude-501/${slug}`);
+  assert.equal(claudeShellTemp("a b", { CLAUDE_CODE_TMPDIR: "/private/var/bench/home/tmp/" }, { uid: 501, resolve: false }), "/private/var/bench/home/tmp/claude-501/a-b");
+  const long = "x".repeat(201);
+  const rooted = claudeShellTemp(long, { CLAUDE_CODE_TMPDIR: "/private/var/bench/home/tmp" }, { uid: 7, resolve: false });
+  assert.ok(rooted.startsWith("/private/var/bench/home/tmp/claude-7/"));
+  assert.equal(appCliRead(null, { realHome: REAL }), null);
+  assert.equal(appCliRead("monocode", { realHome: REAL }), null);
+  assert.equal(appCliRead(`${REAL}/Worktrees/slot/target/debug/monocode`, { realHome: REAL }), `${REAL}/Worktrees/slot/target/debug/monocode`);
+  for (const top of [".ssh", ".claude", "Projects", "agent-memory", "Library"]) {
+    assert.equal(appCliRead(`${REAL}/${top}/monocode`, { realHome: REAL }), null, top);
+  }
+  assert.equal(appCliRead(`${REAL}/monocode`, { realHome: REAL }), null);
+  assert.equal(appCliRead("/Users/other/Worktrees/slot/monocode", { realHome: REAL }), null);
+  assert.equal(appCliRead(`${REAL}/Worktrees/slot/../../../.ssh/monocode`, { realHome: REAL }), null);
+  assert.equal(appCliRead(`${REAL}/Worktrees/slot/monocode"`, { realHome: REAL }), null);
+  assert.equal(appCliRead("/opt/monocode", { realHome: REAL }), "/opt/monocode");
+  const app = `${REAL}/Worktrees/hivra/target/debug/monocode`;
+  const profile = benchSandboxProfile({ realHome: REAL, home: HOME, appBin: app });
+  assert.ok(profile.includes(`(literal "${app}")`));
+  assert.equal(profile.includes(`(subpath "${app}")`), false);
+  assert.match(profile, /CLAUDE_CODE_TMPDIR/);
+  assert.equal(allowBlocks(profile, "file-write*").some((block) => block.includes("/private/tmp/claude-")), false);
+  assert.equal(allowBlocks(profile, "file-read*").some((block) => block.includes("/private/tmp/claude-")), false);
+  const ssh = benchSandboxProfile({ realHome: REAL, home: HOME, appBin: `${REAL}/.ssh/monocode` });
+  assert.equal(ssh.includes(".ssh"), false);
+});
+
+test("a stand-in can mkdir Claude's shell temp inside the run, and a sibling under /private/tmp/claude-<uid> stays closed", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing on macOS");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-shell-temp-")));
+  const home = path.join(root, "home");
+  const cwd = path.join(root, "projects", "tally");
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(cwd, { recursive: true });
+  const env = cliSandboxEnv({ HOME: home, REALTEST_REAL_HOME: os.homedir(), TMPDIR: os.tmpdir() });
+  const shellTemp = claudeShellTemp(cwd, env, { resolve: false });
+  const uid = process.getuid();
+  const id = path.basename(root);
+  const sibling = path.join("/private/tmp", `claude-${uid}`, `not-this-run-${id}`);
+  const parent = path.dirname(sibling);
+  const parentExisted = fs.existsSync(parent);
+  const tmpKeep = path.join("/private/tmp", `monocode-bench-shell-${id}`);
+  const tmpNew = path.join("/private/tmp", `monocode-bench-shell-new-${id}`);
+  fs.mkdirSync(sibling, { recursive: true });
+  fs.writeFileSync(path.join(sibling, "keep"), "keep\n");
+  fs.writeFileSync(tmpKeep, "keep\n");
+  const profile = benchSandboxProfile({ realHome: os.homedir(), home, project: cwd, allowed: [root] });
+  const file = path.join(home, "sandbox.sb");
+  fs.writeFileSync(file, profile);
+  const script = path.join(home, "run.sh");
+  fs.writeFileSync(
+    script,
+    `#!/bin/sh
+set +e
+mkdir -p "$SHELL_TEMP" && echo ok > "$SHELL_TEMP/probe.txt" && test -f "$SHELL_TEMP/probe.txt" && echo shell_rw=ok || echo shell_rw=fail
+if echo x > "$SIBLING/nope"; then echo sib_write=ok; else echo sib_write=fail; fi
+if rm "$SIBLING/keep"; then echo sib_del=ok; else echo sib_del=fail; fi
+if echo x > "$TMP_NEW"; then echo tmp_write=ok; else echo tmp_write=fail; fi
+if rm "$TMP_KEEP"; then echo tmp_del=ok; else echo tmp_del=fail; fi
+`,
+    { mode: 0o755 },
+  );
+  try {
+    assert.ok(shellTemp.startsWith(`${env.CLAUDE_CODE_TMPDIR}/claude-${uid}/`), shellTemp);
+    assert.equal(shellTemp.includes(`/private/tmp/claude-${uid}`), false, shellTemp);
+    assert.equal(profile.includes(`/private/tmp/claude-${uid}`), false);
+    const out = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", script], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { HOME: home, PATH: "/usr/bin:/bin", SHELL_TEMP: shellTemp, SIBLING: sibling, TMP_KEEP: tmpKeep, TMP_NEW: tmpNew, ...privateTempEnv(env.TMPDIR) },
+    });
+    assert.equal(out.status, 0, `${out.stderr}\n${out.stdout}`);
+    const report = Object.fromEntries(out.stdout.trim().split("\n").filter(Boolean).map((line) => line.split("=")));
+    assert.equal(report.shell_rw, "ok", out.stdout);
+    assert.equal(fs.readFileSync(path.join(shellTemp, "probe.txt"), "utf8"), "ok\n");
+    assert.equal(report.sib_write, "fail", out.stdout);
+    assert.equal(report.sib_del, "fail", out.stdout);
+    assert.equal(report.tmp_write, "fail", out.stdout);
+    assert.equal(report.tmp_del, "fail", out.stdout);
+    assert.equal(fs.readFileSync(path.join(sibling, "keep"), "utf8"), "keep\n");
+    assert.equal(fs.readFileSync(tmpKeep, "utf8"), "keep\n");
+    assert.equal(fs.existsSync(path.join(sibling, "nope")), false);
+    assert.equal(fs.existsSync(tmpNew), false);
+  } finally {
+    fs.rmSync(sibling, { recursive: true, force: true });
+    if (!parentExisted) {
+      try {
+        fs.rmdirSync(parent);
+      } catch {
+        // the user's own Claude sessions still have folders here
+      }
+    }
+    for (const leftover of [tmpKeep, tmpNew]) {
+      try {
+        fs.unlinkSync(leftover);
+      } catch {
+        // already gone
+      }
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("monocode app tasks.workers answers from a bench shell, and the worktree beside that file stays closed", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing on macOS");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-monocode-path-")));
+  const real = path.join(root, "real-home");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const bin = path.join(real, "Worktrees", "slot", "target", "debug", "monocode");
+  const beside = path.join(path.dirname(bin), "other.txt");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(beside, "secret\n");
+  fs.writeFileSync(
+    bin,
+    `#!/bin/sh
+if [ "$1" = "app" ] && [ "$2" = "tasks.workers" ] && [ "$3" = "--json" ] && [ "$4" = "{}" ]; then
+  echo '{"workers":[]}'
+  exit 0
+fi
+echo no >&2
+exit 2
+`,
+    { mode: 0o755 },
+  );
+  const fenced = benchFenceEnv({ PATH: "/usr/bin:/bin", HOME: home, REALTEST_REAL_HOME: real, REALTEST_APP_BIN: bin }, state);
+  const profile = benchSandboxProfile({ realHome: real, home, project: home, appBin: bin });
+  const file = path.join(home, "sandbox.sb");
+  fs.writeFileSync(file, profile);
+  const cmd = "monocode app tasks.workers --json '{}'";
+  try {
+    assert.ok(profile.includes(`(literal "${bin}")`));
+    assert.equal(profile.includes(`(subpath "${bin}")`), false);
+    assert.equal(profile.includes(".ssh"), false);
+    const inherited = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", "-c", `${cmd}; echo beside=$(cat '${beside}' 2>/dev/null || echo closed)`], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { HOME: home, PATH: fenced.PATH, TMPDIR: home },
+    });
+    assert.equal(inherited.status, 0, `${inherited.stderr}\n${inherited.stdout}`);
+    assert.match(inherited.stdout, /\{"workers":\[\]\}/);
+    assert.match(inherited.stdout, /beside=closed/);
+    assert.doesNotMatch(inherited.stdout, /secret/);
+    const login = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", "-c", `. "$HOME/.zprofile"; ${cmd}`], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home },
+    });
+    assert.equal(login.status, 0, `${login.stderr}\n${login.stdout}`);
+    assert.match(login.stdout, /\{"workers":\[\]\}/);
+    if (fs.existsSync("/bin/zsh")) {
+      const zsh = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/zsh", "-lc", cmd], {
+        encoding: "utf8",
+        timeout: 15000,
+        env: { HOME: home, PATH: "/usr/bin:/bin", TMPDIR: home, USER: process.env.USER || "bench", LOGNAME: process.env.LOGNAME || "bench", SHELL: "/bin/zsh" },
+      });
+      assert.equal(zsh.status, 0, `${zsh.stderr}\n${zsh.stdout}`);
+      assert.match(zsh.stdout, /\{"workers":\[\]\}/);
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Claude Code's temp root is CLAUDE_CODE_TMPDIR, and the shared temp opens only for this run's slug when it is not", () => {
+  assert.equal(claudeHonoursCodeTmpdir(null), null);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.alloc(0)), null);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.from("CLAUDE_TMPDIR only")), false);
+  assert.equal(claudeHonoursCodeTmpdir(Buffer.from("xx CLAUDE_CODE_TMPDIR yy")), true);
+  const missing = installedClaudeHonoursTmpdir("/no/such/home", () => { throw new Error("gone"); }, (file) => file);
+  assert.equal(missing, null);
+  const read = (file) => {
+    assert.match(file, /\/\.local\/bin\/claude$/);
+    return Buffer.from("CLAUDE_CODE_TMPDIR");
+  };
+  assert.equal(installedClaudeHonoursTmpdir("/Users/example", read, (file) => file), true);
+  const cwd = "/private/tmp/monocode-realtest-GhKDHU/projects/tally";
+  const slug = "-private-tmp-monocode-realtest-GhKDHU-projects-tally";
+  const exact = `/private/tmp/claude-501/${slug}`;
+  assert.equal(shellTempAllow(cwd, { honours: true, uid: 501 }), null);
+  assert.equal(shellTempAllow(cwd, { honours: null, uid: 501 }), null);
+  assert.equal(shellTempAllow(cwd, { honours: false, uid: 501 }), exact);
+  assert.equal(exactShellTemp(`/private/tmp/claude-501`), null);
+  assert.equal(exactShellTemp(`${exact}-other`), `/private/tmp/claude-501/${slug}-other`);
+  assert.equal(exactShellTemp(`/tmp/claude-501/${slug}`), null);
+  const closed = benchSandboxProfile({ realHome: REAL, home: HOME });
+  assert.equal(closed.includes("regex"), false);
+  const opened = benchSandboxProfile({ realHome: REAL, home: HOME, shellTemp: exact });
+  assert.match(opened, new RegExp(`regex #"\\^/private/tmp/claude-501/${slug}\\(/\\|\\$\\)"`));
+  assert.equal(opened.includes(`${slug}-other`), false);
+  assert.equal(opened.includes(`/private/tmp/claude-501")`), false);
+  const wide = benchSandboxProfile({ realHome: REAL, home: HOME, shellTemp: "/private/tmp/claude-501" });
+  assert.equal(wide.includes("regex"), false);
+  const state = fs.mkdtempSync(path.join(os.tmpdir(), "bench-shell-allow-"));
+  const stub = path.join(state, "stub-sandbox");
+  fs.writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  try {
+    const launch = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: REAL,
+      HOME: state,
+      REALTEST_STATE: state,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_CLAUDE_HONOURS_TMPDIR: "0",
+    }, { cwd, uid: 501 });
+    assert.equal(launch.ok, true, launch.reason);
+    const written = fs.readFileSync(path.join(state, "sandbox.sb"), "utf8");
+    assert.match(written, new RegExp(`regex #"\\^${exact.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\(/\\|\\$\\)"`));
+    const kept = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: REAL,
+      HOME: state,
+      REALTEST_STATE: state,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_CLAUDE_HONOURS_TMPDIR: "1",
+    }, { cwd, uid: 501 });
+    assert.equal(kept.ok, true, kept.reason);
+    assert.equal(fs.readFileSync(path.join(state, "sandbox.sb"), "utf8").includes("regex"), false);
+  } finally {
+    fs.rmSync(state, { recursive: true, force: true });
+  }
+});
+
+test("the monocode on PATH is this worktree's dev build, and the daily bundle is not on PATH", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "fence-worktree-"));
+  const real = path.join(root, "real");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const bin = path.join(worktree, "target", "debug", "monocode");
+  const dailyDir = path.join(real, "Applications", "MonoCode Hub.app", "Contents", "MacOS");
+  const dailyBin = path.join(dailyDir, "monocode");
+  const decoyDir = path.join(root, "decoy");
+  const linked = path.join(worktree, "target", "alias", "monocode");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.mkdirSync(path.dirname(linked), { recursive: true });
+  fs.mkdirSync(dailyDir, { recursive: true });
+  fs.mkdirSync(decoyDir, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho dev\n", { mode: 0o755 });
+  fs.writeFileSync(dailyBin, "#!/bin/sh\necho daily\n", { mode: 0o755 });
+  fs.writeFileSync(path.join(decoyDir, "monocode"), "#!/bin/sh\necho decoy\n", { mode: 0o755 });
+  fs.symlinkSync(dailyBin, linked);
+  const dailyOnPath = `${dailyDir}${path.delimiter}${decoyDir}${path.delimiter}/usr/bin${path.delimiter}/bin`;
+  try {
+    const env = benchFenceEnv({
+      PATH: dailyOnPath,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: bin,
+      REALTEST_WORKTREE: worktree,
+    }, state);
+    const shim = path.join(state, "bench-bin", "monocode");
+    const resolved = fs.realpathSync(shim);
+    assert.equal(resolved.startsWith(`${fs.realpathSync(worktree)}/target/`), true, resolved);
+    assert.equal(resolved, fs.realpathSync(bin));
+    for (const entry of env.PATH.split(path.delimiter)) {
+      assert.equal(entry.includes("MonoCode Hub.app"), false, entry);
+    }
+    const which = spawnSync("/bin/sh", ["-c", "command -v monocode"], { env, encoding: "utf8" });
+    assert.equal(which.status, 0, which.stderr);
+    assert.equal(fs.realpathSync(which.stdout.trim()), fs.realpathSync(bin));
+    const stolen = path.join(home, "state-stolen");
+    const viaDaily = benchFenceEnv({
+      PATH: dailyOnPath,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: linked,
+      REALTEST_WORKTREE: worktree,
+    }, stolen);
+    assert.equal(fs.existsSync(path.join(stolen, "bench-bin", "monocode")), false);
+    for (const entry of viaDaily.PATH.split(path.delimiter)) assert.equal(entry.includes("MonoCode Hub.app"), false, entry);
+    const found = spawnSync("/bin/sh", ["-c", "command -v monocode || true"], { env: viaDaily, encoding: "utf8" });
+    assert.equal(found.stdout.includes("MonoCode Hub.app"), false, found.stdout);
+    assert.equal(found.stdout.trim().endsWith("/decoy/monocode"), false, found.stdout);
+    const stub = path.join(stolen, "stub-sandbox");
+    fs.writeFileSync(stub, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const stolenLaunch = agentCommand("/bin/echo", ["hi"], {
+      REALTEST_REAL_HOME: real,
+      HOME: home,
+      REALTEST_STATE: stolen,
+      REALTEST_ALLOWED: "[]",
+      REALTEST_SANDBOX_EXEC: stub,
+      REALTEST_APP_BIN: linked,
+      REALTEST_WORKTREE: worktree,
+    });
+    assert.equal(stolenLaunch.ok, true, stolenLaunch.reason);
+    assert.equal(fs.readFileSync(path.join(stolen, "sandbox.sb"), "utf8").includes("MonoCode Hub.app"), false);
+    const outside = path.join(home, "state-outside");
+    benchFenceEnv({
+      PATH: `/usr/bin${path.delimiter}/bin`,
+      HOME: home,
+      REALTEST_REAL_HOME: real,
+      REALTEST_APP_BIN: path.join(root, "opt", "monocode"),
+      REALTEST_WORKTREE: worktree,
+    }, outside);
+    assert.equal(fs.existsSync(path.join(outside, "bench-bin", "monocode")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the scene probe reports which of the two checks failed", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "probe-agent-"));
+  const real = path.join(root, "real");
+  const home = path.join(root, "home");
+  const state = path.join(home, "state");
+  const worktree = path.join(root, "worktree");
+  const bin = path.join(worktree, "target", "debug", "monocode");
+  const dailyDir = path.join(real, "Applications", "MonoCode Hub.app", "Contents", "MacOS");
+  fs.mkdirSync(path.dirname(bin), { recursive: true });
+  fs.mkdirSync(dailyDir, { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  fs.writeFileSync(bin, "#!/bin/sh\necho dev\n", { mode: 0o755 });
+  const ctx = {
+    home,
+    state,
+    appBin: bin,
+    worktree,
+    realHome: real,
+    path: `${dailyDir}${path.delimiter}/usr/bin${path.delimiter}/bin`,
+  };
+  try {
+    const echoFail = probeBenchAgent(ctx, { exec: () => ({ status: 1, stdout: "", stderr: "EPERM" }) });
+    assert.equal(echoFail, "bench broken: echo probe");
+    let commands = [];
+    const versionFail = probeBenchAgent(ctx, {
+      exec: (command) => {
+        commands.push(command);
+        if (command === "echo probe") return { status: 0, stdout: "probe\n", stderr: "" };
+        return { status: 0, stdout: `${JSON.stringify({ identifier: "com.ash.monocode-hub" })}\n`, stderr: "" };
+      },
+    });
+    assert.equal(versionFail, "bench broken: monocode version");
+    assert.deepEqual(commands, ["echo probe", "monocode version --json"]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a slug allow does not open a sibling under /private/tmp/claude-<uid>", { skip: process.platform !== "darwin" }, () => {
+  assert.equal(fs.existsSync("/usr/bin/sandbox-exec"), true, "sandbox-exec is missing on macOS");
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "bench-slug-")));
+  const home = path.join(root, "home");
+  fs.mkdirSync(home, { recursive: true });
+  const uid = process.getuid();
+  const id = path.basename(root).replace(/[^a-zA-Z0-9]/g, "-");
+  const slug = `bench-slug-${id}`;
+  const exact = `/private/tmp/claude-${uid}/${slug}`;
+  const sibling = `/private/tmp/claude-${uid}/${slug}-other`;
+  const parent = path.dirname(exact);
+  const parentExisted = fs.existsSync(parent);
+  fs.mkdirSync(sibling, { recursive: true });
+  fs.writeFileSync(path.join(sibling, "keep"), "keep\n");
+  const profile = benchSandboxProfile({ realHome: os.homedir(), home, project: home, shellTemp: exact });
+  const file = path.join(home, "sandbox.sb");
+  fs.writeFileSync(file, profile);
+  const script = path.join(home, "run.sh");
+  fs.writeFileSync(script, `#!/bin/sh
+set +e
+mkdir -p "$EXACT" && echo ok > "$EXACT/probe.txt" && test -f "$EXACT/probe.txt" && echo slug_rw=ok || echo slug_rw=fail
+if echo x > "$SIBLING/nope"; then echo sib_write=ok; else echo sib_write=fail; fi
+if rm "$SIBLING/keep"; then echo sib_del=ok; else echo sib_del=fail; fi
+`, { mode: 0o755 });
+  try {
+    assert.match(profile, new RegExp(`regex #"\\^/private/tmp/claude-${uid}/${slug}\\(/\\|\\$\\)"`));
+    assert.equal(profile.includes(sibling), false);
+    const out = spawnSync("/usr/bin/sandbox-exec", ["-f", file, "/bin/sh", script], {
+      encoding: "utf8",
+      timeout: 15000,
+      env: { HOME: home, PATH: "/usr/bin:/bin", EXACT: exact, SIBLING: sibling },
+    });
+    assert.equal(out.status, 0, `${out.stderr}\n${out.stdout}`);
+    const report = Object.fromEntries(out.stdout.trim().split("\n").filter(Boolean).map((line) => line.split("=")));
+    assert.equal(report.slug_rw, "ok", out.stdout);
+    assert.equal(report.sib_write, "fail", out.stdout);
+    assert.equal(report.sib_del, "fail", out.stdout);
+    assert.equal(fs.readFileSync(path.join(sibling, "keep"), "utf8"), "keep\n");
+    assert.equal(fs.existsSync(path.join(sibling, "nope")), false);
+  } finally {
+    fs.rmSync(exact, { recursive: true, force: true });
+    fs.rmSync(sibling, { recursive: true, force: true });
+    if (!parentExisted) {
+      try { fs.rmdirSync(parent); } catch { /* the user's Claude sessions still have folders here */ }
     }
     fs.rmSync(root, { recursive: true, force: true });
   }
