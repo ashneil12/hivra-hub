@@ -289,6 +289,18 @@ fn unpack(bytes: &[u8], target: &Path) -> Result<(), String> {
                 "The emulate package has a path outside its folder, so it wasn't installed.".into(),
             );
         }
+        // A link whose target escapes the folder is as bad as a file path that does.
+        if entry.header().entry_type().is_symlink() || entry.header().entry_type().is_hard_link() {
+            let link_target = entry
+                .link_name()
+                .map_err(|error| format!("The emulate package has an unreadable link: {error}"))?;
+            if !safe_link(link_target.as_deref()) {
+                return Err(
+                    "The emulate package has a link outside its folder, so it wasn't installed."
+                        .into(),
+                );
+            }
+        }
         entry
             .unpack_in(target)
             .map_err(|error| format!("The emulate package couldn't be unpacked: {error}"))?;
@@ -299,6 +311,11 @@ fn unpack(bytes: &[u8], target: &Path) -> Result<(), String> {
 fn safe_entry(path: &Path) -> bool {
     path.components()
         .all(|component| matches!(component, Component::Normal(_) | Component::CurDir))
+}
+
+/// A link inside the package must point at a plain relative path, never outside it.
+fn safe_link(target: Option<&Path>) -> bool {
+    target.is_some_and(safe_entry)
 }
 
 pub struct StartRequest {
@@ -347,15 +364,20 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let child = command
+    let mut child = command
         .spawn()
         .map_err(|error| format!("The stand-in didn't start: {error}"))?;
     let pid = child.id();
-    store::save(
+    if let Err(error) = store::save(
         &request.stack_dir.join("emulate.pid"),
         format!("{pid}\n").as_bytes(),
-    )
-    .map_err(|error| format!("The stand-in started, but its pid couldn't be written: {error}"))?;
+    ) {
+        // A process this app cannot stop again is worse than no process.
+        let _ = child.kill();
+        return Err(format!(
+            "The stand-in started, but its pid couldn't be written, so it was stopped: {error}"
+        ));
+    }
     Ok(pid)
 }
 
@@ -583,6 +605,10 @@ mod tests {
         assert!(safe_entry(Path::new("./package/dist/index.js")));
         assert!(!safe_entry(Path::new("../outside")));
         assert!(!safe_entry(Path::new("/etc/hosts")));
+        assert!(safe_link(Some(Path::new("package/dist/index.js"))));
+        assert!(!safe_link(Some(Path::new("../outside"))));
+        assert!(!safe_link(Some(Path::new("/etc/hosts"))));
+        assert!(!safe_link(None));
     }
 
     #[test]
