@@ -25,10 +25,15 @@ function deferred() {
 function fixture(mode: "archive" | "delete", preserveOpenFiles = false) {
   const closing: Session = {
     ...newSession("cursor", "/tmp/project"),
-    busy: true,
+    busy: mode === "archive",
     blocks: [
       { id: "user", role: "user", text: "hello" },
-      { id: "answer", role: "assistant", text: "partial", streaming: true },
+      {
+        id: "answer",
+        role: "assistant",
+        text: "partial",
+        streaming: mode === "archive",
+      },
     ],
     queuedMessages: [{ id: "queued", text: "next", attachments: [] }],
     queueStatus: "active",
@@ -201,7 +206,7 @@ describe.each(["archive", "delete"] as const)("%s lifecycle", (mode) => {
     expect(await f.run()).toBe(false);
     expect(f.stop).not.toHaveBeenCalled();
     expect(mocks.invoke).not.toHaveBeenCalled();
-    expect(f.read().sessions[0].busy).toBe(true);
+    expect(f.read().sessions[0].busy).toBe(mode === "archive");
   });
 
   it("keeps files that become dirty while storage is pending", async () => {
@@ -241,6 +246,20 @@ describe.each(["archive", "delete"] as const)("%s lifecycle", (mode) => {
     expect(f.read().tabs[0].terminalPanes[0].files).toContain(terminal);
     expect(f.commit.mock.calls[0][0].closedTabs).toEqual([]);
   });
+});
+
+it("refuses to trash a chat that is still running", async () => {
+  const f = fixture("delete");
+  f.write({
+    ...f.read(),
+    sessions: f.read().sessions.map((session) =>
+      session.id === f.closing.id ? { ...session, busy: true } : session,
+    ),
+  });
+  await expect(f.run()).rejects.toThrow(/still running/);
+  expect(f.stop).not.toHaveBeenCalled();
+  expect(mocks.invoke).not.toHaveBeenCalled();
+  expect(f.read().sessions[0].busy).toBe(true);
 });
 
 it("archives the flushed transcript after cancellation, with streaming stopped", async () => {

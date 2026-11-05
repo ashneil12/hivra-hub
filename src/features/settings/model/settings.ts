@@ -34,8 +34,10 @@ export type SettingsSectionId =
   | "inbox"
   | "worktrees"
   | "archive"
+  | "trash"
   | "changes"
   | "decisions"
+  | "activity"
   | "dashboards"
   | "portable"
   | "history"
@@ -101,6 +103,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
     keywords: "decision ask waiting memory never rule history per project inbox",
+  },
+  {
+    id: "activity",
+    group: "app",
+    label: "Activity",
+    description:
+      "What agents and the app did, newest first. Kept for 90 days.",
+    keywords: "activity log audit history who did what",
   },
   {
     id: "dashboards",
@@ -226,6 +236,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Archive",
     description: "Projects and conversations you have archived.",
     keywords: "archived restore delete hidden",
+  },
+  {
+    id: "trash",
+    group: "workspace",
+    label: "Trash",
+    description:
+      "Deleted chats, Monos, projects, notes, docs and tasks. Restore them, or delete them forever.",
+    keywords: "trash restore delete forever bin",
   },
   {
     id: "worktrees",

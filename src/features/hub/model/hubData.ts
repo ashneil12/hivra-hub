@@ -2,6 +2,13 @@ import { DEFAULT_TEAM, DEFAULT_TEAM_IDS, ensureBuiltInMonos } from "./builtInMon
 import { leadFor } from "./hubLeads";
 import { useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
+import { normalizeProjectPath } from "../../projects/model/recents";
+import {
+  hiddenProjectFolders,
+  hiddenProjectsLoaded,
+  hiddenProjectsVersion,
+  hiddenProjectsWithheld,
+} from "../../trash/model/hidden";
 import { loadTabGroupLabels, saveTabGroupLabel } from "../../workspace/model/tabGroups";
 import { examplesOn } from "./examples";
 import { HubStore } from "./hubStore";
@@ -186,16 +193,33 @@ export function registryProjects(): HubProject[] {
 }
 
 /** Every screen reads projects with Ash's own name, order and "Remove from hub" applied (projectPrefs.ts). */
+function projectInTrash(project: HubProject, hidden: ReadonlySet<string>): boolean {
+  const ids = [project.id, project.folder].filter((id): id is string => !!id);
+  return ids.some((id) => hidden.has(id) || hidden.has(normalizeProjectPath(id)));
+}
+
+function withoutTrashedProjects(projects: HubProject[]): HubProject[] {
+  if (hiddenProjectsWithheld()) return [];
+  if (!hiddenProjectsLoaded()) return projects;
+  const hidden = hiddenProjectFolders();
+  if (hidden.size === 0) return projects;
+  return projects.filter((project) => !projectInTrash(project, hidden));
+}
+
 const wrapped = new WeakMap<HubDataSource, HubDataSource>();
 function withProjectPrefs(source: HubDataSource): HubDataSource {
   let w = wrapped.get(source);
   if (!w) {
-    let memo: { from: HubProject[]; v: number; out: HubProject[] } | undefined;
+    let memo: { from: HubProject[]; v: number; hidden: number; out: HubProject[] } | undefined;
     w = Object.create(source) as HubDataSource;
     w.listProjects = () => {
       const from = source.listProjects();
       const v = projectPrefsVersion();
-      if (!memo || memo.from !== from || memo.v !== v) memo = { from, v, out: applyProjectPrefs(from) };
+      // WP-76: a trashed project leaves Home and the rails. A failed read keeps the previous set.
+      const hidden = hiddenProjectsVersion();
+      if (!memo || memo.from !== from || memo.v !== v || memo.hidden !== hidden) {
+        memo = { from, v, hidden, out: withoutTrashedProjects(applyProjectPrefs(from)) };
+      }
       return memo.out;
     };
     wrapped.set(source, w);

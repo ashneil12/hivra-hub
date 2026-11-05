@@ -277,6 +277,38 @@
       "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
     },
     {
+      "name": "Orbit's audit log",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/activity.rs",
+      "how": "bounded_text, bounded_metadata and the newest-first page translated from apps/server/src/audit.rs to rusqlite (WP-78). The 90-day keep, the initiator and the activity screen are Hivra's."
+    },
+    {
+      "name": "Orbit trash",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src-tauri/src/trash.rs, src/features/trash",
+      "how": "Page and task trash rules (a batch shares one deleted_at and one trashed_with, a 30-day purge, a restored child of a still-trashed parent comes back at the top level) translated onto one trash_items ledger. Orbit's SQL is sqlx against tasks and pages tables Hivra does not have (WP-76)"
+    },
+    {
+      "name": "Orbit docs editor",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
+      "where": "src/features/docs/model",
+      "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72)"
+    },
+    {
+      "name": "Orbit's task rules",
+      "url": "https://github.com/coollabsio/orbit",
+      "licence": "Apache-2.0",
+      "copyright": "The upstream files have no file-level copyright line. See src/features/tasks/vendor/LICENSE.",
+      "where": "src/features/tasks/vendor, src-tauri/src/tasks",
+      "how": "tasksLib.ts, taskMeta.ts, subIssuesLib.ts, bulkUpdates.ts and relationsLib.ts copied with their tests (WP-70). The parent check, the auto-close rule and the version check are translated from the Rust repositories to rusqlite. Hivra does not close descendants, store relations, or add a duplicate status category."
+    },
+    {
       "name": "Raven's chat importer",
       "url": "https://github.com/EverMind-AI/Raven",
       "licence": "Apache-2.0",

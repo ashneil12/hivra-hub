@@ -314,6 +314,10 @@ import {
 } from "../features/sessions/ui/DeleteSessionDialog";
 import { ConfirmDeleteHost, confirmDelete } from "../shared/ui/ConfirmDelete";
 import { monoDeleteDetail } from "../features/monos/model/monoDelete";
+import { deleteMonoToTrash, STILL_RUNNING } from "../features/trash/model/deleteMono";
+import { trashMono } from "../features/trash/model/client";
+import { TRASH_CHANGED } from "../features/trash/model/trash";
+import { refreshHiddenProjects } from "../features/trash/model/hidden";
 import { delegationOf } from "../features/monos/model/delegationView";
 import {
   unusedWorktreeOf,
@@ -624,6 +628,7 @@ import {
   rebaseProjectData,
   removeProjectData,
 } from "../features/projects/model/projectData";
+import { removeProjectFromWindow } from "../features/trash/model/removeProject";
 import {
   forgetProjectLocation,
   rememberProjectLocation,
@@ -675,7 +680,7 @@ import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
-import { overlayLiveWorking } from "../features/sessions/model/liveTurns";
+import { listLiveTurns, overlayLiveWorking, publishLiveTurns } from "../features/sessions/model/liveTurns";
 import { createSessionRemover } from "../features/sessions/model/sessionRemoval";
 import { shouldGenerateSessionTitle } from "../features/sessions/model/sessionTitle";
 import {
@@ -2990,6 +2995,23 @@ function Workspace({
   useEffect(() => {
     void refreshHistory(sidebarCwd);
   }, [sidebarCwd, refreshHistory]);
+
+  // WP-76: a trash change in this window or another refreshes the sidebar and Home.
+  const [, setTrashTick] = useState(0);
+  useEffect(() => {
+    const listening = listen(TRASH_CHANGED, () => {
+      void refreshHiddenProjects().finally(() => {
+        void refreshHistory(projectCwdRef.current);
+        setTrashTick((tick) => tick + 1);
+      });
+    });
+    void refreshHiddenProjects().then((changed) => {
+      if (changed) setTrashTick((tick) => tick + 1);
+    });
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, [refreshHistory]);
 
   useEffect(() => {
     if (!inboxViewOpen) return;
@@ -6585,38 +6607,85 @@ function Workspace({
     [onRemoveHistorySession],
   );
 
-  /** Deletes the Mono's current conversation, then the Mono. Its folder (soul, memory, habits) stays on disk. */
+  /** Moves the Mono and its current chat to the trash. Its files can be put back for 30 days. */
   const onDeleteMono = useCallback(
     async (monoId: string) => {
       const mono = findMono(monoId);
       if (!mono) return;
       const { name } = monoLook(mono);
       // r30e: the shared confirm, not the native sheet (Cancel focused; Enter keeps the Mono). r30f: it says only what
-      // happens: the chat goes, habits stop, the soul and memory are kept (monoDelete.ts).
-      const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId));
+      // happens (monoDelete.ts). WP-76: a running chat is stopped first, and the person has already been told.
+      const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId), { undoable: true });
       if (!confirmed) return;
-      if (mono.sessionId) {
-        if (monoViewIdRef.current === mono.sessionId) closeMonoView();
-        if (
-          sessionsRef.current.some(
-            (session) => session.id === mono.sessionId,
-          ) ||
-          history.some((entry) => entry.id === mono.sessionId)
-        ) {
-          const removed = await onRemoveHistorySession(
-            mono.sessionId,
-            "delete",
-            true,
-          );
-          if (!removed) return;
-        }
+      try {
+        const moved = await deleteMonoToTrash({
+          confirmed: true,
+          sessionId: mono.sessionId,
+          busy: Boolean(
+            mono.sessionId &&
+              sessionsRef.current.some(
+                (session) => session.id === mono.sessionId && session.busy,
+              ),
+          ),
+          stop: (sessionId) => stopSessionForRemoval(sessionId).then(() => undefined),
+          markStopped: (sessionId) => {
+            const latest = sessionsRef.current.find((session) => session.id === sessionId);
+            if (!latest?.busy) return;
+            const stopped = stopStreaming(latest);
+            const next = sessionsRef.current.map((session) =>
+              session.id === sessionId ? stopped : session,
+            );
+            sessionsRef.current = next;
+            setSessions(next);
+          },
+          stillRunning: async (sessionId) => {
+            const others = sessionsRef.current
+              .filter((session) => session.busy)
+              .map((session) => session.id);
+            await publishLiveTurns(others).catch(() => undefined);
+            const live = await listLiveTurns().catch(() => others);
+            if (!live.includes(sessionId)) return false;
+            void message(STILL_RUNNING, { title: "MonoCode", kind: "error" });
+            return true;
+          },
+          trash: () =>
+            trashMono({
+              id: monoId,
+              title: name,
+              sessionIds: mono.sessionId ? [mono.sessionId] : undefined,
+              payload: JSON.stringify(mono),
+            }).then(() => undefined),
+          removeChat: async () => {
+            if (!mono.sessionId) return true;
+            if (monoViewIdRef.current === mono.sessionId) closeMonoView();
+            const listed =
+              sessionsRef.current.some((session) => session.id === mono.sessionId) ||
+              history.some((entry) => entry.id === mono.sessionId);
+            if (!listed) return true;
+            const removed = await onRemoveHistorySession(
+              mono.sessionId,
+              "delete",
+              true,
+            );
+            return removed;
+          },
+          dropRoster: () => {
+            removeMono(monoId);
+            // Its team leaves the hub. The folder is in the trash with the Mono (monoTeams.ts).
+            forgetMonoTeam(monoId);
+          },
+        });
+        if (!moved) return;
+      } catch (error) {
+        void message(
+          error instanceof Error ? error.message : "The Mono could not be moved to the trash.",
+          { title: "MonoCode", kind: "error" },
+        );
+        return;
       }
-      removeMono(monoId);
-      // Its team goes with it from the hub; the folder stays on disk with whatever its workers made (monoTeams.ts).
-      forgetMonoTeam(monoId);
       if (lastMonoIdRef.current === monoId) lastMonoIdRef.current = undefined;
     },
-    [closeMonoView, history, onRemoveHistorySession],
+    [closeMonoView, history, onRemoveHistorySession, stopSessionForRemoval],
   );
 
   /**
@@ -7293,6 +7362,20 @@ function Workspace({
   const onRemoveProject = useCallback(
     (path: string, options: { purgeData: boolean }) => {
       const normalized = normalizeProjectPath(path);
+      // WP-76: a project with a running chat stays until that chat stops.
+      if (
+        options.purgeData &&
+        sessionsRef.current.some(
+          (session) => sameProjectPath(session.cwd, normalized) && session.busy,
+        )
+      ) {
+        void message(
+          "A chat in this project is still running. Stop it, then move the project to the trash.",
+          { title: "MonoCode", kind: "error" },
+        );
+        return;
+      }
+      const drop = () => {
       const wasCurrent = sameProjectPath(projectCwdRef.current, normalized);
       const remaining = options.purgeData
         ? forgetProject(normalized)
@@ -7342,7 +7425,6 @@ function Workspace({
           }
           lastPersisted.current.delete(session.id);
         }
-        void removeProjectData(normalized);
       } else {
         for (const session of projectSessions) {
           if (session.busy) continue;
@@ -7409,6 +7491,24 @@ function Workspace({
           setComposerFocused(true);
         }
       }
+      };
+      // WP-76: the window drops the project only after the trash accepts it.
+      if (options.purgeData) {
+        void removeProjectFromWindow({
+          purgeData: true,
+          trash: () => removeProjectData(normalized).then(() => undefined),
+          applyLocal: drop,
+        }).catch((error: unknown) => {
+          void message(
+            error instanceof Error
+              ? error.message
+              : "The project could not be moved to the trash.",
+            { title: "MonoCode", kind: "error" },
+          );
+        });
+        return;
+      }
+      drop();
     },
     [activeTabId, invalidateLoadedSession, onSelectProject, persistSession],
   );
@@ -10177,6 +10277,7 @@ function Workspace({
           brief: text,
           ...(input.goal ? { goal: input.goal } : {}),
           ...(input.askIds?.length ? { askIds: input.askIds } : {}),
+          ...(input.taskId ? { taskId: input.taskId } : {}),
           follow: "lead",
           by: `owner:${ownerSession}`,
         });
@@ -13254,6 +13355,7 @@ function Workspace({
             brief: prompt,
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
+            ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
@@ -13885,6 +13987,13 @@ function Workspace({
               window.dispatchEvent(new Event(NOTES_CHANGED_EVENT));
               return saved;
             },
+            // WP-72: docs are notes. Agents read and write them through the same store.
+            docs: {
+              list: () => invoke("docs_list"),
+              get: (id) => invoke("docs_get", { id }),
+              create: (page) => invoke("docs_create", { page }),
+              update: (page) => invoke("docs_update", { page }),
+            },
             artifacts: () => invoke("artifacts_list"),
             artifact: getArtifact,
             saveArtifact,
@@ -13930,6 +14039,8 @@ function Workspace({
                 ? { project: project.id, name: codingTeamName(project), folder: project.folder }
                 : undefined;
             },
+            // WP-70: the shared task list. The handler sets who is asking.
+            taskStore: (command, args) => invoke(command, args),
             monoOf: (id) => {
               const mono =
                 monoForSession(id) ?? findMono(habitRunMono(id) ?? "");
@@ -14033,6 +14144,7 @@ function Workspace({
                   requestId: input.requestId,
                   title: input.title,
                   ...(input.goal ? { goal: input.goal } : {}),
+                  ...(input.taskId ? { taskId: input.taskId } : {}),
                   askIds: input.askIds,
                   mode: input.mode,
                 });
@@ -17300,6 +17412,8 @@ function Workspace({
                         recents={recents}
                         onClose={onLeaveNotes}
                         onToggleSidebar={onToggleSidebar}
+                        // WP-72: an @ on a page can name a chat in this project.
+                        mentionChats={sessions}
                       />
                     </AppViewSurface>
                   ) : null}

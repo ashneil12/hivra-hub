@@ -1636,3 +1636,222 @@ fn an_export_names_its_files_with_forward_slashes_on_every_platform() {
         "# Soul\n"
     );
 }
+
+/// WP-78: the activity log is part of the workspace export. A secret in a summary does not survive, a row older
+/// than 90 days stays out, and importing the same file again adds nothing.
+#[test]
+fn the_activity_log_is_in_the_export_without_the_secret_and_a_second_import_adds_nothing() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    seed(&source);
+    let now = crate::session_store::now_millis();
+    {
+        let store = SessionStore::open(source.db_path.clone()).unwrap();
+        let conn = store.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO activity (id, kind, actor_role, initiator_role, project, target, summary, link, at)
+             VALUES ('act-fresh', 'git.push', 'app', 'person', 'acme/web', 'work', ?1, '', ?2)",
+            params![format!("Pushed the branch. {GITHUB}"), now],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO activity (id, kind, actor_role, initiator_role, summary, at)
+             VALUES ('act-old', 'git.push', 'app', 'person', 'Pushed long ago.', ?1)",
+            params![now - crate::activity::RETENTION_MS - 86_400_000],
+        )
+        .unwrap();
+        let _: (i64, i64, i64) = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .unwrap();
+    }
+
+    let dest = out.0.join("export");
+    let report = export(&source, &export_request(&dest, Form::Folder)).unwrap();
+    assert_eq!(report.counts["activity"], 1);
+    assert_no_secrets(&dest);
+    let text = String::from_utf8(
+        export_texts(&dest)
+            .get("workspace/activity.json")
+            .unwrap()
+            .clone(),
+    )
+    .unwrap();
+    assert!(!text.contains("ghp_"), "{text}");
+    assert!(text.contains("[secret removed]"), "{text}");
+    assert!(!text.contains("act-old"), "{text}");
+    assert!(!text.contains("Pushed long ago"), "{text}");
+
+    let target_store = open_store(&target);
+    let preview = inspect(&target, &dest.to_string_lossy()).unwrap();
+    assert_eq!(preview.workspace.unwrap().activity, 1);
+
+    let request = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport::default()),
+    };
+    let conn = target_store.lock_conn().unwrap();
+    let imported = import_held(&target, &conn, &request).unwrap();
+    assert_eq!(imported.activity_added, 1, "{imported:?}");
+    assert_eq!(imported.sessions_added, 0);
+    let again = import_held(&target, &conn, &request).unwrap();
+    assert_eq!(again.activity_added, 0, "{again:?}");
+
+    let page = crate::activity::list(&conn, &crate::activity::ListQuery::default(), now).unwrap();
+    assert_eq!(page.entries.len(), 1);
+    assert_eq!(page.entries[0].id, "act-fresh");
+    assert!(
+        !page.entries[0].summary.contains("ghp_"),
+        "{}",
+        page.entries[0].summary
+    );
+    assert!(scrubber().findings(&page.entries[0].summary).is_empty());
+    assert!(page.entries[0].summary.contains("[secret removed]"));
+}
+
+#[test]
+fn docs_history_comes_back_and_a_copy_keeps_its_own_parent() {
+    let source_dir = TestDir::new("docs-source");
+    let target_dir = TestDir::new("docs-target");
+    let copy_dir = TestDir::new("docs-copy");
+    let out = TestDir::new("docs-out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let copy = env_for(&copy_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    conn.execute_batch(
+        "INSERT INTO notes (id, slug, title, body, tags_json, slug_pending, created_at, updated_at, content_kind, parent_id, blocks_json)
+         VALUES ('parent', 'parent', 'Parent', 'parent body', '[]', 0, 1, 1, 'note', NULL, NULL),
+                ('child', 'child', 'Child', 'see note-assets/child/pic.png', '[]', 0, 2, 2, 'note', 'parent', '{\"url\":\"note-assets/child/pic.png\"}');
+         INSERT INTO note_versions (id, note_id, version, title, body, blocks_json, kind, author_kind, author_id, author_name, created_at)
+         VALUES ('ver-1', 'child', 1, 'Child', 'see note-assets/child/pic.png', '{\"url\":\"note-assets/child/pic.png\"}', 'auto', 'person', 'ash', 'Ash', 3);
+         INSERT INTO note_mentions (note_id, kind, target_id, name) VALUES ('child', 'page', 'parent', 'Parent');",
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    let exported = export(&source, &request).unwrap();
+    assert_eq!(exported.counts["docVersions"], 1);
+    assert_eq!(exported.counts["docMentions"], 1);
+
+    let bring = ImportRequest {
+        path: dest.to_string_lossy().into_owned(),
+        memory: None,
+        workspace: Some(WorkspaceImport {
+            notes: vec!["parent".into(), "child".into()],
+            ..Default::default()
+        }),
+    };
+    let target_store = open_store(&target);
+    let target_conn = target_store.lock_conn().unwrap();
+    import_held(&target, &target_conn, &bring).unwrap();
+    let parent_of = |id: &str| -> Option<String> {
+        target_conn
+            .query_row("SELECT parent_id FROM notes WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(parent_of("child").as_deref(), Some("parent"));
+    let version_body: String = target_conn
+        .query_row(
+            "SELECT body FROM note_versions WHERE note_id = 'child' AND version = 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        version_body.contains("note-assets/child/pic.png"),
+        "{version_body}"
+    );
+    let mentioned: String = target_conn
+        .query_row(
+            "SELECT target_id FROM note_mentions WHERE note_id = 'child' AND kind = 'page'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(mentioned, "parent");
+    drop(target_conn);
+    drop(target_store);
+
+    let copy_store = open_store(&copy);
+    let copy_conn = copy_store.lock_conn().unwrap();
+    copy_conn
+        .execute_batch(
+            "INSERT INTO notes (id, slug, title, body, tags_json, slug_pending, created_at, updated_at, content_kind, parent_id)
+             VALUES ('parent', 'parent', 'Kept', 'local parent', '[]', 0, 1, 1, 'note', NULL),
+                    ('child', 'child', 'Kept', 'local child', '[]', 0, 2, 2, 'note', 'parent');",
+        )
+        .unwrap();
+    let report = import_held(
+        &copy,
+        &copy_conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                notes: vec!["parent".into(), "child".into()],
+                note_copies: vec!["parent".into(), "child".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let new_parent = report.renamed.get("parent").unwrap();
+    let new_child = report.renamed.get("child").unwrap();
+    let copied_parent: String = copy_conn
+        .query_row(
+            "SELECT parent_id FROM notes WHERE id = ?1",
+            [new_child],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(copied_parent, *new_parent);
+    let kept_parent: String = copy_conn
+        .query_row(
+            "SELECT parent_id FROM notes WHERE id = 'child'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(kept_parent, "parent");
+    let copied_blocks: String = copy_conn
+        .query_row(
+            "SELECT blocks_json FROM notes WHERE id = ?1",
+            [new_child],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(
+        copied_blocks.contains(&format!("note-assets/{new_child}/pic.png")),
+        "{copied_blocks}"
+    );
+    assert!(!copied_blocks.contains("note-assets/child/"));
+    let copied_version: String = copy_conn
+        .query_row(
+            "SELECT blocks_json FROM note_versions WHERE note_id = ?1",
+            [new_child],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(copied_version.contains(&format!("note-assets/{new_child}/")));
+    let copied_mention: String = copy_conn
+        .query_row(
+            "SELECT target_id FROM note_mentions WHERE note_id = ?1 AND kind = 'page'",
+            [new_child],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(copied_mention, *new_parent);
+}

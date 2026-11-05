@@ -109,9 +109,19 @@ pub(crate) fn contains_working_dir(root: &Path, cwd: &Path) -> bool {
 }
 
 fn session_ids(conn: &rusqlite::Connection, path: &Path) -> Result<Vec<String>, String> {
-    let mut query = conn
-        .prepare("SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0")
-        .map_err(|e| e.to_string())?;
+    let trash_table: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'trash_items'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    let sql = if trash_table == 0 {
+        "SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0"
+    } else {
+        "SELECT id, COALESCE(NULLIF(worktree_cwd, ''), cwd) FROM sessions WHERE worktree_removed = 0 AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
+    };
+    let mut query = conn.prepare(sql).map_err(|e| e.to_string())?;
     let rows = query
         .query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -1158,6 +1168,71 @@ mod tests {
             &root,
             &PathBuf::from(format!("{}-other", root.display()))
         ));
+    }
+
+    #[test]
+    fn a_trashed_chat_does_not_keep_its_worktree() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let tree = create(&root, "feature", "main", false).unwrap();
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        for (id, cwd, worktree) in [
+            ("gone", path_to_js(&root), Some(tree.path.clone())),
+            ("stays", path_to_js(&root), Some(tree.path.clone())),
+        ] {
+            conn.execute(
+                "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd, archived) VALUES (?1, ?2, 'codex', 'test', 'supervised', 'Test', '[]', 0, 0, ?3, 0)",
+                rusqlite::params![id, cwd, worktree],
+            )
+            .unwrap();
+        }
+        crate::trash::trash(
+            &conn,
+            &crate::trash::Item {
+                kind: "chat".into(),
+                id: "gone".into(),
+                title: "Gone".into(),
+                parent_kind: None,
+                parent_id: None,
+                payload: "{}".into(),
+            },
+            &[],
+            false,
+            1,
+        )
+        .unwrap();
+        let mut ids = session_ids(&conn, Path::new(&tree.path)).unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["stays".to_string()]);
+        crate::trash::trash(
+            &conn,
+            &crate::trash::Item {
+                kind: "chat".into(),
+                id: "stays".into(),
+                title: "Stays".into(),
+                parent_kind: None,
+                parent_id: None,
+                payload: "{}".into(),
+            },
+            &[],
+            false,
+            2,
+        )
+        .unwrap();
+        assert!(
+            session_ids(&conn, Path::new(&tree.path))
+                .unwrap()
+                .is_empty(),
+            "a worktree whose chats are all trashed is not held"
+        );
+        let removed = remove_with_sessions(&conn, &root, Path::new(&tree.path), true, false);
+        if let Err(message) = &removed {
+            assert!(
+                !message.contains("Sessions still use this worktree"),
+                "{message}"
+            );
+        }
     }
 
     #[test]

@@ -109,10 +109,13 @@ import {
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
+import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
+import { DOC_FIELDS, handleDocs } from "./agentDocs";
+import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
 /** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
@@ -304,6 +307,16 @@ export type AgentAppHost = {
   codingTeamOf?(sessionId: string): { project: string; name: string; folder: string } | undefined;
   /** The delegate tool's task rows (agentAppTasks.ts); a Mono's own chat or a coding-team chat only. */
   tasks?: AgentAppTasksHost;
+  /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
+  taskStore?(
+    command: "tasks_list" | "tasks_get" | "tasks_create" | "tasks_update",
+    args: {
+      actor: { id: string; project: string; kind: "agent" };
+      project?: unknown;
+      id?: string;
+      input?: Record<string, unknown>;
+    },
+  ): Promise<unknown>;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
   /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
@@ -313,6 +326,13 @@ export type AgentAppHost = {
    * started from a room comes back to it.
    */
   rooms?: AgentAppRoomsHost & { delegated?(source: Session, result: unknown): void };
+  /** WP-72: docs are notes. Page text comes back as data, never as instructions. */
+  docs?: {
+    list: () => Promise<DocRecord[]>;
+    get: (id: string) => Promise<DocRecord | null>;
+    create: (page: DocCreateInput) => Promise<DocWriteResult>;
+    update: (page: DocUpdateInput) => Promise<DocWriteResult>;
+  };
 };
 
 const FIELDS = new Map<string, readonly string[]>([
@@ -381,11 +401,14 @@ const FIELDS = new Map<string, readonly string[]>([
   ["chat.card", [...CARD_FIELDS]],
   ["monos.propose", ["name", "brief", "lane", "team", "engine", "projects", "connectors", "soul"]],
   ...TASK_FIELDS,
+  // WP-70: the shared task list. Not the delegation tools above.
+  ...TASK_STORE_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
   ...TIMER_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
+  ...DOC_FIELDS,
 ]);
 
 /**
@@ -1412,6 +1435,8 @@ export async function handleAgentApp(
 ): Promise<unknown> {
   fields(action, input);
   checkerLane(source, action, host);
+  // WP-70: the shared task list. Not the delegation tools below.
+  if (isTaskStoreAction(action)) return handleTaskStore(source, action, input, host);
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
@@ -1423,6 +1448,9 @@ export async function handleAgentApp(
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
+  if (action.startsWith("docs.")) {
+    return handleDocs(source, requestId, action, input, host, (session, fields) => requireProject(session, fields, host));
+  }
   if (action === "monos.create" || action === "monos.retire" || action === "teams.create" || action === "pages.build" || action === "hub.change" || action === "today.change" || action === "creator.draft" || action === "creator.state")
     return handleSelfBuild(source, action, input, host, async (brief, title, folder, intent) => {
       // The worker runs in the preview copy: the caller may name that one folder as its project for this delegation.

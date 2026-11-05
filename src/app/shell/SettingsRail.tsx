@@ -11,6 +11,7 @@ import {
   SlidersHorizontal,
   Sparkles,
   Terminal,
+  Trash2,
   Zap,
   Chatting,
   Code,
@@ -36,8 +37,10 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   inbox: Inbox,
   worktrees: FolderTree,
   archive: Archive,
+  trash: Trash2,
   changes: Undo2,
   decisions: CheckCheck,
+  activity: Clock, // WP-78
   dashboards: DashboardSquare,
   portable: CloudUpload,
   history: Clock, // WP-50

@@ -40,6 +40,21 @@ describe("the shared delete confirm", () => {
     expect(dialog()).toBeNull();
   });
 
+  it("leaves out \"This can't be undone.\" when the thing goes to the trash (WP-76)", async () => {
+    act(() => root.render(createElement(ConfirmDeleteHost)));
+    let answer: boolean | undefined;
+    await act(
+      async () =>
+        void confirmDelete("Example: Pip", "Its files go to the trash for 30 days, and you can put them back.", {
+          undoable: true,
+        }).then((ok) => (answer = ok)),
+    );
+    expect(dialog()?.textContent).toContain("Its files go to the trash for 30 days, and you can put them back.");
+    expect(dialog()?.textContent).not.toContain("can't be undone");
+    await act(async () => button("Cancel")!.click());
+    expect(answer).toBe(false);
+  });
+
   it("answers yes only for Delete, and no for Escape", async () => {
     act(() => root.render(createElement(ConfirmDeleteHost)));
     let answer: boolean | undefined;

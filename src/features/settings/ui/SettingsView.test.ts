@@ -1207,4 +1207,48 @@ describe("providers scope inheritance", () => {
       "Hidden globally",
     );
   });
+
+  it("shows activity in settings and loads the next page", async () => {
+    const newer = {
+      id: "newer",
+      seq: 2,
+      kind: "git.push",
+      actor: { role: "person" },
+      initiator: { role: "person" },
+      project: "",
+      target: "",
+      summary: "Newer row.",
+      link: "",
+      at: 1_700_000_000_000,
+    };
+    const older = { ...newer, id: "older", seq: 1, summary: "Older row.", at: 1_699_000_000_000 };
+    const cursor = { at: newer.at, seq: newer.seq };
+    let calls = 0;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "mobile_status") {
+        return {
+          enabled: false, listening: false, name: "Desktop", fingerprint: null,
+          openRouter: true, remoteAddress: "", routerStatus: "Off", addresses: [], devices: [],
+        };
+      }
+      if (command !== "activity_list") return undefined;
+      calls += 1;
+      if (calls === 1) return { entries: [newer], next: cursor };
+      const query = (args as { query?: { before?: unknown } } | undefined)?.query;
+      expect(query?.before).toEqual(cursor);
+      return { entries: [older], next: null };
+    });
+    await render("activity");
+    expect(container.textContent).toContain("Newer row.");
+    expect(container.textContent).not.toContain("Older row.");
+    const more = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Show older"),
+    );
+    expect(more).toBeTruthy();
+    await act(async () => {
+      more!.click();
+    });
+    expect(container.textContent).toContain("Newer row.");
+    expect(container.textContent).toContain("Older row.");
+  });
 });
