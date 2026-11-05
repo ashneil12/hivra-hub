@@ -179,6 +179,63 @@ it("a reply written in two parts around a tool call keeps them apart in the room
   expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe("Nothing for you yet. Briefing the Tally lead now.\n\nThe Tally lead has the brief.");
 });
 
+it("a late answer block still posts the ack and the answer as two paragraphs", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "what's true");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const cos = chatOf("ada");
+  const ack = "Starting with the hourly checker, then the rest.";
+  const answer = "Six asks. Here's what's true.";
+  // The turn has ended, but this hidden chat has only flushed the wake, the ack and the tools.
+  setSessions(
+    sessionsRef.current.map((s) =>
+      s.id === cos
+        ? {
+            ...s,
+            blocks: [
+              { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: submitted[0].options.appRequestId as string },
+              { id: "a1", role: "assistant", text: ack },
+              { id: "t", role: "assistant", text: "", tool: { callId: "c", title: "Read", kind: "read", status: "completed" } as Block["tool"] },
+            ],
+          }
+        : s,
+    ),
+  );
+  settle.get(cos)!(`${ack}\n\n${answer}`);
+  await chat.roomIdle(room.id);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toContain("then the rest.\n\nSix asks.");
+});
+
+it("a landed answer keeps the chat's own copy of the two paragraphs", async () => {
+  const { chat, room, sessionsRef, submitted, settle, setSessions, chatOf } = await setup();
+  const conv = chat.startConversation(room.id, "what's true");
+  void chat.requestReply(room.id, conv);
+  await vi.waitFor(() => expect(submitted).toHaveLength(1));
+  const cos = chatOf("ada");
+  const ack = "Starting with the hourly checker, then the rest.";
+  const answer = "Six asks. Here's what's true.";
+  setSessions(
+    sessionsRef.current.map((s) =>
+      s.id === cos
+        ? {
+            ...s,
+            blocks: [
+              { id: "p", role: "user", text: submitted[0].text, internal: true, appRequestId: submitted[0].options.appRequestId as string },
+              { id: "a1", role: "assistant", text: ack },
+              { id: "t", role: "assistant", text: "", tool: { callId: "c", title: "Read", kind: "read", status: "completed" } as Block["tool"] },
+              { id: "a2", role: "assistant", text: answer },
+            ],
+          }
+        : s,
+    ),
+  );
+  // Same words as the blocks. The doubled space is ignored, so the chat's copy is the post.
+  settle.get(cos)!(`${ack.replace("checker,", "checker, ")}\n\n${answer}`);
+  await chat.roomIdle(room.id);
+  expect(chat.getChat(room.id)!.conversations[0].messages.at(-1)!.text).toBe(`${ack}\n\n${answer}`);
+});
+
 it("a seat's room turn carries no project memory block: nothing outside the app reads one since Ash OS is retired (WP-04)", async () => {
   const { chat, room, submitted, settle, chatOf } = await setup();
   const conv = chat.startConversation(room.id, "wat now");

@@ -5,6 +5,7 @@ import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
 import { faultedOutcome, faultedReply, faultStopper, takeWorkerFault } from "../features/monos/model/devFault";
 import { doneOnlyWhenDone } from "../features/monos/model/workOutcome";
 import { sendVerifyRoomMessage, useRoomRunner } from "./hooks/useRoomRunner";
+import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
@@ -9187,10 +9188,9 @@ function Workspace({
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
           orchestrator.observe(sessionId, event);
-          if (options?.onSettled && event.type === "message.delta")
-            controlText = (controlText + event.text).slice(-20_000);
-          if (options?.onSettled && event.type === "message.completed")
-            controlText += "\n";
+          // A finished assistant message is its own paragraph. One newline glues "rest.Six".
+          if (options?.onSettled)
+            controlText = appendControlEvent(controlText, event);
           if (event.type === "session.error")
             controlOutcome = withProviderFailure(controlOutcome, event);
           if (

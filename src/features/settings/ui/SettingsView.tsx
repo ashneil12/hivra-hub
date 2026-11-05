@@ -20,6 +20,7 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
 import {
@@ -729,6 +730,8 @@ export function SettingsView({
                   <CrewRulesPage cwd={cwd} />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
+                  <GithubIssuesSetting project={cwd} />
                 </>
               ) : null}
               {section === "chat" ? <ChatPage /> : null}
