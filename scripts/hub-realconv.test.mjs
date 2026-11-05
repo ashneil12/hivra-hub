@@ -287,6 +287,10 @@ function fakeBench({ reply }) {
       claudeTexts: async () => [], delegationRows: async () => [], monoSession: async () => "s-lead",
       leadId: "tally-lead", roomId: "tally:leadership", spec: hooks.spec, deadline: Date.now() + 10 * 60_000, state: evidence,
     };
+    await hooks.beforeReady?.({ act, log: () => {} });
+    // As the real bench: a fresh copy has no team (WP-05), so the room is seated only once a team is put on it before
+    // the ready wait. A runner that pre-loads only after ready never gets there.
+    if (!ops.some((o) => o.op === "teamPack")) throw new Error("the hub never made tally-lead and a seated tally:leadership");
     await hooks.afterReady?.(ctx);
     const results = await hooks.play(ctx, { runScenario: async () => ({ chats: {} }), stopped: () => null });
     return { id: "test-run", evidence, results, stopReason: null, ops };
