@@ -54,10 +54,10 @@ in Settings, under About.
 - [agent-desktop](https://github.com/vercel-labs/agent-desktop): desktop control for workers, headless first.
 - [Crest](https://github.com/pauljoda/Crest): per-agent browser profiles and browsing safety defaults (ideas only).
 - [CARL and PAUL](https://github.com/ChristopherKahler): rule staging behind approval and a four-state worker status.
-- [Orbit](https://github.com/coollabsio/orbit): tasks and boards, docs, a search palette (the finder, WP-74), checked backups and trash. The home column and entrance landed in WP-73. GitHub issue sync and a safe MCP door are still planned for Wave E.
+- [Orbit](https://github.com/coollabsio/orbit): tasks and boards, docs, a search palette (the finder, WP-74), checked backups, trash, GitHub issue sync and a safe MCP door. The home column and entrance landed in WP-73.
 - [no-mistakes](https://github.com/kunchenguid/no-mistakes): the local gate that checks a crew's branch before it reaches GitHub, used as a pinned tool, planned for Wave F.
 - [treehouse](https://github.com/kunchenguid/treehouse): a pool of ready worktrees that keep their installs and build cache, used as a pinned tool, planned for Wave F.
-- [backpass](https://github.com/kunchenguid/backpass): evidence-gated edits to agent instructions learned from past chats, planned for Wave F.
+- [backpass](https://github.com/kunchenguid/backpass): evidence-gated edits to agent instructions learned from past chats, landed in WP-83.
 - [kun](https://github.com/kunchenguid/kun): a person's opinions and voice kept as files agents read (ideas only).
 - [Kun Chen's dotfiles](https://github.com/kunchenguid/dotfiles): one AGENTS.md shared by every agent CLI.
 - [HumanLayer](https://github.com/humanlayer/humanlayer): research and plan before building, terminal sessions mirrored into the app, commit attribution and a local stack per worktree, planned for Wave G.
