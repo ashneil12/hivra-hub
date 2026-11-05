@@ -114,6 +114,13 @@ import {
 } from "./agentAppTasks";
 import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
+// WP-92: the vault's three actions (secrets.request, secrets.list, secrets.run).
+import {
+  handleSecrets,
+  SECRET_FIELDS,
+  type WorkerArmOutcome,
+  type WorkerArmRequest,
+} from "./agentAppSecrets";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
@@ -348,6 +355,11 @@ export type AgentAppHost = {
   /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
   timers?: AgentAppTimersHost;
   /**
+   * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
+   * needed, and arms the handles for the child session; no value crosses to this side.
+   */
+  secretsWorkerArm?(sessionId: string, request: WorkerArmRequest): Promise<WorkerArmOutcome>;
+  /**
    * The rooms (agentAppRooms.ts): private messages between Monos, and `delegated`, told of each delegation so work
    * started from a room comes back to it.
    */
@@ -437,6 +449,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
+  // WP-92: the vault. Handles only; no action here returns a value.
+  ...SECRET_FIELDS,
   // WP-88: the activity log, read only.
   ["activity.list", ["project", "agent", "kind", "search", "before", "limit"]],
 ]);
@@ -1494,6 +1508,7 @@ export async function handleAgentApp(
     if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
     return result;
   }
+  if (action.startsWith("secrets.")) return handleSecrets(source, action, input, host);
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
