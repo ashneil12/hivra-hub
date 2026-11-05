@@ -10,7 +10,7 @@
 //! registry and a higher port range. Tests pass a stand-in; the `stand-in` file is read only when
 //! this crate is built for tests, so a release build never treats it as Docker.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -20,7 +20,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 use crate::stack_decl::StackDecl;
 
@@ -34,12 +34,16 @@ const LOCK_STALE: Duration = Duration::from_secs(300);
 const DOCKER_WAIT: Duration = Duration::from_secs(20);
 const DOCKER_LATER: &str =
     "Docker didn't answer. The stack was left as it was and can be tried again.";
+pub const STACKS_CHANGED: &str = "stacks://changed";
 
 pub struct StackEnv {
     pub dev: bool,
     pub data_dir: PathBuf,
     pub compose: Option<Arc<dyn ComposeRunner>>,
     pub probe: Option<Arc<dyn PortProbe>>,
+    /// Shared port claims. Dev copies of one machine use one directory so they
+    /// cannot take the same block. None means this registry is the only writer.
+    pub claims_dir: Option<PathBuf>,
 }
 
 pub trait ComposeRunner: Send + Sync {
@@ -86,6 +90,9 @@ struct Entry {
     has_compose: bool,
     block: u16,
     ports: Vec<Assigned>,
+    /// Computed for the env file. Not stored: a value can carry a secret, and the
+    /// next start builds it again from the project file.
+    #[serde(skip)]
     env: BTreeMap<String, String>,
     url: Option<String>,
     running: bool,
@@ -128,11 +135,22 @@ pub struct StaleRow {
 }
 
 pub fn env_from_app(app: &AppHandle) -> Result<StackEnv, String> {
+    let dev = crate::instance::kind() != crate::instance::Kind::Daily;
+    let claims_dir = if dev {
+        Some(
+            PathBuf::from(crate::dirs_home().ok_or("There is no home folder for stack ports.")?)
+                .join(".monocode-hub-dev")
+                .join("stack-ports"),
+        )
+    } else {
+        None
+    };
     Ok(StackEnv {
-        dev: crate::instance::kind() != crate::instance::Kind::Daily,
+        dev,
         data_dir: crate::project_file::data_dir(app)?,
         compose: None,
         probe: None,
+        claims_dir,
     })
 }
 
@@ -157,6 +175,16 @@ pub fn maybe_start(
     let compose_file = compose_file(stack, &worktree)?;
     ignore_env_file(&project, &worktree)?;
     let dir = registry_dir(&env.data_dir);
+    if compose_file.is_none() {
+        if let Some(previous) = load(&dir)?
+            .stacks
+            .into_iter()
+            .find(|item| keys_eq(&item.key, &path_key(&worktree)))
+            .filter(|item| item.has_compose)
+        {
+            stop_entry(env, &previous)?;
+        }
+    }
     let entry = update(&dir, |store| {
         reserve(
             env,
@@ -224,6 +252,7 @@ pub fn stop_for_worktree(data_dir: &Path, worktree: &Path) -> Result<(), String>
         data_dir: data_dir.to_path_buf(),
         compose: None,
         probe: None,
+        claims_dir: None,
     };
     down(&env, worktree)
 }
@@ -264,7 +293,11 @@ pub fn remove_stale(env: &StackEnv, id: &str) -> Result<(), String> {
         }
         store.stacks.remove(pos);
         Ok(())
-    })
+    })?;
+    if let Some(claims) = &env.claims_dir {
+        release_claim(claims, &path_key(&env.data_dir), &entry.key)?;
+    }
+    Ok(())
 }
 
 pub fn status_for(env: &StackEnv, cwd: &Path) -> Result<StatusView, String> {
@@ -345,8 +378,17 @@ fn stop_entry(env: &StackEnv, entry: &Entry) -> Result<(), String> {
             "That stack's Compose name is not one this app created, so it was left running.".into(),
         );
     }
-    let file = entry.compose_file.as_deref().map(Path::new);
-    with_retry(|| compose_of(env).down(&entry.compose_project, file))
+    let file = compose_file_for_stop(entry);
+    with_retry(|| compose_of(env).down(&entry.compose_project, file.as_deref()))
+}
+
+/// A compose path from the registry is untrusted. Only a real file inside the
+/// worktree is passed to Docker. Anything else is stopped by the project name.
+fn compose_file_for_stop(entry: &Entry) -> Option<PathBuf> {
+    let raw = entry.compose_file.as_deref()?;
+    let root = crate::fs::canonical(Path::new(&entry.worktree)).ok()?;
+    let file = crate::fs::canonical(Path::new(raw)).ok()?;
+    path_inside(&root, &file).then_some(file)
 }
 
 fn reserve(
@@ -373,15 +415,18 @@ fn reserve(
                 .map(|port| (port.env.clone(), port.port))
                 .collect();
             let (values, url) = materialise(stack, &assigned)?;
+            if let Some(dir) = &env.claims_dir {
+                let _lock = Lock::acquire(dir)?;
+                let ports: Vec<u16> = assigned.iter().map(|(_, port)| *port).collect();
+                store_claim(dir, &path_key(&env.data_dir), &key, &ports)?;
+            }
             existing.project = project_key;
             existing.worktree = worktree.to_string_lossy().into_owned();
-            existing.has_compose = existing.has_compose || has_file;
-            if let Some(path) = compose_path {
-                existing.compose_file = Some(path.to_string_lossy().into_owned());
-            }
+            existing.has_compose = has_file;
+            existing.compose_file = compose_path.map(|path| path.to_string_lossy().into_owned());
             existing.env = values;
             existing.url = url;
-            existing.running = !existing.has_compose;
+            existing.running = !has_file;
             return Ok(existing.clone());
         }
     }
@@ -441,21 +486,38 @@ fn assign_ports(
     let slots = SPAN / BLOCK;
     let preferred = preferred_block(key);
     let probe = probe_of(env);
+    let owner = path_key(&env.data_dir);
+    // Registry lock is already held. Claims come second, never the other way round.
+    let _claims = match &env.claims_dir {
+        Some(dir) => Some(Lock::acquire(dir)?),
+        None => None,
+    };
+    let held = match &env.claims_dir {
+        Some(dir) => claimed_by_others(dir, &owner, key)?,
+        None => HashSet::new(),
+    };
     for offset in 0..slots {
         let index = (preferred + offset) % slots;
         let start = base + index * BLOCK;
         let range: Vec<u16> = (0..BLOCK).map(|step| start + step).collect();
-        if range.iter().any(|port| taken(store, key, *port)) {
+        if range
+            .iter()
+            .any(|port| taken(store, key, *port) || held.contains(port))
+        {
             continue;
         }
         if range.iter().any(|port| !probe.free(*port)) {
             continue;
         }
-        let assigned = names
+        let assigned: Vec<(String, u16)> = names
             .iter()
             .enumerate()
             .map(|(index, name)| (name.clone(), start + u16::try_from(index).unwrap_or(0)))
             .collect();
+        if let Some(dir) = &env.claims_dir {
+            let ports: Vec<u16> = assigned.iter().map(|(_, port)| *port).collect();
+            store_claim(dir, &owner, key, &ports)?;
+        }
         return Ok((index, assigned));
     }
     Err("No free port block is left, so nothing was started.".into())
@@ -473,12 +535,27 @@ fn taken(store: &Store, self_key: &str, port: u16) -> bool {
 
 impl Entry {
     fn block_ports(&self) -> Vec<u16> {
+        // A stored block is untrusted. Only 0..600 is a real block; anything else
+        // contributes no ports, so a wild value cannot panic or look taken.
+        let slots = SPAN / BLOCK;
+        if self.block >= slots {
+            return Vec::new();
+        }
         let base = if self.compose_project.starts_with("hivra-dev-") {
             DEV_BASE
         } else {
             DAILY_BASE
         };
-        let start = base + self.block * BLOCK;
+        let Some(start) = self
+            .block
+            .checked_mul(BLOCK)
+            .and_then(|span| base.checked_add(span))
+        else {
+            return Vec::new();
+        };
+        if start.checked_add(BLOCK - 1).is_none() {
+            return Vec::new();
+        }
         (0..BLOCK).map(|step| start + step).collect()
     }
 }
@@ -847,6 +924,97 @@ fn load(dir: &Path) -> Result<Store, String> {
     }
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Claim {
+    owner: String,
+    key: String,
+    #[serde(default)]
+    ports: Vec<u16>,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimFile {
+    #[serde(default)]
+    claims: Vec<Claim>,
+}
+
+fn claims_path(dir: &Path) -> PathBuf {
+    dir.join("claims.json")
+}
+
+fn load_claims(dir: &Path) -> Result<Vec<Claim>, String> {
+    let path = claims_path(dir);
+    match std::fs::read(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(_) => Err("The port list couldn't be read, so nothing was started.".into()),
+        Ok(bytes) if bytes.iter().all(|byte| byte.is_ascii_whitespace()) => Ok(Vec::new()),
+        Ok(bytes) => serde_json::from_slice::<ClaimFile>(&bytes)
+            .map(|file| file.claims)
+            .map_err(|_| "The port list couldn't be read, so nothing was started.".to_string()),
+    }
+}
+
+fn save_claims(dir: &Path, claims: &[Claim]) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let path = claims_path(dir);
+    let tmp = dir.join(format!("claims.json.{}.tmp", std::process::id()));
+    let bytes = serde_json::to_vec_pretty(&ClaimFile {
+        claims: claims.to_vec(),
+    })
+    .map_err(|error| error.to_string())?;
+    {
+        let mut file = std::fs::File::create(&tmp).map_err(|error| error.to_string())?;
+        file.write_all(&bytes).map_err(|error| error.to_string())?;
+        file.write_all(b"\n").map_err(|error| error.to_string())?;
+        file.sync_all().ok();
+    }
+    std::fs::rename(&tmp, &path).map_err(|error| {
+        let _ = std::fs::remove_file(&tmp);
+        error.to_string()
+    })
+}
+
+/// Ports held by any other copy. Our own claim for this worktree is not held:
+/// two copies of one worktree must still see each other, and a retry of our own
+/// start must not be blocked by the claim we just wrote.
+fn claimed_by_others(dir: &Path, owner: &str, key: &str) -> Result<HashSet<u16>, String> {
+    let mut held = HashSet::new();
+    for claim in load_claims(dir)? {
+        if keys_eq(&claim.owner, owner) && keys_eq(&claim.key, key) {
+            continue;
+        }
+        held.extend(claim.ports);
+    }
+    Ok(held)
+}
+
+/// Caller holds the claims lock. A file that cannot be read is left untouched.
+fn store_claim(dir: &Path, owner: &str, key: &str, ports: &[u16]) -> Result<(), String> {
+    let mut claims = load_claims(dir)?;
+    claims.retain(|claim| !(keys_eq(&claim.owner, owner) && keys_eq(&claim.key, key)));
+    if !ports.is_empty() {
+        claims.push(Claim {
+            owner: owner.to_string(),
+            key: key.to_string(),
+            ports: ports.to_vec(),
+        });
+    }
+    save_claims(dir, &claims)
+}
+
+fn release_claim(dir: &Path, owner: &str, key: &str) -> Result<(), String> {
+    let _lock = Lock::acquire(dir)?;
+    let mut claims = load_claims(dir)?;
+    let before = claims.len();
+    claims.retain(|claim| !(keys_eq(&claim.owner, owner) && keys_eq(&claim.key, key)));
+    if claims.len() == before {
+        return Ok(());
+    }
+    save_claims(dir, &claims)
+}
+
 fn save(dir: &Path, store: &Store) -> Result<(), String> {
     std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
     let path = registry_path(dir);
@@ -1071,22 +1239,11 @@ fn scrubbed(program: &str) -> Command {
 fn run_timed(cmd: &mut Command) -> Result<(), ComposeFailure> {
     let mut child = cmd.spawn().map_err(|_| ComposeFailure::Unreachable)?;
     let stderr = child.stderr.take();
-    let reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = stderr {
-            let mut tmp = [0u8; 512];
-            while let Ok(n) = pipe.read(&mut tmp) {
-                if n == 0 {
-                    break;
-                }
-                let room = 2048usize.saturating_sub(buf.len());
-                if room > 0 {
-                    buf.extend_from_slice(&tmp[..n.min(room)]);
-                }
-            }
-        }
-        buf
-    });
+    let stdout = child.stdout.take();
+    let err_reader = std::thread::spawn(move || capped(stderr));
+    // Stdout is discarded, but it has to be read to the end. A full pipe blocks
+    // the child until the wait kills it, and the retry then blocks the same way.
+    let out_reader = std::thread::spawn(move || discard(stdout));
     let started = Instant::now();
     let status = loop {
         match child.try_wait() {
@@ -1094,22 +1251,56 @@ fn run_timed(cmd: &mut Command) -> Result<(), ComposeFailure> {
             Ok(None) if started.elapsed() > DOCKER_WAIT => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = reader.join();
+                let _ = err_reader.join();
+                let _ = out_reader.join();
                 return Err(ComposeFailure::TimedOut);
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(30)),
             Err(_) => {
                 let _ = child.kill();
-                let _ = reader.join();
+                let _ = err_reader.join();
+                let _ = out_reader.join();
                 return Err(ComposeFailure::Unreachable);
             }
         }
     };
-    let stderr = reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    let _ = out_reader.join();
     if status.success() {
         Ok(())
     } else {
         Err(ComposeFailure::Failed(one_line(&stderr)))
+    }
+}
+
+fn capped(pipe: Option<impl Read>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    let Some(mut pipe) = pipe else {
+        return buf;
+    };
+    let mut tmp = [0u8; 512];
+    while let Ok(n) = pipe.read(&mut tmp) {
+        if n == 0 {
+            break;
+        }
+        let room = 2048usize.saturating_sub(buf.len());
+        if room > 0 {
+            buf.extend_from_slice(&tmp[..n.min(room)]);
+        }
+    }
+    buf
+}
+
+fn discard(pipe: Option<impl Read>) {
+    let Some(mut pipe) = pipe else {
+        return;
+    };
+    let mut tmp = [0u8; 8192];
+    loop {
+        match pipe.read(&mut tmp) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
     }
 }
 
@@ -1292,12 +1483,17 @@ pub async fn stack_status(app: AppHandle, cwd: String) -> Result<StatusView, Str
 
 #[tauri::command(async)]
 pub async fn stack_down(app: AppHandle, cwd: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    let app_for_work = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
         let cwd = crate::fs::expand_home(&cwd);
-        down(&env_from_app(&app)?, &cwd)
+        down(&env_from_app(&app_for_work)?, &cwd)
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    if outcome.is_ok() {
+        let _ = app.emit(STACKS_CHANGED, ());
+    }
+    outcome
 }
 
 #[tauri::command(async)]
@@ -1309,9 +1505,16 @@ pub async fn stack_stale(app: AppHandle) -> Result<Vec<StaleRow>, String> {
 
 #[tauri::command(async)]
 pub async fn stack_remove_stale(app: AppHandle, id: String) -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(move || remove_stale(&env_from_app(&app)?, &id))
-        .await
-        .map_err(|error| error.to_string())?
+    let app_for_work = app.clone();
+    let outcome = tauri::async_runtime::spawn_blocking(move || {
+        remove_stale(&env_from_app(&app_for_work)?, &id)
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if outcome.is_ok() {
+        let _ = app.emit(STACKS_CHANGED, ());
+    }
+    outcome
 }
 
 #[cfg(test)]
@@ -1328,6 +1531,7 @@ mod tests {
 
     struct Mem {
         calls: Mutex<Vec<String>>,
+        files: Mutex<Vec<Option<PathBuf>>>,
         script: Mutex<Vec<Script>>,
     }
 
@@ -1340,8 +1544,12 @@ mod tests {
             self.next()
         }
 
-        fn down(&self, project: &str, _compose_file: Option<&Path>) -> Result<(), ComposeFailure> {
+        fn down(&self, project: &str, compose_file: Option<&Path>) -> Result<(), ComposeFailure> {
             self.calls.lock().unwrap().push(format!("down {project}"));
+            self.files
+                .lock()
+                .unwrap()
+                .push(compose_file.map(|path| path.to_path_buf()));
             self.next()
         }
     }
@@ -1453,6 +1661,7 @@ mod tests {
                 second,
                 runner: Arc::new(Mem {
                     calls: Mutex::new(Vec::new()),
+                    files: Mutex::new(Vec::new()),
                     script: Mutex::new(Vec::new()),
                 }),
                 tmp,
@@ -1465,6 +1674,7 @@ mod tests {
                 data_dir: self.data.clone(),
                 compose: Some(self.runner.clone()),
                 probe: Some(Arc::new(AllFree)),
+                claims_dir: None,
             }
         }
     }
@@ -1923,5 +2133,267 @@ mod tests {
         remember_running(&fix.data, &fix.first, "hivra-s0123abcd", false);
         stop_for_worktree(&fix.data, &fix.first).unwrap();
         assert!(!registry_dir(&fix.data).join("log").exists());
+    }
+
+    fn same_ports_no_compose() -> StackDecl {
+        let mut stack = decl();
+        stack.compose_file = None;
+        stack
+    }
+
+    #[test]
+    fn dropping_the_compose_file_stops_the_old_stack_and_starts() {
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        let again = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&same_ports_no_compose()),
+        )
+        .unwrap();
+        assert!(again.iter().any(|(key, _)| key == "PORT"));
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&same_ports_no_compose()),
+        )
+        .unwrap();
+        let log = calls(&fix);
+        assert_eq!(
+            log.iter().filter(|line| line.starts_with("up ")).count(),
+            1,
+            "{log:?}"
+        );
+        assert_eq!(
+            log.iter().filter(|line| line.starts_with("down ")).count(),
+            1,
+            "{log:?}"
+        );
+        let store = load(&registry_dir(&env.data_dir)).unwrap();
+        assert!(!store.stacks[0].has_compose);
+        assert!(store.stacks[0].compose_file.is_none());
+        assert!(store.stacks[0].running);
+    }
+
+    #[test]
+    fn dropping_compose_keeps_the_flag_when_docker_will_not_stop() {
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        fix.runner
+            .script
+            .lock()
+            .unwrap()
+            .extend([Script::Timeout, Script::Timeout]);
+        let error = maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&same_ports_no_compose()),
+        )
+        .unwrap_err();
+        assert_eq!(error, DOCKER_LATER);
+        let store = load(&registry_dir(&env.data_dir)).unwrap();
+        assert!(store.stacks[0].has_compose);
+        assert!(store.stacks[0].compose_file.is_some());
+    }
+
+    #[test]
+    fn a_full_stdout_pipe_does_not_stall() {
+        let mut cmd = if cfg!(windows) {
+            let mut cmd = Command::new("powershell");
+            cmd.args([
+                "-NoProfile",
+                "-Command",
+                "$buf = [byte[]]::new(262144); [Console]::OpenStandardOutput().Write($buf, 0, $buf.Length)",
+            ]);
+            cmd
+        } else {
+            let mut cmd = Command::new("/bin/sh");
+            cmd.args(["-c", "dd if=/dev/zero bs=1024 count=256 2>/dev/null"]);
+            cmd
+        };
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::piped());
+        cmd.stderr(Stdio::piped());
+        let started = Instant::now();
+        run_timed(&mut cmd).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "stdout filled the pipe and the wait hit the docker timeout"
+        );
+    }
+
+    #[test]
+    fn two_dev_copies_do_not_take_the_same_ports() {
+        let fix = Fix::new();
+        let claims = fix.tmp.root.join("claims");
+        let mut left = fix.env();
+        left.dev = true;
+        left.data_dir = fix.tmp.root.join("data-a");
+        left.claims_dir = Some(claims.clone());
+        let mut right = fix.env();
+        right.dev = true;
+        right.data_dir = fix.tmp.root.join("data-b");
+        right.claims_dir = Some(claims);
+        let stack = ports_only();
+        let first = maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let second = maybe_start(&right, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let port = |pairs: &[(String, String)]| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == "PORT")
+                .unwrap()
+                .1
+                .parse::<u16>()
+                .unwrap()
+        };
+        let a = port(&first);
+        let b = port(&second);
+        assert_ne!(a, b, "both copies took {a}");
+        assert!((DEV_BASE..DEV_BASE + SPAN).contains(&a), "{a}");
+        assert!((DEV_BASE..DEV_BASE + SPAN).contains(&b), "{b}");
+    }
+
+    #[test]
+    fn a_restart_publishes_ports_another_copy_must_avoid() {
+        let fix = Fix::new();
+        let claims = fix.tmp.root.join("claims");
+        let mut left = fix.env();
+        left.dev = true;
+        left.data_dir = fix.tmp.root.join("data-a");
+        left.claims_dir = Some(claims.clone());
+        let mut right = fix.env();
+        right.dev = true;
+        right.data_dir = fix.tmp.root.join("data-b");
+        right.claims_dir = Some(claims.clone());
+        let stack = ports_only();
+        let first = maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        std::fs::remove_file(claims.join("claims.json")).unwrap();
+        maybe_start(&left, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let second = maybe_start(&right, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let port = |pairs: &[(String, String)]| {
+            pairs
+                .iter()
+                .find(|(key, _)| key == "PORT")
+                .unwrap()
+                .1
+                .parse::<u16>()
+                .unwrap()
+        };
+        assert_ne!(
+            port(&first),
+            port(&second),
+            "a restart left the ports unclaimed"
+        );
+    }
+
+    #[test]
+    fn a_wild_block_in_the_registry_does_not_panic() {
+        let fix = Fix::new();
+        let env = fix.env();
+        update(&registry_dir(&env.data_dir), |store| {
+            store.stacks.push(Entry {
+                id: "s01234567".into(),
+                key: "other-path".into(),
+                worktree: fix.second.to_string_lossy().into_owned(),
+                project: path_key(&fix.main),
+                compose_project: "hivra-s01234567".into(),
+                compose_file: None,
+                has_compose: false,
+                block: 6000,
+                ports: Vec::new(),
+                env: BTreeMap::new(),
+                url: None,
+                running: false,
+            });
+            Ok(())
+        })
+        .unwrap();
+        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&ports_only())).unwrap();
+        let port: u16 = pairs
+            .iter()
+            .find(|(name, _)| name == "PORT")
+            .unwrap()
+            .1
+            .parse()
+            .unwrap();
+        assert!((DAILY_BASE..DAILY_BASE + SPAN).contains(&port), "{port}");
+    }
+
+    #[test]
+    fn down_ignores_a_compose_file_outside_the_worktree() {
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        down(&env, &fix.first).unwrap();
+        let root = crate::fs::canonical(&fix.first).unwrap();
+        let first = fix.runner.files.lock().unwrap().last().cloned().unwrap();
+        assert!(
+            first.as_ref().is_some_and(|path| path_inside(&root, path)),
+            "{first:?}"
+        );
+        let outside = fix.tmp.root.join("elsewhere.yml");
+        std::fs::write(&outside, "services: {}\n").unwrap();
+        update(&registry_dir(&env.data_dir), |store| {
+            store.stacks[0].compose_file = Some(outside.to_string_lossy().into_owned());
+            store.stacks[0].running = true;
+            Ok(())
+        })
+        .unwrap();
+        down(&env, &fix.first).unwrap();
+        let passed = fix.runner.files.lock().unwrap().last().cloned().unwrap();
+        assert!(passed.is_none(), "compose ran against {passed:?}");
+    }
+
+    #[test]
+    fn remove_stale_ignores_a_compose_file_outside_the_worktree() {
+        let fix = Fix::new();
+        let env = fix.env();
+        maybe_start(&env, &fix.main, &fix.first, true, Some(&decl())).unwrap();
+        let outside = fix.tmp.root.join("elsewhere.yml");
+        std::fs::write(&outside, "services: {}\n").unwrap();
+        let id = {
+            let store = load(&registry_dir(&env.data_dir)).unwrap();
+            store.stacks[0].id.clone()
+        };
+        update(&registry_dir(&env.data_dir), |store| {
+            store.stacks[0].compose_file = Some(outside.to_string_lossy().into_owned());
+            Ok(())
+        })
+        .unwrap();
+        std::fs::remove_dir_all(&fix.first).unwrap();
+        remove_stale(&env, &id).unwrap();
+        let passed = fix.runner.files.lock().unwrap().last().cloned().unwrap();
+        assert!(passed.is_none(), "compose ran against {passed:?}");
+    }
+
+    #[test]
+    fn a_secret_in_an_env_value_stays_out_of_the_registry() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let stack: StackDecl = serde_json::from_str(
+            r#"{"services":[{"name":"db","ports":[{"env":"DATABASE_PORT"}],
+               "env":{"DATABASE_URL":"postgres://user:s3cret@127.0.0.1:${DATABASE_PORT}/app"}}]}"#,
+        )
+        .unwrap();
+        let pairs = maybe_start(&env, &fix.main, &fix.first, true, Some(&stack)).unwrap();
+        let url = &pairs
+            .iter()
+            .find(|(key, _)| key == "DATABASE_URL")
+            .unwrap()
+            .1;
+        assert!(url.contains("s3cret"), "{url}");
+        let registry =
+            std::fs::read_to_string(registry_path(&registry_dir(&env.data_dir))).unwrap();
+        assert!(!registry.contains("s3cret"), "{registry}");
+        let body = std::fs::read_to_string(fix.first.join(".monocode").join("stack.env")).unwrap();
+        assert!(body.contains("s3cret"), "{body}");
     }
 }
