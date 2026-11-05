@@ -11,6 +11,7 @@
 
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
 
 use serde_json::{json, Map, Value};
 
@@ -334,6 +335,11 @@ fn is_pin(sha256: &str) -> bool {
     sha256.len() == 64 && sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
+/// One install at a time in this process. Two stacks can start together, each on its own worker
+/// thread; without this they would share one staging folder and one could put a half-unpacked
+/// tool in place.
+static INSTALL_LOCK: Mutex<()> = Mutex::new(());
+
 /// Fetch and install the files the stand-in runs from, against the pins in `tarballs` — the real
 /// table in production, fixtures in a test. A matching copy already there is kept and nothing is
 /// downloaded. All or nothing: the tool folder is left exactly as it was unless every one arrives.
@@ -351,6 +357,11 @@ pub fn install_files(
             ));
         }
     }
+    // The check for an installed copy and the install itself are one step: a second stack
+    // starting at the same moment waits here and then finds the finished tool.
+    let _installing = INSTALL_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some(tool) = installed(data_dir) {
         return Ok(tool);
     }
@@ -1034,6 +1045,27 @@ pub(crate) mod tests {
         let again = install_files(&temp.0, &fetcher, &table).unwrap();
         assert_eq!(again, first);
         assert_eq!(fetcher.hits(), 4, "the second install fetched something");
+    }
+
+    /// Two stacks can start at the same moment, each on its own worker thread. They must not
+    /// share the staging folder, and the second must find the first's finished copy.
+    #[test]
+    fn two_installs_at_once_install_one_copy() {
+        let temp = Temp::new("once");
+        let (table, bodies) = fixture();
+        let fetcher = Fake::online(bodies);
+        let tools: Vec<PathBuf> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| scope.spawn(|| install_files(&temp.0, &fetcher, &table)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap().unwrap())
+                .collect()
+        });
+        assert!(tools.iter().all(|tool| *tool == tools[0]));
+        assert_eq!(fetcher.hits(), 4, "a second thread downloaded its own copy");
+        assert!(installed(&temp.0).is_some());
     }
 
     #[test]
