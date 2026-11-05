@@ -139,6 +139,17 @@ describe("rankFinderHits", () => {
     const ranked = rankFinderHits([task, doc, message], "/work/this", [], "all", null);
     expect(groupFinderHits(ranked).map((group) => group.kind)).toEqual(["doc", "task", "message"]);
   });
+
+  it("keeps one group per kind when a higher scored hit of another kind sits between", () => {
+    const best = hit({ id: "task:high", kind: "task", score: 10, project: "/work/this" });
+    const middle = hit({ id: "doc:mid", kind: "doc", score: 8, project: "/work/this" });
+    const other = hit({ id: "task:low", kind: "task", score: 3, project: "/work/this" });
+    const ranked = rankFinderHits([other, middle, best], "/work/this", [], "all", null);
+    const groups = groupFinderHits(ranked);
+    expect(groups.map((group) => group.kind)).toEqual(["task", "doc"]);
+    expect(groups[0]?.hits.map((item) => item.id)).toEqual(["task:high", "task:low"]);
+    expect(groups[1]?.hits.map((item) => item.id)).toEqual(["doc:mid"]);
+  });
 });
 
 describe("commands, monos and the index", () => {

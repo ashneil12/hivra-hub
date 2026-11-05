@@ -129,6 +129,45 @@ export function settle<T>(previous: T, result: { ok: true; value: T } | { ok: fa
   return result.ok ? result.value : previous;
 }
 
+export type HeldRows<T> = { query: string; rows: readonly T[] };
+
+/** Rows fetched for another query are not this query's results. */
+export function rowsForQuery<T>(held: HeldRows<T>, query: string): readonly T[] {
+  return held.query === query ? held.rows : [];
+}
+
+/**
+ * A failed load keeps the rows already stored for this same query. A timeout
+ * is not a final failure, and it must not adopt another query's rows.
+ */
+export function storeHeld<T>(
+  held: HeldRows<T>,
+  query: string,
+  result: { ok: true; value: readonly T[] } | { ok: false },
+): HeldRows<T> {
+  if (result.ok) return { query, rows: result.value };
+  if (held.query === query) return held;
+  return { query, rows: [] };
+}
+
+/**
+ * The highlighted row is a hit, not a slot. A row inserted above it must not
+ * change which hit Enter opens. A missing hit falls back to the clamped slot.
+ */
+export function finderActiveIndex(
+  hits: readonly { id: string }[],
+  activeId: string | null,
+  fallback: number,
+): number {
+  if (hits.length === 0) return 0;
+  if (activeId) {
+    const at = hits.findIndex((hit) => hit.id === activeId);
+    if (at >= 0) return at;
+  }
+  if (!Number.isFinite(fallback) || fallback < 0) return 0;
+  return Math.min(Math.floor(fallback), hits.length - 1);
+}
+
 /** A late response from an older search is ignored. */
 export function acceptGeneration(latest: number, received: number): boolean {
   return received === latest;
@@ -186,12 +225,23 @@ export function rankFinderHits(
   return out;
 }
 
+/**
+ * One group per kind. The list is already ranked, so a kind's first row is its
+ * best and the groups follow that order. A later row of the same kind joins
+ * the group instead of starting another one.
+ */
 export function groupFinderHits(hits: readonly FinderHit[]): FinderGroup[] {
   const groups: FinderGroup[] = [];
+  const byKind = new Map<FinderKind, FinderGroup>();
   for (const hit of hits) {
-    const last = groups[groups.length - 1];
-    if (last && last.kind === hit.kind) last.hits.push(hit);
-    else groups.push({ kind: hit.kind, label: LABELS[hit.kind], hits: [hit] });
+    const existing = byKind.get(hit.kind);
+    if (existing) {
+      existing.hits.push(hit);
+      continue;
+    }
+    const group: FinderGroup = { kind: hit.kind, label: LABELS[hit.kind], hits: [hit] };
+    byKind.set(hit.kind, group);
+    groups.push(group);
   }
   return groups;
 }
