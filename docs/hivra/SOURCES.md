@@ -64,6 +64,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [emulate](https://github.com/vercel-labs/emulate) | Apache-2.0 | 14 stateful stand-ins for outside services (OAuth flows, signed webhooks, seeds, reset, snapshots), per-service base URLs | Run its pinned npm package and write its base URLs into each stack; translate its base-URL rules and file store | 82, 87, 90 |
 | [oh-my-hermes](https://github.com/rlaope/oh-my-hermes) | MIT | The dag-ulw goal graph (finish line first, write scopes, layers, repair cycles, a verify node, a run verdict), per-lane model chains, reasoned memory admission, two-axis evidence labels, a deterministic skill router and LSP tools | Translate `dag_core.py` and `dag_run.py` to Rust with their tests at commit `2676c33`; the other ideas are candidates | 91 (the rest are candidates) |
 | [Aether](https://runaether.dev) | closed source | A machine per task, the person's own subscription, watching and steering from the phone, work that continues with the laptop closed, a reviewer that runs the changed code | Ideas only; no code and no credit | none yet |
+| [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp) | Apache-2.0 | Memory that fades over the days it was used rather than the calendar, with a lived-day clock, and one question to the person before a fact goes stale | Translate `mnemos/consolidation/lived.py` to TypeScript with its tests; the fade curve, the clocks and the ask are Hivra's | 100 |
 
 ## Vision to packages
 

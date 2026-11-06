@@ -239,6 +239,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/goal_graph/
   dag_core.py translated line by line to Rust in topology.rs (WP-91), with test_dag_core.py's cases ported. The record rules in dag_run.py — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — are translated into record.rs, and the plan-time check into plan.rs. Read and not copied: tools/dag_tool.py, dag_scope_guard.py, dag_define_gate.py (hooks for a single-workspace model Hivra does not have) and the TUI, which informed the view's folding and wording only. One rule differs: dag-ulw treats two nodes as ordered only when one names the other directly, where Hivra refuses only a pair that can really run at the same time.
 
+- Mnemos's lived-day clock
+  Source: https://github.com/Riley-Coyote/mnemos-mcp
+  License: Apache-2.0
+  Copyright 2026 Riley Ralmuto
+  Used in: src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos
+  LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with its tests. The fade curve, the two clocks and the ask are Hivra's own. Licence text in src/features/memory/model/LICENSE.mnemos.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

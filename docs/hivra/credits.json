@@ -215,6 +215,12 @@
       "url": "https://runaether.dev",
       "licence": "closed source",
       "gave": "ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code"
+    },
+    {
+      "name": "Mnemos",
+      "url": "https://github.com/Riley-Coyote/mnemos-mcp",
+      "licence": "Apache-2.0",
+      "gave": "memory that fades over the days it was used rather than the calendar, with a lived-day clock, and one question to the person before a fact goes stale (WP-100)"
     }
   ],
   "components": [
@@ -481,6 +487,14 @@
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
       "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+    },
+    {
+      "name": "Mnemos's lived-day clock",
+      "url": "https://github.com/Riley-Coyote/mnemos-mcp",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Riley Ralmuto",
+      "where": "src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos",
+      "how": "LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with tests/test_lived_time.py's cases ported to fade.test.ts. L(t), the hours into a lived day, the two bisections and the never-below-0 clamp are the original's; a moment is a Date or an ISO string rather than a datetime, unreadable days are dropped on the way in, and the store class is gone. The fade curve, the two clocks and the ask are Hivra's own."
     }
   ]
 }
