@@ -32,6 +32,16 @@ describe("review", () => {
     expect(rejectItem(accepted.doc, doc.items[0].id).items).toHaveLength(1);
   });
 
+  it("accepting or editing a fact tops it up, and an edit makes it the person's own", () => {
+    const doc = withFact();
+    const id = doc.items[0].id;
+    const faded = { ...doc, items: doc.items.map((item) => ({ ...item, fade: 0.05 })) };
+    const confirmed = acceptItem(faded, id, NOW).doc;
+    expect(confirmed.items[0]).toMatchObject({ state: "confirmed", fade: 1, lastUsedAt: NOW });
+    const edited = editItem(faded, id, "Likes tiny commits", NOW);
+    expect(edited.items[0]).toMatchObject({ state: "edited", fade: 1, lastUsedAt: NOW, text: "Likes tiny commits" });
+  });
+
   it("edits, deletes, and searches without losing the id", () => {
     const doc = withFact();
     const id = doc.items[0].id;
