@@ -25,6 +25,9 @@ pub const TREEHOUSE_VERSION: &str = "3.1.8";
 
 const MAX_TREES_LIMIT: u32 = 32;
 const LOCK_STALE: Duration = Duration::from_secs(300);
+// A writer holds the lock across the treehouse and git calls. A second writer waits for the file to go, with a
+// deadline far past what a loaded machine needs; only then is the pool called full.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// treehouse v3.1.8. Checksums are the release `checksums.txt` (SHA-256 of each
 /// archive). The installer keeps only `treehouse` (`treehouse.exe` on Windows).
@@ -337,7 +340,8 @@ impl Lock {
     fn acquire(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
         let path = dir.join(".pool.lock");
-        for _ in 0..40 {
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -347,14 +351,17 @@ impl Lock {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if lock_is_stale(&path) {
                         let _ = std::fs::remove_file(&path);
-                        continue;
+                    } else {
+                        std::thread::sleep(Duration::from_millis(25));
                     }
-                    std::thread::sleep(Duration::from_millis(25));
+                    // Checked on the stale path too: a lock file that can't be removed is not a wait forever.
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!("{POOL_FULL_PREFIX}{POOL_FULL_NOTE}"));
+                    }
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
-        Err(format!("{POOL_FULL_PREFIX}{POOL_FULL_NOTE}"))
     }
 }
 
@@ -1084,13 +1091,17 @@ mod tests {
 
     impl Tmp {
         fn new() -> Self {
+            // Tests run in parallel, and the clock's ticks are coarse enough that two of them can land on the same
+            // reading. The counter keeps every test's folder its own, so one test's cleanup can't remove another's.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
-                "wp82-{}-{}",
+                "wp82-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&root).unwrap();
             Self { root }
@@ -1626,5 +1637,34 @@ mod tests {
         assert!(error.contains("outside"), "{error}");
         assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"stay");
         assert!(!paths.root.join("argv.log").exists());
+    }
+
+    // The store's lock is held across the treehouse and git calls, which on a loaded machine can take well over a
+    // second. A second writer waits for the file to go; it is not a full pool.
+    #[test]
+    fn a_slow_writer_is_waited_for_instead_of_reported_as_a_full_pool() {
+        let tmp = Tmp::new();
+        let state_dir = tmp.root.join("state");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let writer = {
+            let dir = state_dir.clone();
+            std::thread::spawn(move || {
+                let lock = Lock::acquire(&dir).unwrap();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(1500));
+                drop(lock);
+            })
+        };
+        held_rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        let lock = Lock::acquire(&state_dir)
+            .expect("a lock held by a slow writer is waited for, not called a full pool");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1200),
+            "the second writer waited"
+        );
+        drop(lock);
+        writer.join().unwrap();
+        assert!(!state_dir.join(".pool.lock").exists());
     }
 }
