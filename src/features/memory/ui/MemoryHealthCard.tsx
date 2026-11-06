@@ -2,6 +2,8 @@
 // what is fading, and what is waiting for the person.
 
 import type { MemoryHealthView } from "../model/health";
+import type { BudgetPause } from "../model/memoryBudget";
+import { pausedText } from "../model/memoryBudget";
 
 const DROP_NAMES: Array<{ key: keyof MemoryHealthView["dropped"]; label: string }> = [
   { key: "secret", label: "with a secret in them" },
@@ -21,11 +23,12 @@ function when(at: number | undefined, now: number): string {
   return `Memory was last looked at ${days} ${days === 1 ? "day" : "days"} ago.`;
 }
 
-export function MemoryHealthCard({ health, now }: { health: MemoryHealthView; now: number }) {
+export function MemoryHealthCard({ health, now, paused }: { health: MemoryHealthView; now: number; paused?: BudgetPause }) {
   const dropped = DROP_NAMES.filter((row) => health.dropped[row.key] > 0);
   return (
     <section aria-label="Memory health" className="flex flex-col gap-1 rounded-md border border-content/15 p-3 text-sm">
       <p data-health-last-run>{when(health.lastRunAt, now)}</p>
+      {paused && paused.until > now ? <p data-health-paused>{pausedText(paused.problem, paused.until)}</p> : null}
       <p data-health-turns>
         {health.turns === 0
           ? "No chat has been looked at yet."

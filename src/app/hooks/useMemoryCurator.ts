@@ -6,14 +6,15 @@ import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
 import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
-import { cheapAsk } from "../../features/memory/model/cheapAsk";
+import { cheapAsk, cheapProblem } from "../../features/memory/model/cheapAsk";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
 import { noteOutcome } from "../../features/memory/model/health";
+import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
 import { commitDoc } from "../../features/memory/model/review";
 import { rulesAnswer } from "../../features/memory/model/ruleCurator";
-import { loadMemoryTier, type MemoryTier } from "../../features/memory/model/tier";
+import { loadMemoryTier, tierSendsText, type MemoryTier } from "../../features/memory/model/tier";
 import type { Session } from "../../features/sessions/model/session";
 
 type Loaded = { revision: number; doc: unknown };
@@ -107,6 +108,21 @@ export function curatorAsk(tier: MemoryTier, turn: { user: string; assistant: st
   return askModel;
 }
 
+/**
+ * WP-103: the background budget. Only a turn that will call a model spends it: the crew always does, the cheap tier
+ * only once a model is picked (a cheap tier with no model hands back a deferral of its own, and spends nothing). A
+ * turn that does not fit is left for later (the caller unfeds it, so a later turn tries again), and the pause is
+ * recorded for the Memory screen's health card. A manual action on that screen never comes through here.
+ */
+export function backgroundAskFits(tier: MemoryTier, model: string | undefined, now: number): boolean {
+  if (!tierSendsText(tier)) return true;
+  if (tier === "cheap" && cheapProblem(model)) return true;
+  const budget = takeBudget(now);
+  if (budget.ok) return true;
+  notePaused({ problem: budget.problem, until: budget.until });
+  return false;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
@@ -133,6 +149,10 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
         }
         // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one.
         const choice = loadMemoryTier();
+        if (!backgroundAskFits(choice.tier, choice.model, ctx.now)) {
+          fedLast.current.delete(feed.sessionId);
+          return;
+        }
         const result = await collectAnswer(loaded, ctx, curatorAsk(choice.tier, ctx, choice.model));
         if (result.kind === "deferred") {
           fedLast.current.delete(feed.sessionId);

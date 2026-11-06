@@ -1,9 +1,17 @@
-import { expect, it, vi } from "vitest";
+// @vitest-environment happy-dom
+
+import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: () => Promise.reject(new Error("no app")) }));
 
-import { curatorAsk, curatorFeeds, lastExchange } from "./useMemoryCurator";
+import { backgroundAskFits, curatorAsk, curatorFeeds, lastExchange } from "./useMemoryCurator";
+import { BUDGET_KEY, PAUSE_KEY, loadBudget, pausedNow } from "../../features/memory/model/memoryBudget";
+
+const NOW = Date.parse("2026-06-01T12:00:00Z");
+const HOUR = 3_600_000;
+
+beforeEach(() => localStorage.clear());
 
 it("curates a finished first-mate turn once, and not a worker or a busy chat", () => {
   const fed = new Map<string, string | undefined>();
@@ -38,4 +46,36 @@ it("asks nobody on the rules tier, and the crew on the others", async () => {
 it("defers on the cheap tier when the picked model is gone, rather than crashing", async () => {
   const answer = await curatorAsk("cheap", { user: "Remember that it rains.", assistant: "" }, "xai-gone")("p");
   expect(answer).toMatchObject({ ok: false, kind: "timeout" });
+});
+
+it("the background budget: rules spends nothing, and a crew turn leaves the pause for the screen", () => {
+  // Rules never calls a model, so an hour already spent does not hold it back.
+  localStorage.setItem(BUDGET_KEY, JSON.stringify(Array.from({ length: 30 }, (_, i) => NOW - i * 1000)));
+  expect(backgroundAskFits("rules", undefined, NOW)).toBe(true);
+  expect(pausedNow(NOW)).toBeUndefined();
+
+  // Crew is over the hourly limit: the turn is left for later, and the screen is told when it opens again.
+  expect(backgroundAskFits("crew", undefined, NOW)).toBe(false);
+  expect(pausedNow(NOW)).toEqual({ problem: "hour", until: NOW - 29_000 + HOUR });
+
+  // A cheap tier with no model picked would spend nothing, so the budget does not turn it away.
+  localStorage.clear();
+  localStorage.setItem(BUDGET_KEY, JSON.stringify(Array.from({ length: 30 }, (_, i) => NOW - i * 1000)));
+  expect(backgroundAskFits("cheap", undefined, NOW)).toBe(true);
+});
+
+it("the background budget counts a call when it is taken", () => {
+  expect(loadBudget(NOW)).toEqual([]);
+  expect(backgroundAskFits("crew", undefined, NOW)).toBe(true);
+  expect(loadBudget(NOW)).toEqual([NOW]);
+  // A shipped budget that cannot be written still lets the turn through: it is a limit, not a lock.
+  localStorage.setItem(BUDGET_KEY, "not json");
+  expect(backgroundAskFits("crew", undefined, NOW + 1)).toBe(true);
+});
+
+it("a pause is gone from the screen once its moment has passed", () => {
+  localStorage.setItem(BUDGET_KEY, JSON.stringify(Array.from({ length: 30 }, (_, i) => NOW - i * 1000)));
+  expect(backgroundAskFits("crew", undefined, NOW)).toBe(false);
+  expect(localStorage.getItem(PAUSE_KEY)).not.toBeNull();
+  expect(pausedNow(NOW + HOUR)).toBeUndefined();
 });

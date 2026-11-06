@@ -7,6 +7,7 @@ import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
 import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
+import { pausedNow } from "../model/memoryBudget";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
 import {
@@ -185,7 +186,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
           className="rounded-md border border-content/15 bg-transparent px-2 py-1"
         />
       </label>
-      {doc ? <MemoryHealthCard health={healthOf(doc, now)} now={now} /> : null}
+      {doc ? <MemoryHealthCard health={healthOf(doc, now)} now={now} paused={pausedNow(now)} /> : null}
       {failed && !doc ? (
         <div className="flex flex-col gap-2">
           <p>Memory could not be read this time.</p>
