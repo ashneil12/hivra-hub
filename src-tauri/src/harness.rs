@@ -1073,6 +1073,27 @@ pub fn harness_spawn(
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
+    // WP-86: stamp this crew's commits. A failure here must not stop the crew.
+    // The before-run snapshot starts here and is read only after the child
+    // exits, so a slow git never holds the turn. A failed read is not journaled:
+    // guessing the lines that were already dirty would credit the wrong author.
+    let journal_before = crate::attribution::start_before_run(&workdir);
+    if let Ok(data_dir) = app.path().app_data_dir() {
+        let task = app
+            .try_state::<crate::session_store::SessionStore>()
+            .and_then(|store| {
+                crate::attribution::task_id_for_session(&store, &session_id)
+                    .ok()
+                    .flatten()
+            });
+        crate::attribution::apply_crew_env(
+            &mut cmd,
+            &data_dir,
+            &workdir,
+            &session_id,
+            task.as_deref(),
+        );
+    }
     let mut child =
         spawn_managed(&mut cmd).map_err(|e| format!("Failed to start {command}: {e}"))?;
     let pid = child.id();
@@ -1110,8 +1131,16 @@ pub fn harness_spawn(
         // session's live child, and this child's stdout would be parsed as the
         // stream that replaced it. Reap it without emitting anything.
         terminate(rejected.pid);
+        let note_app = app.clone();
+        let note_id = session_id.clone();
+        let note_dir = workdir.clone();
+        let note_before = journal_before;
         thread::spawn(move || {
             let _ = child.wait();
+            // WP-86: journal the lines this cancelled crew left behind.
+            if let Some(before) = note_before.wait() {
+                let _ = crate::attribution::note_run(&note_app, &note_id, &note_dir, &before);
+            }
         });
         return Err(SPAWN_CANCELLED.to_string());
     }
@@ -1171,8 +1200,14 @@ pub fn harness_spawn(
     let wait_app = app.clone();
     let wait_id = session_id;
     let wait_pid = pid;
+    let note_before = journal_before;
+    let note_dir = workdir.clone();
     thread::spawn(move || {
         let code = child.wait().ok().and_then(|status| status.code());
+        // WP-86: journal the lines this crew left behind. A failure leaves the journal as it was.
+        if let Some(before) = note_before.wait() {
+            let _ = crate::attribution::note_run(&wait_app, &wait_id, &note_dir, &before);
+        }
         run.lock()
             .unwrap_or_else(|e| e.into_inner())
             .exited(crate::harness_runs::now_ms());
