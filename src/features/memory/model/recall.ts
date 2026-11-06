@@ -25,18 +25,15 @@ function writtenBy(item: MemoryItem, readingEngine: string | undefined): string 
   return ` (written by ${engineName(item.by)})`;
 }
 
-/** Confirmed and edited facts only. An unreviewed fact is visible on the screen and nowhere else. */
-export function recallBlock(
-  doc: MemoryDoc,
-  mateId: string,
-  query: string,
-  now: number,
-  readingEngine?: string,
-): string | undefined {
+/**
+ * The facts a query recalls for one mate, best first, at most eight. Confirmed and edited facts only. An unreviewed
+ * fact is visible on the screen and nowhere else.
+ */
+export function recallItems(doc: MemoryDoc, mateId: string, query: string, now: number): MemoryItem[] {
   const match = ftsMatch(query);
-  if (!match) return undefined;
+  if (!match) return [];
   const terms = match.split(" OR ").map((term) => term.slice(1, -1));
-  const ranked = doc.items
+  return doc.items
     .filter(
       (item) =>
         item.mateId === mateId &&
@@ -50,14 +47,31 @@ export function recallBlock(
       score: confidence(beliefOf(item), now),
     }))
     .filter((row) => row.overlap > 0 && row.score >= 0.35)
-    .sort((a, b) => b.overlap - a.overlap || b.item.updatedAt - a.item.updatedAt || b.score - a.score);
-  if (!ranked.length) return undefined;
-  const lines = ranked.slice(0, 8).map((row) => {
-    const text = row.item.text.split(RECALL_CLOSE).join("").split(RECALL_OPEN).join("");
-    return `- ${new Date(row.item.updatedAt).toISOString()} ${text}${writtenBy(row.item, readingEngine)}`;
+    .sort((a, b) => b.overlap - a.overlap || b.item.updatedAt - a.item.updatedAt || b.score - a.score)
+    .slice(0, 8)
+    .map((row) => row.item);
+}
+
+/** The fence for a list of recalled facts, or undefined when there are none. */
+export function recallFence(items: readonly MemoryItem[], readingEngine?: string): string | undefined {
+  if (!items.length) return undefined;
+  const lines = items.map((item) => {
+    const text = item.text.split(RECALL_CLOSE).join("").split(RECALL_OPEN).join("");
+    return `- ${new Date(item.updatedAt).toISOString()} ${text}${writtenBy(item, readingEngine)}`;
   });
   const body = AGENT_ZERO_MEMORIES.replace("{{memories}}", lines.join("\n"));
   return `${RECALL_OPEN}\n${body}\n${RECALL_CLOSE}`;
+}
+
+/** Confirmed and edited facts only. An unreviewed fact is visible on the screen and nowhere else. */
+export function recallBlock(
+  doc: MemoryDoc,
+  mateId: string,
+  query: string,
+  now: number,
+  readingEngine?: string,
+): string | undefined {
+  return recallFence(recallItems(doc, mateId, query, now), readingEngine);
 }
 
 /** The system string comes back unchanged. The fence is appended to the user message. */

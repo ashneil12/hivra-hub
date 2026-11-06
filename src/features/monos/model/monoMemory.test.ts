@@ -6,6 +6,7 @@ import {
   fitMemoryBudget,
   memoryEntry,
   memoryLines,
+  memoryUseKey,
   withLineEdited,
   withoutLine,
   redactSecrets,
@@ -142,6 +143,51 @@ it("archives struck, then expired, then oldest entries, never the user's own", (
   expect(archiveMemoryEntries("", moved.slice(0, 1), "2026-10-04")).toBe(
     "# Archive\n\n- ~~2026-08-01 · old~~ · superseded 2026-09-01 · moved 2026-10-04\n",
   );
+});
+
+it("moves the least used live entries before the oldest", () => {
+  const filler = Array.from(
+    { length: MEMORY_MAX_LINES - 2 },
+    (_, i) => `- 2026-09-01 · fact ${i}`,
+  );
+  const text = [
+    "- 2026-09-01 · often used",
+    "- 2026-09-02 · rarely used",
+    "- 2026-09-03 · fading",
+    ...filler,
+    "- 2026-10-04 · just written",
+  ].join("\n");
+  const use = new Map([
+    [memoryUseKey("- 2026-09-01 · often used"), { fade: 0.98, usedAt: Date.parse("2026-10-01") }],
+    [memoryUseKey("- 2026-09-02 · rarely used"), { fade: 0.2, usedAt: Date.parse("2026-09-05") }],
+    [memoryUseKey("- 2026-09-03 · fading"), { fade: 0.45, usedAt: Date.parse("2026-09-08") }],
+  ]);
+  const { text: fitted, moved } = fitMemoryBudget(text, "- 2026-10-04 · just written", "2026-10-04", use);
+  // "often used" is the oldest line, but it is used the most, so the two fainter lines go first, faintest first.
+  expect(moved).toEqual(["- 2026-09-02 · rarely used", "- 2026-09-03 · fading"]);
+  expect(fitted).toContain("often used");
+  expect(fitted.split("\n").filter(Boolean)).toHaveLength(MEMORY_MAX_LINES);
+  // Two lines with the same fade: the one used longest ago goes first.
+  const tie = new Map([
+    [memoryUseKey("- 2026-09-01 · often used"), { fade: 0.5, usedAt: Date.parse("2026-09-20") }],
+    [memoryUseKey("- 2026-09-02 · rarely used"), { fade: 0.5, usedAt: Date.parse("2026-09-10") }],
+    [memoryUseKey("- 2026-09-03 · fading"), { fade: 0.5, usedAt: Date.parse("2026-09-30") }],
+  ]);
+  const tied = fitMemoryBudget(text, "- 2026-10-04 · just written", "2026-10-04", tie);
+  expect(tied.moved).toEqual(["- 2026-09-02 · rarely used", "- 2026-09-01 · often used"]);
+  // A line the doc does not know counts as full, so it is kept before any line that has faded.
+  const partial = new Map([
+    [memoryUseKey("- 2026-09-01 · often used"), { fade: 0.3, usedAt: Date.parse("2026-09-20") }],
+    [memoryUseKey("- 2026-09-02 · rarely used"), { fade: 0.6, usedAt: Date.parse("2026-09-10") }],
+  ]);
+  const unknown = fitMemoryBudget(text, "- 2026-10-04 · just written", "2026-10-04", partial);
+  expect(unknown.moved).toEqual(["- 2026-09-01 · often used", "- 2026-09-02 · rarely used"]);
+  // No use data at all: it behaves exactly as it did, oldest first.
+  const plain = fitMemoryBudget(text, "- 2026-10-04 · just written", "2026-10-04");
+  expect(plain.moved[0]).toBe("- 2026-09-01 · often used");
+  // The writer stays out of the key, so an old line and a signed one are the same fact.
+  expect(memoryUseKey("- 2026-09-01 · fact · by codex")).toBe("fact");
+  expect(memoryUseKey("- ~~2026-09-01 · fact~~ · superseded 2026-09-02")).toBe("fact");
 });
 
 it("accepts plain topic names only", () => {

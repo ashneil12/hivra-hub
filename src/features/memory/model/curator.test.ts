@@ -113,7 +113,7 @@ describe("curateTurn", () => {
     expect(JSON.stringify(result.doc)).not.toContain("sk-ant");
   });
 
-  it("drops a fact whose evidence is not in the turn, and a duplicate of one already kept", async () => {
+  it("drops a fact whose evidence is not in the turn, and counts a fact it sees again as a use", async () => {
     const madeUp = await curateTurn(
       freshDoc(),
       ctx(),
@@ -128,11 +128,21 @@ describe("curateTurn", () => {
     );
     const twice = await curateTurn(
       { ...once.doc, doneTurns: [] },
-      ctx({ turnId: "turn-9" }),
+      ctx({ turnId: "turn-9", now: NOW + 86_400_000 }),
       ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "small commits" })),
     );
-    expect(twice.outcome).toMatchObject({ status: "dropped", reason: "duplicate" });
+    // WP-100: the same fact again is a use, so the row is kept, its support grows, and its fade is topped up.
+    expect(twice.outcome).toMatchObject({ status: "stored" });
     expect(twice.doc.items).toHaveLength(1);
+    expect(twice.doc.items[0]).toMatchObject({
+      text: "Likes small commits",
+      support: 2,
+      fade: 1,
+      lastUsedAt: NOW + 86_400_000,
+    });
+    // The first row's own fields are kept; only the use changes.
+    expect(twice.doc.items[0].createdAt).toBe(once.doc.items[0].createdAt);
+    expect(twice.doc.items[0].state).toBe(once.doc.items[0].state);
   });
 
   it("writes down which engine wrote the memory, and leaves it off when the turn had none", async () => {

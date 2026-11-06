@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
+import { markLived } from "../model/fade";
 import {
   acceptImport,
   acceptItem,
@@ -67,7 +68,10 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     setBusy(true);
     setNote("");
     try {
-      const result = await commitDoc(portsRef.current.load, portsRef.current.save, update);
+      // WP-100: a day the person works on memory is a day the app lived.
+      const result = await commitDoc(portsRef.current.load, portsRef.current.save, (doc) =>
+        markLived(update(doc), Date.now()),
+      );
       setDoc(result.doc);
       setFailed(false);
       return result.applied;

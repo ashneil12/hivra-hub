@@ -30,6 +30,12 @@ export type MemoryItem = {
   against: number;
   createdAt: number;
   updatedAt: number;
+  /** WP-100: how strong the memory is, 0 to 1. Absent on old data, which reads as full. */
+  fade?: number;
+  /** WP-100: when a use signal last topped it up (ms). Absent on old data. */
+  lastUsedAt?: number;
+  /** WP-100: how many times the "still true?" ask has been shown for it. Absent on old data, which reads as 0. */
+  asked?: number;
 };
 
 export type MemoryDoc = {
@@ -38,11 +44,14 @@ export type MemoryDoc = {
   items: MemoryItem[];
   doneTurns: string[];
   imports: Record<string, "confirmed" | "rejected">;
+  /** WP-100: the days (UTC `2026-10-01`) the app was used, which memory fades over. Absent on old data. */
+  livedDays?: string[];
 };
 
 const ITEM_ID = /^mem-[a-f0-9]{16}$/;
 const MATE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const IMPORT_ID = /^[a-z0-9-]{1,80}$/;
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** An engine id: a harness name, lowercase, like `claude` or `codex`. */
 export const ENGINE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 
@@ -128,14 +137,23 @@ function isItem(value: unknown): value is MemoryItem {
 }
 
 /**
- * An item as it loads: an engine id that cannot be read is dropped and the memory itself is kept, because disk is
- * untrusted and a wrong `by` is no reason to forget a fact.
+ * An item as it loads: a field that cannot be read (`by`, `fade`, `lastUsedAt`, `asked`) is dropped and the memory
+ * itself is kept, because disk is untrusted and a wrong number is no reason to forget a fact.
  */
 function loadedItem(value: unknown): MemoryItem | undefined {
   if (!isItem(value)) return undefined;
-  if (value.by === undefined || (typeof value.by === "string" && ENGINE_ID.test(value.by))) return value;
-  const { by: _by, ...rest } = value;
+  const rest: MemoryItem = { ...value };
+  if (rest.by !== undefined && !(typeof rest.by === "string" && ENGINE_ID.test(rest.by))) delete rest.by;
+  if (rest.fade !== undefined && !(finite(rest.fade) && rest.fade <= 1)) delete rest.fade;
+  if (rest.lastUsedAt !== undefined && !finite(rest.lastUsedAt)) delete rest.lastUsedAt;
+  if (rest.asked !== undefined && !(finite(rest.asked) && Number.isInteger(rest.asked))) delete rest.asked;
   return rest;
+}
+
+/** The lived days the doc can read: real UTC dates, one of each, oldest first. */
+function loadedDays(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return [...new Set(value.filter((day): day is string => typeof day === "string" && DAY.test(day)))].sort();
 }
 
 /** Anything that is not a memory doc, or a doc with secrets in it, comes back empty of those parts. */
@@ -158,12 +176,14 @@ export function parseDoc(value: unknown): MemoryDoc {
       if (status === "confirmed" || status === "rejected") imports[key] = status;
     }
   }
+  const livedDays = loadedDays(raw.livedDays);
   return {
     revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
     generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
     items,
     doneTurns,
     imports,
+    ...(livedDays ? { livedDays } : {}),
   };
 }
 

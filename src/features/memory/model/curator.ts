@@ -3,6 +3,7 @@
 
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
 import { bump, emptyDoc, ENGINE_ID, memoryId, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem } from "./doc";
+import { touch } from "./fade";
 
 /** Same sentence as skillLearn.plainLesson. Not imported: loading that module registers a change kind. */
 function oneSentence(raw: string): string {
@@ -21,7 +22,7 @@ export type CuratorOutcome =
   | { status: "none"; ignored: number }
   | { status: "deferred" }
   | { status: "stored"; ignored: number }
-  | { status: "dropped"; reason: "late" | "secret" | "duplicate" | "ungrounded" | "invalid"; ignored: number };
+  | { status: "dropped"; reason: "late" | "secret" | "ungrounded" | "invalid"; ignored: number };
 
 export type CuratorContext = {
   mateId: string;
@@ -194,9 +195,27 @@ function byOf(ctx: CuratorContext): { by?: string } {
   return by && ENGINE_ID.test(by) ? { by } : {};
 }
 
+/**
+ * WP-100: a fact the curator sees again in a later turn is a use, not a duplicate. The item it already has keeps
+ * its row: its support grows by one and it is topped up (fade, lastUsedAt). A skill is not used this way, because a
+ * repeated lesson is not the same as reading it.
+ */
+function repeatItem(doc: MemoryDoc, item: MemoryItem, key: string): MemoryDoc {
+  return bump({
+    ...markDone(doc, key),
+    items: doc.items.map((have) =>
+      have.id !== item.id
+        ? have
+        : have.action === "skill"
+          ? { ...have, support: have.support + 1 }
+          : { ...touch(have, item.updatedAt), support: have.support + 1 },
+    ),
+  });
+}
+
 function addItem(doc: MemoryDoc, item: MemoryItem, key: string): { doc: MemoryDoc; outcome: CuratorOutcome } {
   if (doc.items.some((have) => have.id === item.id)) {
-    return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "duplicate", ignored: 0 } };
+    return { doc: repeatItem(doc, item, key), outcome: { status: "stored", ignored: 0 } };
   }
   return { doc: bump({ ...markDone(doc, key), items: [...doc.items, item] }), outcome: { status: "stored", ignored: 0 } };
 }

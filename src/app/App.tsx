@@ -106,6 +106,8 @@ import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/m
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
+import { recordUse } from "../features/memory/model/memoryUse";
+import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
@@ -14224,6 +14226,8 @@ function Workspace({
               const loaded = await invoke<{ doc?: unknown } | null>("memory_review_load");
               return loaded?.doc ?? null;
             },
+            // WP-100: a Mono reading memory through its tool is a use, so those facts are topped up.
+            markMemoryUsed: (ids, at) => recordUse(memoryUsePorts(), ids, at),
             mateIds: () => listMonos().map((item) => item.id),
             monoOf: (id) => {
               const mono =
