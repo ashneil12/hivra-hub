@@ -34,6 +34,7 @@ export function stubGoals(
       bottlenecks: [],
       lint: [],
     })),
+    checkRepair: vi.fn(async () => {}),
     report: vi.fn(async (run: GoalRunView) => ({
       report: {
         goal: run.goal,
@@ -518,6 +519,12 @@ describe("local orchestration", () => {
   it("preserves case for POSIX checkout and scope identities", () => {
     expect(orchestrationPathKey("/repo/Foo")).toBe("/repo/Foo");
     expect(scopesOverlap(["/repo/Foo"], ["/repo/foo/file.ts"])).toBe(false);
+  });
+  it("reads a scope written with CRLF or padding as the same path", () => {
+    expect(orchestrationPathKey("src/a.ts\r")).toBe("src/a.ts");
+    expect(orchestrationPathKey("  src/a.ts\r\n")).toBe("src/a.ts");
+    // Two tasks writing the same file must meet even when one scope carries a stray carriage return.
+    expect(scopesOverlap(["/repo/src/a.ts\r"], ["/repo/src/a.ts"])).toBe(true);
   });
   it("records the selected worktree separately from the project identity", async () => {
     const f = setup();

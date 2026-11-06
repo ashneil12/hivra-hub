@@ -1,6 +1,11 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
+import {
+  normalizeCheckRun,
+  normalizeGoalCheck,
+  normalizeGoalReport,
+} from "./orchestrationGoal";
 import type {
   GoalCheck,
   GoalCheckRun,
@@ -112,9 +117,12 @@ export type OrchestrationTask = {
   /** The failed task this one repairs, and which cycle it is (2 is the re-plan). */
   repairs?: string;
   cycle?: number;
+  /** WP-91: a node added by an extend round, and the node whose check found the missing work. */
+  extendFrom?: string;
   /** WP-91: the worker's handoff file, recorded when the lead accepts the task. */
   handoff?: TaskHandoff;
-  /** WP-40's gates, when something ran them on this task. Nothing sets it on an orchestration run today. */
+  /** WP-40's word on the task's own gates, when a gate ran them: `passed`, `failed`, `notRun` or `held`. Absent means
+   * no gate ran, which is never a pass: the run's report names those tasks rather than counting them as gated. */
   gateOutcome?: "passed" | "failed" | "notRun" | "held";
 };
 
@@ -203,6 +211,33 @@ export function normalizeOrchestrationRun(
       task.error === legacyPauseError;
     return {
       ...task,
+      // WP-91: a saved task read back from the database is untrusted (a partial write, an older build, a second
+      // window). A field the graph or the pump reads is kept only when it has the shape it is read as.
+      files: stringList(task.files),
+      scopes: stringList(task.scopes),
+      dependsOn: stringList(task.dependsOn),
+      handoff: savedHandoff(task.handoff),
+      role:
+        task.role === "build" || task.role === "verify" ? task.role : undefined,
+      gateOutcome:
+        task.gateOutcome === "passed" ||
+        task.gateOutcome === "failed" ||
+        task.gateOutcome === "notRun" ||
+        task.gateOutcome === "held"
+          ? task.gateOutcome
+          : undefined,
+      repairs:
+        typeof task.repairs === "string" && task.repairs.trim()
+          ? task.repairs
+          : undefined,
+      cycle:
+        typeof task.cycle === "number" && Number.isInteger(task.cycle)
+          ? task.cycle
+          : undefined,
+      extendFrom:
+        typeof task.extendFrom === "string" && task.extendFrom.trim()
+          ? task.extendFrom
+          : undefined,
       ...(legacyInterrupted
         ? {
             status:
@@ -237,5 +272,70 @@ export function normalizeOrchestrationRun(
       ...dispatch,
       state: statusByDispatch.get(dispatch.id) ?? dispatch.state,
     })),
+    // WP-91: the goal, the finish line and the graph's answer are read back as shapes the card can draw. A
+    // truncated row (a partial write, an older build) loses only the part that is malformed, never the run.
+    goal: typeof run.goal === "string" ? run.goal : undefined,
+    check: normalizeGoalCheck(run.check),
+    baseline: normalizeCheckRun(run.baseline),
+    checkRuns: Array.isArray(run.checkRuns)
+      ? run.checkRuns.flatMap((entry) => {
+          const check = normalizeCheckRun(entry);
+          return check ? [check] : [];
+        })
+      : undefined,
+    goalReport: normalizeGoalReport(run.goalReport),
+    repairCycles: savedRepairCycles(run.repairCycles),
+    ...(typeof run.extends === "number" &&
+    Number.isInteger(run.extends) &&
+    run.extends >= 0
+      ? { extends: run.extends }
+      : { extends: undefined }),
   };
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === "string")
+    : [];
+}
+
+function savedHandoff(value: unknown): TaskHandoff | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const input = value as Record<string, unknown>;
+  if (
+    typeof input.path !== "string" ||
+    typeof input.sha256 !== "string" ||
+    typeof input.bytes !== "number"
+  )
+    return undefined;
+  return {
+    path: input.path,
+    sha256: input.sha256,
+    bytes: input.bytes,
+    read: input.read === true,
+    at: typeof input.at === "number" ? input.at : 0,
+  };
+}
+
+/** Each root's cycles: an entry per repair cycle, each a list of task ids. Anything else is dropped. */
+function savedRepairCycles(
+  value: unknown,
+): Record<string, string[][]> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>).flatMap(([root, cycles]) =>
+      Array.isArray(cycles)
+        ? [
+            [
+              root,
+              cycles
+                .map((cycle) => stringList(cycle))
+                .filter((cycle) => cycle.length > 0),
+            ] as const,
+          ]
+        : [],
+    ),
+  );
 }

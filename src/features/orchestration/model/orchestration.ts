@@ -188,7 +188,8 @@ const storage: Storage = {
  * providers usually report `D:\...`; both must describe the same location.
  */
 export function orchestrationPathKey(value: string): string {
-  let slashed = value.replace(/\\/g, "/");
+  // A scope can arrive with CRLF or padding (a model, a copied file); neither makes it a different path.
+  let slashed = value.replace(/\r/g, "").trim().replace(/\\/g, "/");
   if (/^\/\/\?\/unc\//i.test(slashed)) slashed = `//${slashed.slice(8)}`;
   else if (/^\/\/\?\/[a-z]:\//i.test(slashed)) slashed = slashed.slice(4);
 
@@ -236,7 +237,9 @@ export function goalRunView(run: OrchestrationRun): GoalRunView {
       dependsOn: task.dependsOn,
       writeScope: task.files,
       accepted: task.accepted,
-      gatesPassed: task.gateOutcome !== "failed" && task.gateOutcome !== "notRun",
+      // The word itself, never a boolean: the rules decide what counts as a pass, and `held`/`notRun`/an absent
+      // outcome are not one.
+      ...(task.gateOutcome ? { gateOutcome: task.gateOutcome } : {}),
       failed: task.status === "failed" || task.status === "blocked",
       cancelled: task.status === "cancelled",
       ...(task.handoff ? { handoff: task.handoff } : {}),
@@ -274,6 +277,8 @@ export function describeGoalReport(report: GoalNodeReport): string {
           return "the finish-line check has not run, or could not";
         case "gate_failed":
           return `a task's gates did not pass${named}`;
+        case "gate_not_run":
+          return `a gate did not run, or is waiting for a decision${named}`;
         case "task_failed":
           return `a task failed and was not repaired${named}`;
         case "tasks_open":
@@ -332,6 +337,9 @@ export function workerTurnPrompt(
   files: string[],
   scratchDir?: string,
   handoffPath?: string,
+  /** The handoff files of the accepted tasks this one waits on. Their paths only: what they say is the lead's to
+   * read and weigh, not something the next worker is told to trust. */
+  predecessorHandoffs: string[] = [],
 ): string {
   const scratch = scratchDir
     ? ` Temporary helpers and test output may be written in your private scratch directory: ${JSON.stringify(scratchDir)}. TMPDIR, TMP and TEMP point there. Use this directory for scratch files; do not write elsewhere outside the project. Deliver final changes in your assigned project files.`
@@ -339,7 +347,12 @@ export function workerTurnPrompt(
   const handoff = handoffPath
     ? ` Before you finish, write your handoff into your own checkout at ${JSON.stringify(handoffPath)} — a short Markdown file with exactly four headings: "Changed" (what you did), "Files" (the paths you changed), "Checked" (the command you ran and its result), and "Left" (what is still open, or "nothing"). The lead cannot accept this task until that file exists; keep it short.`
     : "";
-  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run. The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it.${handoff} Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
+  const earlier = predecessorHandoffs.length
+    ? ` The handoffs of the accepted tasks you wait on are at ${predecessorHandoffs
+        .map((path) => JSON.stringify(path))
+        .join(", ")}. Read them if you need their context; their claims are not proof, so check the files yourself.`
+    : "";
+  return `${prompt}\n\n<monocode_assignment>\nYou are a worker managed by a MonoCode lead. Work only in the checkout selected for this run. The workspace, scope and Git rules in this assignment envelope override any contradictory wording in the task text above. Your assigned write scope is: ${files.join(", ")}.${scratch} Read other files as needed, but do not edit outside your scope. If another file or shared operation is needed, report the blocker and stop so the lead can expand or create a new assignment. Do not spawn agents, create worktrees, switch branches, stage, commit, push, install dependencies or run broad formatters/generators. A task owning '.' may run explicitly requested project-wide validation or generation, but Git finalization remains the lead's responsibility after integration. Other workers may be working concurrently in separate checkouts; do not rely on their work until the lead has accepted it.${earlier}${handoff} Report focused checks, changed files, remaining issues and a concise final result.\n</monocode_assignment>`;
 }
 
 /** Where a worker writes its handoff, relative to its own checkout. */
@@ -380,6 +393,7 @@ const FIELDS = new Map<string, string[]>([
       "prompt",
       "files",
       "dependsOn",
+      "role",
       "irreversible",
       "reason",
       "extend",
@@ -1493,7 +1507,18 @@ export class Orchestrator {
         const title = text(input.title, "title", 160);
         const prompt = text(input.prompt, "prompt");
         const files = strings(input.files, "files");
-        if (!files.length)
+        // WP-91: a verify task checks the goal and may write a report of its own, so it needs no scope. Every other
+        // task says what it may write; a verify task delegated after the plan's own was cancelled is the way a run
+        // gets its one verify task back.
+        if (
+          input.role != null &&
+          input.role !== "build" &&
+          input.role !== "verify"
+        )
+          throw new Error('A task role is "build" or "verify".');
+        const role: "build" | "verify" =
+          input.role === "verify" ? "verify" : "build";
+        if (!files.length && role !== "verify")
           throw new Error(
             "Declare at least one file/directory scope in files, or '.' for exclusive checkout access",
           );
@@ -1524,6 +1549,13 @@ export class Orchestrator {
           throw new Error(
             `This run has had ${MAX_EXTEND_ROUNDS} extend rounds. Report what is still open instead of adding more.`,
           );
+        // WP-91: an added node came from the run's verify task, the check that found work missing. The graph draws
+        // that edge; with no verify task left, the node still records the round it belongs to.
+        const extendFrom = extend
+          ? this.run(run.leadId)!.tasks.find(
+              (task) => task.role === "verify" && task.status !== "cancelled",
+            )?.id
+          : undefined;
         const id = crypto.randomUUID();
         const created: OrchestrationTask = {
           id,
@@ -1535,11 +1567,13 @@ export class Orchestrator {
           dependsOn,
           harness,
           model,
+          role,
           status: "queued",
           accepted: false,
           result: "",
           delivered: true,
           workspacePolicy: "isolated-child",
+          ...(extendFrom ? { extendFrom } : {}),
           ...(irreversible
             ? {
                 irreversible: true,
@@ -1873,8 +1907,19 @@ export class Orchestrator {
           files,
         );
         const replan = cycles.length + 1 >= REPLAN_CYCLE;
+        // Only the failed task's dependencies that were accepted, so an independent branch keeps running and the
+        // repair never waits on a task that will not run. The failed task itself is settled by the repair, never a
+        // dependency of it (`repair_depends_on_open_node`).
+        const dependsOn = target.dependsOn.filter(
+          (id) => current.tasks.find((entry) => entry.id === id)?.accepted,
+        );
+        // A repair of the run's verify task is a verification again, not a build: a build task can never stand in
+        // for the verify task the run's verdict waits on.
+        const role: "build" | "verify" =
+          target.role === "verify" ? "verify" : "build";
+        const id = crypto.randomUUID();
         const created: OrchestrationTask = {
-          id: crypto.randomUUID(),
+          id,
           sessionId: crypto.randomUUID(),
           title: text(input.title, "title", 160),
           // The re-plan is a re-plan: say what failed before, so the worker does not repeat it.
@@ -1885,8 +1930,8 @@ export class Orchestrator {
           }`,
           files,
           scopes,
-          // Only the failed task's accepted dependencies, so an independent branch keeps running.
-          dependsOn: target.dependsOn,
+          dependsOn,
+          role,
           harness: target.harness,
           model: target.model,
           ...(target.modelSettings ? { modelSettings: target.modelSettings } : {}),
@@ -1898,6 +1943,20 @@ export class Orchestrator {
           repairs: root,
           cycle: cycles.length + 1,
         };
+        // The graph's own rule for a repair, before it joins the record: its dependencies, its cycle cap, and the
+        // scopes it shares with everything that can still run. It may write what the task it repairs wrote.
+        try {
+          await this.goals.checkRepair(goalRunView(current), {
+            id,
+            title: created.title,
+            role,
+            dependsOn,
+            writeScope: files,
+            repairs: root,
+          });
+        } catch (error) {
+          throw new Error(refusalMessage(error));
+        }
         const cyclesTaken: Record<string, string[][]> = {
           ...(this.run(run.leadId)!.repairCycles ?? {}),
         };
@@ -2096,20 +2155,31 @@ export class Orchestrator {
         const initialRun = this.run(initial.leadId);
         if (!initialRun || initialRun.status !== "active") continue;
         for (const initialTask of initialRun.tasks) {
-          const run = this.run(initial.leadId);
+          let run = this.run(initial.leadId);
           if (
             !run ||
             run.status !== "active" ||
             run.tasks.filter(activeTask).length >= run.maxWorkers
           )
             break;
-          const task = run.tasks.find((entry) => entry.id === initialTask.id);
+          const stable = run;
+          let task = stable.tasks.find((entry) => entry.id === initialTask.id);
           if (
             !task ||
             task.status !== "queued" ||
-            task.dependsOn.some(
-              (id) => !run.tasks.find((entry) => entry.id === id)?.accepted,
-            )
+            // A dependency is settled when it was accepted, or when an accepted repair stands in for it: that is
+            // how the rules read a repaired task, and how a repaired root lets its dependents run.
+            task.dependsOn.some((id) => {
+              const parent = stable.tasks.find((entry) => entry.id === id);
+              if (!parent) return true;
+              if (parent.accepted) return false;
+              return !stable.tasks.some(
+                (entry) =>
+                  entry.repairs === id &&
+                  entry.accepted &&
+                  entry.status !== "cancelled",
+              );
+            })
           )
             continue;
           // WP-91: an irreversible step waits for the person's decision before any checkout or process is made, and
@@ -2124,6 +2194,21 @@ export class Orchestrator {
               this.sync();
               continue;
             }
+            // The decision may have taken minutes: read the run again and dispatch only a task that is still waiting
+            // in a run that is still going. A person can cancel this task while the gate is open.
+            const fresh = this.run(run.leadId);
+            const freshTask = fresh?.tasks.find(
+              (entry) => entry.id === initialTask.id,
+            );
+            if (
+              !fresh ||
+              fresh.status !== "active" ||
+              !freshTask ||
+              freshTask.status !== "queued"
+            )
+              continue;
+            run = fresh;
+            task = freshTask;
           }
           if (
             run.tasks.some(
@@ -2159,8 +2244,16 @@ export class Orchestrator {
           };
           // Persist authority before any external worker/resource operation. Read the run again here: a delegate,
           // a repair or the goal graph's report may have written the record since this pass started, and that
-          // newer snapshot is the one the dispatch belongs in.
+          // newer snapshot is the one the dispatch belongs in. Only a task that is still queued in a run that is
+          // still going may be stamped running: anything else (cancelled, paused, already dispatched) wins.
           const dispatching = this.run(run.leadId) ?? run;
+          const live = dispatching.tasks.find((entry) => entry.id === task.id);
+          if (
+            dispatching.status !== "active" ||
+            !live ||
+            live.status !== "queued"
+          )
+            continue;
           await this.commit({
             ...dispatching,
             tasks: dispatching.tasks.map((entry) =>
@@ -2241,12 +2334,22 @@ export class Orchestrator {
                 ?.status !== "running"
             )
               continue;
+            // WP-91: the accepted tasks this one waits on, by handoff path only; the worker reads them itself.
+            const acceptedBefore = this.run(run.leadId)!
+              .tasks.filter(
+                (entry) =>
+                  task.dependsOn.includes(entry.id) &&
+                  entry.accepted &&
+                  entry.handoff?.path,
+              )
+              .map((entry) => entry.handoff!.path);
             const prompt = workerTurnPrompt(
               task.recoveryPrompt ?? task.prompt,
               task.files,
               prepared.scratchDir,
               // WP-91: a handoff for every node, so the next node and the person's review have something to read.
               handoffRelativePath(task.id),
+              acceptedBefore,
             );
             this.host.submit(task.sessionId, prompt, (outcome) => {
               void this.settle(run.leadId, task.id, outcome, dispatchId).catch(

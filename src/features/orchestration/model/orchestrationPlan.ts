@@ -115,9 +115,6 @@ export function validateGoalCheck(value: unknown): GoalCheck {
       : required(input.expectText, "the text the check must print", CHECK_TEXT_MAX);
   if (expectText && (expectText.includes("\n") || /\p{Cc}/u.test(expectText)))
     throw new Error("Keep the text the check must print to one line");
-  const checks = input.checks == null ? [] : stringList(input.checks, "project checks", 20);
-  if (checks.some((id) => id.length > 60))
-    throw new Error("Name project checks by their ids, at most 60 characters each");
   const timeoutSeconds =
     input.timeoutSeconds == null
       ? undefined
@@ -132,13 +129,14 @@ export function validateGoalCheck(value: unknown): GoalCheck {
     command,
     expectExit,
     ...(expectText ? { expectText } : {}),
-    ...(checks.length ? { checks } : {}),
     ...(timeoutSeconds ? { timeoutSeconds } : {}),
   };
 }
 
 function scopePath(value: string): string {
-  const slashed = value.replace(/\\/g, "/");
+  // A scope written into a file or copied from a model can carry CRLF and stray spaces; strip them before comparing,
+  // so "src/a.ts\r" is the same path as "src/a.ts" (as Rust's `topology::scope_path` does).
+  const slashed = value.replace(/\r/g, "").trim().replace(/\\/g, "/");
   const prefix = slashed.startsWith("//")
     ? "//"
     : /^[A-Za-z]:\//.test(slashed)

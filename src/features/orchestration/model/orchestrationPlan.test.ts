@@ -301,6 +301,14 @@ describe("orchestration proposals", () => {
       ),
     ).toThrow('Assignment "ui" has invalid file scope "C:src\\settings"');
   });
+  it("reads a scope written with CRLF or padding as the path it names", () => {
+    expect(
+      validateProposedTasks(
+        [{ ...task, files: ["src/settings\r", "  src/shared\r\n"] }],
+        draft.settings,
+      )[0].files,
+    ).toEqual(["src/settings", "src/shared"]);
+  });
   it("keeps an explicitly selected worker effort and rejects malformed settings", () => {
     expect(
       validateProposedTasks(

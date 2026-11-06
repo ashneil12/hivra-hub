@@ -28,8 +28,6 @@ export type GoalCheck = {
   expectExit: number;
   /** Text the output must hold, when the exit code alone is not the whole finish line. */
   expectText?: string;
-  /** Project check ids to take a baseline of as well. */
-  checks?: string[];
   timeoutSeconds?: number;
 };
 
@@ -105,6 +103,16 @@ export type GoalPlanNode = {
   writeScope: string[];
 };
 
+/** A repair task offered to the run, as the rules read it: a node with the task it repairs. */
+export type GoalRepairNode = {
+  id: string;
+  title: string;
+  role: "build" | "verify";
+  dependsOn: string[];
+  writeScope: string[];
+  repairs: string;
+};
+
 /** One node of the run, as the rules read it. */
 export type GoalRunNode = {
   id: string;
@@ -113,7 +121,9 @@ export type GoalRunNode = {
   dependsOn: string[];
   writeScope: string[];
   accepted: boolean;
-  gatesPassed: boolean;
+  /** WP-40's word on the task's own gates: `passed`, `failed`, `notRun` or `held`. Absent means no gate ran, which
+   * is not a pass. The rules read the word itself, never a boolean. */
+  gateOutcome?: string;
   failed: boolean;
   cancelled: boolean;
   handoff?: TaskHandoff;
@@ -134,6 +144,7 @@ export type GoalRunView = {
 /** The Rust side of the goal graph, so a test can stand in for it. */
 export type GoalGraphBackend = {
   checkPlan(nodes: GoalPlanNode[]): Promise<GoalPlanAnswer>;
+  checkRepair(run: GoalRunView, node: GoalRepairNode): Promise<void>;
   report(run: GoalRunView): Promise<GoalAnswer>;
   runCheck(cwd: string, spec: GoalCheck): Promise<GoalCheckRun>;
   readHandoff(checkout: string, taskId: string): Promise<HandoffFile>;
@@ -164,22 +175,31 @@ export function normalizeCheckRun(value: unknown): GoalCheckRun | undefined {
   };
 }
 
-export function normalizeGoalAnswer(value: unknown): GoalAnswer {
-  const input =
+/** A saved finish-line check, from a run read back out of the database: a partial or older value becomes `undefined`
+ * rather than a check the card draws wrongly. */
+export function normalizeGoalCheck(value: unknown): GoalCheck | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const input = value as Record<string, unknown>;
+  if (typeof input.command !== "string" || !input.command.trim()) return undefined;
+  return {
+    command: input.command,
+    expectExit: typeof input.expectExit === "number" ? input.expectExit : 0,
+    ...(typeof input.expectText === "string" ? { expectText: input.expectText } : {}),
+    ...(typeof input.timeoutSeconds === "number" ? { timeoutSeconds: input.timeoutSeconds } : {}),
+  };
+}
+
+/** A saved goal report, read back out of the database, in the shape the card needs. Anything malformed becomes an
+ * empty report, so a truncated row draws the run without the goal instead of crashing the card. */
+export function normalizeGoalReport(value: unknown): GoalNodeReport | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return normalizeReport(value);
+}
+
+function normalizeReport(value: unknown): GoalNodeReport {
+  const report =
     value && typeof value === "object" && !Array.isArray(value)
       ? (value as Record<string, unknown>)
-      : {};
-  const raw = input.refusal;
-  const refusal =
-    raw && typeof raw === "object" && !Array.isArray(raw)
-      ? {
-          reason: word((raw as Record<string, unknown>).reason, "refused"),
-          say: word((raw as Record<string, unknown>).say, "The graph was refused."),
-        }
-      : undefined;
-  const report =
-    input.report && typeof input.report === "object" && !Array.isArray(input.report)
-      ? (input.report as Record<string, unknown>)
       : {};
   const verdict =
     report.verdict === "verified" || report.verdict === "failed"
@@ -194,29 +214,45 @@ export function normalizeGoalAnswer(value: unknown): GoalAnswer {
         )
       : {};
   return {
+    goal: word(report.goal, ""),
+    verdict,
+    reasons: list(report.reasons),
+    layers: rows(report.layers),
+    criticalPath: list(report.criticalPath),
+    bottlenecks: (Array.isArray(report.bottlenecks) ? report.bottlenecks : []).flatMap(
+      (entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+        const item = entry as Record<string, unknown>;
+        return typeof item.node === "string"
+          ? [{ node: item.node, blocks: typeof item.blocks === "number" ? item.blocks : 0 }]
+          : [];
+      },
+    ),
+    lint: list(report.lint),
+    ready: list(report.ready),
+    cyclesLeft: cycles,
+    replan: list(report.replan),
+    extendsLeft: typeof report.extendsLeft === "number" ? report.extendsLeft : 0,
+    ...(typeof report.verify === "string" ? { verify: report.verify } : {}),
+  };
+}
+
+export function normalizeGoalAnswer(value: unknown): GoalAnswer {
+  const input =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const raw = input.refusal;
+  const refusal =
+    raw && typeof raw === "object" && !Array.isArray(raw)
+      ? {
+          reason: word((raw as Record<string, unknown>).reason, "refused"),
+          say: word((raw as Record<string, unknown>).say, "The graph was refused."),
+        }
+      : undefined;
+  return {
     ...(refusal ? { refusal } : {}),
-    report: {
-      goal: word(report.goal, ""),
-      verdict,
-      reasons: list(report.reasons),
-      layers: rows(report.layers),
-      criticalPath: list(report.criticalPath),
-      bottlenecks: (Array.isArray(report.bottlenecks) ? report.bottlenecks : []).flatMap(
-        (entry) => {
-          if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
-          const item = entry as Record<string, unknown>;
-          return typeof item.node === "string"
-            ? [{ node: item.node, blocks: typeof item.blocks === "number" ? item.blocks : 0 }]
-            : [];
-        },
-      ),
-      lint: list(report.lint),
-      ready: list(report.ready),
-      cyclesLeft: cycles,
-      replan: list(report.replan),
-      extendsLeft: typeof report.extendsLeft === "number" ? report.extendsLeft : 0,
-      ...(typeof report.verify === "string" ? { verify: report.verify } : {}),
-    },
+    report: normalizeReport(input.report),
   };
 }
 
@@ -265,6 +301,9 @@ export function refusalOf(
 
 export const goalGraphBackend: GoalGraphBackend = {
   checkPlan: async (nodes) => normalizePlanAnswer(await invoke("goal_graph_check_plan", { nodes })),
+  checkRepair: async (run, node) => {
+    await invoke("goal_graph_check_repair", { run, node });
+  },
   report: async (run) =>
     normalizeGoalAnswer(await invoke("goal_graph_report", { run })),
   runCheck: async (cwd, spec) =>

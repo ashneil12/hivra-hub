@@ -25,6 +25,7 @@ import {
   type GoalRunView,
 } from "./orchestrationGoal";
 import { newSession } from "../../sessions/model/session";
+import { normalizeOrchestrationRun } from "./orchestrationState";
 import type { OrchestrationRun, OrchestrationTask } from "./orchestrationState";
 
 /**
@@ -42,6 +43,7 @@ function stubGoalsBackend(
       bottlenecks: [],
       lint: [],
     })),
+    checkRepair: vi.fn(async () => {}),
     report: vi.fn(async (run: GoalRunView) => ({
       report: {
         goal: run.goal,
@@ -99,16 +101,19 @@ describe("the finish-line check", () => {
         command: "npm test",
         expectExit: 1,
         expectText: "0 failing",
-        checks: ["web"],
         timeoutSeconds: 900,
       }),
     ).toEqual({
       command: "npm test",
       expectExit: 1,
       expectText: "0 failing",
-      checks: ["web"],
       timeoutSeconds: 900,
     });
+    // A named project check has no baseline of its own here (it is not run and not stored), so the field is not
+    // carried: the run records one finish-line command, which is the run's baseline.
+    expect(
+      validateGoalCheck({ command: "x", checks: Array.from({ length: 21 }, (_, i) => `c${i}`) }),
+    ).toEqual({ command: "x", expectExit: 0 });
   });
 
   it("refuses a missing command, a command that spans lines, and an impossible exit code", () => {
@@ -126,12 +131,6 @@ describe("the finish-line check", () => {
     expect(() => validateGoalCheck({ command: "x", expectText: "a\nb" })).toThrow(
       "one line",
     );
-    expect(() =>
-      validateGoalCheck({
-        command: "x",
-        checks: Array.from({ length: 21 }, (_, index) => `c${index}`),
-      }),
-    ).toThrow();
     expect(() =>
       validateGoalCheck({ command: "x", timeoutSeconds: -1 }),
     ).toThrow("whole number of seconds");
@@ -256,8 +255,11 @@ describe("the run as the rules read it", () => {
       false,
     ]);
     expect(view.nodes[3].role).toBe("verify");
-    // A gate that failed, or could not run, is not a pass.
-    expect(view.nodes[3].gatesPassed).toBe(false);
+    // The gate's own word crosses the boundary, never a boolean: passed, failed, notRun and held stay distinct,
+    // and a task no gate saw sends nothing.
+    expect(view.nodes[0].gateOutcome).toBe("passed");
+    expect(view.nodes[3].gateOutcome).toBe("notRun");
+    expect(view.nodes[1].gateOutcome).toBeUndefined();
     expect(view.nodes[1].failed).toBe(true);
     expect(view.nodes[2].cancelled).toBe(true);
     expect(view.nodes[3].irreversible).toEqual({
@@ -295,6 +297,77 @@ describe("the run as the rules read it", () => {
       "app",
       "delivery",
     ]);
+  });
+});
+
+describe("a run read back from the database", () => {
+  it("draws from a truncated row without the parts it cannot read", () => {
+    const run = normalizeOrchestrationRun({
+      version: 2,
+      leadId: "lead",
+      cwd: "/repo",
+      status: "active",
+      allowedHarnesses: ["codex"],
+      maxWorkers: 2,
+      cli: "/app/monocode",
+      continuations: 0,
+      requests: {},
+      goal: 7,
+      check: { command: 7 },
+      checkRuns: "nope",
+      repairCycles: { a: [["r"], "bad"] },
+      goalReport: {
+        verdict: "done",
+        reasons: 7,
+        layers: [["a"], "bad", [7, "b"]],
+        extendsLeft: "two",
+      },
+      tasks: [
+        {
+          id: "a",
+          sessionId: "s-a",
+          title: "A",
+          harness: "codex",
+          model: "codex:test",
+          prompt: "do it",
+          files: "src",
+          scopes: null,
+          dependsOn: 5,
+          status: "queued",
+          accepted: false,
+          result: "",
+          delivered: true,
+          role: "wizard",
+          gateOutcome: "maybe",
+          handoff: { path: 7 },
+          repairs: 7,
+          cycle: 1.5,
+          extendFrom: "   ",
+        },
+      ],
+    } as unknown as OrchestrationRun);
+    expect(run.goal).toBeUndefined();
+    expect(run.check).toBeUndefined();
+    expect(run.baseline).toBeUndefined();
+    expect(run.checkRuns).toBeUndefined();
+    expect(run.repairCycles).toEqual({ a: [["r"]] });
+    expect(run.goalReport).toMatchObject({
+      verdict: "unverified",
+      reasons: [],
+      layers: [["a"], [], ["b"]],
+      extendsLeft: 0,
+    });
+    expect(run.tasks[0]).toMatchObject({
+      files: [],
+      scopes: [],
+      dependsOn: [],
+      handoff: undefined,
+      repairs: undefined,
+      cycle: undefined,
+      extendFrom: undefined,
+    });
+    expect(run.tasks[0].role).toBeUndefined();
+    expect(run.tasks[0].gateOutcome).toBeUndefined();
   });
 });
 
@@ -616,6 +689,205 @@ describe("a repair", () => {
       f.call("repair", { taskId: id, title: "Fix", prompt: "x" }),
     ).rejects.toThrow("Only a failed or blocked task is repaired");
   });
+
+  it("is decided by the rules before it joins the record, and a failed verify task is repaired by a verify task", async () => {
+    const f = fixture();
+    await f.start();
+    const verify = await f.delegate({ title: "Check", role: "verify", files: [] });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const session = f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.sessionId;
+    f.completions.get(session)!({ status: "failed", text: "", error: "the check could not run" });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.status).toBe(
+        "failed",
+      ),
+    );
+
+    const repaired = (await f.call("repair", {
+      taskId: verify,
+      title: "Check again",
+      prompt: "Run the check again",
+    })) as { taskId: string };
+
+    // The rules were asked first, with the repair as a node of the run.
+    expect(f.goals.checkRepair).toHaveBeenCalledTimes(1);
+    expect(f.goals.checkRepair).toHaveBeenCalledWith(
+      expect.objectContaining({ nodes: expect.any(Array) }),
+      expect.objectContaining({
+        role: "verify",
+        repairs: verify,
+        dependsOn: [],
+      }),
+    );
+    const created = f.manager.run("lead")!.tasks.find((e) => e.id === repaired.taskId)!;
+    expect(created.role).toBe("verify");
+    expect(created.repairs).toBe(verify);
+    expect(created.dependsOn).toEqual([]);
+  });
+
+  it("writes nothing when the rules refuse it", async () => {
+    const f = fixture();
+    await f.start();
+    const broken = await f.delegate({ title: "Broken" });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const task = f.manager.run("lead")!.tasks.find((e) => e.id === broken)!;
+    f.completions.get(task.sessionId)!({ status: "failed", text: "", error: "boom" });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.tasks.find((e) => e.id === broken)!.status).toBe(
+        "failed",
+      ),
+    );
+    f.goals.checkRepair = vi.fn(async () => {
+      throw {
+        reason: "write_scope_overlap",
+        say: "These tasks can run at the same time and write the same paths.",
+      };
+    });
+    await expect(
+      f.call("repair", { taskId: broken, title: "Fix", prompt: "Fix it" }),
+    ).rejects.toThrow("These tasks can run at the same time and write the same paths.");
+    expect(f.manager.run("lead")!.tasks).toHaveLength(1);
+    expect(f.manager.run("lead")!.repairCycles).toEqual({});
+  });
+
+  it("changes nothing when the task was cancelled", async () => {
+    const f = fixture();
+    await f.start();
+    const first = await f.delegate({ title: "First" });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const second = await f.delegate({
+      title: "Second",
+      dependsOn: [first],
+      files: ["docs"],
+    });
+    await f.call("cancel", { taskId: second });
+    expect(
+      f.manager.run("lead")!.tasks.find((e) => e.id === second)!.status,
+    ).toBe("cancelled");
+    await expect(
+      f.call("repair", { taskId: second, title: "Fix", prompt: "Fix it" }),
+    ).rejects.toThrow("A cancelled task is not repaired");
+    expect(f.goals.checkRepair).not.toHaveBeenCalled();
+    expect(f.manager.run("lead")!.tasks).toHaveLength(2);
+    expect(f.manager.run("lead")!.repairCycles).toEqual({});
+  });
+});
+
+describe("the pump and a repair", () => {
+  it("starts a repair without waiting on the failed task, and its dependents run once it is accepted", async () => {
+    const f = fixture();
+    await f.start();
+    const broken = await f.delegate({ title: "Broken" });
+    const downstream = await f.delegate({
+      title: "Downstream",
+      dependsOn: [broken],
+      files: ["docs"],
+    });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const session = f.manager.run("lead")!.tasks.find((e) => e.id === broken)!.sessionId;
+    f.completions.get(session)!({ status: "failed", text: "", error: "boom" });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.tasks.find((e) => e.id === broken)!.status).toBe(
+        "failed",
+      ),
+    );
+
+    const repaired = (await f.call("repair", {
+      taskId: broken,
+      title: "Fix it",
+      prompt: "Fix what broke",
+    })) as { taskId: string };
+    const created = f.manager.run("lead")!.tasks.find((e) => e.id === repaired.taskId)!;
+    // The failed task is not a dependency of its repair: the pump would wait on it forever.
+    expect(created.dependsOn).toEqual([]);
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(2));
+
+    // The downstream still waits: neither the root nor a repair of it is accepted yet.
+    expect(
+      f.manager.run("lead")!.tasks.find((e) => e.id === downstream)!.status,
+    ).toBe("queued");
+
+    await f.complete(repaired.taskId);
+    await f.call("review", { taskId: repaired.taskId });
+    await vi.waitFor(() =>
+      expect(
+        f.manager.run("lead")!.tasks.find((e) => e.id === downstream)!.status,
+      ).not.toBe("queued"),
+    );
+  });
+
+  it("never starts a task the person cancelled while its decision was being read", async () => {
+    const f = fixture();
+    await f.start();
+    let release!: (value: StoredDecision[]) => void;
+    f.store.decisions = vi.fn(
+      () =>
+        new Promise<StoredDecision[]>((resolve) => {
+          release = resolve;
+        }),
+    ) as unknown as typeof f.store.decisions;
+    const id = await f.delegate({
+      irreversible: true,
+      reason: "it deletes the old table",
+    });
+    await vi.waitFor(() => expect(f.store.decisions).toHaveBeenCalled());
+
+    await f.call("cancel", { taskId: id });
+    release([
+      {
+        key: irreversibleDecisionKey("lead", id),
+        answered: true,
+        answer: "Approve",
+      },
+    ]);
+    await vi.waitFor(() =>
+      expect(
+        f.manager.run("lead")!.tasks.find((e) => e.id === id)!.irreversibleAnswered,
+      ).toBe(true),
+    );
+    expect(
+      f.manager.run("lead")!.tasks.find((e) => e.id === id)!.status,
+    ).toBe("cancelled");
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+});
+
+describe("the next worker's prompt", () => {
+  it("names the handoff paths of the accepted tasks it waits on, never their text", async () => {
+    const f = fixture();
+    await f.start();
+    const first = await f.delegate({ title: "First" });
+    await f.delegate({ title: "Second", dependsOn: [first], files: ["docs"] });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    await f.complete(first);
+    await f.call("review", { taskId: first });
+    const path = f.manager.run("lead")!.tasks.find((e) => e.id === first)!.handoff!.path;
+
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+    const prompt = f.host.submit.mock.calls[1][1] as string;
+    expect(prompt).toContain(path);
+    expect(prompt).toContain("their claims are not proof");
+    // The path only: the predecessor's own words are the lead's to read and weigh.
+    expect(prompt).not.toContain("## Changed");
+  });
+});
+
+describe("an extend round", () => {
+  it("records the verify task that found the missing work, so the graph can draw the edge", async () => {
+    const f = fixture();
+    await f.start();
+    const verify = await f.delegate({ title: "Check", role: "verify", files: [] });
+    const added = (await f.call("delegate", {
+      title: "One more",
+      prompt: "Add the missing piece",
+      harness: "codex",
+      files: ["extra"],
+      extend: true,
+    })) as { taskId: string };
+    const task = f.manager.run("lead")!.tasks.find((e) => e.id === added.taskId)!;
+    expect(task.extendFrom).toBe(verify);
+    expect(f.manager.run("lead")!.extends).toBe(1);
+  });
 });
 
 describe("accepting a task", () => {
@@ -669,47 +941,68 @@ describe("accepting a task", () => {
 });
 
 describe("finishing a run", () => {
+  const proposal = () => ({
+    version: 1 as const,
+    leadId: "lead",
+    cwd: "/repo",
+    request: "Build it",
+    author: { harness: "claude" as const, model: "claude:test", name: "Lead" },
+    settings: {
+      choices: [{ harness: "codex" as const, model: "codex:test", name: "Test" }],
+      maxWorkers: 2,
+    },
+    status: "ready" as const,
+    title: "Settings",
+    summary: "Split the work",
+    goal: "The settings screen saves",
+    check: { command: "npm test", expectExit: 0 },
+    tasks: [
+      {
+        id: "build",
+        title: "Build",
+        prompt: "Build it",
+        harness: "codex" as const,
+        model: "codex:test",
+        files: ["src"],
+        dependsOn: [],
+      },
+      {
+        id: "verify",
+        title: "Check",
+        prompt: "Check it",
+        harness: "codex" as const,
+        model: "codex:test",
+        role: "verify" as const,
+        files: [],
+        dependsOn: ["build"],
+      },
+    ],
+  });
+
+  it("refuses to start on a finish line that could not run, in plain words", async () => {
+    const f = fixture();
+    f.goals.runCheck = vi.fn(async () => ({
+      outcome: "notRun" as const,
+      output: "the command could not start",
+      layer: "app",
+      at: 1,
+    }));
+    (f.host.session("lead") as { busy: boolean }).busy = false;
+    await expect(
+      f.manager.startApproved("lead", "card", proposal()),
+    ).rejects.toThrow(
+      "The finish-line check could not run, so the run has no finish line: the command could not start",
+    );
+    // Nothing was queued or started without a proven red baseline.
+    expect(f.host.submit).not.toHaveBeenCalled();
+    expect(f.manager.run("lead")).toBeUndefined();
+  });
+
   it("runs the check itself and refuses while the goal is not proved", async () => {
     const f = fixture();
-    const proposal = {
-      version: 1 as const,
-      leadId: "lead",
-      cwd: "/repo",
-      request: "Build it",
-      author: { harness: "claude" as const, model: "claude:test", name: "Lead" },
-      settings: {
-        choices: [{ harness: "codex" as const, model: "codex:test", name: "Test" }],
-        maxWorkers: 2,
-      },
-      status: "ready" as const,
-      title: "Settings",
-      summary: "Split the work",
-      goal: "The settings screen saves",
-      check: { command: "npm test", expectExit: 0 },
-      tasks: [
-        {
-          id: "build",
-          title: "Build",
-          prompt: "Build it",
-          harness: "codex" as const,
-          model: "codex:test",
-          files: ["src"],
-          dependsOn: [],
-        },
-        {
-          id: "verify",
-          title: "Check",
-          prompt: "Check it",
-          harness: "codex" as const,
-          model: "codex:test",
-          role: "verify" as const,
-          files: [],
-          dependsOn: ["build"],
-        },
-      ],
-    };
     (f.host.session("lead") as { busy: boolean }).busy = false;
-    await f.manager.startApproved("lead", "card", proposal);
+    const started = proposal();
+    await f.manager.startApproved("lead", "card", started);
     // The finish line failed on the untouched base, and that is the baseline.
     expect(f.manager.run("lead")?.baseline?.outcome).toBe("failed");
     const [build, check] = f.manager.run("lead")!.tasks;
