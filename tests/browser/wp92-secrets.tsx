@@ -136,6 +136,19 @@ installFakeTauri("secrets-fixture", (command, args) => {
   }
 });
 
+// `?dev` makes this page a dev copy, so the page's own line about the dev keychain can be seen.
+if (new URLSearchParams(location.search).has("dev")) {
+  (globalThis as Record<string, unknown>).__MONOCODE_APP__ = {
+    kind: "dev",
+    identifier: "com.ash.monocode-hub.dev.fixture",
+    slot: "fixture",
+    version: "0.0.0",
+    stamp: { sha: "0000000", branch: "fixture", dirty: false, builtAt: "" },
+    policy: {},
+    schemaVersion: 0,
+  };
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <div className="min-h-screen bg-[#1b1b1d] p-6 text-content">

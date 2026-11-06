@@ -5,6 +5,8 @@
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 
+import { isDevCopy } from "../../../app/model/appIdentity";
+
 import {
   dayOf,
   deleteSecret,
@@ -94,6 +96,9 @@ export function SecretsPage({ project }: { project?: string }) {
       <p className={PLAIN}>
         The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.
       </p>
+      {isDevCopy() ? (
+        <p className={PLAIN}>This is a dev copy, so this list holds the dev keychain's keys, not your daily app's.</p>
+      ) : null}
       {error ? (
         <p role="alert" className="text-[12px] text-red-400">
           {error}

@@ -67,6 +67,13 @@ test("the Secrets page lists a key with its last four, reveals on a tap, renames
   await expect(page.getByText("resend-key", { exact: true })).toHaveCount(0);
 });
 
+test("a dev copy's Secrets page says its list is the dev keychain's", async ({ page }) => {
+  await page.goto("/tests/browser/wp92-secrets.html?dev");
+  await expect(
+    page.getByText("This is a dev copy, so this list holds the dev keychain's keys, not your daily app's."),
+  ).toBeVisible();
+});
+
 test("the chat's key ask saves the value once and it is nowhere on the page afterwards", async ({ page }, testInfo) => {
   await page.goto("/tests/browser/wp92-secrets.html");
   await expect(page.getByText("This chat needs a key from you")).toBeVisible();
