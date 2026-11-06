@@ -1893,6 +1893,25 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     );
 }
 
+/// Bind `port` once whoever held it has let go, waiting up to three seconds for
+/// a listener that closes from another thread. Fails with the last error if it
+/// never frees, which is the real "still holds" failure.
+fn bind_when_released(port: u16, who: &str) -> TcpListener {
+    let mut waited = Duration::ZERO;
+    loop {
+        match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
+            Ok(listener) => return listener,
+            Err(err) if waited >= Duration::from_secs(3) => {
+                panic!("{who} still holds {port}: {err}")
+            }
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(25));
+                waited += Duration::from_millis(25);
+            }
+        }
+    }
+}
+
 /// Two copies of the door's restart-and-toggle body, run at the same moment
 /// the way two `cargo test` runs on one machine run it. Each copy asks the OS
 /// for its own port and cannot be handed the other's, so both keep their port
@@ -1929,9 +1948,9 @@ fn two_copies_of_the_door_body_run_at_the_same_time() {
                 assert!(problem_of(&restarted).problem.is_none(), "copy {copy}");
                 drop(restarted);
 
-                let released = TcpListener::bind((Ipv4Addr::LOCALHOST, port))
-                    .unwrap_or_else(|err| panic!("copy {copy} still holds {port}: {err}"));
-                drop(released);
+                // Dropping a door lets its listener go from its own thread, so the
+                // port frees a moment later, not at the drop. Wait for that moment.
+                drop(bind_when_released(port, &format!("copy {copy}")));
                 port
             })
         })

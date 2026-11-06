@@ -3,7 +3,7 @@
 //! The format is general on purpose: any repository can carry one, and its actions become one-click buttons for Ash
 //! and `actions.*` calls for a Lead (src/features/agent-app/model/agentApp.ts).
 //!
-//! Trust (docs/T3-HARVEST.md, "Project file"): the file is read only from the project's MAIN checkout, never from a
+//! Trust (the project file design notes): the file is read only from the project's MAIN checkout, never from a
 //! worktree, so a branch from elsewhere can't add commands. Nothing in it runs until Ash imports it once, in Settings >
 //! Worktrees. The import stores the exact text he reviewed, and every run uses that stored copy: a later edit, or
 //! another branch checked out in the main checkout, changes nothing until he imports again.
