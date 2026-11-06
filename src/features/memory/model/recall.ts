@@ -2,7 +2,7 @@
 
 import { AGENT_ZERO_MEMORIES } from "../vendor/agentZeroMemories";
 import { confidence, ftsMatch, type Belief } from "../vendor/mercuryBelief";
-import { mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem } from "./doc";
+import { engineName, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem } from "./doc";
 
 export const RECALL_OPEN = "<untrusted_memory>";
 export const RECALL_CLOSE = "</untrusted_memory>";
@@ -19,8 +19,20 @@ function beliefOf(item: MemoryItem): Belief {
   };
 }
 
+/** "written by Codex", or nothing when the reader is that same engine or the writer is not known. */
+function writtenBy(item: MemoryItem, readingEngine: string | undefined): string {
+  if (!readingEngine || !item.by || item.by === readingEngine) return "";
+  return ` (written by ${engineName(item.by)})`;
+}
+
 /** Confirmed and edited facts only. An unreviewed fact is visible on the screen and nowhere else. */
-export function recallBlock(doc: MemoryDoc, mateId: string, query: string, now: number): string | undefined {
+export function recallBlock(
+  doc: MemoryDoc,
+  mateId: string,
+  query: string,
+  now: number,
+  readingEngine?: string,
+): string | undefined {
   const match = ftsMatch(query);
   if (!match) return undefined;
   const terms = match.split(" OR ").map((term) => term.slice(1, -1));
@@ -42,7 +54,7 @@ export function recallBlock(doc: MemoryDoc, mateId: string, query: string, now: 
   if (!ranked.length) return undefined;
   const lines = ranked.slice(0, 8).map((row) => {
     const text = row.item.text.split(RECALL_CLOSE).join("").split(RECALL_OPEN).join("");
-    return `- ${new Date(row.item.updatedAt).toISOString()} ${text}`;
+    return `- ${new Date(row.item.updatedAt).toISOString()} ${text}${writtenBy(row.item, readingEngine)}`;
   });
   const body = AGENT_ZERO_MEMORIES.replace("{{memories}}", lines.join("\n"));
   return `${RECALL_OPEN}\n${body}\n${RECALL_CLOSE}`;
@@ -55,8 +67,10 @@ export function recallIntoTurn(input: {
   doc: MemoryDoc;
   mateId: string;
   now?: number;
+  /** WP-100: the engine about to read this turn; a fact another engine wrote says so. */
+  readingEngine?: string;
 }): { system: string; message: string } {
-  const block = recallBlock(input.doc, input.mateId, input.message, input.now ?? 0);
+  const block = recallBlock(input.doc, input.mateId, input.message, input.now ?? 0, input.readingEngine);
   if (!block) return { system: input.system, message: input.message };
   return { system: input.system, message: `${input.message}\n\n${block}` };
 }

@@ -9,6 +9,8 @@ export async function recalledFence(
   mateId: string | undefined,
   message: string,
   wide?: { everyMate?: boolean; mateIds?: readonly string[] },
+  /** WP-100: the engine reading this turn, so a fact another engine wrote says so. */
+  readingEngine?: string,
 ): Promise<string | undefined> {
   if (!mateId) return undefined;
   try {
@@ -18,7 +20,7 @@ export async function recalledFence(
       ? [...new Set([mateId, ...(wide.mateIds ?? []).filter((id) => typeof id === "string" && id)])]
       : [mateId];
     const blocks = mates.flatMap((id) => {
-      const next = recallIntoTurn({ system: "", message, doc, mateId: id });
+      const next = recallIntoTurn({ system: "", message, doc, mateId: id, ...(readingEngine ? { readingEngine } : {}) });
       if (next.message === message) return [];
       const extra = next.message.slice(message.length).replace(/^\n\n/, "");
       return extra ? [extra] : [];

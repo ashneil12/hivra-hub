@@ -1,7 +1,7 @@
 // WP-51: the memory screen. It takes ports so a browser test can drive it without Tauri.
 
 import { useEffect, useRef, useState } from "react";
-import { mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
+import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
 import {
   acceptImport,
   acceptItem,
@@ -134,6 +134,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
             <p>{item.text}</p>
             <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : stateLabel(item.state)}</p>
             <p data-source>{item.source.label}</p>
+            {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">
                 <textarea aria-label="Memory text" value={editing.text} onChange={(event) => setEditing({ id: item.id, text: event.target.value })} />

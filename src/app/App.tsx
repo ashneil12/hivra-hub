@@ -9577,7 +9577,8 @@ function Workspace({
             }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
+            // WP-100: a fact an engine other than this chat's wrote is labelled with the engine that did.
+            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide, current.harness);
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);

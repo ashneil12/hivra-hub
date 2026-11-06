@@ -93,7 +93,16 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
   useEffect(() => {
     if (!on) return;
     for (const feed of curatorFeeds(sessions, fedLast.current, mateForSession)) {
-      const ctx: CuratorContext = { mateId: feed.mateId, turnId: feed.turnId, user: feed.user, assistant: feed.assistant, now: Date.now() };
+      // WP-100: the engine whose chat this turn ran in, so a memory one engine wrote is labelled for another.
+      const engine = sessions.find((session) => session.id === feed.sessionId)?.harness;
+      const ctx: CuratorContext = {
+        mateId: feed.mateId,
+        turnId: feed.turnId,
+        user: feed.user,
+        assistant: feed.assistant,
+        now: Date.now(),
+        ...(engine ? { by: engine } : {}),
+      };
       void (async () => {
         let loaded: MemoryDoc;
         try {

@@ -135,6 +135,27 @@ describe("curateTurn", () => {
     expect(twice.doc.items).toHaveLength(1);
   });
 
+  it("writes down which engine wrote the memory, and leaves it off when the turn had none", async () => {
+    const withEngine = await curateTurn(
+      freshDoc(),
+      ctx({ by: "codex" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(withEngine.doc.items[0].by).toBe("codex");
+    const without = await curateTurn(
+      freshDoc(),
+      ctx({ turnId: "turn-2" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(without.doc.items[0].by).toBeUndefined();
+    const nonsense = await curateTurn(
+      freshDoc(),
+      ctx({ turnId: "turn-3", by: "Codex!" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(nonsense.doc.items[0].by).toBeUndefined();
+  });
+
   it("applies a late reply onto the doc as it is now, still only once", () => {
     const answer = {
       kind: "reply" as const,

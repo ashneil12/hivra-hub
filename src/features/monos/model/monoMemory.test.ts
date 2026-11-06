@@ -28,6 +28,46 @@ it("writes one dated line per fact, with an optional end date", () => {
   expect(() => memoryEntry("x".repeat(1001), "2026-10-04")).toThrow("under");
 });
 
+it("signs a line with the engine that wrote it, and reads old lines without one", () => {
+  expect(memoryEntry("beta is open", "2026-10-04", undefined, "codex")).toBe(
+    "- 2026-10-04 · beta is open · by codex",
+  );
+  expect(memoryEntry("beta is open", "2026-10-04", "2026-11-01", "claude")).toBe(
+    "- 2026-10-04 · beta is open · until 2026-11-01 · by claude",
+  );
+  // A bad engine id is not written; the fact still is.
+  expect(memoryEntry("beta is open", "2026-10-04", undefined, "Codex!")).toBe(
+    "- 2026-10-04 · beta is open",
+  );
+  const text = [
+    "- 2026-10-01 · uses pnpm · by codex",
+    "- 2026-10-01 · api on port 3000",
+    "- ~~2026-09-01 · old · by claude~~ · superseded 2026-10-02",
+    "- 2026-10-03 · beta · until 2026-11-01 · by grok",
+  ].join("\n");
+  expect(memoryLines(text)).toEqual([
+    { index: 0, text: "uses pnpm", struck: false, date: "2026-10-01", by: "codex" },
+    { index: 1, text: "api on port 3000", struck: false, date: "2026-10-01" },
+    { index: 2, text: "old", struck: true, date: "2026-09-01", by: "claude" },
+    { index: 3, text: "beta", struck: false, date: "2026-10-03", until: "2026-11-01", by: "grok" },
+  ]);
+  // The same fact from two engines is one fact.
+  const once = addMemoryEntry("", "- 2026-10-01 · uses pnpm · by codex");
+  expect(addMemoryEntry(once.text, "- 2026-10-04 · uses pnpm · by claude").added).toBe(false);
+  // A by suffix after until does not stop an expired line being archived first.
+  const filler = Array.from({ length: MEMORY_MAX_LINES }, (_, i) => `- 2026-09-01 · fact ${i}`);
+  const expired = fitMemoryBudget(
+    ["- 2026-08-02 · beta · until 2026-09-30 · by codex", ...filler].join("\n"),
+    undefined,
+    "2026-10-04",
+  );
+  expect(expired.moved[0]).toBe("- 2026-08-02 · beta · until 2026-09-30 · by codex");
+  // Rewording keeps the writer.
+  expect(withLineEdited("- 2026-10-01 · beta · until 2026-11-01 · by codex\n", 0, "beta  is closed", "2026-10-04")).toBe(
+    "- 2026-10-04 · beta is closed · until 2026-11-01 · by codex\n",
+  );
+});
+
 it("keeps credentials out of memory", () => {
   const text = redactSecrets(
     "deploy key ghp_abcdefghijklmnopqrstuvwxyz0123 and password: hunter22",

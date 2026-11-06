@@ -22,6 +22,8 @@ export type MemoryItem = {
   skill?: MemorySkill;
   targetId?: string;
   state: MemoryState;
+  /** WP-100: the engine whose conversation wrote this (claude, codex, …). Absent on old data. */
+  by?: string;
   source: MemorySource;
   evidence: string;
   support: number;
@@ -41,6 +43,28 @@ export type MemoryDoc = {
 const ITEM_ID = /^mem-[a-f0-9]{16}$/;
 const MATE_ID = /^[a-z0-9][a-z0-9-]{0,79}$/;
 const IMPORT_ID = /^[a-z0-9-]{1,80}$/;
+/** An engine id: a harness name, lowercase, like `claude` or `codex`. */
+export const ENGINE_ID = /^[a-z][a-z0-9-]{0,31}$/;
+
+/** Plain names for engines a person might read, keyed by harness id (session.ts HARNESS_LABEL's ids). */
+const ENGINE_NAME: Record<string, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+  grok: "Grok",
+  opencode: "OpenCode",
+  pi: "Pi",
+  omp: "OMP",
+  fx: "FX",
+  hermes: "Hermes",
+  antigravity: "Antigravity",
+  devin: "Devin",
+};
+
+/** The name a person reads for an engine, or the id itself when it is one this screen does not know. */
+export function engineName(id: string): string {
+  return ENGINE_NAME[id] ?? id;
+}
 
 export function emptyDoc(revision = 0): MemoryDoc {
   return { revision, generation: 0, items: [], doneTurns: [], imports: {} };
@@ -103,12 +127,23 @@ function isItem(value: unknown): value is MemoryItem {
   return true;
 }
 
+/**
+ * An item as it loads: an engine id that cannot be read is dropped and the memory itself is kept, because disk is
+ * untrusted and a wrong `by` is no reason to forget a fact.
+ */
+function loadedItem(value: unknown): MemoryItem | undefined {
+  if (!isItem(value)) return undefined;
+  if (value.by === undefined || (typeof value.by === "string" && ENGINE_ID.test(value.by))) return value;
+  const { by: _by, ...rest } = value;
+  return rest;
+}
+
 /** Anything that is not a memory doc, or a doc with secrets in it, comes back empty of those parts. */
 export function parseDoc(value: unknown): MemoryDoc {
   if (!value || typeof value !== "object") return emptyDoc();
   const raw = value as Partial<MemoryDoc>;
   const seen = new Set<string>();
-  const items = (Array.isArray(raw.items) ? raw.items : []).filter(isItem).filter((item) => {
+  const items = (Array.isArray(raw.items) ? raw.items : []).flatMap((raw) => loadedItem(raw) ?? []).filter((item) => {
     if (seen.has(item.id)) return false;
     seen.add(item.id);
     return true;

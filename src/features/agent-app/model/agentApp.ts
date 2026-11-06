@@ -1111,7 +1111,7 @@ async function handleMemory(
     }
     case "memory.add": {
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
         return { text: next.text, result: next.added };
@@ -1130,7 +1130,7 @@ async function handleMemory(
     case "memory.replace": {
       const find = requiredString(input.find, "find", 2000);
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => ({
         text: supersedeMemoryEntry(text, find, entry, date),
         result: undefined,
