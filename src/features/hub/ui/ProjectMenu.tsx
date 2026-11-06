@@ -20,6 +20,7 @@ import {
   DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits,
 } from "../../monos/model/workerPool";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
+import { plainErrorText } from "../../../shared/text/plainErrorText";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -143,9 +144,9 @@ function IconChooser({ project, anchor, onClose }: { project: HubProject; anchor
   const pickShape = (shape: ProjectIconShape) => {
     setBusy(shape);
     setProblem(undefined);
-    void setProjectShape(project, shape).then(onClose, (e: Error) => {
+    void setProjectShape(project, shape).then(onClose, (e: unknown) => {
       setBusy(undefined);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -214,9 +215,9 @@ function RenameProject({ project, anchor, onClose }: { project: HubProject; anch
     if (!name.trim() || name.trim() === project.name) return onClose();
     setBusy(true);
     setProblem(undefined);
-    void renameProjectEverywhere(project, name).then(onClose, (e: Error) => {
+    void renameProjectEverywhere(project, name).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -292,7 +293,7 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
   useEffect(() => {
     if (!live) return;
     let on = true;
-    archiveCheck(project.id).then((c) => on && setCheck(c), (e: Error) => on && setProblem(e.message));
+    archiveCheck(project.id).then((c) => on && setCheck(c), (e: unknown) => on && setProblem(plainErrorText(e)));
     return () => { on = false; };
   }, [live, project.id]);
   const typedOk = typed.trim().toLowerCase() === project.name.trim().toLowerCase();
@@ -301,9 +302,9 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
     setBusy(true);
     setProblem(undefined);
     const hide = live ? { hide: () => archiveProject(project.id, true), unhide: () => archiveProject(project.id, false) } : undefined;
-    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: Error) => {
+    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (

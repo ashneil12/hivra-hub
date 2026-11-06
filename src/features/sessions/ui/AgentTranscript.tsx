@@ -21,6 +21,7 @@ import {
 import { appNoteLine } from "../model/appNote";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { plainErrorText } from "../../../shared/text/plainErrorText";
 import { engineLabelOnOwnLine } from "../../../shared/text/engineLabelLine";
 import { withoutDoubledAllClear } from "../../../shared/text/allClear";
 import { withoutToolRuleTalk } from "../../../shared/text/toolRuleTalk";
@@ -2408,7 +2409,7 @@ function CopyTurnButton({
             },
             (error: unknown) => {
               setPending(false);
-              setError(error instanceof Error ? error.message : String(error));
+              setError(plainErrorText(error));
             },
           );
         }}
@@ -2467,7 +2468,7 @@ function SaveNoteButton({
             if (timer.current != null) window.clearTimeout(timer.current);
             timer.current = window.setTimeout(() => setSaved(false), 2000);
           } catch (error) {
-            setError(error instanceof Error ? error.message : String(error));
+            setError(plainErrorText(error));
           } finally {
             setPending(false);
           }

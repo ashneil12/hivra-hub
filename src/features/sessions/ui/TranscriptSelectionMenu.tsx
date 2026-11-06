@@ -1,4 +1,5 @@
 import { FilePlusCorner, MessageSquarePlus } from "../../../shared/ui/icons";
+import { plainErrorText } from "../../../shared/text/plainErrorText";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import { type TranscriptSelection } from "../model/transcriptSelection";
@@ -107,7 +108,7 @@ function SelectionAction({
             window.getSelection()?.removeAllRanges();
             onDismiss();
           } catch (error) {
-            setError(error instanceof Error ? error.message : String(error));
+            setError(plainErrorText(error));
           } finally {
             setPending(false);
           }
