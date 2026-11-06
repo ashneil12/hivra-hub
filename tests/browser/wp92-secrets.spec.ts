@@ -67,6 +67,22 @@ test("the Secrets page lists a key with its last four, reveals on a tap, renames
   await expect(page.getByText("resend-key", { exact: true })).toHaveCount(0);
 });
 
+test("the request card works while mounted under StrictMode, as the app mounts it", async ({ page }) => {
+  await page.goto("/tests/browser/wp92-secrets.html");
+  const card = page
+    .locator("section[aria-label='A key is needed']")
+    .filter({ has: page.locator("#secret-label-req-1") });
+  await expect(card).toBeVisible();
+  // No "no longer open" line from a double mount, and the field is usable.
+  await expect(page.getByText("That card is no longer open.")).toHaveCount(0);
+  const field = page.locator("#secret-value-req-1");
+  await field.fill(SAVED);
+  await card.getByRole("button", { name: "Save", exact: true }).click();
+  // The list shows the saved key's last four only; the value is nowhere on the page.
+  await expect(page.getByText(`ends ${SAVED.slice(-4)}`)).toBeVisible();
+  expect(await page.locator("body").innerText()).not.toContain(SAVED);
+});
+
 test("a dev copy's Secrets page says its list is the dev keychain's", async ({ page }) => {
   await page.goto("/tests/browser/wp92-secrets.html?dev");
   await expect(
@@ -81,7 +97,9 @@ test("the chat's key ask saves the value once and it is nowhere on the page afte
   // Not a text box that would become a chat message.
   await expect(page.locator("section[aria-label='A key is needed'] textarea")).toHaveCount(0);
 
-  const card = page.locator("section[aria-label='A key is needed']");
+  const card = page
+    .locator("section[aria-label='A key is needed']")
+    .filter({ has: page.locator("#secret-key-ask-value") });
   await card.locator("#secret-key-ask-value").fill(SAVED);
   await card.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByText("Saved in your Mac's keychain.")).toBeVisible();

@@ -5,6 +5,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { SecretsPage } from "../../src/features/secrets/ui/SecretsPage";
 import { SecretKeyAsk } from "../../src/features/secrets/ui/SecretKeyAsk";
+import { SecretRequestCard } from "../../src/features/secrets/ui/SecretRequestCard";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
 
@@ -73,13 +74,62 @@ const last4 = (value: unknown) => {
   return text.length >= 12 ? text.slice(-4) : null;
 };
 
-installFakeTauri("secrets-fixture", (command, args) => {
+const pendingRequest = {
+  id: "req-1",
+  chat: "chat-1",
+  mono: "Tally",
+  project: null,
+  scope: "global",
+  name: "stripe-api-key",
+  why: "to list the customers",
+  state: "open",
+  createdAt: Date.UTC(2026, 10, 5),
+  updatedAt: Date.UTC(2026, 10, 5),
+};
+let pendingSave = false;
+let beginCalls = 0;
+
+const tauri = installFakeTauri("secrets-fixture", (command, args) => {
   const cmd = command.replace("plugin:hub|", "");
   switch (cmd) {
+    case "secrets_begin_save":
+      beginCalls += 1;
+      if (beginCalls > 1) throw new Error("That key was already saved.");
+      pendingSave = true;
+      return { request: { ...pendingRequest, state: "saving" }, token: "tok-fixture" };
+    case "secrets_save": {
+      // Saving a request for a name that already has a row replaces that row's value, as the real store does.
+      const existing = rows.find((row) => row.scope === "global" && row.name === pendingRequest.name);
+      const row: FixtureRow = existing ?? {
+        scope: "global",
+        name: pendingRequest.name,
+        label: pendingRequest.name,
+        last4: null,
+        createdAt: Date.UTC(2026, 10, 5),
+        updatedAt: Date.UTC(2026, 10, 5),
+        lastUsedAt: null,
+        version: 0,
+        approved: [],
+        executables: [],
+        envFiles: [],
+        needsValue: false,
+      };
+      row.label = String(args.label ?? row.label);
+      row.last4 = last4(args.value);
+      row.version += 1;
+      if (!existing) rows.unshift(row);
+      pendingSave = false;
+      // The store tells every window its list changed; the page reloads on it.
+      queueMicrotask(() => tauri.emit("hivra:secrets-changed", null));
+      return { ...row };
+    }
+    case "secrets_decline":
+      pendingSave = false;
+      return null;
     case "secrets_list":
       return rows.map((row) => ({ ...row }));
     case "secrets_requests":
-      return [];
+      return pendingSave ? [{ ...pendingRequest, state: "saving" }] : [];
     case "secrets_save_new": {
       const row: FixtureRow = {
         scope: String(args.scope),
@@ -160,6 +210,7 @@ createRoot(document.getElementById("root")!).render(
         <section aria-label="Chat">
           <h2 className="mb-3 text-[15px] text-content">A chat</h2>
           <SecretKeyAsk chat={chat} />
+          <SecretRequestCard request={pendingRequest} onDone={() => {}} />
         </section>
       </div>
     </div>

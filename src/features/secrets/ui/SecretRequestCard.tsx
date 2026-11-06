@@ -13,6 +13,24 @@ export const SECRETS_CHANGED = "hivra:secrets-changed";
 const SAVED = "Saved in your Mac's keychain";
 const FAILED = "That key wasn't saved. Try again on a fresh card.";
 
+// One open -> saving claim per request, shared by every mount of its card. React StrictMode (main.tsx) mounts a card
+// twice, so the second effect run must reuse the first run's ticket rather than ask the store again and be refused.
+// A settled claim is dropped, so a card that really closed elsewhere can try again on a later mount.
+const claims = new Map<string, Promise<string>>();
+
+function claimSave(id: string): Promise<string> {
+  const held = claims.get(id);
+  if (held) return held;
+  const claim = beginSave(id)
+    .then((ticket) => ticket.token)
+    .catch((error: unknown) => {
+      if (claims.get(id) === claim) claims.delete(id);
+      throw error;
+    });
+  claims.set(id, claim);
+  return claim;
+}
+
 export function SecretRequestCard({
   request,
   onDone,
@@ -27,12 +45,13 @@ export function SecretRequestCard({
   const input = useRef<HTMLInputElement>(null);
   const token = useRef<string | null>(null);
 
-  // Take the open -> saving transition when the card opens: two windows can't both save the same request.
+  // Take the open -> saving transition when the card opens: two windows can't both save the same request. A second
+  // mount (StrictMode) shares the first mount's claim instead of being refused.
   useEffect(() => {
     let live = true;
-    beginSave(request.id)
+    claimSave(request.id)
       .then((ticket) => {
-        if (live) token.current = ticket.token;
+        if (live) token.current = ticket;
       })
       .catch(() => {
         if (live) setError("That card is no longer open.");
@@ -55,6 +74,7 @@ export function SecretRequestCard({
     setError(null);
     try {
       await saveRequest(request.id, token.current, label.trim() || null, value);
+      claims.delete(request.id);
       input.current.value = "";
       onDone();
     } catch {
@@ -70,6 +90,7 @@ export function SecretRequestCard({
     try {
       await declineRequest(request.id, token.current);
     } finally {
+      claims.delete(request.id);
       onDone();
     }
   };

@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, createElement } from "react";
+import { act, createElement, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -29,12 +29,13 @@ const request = {
   updatedAt: 1,
 };
 
-async function render() {
+async function render(strict = false) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
+  const card = createElement(SecretRequestCard, { request, onDone: () => {} });
   await act(async () => {
-    root.render(createElement(SecretRequestCard, { request, onDone: () => {} }));
+    root.render(strict ? createElement(StrictMode, null, card) : card);
   });
   return { container, root };
 }
@@ -42,6 +43,7 @@ async function render() {
 beforeEach(() => {
   document.body.innerHTML = "";
   beginSave.mockClear();
+  beginSave.mockImplementation(async () => ({ request: {}, token: "tok-1" }));
   saveRequest.mockClear();
 });
 
@@ -62,6 +64,33 @@ it("sends the value once and clears the field", async () => {
   expect(container.textContent).not.toContain(VALUE);
   expect(localStorage.length).toBe(0);
   expect(sessionStorage.length).toBe(0);
+});
+
+it("works under StrictMode: the second mount does not throw away the first ticket", async () => {
+  // The app mounts the card under StrictMode, which runs the open -> saving effect twice. One claim serves both mounts,
+  // so the store is asked once, the first ticket survives, and the card stays usable.
+  let calls = 0;
+  beginSave.mockImplementation(async () => {
+    calls += 1;
+    if (calls > 1) throw new Error("That key was already saved.");
+    return { request: {}, token: "tok-strict" };
+  });
+  const { container } = await render(true);
+  // One claim for the two mounts: the card never asks the store twice.
+  expect(calls).toBe(1);
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+  await act(async () => {
+    input.value = VALUE;
+  });
+  const save = [...container.querySelectorAll("button")].find((button) => button.textContent === "Save")!;
+  await act(async () => {
+    save.click();
+  });
+  expect(saveRequest).toHaveBeenCalledTimes(1);
+  expect(saveRequest.mock.calls[0]).toEqual(["req-1", "tok-strict", "stripe-api-key", VALUE]);
+  expect(container.textContent).not.toContain(VALUE);
+  expect(container.querySelector('[role="alert"]')).toBeNull();
 });
 
 it("a failed save shows one sentence, no value, and clears the field for a fresh card", async () => {
