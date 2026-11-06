@@ -72,7 +72,8 @@ export function useProjectDraftVersion(): number {
   );
 }
 
-/** The draft's tile letter. */
+/** The draft's tile letter. WP-94: the strip now draws the same monogram a project with no icon gets, so nothing calls
+ * this; kept rather than deleted because it is part of this module's small public surface. */
 export function draftInitial(name: string): string {
   return name.trim().slice(0, 1).toUpperCase();
 }

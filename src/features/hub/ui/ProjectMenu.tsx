@@ -11,6 +11,7 @@ import {
   isImageFileName, moveProject, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
   useProjectPrefsVersion, type ProjectIconChoice,
 } from "../model/projectPrefs";
+import { projectMonogram, projectMonogramClasses } from "../model/projectMonogram";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES } from "./projectShapeIcons";
@@ -19,6 +20,7 @@ import {
   DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits,
 } from "../../monos/model/workerPool";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
+import { plainErrorText } from "../../../shared/text/plainErrorText";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -32,10 +34,10 @@ export const PROJECT_ICONS: Record<string, IconComponent> = {
 };
 export const PROJECT_EMOJI = ["🚀", "🎮", "🛠️", "📦", "🧪", "🌱", "🔥", "⭐", "🎨", "📈", "🧠", "💬", "🏠", "🍀", "🐝", "🌊"];
 
-/** First letter, light, on a grey glass square: the default for every project. */
 /**
  * A project's tile letters: its first letter, or its first two ("Hi", "Ha") when another project on the hub shares
- * that first letter. `others` is every project shown (it may include this one).
+ * that first letter. `others` is every project shown (it may include this one). WP-94: no longer drawn, because the
+ * monogram (projectMonogram.ts) says more about a nameless project; kept for any caller that still asks for it.
  */
 export function letterOf(project: Pick<HubProject, "id" | "name" | "shortName">, others: readonly Pick<HubProject, "id" | "name" | "shortName">[] = []): string {
   const chars = (p: Pick<HubProject, "name" | "shortName">) => [...(p.shortName || p.name).trim()];
@@ -43,14 +45,6 @@ export function letterOf(project: Pick<HubProject, "id" | "name" | "shortName">,
   const first = (own[0] ?? "?").toUpperCase();
   const shared = others.some((o) => o.id !== project.id && (chars(o)[0] ?? "").toUpperCase() === first);
   return shared && own[1] ? first + own[1].toLowerCase() : first;
-}
-
-function safeProjects(): HubProject[] {
-  try {
-    return hubData().listProjects();
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -68,17 +62,25 @@ export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size
   }
   if (choice?.kind === "image")
     return <img data-project-glyph="image" alt="" src={choice.src} style={{ width: size + 4, height: size + 4 }} className="rounded-[6px] object-cover" />;
-  const Shape = SHAPES[project.iconShape];
+  // WP-94: a project with no icon of its own gets two letters from its name on a tile whose colour that name always
+  // picks (projectMonogram.ts). "folder" is the shape every project is given when none was chosen, so it reads as
+  // "no icon" rather than as an identity: a grey folder says nothing about which project it is.
+  const Shape = project.iconShape === "folder" ? undefined : SHAPES[project.iconShape];
   if (Shape) return <Shape data-project-glyph="shape" data-project-shape={project.iconShape} aria-hidden style={{ width: size, height: size }} strokeWidth={1.75} />;
-  const letters = letterOf(project, safeProjects());
+  return <ProjectMonogramTile name={project.name} size={size} />;
+}
+
+/** A project's letters on their own colour, as T3 Code draws a project with no icon. */
+export function ProjectMonogramTile({ name, size }: { name: string; size: number }) {
   return (
     <span
-      data-project-glyph="letter"
+      data-project-glyph="monogram"
+      data-project-monogram={projectMonogram(name)}
       aria-hidden
-      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * (letters.length > 1 ? 0.56 : 0.72)) }}
-      className="grid place-items-center rounded-[7px] bg-content/10 font-medium leading-none text-content/85 ring-1 ring-inset ring-content/10"
+      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * 0.56) }}
+      className={`grid place-items-center rounded-[7px] font-medium leading-none ring-1 ring-inset ring-content/10 ${projectMonogramClasses(name)}`}
     >
-      {letters}
+      {projectMonogram(name)}
     </span>
   );
 }
@@ -142,9 +144,9 @@ function IconChooser({ project, anchor, onClose }: { project: HubProject; anchor
   const pickShape = (shape: ProjectIconShape) => {
     setBusy(shape);
     setProblem(undefined);
-    void setProjectShape(project, shape).then(onClose, (e: Error) => {
+    void setProjectShape(project, shape).then(onClose, (e: unknown) => {
       setBusy(undefined);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -213,9 +215,9 @@ function RenameProject({ project, anchor, onClose }: { project: HubProject; anch
     if (!name.trim() || name.trim() === project.name) return onClose();
     setBusy(true);
     setProblem(undefined);
-    void renameProjectEverywhere(project, name).then(onClose, (e: Error) => {
+    void renameProjectEverywhere(project, name).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -291,7 +293,7 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
   useEffect(() => {
     if (!live) return;
     let on = true;
-    archiveCheck(project.id).then((c) => on && setCheck(c), (e: Error) => on && setProblem(e.message));
+    archiveCheck(project.id).then((c) => on && setCheck(c), (e: unknown) => on && setProblem(plainErrorText(e)));
     return () => { on = false; };
   }, [live, project.id]);
   const typedOk = typed.trim().toLowerCase() === project.name.trim().toLowerCase();
@@ -300,9 +302,9 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
     setBusy(true);
     setProblem(undefined);
     const hide = live ? { hide: () => archiveProject(project.id, true), unhide: () => archiveProject(project.id, false) } : undefined;
-    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: Error) => {
+    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
