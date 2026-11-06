@@ -151,11 +151,23 @@ pub struct Scrubbed {
 }
 
 /// Cap, mask, run the shared scrubber, then rescan. A surviving needle drops the whole stream.
+///
+/// The order is mask first, cut second: a value straddling the cap would otherwise leave its first half in the
+/// returned text.
 pub fn stream(raw: &[u8], needles: &[String]) -> Scrubbed {
-    let truncated = raw.len() > STREAM_CAP;
-    let kept = if truncated { &raw[..STREAM_CAP] } else { raw };
-    let text = String::from_utf8_lossy(kept);
-    let mut out = mask(&text, needles);
+    let text = String::from_utf8_lossy(raw);
+    let masked = mask(&text, needles);
+    // Cut on the cap only after masking. A cut inside a multi-byte character takes the whole character with it.
+    let truncated = masked.len() > STREAM_CAP;
+    let mut out = if truncated {
+        let mut end = STREAM_CAP;
+        while end > 0 && !masked.is_char_boundary(end) {
+            end -= 1;
+        }
+        masked[..end].to_string()
+    } else {
+        masked
+    };
     if truncated && !out.ends_with(CUT_MARKER) {
         out.push('\n');
         out.push_str(CUT_MARKER);
@@ -277,6 +289,36 @@ mod tests {
         list.push(MARKER.to_string());
         let out = stream(b"hello [secret removed] world", &list);
         assert_eq!(out.text, DROPPED);
+    }
+
+    #[test]
+    fn a_value_straddling_the_cap_is_never_half_kept() {
+        // Mask first, then cut: a value straddling the cap would otherwise leave its first half in the stream.
+        let value = "sk_live_straddle_51NxAbCdEfGhIjKl";
+        let list = needles(value);
+        for start in [
+            STREAM_CAP - 1,
+            STREAM_CAP - value.len() / 2,
+            STREAM_CAP - value.len(),
+        ] {
+            let mut raw = vec![b'x'; STREAM_CAP + value.len() + 10];
+            raw[start..start + value.len()].copy_from_slice(value.as_bytes());
+            let out = stream(&raw, &list);
+            assert!(!out.text.contains(&value[..4]), "{start}: {out:?}");
+            assert!(out.truncated, "{start}");
+        }
+        // Exactly at the cap: the whole value sits inside, and is masked even though nothing is cut.
+        let mut raw = vec![b'x'; STREAM_CAP];
+        let at = STREAM_CAP - value.len();
+        raw[at..].copy_from_slice(value.as_bytes());
+        let out = stream(&raw, &list);
+        assert!(!out.text.contains(value), "{out:?}");
+        assert!(!out.truncated);
+        assert!(out.text.contains(MARKER));
+        // An ordinary long line still truncates and says so.
+        let out = stream(&vec![b'y'; STREAM_CAP + 5], &list);
+        assert!(out.truncated);
+        assert!(out.text.ends_with(CUT_MARKER));
     }
 
     #[test]
