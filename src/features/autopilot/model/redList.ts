@@ -107,7 +107,11 @@ const PATTERNS: Record<RedCategory, readonly RegExp[]> = {
     /\bcredentials?\b/,
     /\b(access|auth|bearer|refresh|session|github|gh|npm|pat|oauth|personal access) tokens?\b/,
     /\bssh[- ]?keys?\b|\bid_(rsa|ed25519)\b|\.pem\b/,
-    /\bkeychain\b|\bsecurity\s+(find|add|delete)-(generic|internet)-password\b/,
+    /\bkeychain(s)?\b|\bsecurity\s+(find|add|delete)-(generic|internet)-password\b/,
+    // WP-101: a file that holds a login, whatever command reads it (cat, find, stat, file, du, ls).
+    /\.netrc\b|\.pgpass\b|\.pypirc\b|\.npmrc\b/,
+    /\.gnupg\b|\.ssh\b|\.docker[\/]config\.json|\.kube[\/]config\b|\.aws[\/]credentials\b/,
+    /(^|[\s/])\.config[\/]gh\b|gh[\/]hosts\.yml\b/,
     /\bseed phrase\b|\bmnemonic\b|\bwallet (key|seed)\b/,
     /(^|[\s/'"`])\.env(\.[a-z]+)?\b/,
     /\b(2fa|mfa|otp|one[- ]time (code|password)|recovery codes?)\b/,
