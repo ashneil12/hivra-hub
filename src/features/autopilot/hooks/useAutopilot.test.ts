@@ -32,13 +32,13 @@ let wired: Record<string, string[]> = {};
 const wiredServers = async (_cwd: string, sessionId: string) => new Set(wired[sessionId] ?? []);
 /** Folders that are links to elsewhere, as the app resolves them (fs.rs git_locate_files); outside git: null. */
 let links: Record<string, string> = {};
-const OUTSIDE_GIT = "/Users/ash/Scratch";
+const OUTSIDE_GIT = "/home/user/Scratch";
 const locate = async (paths: string[]) =>
   paths.map((path) => {
     if (path.startsWith(`${OUTSIDE_GIT}/`)) return null;
     const link = Object.keys(links).find((from) => path.startsWith(`${from}/`));
     const real = link ? `${links[link]}${path.slice(link.length)}` : path;
-    return { root: "/Users/ash", relative: real.slice("/Users/ash/".length) };
+    return { root: "/home/user", relative: real.slice("/home/user/".length) };
   });
 let setAll: (change: (sessions: Session[]) => Session[]) => void = () => undefined;
 
@@ -107,8 +107,8 @@ beforeEach(async () => {
   setAutopilotBackend(backend);
   setHubDataSource({
     listProjects: () => [
-      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/Users/ash/Projects/hivra" },
-      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/Users/ash/Projects/vg-game" },
+      { id: "hivra", name: "Hivra", shortName: "Hivra", iconShape: "sparkles", folder: "/home/user/projects/hivra" },
+      { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "ghost", folder: "/home/user/projects/vg-game" },
     ],
   } as unknown as HubDataSource);
 });
@@ -138,7 +138,7 @@ const approval = (title: string, call: NonNullable<Block["approval"]>["call"] | 
 describe("what the hook remembers", () => {
   it("forgets decided approvals, closed chats' calls and past resets, and keeps what can still come back", () => {
     const now = Date.now();
-    const open = session("open", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] });
+    const open = session("open", "/home/user/projects/hivra", { blocks: [approval("npm test")] });
     const memory: AutopilotMemory = {
       handled: new Map([
         // an approval of a chat that closed, and a question of a chat that closed and isn't waiting any more
@@ -167,13 +167,13 @@ describe("useAutopilot", () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
     await mount([
-      session("pick", "/Users/ash/Projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }, { id: "b", label: "Beta" }])),
-      session("money", "/Users/ash/Projects/hivra", question("money", "Charged twice: what now?", [{ id: "r", label: "Refund it (Recommended)" }])),
-      session("tests", "/Users/ash/Projects/hivra", { blocks: [approval("npm run check")] }),
-      session("force", "/Users/ash/Projects/hivra", { blocks: [approval("git push --force origin main")] }),
-      session("exo", "/Users/ash/Projects/vg-game", question("exo", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }])),
-      session("line", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Done the first half.\nNeeds Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag" }] }),
-      session("nopick", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Which name do you prefer?" }] }),
+      session("pick", "/home/user/projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }, { id: "b", label: "Beta" }])),
+      session("money", "/home/user/projects/hivra", question("money", "Charged twice: what now?", [{ id: "r", label: "Refund it (Recommended)" }])),
+      session("tests", "/home/user/projects/hivra", { blocks: [approval("npm run check")] }),
+      session("force", "/home/user/projects/hivra", { blocks: [approval("git push --force origin main")] }),
+      session("exo", "/home/user/projects/vg-game", question("exo", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }])),
+      session("line", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Done the first half.\nNeeds Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag" }] }),
+      session("nopick", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Which name do you prefer?" }] }),
     ]);
     expect(answers).toEqual([{ id: "pick", requestId: 5, reply: { kind: "answered", answers: { q: ["a"] } } }]);
     expect(approvals).toEqual([{ id: "tests", requestId: 9, decision: "allow" }]);
@@ -195,7 +195,7 @@ describe("useAutopilot", () => {
   it("allows only reads, listed checks and edits in the chat's own folder; every other approval waits for Ash", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    const hivra = "/Users/ash/Projects/hivra";
+    const hivra = "/home/user/projects/hivra";
     const filler = "x".repeat(6_100);
     await mount([
       // What autopilot used to allow because the red list's words missed them.
@@ -203,14 +203,14 @@ describe("useAutopilot", () => {
       session("b64", hivra, { blocks: [approval("echo cm0gLXJmIH4vZGF0YQ== | base64 -d | sh")] }),
       session("merge", hivra, { blocks: [approval("gh pr merge 12 --admin")] }),
       session("long", hivra, { blocks: [approval(`Write ${hivra}/notes.md`, { tool: "Write", paths: [`${hivra}/notes.md`] }, `${filler} DROP TABLE users`)] }),
-      session("home", hivra, { blocks: [approval("Edit ~/.zshrc", { tool: "Edit", paths: ["/Users/ash/.zshrc"] })] }),
+      session("home", hivra, { blocks: [approval("Edit ~/.zshrc", { tool: "Edit", paths: ["/home/user/.zshrc"] })] }),
       session("tool", hivra, { blocks: [approval("Slack: post", { tool: "mcp__slack__post" })] }),
       session("bare", hivra, { blocks: [approval("npm test", null)] }),
       // What it allows by itself.
       session("check", hivra, { blocks: [approval("npm run check")] }),
       session("read", hivra, { blocks: [approval("Read /etc/hosts", { tool: "Read", paths: ["/etc/hosts"] })] }),
       session("edit", hivra, { blocks: [approval(`Edit ${hivra}/src/a.ts`, { tool: "Edit", paths: [`${hivra}/src/a.ts`] })] }),
-      session("tree", hivra, { worktreeCwd: "/Users/ash/Worktrees/hivra-x", blocks: [approval("Edit a.ts", { tool: "Edit", paths: ["/Users/ash/Worktrees/hivra-x/a.ts"] })] }),
+      session("tree", hivra, { worktreeCwd: "/home/user/worktrees/hivra-x", blocks: [approval("Edit a.ts", { tool: "Edit", paths: ["/home/user/worktrees/hivra-x/a.ts"] })] }),
     ]);
     expect(approvals.map((a) => a.id).sort()).toEqual(["check", "edit", "read", "tree"]);
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
@@ -223,24 +223,24 @@ describe("useAutopilot", () => {
   it("checks where an edit really lands: through a link out of the chat's folder, or outside git, it waits for Ash", async () => {
     await backend.set({ scopes: ["*"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    const tree = "/Users/ash/Worktrees/hivra-x";
-    links = { [`${tree}/shared`]: "/Users/ash/Projects/hivra/shared" };
+    const tree = "/home/user/worktrees/hivra-x";
+    links = { [`${tree}/shared`]: "/home/user/projects/hivra/shared" };
     const edit = (path: string) => approval(`Edit ${path}`, { tool: "Edit", paths: [path] });
     await mount([
-      session("linked", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/shared/config.ts`)] }),
-      session("plain", "/Users/ash/Projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/src/a.ts`)] }),
+      session("linked", "/home/user/projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/shared/config.ts`)] }),
+      session("plain", "/home/user/projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/src/a.ts`)] }),
       session("nogit", `${OUTSIDE_GIT}/notes`, { blocks: [edit(`${OUTSIDE_GIT}/notes/a.md`)] }),
     ]);
     expect(approvals.map((a) => a.id)).toEqual(["plain"]);
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
-    expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/Users/ash/Projects/hivra/shared/config.ts, outside the chat's folder") });
+    expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/home/user/projects/hivra/shared/config.ts, outside the chat's folder") });
     expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
   });
 
   it("holds a waiting question whose answer would send, delete, pay, publish or change access (WP-101, row 19)", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    const line = (id: string, text: string) => session(id, "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text }] });
+    const line = (id: string, text: string) => session(id, "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text }] });
     await mount([
       line("mail", "Needs Ash: Send the invoice to Priya?\nMy pick: yes, send it"),
       line("notes", "Needs Ash: Publish the release notes?\nMy pick: yes"),
@@ -278,18 +278,18 @@ describe("useAutopilot", () => {
           pick: "keep it",
           redLine: false,
           options: 5,
-          cwd: "/Users/ash/Projects/hivra",
+          cwd: "/home/user/projects/hivra",
           title: "claude · Bad",
           askedAt: Date.now(),
         },
       }),
     );
     resetWaitingChats();
-    await mount([session("good", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old endpoint?\nMy pick: yes" }] })]);
+    await mount([session("good", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old endpoint?\nMy pick: yes" }] })]);
     expect(sent.map((m) => m.id)).toEqual(["good"]);
     // Nothing was sent for the unreadable one, and the hook is still working: another change still gets decided.
     await act(async () =>
-      setAll((all) => [...all, session("later", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old cache?\nMy pick: yes" }] })]),
+      setAll((all) => [...all, session("later", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old cache?\nMy pick: yes" }] })]),
     );
     await settle();
     expect(sent.map((m) => m.id)).toEqual(["good", "later"]);
@@ -299,7 +299,7 @@ describe("useAutopilot", () => {
   it("allows an MCP read only from a server the app says it wired for that chat", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    const hivra = "/Users/ash/Projects/hivra";
+    const hivra = "/home/user/projects/hivra";
     wired = { "wired-read": ["plugin-agent_plugins-notion"], "spoofed": ["plugin-agent_plugins-notion"] };
     const mcp = (tool: string) => approval(tool, { tool });
     await mount([
@@ -318,7 +318,7 @@ describe("useAutopilot", () => {
   it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    await mount([session("tests", "/Users/ash/Projects/hivra", { blocks: [approval("npm test")] })]);
+    await mount([session("tests", "/home/user/projects/hivra", { blocks: [approval("npm test")] })]);
     expect(approvals).toHaveLength(1);
     // The app applies the decision; later (a new Claude process numbers its approvals from the start again) the same
     // request id asks for the same command.
@@ -334,7 +334,7 @@ describe("useAutopilot", () => {
     await refreshAutopilot();
     delegated = new Set(["worker"]);
     await mount([
-      session("worker", "/Users/ash/Projects/hivra", {
+      session("worker", "/home/user/projects/hivra", {
         ...question("worker", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }]),
         blocks: [approval("npm test")],
       }),
@@ -345,14 +345,14 @@ describe("useAutopilot", () => {
   });
 
   it("does nothing for questions while autopilot is off", async () => {
-    await mount([session("pick", "/Users/ash/Projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }]))]);
+    await mount([session("pick", "/home/user/projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }]))]);
     expect(answers).toEqual([]);
     expect(backend.entries).toEqual([]);
   });
 
   it("arms an agent's chat at a usage limit to resume at the reset, and shows it paused", async () => {
     const resetsAt = Date.now() + HOUR;
-    await mount([session("worker", "/Users/ash/Projects/hivra", { sidebarHidden: true, usageLimit: { resetsAt } }), session("mine", "/Users/ash/Projects/hivra", { usageLimit: { resetsAt } })]);
+    await mount([session("worker", "/home/user/projects/hivra", { sidebarHidden: true, usageLimit: { resetsAt } }), session("mine", "/home/user/projects/hivra", { usageLimit: { resetsAt } })]);
     const worker = current.find((s) => s.id === "worker")!;
     expect(worker.usageLimit).toMatchObject({ resetsAt, resumeAtReset: true, auto: true });
     expect(worker.usageLimit!.resumeAt!).toBeGreaterThan(resetsAt);
@@ -365,7 +365,7 @@ describe("useAutopilot", () => {
   it("respects a project switched off for auto-resume", async () => {
     await backend.setAutoResume({ project: "hivra", value: false });
     await refreshAutopilot();
-    await mount([session("worker", "/Users/ash/Projects/hivra", { sidebarHidden: true, usageLimit: { resetsAt: Date.now() + HOUR } })]);
+    await mount([session("worker", "/home/user/projects/hivra", { sidebarHidden: true, usageLimit: { resetsAt: Date.now() + HOUR } })]);
     expect(current[0].usageLimit?.resumeAtReset).toBeUndefined();
     expect(backend.resumesById.size).toBe(0);
   });
@@ -374,7 +374,7 @@ describe("useAutopilot", () => {
     const resetsAt = Date.now() + HOUR;
     await backend.arm({ sessionId: "worker", resetsAt, resumeAt: resetsAt + 60_000 });
     // After a restart the chat has no limit in memory.
-    await mount([session("worker", "/Users/ash/Projects/hivra", { sidebarHidden: true })]);
+    await mount([session("worker", "/home/user/projects/hivra", { sidebarHidden: true })]);
     expect(current[0].usageLimit).toMatchObject({ resetsAt, resumeAt: resetsAt + 60_000, resumeAtReset: true, auto: true });
   });
 });
