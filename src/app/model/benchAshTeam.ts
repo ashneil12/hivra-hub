@@ -18,15 +18,19 @@ type Write = (monoId: string, path: AgentFilePath, text: string, expectedHash?: 
 export type BenchMono = { id: string; name: string; specId: string };
 export type BenchTeam = { monos: BenchMono[]; wrote: string[] };
 
-type BenchOpts = { project?: string; read?: Read; write?: Write };
+type BenchOpts = { project?: string; folder?: string; read?: Read; write?: Write };
 
 const nameKey = (name: string | undefined) => (name ?? "").trim().toLowerCase();
 
 /**
  * Adds every starter template that isn't already on the roster (matched by name, so a second call adds nothing), ties
- * each to `project` (once), seats them in its leadership room, and writes Ash's soul and memory the way the old pre-load
- * did: only where a seed exists, and only over a soul that is still the app's. Returns the team, and the ids whose soul
- * file it wrote.
+ * each to the project (once), seats them in its leadership room, and writes Ash's soul and memory the way the old
+ * pre-load did: only where a seed exists, and only over a soul that is still the app's. Returns the team, and the ids
+ * whose soul file it wrote.
+ *
+ * `project` is the hub project's id: the room is named after it. `folder` is where that project's files are; a Mono has
+ * to work on the folder, not the id, or a kickoff aimed at the folder never finds it (verifyKickoffMono), so that is
+ * what each seat is tied to. No folder means the id is a folder (the shapes a person types into Settings are both).
  */
 export async function benchAshTeam(readOrOpts?: Read | BenchOpts, writeArg?: Write): Promise<BenchTeam> {
   const opts: BenchOpts = typeof readOrOpts === "function" ? { read: readOrOpts, write: writeArg } : (readOrOpts ?? {});
@@ -48,14 +52,17 @@ export async function benchAshTeam(readOrOpts?: Read | BenchOpts, writeArg?: Wri
   }
 
   const project = opts.project?.trim();
+  const folder = (typeof opts.folder === "string" ? opts.folder.trim() : "") || project;
   if (project) {
     const room = ensureLeadership(project);
+    for (const seat of team) addMember(room.id, seat.id);
+  }
+  if (folder) {
     for (const seat of team) {
-      addMember(room.id, seat.id);
       // WP-05 left nothing tied to a project (`tieTeamToProjects` reads the now-empty `seatedTeam`). A bench's Monos
       // have to work on the project it is about, or their kickoff never finds them (verifyKickoffMono).
       const mono = findMono(seat.id);
-      if (mono && !monoWorksOn(mono, project)) addMonoProject(seat.id, project);
+      if (mono && !monoWorksOn(mono, folder)) addMonoProject(seat.id, folder);
     }
   }
 

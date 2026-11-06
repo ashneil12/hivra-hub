@@ -90,3 +90,31 @@ it("ties nobody to a project when none is named", async () => {
   for (const mono of none.monos) expect(findMono(mono.id)?.projects).toEqual([]);
   expect(getChat("tally:leadership")).toBeUndefined();
 });
+
+it("seats the room under a project's id and ties each Mono to the project's folder", async () => {
+  // A hub project's id ("verify") is never its folder (/work/chartwell): the room belongs to the first, and the Monos
+  // have to work on the second, or a kickoff aimed at the folder never finds them (verifyKickoff.verifyKickoffMono).
+  const seated = await benchAshTeam({ project: "verify", folder: "/work/chartwell" });
+  for (const mono of seated.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/chartwell"]);
+  expect(getChat("verify:leadership")?.memberIds.slice().sort()).toEqual(seated.monos.map((mono) => mono.id).sort());
+  expect(getChat("/work/chartwell:leadership")).toBeUndefined();
+});
+
+it("ties the folder once, and never the id as well", async () => {
+  await benchAshTeam({ project: "verify", folder: "/work/chartwell" });
+  const again = await benchAshTeam({ project: "verify", folder: "/work/chartwell" });
+  for (const mono of again.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/chartwell"]);
+});
+
+it("ties a named folder even when no project id is given, and seats nobody", async () => {
+  const tied = await benchAshTeam({ folder: "/work/chartwell" });
+  for (const mono of tied.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/chartwell"]);
+  expect(getChat("/work/chartwell:leadership")).toBeUndefined();
+});
+
+it("treats a blank folder as no folder at all", async () => {
+  // A folder only some of the way through a value is not one: it falls back to the id, as before.
+  const seated = await benchAshTeam({ project: "/work/tally", folder: "   " });
+  for (const mono of seated.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/tally"]);
+  expect(getChat("/work/tally:leadership")?.memberIds.length).toBe(starterOffers().length);
+});
