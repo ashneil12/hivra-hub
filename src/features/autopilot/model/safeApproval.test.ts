@@ -38,6 +38,23 @@ describe("shell commands", () => {
     "cargo fmt --all --check",
     "node --test scripts/hub-dev.test.mjs",
     "node --test 'scripts/**/*.test.mjs'",
+    // WP-101: the wider read-only table (Row-Bot's safe commands, with their unsafe options held below).
+    "find . -name '*.ts'",
+    "find src -type f -newer README.md",
+    "find . -maxdepth 2 -name '*.md' -print0",
+    "fd foo",
+    "fd -e ts foo",
+    "fd --type f foo",
+    "tree src",
+    "tree -L 2 -a src",
+    "stat README.md",
+    "stat -f '%z' README.md",
+    "du -sh src",
+    "df -h",
+    "file README.md",
+    "which git",
+    "ps aux",
+    "ps -ef",
   ])("runs by itself: %s", (command) => {
     expect(safeCommand(command)).toBeNull();
   });
@@ -78,6 +95,8 @@ describe("shell commands", () => {
     "git log --ext-diff",
     "git branch -D main",
     "git branch --delete main",
+    "git log --textconv",
+    "git diff --textconv HEAD",
     "git branch -f main HEAD~3",
     "git branch new-branch",
     "npm test --script-shell=/tmp/evil",
@@ -98,6 +117,26 @@ describe("shell commands", () => {
     "rg foo *",
     "rg foo {--pre=sh,.}",
     "ls ^x",
+    // the wider table's commands, with the options that make them write or run another program
+    "find . -delete",
+    "find . -fdelete",
+    "find . -execdir sh",
+    "find . -ok rm",
+    "find . -fprint out.txt",
+    "find . -fprintf out.txt %p",
+    "find . -fls out.txt",
+    "fd -x sh",
+    "fd -X sh",
+    "fd -Hx sh",
+    "fd --exec sh",
+    "fd --ex sh",
+    "fd --exec-batch sh",
+    "tree -o out.txt",
+    "tree -ao out.txt",
+    "file -c magic",
+    "file --compile magic",
+    // an unquoted wildcard could expand into an option
+    "find . -name *.ts",
     // can't be read plainly
     "cat 'unclosed",
   ])("waits for Ash: %s", (command) => {
@@ -108,6 +147,28 @@ describe("shell commands", () => {
     expect(shellWords(`rg -n 'a b' "c\\"d" e\\ f`)).toEqual(["rg", "-n", "a b", 'c"d', "e f"]);
     expect(shellWords("rg foo *")).toBeNull();
     expect(shellWords("cat 'x")).toBeNull();
+  });
+
+  it("reads an unsafe option however the program would: quoted, abbreviated, clustered or with a value", () => {
+    for (const command of [
+      "find . '-delete'",
+      "find . -fprint0 out.txt",
+      "fd '--exec' sh",
+      "fd --ex sh",
+      "fd -e ts -x sh",
+      "fd -X sh",
+      "fd -eX sh",
+      "tree --output=out.txt",
+      "file '-C'",
+      "file --comp x",
+    ])
+      expect(safeCommand(command), command).not.toBeNull();
+  });
+
+  it("keeps an ordinary option that merely starts like an unsafe one", () => {
+    // -L and -a are not -o, and --depth is not --delete.
+    for (const command of ["tree -L 2 -a src", "find . --depth 2 -name '*.md'", "fd --hidden --type f foo", "du -d 2 src"])
+      expect(safeCommand(command), command).toBeNull();
   });
 });
 

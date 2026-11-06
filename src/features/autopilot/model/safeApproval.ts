@@ -4,8 +4,9 @@
 //   server's tools wait, because a hostile server can name a write tool like a read;
 // - an edit or write whose files are all inside that chat's own folder (its worktree when it has one);
 // - a shell command on a short list of reads, tests and builds (git status/diff/log/show/branch, ls, cat, rg, grep,
-//   npm test / run check|lint|build, cargo test|check|clippy|fmt --check, node --test), with no chaining, substitution,
-//   redirection or wildcard, and none of the options that make those tools run something else.
+//   find, fd, tree, stat, du, df, file, which, ps, npm test / run check|lint|build, cargo test|check|clippy|fmt
+//   --check, node --test), with no chaining, substitution, redirection or wildcard, and none of the options that make
+//   those tools write a file or run something else.
 // Anything else waits for Ash exactly as when autopilot is off; the red list (redList.ts) is checked on top. It judges
 // the provider's own request (`Block.approval.call`), never the transcript's label: a call that doesn't say exactly
 // what it runs waits. An edit is checked twice: by its words (safeCall), then where it really lands (editStaysInside),
@@ -131,6 +132,31 @@ export function shellWords(command: string): string[] | null {
 const has = (args: readonly string[], ...flags: string[]) =>
   args.some((arg) => flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
 
+/**
+ * Whether the args use one of `options`, read as the program would read them: a long option matches any abbreviation
+ * of it or a longer option starting with it ("--ex" and "--exec-batch" are both --exec), a one-letter short option
+ * matches inside a cluster ("-Hx" is -x), and anything else matches exactly. Ported from Row-Bot's `_uses_option`.
+ */
+function usesOption(args: readonly string[], options: readonly string[]): boolean {
+  for (const arg of args) {
+    const name = arg.split("=", 1)[0].toLowerCase();
+    for (const option of options) {
+      if (option.startsWith("--")) {
+        if (name.length > 2 && name.startsWith("--") && (option.startsWith(name) || name.startsWith(option))) return true;
+      } else if (option.length === 2) {
+        if (name.startsWith("-") && !name.startsWith("--") && name.slice(1).includes(option[1])) return true;
+      } else if (name === option) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** A command that only reads, unless it is given an option that writes a file or runs another program. */
+const readsUnless = (...unsafe: string[]) => (args: readonly string[]) =>
+  usesOption(args, unsafe) ? "that option writes a file or runs another program" : null;
+
 const GIT_READS: ReadonlySet<string> = new Set(["status", "diff", "log", "show", "branch"]);
 /** `git branch` only lists: these options, and names only as what --list, --contains and the like look for. */
 const BRANCH_LIST_FLAGS = /^(-a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--show-current|--merged|--no-merged|--contains|--no-contains|--points-at|--sort(=.*)?|--format(=.*)?|--column|--no-column|--color(=.*)?|--no-color|--abbrev(=.*)?|--no-abbrev|-i|--ignore-case|--omit-empty)$/;
@@ -139,7 +165,8 @@ const BRANCH_QUERY = new Set(["-l", "--list", "--merged", "--no-merged", "--cont
 function gitRead(args: readonly string[]): SafeVerdict {
   const [sub, ...rest] = args;
   if (!sub || !GIT_READS.has(sub)) return "only git status, diff, log, show and branch run by themselves";
-  if (has(rest, "--output", "--ext-diff")) return "it writes a file or runs an outside diff";
+  // WP-101: --textconv joins Row-Bot's list, which runs an outside diff program.
+  if (has(rest, "--output", "--ext-diff", "--textconv")) return "it writes a file or runs an outside diff";
   if (sub === "branch") {
     const flags = rest.filter((arg) => arg.startsWith("-"));
     if (flags.some((flag) => !BRANCH_LIST_FLAGS.test(flag))) return "git branch only lists by itself";
@@ -199,6 +226,20 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   tail: () => null,
   wc: () => null,
   pwd: () => null,
+  // WP-101, from Row-Bot's safe-command table: listing and system information that only read, with the options
+  // that turn each into a write or a run held.
+  find: readsUnless("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fdelete", "-fprint", "-fprint0", "-fprintf", "-fls"),
+  fd: readsUnless("-x", "--exec", "--exec-batch"),
+  ag: readsUnless("--pager"),
+  // tree writes to a file with -o; --output is held too though tree has no such option, since a stricter answer
+  // costs Ash one tap and a looser one cannot be taken back.
+  tree: readsUnless("-o", "--output"),
+  stat: () => null,
+  du: () => null,
+  df: () => null,
+  file: readsUnless("-c", "--compile"),
+  which: () => null,
+  ps: () => null,
 };
 
 /** Whether a shell command is one autopilot may run by itself; why not otherwise. */
