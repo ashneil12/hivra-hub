@@ -91,8 +91,8 @@ export function validateGoal(value: unknown): string {
 
 /**
  * The finish line: a command that fails until the goal holds, the exit code it must give, and optionally text it
- * must print. An empty or over-long command, an exit code that is not a whole number in range, text that is too long
- * or spans lines, and a check naming too many project checks are all refused with plain words.
+ * must print. An empty or over-long command, an exit code that is not a whole number in range, and text that is too
+ * long or spans lines are all refused with plain words.
  */
 export function validateGoalCheck(value: unknown): GoalCheck {
   const input = record(value);
