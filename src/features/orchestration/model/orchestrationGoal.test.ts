@@ -690,7 +690,7 @@ describe("a repair", () => {
     ).rejects.toThrow("Only a failed or blocked task is repaired");
   });
 
-  it("is decided by the rules before it joins the record, and a failed verify task is repaired by a verify task", async () => {
+  it("is decided by the rules before it joins the record, and a failed check is repaired by a build task", async () => {
     const f = fixture();
     await f.start();
     const verify = await f.delegate({ title: "Check", role: "verify", files: [] });
@@ -705,22 +705,24 @@ describe("a repair", () => {
 
     const repaired = (await f.call("repair", {
       taskId: verify,
-      title: "Check again",
-      prompt: "Run the check again",
+      title: "Fix what the check found",
+      prompt: "Fix the build so the check passes",
+      files: ["src/a.rs"],
     })) as { taskId: string };
 
-    // The rules were asked first, with the repair as a node of the run.
+    // The rules were asked first, with the repair as a node of the run. A repair of a check is a build
+    // task: the check goes back in the queue when the repair is accepted, so it is never replaced.
     expect(f.goals.checkRepair).toHaveBeenCalledTimes(1);
     expect(f.goals.checkRepair).toHaveBeenCalledWith(
       expect.objectContaining({ nodes: expect.any(Array) }),
       expect.objectContaining({
-        role: "verify",
+        role: "build",
         repairs: verify,
         dependsOn: [],
       }),
     );
     const created = f.manager.run("lead")!.tasks.find((e) => e.id === repaired.taskId)!;
-    expect(created.role).toBe("verify");
+    expect(created.role).toBe("build");
     expect(created.repairs).toBe(verify);
     expect(created.dependsOn).toEqual([]);
   });
@@ -849,6 +851,113 @@ describe("the pump and a repair", () => {
       f.manager.run("lead")!.tasks.find((e) => e.id === id)!.status,
     ).toBe("cancelled");
     expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+});
+
+describe("a repaired verification", () => {
+  /**
+   * The original's `reruns_root` (`tests/test_dag_run_rules.py`, `test_a_repaired_verification_runs_again_before_the_run_is_done`):
+   * a repair of the run's verify task fixes what it found, and only the verify task running again says the goal holds.
+   * Accepting the repair must not settle the verification, and the verification must not stand in for itself.
+   */
+  it("runs again once its repair is accepted, and the run is not done until it passes", async () => {
+    const f = fixture();
+    await f.start();
+    const verify = await f.delegate({ title: "Check", role: "verify", files: [] });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const session = f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.sessionId;
+    f.completions.get(session)!({ status: "failed", text: "", error: "2 tests red" });
+    await vi.waitFor(() =>
+      expect(f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.status).toBe(
+        "failed",
+      ),
+    );
+
+    const repaired = (await f.call("repair", {
+      taskId: verify,
+      title: "Fix what the check found",
+      prompt: "Fix it",
+      files: ["src"],
+    })) as { taskId: string };
+    const created = f.manager.run("lead")!.tasks.find((e) => e.id === repaired.taskId)!;
+    // A repair of a verification is a build task that fixes the work: the verification it repairs re-runs, so the
+    // repair must not be a second verifier.
+    expect(created.role).toBe("build");
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(2));
+
+    await f.complete(repaired.taskId);
+    await f.call("review", { taskId: repaired.taskId });
+    // The verification is queued again, with a fresh turn, rather than the repair standing in for it. The pump may
+    // pick it up before the assertion runs, so what is proved is the new turn's words, not a moment in the queue.
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(3));
+    const secondTurn = f.host.submit.mock.calls[2][1] as string;
+    expect(secondTurn).toContain("Check the goal again");
+    expect(secondTurn).toContain("2 tests red");
+    expect(
+      f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.accepted,
+    ).toBe(false);
+
+    // The re-run passes: now the verification is the run's one verify task, accepted.
+    await f.complete(verify);
+    const verdict = await f.call("review", { taskId: verify });
+    expect(f.manager.run("lead")!.tasks.find((e) => e.id === verify)!.accepted).toBe(true);
+    expect(verdict).toBeTruthy();
+  });
+
+  it("takes the second cycle of repairs, then the run stops asking for another", async () => {
+    // The original's `test_a_failed_reverification_takes_the_second_cycle_then_the_run_stops`.
+    const f = fixture();
+    await f.start();
+    const verify = await f.delegate({ title: "Check", role: "verify", files: [] });
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    const fail = async (id: string) => {
+      const task = f.manager.run("lead")!.tasks.find((e) => e.id === id)!;
+      await vi.waitFor(() => expect(f.completions.has(task.sessionId)).toBe(true));
+      f.completions.get(task.sessionId)!({ status: "failed", text: "", error: "still red" });
+      await vi.waitFor(() =>
+        expect(f.manager.run("lead")!.tasks.find((e) => e.id === id)!.status).toBe(
+          "failed",
+        ),
+      );
+    };
+    await fail(verify);
+    const first = (await f.call("repair", {
+      taskId: verify,
+      title: "First fix",
+      prompt: "Fix one",
+      files: ["src"],
+    })) as { taskId: string };
+    await vi.waitFor(() => expect(f.completions.has(f.manager.run("lead")!.tasks.find((e) => e.id === first.taskId)!.sessionId)).toBe(true));
+    await f.complete(first.taskId);
+    await f.call("review", { taskId: first.taskId });
+    const turns = f.host.submit.mock.calls.length;
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(turns + 1));
+
+    // The re-run fails: that is the second cycle's repair.
+    await fail(verify);
+    const second = (await f.call("repair", {
+      taskId: verify,
+      title: "Second fix",
+      prompt: "Fix two",
+      files: ["src"],
+    })) as { taskId: string; cycle: number };
+    expect(second.cycle).toBe(2);
+    await vi.waitFor(() => expect(f.completions.has(f.manager.run("lead")!.tasks.find((e) => e.id === second.taskId)!.sessionId)).toBe(true));
+    await f.complete(second.taskId);
+    await f.call("review", { taskId: second.taskId });
+    const afterSecond = f.host.submit.mock.calls.length;
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(afterSecond + 1));
+
+    // A third failure is the end: the run stops asking for another repair.
+    await fail(verify);
+    await expect(
+      f.call("repair", {
+        taskId: verify,
+        title: "Third fix",
+        prompt: "again",
+        files: ["src"],
+      }),
+    ).rejects.toThrow("2 repair cycles");
   });
 });
 

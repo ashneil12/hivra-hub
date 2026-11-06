@@ -857,6 +857,40 @@ export class Orchestrator {
       return false;
     }
   }
+  /**
+   * WP-91: a repair of the run's verify task just fixed what the verification found, so the verification runs again.
+   * A verification is never settled by its repair (the original's `reruns_root`): it goes back in the queue with a note
+   * saying what its repair changed, and the run is not done until it passes on its own.
+   */
+  private async requeueRepairedVerification(leadId: string, repairId: string) {
+    const run = this.run(leadId);
+    const repair = run?.tasks.find((entry) => entry.id === repairId);
+    const root = repair?.repairs
+      ? run!.tasks.find((entry) => entry.id === repair.repairs)
+      : undefined;
+    if (!run || !repair || !root || root.role !== "verify" || root.status === "cancelled")
+      return;
+    const current = this.run(leadId)!;
+    const target = current.tasks.find((entry) => entry.id === root.id)!;
+    if (target.status !== "failed" && target.status !== "blocked") return;
+    await this.commit({
+      ...current,
+      tasks: current.tasks.map((entry) =>
+        entry.id === root.id
+          ? {
+              ...entry,
+              status: "queued",
+              error: undefined,
+              recoveryPrompt: `Check the goal again: the repair ${JSON.stringify(
+                repair.title,
+              )} was accepted after your last turn. What you found before:
+${(entry.error ?? entry.result).slice(-2000)}
+Run the whole check again and report what you observed.`,
+            }
+          : entry,
+      ),
+    });
+  }
   async hydrate(id: string) {
     if (this.loaded.has(id) || this.run(id)) return;
     this.loaded.add(id);
@@ -1825,6 +1859,12 @@ export class Orchestrator {
           target = this.run(run.leadId)!.tasks.find(
             (entry) => entry.id === target.id,
           )!;
+          // WP-91: accepting a repair of the run's verify task puts the verification back in the queue. It is the
+          // verification that says the goal holds, not the repair that fixed what it found (`reruns_root`).
+          await this.requeueRepairedVerification(run.leadId, target.id);
+          target = this.run(run.leadId)!.tasks.find(
+            (entry) => entry.id === target.id,
+          )!;
         }
 
         let cleaned = !isolated;
@@ -1894,10 +1934,14 @@ export class Orchestrator {
           throw new Error(
             `${target.title} has had ${MAX_REPAIR_CYCLES} repair cycles. Report what is still open instead of repairing again, or delegate a new task for the rest.`,
           );
+        // A repair of a verification fixes work, so it declares what it will write: the verification's own scope is
+        // empty (it checks and writes a report), and a build task with no scope would start with nothing to do.
         const files = input.files == null ? target.files : strings(input.files, "files");
-        if (!files.length && target.role !== "verify")
+        if (!files.length)
           throw new Error(
-            "Declare at least one corrected project-relative file/directory scope, or '.' for the whole checkout",
+            target.role === "verify"
+              ? "This repairs a check, so name the project files the fix writes (or '.' for the whole checkout)."
+              : "Declare at least one corrected project-relative file/directory scope, or '.' for the whole checkout",
           );
         const current = this.run(run.leadId)!;
         if (current.tasks.length >= 40)
@@ -1913,10 +1957,10 @@ export class Orchestrator {
         const dependsOn = target.dependsOn.filter(
           (id) => current.tasks.find((entry) => entry.id === id)?.accepted,
         );
-        // A repair of the run's verify task is a verification again, not a build: a build task can never stand in
-        // for the verify task the run's verdict waits on.
-        const role: "build" | "verify" =
-          target.role === "verify" ? "verify" : "build";
+        // A repair of the run's verify task is a build task that fixes what the verification found. The verification
+        // itself goes back in the queue when the repair is accepted (`reruns_root`), so a repair is never a second
+        // verifier and never needs to be one: a verification is checked by running again, not by being replaced.
+        const role: "build" | "verify" = "build";
         const id = crypto.randomUUID();
         const created: OrchestrationTask = {
           id,

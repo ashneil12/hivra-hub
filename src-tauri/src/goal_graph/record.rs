@@ -123,8 +123,37 @@ fn repaired_by<'a>(nodes: &'a [GoalNode], root: &str) -> Option<&'a GoalNode> {
 }
 
 /// Whether the root's failure is answered: an accepted repair stands in for it.
+///
+/// A verification is never answered this way: its repair fixes what it found, and only the verification running again
+/// says the goal holds (the original's `reruns_root`, `dag_run.py:1490-1491`, and `derive`: "a verification is the
+/// exception: the group fixed what it found, and only the root running again says the goal holds").
 pub fn is_repaired(nodes: &[GoalNode], root: &str) -> bool {
-    repaired_by(nodes, root).is_some()
+    let root_is_verify = nodes
+        .iter()
+        .any(|node| node.id == root && role_of(node).is_verify());
+    !root_is_verify && repaired_by(nodes, root).is_some()
+}
+
+/// A failed verification whose latest repair group is all accepted: it is due to run again.
+///
+/// The record's counterpart to the original's `derive`: a verification is never `repaired`, it is set back to
+/// `pending` once its repair group is accepted, so the run is not done until the verification itself has passed.
+/// The orchestrator does the setting back (the task returns to the queue when the repair is accepted), so this is
+/// only consulted where the record still says the verification failed: a repair whose group is accepted means the
+/// verification is about to run again, not that the run has failed.
+fn rerun_due(run: &RunView, node: &GoalNode) -> bool {
+    if !role_of(node).is_verify() || !node.failed {
+        return false;
+    }
+    let Some(latest) = run.repairs.get(&node.id).and_then(|cycles| cycles.last()) else {
+        return false;
+    };
+    !latest.is_empty()
+        && latest.iter().all(|member| {
+            run.nodes
+                .iter()
+                .any(|other| &other.id == member && other.accepted && !other.cancelled)
+        })
 }
 
 /// The task's gates passed. Only the word `passed` says so: no gate result at all, `held` (WP-40's "someone must
@@ -149,13 +178,18 @@ fn runnable(nodes: &[GoalNode]) -> BTreeSet<String> {
 
 /// Whether a later record entry stands in for this one.
 ///
-/// A cancelled node is out. A node named in another node's `repairs` is out — except that a build repair never stands
-/// in for a verification: only a verify-role task can replace one. And among repairs of the same root only the latest
-/// cycle is live, so a run that needed a second cycle has one verifier, not two.
+/// A cancelled node is out. A node named in another node's `repairs` is out — except a verification, which is never
+/// stood in for: its repair fixes what it found and the verification runs again (`reruns_root`). And among repairs of
+/// the same root only the latest cycle is live, so a run that needed a second cycle has one repair, not two.
 pub fn superseded(nodes: &[GoalNode], index: usize) -> bool {
     let node = &nodes[index];
     if node.cancelled {
         return true;
+    }
+    // A verification's repair is never superseded: it is what tells the verification to run again. An older group's
+    // repair is out only when a later group of the same root exists.
+    if repairs_a_verification(nodes, node) {
+        return false;
     }
     nodes.iter().enumerate().any(|(other_index, other)| {
         if other.cancelled {
@@ -163,9 +197,19 @@ pub fn superseded(nodes: &[GoalNode], index: usize) -> bool {
         }
         let later_cycle =
             other_index > index && other.repairs.is_some() && other.repairs == node.repairs;
-        let replaces = other.repairs.as_deref() == Some(node.id.as_str())
-            && (!role_of(node).is_verify() || role_of(other).is_verify());
+        let replaces =
+            !role_of(node).is_verify() && other.repairs.as_deref() == Some(node.id.as_str());
         later_cycle || replaces
+    })
+}
+
+/// A verification's repair: it does the fixing, and the verification it repairs runs again. It is not a second
+/// verifier, so the run still has exactly one (the original's `reruns_root`, `dag_run.py:1490-1491`).
+fn repairs_a_verification(nodes: &[GoalNode], node: &GoalNode) -> bool {
+    node.repairs.as_deref().is_some_and(|root| {
+        nodes
+            .iter()
+            .any(|other| other.id == root && role_of(other).is_verify())
     })
 }
 
@@ -422,14 +466,14 @@ pub fn require_graph(
 
 /// The verify node, when the graph has exactly one and it follows every producer.
 ///
-/// A cancelled verify task is not one, so a replacement can be delegated; a verify task a repair stands in for is not
-/// one either, so repairing it does not leave two.
+/// A cancelled verify task is not one, so a replacement can be delegated; a verification's repair is not one either
+/// (the verification it repairs runs again), so repairing it does not leave two.
 pub fn require_verify_node(nodes: &[GoalNode]) -> Result<String, Refusal> {
     let verifiers: Vec<&GoalNode> = nodes
         .iter()
-        .enumerate()
-        .filter(|(index, node)| role_of(node).is_verify() && !superseded(nodes, *index))
-        .map(|(_, node)| node)
+        .filter(|node| {
+            role_of(node).is_verify() && !node.cancelled && !repairs_a_verification(nodes, node)
+        })
         .collect();
     if verifiers.is_empty() {
         let producers = nodes.iter().filter(|node| is_producer(node)).count();
@@ -544,17 +588,8 @@ pub fn check_repair(run: &RunView, repair: &GoalNode) -> Result<(), Refusal> {
             ),
         ));
     }
-    // A verify task is repaired by another verify task, so a build task never stands in for a verification. And a
-    // repair's dependencies are the failed task's accepted ones (or the failed task itself), never an open branch.
-    if role_of(root).is_verify() && !role_of(repair).is_verify() {
-        return Err(Refusal::new(
-            "repair_of_verify_must_verify",
-            format!(
-                "The verify task {root_id} can only be repaired by another verify task; repair the task that writes \
-                 the work instead."
-            ),
-        ));
-    }
+    // A verification's repair is a build task that fixes what it found; the verification then runs again
+    // (`reruns_root`), so the repair never stands in for it and the run keeps one verifier.
     require_repair_edges(&[run.nodes.clone(), vec![repair.clone()]].concat())?;
     let mut nodes = run.nodes.clone();
     nodes.push(repair.clone());
@@ -586,7 +621,9 @@ pub fn ready_nodes(run: &RunView) -> Vec<String> {
             candidates.contains(&node.id)
                 && !node.accepted
                 && !dropped(node)
-                && !node.failed
+                // A failed node waits for its repair — unless it is a verification whose repair group is accepted,
+                // and then it is the one due to run again (`reruns_root`).
+                && (!node.failed || rerun_due(run, node))
                 && node.irreversible.as_ref().is_none_or(|step| step.answered)
         })
         .map(|node| node.id.clone())
@@ -599,7 +636,16 @@ pub fn ready_nodes(run: &RunView) -> Vec<String> {
 /// with its handoff read, and the app's own run of the finish-line check passed. `failed` when a check or a gate
 /// failed. Anything else is `unverified`, with a reason code per thing left undone.
 pub fn goal_verdict(run: &RunView) -> (Verdict, Vec<String>) {
-    let live: Vec<&GoalNode> = run.nodes.iter().filter(|node| !dropped(node)).collect();
+    // A repair's verification root is due to run again, and the record may still say it failed if the re-run hasn't
+    // started yet; the re-run is the one thing standing between the run and done, so it is read as open, not failed.
+    // Its superseded repairs are out, exactly as the original's `derive` marks older repair groups `superseded`.
+    let live: Vec<&GoalNode> = run
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(index, node)| !dropped(node) && !superseded(&run.nodes, *index))
+        .map(|(_, node)| node)
+        .collect();
     let mut reasons: Vec<String> = Vec::new();
     let failed = |reason: String| (Verdict::Failed, vec![reason]);
 
@@ -632,9 +678,11 @@ pub fn goal_verdict(run: &RunView) -> (Verdict, Vec<String>) {
         reasons.push(format!("gate_not_run:{}", ungated.join(",")));
     }
 
+    // A failed verification whose repair group is accepted is not a failure any more: it is due to run again, exactly
+    // as the original sets the root back to `pending` rather than `repaired`.
     let failed_nodes: Vec<String> = live
         .iter()
-        .filter(|node| node.failed && !is_repaired(&run.nodes, &node.id))
+        .filter(|node| node.failed && !is_repaired(&run.nodes, &node.id) && !rerun_due(run, node))
         .map(|node| node.id.clone())
         .collect();
     if !failed_nodes.is_empty() {
@@ -667,11 +715,9 @@ pub fn goal_verdict(run: &RunView) -> (Verdict, Vec<String>) {
     let verifiers: Vec<&GoalNode> = run
         .nodes
         .iter()
-        .enumerate()
-        .filter(|(index, node)| {
-            !dropped(node) && role_of(node).is_verify() && !superseded(&run.nodes, *index)
+        .filter(|node| {
+            !dropped(node) && role_of(node).is_verify() && !repairs_a_verification(&run.nodes, node)
         })
-        .map(|(_, node)| node)
         .collect();
     let built = live.iter().any(|node| is_producer(node));
     if verifiers.is_empty() {
@@ -797,9 +843,12 @@ pub fn report(run: &RunView) -> GraphAnswer {
     let verify = run
         .nodes
         .iter()
-        .enumerate()
-        .find(|(index, node)| role_of(node).is_verify() && !superseded(&run.nodes, *index))
-        .map(|(_, node)| node.id.clone());
+        .find(|node| {
+            role_of(node).is_verify()
+                && !node.cancelled
+                && !repairs_a_verification(&run.nodes, node)
+        })
+        .map(|node| node.id.clone());
     let cycles: BTreeMap<String, u32> = run
         .nodes
         .iter()
@@ -1384,27 +1433,25 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_verify_task_is_repaired_by_a_verify_task_and_the_run_then_finishes() {
+    fn a_repaired_verification_runs_again_before_the_run_is_done() {
+        // The original's `reruns_root` (dag_run.py:1490-1491, `test_a_repaired_verification_runs_again_before_the_run_is_done`):
+        // a repair of a verification fixes what it found, and only the verification running again says the goal holds.
+        // Through `report()`, the path the card and `finish` read.
         let build = accepted("a");
         let mut failed_verify = verify("v", &["a"]);
         failed_verify.failed = true;
         let mut record = run(vec![build.clone(), failed_verify.clone()]);
 
-        // A build task may not stand in for a verification.
-        let mut wrong = node("r");
-        wrong.repairs = Some("v".into());
-        wrong.depends_on = vec!["a".into()];
-        assert_eq!(
-            check_repair(&record, &wrong).unwrap_err().reason,
-            "repair_of_verify_must_verify"
-        );
-
-        // A verify task may.
-        let mut again = verify("v2", &["a"]);
+        // The repair of a verification is a build task that fixes what it found: a build repair is accepted by the
+        // rules, and the verification it repairs runs again. It stands in for the verification's coverage while the
+        // verification is due to re-run, exactly as the original's `verification_misses` states.
+        let mut again = node("v2");
         again.repairs = Some("v".into());
+        again.depends_on = vec!["a".into()];
+        again.write_scope = vec!["src/a.rs".into()];
         check_repair(&record, &again).unwrap();
 
-        // Until it is accepted, the failed verification shows and the run is not done.
+        // Until the repair is accepted the failed verification shows and the run is not done.
         record.repairs.insert("v".into(), vec![vec!["v2".into()]]);
         record.nodes.push(again.clone());
         let open = report(&record);
@@ -1412,13 +1459,38 @@ mod tests {
         assert_eq!(open.report.verdict, Verdict::Failed);
         assert_eq!(open.report.reasons, vec!["task_failed:v".to_string()]);
 
-        // Once accepted it is the run's one verify task; the failed one is superseded, not left open.
-        let mut accepted_again = accepted_verify("v2", &["a"]);
+        // Accepting the repair does not settle the verification: a verification is never `repaired`, it runs again,
+        // and the run still has exactly one verifier — the failed task itself.
+        let mut accepted_again = accepted("v2");
+        accepted_again.write_scope = vec!["src/a.rs".into()];
         accepted_again.repairs = Some("v".into());
         record.nodes[2] = accepted_again;
+        let waiting = report(&record);
+        assert!(waiting.refusal.is_none(), "{:?}", waiting.refusal);
+        assert_eq!(waiting.report.verify.as_deref(), Some("v"));
+        assert_eq!(waiting.report.verdict, Verdict::Unverified);
+        assert!(
+            waiting
+                .report
+                .reasons
+                .contains(&"verification_open:v".to_string()),
+            "{:?}",
+            waiting.report.reasons
+        );
+
+        // The orchestrator puts it back in the queue; the run reads the same and the task is ready to run again.
+        record.nodes[1].failed = false;
+        let queued = report(&record);
+        assert!(queued.refusal.is_none(), "{:?}", queued.refusal);
+        assert_eq!(queued.report.verdict, Verdict::Unverified);
+        assert_eq!(queued.report.reasons, waiting.report.reasons);
+        assert!(ready_nodes(&run(record.nodes.clone())).contains(&"v".to_string()));
+
+        // The verification runs again and passes: now the run is done.
+        record.nodes[1] = accepted_verify("v", &["a"]);
         let answer = report(&record);
         assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
-        assert_eq!(answer.report.verify.as_deref(), Some("v2"));
+        assert_eq!(answer.report.verify.as_deref(), Some("v"));
         assert_eq!(
             answer.report.verdict,
             Verdict::Verified,
@@ -1429,27 +1501,67 @@ mod tests {
 
     #[test]
     fn a_second_failed_verification_takes_the_last_cycle_and_a_third_is_refused() {
+        // The original's `test_a_failed_reverification_takes_the_second_cycle_then_the_run_stops`: each repair of the
+        // verification fixes what it found, the verification runs again, and its second failure is the last cycle.
         let mut failed_verify = verify("v", &["a"]);
         failed_verify.failed = true;
         let mut record = run(vec![accepted("a"), failed_verify]);
         record.repairs.insert("v".into(), vec![vec!["v2".into()]]);
 
-        // One cycle left: the re-verification may be offered again, and that is the re-plan.
-        let mut v2 = verify("v2", &["a"]);
+        // One cycle left, and the next repair is the re-plan.
+        let mut v2 = node("v2");
         v2.repairs = Some("v".into());
+        v2.write_scope = vec!["src/a.rs".into()];
         v2.failed = true;
         record.nodes.push(v2);
-        let mut v3 = verify("v3", &["a"]);
+        let mut v3 = node("v3");
         v3.repairs = Some("v".into());
+        v3.write_scope = vec!["src/a.rs".into()];
         check_repair(&record, &v3).unwrap();
         assert!(next_cycle_is_replan(&record, "v"));
 
-        // The second cycle failed too: the run stops repairing and says what is still open.
+        // A verification whose first repair is accepted, whose re-run fails, and whose second repair is accepted, is
+        // still open: the run has used both cycles and says so instead of repairing again.
         record
             .repairs
             .insert("v".into(), vec![vec!["v2".into()], vec!["v3".into()]]);
-        let mut v4 = verify("v4", &["a"]);
+        let mut accepted_second = accepted("v3");
+        accepted_second.write_scope = vec!["src/a.rs".into()];
+        accepted_second.repairs = Some("v".into());
+        record.nodes[2] = accepted("v2");
+        record.nodes[2].write_scope = vec!["src/a.rs".into()];
+        record.nodes[2].repairs = Some("v".into());
+        record.nodes[2].accepted = true;
+        record.nodes.push(accepted_second);
+        // Both groups accepted and the record still says the verification failed: it is due to run again, so the run
+        // is open rather than failed, and no cycle is left to repair a third failure.
+        let stopped = report(&record);
+        assert!(stopped.refusal.is_none(), "{:?}", stopped.refusal);
+        assert_eq!(stopped.report.verdict, Verdict::Unverified);
+        assert!(
+            stopped
+                .report
+                .reasons
+                .contains(&"verification_open:v".to_string()),
+            "{:?}",
+            stopped.report.reasons
+        );
+        assert_eq!(stopped.report.cycles_left.get("v"), Some(&0));
+
+        // The re-run fails: with no cycle left, the run is failed and says which task.
+        record.nodes[1].failed = true;
+        record.repairs.remove("v");
+        let failed = report(&record);
+        assert!(failed.refusal.is_none(), "{:?}", failed.refusal);
+        assert_eq!(failed.report.verdict, Verdict::Failed);
+        assert_eq!(failed.report.reasons, vec!["task_failed:v".to_string()]);
+        record
+            .repairs
+            .insert("v".into(), vec![vec!["v2".into()], vec!["v3".into()]]);
+
+        let mut v4 = node("v4");
         v4.repairs = Some("v".into());
+        v4.write_scope = vec!["src/a.rs".into()];
         assert_eq!(
             check_repair(&record, &v4).unwrap_err().reason,
             "repair_limit_reached"
