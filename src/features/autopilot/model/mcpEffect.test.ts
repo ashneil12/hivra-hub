@@ -83,10 +83,13 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "create_or_update_file", description: "Create or update a single file in a GitHub repository", expected: "high_impact" },
   { name: "get_or_make_page", description: "Update the page, creating it when missing", expected: "unknown" },
   { name: "collaborator", description: "Add a collaborator to a repository", expected: "unknown" },
-  { name: "get_page", description: "Update the page", hints: { readOnlyHint: true }, expected: "read_only" },
+  // WP-101 fix round: Row-Bot reads a readOnlyHint as the server's word. Here a description or an annotation can only
+  // make a verdict stricter, never looser, so this one stays unknown and waits.
+  { name: "get_page", description: "Update the page", hints: { readOnlyHint: true }, expected: "unknown" },
   // test_mcp_contract.py
   { name: "lookup", description: "Look a record up", hints: { destructiveHint: true }, expected: "high_impact" },
-  { name: "check_stock", description: "Execute a stock check", hints: { readOnlyHint: true }, expected: "read_only" },
+  // Stricter than Row-Bot for the same reason: its description says "Execute".
+  { name: "check_stock", description: "Execute a stock check", hints: { readOnlyHint: true }, expected: "unknown" },
   { name: "delete_order", hints: { readOnlyHint: true }, expected: "high_impact" },
   { name: "save_purchase_orders", hints: { readOnlyHint: true }, expected: "change" },
   { name: "read_query", description: "Execute a SELECT query on the SQLite database", expected: "read_only" },
@@ -130,7 +133,9 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "browser_click", hints: { destructiveHint: true, readOnlyHint: true }, expected: "high_impact" },
   { name: "read_and_delete_file", hints: { readOnlyHint: true }, expected: "high_impact" },
   { name: "opaque_operation", expected: "unknown" },
-  { name: "opaque_operation", hints: { readOnlyHint: true }, expected: "read_only" },
+  // Stricter than Row-Bot: a hint can't turn a name outside the vocabulary into a read.
+  { name: "opaque_operation", hints: { readOnlyHint: true }, expected: "unknown" },
+  { name: "opaque_operation", expected: "unknown" },
   { name: "get_and_process", hints: { readOnlyHint: false }, expected: "unknown" },
 ];
 
@@ -147,6 +152,89 @@ describe("what a tool does (Row-Bot's tables)", () => {
     for (const row of TABLES) {
       expect(isHighImpactTool(row.name, row.description ?? "", row.hints ?? {}), row.name).toBe(row.expected === "high_impact");
     }
+  });
+});
+
+describe("a read is a closed vocabulary, never a guess (WP-101 fix round)", () => {
+  /** The review's rows 3 to 7: every one of these was approved before this round. */
+  const REVIEW_HELD = [
+    // row 3: a read verb first, another verb after it
+    "get_status_and_restart",
+    "status_restart",
+    "search_and_replace",
+    "find_replace",
+    "get_replace",
+    "get_clear",
+    // row 4: look-alike and non-Latin letters
+    "get_dеlete",
+    "get_удалить",
+    "read_删除",
+    "get_sеnd_email",
+    "list_ѕеnd",
+    "get_ѕhell",
+    "read_ехес",
+    // row 5: write verbs the old blacklist did not list
+    ...["start", "stop", "restart", "reboot", "apply", "rotate", "enable", "disable", "sync", "launch", "trigger", "invoke", "call", "install", "download", "upload", "open", "navigate", "restore", "rollback", "revert", "approve", "reject", "lock", "unlock", "ban", "block", "subscribe", "login", "connect", "mount", "flush", "clean", "prune", "export", "import", "clone", "mint", "burn", "swap", "stake", "claim", "redeem"].flatMap((verb) => [
+      `get_${verb}`,
+      `read_${verb}`,
+      `list_${verb}`,
+      `fetch_${verb}`,
+    ]),
+    // row 6: a secret named after a read verb
+    "read_secret",
+    "get_token",
+    "read_password",
+    "get_credentials",
+    "get_api_key",
+    "list_secrets",
+    "get_env",
+    "read_ssh_key",
+    "read_keychain",
+    "get_secret_value",
+    // row 7: network
+    "fetch_url",
+    "get_url",
+    "fetch_to_url",
+    "fetch_exfiltrate",
+    "fetch",
+    "get_remote",
+  ];
+
+  it("holds every tool name from the review's rows 3 to 7", () => {
+    // Held means it waits: unknown, or high impact when it names a secret (rows 6).
+    for (const name of REVIEW_HELD) expect(["unknown", "high_impact"], name).toContain(toolEffect(name));
+    // Only a secret makes one of these high impact; the rest are unknown.
+    const secrets = new Set(["read_secret", "get_token", "read_password", "get_credentials", "get_api_key", "list_secrets", "get_env", "read_ssh_key", "read_keychain", "get_secret_value"]);
+    for (const name of REVIEW_HELD) if (!secrets.has(name)) expect(toolEffect(name), name).toBe("unknown");
+  });
+
+  it("names a secret's tool high impact, so it always waits", () => {
+    expect(toolEffect("read_secret")).toBe("high_impact");
+    expect(toolEffect("get_token")).toBe("high_impact");
+  });
+
+  it("still reads the plain read names for a trusted server", () => {
+    for (const name of ["get_status", "list_files", "read_file", "search_docs", "get_issue", "list_pull_requests"])
+      expect(toolEffect(name), name).toBe("read_only");
+  });
+
+  it("holds a name with a joining word, an empty token list, or no parseable words", () => {
+    // Each waits: unknown, or a change or high impact, which wait too. None is a read.
+    for (const name of ["get_and_delete", "read_then_write", "list_or_create", "_", "__", "get__page", "  ", ""])
+      expect(toolEffect(name), name).not.toBe("read_only");
+    for (const name of ["_", "__", "get__page", "  ", ""]) expect(toolEffect(name), name).toBe("unknown");
+    // A joining word with a secret still names a secret, so it is held as high impact.
+    expect(toolEffect("get_with_token")).toBe("high_impact");
+  });
+
+  it("counts a sensitive noun anywhere as high impact, never as a read", () => {
+    for (const name of ["read_secret", "get_token", "list_passwords", "get_credential", "read_api_key", "get_env", "read_ssh_key", "get_keychain", "read_cookie", "get_session", "read_auth", "get_private_data"])
+      expect(isHighImpactTool(name), name).toBe(true);
+  });
+
+  it("never lets a description or an annotation make a held name pass", () => {
+    for (const name of ["get_status_and_restart", "read_secret", "get_dеlete", "get_start"])
+      expect(toolEffect(name, "Read-only: fetch a page", { readOnlyHint: true }), name).not.toBe("read_only");
   });
 });
 

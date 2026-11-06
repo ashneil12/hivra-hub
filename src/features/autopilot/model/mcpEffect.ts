@@ -27,6 +27,105 @@ const ROUTINE_WORDS = words("create|add|update|edit|write|set|rename|move|put|pa
 const ROUTINE_FIRST_WORDS = words("tag|label|mark|archive|close|star|link|attach|copy");
 const READ_WORDS = words("read|get|list|search|find|inspect|describe|count|query|fetch|status|lookup");
 
+// ---- a read is a closed vocabulary (WP-101 fix round) --------------------------------------------------------------
+//
+// A name is a read only when every word in it is on these lists. Before, a read verb anywhere near the front was
+// enough, so a name that opened with "get" and then said "restart", "start" or "read_secret" passed. Anything not
+// listed here, any joining word, any look-alike letter and any name that doesn't parse as plain ASCII words waits.
+
+/** Words that read something. `fetch` is not here: a fetch can carry data out in its URL, so it waits (network). */
+const READ_VERBS: ReadonlySet<string> = new Set(words("read|get|list|search|find|inspect|describe|count|query|status|lookup|view|show|check"));
+
+/** Nouns a read may name. Anything not on this list waits, however harmless it looks. */
+const HARMLESS_NOUNS: ReadonlySet<string> = new Set(
+  words(
+    "file|files|folder|folders|directory|directories|path|paths|content|contents|issue|issues|pull|request|requests|doc|docs|document|documents|message|messages|member|members|label|labels|tag|tags|commit|commits|branch|branches|workflow|workflows|run|runs|artifact|artifacts|order|orders|purchase|purchases|post|posts|page|pages|note|notes|user|users|project|projects|repo|repos|repository|repositories|item|items|record|records|report|reports|log|logs|info|detail|details|metadata|summary|history|status|statuses|instance|instances|list|lists|comment|comments|review|reviews|event|events|job|jobs|thread|threads|workspace|workspaces|team|teams|group|groups|channel|channels|version|versions|stock|query|github|profile|profiles",
+  ),
+);
+
+/** Little words that connect a noun to its verb ("list_by_tag", "get_details_of_a_commit"). */
+const PARTICLES: ReadonlySet<string> = new Set(words("a|an|the|of|in|on|for|by|from|at|to|all|my|your"));
+
+/** A joining word says the name does more than one thing, so it is never a plain read. */
+const JOINING_TOKENS: ReadonlySet<string> = new Set(words("and|or|then|with"));
+
+/** A word naming a secret makes the tool high impact wherever it sits, after a read verb or not. */
+const SENSITIVE_TOKENS: ReadonlySet<string> = new Set(
+  words("secret|secrets|token|tokens|password|passwords|passwd|credential|credentials|key|keys|env|ssh|keychain|cookie|cookies|session|sessions|auth|private"),
+);
+
+/** A word naming a network destination waits: a read to a URL the agent picks can carry data out. */
+const NETWORK_TOKENS: ReadonlySet<string> = new Set(
+  words("url|urls|remote|web|http|https|fetch|download|upload|uploads|webhook|webhooks|request|requests|endpoint|endpoints|socket|proxy"),
+);
+
+/**
+ * A name as plain ASCII words, split on underscore, hyphen and dot and at camelCase; null when it isn't one: any
+ * non-ASCII or look-alike letter, a space, punctuation, an empty word, or an empty name. Nothing is cleaned away first,
+ * because cleaning is what turned a Cyrillic "delete" into a read.
+ */
+export function nameTokens(value: unknown): string[] | null {
+  if (typeof value !== "string") return null;
+  const cased = value
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1_$2")
+    .toLowerCase();
+  if (!/^[a-z0-9]+(?:[_.-][a-z0-9]+)*$/.test(cased)) return null;
+  const tokens = cased.split(/[_.-]+/);
+  return tokens.length ? tokens : null;
+}
+
+/** Whether a word is one a read name may use. "request" after "pull" is a pull request; anywhere else it is network. */
+function harmlessWord(tokens: readonly string[], index: number): boolean {
+  const word = tokens[index];
+  if (READ_VERBS.has(word) || HARMLESS_NOUNS.has(word) || PARTICLES.has(word)) return true;
+  if ((word === "request" || word === "requests") && tokens[index - 1] === "pull") return true;
+  return false;
+}
+
+/** Whether a name is, word for word, a plain read. */
+function closedReadName(tokens: readonly string[] | null): boolean {
+  if (!tokens?.length || !READ_VERBS.has(tokens[0])) return false;
+  for (let index = 0; index < tokens.length; index++) {
+    const word = tokens[index];
+    if (JOINING_TOKENS.has(word)) return false;
+    // "pull_request" is a thing, not a destination; a request anywhere else can carry data out.
+    const pullRequest = /^requests?$/.test(word) && tokens[index - 1] === "pull";
+    if (NETWORK_TOKENS.has(word) && !pullRequest) return false;
+    if (!harmlessWord(tokens, index)) return false;
+  }
+  return true;
+}
+
+/** Whether a name says "secret", "token", "key" and the like anywhere in it. */
+function namesASecret(tokens: readonly string[] | null): boolean {
+  return !!tokens?.some((word) => SENSITIVE_TOKENS.has(word));
+}
+
+/**
+ * A word that names something a read returns, once anything the module already knows is set aside: "operation" and
+ * "result" are what a read returns, so "frobnicate"/"lookup" named with one is still a read if the server says so.
+ */
+const READ_RESULT_NOUNS: ReadonlySet<string> = new Set(
+  words("operation|operations|result|results|entry|entries|row|rows|object|objects|thing|things|data|value|values|state|signal|response|responses|output|outputs|input|inputs|payload|payloads"),
+);
+
+/**
+ * Whether a readOnlyHint may be believed: only for a name whose every word the module knows (a read verb, a harmless
+ * noun, a particle, or a name of something a read returns), and none of them a change, joining or network word. A word
+ * nobody knows ("frobnicate") is not evidence, so it waits.
+ */
+function hintCanBeBelieved(tokens: readonly string[] | null): boolean {
+  if (!tokens?.length) return false;
+  return tokens.every((word) => {
+    if (JOINING_TOKENS.has(word) || NETWORK_TOKENS.has(word)) return false;
+    if (READ_VERBS.has(word) || HARMLESS_NOUNS.has(word) || PARTICLES.has(word) || READ_RESULT_NOUNS.has(word)) return true;
+    if (DESTRUCTIVE_WORDS.includes(word) || ROUTINE_WORDS.includes(word) || ROUTINE_FIRST_WORDS.includes(word)) return false;
+    const found = readObject(word);
+    return found !== null;
+  });
+}
+
 /** Words that are also nouns: a change only as the name's verb, and never counted in their -s form. */
 const NOUNS = new Set(
   words("order|post|comment|share|invite|book|charge|payment|pay|trade|buy|sell|reply|forward|set|add|save|edit|move|put|patch|command|shell|permission|permissions|eval"),
@@ -170,16 +269,17 @@ function sensitiveChange(name: string, description: string): boolean {
 }
 
 /**
- * What a tool does. Trusted in this order: a destructiveHint; a high-impact name; a change named as one (which its
- * description can still make high impact); a readOnlyHint; a read verb in the name; and only then the description.
- * A read-only hint never outweighs a name, and a description never outweighs either of them, except that a read whose
- * description says it changes something is unknown.
+ * What a tool does. Trusted in this order: a destructiveHint; a name that says a word for a secret; a high-impact
+ * name; a change named as one (which its description can still make high impact); a plain read name, which is every
+ * word on the closed lists below; and only then the description. A read-only hint never outweighs a name, a
+ * description never outweighs either of them, and neither can turn a name that isn't on the lists into a read.
  */
 export function toolEffect(toolName: string, description = "", hints: McpHints = {}): McpEffect {
   const name = sanitizeNameComponent(toolName);
   const said = sanitizeNameComponent(description);
-  const objects = readObjects(name);
-  if (hints.destructiveHint === true || (DESTRUCTIVE.test(name) && objects === null) || sensitiveChange(name, description))
+  const tokens = nameTokens(toolName);
+  const objects = tokens?.length ? readObjects(name) : null;
+  if (hints.destructiveHint === true || namesASecret(tokens) || (DESTRUCTIVE.test(name) && objects === null) || sensitiveChange(name, description))
     return "high_impact";
   if (BROWSER_READS.has(name)) return "read_only";
   if (BROWSER_SESSION_TOOLS.has(name)) return "change";
@@ -188,12 +288,17 @@ export function toolEffect(toolName: string, description = "", hints: McpHints =
     // "share" or "comment" in a description are often nouns.
     return SAYS_HIGH_IMPACT.test(said) && hints.destructiveHint !== false ? "high_impact" : "change";
   }
-  if (hints.readOnlyHint === true) return "read_only";
-  if (hints.readOnlyHint !== false && READ.test(name)) {
+  if (closedReadName(tokens)) {
+    if (hints.readOnlyHint === false) return "unknown";
     let onlySaid = said.replace(RUNS_A_READ, "_");
     if (objects?.size) onlySaid = withoutObjects(onlySaid, objects);
     return SAYS_HIGH_IMPACT.test(onlySaid) || changeInDescription.test(onlySaid) ? "unknown" : "read_only";
   }
+  // A readOnlyHint is the server's own word, and a hostile server can say it about anything: it counts only when every
+  // word of the name is one this module knows and none says a change, a join or a network word; and never when the
+  // description says it changes something.
+  if (hints.readOnlyHint === true && hintCanBeBelieved(tokens) && !SAYS_HIGH_IMPACT.test(said) && !changeInDescription.test(said))
+    return "read_only";
   return SAYS_HIGH_IMPACT.test(said) ? "high_impact" : "unknown";
 }
 
