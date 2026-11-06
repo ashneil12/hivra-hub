@@ -335,6 +335,92 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
 }
 
 #[test]
+fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "opencode",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    // Even with the grant in hand and the person not asked, the tool is refused before anything is armed: the value
+    // must not go into a child whose output the app never reads line by line.
+    let mut request = worker_request();
+    request.executable = "opencode".into();
+    assert_eq!(
+        worker::prepare(&bench.vault, &mut conn, request, bench.now).unwrap_err(),
+        "this tool can't keep a key out of its own output, so it was not given the key"
+    );
+    // A handle armed by an older build is refused at the spawn too.
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "claude",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    let mut claude = worker_request();
+    claude.executable = "claude".into();
+    let worker::WorkerOutcome::Ready { mut secrets } =
+        worker::prepare(&bench.vault, &mut conn, claude, bench.now).unwrap()
+    else {
+        panic!("the grant is there");
+    };
+    for secret in &mut secrets {
+        secret.executable = "opencode".into();
+    }
+    worker::clear_for_tests();
+    worker::arm("worker-open", secrets);
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    let refused = worker::apply_to_child("worker-open", &bench.vault, &mut cmd, &conn, bench.now)
+        .unwrap_err();
+    assert_eq!(
+        refused,
+        "this tool can't keep a key out of its own output, so it was not given the key"
+    );
+    assert_eq!(cmd.get_envs().count(), 0);
+    // Every other worker program the app runs delivers line stdout, so only OpenCode is refused.
+    for line_stdout in [
+        "claude",
+        "codex",
+        "cursor",
+        "grok",
+        "pi",
+        "omp",
+        "fx",
+        "hermes",
+        "antigravity",
+        "devin",
+        "/usr/local/bin/Claude",
+    ] {
+        assert!(worker::delivers_line_stdout(line_stdout), "{line_stdout}");
+    }
+    for sse in ["opencode", "OpenCode", "/usr/local/bin/opencode", "sh", ""] {
+        assert!(!worker::delivers_line_stdout(sse), "{sse}");
+    }
+}
+
+#[test]
 fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     let bench = Bench::new();
     let mut conn = bench.store.lock_conn().unwrap();

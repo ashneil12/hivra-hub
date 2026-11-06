@@ -112,6 +112,10 @@ pub fn prepare(
     if request.secrets.is_empty() {
         return Err("Name at least one secret.".into());
     }
+    // Before the person is asked at all: a tool whose output the app never reads line by line would keep the key.
+    if !delivers_line_stdout(executable) {
+        return Err(REFUSED_OUTPUT.into());
+    }
     if request.secrets.len() > MAX_WORKER_SECRETS {
         return Err(format!(
             "A worker gets at most {MAX_WORKER_SECRETS} secrets."
@@ -233,6 +237,35 @@ pub fn arm(session_id: &str, secrets: Vec<ArmedSecret>) {
     }
 }
 
+/// The worker programs whose whole output the app reads line by line and scrubs (`scrub_line`). Everything else is
+/// refused the value: OpenCode talks over HTTP and SSE, so the app would never see the words its output turns into.
+pub const LINE_STDOUT_WORKERS: [&str; 10] = [
+    "claude",
+    "codex",
+    "cursor",
+    "grok",
+    "pi",
+    "omp",
+    "fx",
+    "hermes",
+    "antigravity",
+    "devin",
+];
+
+/// The one sentence a worker's task shows when its tool cannot be given a key.
+pub const REFUSED_OUTPUT: &str =
+    "this tool can't keep a key out of its own output, so it was not given the key";
+
+/// Whether this worker's output reaches the app as lines it can scrub.
+pub fn delivers_line_stdout(executable: &str) -> bool {
+    let base = executable
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(executable)
+        .to_ascii_lowercase();
+    LINE_STDOUT_WORKERS.contains(&base.as_str())
+}
+
 /// Put the armed values into one worker's own environment. Called by `harness_spawn` before the child forks.
 ///
 /// The handles are consumed, so a second spawn of the same session gets nothing without a fresh approval. A value that
@@ -251,6 +284,12 @@ pub fn apply_to_child(
         .unwrap_or_default();
     if secrets.is_empty() {
         return Ok(());
+    }
+    if secrets
+        .iter()
+        .any(|secret| !delivers_line_stdout(&secret.executable))
+    {
+        return Err(REFUSED_OUTPUT.into());
     }
     let mut values = Vec::new();
     let mut needles = Vec::new();
