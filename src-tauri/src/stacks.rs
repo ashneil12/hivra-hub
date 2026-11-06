@@ -4476,6 +4476,8 @@ mod tests {
     }
 
     impl StandInFix {
+        // On Windows the block below is gone and the early `return` is the last statement; clippy calls it needless there.
+        #[cfg_attr(windows, allow(clippy::needless_return))]
         fn new() -> Option<Self> {
             #[cfg(windows)]
             {
