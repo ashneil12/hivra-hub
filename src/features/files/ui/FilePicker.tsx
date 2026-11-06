@@ -68,11 +68,6 @@ function readableShortcut(keys: string): string {
   return keys.includes("…") ? keys.replace("…", " to ") : keys;
 }
 
-/** The palette's rows for the person's current shortcuts and what can run. */
-export function paletteRows(context: PaletteContext): PaletteRow[] {
-  return resolvePaletteRows(context);
-}
-
 type FinderPalette = {
   hits: readonly FinderHit[];
   scope: FinderScope;

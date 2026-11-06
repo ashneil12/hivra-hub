@@ -84,46 +84,6 @@ export const PALETTE_APP_ACTIONS = [
 
 const APP_ACTIONS = new Set<string>(PALETTE_APP_ACTIONS);
 
-export type PaletteHandlers = {
-  /** The workspace handlers the shortcut table already routes into. */
-  tab: (row: PaletteRow) => void;
-  app: (row: PaletteRow) => void;
-  zoom: (row: PaletteRow) => void;
-  editor: (row: PaletteRow) => void;
-};
-
-/**
- * True when the command was handed on. A greyed command, one with no handler
- * yet, or a handler that throws is false: the palette itself never throws.
- */
-export function runPaletteCommand(
-  row: PaletteRow,
-  handlers: PaletteHandlers,
-): boolean {
-  if (row.blockedReason) return false;
-  try {
-    switch (row.run.kind) {
-      case "tab":
-        handlers.tab(row);
-        return true;
-      case "app":
-        handlers.app(row);
-        return true;
-      case "zoom":
-        handlers.zoom(row);
-        return true;
-      case "editor":
-        handlers.editor(row);
-        return true;
-      default:
-        return false;
-    }
-  } catch (error) {
-    console.error(error);
-    return false;
-  }
-}
-
 /**
  * Runs a row through named handlers, so App maps each name to the callback its
  * key handler already calls. An unknown name, a greyed row or a throwing

@@ -4,7 +4,6 @@ import { PALETTE_COMMANDS } from "./commandRegistry";
 import {
   PALETTE_APP_ACTIONS,
   PALETTE_TAB_ACTIONS,
-  runPaletteCommand,
   runPaletteRow,
   tabActionFor,
   type PaletteRunHandlers,
@@ -25,15 +24,6 @@ function row(partial: Partial<PaletteRow>): PaletteRow {
   };
 }
 
-function handlers() {
-  return {
-    tab: vi.fn(),
-    app: vi.fn(),
-    zoom: vi.fn(),
-    editor: vi.fn(),
-  };
-}
-
 function named(): PaletteRunHandlers {
   return {
     tab: vi.fn(),
@@ -43,58 +33,11 @@ function named(): PaletteRunHandlers {
   };
 }
 
-describe("running a palette command", () => {
-  it("hands each kind to its one handler", () => {
-    const next = handlers();
-    expect(runPaletteCommand(row({}), next)).toBe(true);
-    expect(next.tab).toHaveBeenCalledTimes(1);
-
-    expect(
-      runPaletteCommand(row({ run: { kind: "app", action: "new-chat" } }), next),
-    ).toBe(true);
-    expect(next.app).toHaveBeenCalledTimes(1);
-
-    expect(
-      runPaletteCommand(row({ run: { kind: "zoom", action: "zoom-in" } }), next),
-    ).toBe(true);
-    expect(next.zoom).toHaveBeenCalledTimes(1);
-
-    expect(
-      runPaletteCommand(row({ run: { kind: "editor", action: "find" } }), next),
-    ).toBe(true);
-    expect(next.editor).toHaveBeenCalledTimes(1);
-    expect(next.tab).toHaveBeenCalledTimes(1);
-  });
-
-  it("does nothing for a greyed command or one with no handler", () => {
-    const next = handlers();
-    expect(
-      runPaletteCommand(row({ blockedReason: "Open a project first" }), next),
-    ).toBe(false);
-    expect(runPaletteCommand(row({ run: { kind: "none" } }), next)).toBe(false);
-    expect(Object.values(next).every((fn) => fn.mock.calls.length === 0)).toBe(
-      true,
-    );
-  });
-
-  it("never throws for a handler that throws, so the palette stays open", () => {
-    const next = handlers();
-    next.app.mockImplementation(() => {
-      throw new Error("boom");
-    });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    expect(
-      runPaletteCommand(row({ run: { kind: "app", action: "reload" } }), next),
-    ).toBe(false);
-    expect(consoleError).toHaveBeenCalledTimes(1);
-  });
-
+describe("running a row through named handlers", () => {
   it("names every app action once", () => {
     expect(new Set(PALETTE_APP_ACTIONS).size).toBe(PALETTE_APP_ACTIONS.length);
   });
-});
 
-describe("running a row through named handlers", () => {
   it("names the tab command it runs, including the number key's last tab", () => {
     expect(tabActionFor("new")).toBe("new");
     expect(tabActionFor("toggle-terminal")).toBe("toggle-terminal");

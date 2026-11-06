@@ -29,10 +29,6 @@ export type RankedCommandInput = {
   blockedReason?: string | null;
 };
 
-export type PaletteRowHighlight = {
-  positions: number[];
-};
-
 export type PaletteItem =
   | { kind: "heading"; label: string }
   | {
