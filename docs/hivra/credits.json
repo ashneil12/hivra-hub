@@ -322,7 +322,7 @@
       "licence": "Apache-2.0",
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "plugins/desktop-control/skills/agent-desktop/SKILL.md",
-      "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)"
+      "how": "Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.2.0, with Hivra's gate and consent rules added (WP-44)"
     },
     {
       "name": "Orbit's checked backups",
@@ -354,7 +354,7 @@
       "licence": "Apache-2.0",
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "src/features/docs/model",
-      "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72)"
+      "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72). The blank line before a list item's paragraph, quote or heading child, and before a numbered list that does not start at 1, comes from Orbit's ab86dac (WP-102)"
     },
     {
       "name": "Orbit's task rules",
@@ -515,6 +515,14 @@
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
       "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+    },
+    {
+      "name": "OpenMausBot's turn watchdog sleep rule",
+      "url": "https://github.com/milind-soni/OpenMausBot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Milind Soni and OpenMausBot contributors",
+      "where": "src/features/firstmate/watcher/classifier.ts, src/features/monos/model/workerStall.ts, src/features/monos/hooks/useStallWatch.ts",
+      "how": "server/turn-watchdog.ts's sleep guard (e39d9b0d7, da0309f6c) translated to TypeScript: a look that arrives more than three intervals late is read as the computer having slept, and each running worker's clock moves forward by the gap instead of being stopped. Hivra keeps one interval of the gap as the tick's own, so a stall is still caught up to one tick late (WP-102). The rule lives in classifier.ts beside SILENCE_MS, so the headless watcher and the half-minute look share it."
     },
     {
       "name": "Row-Bot's memory policy",

@@ -2,6 +2,11 @@
 // fm-watch.sh, MIT, Copyright (c) 2026 Kun Chen; Raven's once-per-stretch stall notice; PandaCode's silence watchdog,
 // ideas only).
 //
+// WP-102: the sleep rule (`SLEEP_TICKS`, `sleepGap`) is translated from OpenMausBot's server/turn-watchdog.ts at
+// e39d9b0d7 and da0309f6c, Apache-2.0, Copyright 2026 Milind Soni and OpenMausBot contributors. Changed: the gap is
+// measured by the caller's look interval, and one interval of it is kept as the tick's own; the rule is a small pure
+// function here so the headless watcher and the half-minute look share it.
+//
 // Plain code watches every crew and wakes a first mate only when something needs its judgment. Everything else updates
 // records and the UI, never the model. It is headless (no React, DOM or Tauri; watcher.headless.test.ts walks its
 // imports), so WP-60 can run it on a remote host, and it never calls a model, starts a CLI or spends a token.
@@ -23,6 +28,23 @@ const MIN = 60_000;
 
 /** A worker with no events this long, and nothing pending, is stopped and marked failed (retryable). */
 export const SILENCE_MS = 20 * MIN;
+
+/**
+ * How many ordinary look intervals a gap between two looks may last before it is read as the computer having slept
+ * (OpenMausBot `e39d9b0d7`, Apache-2.0). A sleeping Mac suspends the app while its wall clock runs on, so the first look
+ * after wake is late by the sleep, and that time was nobody's silence.
+ */
+export const SLEEP_TICKS = 3;
+
+/**
+ * The time to forgive a look that arrived late: everything over one interval, but only when the gap beats
+ * `SLEEP_TICKS` intervals. An ordinary late tick is no sleep (`0`). The one interval kept is the tick's own, so a stall
+ * is still caught up to one tick late and never early (OpenMausBot `da0309f6c`).
+ */
+export function sleepGap(gapMs: number, everyMs: number): number {
+  if (!(everyMs > 0) || gapMs <= SLEEP_TICKS * everyMs) return 0;
+  return gapMs - everyMs;
+}
 /** The failure a silence stop records: no word the self-repair retries on ("timed out", "killed"), so its first mate decides. */
 export const SILENCE_ERROR_CLASS = "silent";
 
@@ -201,11 +223,21 @@ export function silentFor(event: Extract<WatchEvent, { kind: "look" }>, now: num
   return quiet >= silenceMs ? quiet : null;
 }
 
-/** A look at a running worker: record its stall, tell its first mate once per silent stretch, and stop it at 20 minutes. */
-export function classifyLook(event: Extract<WatchEvent, { kind: "look" }>, now: number, silenceMs = SILENCE_MS): Decision[] {
+/**
+ * A look at a running worker: record its stall, tell its first mate once per silent stretch, and stop it at 20 minutes.
+ * `sleptMs` is the time the computer slept before this look (classifier.ts `sleepGap`): it is forgiven, not silence, and
+ * the look judges nothing that one time.
+ */
+export function classifyLook(
+  event: Extract<WatchEvent, { kind: "look" }>,
+  now: number,
+  silenceMs = SILENCE_MS,
+  slept?: { sleptMs: number },
+): Decision[] {
   const { row } = event;
   // A declared block (task_cannot) is the agent's own word, not a judgment: it stands until the row itself moves.
   if (row.state !== "running" || row.stallKind === "blocked") return [record("not judged")];
+  if (slept && slept.sleptMs > 0) return [record("the computer slept; the clock moved forward")];
   const quiet = silentFor(event, now, silenceMs);
   if (quiet !== null) {
     const since = stretchStart(event.presence, row);
@@ -277,12 +309,17 @@ export function classifyTimer(event: Extract<WatchEvent, { kind: "timer" }>): De
 }
 
 /** The one entry point: an event and the time, to what code does about it. Pure. */
-export function classify(event: WatchEvent, now: number, silenceMs = SILENCE_MS): Decision[] {
+export function classify(
+  event: WatchEvent,
+  now: number,
+  silenceMs = SILENCE_MS,
+  slept?: { sleptMs: number },
+): Decision[] {
   switch (event.kind) {
     case "row":
       return classifyRow(event.before, event.row);
     case "look":
-      return classifyLook(event, now, silenceMs);
+      return classifyLook(event, now, silenceMs, slept);
     case "pr":
       return classifyPr(event);
     case "timer":

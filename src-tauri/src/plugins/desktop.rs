@@ -503,7 +503,7 @@ pub fn install_bundled(host: &Host) -> Result<Outcome, String> {
         Source {
             kind: "bundled".into(),
             location: "desktop-control".into(),
-            pin: Some("1.1.0".into()),
+            pin: Some("1.2.0".into()),
             tag: None,
             path: None,
             registry: None,

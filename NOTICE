@@ -81,7 +81,7 @@ Third-party components Hivra adds:
   License: Apache-2.0
   The upstream files do not carry a separate copyright line (Apache-2.0)
   Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
-  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
+  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.2.0, with Hivra's gate and consent rules added (WP-44)
 
 - Orbit's checked backups
   Source: https://github.com/coollabsio/orbit
@@ -257,6 +257,13 @@ Third-party components Hivra adds:
   Copyright (c) 2026 oh-my-hermes contributors
   Used in: src-tauri/src/goal_graph/
   dag_core.py translated line by line to Rust in topology.rs (WP-91), with test_dag_core.py's cases ported. The record rules in dag_run.py — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — are translated into record.rs, and the plan-time check into plan.rs. Read and not copied: tools/dag_tool.py, dag_scope_guard.py, dag_define_gate.py (hooks for a single-workspace model Hivra does not have) and the TUI, which informed the view's folding and wording only. One rule differs: dag-ulw treats two nodes as ordered only when one names the other directly, where Hivra refuses only a pair that can really run at the same time.
+
+- OpenMausBot's turn watchdog sleep rule
+  Source: https://github.com/milind-soni/OpenMausBot
+  License: Apache-2.0
+  Copyright 2026 Milind Soni and OpenMausBot contributors
+  Used in: src/features/firstmate/watcher/classifier.ts, src/features/monos/model/workerStall.ts, src/features/monos/hooks/useStallWatch.ts
+  server/turn-watchdog.ts's sleep guard translated to TypeScript (WP-102): a sweep or look that arrives more than three check intervals late is read as the computer having slept, and each running turn's last-event time moves forward by the gap instead of the turn being stopped. Hivra keeps one interval of the gap as the tick's own, so a stall is still caught up to one tick late. The rule lives in classifier.ts beside SILENCE_MS, so the headless watcher and the half-minute look share it (e39d9b0d7, da0309f6c).
 
 - Row-Bot's memory policy
   Source: https://github.com/siddsachar/row-bot

@@ -249,7 +249,9 @@ fn overlaps(pool: &Path, other: &Path) -> bool {
     component_prefix(other, pool) || component_prefix(pool, other)
 }
 
-/// `path` is `prefix` or a directory inside it. Windows matches ignoring case.
+/// `path` is `prefix` or a directory inside it, compared as spelled. Windows matches ignoring case. This is the text
+/// rule the dev-copy guard and the slots folder check need: resolving `/var` to `/private/var` would make two spellings
+/// of one folder look unrelated. Lease matching uses `same_path`, which resolves both sides (WP-102 item 5).
 fn component_prefix(path: &Path, prefix: &Path) -> bool {
     let path = normalize(path);
     let prefix = normalize(prefix);
@@ -267,6 +269,11 @@ fn component_prefix(path: &Path, prefix: &Path) -> bool {
     })
 }
 
+/// The folder a path really names. A path that isn't there (a slot already removed) is only cleaned, never refused.
+fn resolve(path: &Path) -> PathBuf {
+    crate::fs::canonical(path).unwrap_or_else(|_| normalize(path))
+}
+
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -281,8 +288,12 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// `path` is a folder inside `dir` (not `dir` itself), by the folders' real identity. A slot reached through a link is
+/// still inside the pool; a link that resolves outside it is not.
 fn path_in(dir: &Path, path: &Path) -> bool {
-    component_prefix(path, dir) && !same_path(path, dir)
+    let dir = resolve(dir);
+    let path = resolve(path);
+    component_prefix(&path, &dir) && path != dir
 }
 
 pub fn env_from_app(app: &AppHandle) -> PoolEnv {
@@ -759,7 +770,16 @@ pub fn give_back(env: &PoolEnv, repo: &Path, path: &Path) -> Result<HandBack, St
     Ok(HandBack::Returned)
 }
 
+/// Whether two spellings name the same folder. WP-102 item 5: the lease table used to compare spellings, so a slot
+/// reached through a link (macOS `/var` is `/private/var`) or by another letter case lost its lease. Now each side is
+/// resolved first, so the folder's real identity decides; when it can't be read (the slot is gone) the spelling still
+/// has a say, as before.
 fn same_path(left: &Path, right: &Path) -> bool {
+    if let (Ok(left), Ok(right)) = (same_identity(left), same_identity(right)) {
+        if left == right {
+            return true;
+        }
+    }
     if cfg!(windows) {
         normalize(left)
             .to_string_lossy()
@@ -767,6 +787,11 @@ fn same_path(left: &Path, right: &Path) -> bool {
     } else {
         normalize(left) == normalize(right)
     }
+}
+
+/// A folder's real identity: its resolved path, with any trailing separator already gone.
+fn same_identity(path: &Path) -> std::io::Result<PathBuf> {
+    crate::fs::canonical(path)
 }
 
 pub fn leased_protections(data_dir: &Path) -> Result<Vec<(PathBuf, String)>, String> {
@@ -1602,6 +1627,91 @@ mod tests {
         );
         let log = argv_log(&env);
         assert!(!log.contains("include-leased"), "{log}");
+        fix.marker_ok();
+    }
+
+    // WP-102 item 5: a lease is matched by the folder it names, not the letters it was spelled with. macOS aliases
+    // /var to /private/var, so a caller can reach the same slot by another spelling; that is the same worktree.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_spelling_with_a_trailing_slash_is_the_same_slot() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        // A link beside the pool that resolves to the slot's own folder, the way /var resolves to /private/var.
+        let alias = fix.tmp.root.join("alias");
+        std::os::unix::fs::symlink(&leased, &alias).unwrap();
+        let mut spelled = alias.to_string_lossy().into_owned();
+        spelled.push(std::path::MAIN_SEPARATOR);
+        assert_eq!(
+            give_back(&env, &fix.repo, Path::new(&spelled)).unwrap(),
+            HandBack::Returned,
+            "a symlinked spelling with a trailing slash is the same slot"
+        );
+        assert!(leased_protections(&fix.data).unwrap().is_empty());
+        fix.marker_ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_differently_cased_spelling_is_the_same_slot() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let spelled = leased.to_string_lossy().to_uppercase();
+        assert_eq!(
+            give_back(&env, &fix.repo, Path::new(&spelled)).unwrap(),
+            HandBack::Returned,
+            "a differently cased spelling is the same slot"
+        );
+        assert!(leased_protections(&fix.data).unwrap().is_empty());
+        fix.marker_ok();
+    }
+
+    // The other half of the same rule: the repo is keyed by its real folder too, so a second call by another spelling
+    // reuses the crew's lease instead of taking a fresh slot.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_repo_spelling_reuses_the_crew_lease() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (first, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let alias = fix.tmp.root.join("repo-alias");
+        std::os::unix::fs::symlink(&fix.repo, &alias).unwrap();
+        let (again, _) = slot(acquire(&env, &alias, "mc/orch-aaaa", "crew-a").unwrap());
+        assert_eq!(
+            resolve(&first),
+            resolve(&again),
+            "the same crew and branch get the slot they already hold"
+        );
+        assert_eq!(
+            argv_log(&env).matches("\"command\":\"get\"").count(),
+            1,
+            "the pool is asked once, not again for the other spelling"
+        );
+        fix.marker_ok();
+    }
+
+    // The other half of the same rule: a slot reached through a link is still inside the pool, so its lease is found
+    // there. A link that resolves outside the pool is refused, because the folder really is outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_pool_is_still_outside_it() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let outside = fix.tmp.root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"stay").unwrap();
+        let link = fix.tmp.root.join("link-out");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert_eq!(
+            give_back(&env, &fix.repo, &link).unwrap(),
+            HandBack::NotLeased,
+            "a link to a folder the pool never leased is not a lease"
+        );
+        assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"stay");
+        assert!(leased.is_dir());
         fix.marker_ok();
     }
 

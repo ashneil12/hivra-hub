@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Hivra's desktop gate (WP-44). The app starts this server. A worker does not.
-// The binary is pinned as agent-desktop 1.1.0 (Apache-2.0, https://github.com/vercel-labs/agent-desktop).
+// The binary is pinned as agent-desktop 1.2.0 (Apache-2.0, https://github.com/vercel-labs/agent-desktop).
 // Those upstream files do not carry a separate copyright line. This file is Hivra's: the off switch,
 // per-app consent, and the visible-control check. It does not search PATH and it does not keep secrets.
 
@@ -207,7 +207,7 @@ const REF_COMMANDS = new Set([
   "hover",
 ]);
 const APP_FLAG_COMMANDS = new Set(["snapshot", "find", "screenshot", "press", "list-surfaces", "wait"]);
-// agent-desktop 1.1.0 command names. The first argument has to be one of these.
+// agent-desktop 1.2.0 command names. The first argument has to be one of these.
 // A later one is a second command, which the program can run in place of the first
 // when a leading flag (such as `-w`) takes the first word as its value.
 const KNOWN_COMMANDS = new Set([
@@ -272,7 +272,7 @@ const KNOWN_COMMANDS = new Set([
   "cursor-overlay",
   "trace",
 ]);
-// Positional arity from the 1.1.0 command structs. Flags are not positionals.
+// Positional arity from the 1.2.0 command structs. Flags are not positionals.
 const ONE_REF = { min: 1, max: 1, refAt: 0 };
 const SHAPES = {
   click: ONE_REF,
@@ -881,7 +881,7 @@ export function launchFromAppEnv(env) {
 function readPin(pinPath) {
   const missing = {
     code: "BINARY_MISSING",
-    message: "The desktop program's pin isn't set (agent-desktop 1.1.0). Try again once it is.",
+    message: "The desktop program's pin isn't set (agent-desktop 1.2.0). Try again once it is.",
     retry: "safe",
   };
   if (!absolutePath(pinPath)) return missing;
@@ -1072,7 +1072,7 @@ function hashProblem(file, expected, missingFile) {
   if (typeof expected !== "string" || !/^[0-9a-fA-F]{64}$/.test(expected)) {
     return {
       code: "BINARY_MISSING",
-      message: "The desktop program's pin isn't set (agent-desktop 1.1.0). Try again once it is.",
+      message: "The desktop program's pin isn't set (agent-desktop 1.2.0). Try again once it is.",
       retry: "safe",
     };
   }
@@ -1095,7 +1095,7 @@ function hashProblem(file, expected, missingFile) {
 function pinProblem(binary, pin) {
   const programMissing = {
     code: "BINARY_MISSING",
-    message: "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+    message: "The desktop program isn't there (agent-desktop 1.2.0). Try again once it is installed.",
     retry: "safe",
   };
   const binaryProblem = hashProblem(binary, pin && pin.sha256, programMissing);
@@ -1105,7 +1105,7 @@ function pinProblem(binary, pin) {
   if (!helper) return null;
   return hashProblem(path.join(path.dirname(binary), helper), pin.helperSha256, {
     code: "BINARY_MISSING",
-    message: "The desktop program's helper isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+    message: "The desktop program's helper isn't there (agent-desktop 1.2.0). Try again once it is installed.",
     retry: "safe",
   });
 }
@@ -1121,7 +1121,7 @@ function spawnDesktop(command, binary, pin, forwarded, spawnImpl, env) {
     return refuse(
       command,
       "BINARY_MISSING",
-      "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+      "The desktop program isn't there (agent-desktop 1.2.0). Try again once it is installed.",
       "safe",
     );
   }
@@ -1129,7 +1129,7 @@ function spawnDesktop(command, binary, pin, forwarded, spawnImpl, env) {
     return refuse(
       command,
       "BINARY_MISSING",
-      "The desktop program isn't there (agent-desktop 1.1.0). Try again once it is installed.",
+      "The desktop program isn't there (agent-desktop 1.2.0). Try again once it is installed.",
       "safe",
     );
   }
@@ -1301,7 +1301,7 @@ export function handleMcpMessage(message, state) {
       result: {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "hivra-desktop", version: "1.1.0" },
+        serverInfo: { name: "hivra-desktop", version: "1.2.0" },
       },
     })}\n`;
   }

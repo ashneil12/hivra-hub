@@ -126,7 +126,7 @@ fn the_bundled_index_lists_the_five_default_plugins() {
         verify.source,
         Some(InstallSource::Npm {
             package: "e2e".into(),
-            version: "0.22.0".into(),
+            version: "0.23.0".into(),
             registry: None,
         })
     );
