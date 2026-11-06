@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 78] = [
+const APP_ACTIONS: [&str; 79] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -99,6 +99,8 @@ const APP_ACTIONS: [&str; 78] = [
     "worktrees.create",
     "actions.list",
     "actions.run",
+    // WP-90: the same stack rows the stack card shows, names and fake services included.
+    "stacks.list",
     "folders.list",
     "folders.move",
     "notes.list",
@@ -286,6 +288,9 @@ Actions:
                   worktrees.list). It returns at once with a run ID;
                   waitSeconds (0-25) waits that long for it to end. Check how
                   a longer run ended with actions.list.
+  stacks.list    {}  This checkout's stack, the name its app opens at
+                  (name.localhost:<proxy port>), the fake outside services it
+                  runs, and whether it reaches the real internet. Read only.
   folders.list   {}  Folders in your current project.
   folders.move   {"sessionId":"...","folderId":"..."}
                   Or use "newFolderName":"Research" to create a folder.
@@ -916,6 +921,7 @@ mod tests {
             "worktrees.create",
             "actions.list",
             "actions.run",
+            "stacks.list",
             "artifacts.list",
             "artifacts.read",
             "artifacts.write",

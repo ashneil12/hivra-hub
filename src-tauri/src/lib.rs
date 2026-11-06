@@ -133,6 +133,8 @@ pub mod ssh_askpass;
 // Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
 mod worktree_pool;
 // WP-87: a stack per worktree, with its own ports and Compose project.
+mod local_services; // WP-90: the fake outside service each stack can run
+mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
 mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
@@ -439,6 +441,28 @@ pub fn run() {
                     data_dir: claim.data_dir.clone(),
                     error: format!("the app's data folder is {app_data:?}"),
                 });
+            }
+            // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
+            // keeps its own registry and takes the next free port above 7400.
+            let dev_copy = identity.kind != instance::Kind::Daily;
+            if let Err(error) = proxy::server::ensure_running(
+                &claim.data_dir,
+                dev_copy,
+                &std::collections::HashSet::new(),
+            ) {
+                eprintln!("WP-90: the named-app proxy did not start: {error}");
+            }
+            // WP-90: a stack still marked running from the last launch keeps its names on
+            // this process; the new proxy has just pruned the previous owner's.
+            match stacks::env_from_app(app.handle()) {
+                Ok(env) => {
+                    if let Err(error) = stacks::resume_names(&env) {
+                        eprintln!("WP-90: the running stacks' names were not put back: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("WP-90: the running stacks' names were not put back: {error}");
+                }
             }
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
@@ -825,6 +849,7 @@ pub fn run() {
             worktree_pool::worktree_pool_prune,
             stacks::stack_status,
             stacks::stack_down,
+            stacks::stack_reset,
             stacks::stack_stale,
             stacks::stack_remove_stale,
             project_file::project_file_status,

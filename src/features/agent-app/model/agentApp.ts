@@ -218,6 +218,8 @@ export type AgentAppHost = {
   ): Promise<Worktree>;
   /** The project's imported actions (.monocode/project.json) and recent runs. */
   projectActions?(cwd: string): Promise<ActionsListing>;
+  /** WP-90: the same stack rows the stack card shows, names and fake services included. */
+  stacks?(cwd: string): Promise<unknown>;
   /** Start one in a checkout of the project; returns at once. */
   runProjectAction?(checkoutCwd: string, actionId: string): Promise<ActionRun>;
   waitProjectAction?(runId: string, timeoutMs: number): Promise<ActionRun>;
@@ -397,6 +399,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["worktrees.create", ["branch", "base", "existing", "runSetup", "project"]],
   ["actions.list", ["project"]],
   ["actions.run", ["action", "worktreeCwd", "waitSeconds", "project"]],
+  ["stacks.list", ["project"]],
   ["folders.list", ["project"]],
   ["folders.move", ["sessionId", "folderId", "newFolderName", "project"]],
   ["notes.list", ["limit", "offset"]],
@@ -1873,6 +1876,12 @@ export async function handleAgentApp(
             setupNote: `${tree.setup?.name ?? "Setup"} is running in the new worktree (run ${run.id}). actions.list shows when it ends; start work there after it finishes.`,
           }
         : tree;
+    }
+    case "stacks.list": {
+      const cwd = requireProject(source, input, host);
+      if (!host.stacks) throw new Error("Stacks aren't available in this app");
+      // Read only: the same status the stack card shows, names and fake services included.
+      return host.stacks(cwd);
     }
     case "actions.list": {
       const cwd = requireProject(source, input, host);

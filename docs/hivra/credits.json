@@ -196,13 +196,13 @@
       "name": "portless",
       "url": "https://github.com/vercel-labs/portless",
       "licence": "Apache-2.0",
-      "gave": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove, planned for Wave I"
+      "gave": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90)"
     },
     {
       "name": "emulate",
       "url": "https://github.com/vercel-labs/emulate",
       "licence": "Apache-2.0",
-      "gave": "14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones, planned for Wave I"
+      "gave": "14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90)"
     },
     {
       "name": "oh-my-hermes",
@@ -464,7 +464,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Vercel Inc.",
       "where": "src-tauri/src/proxy/",
-      "how": "Planned for WP-90, code not copied yet: routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
+      "how": "WP-90: routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
     },
     {
       "name": "emulate's base URLs and file store",
@@ -472,7 +472,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Chris Tate",
       "where": "src-tauri/src/local_services/",
-      "how": "Planned for WP-90, code not copied yet: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
+      "how": "WP-90: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
     },
     {
       "name": "oh-my-hermes's dag-ulw planner",

@@ -64,7 +64,21 @@ export function WorktreeStacks({ cwd }: { cwd: string }) {
     <section className="flex flex-col gap-3 rounded-xl border border-stroke p-4" aria-label="Worktree stacks">
       <h3 className="text-[13px] font-medium">Worktree stacks</h3>
       {error ? <p className="text-[12px] text-content/70">{error}</p> : null}
-      <StackList stacks={status.stacks} onStop={stop} />
+      <StackList
+        stacks={status.stacks}
+        onStop={stop}
+        onReset={(worktree) => {
+          const requested = cwd;
+          invoke("stack_reset", { cwd: worktree }).then(
+            () => {
+              if (cwdRef.current === requested) setTick((value) => value + 1);
+            },
+            (reason) => {
+              if (cwdRef.current === requested) setError(String(reason));
+            },
+          );
+        }}
+      />
     </section>
   );
 }
