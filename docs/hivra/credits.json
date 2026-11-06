@@ -211,6 +211,12 @@
       "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
     },
     {
+      "name": "T3 Code",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
@@ -481,6 +487,22 @@
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
       "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+    },
+    {
+      "name": "T3 Code's PR watch, Claude result and worktree cleanup rules",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs",
+      "how": "evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640."
+    },
+    {
+      "name": "T3 Code's recorded Claude transcripts",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
+      "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
     }
   ]
 }

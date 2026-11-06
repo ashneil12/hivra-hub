@@ -239,6 +239,20 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/goal_graph/
   dag_core.py translated line by line to Rust in topology.rs (WP-91), with test_dag_core.py's cases ported. The record rules in dag_run.py — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — are translated into record.rs, and the plan-time check into plan.rs. Read and not copied: tools/dag_tool.py, dag_scope_guard.py, dag_define_gate.py (hooks for a single-workspace model Hivra does not have) and the TUI, which informed the view's folding and wording only. One rule differs: dag-ulw treats two nodes as ordered only when one names the other directly, where Hivra refuses only a pair that can really run at the same time.
 
+- T3 Code's PR watch, Claude result and worktree cleanup rules
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs
+  evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640.
+
+- T3 Code's recorded Claude transcripts
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/integrations/harness/providers/claude/fixtures/t3code/
+  18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
