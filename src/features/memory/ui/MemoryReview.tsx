@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
+import { lastRecallFor, latestRecall, recallSummary } from "../model/lastRecall";
 import {
   acceptImport,
   acceptItem,
@@ -20,6 +21,8 @@ const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/8
 export type ImportRow = { id: string; project: string; markdown: string; status: string };
 
 export type MemoryPorts = {
+  /** Which Mono's memory this screen is showing, when it knows. The last recall is read for it. */
+  mateId?: string;
   load: () => Promise<MemoryDoc>;
   save: (revision: number, doc: MemoryDoc) => Promise<boolean>;
   proposals: () => Promise<ImportRow[]>;
@@ -103,12 +106,20 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   }
 
   const items = doc ? searchMemory(doc.items, query) : [];
+  // WP-99: the last turn's recall, in plain words, folded away unless asked for.
+  const lastRecall = doc ? (ports.mateId ? lastRecallFor(ports.mateId) : latestRecall()) : undefined;
   const proposals = (doc ? imports : []).filter(
     (row) => row.status === "unreviewed" && !doc?.imports[row.id] && !mentionsSecret(row.markdown) && !mentionsSecret(row.project),
   );
 
   return (
     <section className="flex flex-col gap-4" aria-label="Memory">
+      {lastRecall ? (
+        <details data-recall-why>
+          <summary className="cursor-pointer text-sm">Why these were recalled</summary>
+          <p className="mt-2 text-sm">{recallSummary(lastRecall)}</p>
+        </details>
+      ) : null}
       <label className="flex flex-col gap-1 text-sm">
         Search memory
         <input
