@@ -101,6 +101,11 @@ function keepRoot(abs, ctx) {
   return true;
 }
 
+/** The launchers that read the local gateway's own files (`~/.local/share/claude-gpt/*`) beside their own script. */
+const GATEWAY_LAUNCHERS = ["claude-deepseek", "claude-grok"];
+/** Every launcher Ash starts a bench on: the gateway's two, and the OpenRouter one (which reads its key from the Keychain, so it needs nothing beside its own script). */
+const LAUNCHER_BASENAMES = [...GATEWAY_LAUNCHERS, "claude-openrouter"];
+
 /** True only for the CLI's own install, config and credential files. Nothing else under the real home. */
 export function isCliReadPath(abs, ctx = {}) {
   const file = clean(abs);
@@ -110,8 +115,12 @@ export function isCliReadPath(abs, ctx = {}) {
   const cli = clean(ctx.cli);
   if (cli) roots.push(cli);
   const base = path.posix.basename(cli ?? "");
-  if (base === "claude-deepseek" || base === "claude-grok") {
+  if (GATEWAY_LAUNCHERS.includes(base)) {
     roots.push(`${home}/.local/share/claude-gpt/proxy-key`, `${home}/.local/share/claude-gpt/launcher.py`, `${home}/.local/share/claude-gpt/settings.json`, `${home}/.local/bin/${base}`);
+  } else if (LAUNCHER_BASENAMES.includes(base)) {
+    // OpenRouter: the launcher file itself and nothing else. Its key passes through the run's own relay, and its CLI is
+    // `~/.local/bin/claude`, already above.
+    roots.push(`${home}/.local/bin/${base}`);
   }
   return roots.some((root) => file === root || file.startsWith(`${root}/`));
 }
@@ -131,11 +140,14 @@ export function cliReadOnlyPaths({ realHome, cli, devConfig } = {}) {
     add(`${home}/.local/share/claude`, "Claude Code's install directory: the binary and the version files next to it");
     add(`${home}/.local/bin/claude`, "the claude program the DeepSeek and Grok launchers exec, and the one claude and haiku-test start");
     const base = path.posix.basename(clean(cli) ?? "");
-    if (base === "claude-deepseek" || base === "claude-grok") {
+    if (GATEWAY_LAUNCHERS.includes(base)) {
       add(`${home}/.local/share/claude-gpt/proxy-key`, "the local gateway key the DeepSeek and Grok launchers read once, at start. The rest of that folder (config, auth, logs) stays closed.");
       add(`${home}/.local/share/claude-gpt/launcher.py`, "the Grok launcher script");
       add(`${home}/.local/share/claude-gpt/settings.json`, "the settings file the Grok launcher passes to Claude");
       add(`${home}/.local/bin/${base}`, "the launcher the bench was pointed at");
+    } else if (LAUNCHER_BASENAMES.includes(base)) {
+      // The OpenRouter launcher: one file. Its key is held by this run's loopback relay, never read in here.
+      add(`${home}/.local/bin/${base}`, "the launcher the bench was pointed at; it reads no key of its own inside this fence (the run's relay holds it)");
     }
   }
   return out;

@@ -11,6 +11,8 @@
 //                           --judge deepseek --judge-model deepseek-chat --judge-key-env DEEPSEEK_API_KEY
 //   npm run hub:realconv -- --scenes S10 --agents custom:grok --custom-model ~/grok-model.json
 //   npm run hub:realconv -- --scenes S10,S5,S14 --agents deepseek-sub  # everything on DeepSeek V4.1 Flash (local gateway)
+//   npm run hub:realconv -- --scenes S10,S5,S14 --agents openrouter-sub --tester openrouter-sub --judge openrouter-sub
+//                                                                        # everything on OpenRouter (~/.local/bin/claude-openrouter)
 //   npm run hub:realconv -- --list          # the scenes and which can run
 //   npm run hub:realconv -- --dry-run ...   # check the options and print the plan; nothing starts
 //
@@ -41,7 +43,8 @@ export function parseArgs(argv, env = process.env) {
     effort: value(`--${who}-effort`),
   });
   const agents = value("--agents", "deepseek-sub");
-  if (!/^(claude:[\w.-]+|custom:[\w.-]+|deepseek-sub|haiku-test|grok-sub)$/.test(agents)) throw new Error(`--agents is claude:<model> or custom:<id> (or deepseek-sub, haiku-test, grok-sub), not "${agents}"`);
+  if (!/^(claude:[\w.-]+|custom:[\w.-]+|deepseek-sub|haiku-test|grok-sub|openrouter-sub)$/.test(agents))
+    throw new Error(`--agents is claude:<model> or custom:<id> (or deepseek-sub, haiku-test, grok-sub, openrouter-sub), not "${agents}"`);
   // The tester and judge stay on DeepSeek unless named; never Claude by default, even with Claude agents.
   const llmDefault = "deepseek-sub";
   return {
@@ -108,15 +111,20 @@ export function benchSpec(book, scenes, options) {
     leak: book.leak,
     // The wrapper holds Claude chats to this alias (sonnet unless Ash asked for another); routed chats are left alone.
     model: claudeModel ? claudeModel.split("-")[0] : book.model ?? "sonnet",
-    // On a gateway launcher the app keeps its Claude default; the bench's wrapper sends every call to the launcher.
-    appModel: options.agents === "deepseek-sub" || options.agents === "grok-sub" ? "claude:sonnet-5" : options.agents === "haiku-test" ? "claude:haiku-4.5" : options.agents,
+    // On a launcher the app keeps its Claude default; the bench's wrapper sends every call to the launcher.
+    appModel:
+      options.agents === "deepseek-sub" || options.agents === "grok-sub" || options.agents === "openrouter-sub"
+        ? "claude:sonnet-5"
+        : options.agents === "haiku-test"
+          ? "claude:haiku-4.5"
+          : options.agents,
     effort: book.effort ?? "medium",
     budget: { ...book.budget, maxMinutes: options.maxMinutes ?? Math.min(book.budget?.maxMinutes ?? 100, minutes) },
     scenarios: [],
   };
 }
 
-/** What realconv asks the realtest bench to run. Grok is its own launcher, not DeepSeek. */
+/** What realconv asks the realtest bench to run. Grok and OpenRouter are their own launchers, not DeepSeek. */
 export function benchRunOptions(options) {
   return {
     build: options.build,
@@ -130,6 +138,7 @@ export function benchRunOptions(options) {
     claudeConfigs: options.claudeConfigs ?? [],
     deepseekSub: options.agents === "deepseek-sub",
     grokSub: options.agents === "grok-sub",
+    openrouterSub: options.agents === "openrouter-sub",
     ...(options.agents === "haiku-test" ? { haikuTest: true } : {}),
   };
 }
@@ -154,7 +163,9 @@ export async function runRealconv(options, { bench, clients } = {}) {
         ? "deepseek-sub (Claude Code on DeepSeek V4.1 Flash through the local gateway)"
         : options.agents === "grok-sub"
           ? "grok-sub (Claude Code on Grok through the local gateway; the tester and the judge stay on DeepSeek)"
-          : options.agents,
+          : options.agents === "openrouter-sub"
+            ? "openrouter-sub (Claude Code on OpenRouter through the launcher; the tester and the judge stay on DeepSeek unless named)"
+            : options.agents,
     tester: `${testerSpec.provider}/${testerSpec.model}${testerSpec.keyEnv ? ` (key from $${testerSpec.keyEnv})` : ""}`,
     judge: `${judgeSpec.provider}/${judgeSpec.model}${judgeSpec.keyEnv ? ` (key from $${judgeSpec.keyEnv})` : ""}`,
     budget: spec.budget,

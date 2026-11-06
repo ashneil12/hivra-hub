@@ -1,4 +1,8 @@
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
+// WP-85: terminal Claude sessions in the chat list.
+import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
+import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
+import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
 import { withInboxCount } from "../features/hub/model/inboxCountNote";
 import { roomSeatTitle } from "../features/hub/model/roomSeatTitle";
 import { standingRuleSendNote } from "../features/monos/model/workerStartNudge";
@@ -14680,22 +14684,28 @@ function Workspace({
     [history, sidebarCwd],
   );
 
+  // WP-85: a terminal Claude session joins this project's chats.
+  const terminalMirror = useTerminalMirror();
   const sidebarHistoryRows = useMemo(
     () =>
-      historyWithLiveSessions(
-        history,
-        // A habit's hidden run is never one of the project's chats.
-        promptableSessions,
+      mergeTerminalSessions(
+        historyWithLiveSessions(
+          history,
+          // A habit's hidden run is never one of the project's chats.
+          promptableSessions,
+          sidebarCwd,
+          {
+            ...(projectBranches?.current
+              ? { branch: projectBranches.current }
+              : {}),
+            ...(sidebarCwd && sidebarCwd !== "~"
+              ? { repo: projectName(sidebarCwd) }
+              : {}),
+          },
+          orchestrationRuns,
+        ),
+        terminalMirror.sessions,
         sidebarCwd,
-        {
-          ...(projectBranches?.current
-            ? { branch: projectBranches.current }
-            : {}),
-          ...(sidebarCwd && sidebarCwd !== "~"
-            ? { repo: projectName(sidebarCwd) }
-            : {}),
-        },
-        orchestrationRuns,
       ),
     [
       history,
@@ -14703,6 +14713,7 @@ function Workspace({
       promptableSessions,
       sidebarCwd,
       orchestrationRuns,
+      terminalMirror.sessions,
     ],
   );
   const sidebarHistory = useStableValue(
@@ -16972,15 +16983,20 @@ function Workspace({
   // Where the team remembers the chat Ash was last in (codingTeamList.ts codingTeamView): its project, or its Mono's item.
   const teamProjectId = teamProject?.id ?? (ownTeamShown ? monoTeamItem(teamOwnerMonoId!) : undefined);
   // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
+  const openTerminalSession = terminalMirror.openSession;
+  const closeTerminalSession = terminalMirror.close;
   const onSelectSessionFromList = useCallback(
     (sessionId: string) => {
+      // WP-85: a terminal session opens here, and does not start a harness chat.
+      if (openTerminalSession(sessionId)) return;
+      closeTerminalSession();
       if (teamProjectId && !isMonoSession(sessionId)) {
         noteCodingTeamView(teamProjectId, "chat");
         if (monoViewIdRef.current) closeMonoView();
       }
       return onSelectHistorySession(sessionId);
     },
-    [teamProjectId, closeMonoView, onSelectHistorySession],
+    [teamProjectId, closeMonoView, onSelectHistorySession, openTerminalSession, closeTerminalSession],
   );
   const onNewFromList = useCallback(() => {
     if (teamProjectId) noteCodingTeamView(teamProjectId, "chat");
@@ -17356,6 +17372,23 @@ function Workspace({
                               style={{ gridArea: "main" }}
                             >
                               <div className="relative min-h-0 min-w-0 flex-1">
+                                {/* WP-85: the terminal session covers the chat. It is not a harness session. The key drops a reply typed for another one. */}
+                                {terminalMirror.session ? (
+                                  <div className="absolute inset-0 z-10">
+                                    <TerminalMirrorPane
+                                      key={terminalMirror.session.id}
+                                      session={terminalMirror.session}
+                                      projectId={hubProject?.id}
+                                      note={terminalMirror.note}
+                                      onReply={terminalMirror.reply}
+                                      onStop={terminalMirror.stop}
+                                      onAllow={terminalMirror.allow}
+                                      onDeny={terminalMirror.deny}
+                                      onAttach={(taskId) => void terminalMirror.attach(taskId)}
+                                      onClose={terminalMirror.close}
+                                    />
+                                  </div>
+                                ) : null}
                                 {tabs.map((tab) => (
                                   <div
                                     key={tab.id}

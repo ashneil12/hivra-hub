@@ -163,7 +163,8 @@ const read = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8"));
 const data = path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub");
 fs.mkdirSync(data, { recursive: true });
 let lock = null;
-const deadline = Date.now() + 2000;
+// Wait for the lock to go, with a deadline far past what a loaded machine needs holding it.
+const deadline = Date.now() + 60_000;
 while (!lock) {
   const db = new DatabaseSync(path.join(data, "instance-owner.sqlite"));
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
@@ -395,7 +396,9 @@ function ship(w, args = [], env = {}) {
       "--launcher",
       "spawn",
       "--timeouts",
-      "3000,6000,30000",
+      // The build's start (it appears in running.json) waits on a condition with a deadline far past what a loaded
+      // machine needs. The 6 s commit window stays: the no-commit test reads that number.
+      "30000,6000,30000",
       ...args,
     ],
     { env: { ...w.env, ...env }, encoding: "utf8" },
@@ -596,6 +599,21 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   assert.equal(state.launch.env.CFFIXED_USER_HOME, w.home);
 });
 
+// The app takes the data folder's lock like the real one. On a loaded machine the previous holder can take longer
+// than a couple of seconds to let go; the app must wait for the lock to go, not give up and make the ship roll back.
+test("the app waits for a held data-folder lock instead of giving up after two seconds", async () => {
+  const w = world();
+  const lock = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(lock, "the test holds the data folder's lock");
+  const pid = startApp(w);
+  // Past the old two-second budget, where the app used to exit 75.
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+  assert.equal(alive(pid), true, "the app is still waiting for the lock, not gone");
+  releaseLock(lock);
+  const running = await until("the app to take the lock", () => readJson(path.join(w.data, "running.json")), 30_000);
+  assert.equal(running.pid, pid);
+});
+
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
   const w = world({ newBehavior: "no-commit" });
   const { code, answer } = ship(w);
@@ -671,7 +689,7 @@ test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not 
   const w = world();
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
     { env: w.env, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1163,7 +1181,7 @@ test("r50: the runner is submitted to launchd with no plist, so macOS sees no ne
   const launchctl = fakeLaunchctl(w.root);
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "30000,6000,30000"],
     { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1230,7 +1248,7 @@ test("r53 drill: the default ship starts a detached runner, asks launchd for not
   const started = Date.now();
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
     { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1266,7 +1284,7 @@ test("r50 drill: a submitted runner carries a ship across the app's restart and 
   await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "30000,6000,30000"],
     { env: w.env, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1395,4 +1413,42 @@ test("on Windows a briefly locked app folder is renamed again, for up to ten sec
   calls = 0;
   assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: () => { calls += 1; throw busy("ENOENT"); }, now: () => 0, wait: () => {} }), /ENOENT/);
   assert.equal(calls, 1, "only a locked folder is retried");
+});
+
+// Two writers, or a virus checker holding the old file, can make the rename fail on Windows with EPERM or EBUSY.
+// That is a moment, not a failure: the state file is written by trying again briefly, and never on another error.
+test("a state file whose rename is locked for a moment is written by trying again", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const file = path.join(root, "state.json");
+  const busy = (code) => Object.assign(new Error(`${code}: the file is locked`), { code });
+  let calls = 0;
+  let clock = 0;
+  writeJson(file, { phase: "waiting" }, {
+    now: () => clock,
+    wait: (ms) => (clock += ms),
+    rename: (from, to) => {
+      calls += 1;
+      if (calls < 3) throw busy(calls === 1 ? "EPERM" : "EBUSY");
+      fs.renameSync(from, to);
+    },
+  });
+  assert.equal(calls, 3, "a locked rename is tried again");
+  assert.equal(readJson(file).phase, "waiting");
+  assert.ok(clock > 0 && clock < 2_000, "the retries stay inside a short budget");
+
+  calls = 0;
+  clock = 0;
+  assert.throws(
+    () => writeJson(file, { phase: "waiting" }, { now: () => clock, wait: (ms) => (clock += ms), rename: () => { calls += 1; throw busy("EBUSY"); } }),
+    /EBUSY/,
+  );
+  assert.ok(clock >= 2_000, "a lock that never clears is given up on");
+
+  calls = 0;
+  assert.throws(
+    () => writeJson(file, {}, { now: () => 0, wait: () => {}, rename: () => { calls += 1; throw busy("ENOENT"); } }),
+    /ENOENT/,
+  );
+  assert.equal(calls, 1, "only a locked rename is retried");
 });

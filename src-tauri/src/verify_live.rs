@@ -59,8 +59,8 @@ pub struct Plan {
     /// Only with `claudeBinary`.
     #[serde(default)]
     pub deepseek: bool,
-    /// The bench's Claude Code runs on some other local gateway launcher (`--agents grok-sub`). No Claude sign-in
-    /// holds workers, and models are not rewritten to DeepSeek. Only with `claudeBinary`.
+    /// The bench's Claude Code runs on some other launcher of Ash's (`--agents grok-sub`, `--agents openrouter-sub`).
+    /// No Claude sign-in holds workers, and models are not rewritten to DeepSeek. Only with `claudeBinary`.
     #[serde(default)]
     pub launcher: bool,
     /// Old plans set this for a launcher this app no longer runs. Parsed so those plans still start, then ignored.

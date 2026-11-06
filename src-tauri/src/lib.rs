@@ -3,7 +3,9 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
+mod attribution;
 // WP-79: a loopback door for outside AI tools.
 mod outside;
 // WP-04: the one-time, read-only import from the retired Ash OS bridge.
@@ -51,6 +53,8 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// WP-85: Claude sessions started in a terminal.
+mod terminal_mirror;
 // WP-51: memory the person reviews.
 mod memory_review;
 // WP-83: learn from past chats. Readers, and the write after an accept.
@@ -461,6 +465,8 @@ pub fn run() {
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
             control::init(app.handle())?;
+            // WP-85: the loopback port for terminal Claude sessions. A failure here does not stop the app.
+            terminal_mirror::init(app.handle().clone(), claim.data_dir.clone(), identity.kind);
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
@@ -600,6 +606,12 @@ pub fn run() {
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
+            // WP-85: terminal Claude sessions.
+            terminal_mirror::terminal_mirror_status,
+            terminal_mirror::terminal_mirror_set,
+            terminal_mirror::terminal_mirror_list,
+            terminal_mirror::terminal_mirror_steer,
+            terminal_mirror::terminal_mirror_attach,
             delivery_gate::gate_cards,
             delivery_gate::gate_respond,
             // Hivra WP-11: the watcher's wake queue and timers.
@@ -1133,6 +1145,9 @@ pub fn run() {
             project_logo::forget_logo_file,
             // WP-78: Settings → Activity.
             activity::activity_list,
+            // WP-86: commits on a task, and the agents behind a pull request.
+            attribution::attribution_for_task,
+            attribution::attribution_for_commits,
             // WP-89: a worker-default change, beside the activity list.
             activity::activity_note,
             // WP-50: past chats, only with a person's OK, drafted for review.

@@ -5,6 +5,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { pathKey } from "../../../shared/lib/paths";
 import { takeHomeTask } from "../../home/model/pending";
+import { readTaskCommits, type TaskCommit } from "../../attribution/read";
 import { peekTaskFocus, subscribeTaskFocus } from "../../search/model/finderOpen";
 import { hubData } from "../../hub/model/hubData";
 import { setHubSelection } from "../../hub/model/hubNav";
@@ -191,6 +192,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
   const [views, setViews] = useState<HeldView[]>([]);
   const [current, setCurrent] = useState<HeldView | null>(null);
   const [open, setOpen] = useState<StoreTask | null>(null);
+  const [commits, setCommits] = useState<TaskCommit[]>([]);
   const [adding, setAdding] = useState(false);
   const [showFilter, setShowFilter] = useState(false);
   const [naming, setNaming] = useState(false);
@@ -345,6 +347,29 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
     const task = tasks.find((item) => item.id === id);
     if (task) setOpen(task);
   }, [tasks]);
+
+  // WP-86: this task's commits. A new task clears first. A failed read keeps the list.
+  const commitKey = open ? `${open.id}\0${cwd}` : "";
+  const [commitsFor, setCommitsFor] = useState(commitKey);
+  if (commitsFor !== commitKey) {
+    setCommitsFor(commitKey);
+    setCommits([]);
+  }
+  useEffect(() => {
+    if (!open) return;
+    const key = `${open.id}\0${cwd}`;
+    let cancelled = false;
+    void invoke("attribution_for_task", { taskId: open.id, repo: cwd || null })
+      .then((value) => {
+        if (!cancelled && commitsFor === key) setCommits(readTaskCommits(value));
+      })
+      .catch(() => {
+        // The rows already on screen stay.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, cwd, commitsFor]);
 
   useEffect(() => {
     if (adding) titleRef.current?.focus();
@@ -725,6 +750,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onPriority={(priority) => void write(open, { priority })}
               onAssign={(assignee) => void write(open, { assignee: assignee || null })}
               onOpenChat={(id) => window.dispatchEvent(new CustomEvent("hivra:open-task-chat", { detail: id }))}
+              commits={commits}
               appUrl={appUrl}
             />
           </div>

@@ -7,6 +7,8 @@ import { workingLabel } from "../model/working";
 import { PhasePanel } from "../../phases/ui/PhasePanel";
 import type { PathId } from "../../phases/model/settings";
 import { MarkdownView } from "./MarkdownView";
+import { TaskCommits } from "../../attribution/ui/TaskCommits";
+import type { TaskCommit } from "../../attribution/read";
 
 const STATUSES = ["Backlog", "Todo", "In progress", "In review", "Done", "Cancelled"] as const;
 
@@ -43,6 +45,7 @@ export function TaskDetail({
   onPriority,
   onAssign,
   onOpenChat,
+  commits = [],
   phase,
   onPhaseAnswer,
   onPhasePath,
@@ -50,6 +53,8 @@ export function TaskDetail({
   appUrl,
 }: {
   task: TaskDetailTask;
+  /** WP-86: commits credited to this task. */
+  commits?: readonly TaskCommit[];
   note?: string | null;
   now?: number;
   parentTitle?: string | null;
@@ -133,6 +138,7 @@ export function TaskDetail({
       {typeof task.workingSince === "number" ? <p className="text-[12px] text-content/70">{workingLabel(task.workingSince, now)}</p> : null}
       {followsWork ? <p className="text-[12px] text-content/70">This task follows its work.</p> : null}
       {note ? <p className="mt-1 text-[12px] text-content/70">{note}</p> : null}
+      <TaskCommits commits={commits} />
       <label className="mt-2 block text-[12px] text-content/70">
         Status
         <select
