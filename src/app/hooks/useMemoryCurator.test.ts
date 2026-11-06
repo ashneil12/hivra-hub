@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: () => Promise.reject(new Error("no app")) }));
 
-import { curatorFeeds, lastExchange } from "./useMemoryCurator";
+import { curatorAsk, curatorFeeds, lastExchange } from "./useMemoryCurator";
 
 it("curates a finished first-mate turn once, and not a worker or a busy chat", () => {
   const fed = new Map<string, string | undefined>();
@@ -22,4 +22,15 @@ it("curates a finished first-mate turn once, and not a worker or a busy chat", (
   expect(lastExchange([{ id: "u", role: "user", text: "hi" }, { id: "a", role: "assistant", text: "ok", streaming: true }])).toBeUndefined();
   expect(lastExchange([{ id: "t", role: "tool", text: "x".repeat(100) }])).toBeUndefined();
   expect(lastExchange([])).toBeUndefined();
+});
+
+it("asks nobody on the rules tier, and the crew on the others", async () => {
+  const turn = { user: "Remember that the release branch is called ship.", assistant: "Noted." };
+  const answer = await curatorAsk("rules", turn)("the whole prompt");
+  expect(answer.ok && answer.text).toBe(
+    JSON.stringify({ kind: "add", text: "The release branch is called ship.", evidence: "Remember that the release branch is called ship." }),
+  );
+  // A quiet turn says none, so settleTurn finishes it without an item.
+  const quiet = await curatorAsk("rules", { user: "Thanks.", assistant: "" })("");
+  expect(quiet.ok && quiet.text).toBe('{"kind":"none"}');
 });

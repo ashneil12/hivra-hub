@@ -5,12 +5,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
-import { collectAnswer, settleTurn, type CuratorContext } from "../../features/memory/model/curator";
+import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
 import { noteOutcome } from "../../features/memory/model/health";
 import { commitDoc } from "../../features/memory/model/review";
+import { rulesAnswer } from "../../features/memory/model/ruleCurator";
+import { loadMemoryTier, type MemoryTier } from "../../features/memory/model/tier";
 import type { Session } from "../../features/sessions/model/session";
 
 type Loaded = { revision: number; doc: unknown };
@@ -89,6 +91,20 @@ function askModel(prompt: string) {
   return askCrew(prompt);
 }
 
+/**
+ * WP-103: the tier the person chose. Rules answers without asking anything; cheap asks the model they picked;
+ * crew is today's brief to a signed-in CLI. The tier is read once per turn, so a change starts with the next turn.
+ */
+export function curatorAsk(tier: MemoryTier, turn: { user: string; assistant: string }): (prompt: string) => Promise<CuratorAsk> {
+  if (tier === "rules") {
+    return async () => {
+      const answer = rulesAnswer(turn);
+      return { ok: true, text: answer.kind === "reply" ? answer.text : "" };
+    };
+  }
+  return askModel;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
@@ -113,7 +129,8 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           fedLast.current.delete(feed.sessionId);
           return;
         }
-        const result = await collectAnswer(loaded, ctx, askModel);
+        // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one.
+        const result = await collectAnswer(loaded, ctx, curatorAsk(loadMemoryTier().tier, ctx));
         if (result.kind === "deferred") {
           fedLast.current.delete(feed.sessionId);
           return;
