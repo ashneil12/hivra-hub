@@ -186,8 +186,8 @@ export function fitMemoryBudget(
   const place = (line: string): MemoryUse => {
     const here = use?.get(memoryUseKey(line));
     if (here) return here;
-    const date = line.match(DATED)?.[1] ?? "0000-00-00";
-    const at = Date.parse(`${date}T00:00:00Z`);
+    const written = line.match(DATED)?.[1] ?? "0000-00-00";
+    const at = Date.parse(`${written}T00:00:00Z`);
     return { fade: 1, usedAt: Number.isFinite(at) ? at : 0 };
   };
   // Least used first: the lowest fade, then the one last used longest ago. Ties keep file order.
