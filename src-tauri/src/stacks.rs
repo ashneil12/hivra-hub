@@ -773,9 +773,7 @@ fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, Strin
     // Stop-then-start is one step: a second reset waits for this one rather than interleaving
     // and leaving the first stand-in running.
     let lock = stand_in_lock(&dir);
-    let _one_at_a_time = lock
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _one_at_a_time = lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     stand_in.stop(&dir)?;
     if entry.emulated.is_empty() {
         return Ok(None);
@@ -4225,9 +4223,8 @@ mod tests {
     fn a_running_stack_gets_its_names_back_after_a_restart() {
         let fix = Fix::new();
         let base = fix.env();
-        let routes = crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(
-            &base.data_dir,
-        ));
+        let routes =
+            crate::proxy::routes::RouteStore::new(crate::proxy::server::proxy_dir(&base.data_dir));
         // The previous app process published every name and is now gone.
         let dead = u32::MAX;
         routes
@@ -4308,7 +4305,10 @@ mod tests {
         let live = routes.load_routes_raw().unwrap();
         assert_eq!(live.len(), 2, "{live:?}");
         let own = std::process::id();
-        for (name, port) in [("main-a.localhost", 22010u16), ("github-a.localhost", 22011)] {
+        for (name, port) in [
+            ("main-a.localhost", 22010u16),
+            ("github-a.localhost", 22011),
+        ] {
             let route = routes
                 .route_for_host(name)
                 .unwrap_or_else(|| panic!("{name} is not routed"));
@@ -4322,10 +4322,7 @@ mod tests {
         assert_eq!(running.owner_pid, own);
         assert_eq!(running.proxy_port, Some(7500));
         // The app URL follows the proxy's new port too.
-        assert_eq!(
-            running.url.as_deref(),
-            Some("http://main-a.localhost:7500")
-        );
+        assert_eq!(running.url.as_deref(), Some("http://main-a.localhost:7500"));
     }
 
     #[test]
@@ -4380,8 +4377,8 @@ mod tests {
                ]}"#,
         )
         .unwrap();
-        let error = maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true)
-            .unwrap_err();
+        let error =
+            maybe_start(&env, &fix.main, &fix.first, true, Some(&stack), false, true).unwrap_err();
         assert!(error.contains("real outside service"), "{error}");
         assert!(error.contains("www.googleapis.com"), "{error}");
     }

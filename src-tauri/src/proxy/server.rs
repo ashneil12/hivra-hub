@@ -944,7 +944,8 @@ mod tests {
     #[test]
     fn a_slow_response_body_is_not_cut_by_the_head_timeout() {
         let port = sleepy_backend(Duration::from_millis(500));
-        let (dir, bound) = proxy_with_timeouts(&[("shop-slow.localhost", port)], "slow", short_head());
+        let (dir, bound) =
+            proxy_with_timeouts(&[("shop-slow.localhost", port)], "slow", short_head());
         let reply = request(&bound, &get("shop-slow.localhost"));
         assert!(reply.ends_with("hello"), "the body was cut: {reply:?}");
         drop(dir);
@@ -985,11 +986,8 @@ mod tests {
                 }
             }
         });
-        let (dir, bound) = proxy_with_timeouts(
-            &[("shop-idle.localhost", port)],
-            "ws-idle",
-            short_head(),
-        );
+        let (dir, bound) =
+            proxy_with_timeouts(&[("shop-idle.localhost", port)], "ws-idle", short_head());
         let mut stream = TcpStream::connect_timeout(&bound.v4, Duration::from_secs(2)).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1006,7 +1004,9 @@ mod tests {
         // Quiet for longer than the head timeout: a live socket may send nothing for minutes.
         std::thread::sleep(Duration::from_millis(500));
         stream.write_all(b"ping").unwrap();
-        let read = stream.read(&mut buffer).expect("the idle socket was closed");
+        let read = stream
+            .read(&mut buffer)
+            .expect("the idle socket was closed");
         assert_eq!(&buffer[..read], b"ping");
         drop(dir);
     }

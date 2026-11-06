@@ -998,7 +998,10 @@ pub(crate) mod tests {
             real_target("api.stripe.com:443").as_deref(),
             Some("api.stripe.com")
         );
-        assert_eq!(real_target("user@api.linear.app/x").as_deref(), Some("api.linear.app"));
+        assert_eq!(
+            real_target("user@api.linear.app/x").as_deref(),
+            Some("api.linear.app")
+        );
         assert_eq!(real_target("http://github-shop-wp-90.localhost:7400"), None);
         assert_eq!(real_target("http://127.0.0.1:22010"), None);
         assert_eq!(real_target("http://[::1]:3000"), None);
@@ -1667,7 +1670,8 @@ pub(crate) mod tests {
     fn tasklist_output_names_the_image_or_nothing() {
         // A live pid that is ours.
         assert_eq!(
-            tasklist_image_name("\"node.exe\",\"4321\",\"Console\",\"1\",\"32,456 K\"\n").as_deref(),
+            tasklist_image_name("\"node.exe\",\"4321\",\"Console\",\"1\",\"32,456 K\"\n")
+                .as_deref(),
             Some("node.exe")
         );
         assert_eq!(
