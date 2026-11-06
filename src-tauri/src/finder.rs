@@ -537,13 +537,27 @@ mod tests {
         }
     }
 
-    fn fresh() -> Connection {
+    /// A folder name nothing has used before: process id, a counter and the clock. The old name (id and counter
+    /// only) was reused by a later run whose process got the same id, so its first database opened with the
+    /// rows an earlier run had left in the folder, and four tests counted twice what they had put in.
+    fn fresh_dir() -> std::path::PathBuf {
         static N: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "hivra-wp74-finder-{}-{}",
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!(
+            "hivra-wp74-finder-{}-{}-{}",
             std::process::id(),
-            N.fetch_add(1, Ordering::Relaxed)
-        ));
+            N.fetch_add(1, Ordering::Relaxed),
+            nanos
+        ))
+    }
+
+    fn fresh() -> Connection {
+        let dir = fresh_dir();
+        // A folder with this name can only be left over; start from nothing.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let conn = Connection::open(dir.join("finder.db")).unwrap();
         conn.busy_timeout(std::time::Duration::from_secs(2))
@@ -552,6 +566,22 @@ mod tests {
         crate::notes::ensure_notes_table(&conn).unwrap();
         crate::tasks::ensure_tables(&conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn a_leftover_folder_from_an_earlier_run_is_never_reused() {
+        let pid = std::process::id();
+        // What the old naming would have picked for the first database of a later run with this process id.
+        let stale = std::env::temp_dir().join(format!("hivra-wp74-finder-{pid}-0"));
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("finder.db"), b"left over from an earlier run").unwrap();
+        let names: Vec<_> = (0..3).map(|_| fresh_dir()).collect();
+        let _ = std::fs::remove_dir_all(&stale);
+        for (i, name) in names.iter().enumerate() {
+            assert_ne!(name, &stale, "the folder name repeats an earlier run's");
+            assert!(!name.exists(), "a new folder name already exists");
+            assert!(!names[..i].contains(name), "two databases got one folder");
+        }
     }
 
     fn indexed() -> Connection {
