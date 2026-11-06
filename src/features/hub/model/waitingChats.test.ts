@@ -10,6 +10,7 @@ import type { HubProject } from "./types";
 import {
   answerInWords,
   autopilotMayTake,
+  chatQuestionVeto,
   findWaitingChat,
   gateLog,
   forgetWaitingChat,
@@ -305,6 +306,57 @@ describe("hooks for Autopilot and H4", () => {
     expect(calls.send.map(([id]) => id)).toEqual(["fine"]);
     // Ash may still take a vetoed one himself: the rule only narrows what autopilot does.
     for (const id of vetoed) expect((await takePick(id)).ok, id).toBe(true);
+  });
+
+  // WP-101 fix round 2, item F (N10): a chat's stored shape is read from disk and may have been written by an older
+  // build or edited by hand. A shape the veto can't read is a hold with a reason, never an exception: `autopilotMayTake`
+  // runs in render code, where a throw breaks a list rather than just waiting.
+  it("holds any chat shape it can't read, with a reason, instead of throwing (fix round 2, item F)", async () => {
+    const hostile = {
+      get question(): string {
+        throw new Error("a getter that throws");
+      },
+      pick: "yes",
+    };
+    const shapes: unknown[] = [
+      null,
+      undefined,
+      7,
+      "ship it",
+      {},
+      { question: "" },
+      { question: "Which first?", options: 5 },
+      { question: "Which first?", rows: 5 },
+      { question: "Which first?", rows: [null] },
+      { question: "Which first?", rows: [{ options: 5 }] },
+      { question: "Which first?", rows: [{ question: 7 }] },
+      { question: 7 },
+      hostile,
+    ];
+    for (const shape of shapes) {
+      const label = shape === hostile ? "a throwing getter" : JSON.stringify(shape) ?? "undefined";
+      expect(() => chatQuestionVeto(shape as never), label).not.toThrow();
+      expect(chatQuestionVeto(shape as never), label).toBe("The reviewer couldn't read what this would do, so it waits for you.");
+      expect(() => autopilotMayTake(shape as never), label).not.toThrow();
+      expect(autopilotMayTake(shape as never), label).toBe(false);
+    }
+    // A shape that is readable and names no action is still a plain null: the rule only holds what it can't read.
+    expect(chatQuestionVeto({ question: "Which first?" })).toBeNull();
+    // The list itself is render code: one unreadable saved chat doesn't take it down.
+    expect(() => waitingChats()).not.toThrow();
+  });
+
+  it("holds a saved chat whose rows hold an action, and one whose rows it can't read, on the same door (item F)", async () => {
+    host();
+    noteChats([markerChat("rows", "Needs Ash: What next?\nMy pick: keep it")]);
+    const chat = findWaitingChat("rows")!;
+    // A card whose other row is a send: taking this pick answers a card that names it.
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: "Anything else?", redLine: false }, { question: "Ping Priya?", redLine: false }] })).not.toBeNull();
+    // A row whose own text can't be read: held too, never passed.
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: 7, redLine: false } as never] })).not.toBeNull();
+    expect(chatQuestionVeto({ ...chat, rows: [{ question: "Rename the file?", redLine: false }] })).toBeNull();
+    // And `takePick` by autopilot says so plainly: a hold, not a rejection.
+    expect(await takePick("rows", { by: "autopilot" })).toMatchObject({ ok: true });
   });
 
   it("a worker's question H4 routes to its Lead is not Ash's", () => {

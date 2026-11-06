@@ -246,13 +246,54 @@ describe("useAutopilot", () => {
       line("notes", "Needs Ash: Publish the release notes?\nMy pick: yes"),
       line("branch", "Needs Ash: Delete the old branch?\nMy pick: yes"),
       line("changelog", "Needs Ash: Post the changelog to the public site?\nMy pick: yes"),
+      // WP-101 fix round 2, item F: the wider vocabulary reaches this door too.
+      line("ship", "Needs Ash: Ship it?\nMy pick: yes"),
+      line("merge", "Needs Ash: Should I merge the PR?\nMy pick: yes"),
+      line("public", "Needs Ash: Make the repository public?\nMy pick: yes"),
+      line("wire", "Needs Ash: Wire the money to the supplier?\nMy pick: yes"),
+      line("migration", "Needs Ash: Run the migration?\nMy pick: yes"),
+      line("ping", "Needs Ash: Ping Priya on Slack?\nMy pick: yes"),
       line("plain", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag"),
     ]);
     expect(sent.map((m) => m.id)).toEqual(["plain"]);
     const held = backend.entries.filter((e) => e.kind === "question" && e.outcome === "held").map((e) => e.chatId).sort();
-    expect(held).toEqual(["branch", "changelog", "mail", "notes"]);
+    expect(held).toEqual(["branch", "changelog", "mail", "merge", "migration", "notes", "ping", "public", "ship", "wire"]);
     // Held ones stay on Today's waiting list for Ash.
-    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual(["branch", "changelog", "mail", "notes"]);
+    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual(held);
+  });
+
+  it("holds a saved question it can't read, instead of rejecting the hook (WP-101 fix round 2, item F)", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    // A waiting question stored by an older build, whose options field isn't a list. It is read back from the store on
+    // its own (its chat is not open here), and the hook has to leave it for Ash without throwing over the chats beside it.
+    localStorage.setItem(
+      "monocode:hub-waiting-chats",
+      JSON.stringify({
+        bad: {
+          sessionId: "bad",
+          source: "marker",
+          question: "What next?",
+          more: 0,
+          pick: "keep it",
+          redLine: false,
+          options: 5,
+          cwd: "/Users/ash/Projects/hivra",
+          title: "claude · Bad",
+          askedAt: Date.now(),
+        },
+      }),
+    );
+    resetWaitingChats();
+    await mount([session("good", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old endpoint?\nMy pick: yes" }] })]);
+    expect(sent.map((m) => m.id)).toEqual(["good"]);
+    // Nothing was sent for the unreadable one, and the hook is still working: another change still gets decided.
+    await act(async () =>
+      setAll((all) => [...all, session("later", "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old cache?\nMy pick: yes" }] })]),
+    );
+    await settle();
+    expect(sent.map((m) => m.id)).toEqual(["good", "later"]);
+    expect(sent.find((m) => m.id === "bad")).toBeUndefined();
   });
 
   it("allows an MCP read only from a server the app says it wired for that chat", async () => {

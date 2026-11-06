@@ -302,6 +302,26 @@ export function useAutopilot(options: {
 
     /** One waiting chat under autopilot: held on a red line (either list's), its pick taken, or handed back. */
     async function decideWaiting(chat: WaitingChat, untilLabel: string, key: string) {
+      // WP-101 fix round 2, item F: every read of a saved chat is kept inside a try. A shape this build can't read
+      // holds the question with its plain reason; it never becomes an exception that leaves the chat undecided.
+      try {
+        await decideWaitingInner(chat, untilLabel, key);
+      } catch (error) {
+        console.warn("Autopilot waiting chat:", error);
+        void log({
+          project: chat?.projectId ?? null,
+          chatId: chat?.sessionId,
+          who: chat?.chatName,
+          what: "A waiting question",
+          kind: "question",
+          outcome: "held",
+          detail: "Not allowed by itself: the app couldn't read this question, so it waits for Ash",
+          dedupe: key,
+        });
+      }
+    }
+
+    async function decideWaitingInner(chat: WaitingChat, untilLabel: string, key: string) {
       const base = {
         project: chat.projectId,
         chatId: chat.sessionId,
@@ -325,20 +345,28 @@ export function useAutopilot(options: {
         return;
       }
       // WP-101: the rule a reviewed approval follows, on this door too. Taking the pick answers the question, and
-      // the question (or an option it points back to) can be the action itself.
+      // the question (or an option it points back to) can be the action itself. The veto itself never throws now; the
+      // wrapper above is the second wall, so a shape that slips past it still holds rather than rejects.
       if (chatQuestionVeto(chat)) {
         void log({ ...base, kind: "question", outcome: "held" });
         return;
       }
       if (chat.pick) {
-        const taken = await takePick(chat.sessionId, { by: "autopilot" });
+        const taken = await takePick(chat.sessionId, { by: "autopilot" }).catch((error: unknown) => {
+          // A delivery that throws is a failed delivery, never an answer.
+          console.warn("Autopilot take pick:", error);
+          return { ok: false as const, reason: "the app couldn't answer this one" };
+        });
         if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });
         else if (/red line/i.test(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
         // Couldn't deliver (the chat is busy or gone): try again in a while.
         else retryAt.current.set(key, Date.now() + RETRY_MS);
         return;
       }
-      const handed = await answerInWords(chat.sessionId, handBackText(untilLabel));
+      const handed = await answerInWords(chat.sessionId, handBackText(untilLabel)).catch((error: unknown) => {
+        console.warn("Autopilot hand back:", error);
+        return { ok: false as const, reason: "the app couldn't answer this one" };
+      });
       if (handed.ok)
         void log({ ...base, kind: "question", outcome: "handed_back", recommendation: "Told to decide itself" });
       else retryAt.current.set(key, Date.now() + RETRY_MS);

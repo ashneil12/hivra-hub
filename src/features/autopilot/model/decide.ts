@@ -37,6 +37,13 @@ export function decideCall(input: {
   if (input.until === undefined) return { outcome: "off" };
   const until = input.until;
   try {
+    // WP-101 fix round 2, item F: the fields are read from an agent's call, which may be any shape at all. A question
+    // or a recommendation that isn't text can't be judged, so it holds; the review found these returning "taken"
+    // with a null answer.
+    if (!input || typeof input !== "object") return { outcome: "held", red: null, until };
+    if (typeof input.question !== "string" || !input.question.trim()) return { outcome: "held", red: null, until };
+    if (typeof input.recommendation !== "string") return { outcome: "held", red: null, until };
+    if (input.options !== undefined && input.options !== null && !Array.isArray(input.options)) return { outcome: "held", red: null, until };
     const red = redVerdict(
       callText(input.question, input.recommendation, input.why, ...(input.options ?? [])),
       input.declaredRed,

@@ -28,6 +28,44 @@ describe("autopilot.decide", () => {
     held({ question: "Which next?", recommendation: "Option B", options: ["A: keep", "B: delete the old branch"] });
   });
 
+  // WP-101 fix round 2, item F (N8): the review found these phrasings taken, because the veto knew only a short list
+  // of verbs. Each one is a regression row, and the wider list also covers the forms people actually type.
+  it("holds the phrasings the review found passing (fix round 2, item F)", () => {
+    for (const input of [
+      { question: "Should I wire the money?", recommendation: "Yes" },
+      { question: "Ship it?", recommendation: "Yes" },
+      { question: "Should I make it public?", recommendation: "Yes" },
+      { question: "Which next?", recommendation: "Make the repository public" },
+      { question: "Should I merge the PR?", recommendation: "Yes" },
+      { question: "Ping Priya on Slack?", recommendation: "Yes" },
+      { question: "Should I unpublish?", recommendation: "Yes" },
+      { question: "Should I add Priya as a collaborator?", recommendation: "Yes" },
+      { question: "Should I apply the migration to the database?", recommendation: "Yes" },
+      { question: "Should I run the migration?", recommendation: "Yes" },
+      { question: "Should I overwrite the file?", recommendation: "Yes" },
+      { question: "Should I kill the process?", recommendation: "Yes" },
+      { question: "Should I upload the build?", recommendation: "Yes" },
+      { question: "Should I submit the form?", recommendation: "Yes" },
+      { question: "Should I book the flight?", recommendation: "Yes" },
+      { question: "Should I sign the contract?", recommendation: "Yes" },
+      { question: "Should I make the repo open source?", recommendation: "Yes" },
+      { question: "Which next?", recommendation: "Option B", options: ["A: keep", "B: go live"] },
+    ])
+      expect(decideCall({ ...input, until: UNTIL }), input.question).toMatchObject({ outcome: "held", red: null });
+  });
+
+  it("holds a call whose words it can't read, instead of taking it (fix round 2, item F)", () => {
+    for (const input of [
+      { question: null, recommendation: "Yes" },
+      { question: 7, recommendation: "Yes" },
+      { question: "Which next?", recommendation: null },
+      { question: "Which next?", recommendation: "Yes", options: "not a list" },
+    ])
+      expect(decideCall({ ...(input as unknown as { question: string; recommendation: string }), until: UNTIL })).toMatchObject({ outcome: "held", red: null });
+    // The ordinary call still goes through: the rule only holds what it can't read.
+    expect(decideCall({ question: "Which first?", recommendation: "Alpha", until: UNTIL })).toMatchObject({ outcome: "taken" });
+  });
+
   it("never takes a red-list call: by its words, its options, or the agent's own mark", () => {
     expect(decideCall({ question: "What about the duplicate charge?", recommendation: "Refund the customer", until: UNTIL })).toMatchObject({ outcome: "held", red: "money" });
     expect(decideCall({ question: "Clean up?", recommendation: "Option B", options: ["A: keep", "B: DROP TABLE sessions"], until: UNTIL })).toMatchObject({ outcome: "held", red: "delete" });

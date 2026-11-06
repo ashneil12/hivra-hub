@@ -6,6 +6,7 @@ import {
   LOOSER_REASON,
   NO_REQUEST_REASON,
   UNCLEAR_REASON,
+  UNREADABLE_REASON,
   actionHeads,
   askKinds,
   questionVeto,
@@ -165,9 +166,103 @@ describe("the question path (WP-101 fix round, row 19)", () => {
       expect(questionVeto({ question }), question).toBeNull();
   });
 
-  it("never throws on text it can't read", () => {
-    for (const input of [null, undefined, 7, { question: 7 }, { question: "x", recommendation: 7 }, { question: "x", options: 7 }] as unknown[])
-      expect(() => questionVeto(input as never)).not.toThrow();
+  // WP-101 fix round 2, item F (N8): the review found "wire the money", "Ship it?", "make it public", "merge the PR"
+  // and friends passing, because the veto only knew a short list of verbs. Each one is a regression row.
+  it.each([
+    // money moved by another name
+    "Should I wire the money?",
+    "Should I wire it to them?",
+    "Should I transfer the balance?",
+    "Should I remit the payment?",
+    "Should I book the flight?",
+    "Should I reserve a table?",
+    "Should I subscribe to the paid plan?",
+    // shipped, merged or put out for others
+    "Ship it?",
+    "Should I ship the build?",
+    "Should I deploy the new version?",
+    "Should I cut a release?",
+    "Should we go live?",
+    "Should I make it public?",
+    "Make the repository public",
+    "Should I make the repo open source?",
+    "Should I unpublish the page?",
+    "Should I merge the PR?",
+    "Should I upload the build?",
+    "Should I push the branch?",
+    "Should I force the update?",
+    // destructive
+    "Should I reset --hard?",
+    "Should I terminate the instance?",
+    // access, people and signatures
+    "Should I add Priya as a collaborator?",
+    "Should I sign the contract?",
+    "Should I authorise the app?",
+    "Should I authorize this device?",
+    "Should I rotate the keys?",
+    // schema changes and messages
+    "Should I run the migration?",
+    "Should I apply the migration to the database?",
+    "Should I migrate the data?",
+    "Ping Priya on Slack?",
+    "Should I ping the team?",
+    "Should I invite the new hire?",
+    "Should I notify the customer?",
+    "Should I dm Sam?",
+    "Should I send a direct message?",
+    "Should I post the update?",
+    "Should I tweet the launch?",
+    "Should I announce it?",
+    "Should I share the draft?",
+  ])("holds a question the review found passing (item F): %s", (question) => {
+    expect(questionVeto({ question })).not.toBeNull();
+  });
+
+  it("keeps a real one-letter word apart from its neighbour, and still reads a word spelled out one letter at a time (item F)", () => {
+    // "A or B" is three words; the guard's letter-spaced joining would read it as "aorb" and miss "ship".
+    expect(questionVeto({ question: "Ship A or B?" })).toBe(ALWAYS_ASK_REASON.publish);
+    expect(questionVeto({ question: "Which first, Plan A or Plan B?" })).toBeNull();
+    // Written out one character at a time, it is the word a reader hears.
+    expect(questionVeto({ question: "Should I s h i p it?" })).toBe(ALWAYS_ASK_REASON.publish);
+    expect(questionVeto({ question: "Should I p u b l i s h the notes?" })).toBe(ALWAYS_ASK_REASON.publish);
+  });
+
+  it("reads those words as a person does: any case, fullwidth letters, a zero width split and a phrase (item F)", () => {
+    for (const question of [
+      "SHOULD I SHIP IT?",
+      "Should I ｓｈｉｐ it?",
+      "Should I sh​ip it?",
+      "Should I    ship   it?",
+      "Should I SH​ARE the draft?",
+      "Should we GO LIVE?",
+      "Should I make  it public?",
+      "Should I open source it?",
+      "Should I reset\t--hard?",
+    ])
+      expect(questionVeto({ question }), question).not.toBeNull();
+  });
+
+  it("still matches whole words only, so an ordinary word that merely contains one passes (item F)", () => {
+    for (const question of ["Should I fix the wardrobe door handle?", "Which folder holds the wireframe?", "Should I test the wireless driver?", "Should I rename the shipwreck asset?"])
+      expect(questionVeto({ question }), question).toBeNull();
+    // A word the list holds passes inside a longer one that it isn't: "shipping" is a form of ship on purpose, but a
+    // word that merely starts with a held one is not that word.
+    expect(questionVeto({ question: "Should I check the signpost?" })).toBeNull();
+  });
+
+  it("holds any question, recommendation or option it can't read, instead of passing it (item F, N10)", () => {
+    for (const input of [null, undefined, 7, "ship it", [] as unknown])
+      expect(questionVeto(input as never), JSON.stringify(input) ?? "undefined").not.toBeNull();
+    for (const input of [{ question: 7 }, { question: "x", recommendation: 7 }, { question: "x", options: 7 }, { question: "x", options: ["a", 7] }, { question: "" }, {} as unknown])
+      expect(questionVeto(input as never), JSON.stringify(input)).toBe(UNREADABLE_REASON);
+    // A getter that throws is a hold, never an exception.
+    const hostile = {
+      get question(): string {
+        throw new Error("nope");
+      },
+    };
+    expect(questionVeto(hostile)).toBe(UNREADABLE_REASON);
+    expect(() => questionVeto(hostile)).not.toThrow();
   });
 });
 

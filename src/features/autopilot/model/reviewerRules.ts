@@ -12,6 +12,7 @@
 // Hivra's autopilot itself is one switch. The answer reading follows Row-Bot's: anything but a clear approve is an
 // ask, and an answer that can't be read asks the person instead of failing the action.
 
+import { normalised } from "../../memory/backpass/proposalGuard";
 import { sanitizeNameComponent, splitMcpTool } from "./mcpEffect";
 
 // ---- what a reviewer may treat as the person's request -------------------------------------------------------------
@@ -93,29 +94,62 @@ export function readAnswer(text: unknown): ReviewAnswer {
 
 // ---- actions that always wait for the person ----------------------------------------------------------------------
 
-export type AskKind = "send" | "delete" | "pay" | "publish" | "account";
+export type AskKind = "send" | "delete" | "pay" | "publish" | "account" | "commit" | "forceful";
 
 export const ALWAYS_ASK_REASON: Record<AskKind, string> = {
   send: "This sends a message or reaches someone else, so it waits for you.",
   delete: "This deletes something, so it waits for you.",
-  pay: "This moves money, so it waits for you.",
+  pay: "This moves money or books something paid, so it waits for you.",
   publish: "This publishes something for others to see, so it waits for you.",
   account: "This changes an account, a login or access, so it waits for you.",
+  commit: "This signs or agrees to something in your name, so it waits for you.",
+  forceful: "This forces or overwrites something in a way that can't be undone, so it waits for you.",
 };
 
 const words = (parts: string) => parts.split("|");
 
-/** The verb an action opens with, by the kind of change it makes. Only the opening words are read, never every word
- * in a path or an argument ("cat src/billing/account.ts" is a read). */
+/**
+ * The verb an action opens with, by the kind of change it makes. Only the opening words are read, never every word
+ * in a path or an argument ("cat src/billing/account.ts" is a read).
+ *
+ * WP-101 fix round 2, item F: the review found the question path taking "wire the money", "Ship it?", "make it public",
+ * "merge the PR", "apply the migration" and more, because a phrase a person reads as one action was no word the list
+ * knew. Every common way of saying those sorts of change is here now, including the ones people say without the verb
+ * the list started with. A word here only ever holds: one word too many costs the person a tap, and a word too few
+ * approves something that can't be undone.
+ */
 const ASK_WORDS: Record<AskKind, readonly string[]> = {
-  send: words("send|sends|sent|email|emails|mail|message|messages|dm|dms|sms|tweet|tweets|post|reply|forward|share|invite|broadcast|announce|comment|notify|mention"),
-  delete: words("delete|deletes|delete_all|remove|removes|rm|unlink|erase|drop|purge|wipe|destroy|truncate|clear|trash|uninstall|revoke"),
-  pay: words("pay|pays|paid|payment|payments|charge|charges|refund|refunds|transfer|transfers|withdraw|deposit|invoice|purchase|buy|sell|order|orders|stripe|checkout|billing|subscribe|subscription|payout|donate"),
-  publish: words("publish|publishes|deploy|deploys|release|releases|push|pushes"),
-  account: words(
-    "login|logout|signin|signout|sign_up|auth|authenticate|authorization|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password|env|ssh|keychain|cookie|cookies|session|sessions|private",
+  send: words(
+    "send|sends|sent|email|emails|emailed|mail|message|messages|dm|dms|sms|tweet|tweets|tweeted|post|posts|posted|reply|replies|forward|forwards|share|shares|shared|sharing|invite|invites|invited|inviting|broadcast|broadcasts|announce|announces|announced|comment|comments|notify|notifies|notified|mention|mentions|ping|pings|pinged|remind|reminds|reminded|text|texted|tell|tells|told|contact|contacts|submit|submits|submitted|submitting",
   ),
+  delete: words(
+    "delete|deletes|deleted|deleting|delete_all|remove|removes|removed|removing|removal|rm|unlink|erase|erases|erased|drop|drops|dropped|dropping|purge|purges|purged|wipe|wipes|wiped|destroy|destroys|destroyed|destroying|truncate|truncates|truncated|clear|clears|cleared|clearing|trash|uninstall|uninstalls|revoke|revokes|revoked|revoking|overwrite|overwrites|overwrote|overwriting|terminate|terminates|terminated|kill|kills|killed|reset|resets|resetting",
+  ),
+  pay: words(
+    "pay|pays|paid|paying|payment|payments|wire|wires|wired|wiring|remit|remits|remitted|remittance|transfer|transfers|transferred|transferring|charge|charges|charged|refund|refunds|refunded|withdraw|withdraws|withdrew|deposit|deposits|invoice|invoices|purchase|purchases|buy|buys|bought|buying|sell|sells|sold|order|orders|ordered|ordering|stripe|checkout|billing|subscribe|subscribes|subscribed|subscription|subscriptions|payout|payouts|donate|donates|donation|book|books|booked|booking|reserve|reserves|reserved|reservation",
+  ),
+  publish: words(
+    "publish|publishes|published|publishing|unpublish|unpublishes|unpublished|unpublishing|republish|republishes|deploy|deploys|deployed|deploying|deployment|release|releases|released|releasing|push|pushes|pushed|pushing|ship|ships|shipped|merge|merges|merged|merging|upload|uploads|uploaded|uploading|public",
+  ),
+  account: words(
+    "login|logout|signin|signout|sign_up|signup|auth|authenticate|authentication|authorization|authorise|authorises|authorised|authorizing|authorize|authorizes|authorized|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|grants|granted|granting|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password|env|ssh|keychain|cookie|cookies|session|sessions|private|collaborator|collaborators|collaboration|migrate|migrates|migrated|migrating|migration|migrations|rotate|rotates|rotating",
+  ),
+  commit: words("sign|signs|signed|signing|signature"),
+  forceful: words("force|forces|forced|forcing|killall|pkill"),
 };
+
+/**
+ * Phrases a person says as one action but writes as two words. They are read on the normalised text, so a doubled
+ * space, a tab or a line break between the words changes nothing.
+ */
+const ASK_PHRASES: readonly { pattern: RegExp; kind: AskKind }[] = [
+  { pattern: /\bgo(?:es|ing)? live\b/, kind: "publish" },
+  { pattern: /\b(?:make|makes|making|made) (?:it |this |the repo |the repository |the project |the site |the bucket )?public\b/, kind: "publish" },
+  { pattern: /\bopen[- ]sourc(?:e|es|ed|ing)\b/, kind: "publish" },
+  { pattern: /\breset\s+(?:--?)?hard\b|\breset\s+-{1,2}[a-z]*h[a-z]*\b/, kind: "forceful" },
+  { pattern: /\bdirect (?:message|messages|messaging|dm)\b/, kind: "send" },
+  { pattern: /\bloop (?:in|into)\b/, kind: "send" },
+];
 
 /** Words that name something a person's own or a secret: anywhere in a tool's name they make it an account change. */
 const SECRET_WORDS = new Set(words("password|passwd|credential|credentials|key|keys|token|tokens|secret|secrets|env|ssh|keychain|cookie|cookies|session|sessions|auth|private"));
@@ -126,6 +160,49 @@ const JOINING_WORDS = new Set(words("and|or|then|with"));
 const WORD_KIND = new Map<string, AskKind>();
 for (const [kind, list] of Object.entries(ASK_WORDS) as [AskKind, readonly string[]][]) {
   for (const word of list) if (!WORD_KIND.has(word)) WORD_KIND.set(word, kind);
+}
+
+/**
+ * The kind a phrase names, if any. The text is read the way the proposal guard reads it (NFKC, lower case, one space,
+ * zero width characters gone), so a phrase split over a line or typed with odd spacing is the same phrase.
+ */
+function phraseKind(text: string): AskKind | undefined {
+  const value = normalised(text).replace(/_+/g, " ");
+  for (const { pattern, kind } of ASK_PHRASES) if (pattern.test(value)) return kind;
+  return undefined;
+}
+
+/** The longest run of one-letter words that is read as a word written out letter by letter, which bounds the work. */
+const MAX_SPELLED_RUN = 24;
+
+/**
+ * The plain words of a text, plus every word spelled out one letter at a time ("s h i p" is ship). The proposal
+ * guard's normalisation joins every one-letter word in a text, which would glue real words together ("Should I ship A
+ * or B?" becomes one token), so the word table is read on this, and on the guard's form as well.
+ */
+function plainWords(text: string): string[] {
+  const tokens = text
+    .normalize("NFKC")
+    .replace(/[​]/g, "")
+    .toLowerCase()
+    .split(/[^a-z0-9']+/)
+    .filter(Boolean);
+  const words = [...tokens];
+  let runStart = -1;
+  for (let i = 0; i <= tokens.length; i++) {
+    const single = i < tokens.length && tokens[i].length === 1;
+    if (single) {
+      if (runStart < 0) runStart = i;
+      continue;
+    }
+    if (runStart >= 0) {
+      const run = tokens.slice(runStart, i);
+      for (let from = 0; from < run.length; from++)
+        for (let to = from + 2; to <= Math.min(run.length, from + MAX_SPELLED_RUN); to++) words.push(run.slice(from, to).join(""));
+      runStart = -1;
+    }
+  }
+  return words;
 }
 
 /** Words that only run something else; the words after them are the action. */
@@ -368,12 +445,28 @@ export function reviewVeto(input: ReviewInput): string | null {
 /** A question an agent asks the person, with the answer it recommends and any options it offers. */
 export type QuestionToAnswer = { question?: unknown; recommendation?: unknown; options?: unknown };
 
-/** The text that can carry an action, in the order it is spoken: the question, then what would be taken. */
-function questionParts(input: QuestionToAnswer | null | undefined): string[] {
-  if (!input || typeof input !== "object") return [];
-  const parts: string[] = [];
-  for (const value of [input.question, input.recommendation]) if (typeof value === "string" && value.trim()) parts.push(value);
-  if (Array.isArray(input.options)) for (const option of input.options) if (typeof option === "string" && option.trim()) parts.push(option);
+/**
+ * The text that can carry an action, in the order it is spoken: the question, then what would be taken. A shape it
+ * can't read (no question, a field that isn't text, an option that isn't) is a hold, never a pass: the caller reads
+ * a `null` from `questionVeto` as "go ahead", so anything unreadable here has to say so.
+ */
+function questionParts(input: QuestionToAnswer | null | undefined): string[] | null {
+  if (!input || typeof input !== "object") return null;
+  const question = input.question;
+  if (typeof question !== "string" || !question.trim()) return null;
+  const parts: string[] = [question];
+  for (const value of [input.recommendation]) {
+    if (value === undefined || value === null) continue;
+    if (typeof value !== "string") return null;
+    if (value.trim()) parts.push(value);
+  }
+  if (input.options !== undefined && input.options !== null) {
+    if (!Array.isArray(input.options)) return null;
+    for (const option of input.options) {
+      if (typeof option !== "string") return null;
+      if (option.trim()) parts.push(option);
+    }
+  }
   return parts;
 }
 
@@ -385,10 +478,16 @@ function questionParts(input: QuestionToAnswer | null | undefined): string[] {
  */
 export function questionVeto(input: QuestionToAnswer | null | undefined): string | null {
   try {
-    for (const part of questionParts(input)) {
-      for (const word of part.toLowerCase().split(/[^a-z0-9']+/)) {
-        const kind = WORD_KIND.get(tidy(word));
-        if (kind) return ALWAYS_ASK_REASON[kind];
+    const parts = questionParts(input);
+    if (!parts) return UNREADABLE_REASON;
+    for (const part of parts) {
+      const kind = phraseKind(part);
+      if (kind) return ALWAYS_ASK_REASON[kind];
+      // Both readings: the guard's (which spells out "h t t p" style hiding) and the plain words. A word written out
+      // one letter at a time is that word, and a real one-letter word is not glued to its neighbour.
+      for (const word of [...plainWords(part), ...normalised(part).split(/[^a-z0-9']+/)]) {
+        const byWord = WORD_KIND.get(tidy(word));
+        if (byWord) return ALWAYS_ASK_REASON[byWord];
       }
     }
     return null;
