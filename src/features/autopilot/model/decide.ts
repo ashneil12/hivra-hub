@@ -100,12 +100,10 @@ export function approvalVerdict(
     const red = redListCategory(text);
     if (red) return { kind: "held", red, what, why: "it touches the red list" };
     // WP-101 fix round 2, item A: a shell command is also read as the words the shell would pass. Quotes and
-    // backslashes can hide a path from the raw text (`cat ~/.ne"t"rc`), so the red list reads the real words, and a
-    // command it can't read that way waits here rather than reaching safeCall.
+    // backslashes can hide a path from the raw text (`cat ~/.ne"t"rc`), so the red list reads the real words.
     const words = bashWords(block.approval?.call);
-    if (words && "why" in words) return { kind: "held", red: null, what, why: words.why };
     if (words) {
-      const fromWords = redListInWords(words.words);
+      const fromWords = redListInWords(words);
       if (fromWords) return { kind: "held", red: fromWords, what, why: "it touches the red list" };
     }
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may

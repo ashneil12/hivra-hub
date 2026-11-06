@@ -14,6 +14,7 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
+import { walkHeld } from "./credentialPaths";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import type { TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
@@ -86,22 +87,19 @@ const SHELL_META = /[;&|`$<>()\n\r]/;
 /** Why a command it can't read waits, rather than throwing. */
 const UNREADABLE_COMMAND = "it can't be read plainly (a wildcard, an open quote or an expansion)";
 
-/** What a shell call would run: its words, or why it can't be read that way. */
-export type CommandWords = { words: readonly string[] } | { why: string };
-
 /**
- * The words a shell call runs with, or why not: undefined when the call isn't a shell command. The red list is judged
- * on these words, so a quoted path reads as the path it is (`cat ~/.ne"t"rc` names the netrc).
+ * The words a shell call runs with: undefined when the call isn't a shell command, null when its command can't be read
+ * that way. The red list is judged on these words, so a quoted path reads as the path it is (`cat ~/.ne"t"rc` names
+ * the netrc). A null here is not a verdict: safeCommand refuses the same command for the same reason.
  */
-export function bashWords(call: ApprovalCall | undefined): CommandWords | undefined {
+export function bashWords(call: ApprovalCall | undefined): readonly string[] | null | undefined {
   if (!call || typeof call.tool !== "string" || !SHELL_TOOLS.has(call.tool)) return undefined;
-  if (typeof call.command !== "string") return { why: "it doesn't say what it runs" };
-  if (SHELL_META.test(call.command)) return { why: "it chains, substitutes or redirects" };
+  if (typeof call.command !== "string" || SHELL_META.test(call.command)) return null;
   try {
     const words = shellWords(call.command.trim());
-    return words?.length ? { words } : { why: UNREADABLE_COMMAND };
+    return words?.length ? words : null;
   } catch {
-    return { why: UNREADABLE_COMMAND };
+    return null;
   }
 }
 
@@ -236,8 +234,7 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   ps: psRead,
 };
 
-/** Why a command it can't read waits, rather than throwing. */
-function safeCommandInner(command: string): SafeVerdict {
+function safeCommandInner(command: string, folder: string | undefined): SafeVerdict {
   if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";
   const words = shellWords(command.trim());
@@ -246,13 +243,15 @@ function safeCommandInner(command: string): SafeVerdict {
   if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read, test or build autopilot runs by itself`;
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
+  // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
+  if (walkHeld(words, folder)) return "it walks folders outside the chat's own, so it waits for Ash";
   return check(words.slice(1));
 }
 
 /** Whether a shell command is one autopilot may run by itself; why not otherwise. A command it can't read waits. */
-export function safeCommand(command: string): SafeVerdict {
+export function safeCommand(command: string, folder?: string | undefined): SafeVerdict {
   try {
-    return safeCommandInner(command);
+    return safeCommandInner(command, folder);
   } catch {
     return UNREADABLE_COMMAND;
   }
@@ -283,7 +282,7 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     }
     return null;
   }
-  if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command);
+  if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command, folder);
   const mcp = splitMcpTool(call.tool);
   if (mcp) {
     // A hostile server can name a write tool `get_x` and can call itself `plugin-anything`, so a name alone counts

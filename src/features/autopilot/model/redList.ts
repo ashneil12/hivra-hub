@@ -4,6 +4,7 @@
 // one way autopilot could do something on the list, so the patterns lean to holding: a held call costs Ash one tap, a
 // taken one can't be undone.
 import { forUser } from "../../hub/model/userName";
+import { credentialInWords, credentialInText } from "./credentialPaths";
 
 export type RedCategory =
   | "money"
@@ -134,6 +135,9 @@ export function redListCategory(text: string): RedCategory | null {
   const normalized = text.toLowerCase().replace(/\s+/g, " ");
   for (const { id } of RED_LIST) {
     if (PATTERNS[id].some((pattern) => pattern.test(normalized))) return id;
+    // WP-101 fix round 2, item B: a path is checked segment by segment against the places and names a login lives
+    // under, which no fixed pattern can list.
+    if (id === "credentials" && credentialInText(normalized)) return id;
   }
   return null;
 }
@@ -141,10 +145,10 @@ export function redListCategory(text: string): RedCategory | null {
 /**
  * The first red-list category the words of a command touch, or null. A command is judged on the words the shell would
  * pass (shellWords.ts), so a quoted path reads as the path it is: `cat ~/.ne"t"rc` names the netrc, and
- * `cat ~/.s''sh/config` names the ssh config. Each word is read on its own as well as in a line, since a quote can
- * join two pieces into one word whose characters are all the shell would pass.
+ * `cat ~/.s''sh/config` names the ssh config.
  */
 export function redListInWords(words: readonly string[]): RedCategory | null {
+  if (credentialInWords(words)) return "credentials";
   return redListCategory(words.join(" "));
 }
 

@@ -46,7 +46,7 @@ describe("a question with no pick", () => {
 });
 
 describe("a tool approval under autopilot", () => {
-  const FOLDER = "/Users/ash/Projects/hivra";
+  const FOLDER = "/Users/ash/Worktrees/hub-x";
   const SECRET_FILE = "/home/user/.ssh/id_ed25519";
   const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command } } });
 
@@ -89,6 +89,53 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(readNote, FOLDER, undefined, new Set(["plugin-agent_plugins-blog"]))).toMatchObject({ kind: "allow" });
     const publish = { text: "", tool: { title: "Bash" }, approval: { requestId: 9, call: { tool: "Bash", command: "npm publish" } } };
     expect(approvalVerdict(publish, FOLDER)).toMatchObject({ kind: "held", red: null, why: "This publishes something for others to see, so it waits for you." });
+  });
+
+  it("holds a read of a credential place or a folder too broad to be a project (WP-101 fix round 2, item B)", () => {
+    // A folder that holds logins, and files whose names the patterns never listed.
+    for (const command of [
+      "cat ~/.aws",
+      "ls ~/.aws",
+      "stat ~/.aws",
+      "cat ~/.aws/config",
+      "cat ~/.azure/accessTokens.json",
+      "cat ~/.terraform.d/credentials.tfrc.json",
+      "cat ~/.hermes/auth.json",
+      "cat terraform.tfstate",
+      "cat service-account.json",
+      "cat token.txt",
+      "cat api_key.txt",
+      "cat private.key",
+      "cat cert.p12",
+      "cat id_ecdsa",
+      "cat id_dsa",
+      "cat .htpasswd",
+      "cat ~/.s3cfg",
+      "cat ~/.boto",
+      "cat ~/.dockercfg",
+      "cat ~/.zsh_history",
+      "cat ~/.claude.json",
+      "git show HEAD:.env",
+      // folder walks that name no credential and read every one the person has
+      "grep -r . ~/.aws",
+      "rg . ~/.kube",
+      "rg -uuu . ~",
+      "grep -r BEGIN /Users",
+      "rg -uuu . /",
+      "find ~ -name '*.pem'",
+      "cat ~/.ssh/config",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    // A recursive read inside the chat's folder stays allowed, unless it names a credential file too.
+    expect(approvalVerdict(bash("grep -rn TODO src"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("rg -n 'foo' src"), FOLDER)).toMatchObject({ kind: "allow" });
+    // A recursive read by a relative place stays inside the working folder; an absolute one can't be shown to.
+    expect(approvalVerdict(bash("grep -rn TODO src"), undefined)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("grep -rn TODO /Users/ash/Projects/other"), undefined)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("find . -name '.env'"), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+    // A search for the word is not a file: the names that merely hold a word pass.
+    expect(approvalVerdict(bash("grep token src/app.ts"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("cat src/features/autopilot/model/tokenizer.ts"), FOLDER)).toMatchObject({ kind: "allow" });
   });
 
   it("reads a command as the shell reads it, so quotes can't hide a login file (WP-101 fix round 2, item A)", () => {
