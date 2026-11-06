@@ -81,7 +81,9 @@ describe("the palette command registry", () => {
     );
     expect(row("Tab: New").binding).toBe("Tab: New");
     expect(row("Tab: New").hint).toBeNull();
-    expect(row("Tab: Close All").hint).toBe(KEYBINDINGS.find((entry) => entry.command === "Tab: Close All")!.keys);
+    expect(row("Tab: Close All").hint).toBe(
+      KEYBINDINGS.find((entry) => entry.command === "Tab: Close All")!.keys,
+    );
     expect(row("app.new-chat").hint).toBeNull();
   });
 
