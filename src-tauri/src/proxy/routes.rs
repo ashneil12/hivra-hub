@@ -476,8 +476,12 @@ mod tests {
     fn two_names_coexist() {
         let dir = temp_dir("coexist");
         let store = RouteStore::new(&dir);
-        store.add_route("shop-a.localhost", 4001, 1, false).unwrap();
-        store.add_route("shop-b.localhost", 4002, 1, false).unwrap();
+        store
+            .add_route("shop-a.localhost", 4001, std::process::id(), false)
+            .unwrap();
+        store
+            .add_route("shop-b.localhost", 4002, std::process::id(), false)
+            .unwrap();
         let routes = store.load_routes_raw().unwrap();
         assert_eq!(routes.len(), 2);
         assert_eq!(store.route_for_host("shop-a.localhost").unwrap().port, 4001);
@@ -560,7 +564,9 @@ mod tests {
         store.ensure_dir().unwrap();
         std::fs::create_dir(store.lock_path()).unwrap();
         std::thread::sleep(Duration::from_millis(60));
-        store.add_route("shop-a.localhost", 4001, 1, false).unwrap();
+        store
+            .add_route("shop-a.localhost", 4001, std::process::id(), false)
+            .unwrap();
         assert!(store.route_for_host("shop-a.localhost").is_some());
         assert!(!store.lock_path().exists());
     }
@@ -575,7 +581,9 @@ mod tests {
             hands.push(std::thread::spawn(move || {
                 for item in 0..25 {
                     let name = format!("shop-{writer}-{item}.localhost");
-                    store.add_route(&name, 5000, 1, false).unwrap();
+                    store
+                        .add_route(&name, 5000, std::process::id(), false)
+                        .unwrap();
                 }
             }));
         }
