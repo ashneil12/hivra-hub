@@ -1,4 +1,4 @@
-//! Worktree janitor: one report over every worktree, and two taps that act on it (docs/T3-HARVEST.md, "Worktree
+//! Worktree janitor: one report over every worktree, and two taps that act on it (the worktree janitor design notes, "Worktree
 //! janitor with a dry-run report"; the cases are ported from T3's apps/server/src/storageCleanup.ts).
 //!
 //! The report only reads: git runs with `GIT_OPTIONAL_LOCKS=0` (no index refresh), nothing is fetched, and folders are

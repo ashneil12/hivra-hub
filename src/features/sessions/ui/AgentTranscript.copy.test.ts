@@ -244,6 +244,42 @@ it("copies attachments even when the user message has no text", async () => {
   );
 });
 
+// WP-94: a failure the system writes in its own words ("Access is denied") shows as a sentence saying what to do.
+it("says what to do when the system refuses a copy", async () => {
+  vi.spyOn(navigator.clipboard, "write").mockRejectedValue(new Error("Access is denied."));
+  act(() =>
+    root.render(
+      createElement(AgentTranscript, {
+        blocks: [
+          {
+            id: "p",
+            role: "user",
+            text: "File",
+            attachments: [{ id: "f", name: "a.txt", mimeType: "text/plain", kind: "file", size: 1, data: "YQ==" }],
+          },
+        ],
+      }),
+    ),
+  );
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!.click());
+  const text = container.querySelector('[role="alert"]')?.textContent ?? "";
+  expect(text).toContain("did not allow it");
+  expect(text).not.toContain("Access is denied");
+});
+
+it("says what to do when the note could not be saved", async () => {
+  const onSaveNote = vi.fn().mockRejectedValue(new Error("database is locked"));
+  act(() =>
+    root.render(
+      createElement(AgentTranscript, { blocks: [{ id: "prompt", role: "user", text: "Keep this" }], onSaveNote }),
+    ),
+  );
+  await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Save as note"]')!.click());
+  const text = container.querySelector('[role="alert"]')?.textContent ?? "";
+  expect(text).toContain("Try again in a moment");
+  expect(text).not.toContain("database is locked");
+});
+
 it("saves the user prompt to Notes from the action row outside the bubble", async () => {
   const onSaveNote = vi.fn();
   act(() =>

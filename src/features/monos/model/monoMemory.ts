@@ -11,7 +11,17 @@ import { MEMORY_MAX_BYTES, MEMORY_MAX_LINES } from "./monoFiles";
 export const MEMORY_ENTRY_MAX = 1000;
 
 const DATED = /^- (?:~~)?(\d{4}-\d{2}-\d{2}) · /;
-const UNTIL = / · until (\d{4}-\d{2}-\d{2})\s*$/;
+/**
+ * WP-100: the engine that wrote the line: ` · by codex`, last on a live line, inside the strike on a superseded
+ * one and before a moved note in the archive. Old lines have none and read exactly as before.
+ */
+const BY = / · by ([a-z][a-z0-9-]{0,31})(?=~~| · (?:superseded|moved) |\s*$)/;
+const UNTIL = / · until (\d{4}-\d{2}-\d{2})(?: · by [a-z][a-z0-9-]{0,31})?\s*$/;
+const ENGINE = /^[a-z][a-z0-9-]{0,31}$/;
+
+function withoutBy(line: string): string {
+  return line.replace(BY, "").trimEnd();
+}
 
 /** Local calendar date, the way entries are dated. */
 export function memoryDate(now = new Date()): string {
@@ -39,11 +49,12 @@ export function redactSecrets(text: string): string {
   );
 }
 
-/** A fact as one dated bullet: `- 2026-10-04 · fact · until 2026-11-01`. */
+/** A fact as one dated bullet: `- 2026-10-04 · fact · until 2026-11-01 · by codex`. */
 export function memoryEntry(
   fact: string,
   date: string,
   until?: string,
+  by?: string,
 ): string {
   const text = redactSecrets(fact).replace(/\s+/g, " ").trim();
   if (!text) throw new Error("fact must not be empty");
@@ -51,7 +62,8 @@ export function memoryEntry(
     throw new Error(`fact must be under ${MEMORY_ENTRY_MAX} characters`);
   if (until !== undefined && !/^\d{4}-\d{2}-\d{2}$/.test(until))
     throw new Error("until must be a date like 2026-10-31");
-  return `- ${date} · ${text}${until ? ` · until ${until}` : ""}`;
+  const engine = by !== undefined && ENGINE.test(by) ? by : undefined;
+  return `- ${date} · ${text}${until ? ` · until ${until}` : ""}${engine ? ` · by ${engine}` : ""}`;
 }
 
 function lines(text: string): string[] {
@@ -62,9 +74,9 @@ function join(list: string[]): string {
   return list.length ? `${list.join("\n")}\n` : "";
 }
 
-/** The fact a line holds, without its date, strike-through or until. */
+/** The fact a line holds, without its date, strike-through, until or writer. */
 function factOf(line: string): string {
-  return line
+  return withoutBy(line)
     .replace(DATED, "")
     .replace(/^- /, "")
     .replace(UNTIL, "")
@@ -137,16 +149,31 @@ function overBudget(list: string[]): boolean {
   return list.length > MEMORY_MAX_LINES || bytes > MEMORY_MAX_BYTES;
 }
 
+/** One line's place in the memory doc's fade, when the caller has it. */
+export type MemoryUse = { fade: number; usedAt: number };
+
+/** A line's key for the use map: its dated fact, without the writer, as factOf would give it. */
+export function memoryUseKey(line: string): string {
+  return factOf(line.trim());
+}
+
 /**
  * Keeps MEMORY.md within what loads by moving the oldest dated entries out to
- * the archive: struck-through ones first, then expired ones, then the oldest
- * live ones. The user's undated lines and `keep` (the entry just written)
- * never move, so the file can still overflow when those fill it by themselves.
+ * the archive: struck-through ones first, then expired ones, then the live ones
+ * least used before the oldest. The user's undated lines and `keep` (the entry
+ * just written) never move, so the file can still overflow when those fill it
+ * by themselves.
+ *
+ * WP-100: `use` is the doc's fade for each line, keyed by `memoryUseKey`. A line
+ * the doc does not know counts as full and as used on its own date, so a fade it
+ * cannot read never makes a line look stale; without `use` this is exactly the
+ * oldest-first order it always had.
  */
 export function fitMemoryBudget(
   text: string,
   keep: string | undefined,
   date: string,
+  use?: ReadonlyMap<string, MemoryUse>,
 ): { text: string; moved: string[] } {
   const list = lines(text);
   const moved: string[] = [];
@@ -155,10 +182,31 @@ export function fitMemoryBudget(
     const until = line.match(UNTIL)?.[1];
     return !!until && until < date;
   };
-  const passes = [
+  // A line the doc does not know is as strong as a freshly confirmed one, and its own date is the only use it has.
+  const place = (line: string): MemoryUse => {
+    const here = use?.get(memoryUseKey(line));
+    if (here) return here;
+    const written = line.match(DATED)?.[1] ?? "0000-00-00";
+    const at = Date.parse(`${written}T00:00:00Z`);
+    return { fade: 1, usedAt: Number.isFinite(at) ? at : 0 };
+  };
+  // Least used first: the lowest fade, then the one last used longest ago. Ties keep file order.
+  const leastUsed = (): number => {
+    let pick = -1;
+    let pickUse: MemoryUse | undefined;
+    list.forEach((line, index) => {
+      if (!movable(line)) return;
+      const here = place(line);
+      if (!pickUse || here.fade < pickUse.fade || (here.fade === pickUse.fade && here.usedAt < pickUse.usedAt)) {
+        pick = index;
+        pickUse = here;
+      }
+    });
+    return pick;
+  };
+  const passes: Array<(line: string) => boolean> = [
     (line: string) => movable(line) && line.includes("~~"),
     (line: string) => movable(line) && expired(line),
-    movable,
   ];
   for (const pick of passes) {
     while (overBudget(list)) {
@@ -166,6 +214,17 @@ export function fitMemoryBudget(
       if (index < 0) break;
       moved.push(...list.splice(index, 1));
     }
+  }
+  while (overBudget(list)) {
+    const index = leastUsed();
+    if (index < 0) break;
+    moved.push(...list.splice(index, 1));
+  }
+  for (;;) {
+    if (!overBudget(list)) break;
+    const index = list.findIndex(movable);
+    if (index < 0) break;
+    moved.push(...list.splice(index, 1));
   }
   return { text: join(list), moved };
 }
@@ -274,6 +333,8 @@ export type MemoryLine = {
   text: string;
   date?: string;
   until?: string;
+  /** WP-100: the engine that wrote the line, when the line says. */
+  by?: string;
   /** Superseded by a newer entry; kept for the record. */
   struck: boolean;
 };
@@ -290,7 +351,8 @@ export function memoryLines(text: string): MemoryLine[] {
     const struck = /^- ~~/.test(line);
     const date = line.match(DATED)?.[1];
     const until = line.match(UNTIL)?.[1];
-    const fact = line
+    const by = line.match(BY)?.[1];
+    const fact = withoutBy(line)
       .replace(/^[-*]\s+/, "")
       .replace(/~~/g, "")
       .replace(/^\d{4}-\d{2}-\d{2} · /, "")
@@ -304,6 +366,7 @@ export function memoryLines(text: string): MemoryLine[] {
       struck,
       ...(date ? { date } : {}),
       ...(until ? { until } : {}),
+      ...(by ? { by } : {}),
     });
   });
   return out;
@@ -329,7 +392,7 @@ export function withLineEdited(
   const lines = text.split("\n");
   const old = lines[index] ?? "";
   if (DATED.test(old.trim())) {
-    lines[index] = memoryEntry(fact, date, old.match(UNTIL)?.[1]);
+    lines[index] = memoryEntry(fact, date, old.match(UNTIL)?.[1], old.match(BY)?.[1]);
   } else {
     const clean = redactSecrets(fact).replace(/\s+/g, " ").trim();
     if (!clean) throw new Error("fact must not be empty");
