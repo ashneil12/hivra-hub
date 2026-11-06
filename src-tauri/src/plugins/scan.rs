@@ -41,6 +41,23 @@ const INSTALLER_KEYS: &[&str] = &[
     "preinstall",
     "scripts",
 ];
+/// Build and task files that another program starts when asked. Hivra only copies them, so they warn rather than
+/// block; the person sees that the plugin carries them.
+const RUNNER_FILES: &[&str] = &[
+    "makefile",
+    "gnumakefile",
+    "justfile",
+    "taskfile.yml",
+    "taskfile.yaml",
+    "rakefile",
+    "gemfile",
+    "procfile",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+];
+/// package.json scripts npm runs by itself when it installs the package.
+const INSTALL_SCRIPTS: &[&str] = &["preinstall", "install", "postinstall", "prepare"];
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -72,6 +89,9 @@ pub struct ScanResult {
     pub bytes: u64,
     /// The approximate size of what the agent will read, in tokens.
     pub token_estimate: usize,
+    /// The content hash of the copy that was read (`fsutil::tree_digest`), checked again before the install lands.
+    #[serde(default)]
+    pub digest: String,
 }
 
 /// One entry of the staged copy: its path relative to the plugin root (as written, with either separator), its size,
@@ -104,17 +124,109 @@ fn finding(severity: Severity, code: &str, path: &str, message: impl Into<String
 }
 
 /// Scan a staged plugin folder. A folder that can't be read blocks: an install the person was told nothing about
-/// must not go ahead.
+/// must not go ahead. The result carries the copy's content hash, so the same copy can be proved at commit time.
 pub fn scan(root: &Path) -> ScanResult {
     match walk(root) {
-        Ok(entries) => scan_entries(root, &entries),
+        Ok(entries) => {
+            let mut result = scan_entries(root, &entries);
+            result.digest = super::fsutil::tree_digest(root);
+            result
+        }
         Err(why) => unreadable(why),
     }
+}
+
+/// A staged copy, with reads that arrive from disk treated as untrusted: any finding not shaped as one is dropped, and
+/// every other field is rebuilt rather than passed through.
+pub fn scan_untrusted(root: &Path) -> ScanResult {
+    let mut result = scan(root);
+    result.findings = result
+        .findings
+        .into_iter()
+        .filter_map(|f| {
+            let message = sanitized(&f.message, 400);
+            if message.is_empty() {
+                return None;
+            }
+            Some(Finding {
+                severity: f.severity,
+                code: sanitized(&f.code, 40),
+                path: sanitized(&f.path, 200),
+                message,
+            })
+        })
+        .collect();
+    result
+}
+
+/// Text on a card: one line, no control characters, no NUL, trimmed and cut to `most` characters at a character
+/// boundary (so a name in any script stays whole).
+pub(super) fn sanitized(text: &str, most: usize) -> String {
+    let clean: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .filter(|c| *c != '\0')
+        .collect();
+    let mut cut: String = clean.trim().chars().take(most).collect();
+    if cut.chars().count() == most && clean.trim().chars().count() > most {
+        cut.push_str("...");
+    }
+    cut
 }
 
 /// The same scan for a plugin the loader has already read.
 pub fn scan_loaded(loaded: &LoadedPlugin) -> ScanResult {
     scan(&loaded.root)
+}
+
+/// Read a fetched folder before it is copied into place: links and paths that climb out are blocks here, since the
+/// copy silently leaves them out (fsutil::copy_plugin_tree) and the person should know rather than have it vanish.
+/// Only paths and kinds are compared; the same folder is scanned again once staged, for everything else.
+pub fn scan_source(fetched: &Path, staged: &Path) -> Vec<Finding> {
+    let Ok(entries) = walk(fetched) else {
+        return Vec::new();
+    };
+    let mut findings = Vec::new();
+    for entry in &entries {
+        if escapes(&entry.path) {
+            findings.push(finding(
+                Severity::Block,
+                "path_traversal",
+                &entry.path,
+                "This file's path leads outside the plugin folder.",
+            ));
+        }
+        if entry.link && dropped_by_copy(fetched, staged, &entry.path) {
+            findings.push(finding(
+                Severity::Block,
+                "symlink",
+                &entry.path,
+                "This is a link to another place on the computer, so the install stops.",
+            ));
+        }
+    }
+    findings
+}
+
+/// Whether the copy leaves this link out: it points outside the plugin. (A link that points inside is copied as the
+/// file it points to, so it is not a reason to stop.)
+fn dropped_by_copy(fetched: &Path, _staged: &Path, rel: &str) -> bool {
+    let source = local(fetched, rel);
+    let Some(target) = std::fs::read_link(&source).ok() else {
+        return false;
+    };
+    let real = if target.is_absolute() {
+        target
+    } else {
+        source.parent().unwrap_or(fetched).join(target)
+    };
+    let Ok(real) = super::fsutil::canonical(&real) else {
+        return true;
+    };
+    let Ok(root) = super::fsutil::canonical(fetched) else {
+        return false;
+    };
+    !real.starts_with(&root)
 }
 
 fn unreadable(why: String) -> ScanResult {
@@ -217,6 +329,52 @@ fn reads_as_text(root: &Path, rel: &str) -> bool {
     !head.contains(&0) && std::str::from_utf8(head).is_ok()
 }
 
+/// Whether the file's first line starts with `#!`, which is how a script names the program that runs it. Only the
+/// first two bytes are read, so a large file costs nothing.
+fn starts_with_shebang(root: &Path, rel: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut file) = std::fs::File::open(local(root, rel)) else {
+        return false;
+    };
+    let mut head = [0u8; 2];
+    file.read_exact(&mut head).is_ok() && &head == b"#!"
+}
+
+/// Whether a package.json asks npm to run one of its own install scripts. Only a warning: npm runs those on install,
+/// and the install card already says so.
+fn install_script_finding(root: &Path, rel: &str, findings: &mut Vec<Finding>) {
+    let Ok(package) = serde_json::from_str::<serde_json::Value>(&read_text(root, rel)) else {
+        return;
+    };
+    let Some(scripts) = package
+        .get("scripts")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    let ran: Vec<&str> = INSTALL_SCRIPTS
+        .iter()
+        .copied()
+        .filter(|name| {
+            scripts
+                .get(*name)
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+        })
+        .collect();
+    if !ran.is_empty() {
+        findings.push(finding(
+            Severity::Warn,
+            "install_script",
+            rel,
+            format!(
+                "package.json runs {} when npm installs it; Hivra only copies it unless the person approves the install.",
+                ran.join(", ")
+            ),
+        ));
+    }
+}
+
 /// Scan a copy described by `entries`, reading its manifest, skills and files from `root`. Tests use this to
 /// describe a copy (paths, sizes, links) without making one; the install path always calls `scan`.
 pub fn scan_entries(root: &Path, entries: &[Entry]) -> ScanResult {
@@ -268,10 +426,11 @@ pub fn scan_entries(root: &Path, entries: &[Entry]) -> ScanResult {
             ));
         }
         let name = path.rsplit('/').next().unwrap_or(&path);
-        if name == "plugin.json" {
+        let lower = name.to_lowercase();
+        if lower == "plugin.json" {
             manifests.push(path.clone());
         }
-        if name == "SKILL.md" {
+        if lower == "skill.md" {
             skill_files += 1;
         }
         let ext = suffix(&path);
@@ -299,6 +458,43 @@ pub fn scan_entries(root: &Path, entries: &[Entry]) -> ScanResult {
                 "This file isn't text and isn't a common format; it is copied, never run.",
             ));
         }
+        // A file with no extension that another program can still start: a #! first line, or a name a runner looks
+        // for. Hivra never runs it, and the person is told it is there.
+        if !entry.link && !escapes(&entry.path) {
+            let runner_name = RUNNER_FILES.contains(&lower.as_str());
+            if runner_name || starts_with_shebang(root, &path) {
+                findings.push(finding(
+                    Severity::Warn,
+                    "runnable_file",
+                    &entry.path,
+                    if runner_name {
+                        "A program on this computer can start this file; Hivra only copies it."
+                    } else {
+                        "This file starts with a script line, so a program could run it; Hivra only copies it."
+                    },
+                ));
+            }
+            if lower == "package.json" {
+                install_script_finding(root, &path, &mut findings);
+            }
+        }
+        if lower == "hooks.json" {
+            findings.push(finding(
+                Severity::Warn,
+                "hooks_file",
+                &entry.path,
+                "This is a hooks file; Hivra doesn't run plugin hooks, and the person may want to check it.",
+            ));
+        }
+        let lower_path = path.to_lowercase();
+        if lower_path.starts_with(".husky/") || lower_path.contains("/.husky/") {
+            findings.push(finding(
+                Severity::Warn,
+                "hook_script",
+                &entry.path,
+                "This runs when someone commits with git; Hivra only copies it.",
+            ));
+        }
     }
 
     if total > MAX_TOTAL_BYTES {
@@ -316,7 +512,7 @@ pub fn scan_entries(root: &Path, entries: &[Entry]) -> ScanResult {
     manifest_findings(root, &manifests, &mut findings);
     skill_findings(root, entries, &mut findings);
 
-    let instructions = instructions(root, entries);
+    let instructions = instructions(root, entries, &manifests);
     let token_estimate = instructions.len() / 4;
     if token_estimate > HIGH_TOKEN_WARNING {
         findings.push(finding(
@@ -355,6 +551,7 @@ pub fn scan_entries(root: &Path, entries: &[Entry]) -> ScanResult {
         files: entries.len(),
         bytes: total,
         token_estimate,
+        digest: String::new(),
     }
 }
 
@@ -446,7 +643,8 @@ fn skill_findings(root: &Path, entries: &[Entry], findings: &mut Vec<Finding>) {
                 continue;
             }
             let rel = format!("skills/{}", child.file_name().to_string_lossy());
-            let text = std::fs::read_to_string(path.join("SKILL.md")).unwrap_or_default();
+            // A lower-case skill.md is the same file to a loader on a case-insensitive disk, so it is read here too.
+            let text = skill_file(&path).map(|(_, text)| text).unwrap_or_default();
             if text.trim().is_empty() {
                 findings.push(finding(
                     Severity::Warn,
@@ -461,7 +659,7 @@ fn skill_findings(root: &Path, entries: &[Entry], findings: &mut Vec<Finding>) {
     let mut declares_tools = false;
     for entry in entries {
         let rel = entry.path.replace('\\', "/");
-        if !rel.ends_with("SKILL.md") || escapes(&entry.path) || entry.link {
+        if !name_is(&rel, "SKILL.md") || escapes(&entry.path) || entry.link {
             continue;
         }
         let text = read_text(root, &rel);
@@ -499,62 +697,195 @@ fn skill_findings(root: &Path, entries: &[Entry], findings: &mut Vec<Finding>) {
     }
 }
 
-/// The instructions an agent would read, joined, so the wording checks see the whole plugin.
-fn instructions(root: &Path, entries: &[Entry]) -> String {
+/// The instructions an agent would read, joined, so the wording checks see the whole plugin: each skill's body and
+/// frontmatter (a description is what every session shows about the skill, so it is read as instructions too),
+/// every other `.md` or `.txt` file, which a skill can point the agent at, and every piece of text the manifest
+/// declares (the name and description are shown in the installed list, and extension fields are text too).
+fn instructions(root: &Path, entries: &[Entry], manifests: &[String]) -> String {
     let mut out = String::new();
+    for path in manifests {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&read_text(root, path)) else {
+            continue;
+        };
+        let mut strings = Vec::new();
+        collect_strings(&value, &mut strings);
+        out.push_str(&strings.join("\n"));
+        out.push('\n');
+    }
     for entry in entries {
         let rel = entry.path.replace('\\', "/");
-        if !rel.ends_with("SKILL.md") || escapes(&entry.path) || entry.link {
+        if escapes(&entry.path) || entry.link {
             continue;
         }
-        let text = read_text(root, &rel);
-        match split_frontmatter(&text) {
-            Some((_, body)) => out.push_str(body),
-            None => out.push_str(&text),
+        let ext = suffix(&rel);
+        if name_is(&rel, "SKILL.md") {
+            let text = read_text(root, &rel);
+            out.push_str(&text);
+            out.push('\n');
+        } else if ext == "md" || ext == "txt" {
+            out.push_str(&read_text(root, &rel));
+            out.push('\n');
         }
-        out.push('\n');
     }
     out
 }
 
+/// Every string inside a JSON value, however deeply it nests (a manifest is small and already size-capped). Keys are
+/// read too: a description can sit under a key a version of the schema added later.
+fn collect_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(text) => out.push(text.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, field) in fields {
+                out.push(key.clone());
+                collect_strings(field, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Whether the file name at the end of `path` is `name`, ignoring case: a loader on a case-insensitive disk finds
+/// `skill.md` where it asks for `SKILL.md`, so the scan has to read it as one too.
+fn name_is(path: &str, name: &str) -> bool {
+    path.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case(name))
+}
+
+/// A skill's own instruction file, whatever its case: the name as it is on disk, and the text.
+fn skill_file(dir: &Path) -> Option<(String, String)> {
+    let children = std::fs::read_dir(dir).ok()?;
+    for child in children.flatten() {
+        let name = child.file_name().to_string_lossy().into_owned();
+        if name.eq_ignore_ascii_case("SKILL.md") {
+            let text = std::fs::read_to_string(child.path()).ok()?;
+            return Some((name, text));
+        }
+    }
+    None
+}
+
 /// Wording worth the person's eye before a plugin goes on. These never block: ordinary plugins say "send the token
-/// count" and "ignore the permission prompt in the tutorial", so the person reads the warning and decides.
+/// count" and "ignore the permission prompt in the tutorial", so the person reads the warning and decides. The wording
+/// is best effort: it reads a folded copy of the text, so a line break, a look-alike letter or a zero-width space
+/// doesn't hide a phrase, but a determined author can still write around it, which is why the card says "may".
 fn wording_findings(text: &str) -> Vec<(&'static str, &'static str)> {
-    let words = lower_words(text);
+    let folded = folded(text);
+    let words = lower_words(&folded);
     if words.is_empty() {
         return Vec::new();
     }
     let mut out = Vec::new();
-    if near(&words, EXFILTRATE_VERBS, SECRET_NOUNS, 12) {
+    if near(&words, EXFILTRATE_VERBS, SECRET_NOUNS, 12) || reads_private_key(&words) {
         out.push((
             "secret_exfiltration",
-            "Its instructions talk about sending or revealing a secret; read them before adding it.",
+            "Its instructions may be talking about sending or revealing a secret; read them before adding it.",
         ));
     }
     if near(&words, BYPASS_VERBS, APPROVAL_NOUNS, 12) {
         out.push((
             "approval_bypass",
-            "Its instructions talk about getting past an approval or a sandbox; read them before adding it.",
+            "Its instructions may be talking about getting past an approval or a sandbox; read them before adding it.",
         ));
     }
     if near(&words, CREDENTIAL_WORDS, KEY_NOUNS, 1)
         || has_phrase(&words, &["environment", "variable"])
+        || mentions_ssh_home(&words)
     {
         out.push((
             "credentials_language",
-            "Its instructions talk about keys or credentials; read them before adding it.",
+            "Its instructions may be talking about keys or credentials; read them before adding it.",
         ));
     }
     if INJECTION_PHRASES
         .iter()
         .any(|phrase| has_phrase(&words, phrase))
+        || has_phrase(&words, &["ignore", "instructions"])
+        || split_letter_phrase(&words, "ignore")
     {
         out.push((
             "prompt_injection_language",
-            "Its instructions tell the agent to ignore other instructions; read them before adding it.",
+            "Its instructions may be telling the agent to ignore other instructions; read them before adding it.",
         ));
     }
     out
+}
+
+/// The text with look-alike letters and typographic marks folded to plain letters and a plain space.
+fn folded(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let nfkc: String = text.nfkc().collect();
+    let mut out = String::with_capacity(nfkc.len());
+    for ch in nfkc.chars() {
+        // Zero-width and bidi controls carry no sound, so they are dropped; "ig\u{200b}nore" is "ignore".
+        if matches!(
+            ch,
+            '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{feff}'
+                | '\u{00ad}'
+        ) {
+            continue;
+        }
+        // NFKC has already folded full-width letters; Cyrillic and Greek look-alikes are folded by hand for the few
+        // letters a wordlist cares about, in either case.
+        out.push(match ch.to_lowercase().next().unwrap_or(ch) {
+            'а' => 'a',
+            'е' => 'e',
+            'о' => 'o',
+            'р' => 'p',
+            'с' => 'c',
+            'у' => 'y',
+            'х' => 'x',
+            'і' => 'i',
+            'ѕ' => 's',
+            'ј' => 'j',
+            'ӏ' => 'l',
+            'ο' => 'o',
+            'α' => 'a',
+            'ε' => 'e',
+            'ι' => 'i',
+            'ν' => 'v',
+            'ρ' => 'p',
+            'τ' => 't',
+            'υ' => 'u',
+            'χ' => 'x',
+            other => other,
+        });
+    }
+    out
+}
+
+/// "curl -d @~/.ssh/id_rsa" or "upload ~/.ssh/key": a private key path going somewhere.
+fn reads_private_key(words: &[String]) -> bool {
+    words
+        .iter()
+        .any(|word| word.contains(".ssh") || word.contains("id_rsa"))
+}
+
+/// "ssh key in ~/.ssh": a private key named in the instructions, wherever it sits.
+fn mentions_ssh_home(words: &[String]) -> bool {
+    words.iter().any(|word| word == ".ssh")
+}
+
+/// Whether a run of one-letter words spells `word`: "i.g.n.o.r.e" is "ignore" to a reader.
+fn split_letter_phrase(words: &[String], word: &str) -> bool {
+    let letters: Vec<char> = word.chars().collect();
+    if letters.len() < 4 || words.len() < letters.len() {
+        return false;
+    }
+    words.windows(letters.len()).any(|run| {
+        run.iter()
+            .zip(&letters)
+            .all(|(part, letter)| part.chars().count() == 1 && part.starts_with(*letter))
+    })
 }
 
 const EXFILTRATE_VERBS: &[&str] = &[
@@ -629,7 +960,7 @@ const INJECTION_PHRASES: &[&[&str]] = &[
 ];
 
 fn lower_words(text: &str) -> Vec<String> {
-    text.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '-'))
+    text.split(|c: char| !(c.is_alphanumeric() || c == '_'))
         .filter(|word| !word.is_empty())
         .map(str::to_ascii_lowercase)
         .collect()

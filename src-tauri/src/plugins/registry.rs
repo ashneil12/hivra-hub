@@ -470,13 +470,28 @@ pub fn install_local(host: &Host, source_dir: &Path, source: Source) -> Result<O
         .root
         .join("installed")
         .join(format!(".staging-{}", uuid::Uuid::new_v4()));
+    // WP-101: a folder picked by hand gets the same read as a downloaded one, and the own-folder scan runs before the
+    // copy so a link out of the plugin is refused with a reason rather than silently left out of the copy.
+    let links = super::scan::scan_source(&checked.root, &staging);
+    if links
+        .iter()
+        .any(|f| f.severity == super::scan::Severity::Block)
+    {
+        let blocked = super::scan::ScanResult {
+            blocked: true,
+            findings: links,
+            ..super::scan::ScanResult::default()
+        };
+        return Err(format!(
+            "\"{name}\" didn't pass the install check: {}",
+            super::scan::blocking_reason(&blocked)
+        ));
+    }
     if let Err(why) = fsutil::copy_plugin_tree(&checked.root, &staging) {
         let _ = fsutil::remove_tree(&staging);
         return Err(why);
     }
-    // WP-101: a folder picked by hand gets the same read as a downloaded one. A block refuses before anything is
-    // placed; the copy made above goes with it.
-    let scanned = super::scan::scan(&staging);
+    let scanned = super::scan::scan_untrusted(&staging);
     if scanned.blocked {
         let _ = fsutil::remove_tree(&staging);
         return Err(format!(

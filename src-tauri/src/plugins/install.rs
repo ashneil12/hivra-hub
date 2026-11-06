@@ -26,7 +26,7 @@ use super::manifest::{load_plugin, LoadedPlugin, Report};
 use super::registry::{
     self, Contribution, Enablement, Entry, Host, Outcome, Registry, Snapshot, Source,
 };
-use super::scan::{self, scan as scan_staged};
+use super::scan;
 use super::source::{self, InstallSource, Tools};
 use super::wiring::passed_env;
 
@@ -284,12 +284,9 @@ fn restage(dir: &Path, request: &PendingRequest, tools: &Tools) -> Result<(), St
             ));
         }
         manifest_declared(&checked)?.check(&tools.target)?;
-        fsutil::copy_plugin_tree(&fetched.root, &staged)?;
-        // WP-101: a re-fetched copy is scanned again; the pinned source could have changed under it.
-        let scanned = scan_staged(&staged);
-        if scanned.blocked {
-            return Err(scan::blocking_reason(&scanned));
-        }
+        // WP-101: a re-fetched copy is scanned again; the pinned source could have changed under it. The re-fetched
+        // copy is the one the person approves, so a warning the card never showed also stops it.
+        refuse_changed(&new_scan(&fetched.root, &staged)?, request)?;
         Ok(())
     })();
     let _ = fsutil::remove_tree(&work);
@@ -346,18 +343,18 @@ fn prepare(
             None => None,
         };
         let staged = dir.join("plugin");
-        fsutil::copy_plugin_tree(&fetched.root, &staged)?;
-        let _ = fsutil::remove_tree(&work);
-        let loaded = load_plugin(&staged).map_err(|e| e.0)?;
-        // WP-101: read the copy before anyone is asked to install it. A block refuses now, with nothing placed and
-        // the pending folder dropped by the caller; warnings travel on the request for the card.
-        let scanned = scan_staged(&staged);
+        // WP-101: read the fetched folder before the copy, so a link that points outside the plugin is refused with a
+        // reason rather than silently left out, then read the copy for everything else. A block refuses now, with
+        // nothing placed and the pending folder dropped by the caller; warnings travel on the request for the card.
+        let scanned = new_scan(&fetched.root, &staged)?;
         if scanned.blocked {
             return Err(format!(
                 "\"{name}\" didn't pass the install check: {}",
                 scan::blocking_reason(&scanned)
             ));
         }
+        let _ = fsutil::remove_tree(&work);
+        let loaded = load_plugin(&staged).map_err(|e| e.0)?;
         let steps = script_steps(&loaded)?;
         Ok(PendingRequest {
             id: id.clone(),
@@ -392,6 +389,55 @@ fn prepare(
     }
 }
 
+/// Copy `fetched` into `staged`, then read it: first the fetched folder for links and paths that would be dropped, then
+/// the copy for everything else. The result carries the copy's content hash.
+fn new_scan(fetched: &Path, staged: &Path) -> Result<scan::ScanResult, String> {
+    let runway = scan::scan_source(fetched, staged);
+    if runway.iter().any(|f| f.severity == scan::Severity::Block) {
+        return Ok(scan::ScanResult {
+            blocked: true,
+            findings: runway,
+            ..scan::ScanResult::default()
+        });
+    }
+    fsutil::copy_plugin_tree(fetched, staged)?;
+    let mut result = scan::scan_untrusted(staged);
+    result.findings.extend(runway);
+    result.blocked = result
+        .findings
+        .iter()
+        .any(|f| f.severity == scan::Severity::Block);
+    Ok(result)
+}
+
+/// The copy fetched again has to be the copy the person was shown: same content, same findings. Anything else stops,
+/// because they approved a card that no longer describes what would land.
+fn refuse_changed(fresh: &scan::ScanResult, request: &PendingRequest) -> Result<(), String> {
+    if fresh.blocked {
+        return Err(scan::blocking_reason(fresh));
+    }
+    let shown = &request.scan;
+    let same_digest = shown.digest.is_empty() || fresh.digest == shown.digest;
+    if same_digest && fresh.findings.len() == shown.findings.len() {
+        let mut had: Vec<(&str, &str, &str)> = fresh
+            .findings
+            .iter()
+            .map(|f| (f.code.as_str(), f.path.as_str(), f.message.as_str()))
+            .collect();
+        let mut seen: Vec<(&str, &str, &str)> = shown
+            .findings
+            .iter()
+            .map(|f| (f.code.as_str(), f.path.as_str(), f.message.as_str()))
+            .collect();
+        had.sort_unstable();
+        seen.sort_unstable();
+        if had == seen {
+            return Ok(());
+        }
+    }
+    Err("The copy fetched again isn't the one you were shown, so nothing was installed. Ask for it again to see what changed.".into())
+}
+
 fn manifest_declared(loaded: &LoadedPlugin) -> Result<Declared, String> {
     let value = serde_json::json!({ "extensions": loaded.manifest.extensions });
     Declared::from_manifest(&value)
@@ -422,6 +468,25 @@ fn commit(
             return Err(format!(
                 "The downloaded copy is gone and couldn't be fetched again ({why}). Try again."
             ));
+        }
+    }
+    if already.is_none() && staged.is_dir() {
+        // WP-101: the copy that lands is the copy that was read. Anything changed since the scan (a retry, a moved
+        // tag, something writing in the data folder) stops the install rather than installing what nobody saw.
+        let now = scan::scan_untrusted(&staged);
+        if now.blocked {
+            drop_pending(host, dir);
+            return Err(format!(
+                "The copy changed after it was read: {} Ask for it again.",
+                scan::blocking_reason(&now)
+            ));
+        }
+        if !request.scan.digest.is_empty() && now.digest != request.scan.digest {
+            drop_pending(host, dir);
+            return Err(
+                "The copy changed after it was read, so nothing was installed. Ask for it again to see what changed."
+                    .into(),
+            );
         }
     }
     if already.is_none() && !request.steps.is_empty() {
