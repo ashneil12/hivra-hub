@@ -456,7 +456,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Vercel Inc.",
       "where": "src-tauri/src/proxy/",
-      "how": "WP-90: routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
+      "how": "WP-90: routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
     },
     {
       "name": "emulate's base URLs and file store",

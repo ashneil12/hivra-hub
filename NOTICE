@@ -214,7 +214,9 @@ Third-party components Hivra adds:
   License: Apache-2.0
   Copyright 2025 Vercel Inc.
   Used in: src-tauri/src/proxy/
-  routes.ts, auto.ts, config.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync, the sudo path and the CLI's app launcher are not included (WP-90).
+  routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their
+  tests. TLS, the /etc/hosts sync, the sudo path and the CLI's app launcher are not included
+  (WP-90).
 
 - emulate's base URLs and file store
   Source: https://github.com/vercel-labs/emulate
