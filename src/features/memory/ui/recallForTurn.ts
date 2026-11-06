@@ -6,6 +6,7 @@ import { parseDoc } from "../model/doc";
 import { recallDecision } from "../model/recallPolicy";
 import { recallFence } from "../model/recall";
 import { noteShown, shownIds } from "../model/shownMemory";
+import { recordRecall } from "../model/lastRecall";
 
 /** The fence to append after the trusted note, or nothing. The system prompt is not involved. */
 export async function recalledFence(
@@ -35,6 +36,8 @@ export async function recalledFence(
         mode: "automatic",
         exclude: shown,
       });
+      // WP-99: the Memory screen can say why this Mono's last turn got what it got.
+      recordRecall(decision, now);
       const block = recallFence(doc, decision.picked);
       if (!block) continue;
       blocks.push(block);

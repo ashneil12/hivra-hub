@@ -38,3 +38,19 @@ test("memory can be searched, edited, deleted, and a proposal accepted or reject
   await page.getByRole("button", { name: "Reject import from old" }).click();
   await expect(page.getByText("Uses tabs")).toHaveCount(0);
 });
+
+test("the memory screen can say why the last turn recalled what it did", async ({ page }) => {
+  await page.goto("/tests/browser/wp51-memory.html");
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Likes small commits", { exact: true })).toBeVisible();
+
+  const why = page.locator("[data-recall-why]");
+  await expect(why.locator("summary")).toHaveText("Why these were recalled");
+  // Folded away until asked for.
+  await expect(why.locator("p")).not.toBeVisible();
+  await why.locator("summary").click();
+  await expect(why.locator("p")).toBeVisible();
+  await expect(why.locator("p")).toContainText("picked");
+  await expect(why.locator("p")).toContainText("skipped");
+  await expect(why.locator("p")).toContainText("needs review");
+});
