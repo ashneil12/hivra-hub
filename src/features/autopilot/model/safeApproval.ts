@@ -1,5 +1,7 @@
 // What autopilot may allow by itself when a supervised chat waits on a tool approval (Ash, 20 Oct): only
 // - a read-only tool (Read, Grep, Glob, LS, WebSearch, WebFetch and the like);
+// - a read-only MCP tool from a server the person installed through a Hivra plugin (mcpEffect.ts): every other
+//   server's tools wait, because a hostile server can name a write tool like a read;
 // - an edit or write whose files are all inside that chat's own folder (its worktree when it has one);
 // - a shell command on a short list of reads, tests and builds (git status/diff/log/show/branch, ls, cat, rg, grep,
 //   npm test / run check|lint|build, cargo test|check|clippy|fmt --check, node --test), with no chaining, substitution,
@@ -11,6 +13,7 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
+import { isInstalledPluginServer, splitMcpTool, toolEffect } from "./mcpEffect";
 
 /** Why a call isn't one autopilot may allow by itself, or null when it may. */
 export type SafeVerdict = string | null;
@@ -221,6 +224,14 @@ export function safeCall(call: ApprovalCall | undefined, folder: string | undefi
     return null;
   }
   if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command);
+  const mcp = splitMcpTool(call.tool);
+  if (mcp) {
+    // A hostile server can name a write tool `get_x`, so a name alone only counts for a server the person installed
+    // through Hivra's plugin flow. Every other server's tools wait, however they read.
+    if (!isInstalledPluginServer(mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
+    const effect = toolEffect(mcp.tool);
+    return effect === "read_only" ? null : `it is an MCP ${effect === "change" ? "change" : effect === "high_impact" ? "high-impact action" : "call autopilot can't place"}, so it waits for Ash`;
+  }
   return `${call.tool} isn't a read, a test or build, or an edit in the chat's folder`;
 }
 

@@ -129,6 +129,31 @@ describe("edits", () => {
   });
 });
 
+describe("MCP tools", () => {
+  const plugin = (tool: string) => `mcp__plugin-agent_plugins-notion__${tool}`;
+
+  it("allows a read from a server the person installed as a plugin", () => {
+    for (const tool of ["get_page", "list_issues", "search_docs", "search_issues"])
+      expect(safeCall({ tool: plugin(tool) }, FOLDER), tool).toBeNull();
+  });
+
+  it("holds a plugin server's tool that changes anything, or that can't be placed", () => {
+    for (const tool of ["create_page", "update_settings", "delete_file", "send_message", "frobnicate"])
+      expect(safeCall({ tool: plugin(tool) }, FOLDER), tool).not.toBeNull();
+    // A hostile server can give a write tool a reading name; a change by name still waits.
+    expect(safeCall({ tool: plugin("delete_page") }, FOLDER)).not.toBeNull();
+  });
+
+  it("holds every tool from a server Hivra didn't install, however it reads", () => {
+    for (const tool of ["mcp__slack__reply_to_thread", "mcp__slack__get_messages", "mcp__claude_ai_Firecrawl__firecrawl_scrape", "mcp__monocode__delegate_task", "mcp__notion__get_page", "mcp__plugin-__get_x"])
+      expect(safeCall({ tool }, FOLDER), tool).not.toBeNull();
+  });
+
+  it("holds a call whose name it can't split into a server and a tool", () => {
+    for (const tool of ["mcp__", "mcp____x", "mcp__x__", "mcp_x__y"]) expect(safeCall({ tool }, FOLDER), tool).not.toBeNull();
+  });
+});
+
 describe("tool calls", () => {
   it("allow read-only tools, edits in the folder and listed commands; hold the rest", () => {
     expect(safeCall({ tool: "Read", paths: ["/etc/hosts"] }, FOLDER)).toBeNull();

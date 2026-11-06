@@ -43,6 +43,20 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict({ text: "", tool: { title: "Edit a.ts" }, approval: { requestId: 3, call: { tool: "Edit", paths: [`${FOLDER}/src/a.ts`] } } }, FOLDER)).toMatchObject({ kind: "allow" });
   });
 
+  it("allows a read-only MCP call from an installed plugin's server, and nothing else from MCP", () => {
+    const mcp = (tool: string) => ({ text: "", tool: { title: tool, kind: "other" }, approval: { requestId: 6, call: { tool } } });
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__create_page"), FOLDER)).toMatchObject({ kind: "held", red: null });
+    // A server Hivra didn't install waits even for a name that reads as a read.
+    expect(approvalVerdict(mcp("mcp__notion__get_page"), FOLDER)).toMatchObject({ kind: "held", red: null });
+  });
+
+  it("lets the red list hold an MCP call the classifier would allow", () => {
+    // The name says a read; the files it names say credentials, and the red list is checked first.
+    const read = { text: "", tool: { title: "mcp__plugin-x-memory__get_file" }, approval: { requestId: 7, call: { tool: "mcp__plugin-x-memory__get_file", paths: ["/Users/ash/.ssh/id_ed25519"] } } };
+    expect(approvalVerdict(read, FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+  });
+
   it("holds red-list commands, saying which list", () => {
     expect(approvalVerdict(bash("rm -rf ~/Library/Application Support/x"), FOLDER)).toMatchObject({ kind: "held", red: "delete" });
     expect(approvalVerdict(bash("git push --force origin main"), FOLDER)).toMatchObject({ kind: "held", red: "mass-destructive" });
