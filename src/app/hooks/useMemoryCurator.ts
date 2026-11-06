@@ -10,7 +10,7 @@ import { cheapAsk, cheapProblem } from "../../features/memory/model/cheapAsk";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
-import { noteOutcome } from "../../features/memory/model/health";
+import { noteDeferred, noteOutcome } from "../../features/memory/model/health";
 import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
 import { commitDoc } from "../../features/memory/model/review";
 import { rulesAnswer } from "../../features/memory/model/ruleCurator";
@@ -123,9 +123,24 @@ export function backgroundAskFits(tier: MemoryTier, model: string | undefined, n
   return false;
 }
 
+/**
+ * WP-103: a turn left for later is counted once on the health card, however many times it is tried again. Bounded so
+ * a long session cannot grow the set without limit.
+ */
+export function firstDeferral(counted: Set<string>, key: string): boolean {
+  if (counted.has(key)) return false;
+  counted.add(key);
+  if (counted.size > 500) {
+    const oldest = counted.values().next().value;
+    if (oldest !== undefined) counted.delete(oldest);
+  }
+  return true;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
+  const countedDeferrals = useRef(new Set<string>());
   useEffect(() => {
     if (!on) return;
     for (const feed of curatorFeeds(sessions, fedLast.current, mateForSession)) {
@@ -157,6 +172,16 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
         }
         const result = await collectAnswer(loaded, tierCtx, curatorAsk(choice.tier, tierCtx, choice.model));
         if (result.kind === "deferred") {
+          // WP-103: the card should say a model failed to answer, not stay silent about it. The turn is not done, so
+          // the next turn tries it again; the count moves on its first failure only.
+          if (firstDeferral(countedDeferrals.current, `${ctx.mateId}:${ctx.turnId}`)) {
+            const at = Date.now();
+            try {
+              await commitDoc(loadDoc, saveDoc, (doc) => noteDeferred(markLived(doc, at), at));
+            } catch {
+              // The count is a nicety: not being able to write it never holds the turn back.
+            }
+          }
           fedLast.current.delete(feed.sessionId);
           return;
         }

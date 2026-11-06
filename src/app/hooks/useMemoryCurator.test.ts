@@ -5,7 +5,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ label: "main" }) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: () => Promise.reject(new Error("no app")) }));
 
-import { backgroundAskFits, curatorAsk, curatorFeeds, lastExchange } from "./useMemoryCurator";
+import { backgroundAskFits, curatorAsk, curatorFeeds, firstDeferral, lastExchange } from "./useMemoryCurator";
 import { BUDGET_KEY, PAUSE_KEY, loadBudget, pausedNow } from "../../features/memory/model/memoryBudget";
 
 const NOW = Date.parse("2026-06-01T12:00:00Z");
@@ -71,6 +71,20 @@ it("the background budget counts a call when it is taken", () => {
   // A shipped budget that cannot be written still lets the turn through: it is a limit, not a lock.
   localStorage.setItem(BUDGET_KEY, "not json");
   expect(backgroundAskFits("crew", undefined, NOW + 1)).toBe(true);
+});
+
+it("counts a deferred turn the first time it is left for later, and not on every retry", () => {
+  const counted = new Set<string>();
+  expect(firstDeferral(counted, "notes-lead:turn-1")).toBe(true);
+  expect(firstDeferral(counted, "notes-lead:turn-1")).toBe(false);
+  expect(firstDeferral(counted, "notes-lead:turn-2")).toBe(true);
+  // A different Mono's turn is its own.
+  expect(firstDeferral(counted, "other-lead:turn-1")).toBe(true);
+  // The set stays bounded however long a session runs.
+  const long = new Set<string>();
+  for (let i = 0; i < 700; i++) firstDeferral(long, `turn-${i}`);
+  expect(long.size).toBeLessThanOrEqual(500);
+  expect(firstDeferral(long, "turn-699")).toBe(false);
 });
 
 it("a pause is gone from the screen once its moment has passed", () => {
