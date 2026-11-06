@@ -182,22 +182,25 @@ function nodeTest(args: readonly string[]): SafeVerdict {
   return null;
 }
 
-/** The only ps fields autopilot may ask for: each one process's own numbers, none its environment or command line. */
-const PS_FIELDS = new Set(["pid", "ppid", "etime", "state", "stat", "comm", "%cpu", "%mem", "rss"]);
+/**
+ * The only ps fields autopilot may ask for: one process's own numbers. None prints its environment or its command
+ * line: macOS prints both from `comm` on some systems (the full command with its arguments, confirmed against a child
+ * started with a secret in argv), so it is not here either.
+ */
+const PS_FIELDS = new Set(["pid", "ppid", "etime", "state", "stat", "%cpu", "%mem", "rss"]);
 
 /**
- * `ps` only for one process's own status: `ps -p <pid>` or `ps -p <pid> -o <fields>`, fields from a fixed list. Every
- * other shape prints every process's environment (`ps e`, `ps eww`, `-E`, `e` in a cluster: confirmed on macOS) or
- * every process's command line (`ps aux`, `ps -ef`, `-o command`), which is a secret read with no tap. Windows has no
- * `ps`, so this holds it on every platform the table is shared across.
+ * `ps` only for one process's own status, as `ps -p <pid> -o <fields>` with `-o` required, fields from the fixed list
+ * above. A bare `ps -p <pid>` prints the full command line with its arguments on macOS, which can carry a secret, so it
+ * waits. Every other shape prints every process's environment (`ps e`, `ps eww`, `-E`, `e` in a cluster) or every
+ * process's command line (`ps aux`, `ps -ef`, `-o command`). Windows has no `ps`, so this holds it everywhere.
  */
 function psRead(args: readonly string[]): SafeVerdict {
-  if (args.length === 2 && args[0] === "-p" && /^\d+$/.test(args[1])) return null;
   if (args.length === 4 && args[0] === "-p" && /^\d+$/.test(args[1]) && args[2] === "-o") {
     const fields = args[3].split(",");
     if (fields.every((field) => PS_FIELDS.has(field))) return null;
   }
-  return "ps only runs by itself for one process, as ps -p <pid> or ps -p <pid> -o <pid, ppid, etime, state, stat, comm, %cpu, %mem, rss>";
+  return "ps only runs by itself for one process, as ps -p <pid> -o <fields>, with the fields from pid, ppid, etime, state, stat, %cpu, %mem and rss";
 }
 
 function rgRead(args: readonly string[]): SafeVerdict {

@@ -54,10 +54,8 @@ describe("shell commands", () => {
     "df -h",
     "file README.md",
     "which git",
-    // WP-101 fix round: ps only for one process's own status, in the two shapes below. Anything else can print
-    // every process's environment (`ps e`, `ps eww`) or every command line (`ps aux`).
-    "ps -p 501",
-    "ps -p 501 -o pid,ppid,etime,state,stat,comm,%cpu,%mem,rss",
+    // WP-101 fix round 2, item C: ps only as `ps -p <pid> -o <fields>` with `-o` required and a fixed field list.
+    "ps -p 501 -o pid,ppid,etime,state,stat,%cpu,%mem,rss",
     "ps -p 501 -o pid",
   ])("runs by itself: %s", (command) => {
     expect(safeCommand(command)).toBeNull();
@@ -163,9 +161,16 @@ describe("shell commands", () => {
     "file --compile magic",
     // an unquoted wildcard could expand into an option
     "find . -name *.ts",
-    // WP-101 fix round: ps in any shape but the two allowed ones. `ps e` and `ps eww` print every process's
-    // environment (confirmed on macOS); `aux` and `-ef` print every command line.
+    // WP-101 fix round 2, item C: a bare `ps -p <pid>` prints the process's full command line on macOS, with its
+    // arguments, so it waits too. `ps e` and `ps eww` print every process's environment; `aux` and `-ef` every
+    // command line.
+    "ps -p 1",
+    "ps -p 501",
+    "ps -p 501 -o comm",
+    "ps -p 501 -o pid,comm",
     "ps",
+    "ps -p 501 -o args",
+    "ps -p 501 -o pid,command",
     "ps aux",
     "ps -ef",
     "ps e",
