@@ -336,7 +336,7 @@
       "licence": "Apache-2.0",
       "copyright": "The upstream files do not carry a separate copyright line (Apache-2.0)",
       "where": "src/features/docs/model",
-      "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72)"
+      "how": "The docs editor's link rules, slash menu, content checks, page tree and Markdown conversion, copied from Orbit and restyled for Hivra (WP-72). The blank line before a list item's paragraph, quote or heading child, and before a numbered list that does not start at 1, comes from Orbit's ab86dac (WP-102)"
     },
     {
       "name": "Orbit's task rules",
