@@ -29,7 +29,7 @@ keeps the same work running while the laptop is off.
    `src-tauri/src/<feature>`); upstream files only get small hooks.
 8. **Any CLI, any platform.** Nothing in the core depends on one agent CLI or on bash. macOS first, Windows and Linux
    kept working in CI.
-9. **Never risk the daily app or its data.** Everything in CLAUDE.md about dev copies, ship and identity still holds.
+9. **Never risk the daily app or its data.** Everything in AGENTS.md about dev copies, ship and identity still holds.
 10. **Credit every source and respect its licence** (see SOURCES.md for the rules).
 
 ## 3. The model
