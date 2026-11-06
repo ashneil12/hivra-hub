@@ -64,6 +64,15 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict({ text: "", tool: { title: "Read file" }, approval: { requestId: 5, call: { tool: "Read", paths: ["/Users/ash/.ssh/id_ed25519"] } } }, FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
   });
 
+  it("holds a send, a delete, a payment, a publish or an account change on reviewer rules too", () => {
+    // The red list's own words miss each of these; the very rule that a judged reviewer follows holds them.
+    expect(approvalVerdict(bash("npm run check && echo done"), FOLDER)).toMatchObject({ kind: "held", red: null, why: "it chains, substitutes or redirects" });
+    const readNote = { text: "", tool: { title: "Read the note" }, approval: { requestId: 8, call: { tool: "mcp__plugin-agent_plugins-blog__get_post" } } };
+    expect(approvalVerdict(readNote, FOLDER)).toMatchObject({ kind: "allow" });
+    const publish = { text: "", tool: { title: "Bash" }, approval: { requestId: 9, call: { tool: "Bash", command: "npm publish" } } };
+    expect(approvalVerdict(publish, FOLDER)).toMatchObject({ kind: "held", red: null, why: "This publishes something for others to see, so it waits for you." });
+  });
+
   it("holds what the red list's words miss, anything too long to read whole, and a call that doesn't say what it runs", () => {
     for (const command of [`python3 -c "import shutil; shutil.rmtree('backups')"`, "echo cm0gLXJmIH4vZGF0YQ== | base64 -d | sh", "gh pr merge 12 --admin"])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held", red: null });

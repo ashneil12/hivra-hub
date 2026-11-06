@@ -10,6 +10,7 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
+import { reviewVeto } from "./reviewerRules";
 import { safeCall } from "./safeApproval";
 import { forUser } from "../../hub/model/userName";
 
@@ -74,6 +75,12 @@ export function approvalVerdict(block: ApprovalBlock, folder: string | undefined
   if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
   const red = redListCategory(text);
   if (red) return { kind: "held", red, what, why: "it touches the red list" };
+  // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
+  // (reviewerRules.ts). This can only hold, never allow.
+  const reviewed = reviewVeto({
+    action: { tool: block.approval?.call?.tool, command: block.approval?.call?.command, title: block.tool?.title },
+  });
+  if (reviewed) return { kind: "held", red: null, what, why: reviewed };
   const why = safeCall(block.approval?.call, folder);
   return why ? { kind: "held", red: null, what, why } : { kind: "allow", what };
 }
