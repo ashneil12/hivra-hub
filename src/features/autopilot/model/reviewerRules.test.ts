@@ -188,6 +188,8 @@ describe("the question path (WP-101 fix round, row 19)", () => {
     "Should I make the repo open source?",
     "Should I unpublish the page?",
     "Should I merge the PR?",
+    "Should I open the PR?",
+    "Should I clean out the old branches?",
     "Should I upload the build?",
     "Should I push the branch?",
     "Should I force the update?",

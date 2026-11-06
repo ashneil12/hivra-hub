@@ -146,6 +146,11 @@ const ASK_PHRASES: readonly { pattern: RegExp; kind: AskKind }[] = [
   { pattern: /\bgo(?:es|ing)? live\b/, kind: "publish" },
   { pattern: /\b(?:make|makes|making|made) (?:it |this |the repo |the repository |the project |the site |the bucket )?public\b/, kind: "publish" },
   { pattern: /\bopen[- ]sourc(?:e|es|ed|ing)\b/, kind: "publish" },
+  // Opening a pull or merge request puts it in front of everyone watching the repository. "open" alone is left as
+  // the plain word it is: "Should I open the file?" is not a publish.
+  { pattern: /\bopen(?:s|ed|ing)? (?:a |an |the )?(?:pr|mrs?|pull request|merge request)\b/, kind: "publish" },
+  // "Clean out" the branches takes them away, so it is a delete whatever it is called.
+  { pattern: /\bclean(?:s|ed|ing)? out\b/, kind: "delete" },
   { pattern: /\breset\s+(?:--?)?hard\b|\breset\s+-{1,2}[a-z]*h[a-z]*\b/, kind: "forceful" },
   { pattern: /\bdirect (?:message|messages|messaging|dm)\b/, kind: "send" },
   { pattern: /\bloop (?:in|into)\b/, kind: "send" },

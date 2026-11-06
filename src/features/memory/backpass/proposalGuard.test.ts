@@ -381,6 +381,11 @@ describe("what a proposal adds when it is written to get past the matcher (fix r
     "loop in Alice",
     "add Alice to the thread",
     "to: alice",
+    // the brief's own phrases: a recipient told without a send word in front of them
+    "let Priya know",
+    "Let Priya know when it's done",
+    "ping",
+    "Ping the team when CI is green",
   ])("refuses a new recipient: %s", (text) => {
     expect(additionsIn(text), text).toContain("recipient");
   });

@@ -120,6 +120,18 @@ const SEND_A_GROUP =
   /\b(?:notify|ping|dm|mention|message|slack|tell|text|mail|tweet)\s+(?:the|our|all)\s+(?:team|group|channel|list|staff|customers?|clients?|users?|people|folks|everyone)\b/;
 /** A bare tool that sends, used on its own: "tweet it", "tweet the launch". */
 const SEND_A_TOOL = /\b(?:tweet|post|share|mail|text|slack|dm|ping)\s+(?:it|the \w+|them)\b/;
+/**
+ * "let Priya know" / "let the team know": the person who is told is named before the word that says so, which no
+ * other send phrase does. "let me know" and "let it know" tell the writer, not someone else, so they pass.
+ */
+const LET_KNOW =
+  /\blet(?:ting)?\s+(?!(?:me|us|it|this|that|alone|well|rest)\b)(?!know\b)[a-z0-9@._-]+(?:\s+[a-z0-9@._-]+){0,3}?\s+know\b/;
+/**
+ * A bare "ping", with no person or thing it pings: the words an agent writes beside a name ("Ping Priya"), or the
+ * name of a call it means to make, are both a message to someone. It is read as a whole word, so "pinging the host"
+ * is left alone unless it names a person.
+ */
+const BARE_PING = /\bping\b/i;
 
 /**
  * A mail field that names who a message goes to. "to: alice" is a recipient; "Read user.id" is not, so the field name
@@ -266,6 +278,8 @@ export function additionsIn(text: string): Addition[] {
     SEND_A_LOWER_NAME.test(value) ||
     SEND_A_GROUP.test(value) ||
     SEND_A_TOOL.test(value) ||
+    LET_KNOW.test(value) ||
+    BARE_PING.test(value) ||
     ADD_TO_THREAD.test(value) ||
     LOOP_IN.test(value) ||
     CC.test(value) ||
