@@ -31,7 +31,7 @@ const INITIAL: MemoryDoc = {
   generation: 1,
   items: [
     fact("Likes small commits", "unreviewed"),
-    fact("Reviews happen on Friday", "confirmed", { updatedAt: NOW + 1 }),
+    fact("Reviews happen on Friday", "confirmed", { updatedAt: NOW + 1, by: "codex" }),
     fact("Read the diff before commenting.", "unreviewed", {
       action: "skill",
       skill: { name: "reviewing-a-diff", lesson: "Read the diff before commenting." },

@@ -14,6 +14,12 @@ test("memory can be searched, edited, deleted, and a proposal accepted or reject
   await page.getByLabel("Search memory").fill("friday");
   await expect(page.getByText("Likes small commits")).toHaveCount(0);
   await expect(page.getByText("Reviews happen on Friday", { exact: true })).toBeVisible();
+  // WP-100: a person can see which engine wrote a memory.
+  await expect(page.locator("[data-kind='add']", { hasText: "Reviews happen on Friday" }).locator("[data-by]")).toHaveText(
+    "Written by Codex",
+  );
+  await expect(page.locator("[data-kind='add']", { hasText: "Reviews happen on Friday" }).locator("[data-by]")).toHaveCount(1);
+  await expect(page.locator("[data-by]")).toHaveCount(1);
   await page.getByLabel("Search memory").fill("");
 
   await page.getByRole("button", { name: "Edit Likes small commits" }).click();

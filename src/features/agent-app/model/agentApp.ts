@@ -94,12 +94,16 @@ import {
   fitMemoryBudget,
   memoryDate,
   memoryEntry,
+  memoryUseKey,
   removeMemoryEntry,
   searchMemory,
   sinceDate,
   supersedeMemoryEntry,
   topicName,
+  type MemoryUse,
 } from "../../monos/model/monoMemory";
+import { parseDoc } from "../../memory/model/doc";
+import { fadeNow, livedClockOf } from "../../memory/model/fade";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
 import {
   sendMode,
@@ -333,6 +337,8 @@ export type AgentAppHost = {
   activityList?: (query: Record<string, unknown>) => Promise<unknown>;
   /** WP-88: reviewed memory for recall. Writes stay on memory.add. */
   memoryDoc?: () => Promise<unknown>;
+  /** WP-100: the facts a Mono read through memory.recall are used, so they are topped up. A miss is not final. */
+  markMemoryUsed?: (ids: readonly string[], at: number) => Promise<unknown>;
   /** WP-88: mate ids on this copy, for a wide recall. */
   mateIds?: () => readonly string[];
   /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
@@ -959,6 +965,24 @@ async function editAgentFile<T>(
   }
 }
 
+/** The doc's fade for each line of this Mono's MEMORY.md, or nothing when it cannot be read or to be trusted. */
+async function memoryUseOf(host: AgentAppHost, monoId: string): Promise<Map<string, MemoryUse> | undefined> {
+  if (!host.memoryDoc) return undefined;
+  try {
+    const doc = parseDoc(await host.memoryDoc());
+    const clock = livedClockOf(doc);
+    const now = (host.now?.() ?? new Date()).getTime();
+    const use = new Map<string, MemoryUse>();
+    for (const item of doc.items) {
+      if (item.mateId !== monoId || item.action !== "add") continue;
+      use.set(memoryUseKey(item.text), { fade: fadeNow(item, clock, now), usedAt: item.lastUsedAt ?? item.updatedAt });
+    }
+    return use;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Keeps MEMORY.md within what loads. The archive is written first, so a line
  * is never out of one file without already being in the other. If the user
@@ -973,7 +997,9 @@ async function keepMemoryInBudget(
   by: { bot: string; run: string },
 ): Promise<string[]> {
   const memory = await host.readAgentFile(monoId, "MEMORY.md");
-  const fitted = fitMemoryBudget(memory.text ?? "", keep, date);
+  // WP-100: the least used lines go first. A doc that cannot be read leaves the order as it was.
+  const use = await memoryUseOf(host, monoId);
+  const fitted = fitMemoryBudget(memory.text ?? "", keep, date, use);
   if (!fitted.moved.length) return [];
   const archived = await editAgentFile(host, monoId, "memory/archive.md", (archive) => ({
     text: archiveMemoryEntries(archive, fitted.moved, date),
@@ -1111,7 +1137,7 @@ async function handleMemory(
     }
     case "memory.add": {
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
         return { text: next.text, result: next.added };
@@ -1130,7 +1156,7 @@ async function handleMemory(
     case "memory.replace": {
       const find = requiredString(input.find, "find", 2000);
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => ({
         text: supersedeMemoryEntry(text, find, entry, date),
         result: undefined,

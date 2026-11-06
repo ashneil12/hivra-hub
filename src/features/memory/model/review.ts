@@ -3,6 +3,7 @@
 
 import { ftsMatch } from "../vendor/mercuryBelief";
 import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryItem } from "./doc";
+import { touch } from "./fade";
 
 const CITE = /\[src:\s+[A-Za-z0-9._:-]+\s+#[A-Za-z0-9._:-]+\]/;
 const IMPORT_ID = /^[a-z0-9-]{1,80}$/;
@@ -18,9 +19,10 @@ export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResul
   const item = doc.items.find((candidate) => candidate.id === id);
   if (!item || item.state !== "unreviewed") return { doc };
   if (item.action === "skill" && item.skill) {
-    return { doc: replaceItem(doc, { ...item, state: "confirmed", updatedAt: now }), skill: { ...item.skill } };
+    return { doc: replaceItem(doc, touch({ ...item, state: "confirmed", updatedAt: now }, now)), skill: { ...item.skill } };
   }
-  if (item.action === "add") return { doc: replaceItem(doc, { ...item, state: "confirmed", updatedAt: now }) };
+  // WP-100: the person accepting it is a use, so it starts its clock from today.
+  if (item.action === "add") return { doc: replaceItem(doc, touch({ ...item, state: "confirmed", updatedAt: now }, now)) };
   if (item.action === "update" && item.targetId) {
     const target = doc.items.find((candidate) => candidate.id === item.targetId && candidate.action === "add");
     const rest = doc.items.filter((candidate) => candidate.id !== item.id);
@@ -29,7 +31,9 @@ export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResul
       doc: bump({
         ...doc,
         items: rest.map((candidate) =>
-          candidate.id === target.id ? { ...candidate, text: item.text, state: "edited" as const, updatedAt: now } : candidate,
+          candidate.id === target.id
+            ? touch({ ...candidate, text: item.text, state: "edited" as const, updatedAt: now, support: candidate.support + 1 }, now)
+            : candidate,
         ),
       }),
     };
@@ -51,7 +55,8 @@ export function editItem(doc: MemoryDoc, id: string, text: string, now: number):
   if (!clean || mentionsSecret(clean)) return doc;
   const item = doc.items.find((candidate) => candidate.id === id && candidate.action === "add");
   if (!item || normalizeFact(item.text) === clean) return doc;
-  return replaceItem(doc, { ...item, text: clean, state: "edited", updatedAt: now });
+  // WP-100: the person rewrote it, so it is theirs now and does not fade (fade.ownerStated).
+  return replaceItem(doc, { ...item, text: clean, state: "edited", updatedAt: now, fade: 1, lastUsedAt: now });
 }
 
 export function deleteItem(doc: MemoryDoc, id: string): MemoryDoc {
@@ -117,7 +122,13 @@ export class MemoryDeferred extends Error {
 }
 
 function sameDoc(a: MemoryDoc, b: MemoryDoc): boolean {
-  return a.generation === b.generation && a.items === b.items && a.doneTurns === b.doneTurns && a.imports === b.imports;
+  return (
+    a.generation === b.generation &&
+    a.items === b.items &&
+    a.doneTurns === b.doneTurns &&
+    a.imports === b.imports &&
+    a.livedDays === b.livedDays
+  );
 }
 
 export type CommitResult = { doc: MemoryDoc; applied: boolean };

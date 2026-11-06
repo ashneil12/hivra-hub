@@ -232,7 +232,7 @@
       "name": "Mnemos",
       "url": "https://github.com/Riley-Coyote/mnemos-mcp",
       "licence": "Apache-2.0",
-      "gave": "ideas only: four content words, two distinctive shared words, at most three lines, and never the same memory twice in a conversation (WP-99)"
+      "gave": "ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100)"
     }
   ],
   "components": [
@@ -523,6 +523,14 @@
       "copyright": "Copyright 2026 Row-Bot Contributors",
       "where": "src/features/memory/model/recallPolicy.ts",
       "how": "memory_policy.py translated to TypeScript, its test cases ported, for WP-99. The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review."
+    },
+    {
+      "name": "Mnemos's lived-day clock",
+      "url": "https://github.com/Riley-Coyote/mnemos-mcp",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Riley Ralmuto",
+      "where": "src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos",
+      "how": "LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with tests/test_lived_time.py's cases ported to fade.test.ts. L(t), the hours into a lived day, the two bisections and the never-below-0 clamp are the original's; a moment is a Date or an ISO string rather than a datetime, unreadable days are dropped on the way in, and the store class is gone. The fade curve, the two clocks and the ask are Hivra's own."
     },
     {
       "name": "T3 Code's PR watch, Claude result and worktree cleanup rules",

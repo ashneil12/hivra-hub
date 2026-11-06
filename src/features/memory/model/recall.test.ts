@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryId } from "./doc";
-import { RECALL_CLOSE, RECALL_OPEN, recallIntoTurn, recallTurnBlock } from "./recall";
+import { RECALL_CLOSE, RECALL_OPEN, recallFence, recallIntoTurn, recallTurnBlock } from "./recall";
 import type { MemoryDoc, MemoryItem } from "./doc";
 
 const NOW = Date.parse("2026-03-01T00:00:00Z");
@@ -79,6 +79,29 @@ describe("recallIntoTurn", () => {
       now: NOW,
     });
     expect(none.message).toBe("the and for");
+  });
+
+  it("names the writer only when the reader is a different engine", () => {
+    // The fence is tested on its own: which facts the policy picks is recallPolicy.test.ts's business.
+    const written = doc([
+      fact("Likes small commits", "confirmed", { by: "codex" }),
+      fact("Reviews happen on Friday", "edited", { by: "claude", updatedAt: NOW + 1 }),
+      fact("Uses pnpm for installs", "confirmed", { updatedAt: NOW + 2 }),
+    ]);
+    const ids = written.items.map((item) => item.id);
+    const byClaude = recallFence(written, ids, "claude") ?? "";
+    const lines = byClaude.split("\n").filter((line) => line.startsWith("- "));
+    const codex = lines.find((line) => line.includes("Likes small commits"));
+    const own = lines.find((line) => line.includes("Reviews happen on Friday"));
+    const unknown = lines.find((line) => line.includes("Uses pnpm"));
+    expect(codex).toContain("written by Codex");
+    expect(own).not.toContain("written by");
+    expect(unknown).not.toContain("written by");
+    const byCodex = recallFence(written, ids, "codex") ?? "";
+    expect(byCodex).not.toContain("written by Codex");
+    expect(byCodex).toContain("written by Claude");
+    const noReader = recallFence(written, ids) ?? "";
+    expect(noReader).not.toContain("written by");
   });
 
   it("keeps a fact from closing the fence early", () => {

@@ -13,6 +13,8 @@ export async function recalledFence(
   mateId: string | undefined,
   message: string,
   wide?: { everyMate?: boolean; mateIds?: readonly string[]; sessionId?: string; compacted?: number },
+  /** WP-100: the engine reading this turn, so a fact another engine wrote says so. */
+  readingEngine?: string,
 ): Promise<string | undefined> {
   if (!mateId) return undefined;
   try {
@@ -38,7 +40,7 @@ export async function recalledFence(
       });
       // WP-99: the Memory screen can say why this Mono's last turn got what it got.
       recordRecall(decision, now);
-      const block = recallFence(doc, decision.picked);
+      const block = recallFence(doc, decision.picked, readingEngine);
       if (!block) continue;
       blocks.push(block);
       picked.push(...decision.picked);

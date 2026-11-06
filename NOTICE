@@ -265,6 +265,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/model/recallPolicy.ts
   memory_policy.py translated to TypeScript with its test cases ported (WP-99). The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; and Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review.
 
+- Mnemos's lived-day clock
+  Source: https://github.com/Riley-Coyote/mnemos-mcp
+  License: Apache-2.0
+  Copyright 2026 Riley Ralmuto
+  Used in: src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos
+  LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with its tests. The fade curve, the two clocks and the ask are Hivra's own. Licence text in src/features/memory/model/LICENSE.mnemos.
+
 - T3 Code's PR watch, Claude result and worktree cleanup rules
   Source: https://github.com/pingdotgg/t3code
   License: MIT
