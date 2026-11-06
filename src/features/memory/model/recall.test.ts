@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { memoryId } from "./doc";
-import { RECALL_CLOSE, RECALL_OPEN, recallIntoTurn, recallTurnBlock } from "./recall";
+import { RECALL_CLOSE, RECALL_OPEN, recallFence, recallIntoTurn, recallTurnBlock } from "./recall";
 import type { MemoryDoc, MemoryItem } from "./doc";
 
 const NOW = Date.parse("2026-03-01T00:00:00Z");
