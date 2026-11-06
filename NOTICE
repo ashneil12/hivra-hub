@@ -265,6 +265,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/model/recallPolicy.ts
   memory_policy.py translated to TypeScript with its test cases ported (WP-99). The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; and Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review.
 
+- Row-Bot's correction rule
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/model/ruleCurator.ts
+  learning/corrections.py translated line for line to TypeScript, with its test cases ported (WP-103). The store, episode and signal parts are left out because Hivra judges one turn at a time; the context cut, the retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it.
+
 - Mnemos's lived-day clock
   Source: https://github.com/Riley-Coyote/mnemos-mcp
   License: Apache-2.0
