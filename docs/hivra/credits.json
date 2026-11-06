@@ -211,6 +211,12 @@
       "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
     },
     {
+      "name": "T3 Code",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
@@ -481,6 +487,22 @@
       "how": "WP-90: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
     },
     {
+      "name": "T3 Code's hidden-character pattern",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/features/sessions/model/hiddenText.ts, src-tauri/src/pr_watch/wake.rs",
+      "how": "sanitizeLinkedPrompt from packages/shared/src/promptLinks.ts translated to TypeScript and to Rust, with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts of that file are not copied. A zero-width joiner stays only between two emoji, as in the original."
+    },
+    {
+      "name": "T3 Code's project monogram",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/features/hub/model/projectMonogram.ts",
+      "how": "projectMonogram and projectColor from apps/web/src/projectIdentity.ts translated to TypeScript, with their cases in projectMonogram.test.ts, at commit 6577c6b (WP-94). The letters and the colour hash are the original's; the tile's colours come from Hivra's theme. One rule differs: a one-letter name stays one letter, where the original draws it twice."
+    },
+    {
       "name": "oh-my-hermes's dag-ulw planner",
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
@@ -495,6 +517,22 @@
       "copyright": "Copyright 2026 Riley Ralmuto",
       "where": "src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos",
       "how": "LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with tests/test_lived_time.py's cases ported to fade.test.ts. L(t), the hours into a lived day, the two bisections and the never-below-0 clamp are the original's; a moment is a Date or an ISO string rather than a datetime, unreadable days are dropped on the way in, and the store class is gone. The fade curve, the two clocks and the ask are Hivra's own."
+    },
+    {
+      "name": "T3 Code's PR watch, Claude result and worktree cleanup rules",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs",
+      "how": "evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640."
+    },
+    {
+      "name": "T3 Code's recorded Claude transcripts",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
+      "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
     }
   ]
 }

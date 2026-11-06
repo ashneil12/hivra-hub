@@ -1,2 +1,0 @@
-- Tally's accent colour is teal #0F766E; the board uses it for the +1 button and the streak badge (Ash, 18 Oct).
-- The weekly board week starts on Monday, Europe/London time (Ash, 18 Oct).

@@ -33,6 +33,15 @@ import {
   consumeQuoteRequest,
   type QuoteRequest,
 } from "../../sessions/model/quoteDraft";
+import {
+  stripHiddenCharacters,
+  stripHiddenText,
+} from "../../sessions/model/hiddenText";
+import {
+  isLargePaste,
+  isPasteKey,
+  largePasteContents,
+} from "../../sessions/model/largePaste";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -127,7 +136,11 @@ export function MonoComposer({
   const inlineMeasure = useRef<HTMLTextAreaElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const [dropError, setDropError] = useState<string | null>(null);
+  /** A send or paste where hidden characters were removed: news, not a failure. */
+  const [dropNotice, setDropNotice] = useState<string | null>(null);
   const submittingRef = useRef(false);
+  /** The paste shortcut was held at the last keydown, since a paste event carries no modifier keys. */
+  const inlinePasteRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const ready =
     enabled &&
@@ -303,8 +316,21 @@ export function MonoComposer({
     }
     if (!enabled || submittingRef.current || pendingReadsRef.current > 0)
       return;
-    const message = textRef.current.trim();
-    const draft = textRef.current;
+    // WP-94: hidden characters never reach the agent, and the composer says what it removed (hiddenText.ts).
+    const hidden = stripHiddenText(textRef.current);
+    if (hidden.removed > 0) {
+      update(hidden.text);
+      if (!hidden.text && !attachmentsRef.current.length) {
+        setDropNotice(null);
+        setDropError("That message had only hidden characters, so it was not sent.");
+        return;
+      }
+      setDropNotice(
+        `Removed ${hidden.removed} hidden ${hidden.removed === 1 ? "character" : "characters"} from your message.`,
+      );
+    } else setDropNotice(null);
+    const message = hidden.text;
+    const draft = hidden.text;
     const files = attachmentsRef.current;
     if (!message && !files.length) return;
     const generation = readGeneration.current;
@@ -423,6 +449,10 @@ export function MonoComposer({
       onFocus={onFocus}
       onChange={(event) => update(event.target.value)}
       onKeyDown={(event) => {
+        inlinePasteRef.current =
+          (event.metaKey || event.ctrlKey) &&
+          event.shiftKey &&
+          isPasteKey(event.nativeEvent);
         if (
           event.key !== "Enter" ||
           event.shiftKey ||
@@ -435,7 +465,68 @@ export function MonoComposer({
       }}
       onPaste={(event) => {
         const files = filesFromClipboard(event.clipboardData);
-        if (files.length === 0) return;
+        if (files.length === 0) {
+          const plain = event.clipboardData?.getData("text/plain") ?? "";
+          const paste = plain ? stripHiddenCharacters(plain) : null;
+          // WP-94: a big paste becomes a text file instead of flooding the prompt; Shift keeps it inline
+          // (largePaste.ts). A paste of only hidden characters falls through to the notice below.
+          if (
+            paste?.text &&
+            isLargePaste(paste.text) &&
+            !inlinePasteRef.current
+          ) {
+            event.preventDefault();
+            readAttachments(async () => {
+              let saved: Attachment[];
+              try {
+                saved = await attachmentsFromFiles([
+                  largePasteContents(paste.text),
+                ]);
+              } catch {
+                saved = [];
+              }
+              if (saved.length) {
+                setDropNotice(
+                  `That paste was large, so it became the file ${saved[0].name}. Hold Shift while pasting to keep it inline.`,
+                );
+              } else {
+                setDropError(
+                  "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+                );
+              }
+              return saved;
+            });
+            return;
+          }
+          // WP-94: a paste keeps its visible text and loses every hidden character.
+          if (!paste || paste.removed === 0) return;
+          event.preventDefault();
+          if (paste.text) {
+            // At the caret, as a paste goes, not at the end of whatever comes after it.
+            const start = event.currentTarget.selectionStart ?? textRef.current.length;
+            const end = event.currentTarget.selectionEnd ?? start;
+            const next =
+              textRef.current.slice(0, start) +
+              paste.text +
+              textRef.current.slice(end);
+            update(next);
+            const caret = start + paste.text.length;
+            requestAnimationFrame(() =>
+              event.currentTarget.setSelectionRange(caret, caret),
+            );
+          }
+          if (paste.text) {
+            setDropNotice(
+              `Removed ${paste.removed} hidden ${paste.removed === 1 ? "character" : "characters"} from the paste.`,
+            );
+          } else {
+            setDropNotice(null);
+            setDropError(
+              "That paste had only hidden characters, so nothing was pasted.",
+            );
+          }
+          return;
+        }
         event.preventDefault();
         readAttachments(() => attachmentsFromFiles(files));
       }}
@@ -479,6 +570,10 @@ export function MonoComposer({
         {dropError ? (
           <p role="alert" className="px-3 pt-2 text-xs text-red-400">
             {dropError}
+          </p>
+        ) : dropNotice ? (
+          <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
+            {dropNotice}
           </p>
         ) : null}
         {attachments.length > 0 ? (

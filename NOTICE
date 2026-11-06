@@ -232,6 +232,25 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/local_services/
   base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as emulate's pinned Node package and are not copied (WP-90).
 
+- T3 Code's hidden-character pattern
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/sessions/model/hiddenText.ts, src-tauri/src/pr_watch/wake.rs
+  sanitizeLinkedPrompt from packages/shared/src/promptLinks.ts translated to TypeScript and to Rust,
+  with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts
+  of that file are not copied. A zero-width joiner stays only between two emoji, as in the original.
+
+- T3 Code's project monogram
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/hub/model/projectMonogram.ts
+  projectMonogram and projectColor from apps/web/src/projectIdentity.ts translated to TypeScript, with
+  their cases in projectMonogram.test.ts, at commit 6577c6b (WP-94). The letters and the colour hash are
+  the original's; the tile's colours come from Hivra's theme. One rule differs: a one-letter name stays
+  one letter, where the original draws it twice.
+
 - oh-my-hermes's dag-ulw planner
   Source: https://github.com/rlaope/oh-my-hermes
   License: MIT
@@ -245,6 +264,20 @@ Third-party components Hivra adds:
   Copyright 2026 Riley Ralmuto
   Used in: src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos
   LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with its tests. The fade curve, the two clocks and the ask are Hivra's own. Licence text in src/features/memory/model/LICENSE.mnemos.
+
+- T3 Code's PR watch, Claude result and worktree cleanup rules
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs
+  evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640.
+
+- T3 Code's recorded Claude transcripts
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/integrations/harness/providers/claude/fixtures/t3code/
+  18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them.
 
 MonoCode
 ========
