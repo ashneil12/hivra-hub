@@ -126,20 +126,37 @@ const COMMAND_WRAPPERS = new Set(["sudo", "doas", "env", "command", "nice", "tim
 /** A tool that only runs what it is given: the command says what the action is, its name says nothing. */
 const GENERIC_RUNNERS = new Set(["bash", "sh", "shell", "zsh", "exec", "run"]);
 
+/**
+ * Programs whose second word is the action ("npm publish", "gh auth login", "stripe refund"). For any other
+ * program the second word is an argument, so "grep send src" stays a read.
+ */
+const SUBCOMMAND_TOOLS = new Set(
+  words(
+    "git|npm|npx|pnpm|yarn|bun|cargo|node|deno|gh|glab|docker|podman|kubectl|terraform|aws|gcloud|az|fly|flyctl|vercel|netlify|heroku|railway|render|stripe|supabase|psql|mysql|mongo|sqlite3|brew|systemctl|launchctl|security|osascript|queue|rabbitmq|redis-cli|wrangler|composio",
+  ),
+);
+
 function tidy(word: string | undefined): string {
   return (word ?? "").toLowerCase().replace(/^['"`]+|['"`,;]+$/g, "");
 }
 
-/** The opening words of a command, past any wrapper; a second word that is an option or a path is not a verb. */
+/**
+ * The opening words of a command, past any wrapper; a second word that is an option or a path is not a verb, and for
+ * a program that isn't a subcommand tool ("grep send src") the second word is an argument, not what the call does.
+ */
 function commandHeads(command: string): string[] {
   const parts = command.trim().split(/\s+/).filter(Boolean);
   let index = 0;
-  while (index < parts.length && COMMAND_WRAPPERS.has(tidy(parts[index]))) index++;
+  while (index < parts.length && COMMAND_WRAPPERS.has(tidy(parts[index]))) {
+    index++;
+    // A wrapper's own options (sudo -u root) come before the program.
+    while (index < parts.length && tidy(parts[index]).startsWith("-")) index++;
+  }
   const head = tidy(parts[index]);
   if (!head) return [];
   const heads = [head];
   const next = tidy(parts[index + 1]);
-  if (next && !next.startsWith("-")) heads.push(next);
+  if (next && !next.startsWith("-") && !next.startsWith("/") && SUBCOMMAND_TOOLS.has(head)) heads.push(next);
   return heads;
 }
 

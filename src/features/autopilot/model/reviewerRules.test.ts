@@ -105,6 +105,8 @@ describe("the actions that always wait for the person", () => {
       { tool: "mcp__plugin-agent_plugins-slack__list_messages" },
       { tool: "Bash", command: "git log --grep=publish" },
       { tool: "Bash", command: "cat src/billing/account.ts" },
+      { tool: "Bash", command: "grep send src/billing/account.ts" },
+      { tool: "Bash", command: "rg 'delete' src/notes.ts" },
       { tool: "Bash", command: "npm run check" },
       { tool: "Edit", title: "Edit a.ts" },
     ])
