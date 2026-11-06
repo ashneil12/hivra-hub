@@ -1098,6 +1098,10 @@ function emitContext(live: Live, info: Record<string, unknown> | null): void {
         (total.cacheReadTokens ?? 0) + (current.cacheReadTokens ?? 0),
       cacheWriteTokens:
         (total.cacheWriteTokens ?? 0) + (current.cacheWriteTokens ?? 0),
+      // WP-108: each message's reported cost adds to the turn's; a message without one adds nothing.
+      ...(total.costUsd != null || current.costUsd != null
+        ? { costUsd: (total.costUsd ?? 0) + (current.costUsd ?? 0) }
+        : {}),
     }),
     {},
   );

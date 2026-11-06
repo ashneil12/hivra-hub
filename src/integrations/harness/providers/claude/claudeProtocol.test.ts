@@ -933,6 +933,47 @@ describe("turnMetricsFromResult", () => {
       cacheHitPercent: (16_652 / (2 + 12_941 + 16_652)) * 100,
     });
   });
+
+  // WP-108: a reported price is kept; none is ever guessed.
+  it("keeps the total cost the CLI reported", () => {
+    expect(
+      turnMetricsFromResult({
+        total_cost_usd: 0.0036516,
+        usage: { input_tokens: 3, output_tokens: 7 },
+      }),
+    ).toEqual({
+      inputTokens: 3,
+      outputTokens: 7,
+      costUsd: 0.0036516,
+    });
+  });
+
+  it("reports no cost when the CLI sent none", () => {
+    const metrics = turnMetricsFromResult({
+      usage: { input_tokens: 3, output_tokens: 7 },
+    });
+    expect(metrics?.costUsd).toBeUndefined();
+    expect("costUsd" in (metrics ?? {})).toBe(false);
+  });
+
+  it("ignores a cost it cannot read as a number", () => {
+    for (const bad of ["0.01", null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        turnMetricsFromResult({
+          total_cost_usd: bad,
+          usage: { input_tokens: 3, output_tokens: 7 },
+        })?.costUsd,
+      ).toBeUndefined();
+    }
+  });
+
+  it("still reports the cost when the usage counts alone are empty", () => {
+    const metrics = turnMetricsFromResult({
+      total_cost_usd: 0.5,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    expect(metrics).toEqual({ costUsd: 0.5 });
+  });
 });
 
 describe("subagent messages", () => {
