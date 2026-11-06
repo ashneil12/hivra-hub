@@ -1,10 +1,10 @@
-import { clearProjectDraft, draftInitial, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
+import { clearProjectDraft, projectDraft, useProjectDraftVersion } from "../model/projectDraft";
 import { Popover } from "../../../shared/ui/Popover";
 import { CANCEL_FOCUS_RING } from "../../../shared/ui/ConfirmDelete";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { MoreHorizontal, Plus, type IconComponent } from "../../../shared/ui/icons";
 import type { PopoverAnchor } from "../../../shared/ui/Popover";
-import { ProjectGlyph, ProjectMenu, RemovedUndoToast } from "./ProjectMenu";
+import { ProjectGlyph, ProjectMenu, ProjectMonogramTile, RemovedUndoToast } from "./ProjectMenu";
 import { moveLocalNamesToAshOs } from "../model/projectActions";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { attentionCount, useAttentionVersion } from "../model/todayCounts";
@@ -106,7 +106,9 @@ export function ProjectStrip({
             title={`Draft: ${draftProject.name}, still being set up`}
             selected={selection.item === "new-project"}
             onClick={() => { onLeaveCovers?.(); showAppItem("new-project"); }}
-            glyph={<span className="grid size-[24px] place-items-center rounded-[7px] bg-content/10 text-[12px] font-medium text-content/85 ring-1 ring-inset ring-content/10">{draftInitial(draftProject.name)}</span>}
+            // WP-94: the draft wears the same two-letter, name-coloured tile a project with no icon gets, so it reads as
+            // the project-shaped thing it will become rather than a lone grey letter.
+            glyph={<ProjectMonogramTile name={draftProject.name} size={18} />}
             onMenu={setDraftMenu}
           />
         </div>

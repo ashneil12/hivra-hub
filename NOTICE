@@ -241,6 +241,16 @@ Third-party components Hivra adds:
   with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts
   of that file are not copied. A zero-width joiner stays only between two emoji, as in the original.
 
+- T3 Code's project monogram
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/hub/model/projectMonogram.ts
+  projectMonogram and projectColor from apps/web/src/projectIdentity.ts translated to TypeScript, with
+  their cases in projectMonogram.test.ts, at commit 6577c6b (WP-94). The letters and the colour hash are
+  the original's; the tile's colours come from Hivra's theme. One rule differs: a one-letter name stays
+  one letter, where the original draws it twice.
+
 - oh-my-hermes's dag-ulw planner
   Source: https://github.com/rlaope/oh-my-hermes
   License: MIT
