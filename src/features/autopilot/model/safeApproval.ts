@@ -209,6 +209,24 @@ function nodeTest(args: readonly string[]): SafeVerdict {
   return null;
 }
 
+/** The only ps fields autopilot may ask for: each one process's own numbers, none its environment or command line. */
+const PS_FIELDS = new Set(["pid", "ppid", "etime", "state", "stat", "comm", "%cpu", "%mem", "rss"]);
+
+/**
+ * `ps` only for one process's own status: `ps -p <pid>` or `ps -p <pid> -o <fields>`, fields from a fixed list. Every
+ * other shape prints every process's environment (`ps e`, `ps eww`, `-E`, `e` in a cluster: confirmed on macOS) or
+ * every process's command line (`ps aux`, `ps -ef`, `-o command`), which is a secret read with no tap. Windows has no
+ * `ps`, so this holds it on every platform the table is shared across.
+ */
+function psRead(args: readonly string[]): SafeVerdict {
+  if (args.length === 2 && args[0] === "-p" && /^\d+$/.test(args[1])) return null;
+  if (args.length === 4 && args[0] === "-p" && /^\d+$/.test(args[1]) && args[2] === "-o") {
+    const fields = args[3].split(",");
+    if (fields.every((field) => PS_FIELDS.has(field))) return null;
+  }
+  return "ps only runs by itself for one process, as ps -p <pid> or ps -p <pid> -o <pid, ppid, etime, state, stat, comm, %cpu, %mem, rss>";
+}
+
 function rgRead(args: readonly string[]): SafeVerdict {
   // --pre runs a program on every file; --hostname-bin runs one too.
   return has(args, "--pre", "--pre-glob", "--hostname-bin") ? "rg --pre runs a program" : null;
@@ -240,7 +258,7 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   df: () => null,
   file: readsUnless("-c", "--compile"),
   which: () => null,
-  ps: () => null,
+  ps: psRead,
 };
 
 /** Whether a shell command is one autopilot may run by itself; why not otherwise. */

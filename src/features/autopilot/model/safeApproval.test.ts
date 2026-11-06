@@ -53,8 +53,11 @@ describe("shell commands", () => {
     "df -h",
     "file README.md",
     "which git",
-    "ps aux",
-    "ps -ef",
+    // WP-101 fix round: ps only for one process's own status, in the two shapes below. Anything else can print
+    // every process's environment (`ps e`, `ps eww`) or every command line (`ps aux`).
+    "ps -p 501",
+    "ps -p 501 -o pid,ppid,etime,state,stat,comm,%cpu,%mem,rss",
+    "ps -p 501 -o pid",
   ])("runs by itself: %s", (command) => {
     expect(safeCommand(command)).toBeNull();
   });
@@ -122,6 +125,28 @@ describe("shell commands", () => {
     "find . -fdelete",
     "find . -execdir sh",
     "find . -ok rm",
+    // WP-101 fix round: every shell experiment from the review's "tried and correctly held" section, kept as a
+    // regression. An option however it is spelled, a wrapper in front of it, and every run or write shape.
+    "find . '-DELETE'",
+    "find . -e\\xec sh",
+    "find . -name x -exec echo {} \\;",
+    "find . -prune -o -name '*.ts' -exec rm {} +",
+    "FOO=bar find .",
+    "env find .",
+    "sudo find .",
+    "nice find .",
+    "time find .",
+    "xargs find",
+    "fd --exe sh",
+    "fd --exec-batch sh",
+    "fd -xx sh",
+    "fd -X -e ts foo",
+    "tree -H . -o out.txt",
+    "tree -ofile",
+    "tree -o=x",
+    "file -C -m magic",
+    "ag --pager ls",
+    "du -sh *",
     "find . -fprint out.txt",
     "find . -fprintf out.txt %p",
     "find . -fls out.txt",
@@ -137,6 +162,33 @@ describe("shell commands", () => {
     "file --compile magic",
     // an unquoted wildcard could expand into an option
     "find . -name *.ts",
+    // WP-101 fix round: ps in any shape but the two allowed ones. `ps e` and `ps eww` print every process's
+    // environment (confirmed on macOS); `aux` and `-ef` print every command line.
+    "ps",
+    "ps aux",
+    "ps -ef",
+    "ps e",
+    "ps eww",
+    "ps auxe",
+    "ps ewwf",
+    "ps e -p 1",
+    "ps -E",
+    "ps -e",
+    "ps -eo pid,args",
+    "ps ax -o command -ww",
+    "ps -p 501 -ww",
+    "ps -p 501 -o command",
+    "ps -p 501 -o pid,environ",
+    "ps -p 501 -o pid -e",
+    "ps -p 501 e",
+    "ps -p 501 -E",
+    "ps -p abc",
+    "ps -p 501 502",
+    "ps -p",
+    "ps -p 501 -o",
+    "ps -p 501 --pid 502",
+    "ps -o pid",
+    "ps -p 501 -o pid -o command",
     // can't be read plainly
     "cat 'unclosed",
   ])("waits for Ash: %s", (command) => {
