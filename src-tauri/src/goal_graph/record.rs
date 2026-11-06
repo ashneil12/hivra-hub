@@ -127,6 +127,124 @@ pub fn is_repaired(nodes: &[GoalNode], root: &str) -> bool {
     repaired_by(nodes, root).is_some()
 }
 
+/// The task's gates passed. Only the word `passed` says so: no gate result at all, `held` (WP-40's "someone must
+/// decide"), `notRun` and any unknown word are not a pass.
+pub fn gates_passed(node: &GoalNode) -> bool {
+    node.gate_outcome.as_deref().map(str::trim) == Some("passed")
+}
+
+/// The task's gates ran and failed.
+pub fn gates_failed(node: &GoalNode) -> bool {
+    node.gate_outcome.as_deref().map(str::trim) == Some("failed")
+}
+
+/// The nodes that can still run or be reviewed: not accepted (done), not dropped, not failed (waiting for a repair).
+fn runnable(nodes: &[GoalNode]) -> BTreeSet<String> {
+    nodes
+        .iter()
+        .filter(|node| !node.accepted && !node.cancelled && !node.failed)
+        .map(|node| node.id.clone())
+        .collect()
+}
+
+/// Whether a later record entry stands in for this one.
+///
+/// A cancelled node is out. A node named in another node's `repairs` is out — except that a build repair never stands
+/// in for a verification: only a verify-role task can replace one. And among repairs of the same root only the latest
+/// cycle is live, so a run that needed a second cycle has one verifier, not two.
+pub fn superseded(nodes: &[GoalNode], index: usize) -> bool {
+    let node = &nodes[index];
+    if node.cancelled {
+        return true;
+    }
+    nodes.iter().enumerate().any(|(other_index, other)| {
+        if other.cancelled {
+            return false;
+        }
+        let later_cycle =
+            other_index > index && other.repairs.is_some() && other.repairs == node.repairs;
+        let replaces = other.repairs.as_deref() == Some(node.id.as_str())
+            && (!role_of(node).is_verify() || role_of(other).is_verify());
+        later_cycle || replaces
+    })
+}
+
+/// The order a repair adds to the graph: every node that waits on the failed root also waits for the repair, so the
+/// repair may write what those nodes write only after it has been accepted.
+fn repair_order(run: &RunView, repair_id: &str, root: &str) -> BTreeMap<String, Vec<String>> {
+    let parents = parents_of(&run.nodes);
+    let mut before: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node in &run.nodes {
+        if node.id == repair_id || node.id == root {
+            continue;
+        }
+        if ancestors(&node.id, &parents).contains(root) {
+            before
+                .entry(node.id.clone())
+                .or_default()
+                .push(repair_id.to_string());
+        }
+    }
+    before
+}
+
+/// Every repair's order against the root it repairs, for a report over a run that already holds repairs.
+fn repair_orders(run: &RunView) -> BTreeMap<String, Vec<String>> {
+    let mut before: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node in &run.nodes {
+        let Some(root) = node.repairs.as_deref() else {
+            continue;
+        };
+        if node.cancelled {
+            continue;
+        }
+        for (dependent, repairs) in repair_order(run, &node.id, root) {
+            let listed = before.entry(dependent).or_default();
+            for repair in repairs {
+                if !listed.contains(&repair) {
+                    listed.push(repair);
+                }
+            }
+        }
+    }
+    before
+}
+
+/// A repair node may depend only on accepted nodes, or on the failed task it repairs.
+fn require_repair_edges(nodes: &[GoalNode]) -> Result<(), Refusal> {
+    let accepted: BTreeSet<&str> = nodes
+        .iter()
+        .filter(|node| node.accepted)
+        .map(|node| node.id.as_str())
+        .collect();
+    for node in nodes {
+        if node.cancelled {
+            continue;
+        }
+        let Some(root) = node.repairs.as_deref() else {
+            continue;
+        };
+        let outside: Vec<&str> = node
+            .depends_on
+            .iter()
+            .map(String::as_str)
+            .filter(|parent| !accepted.contains(parent) && *parent != root)
+            .collect();
+        if !outside.is_empty() {
+            return Err(Refusal::new(
+                "repair_depends_on_open_node",
+                format!(
+                    "The repair task {} waits on tasks that are not accepted ({}). A repair follows the failed \
+                     task's accepted dependencies, or the failed task itself.",
+                    node.id,
+                    outside.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// How many repair cycles a failed node has left.
 pub fn cycles_left(run: &RunView, node_id: &str) -> u32 {
     let root = run
@@ -154,10 +272,27 @@ pub fn next_cycle_is_replan(run: &RunView, node_id: &str) -> bool {
 /// The write-scope pairs two nodes may not have: neither ordered after the other, sharing a path.
 ///
 /// Scopes are compared as paths (`topology::shared_scope_pairs` `as_paths`): `./src/x.py` is `src/x.py`, `src/` holds
-/// it, and `src/*.py` matches it. `checked` limits the pairs to those nodes, and `involving` further to pairs with
-/// one of those nodes in them — a repair is checked against the run, not the run against itself again.
-pub fn write_scope_overlaps(nodes: &[GoalNode], involving: &BTreeSet<String>) -> Vec<String> {
-    let parents = parents_of(nodes);
+/// it, and `src/*.py` matches it. `editable` limits the pairs to nodes that can still run (a finished or cancelled
+/// node can never meet another); `involving` further limits them to pairs with one of those nodes in them — a repair
+/// is checked against the run, not the run against itself again. `before` adds an order the record does not carry in
+/// `depends_on`: a repair is ordered before every node that waits on the task it repairs.
+pub fn write_scope_overlaps(
+    nodes: &[GoalNode],
+    editable: Option<&BTreeSet<String>>,
+    involving: &BTreeSet<String>,
+    before: Option<&BTreeMap<String, Vec<String>>>,
+) -> Vec<String> {
+    let mut parents = parents_of(nodes);
+    if let Some(before) = before {
+        for (node, extra) in before {
+            let listed = parents.entry(node.clone()).or_default();
+            for parent in extra {
+                if !listed.contains(parent) {
+                    listed.push(parent.clone());
+                }
+            }
+        }
+    }
     let scopes: Vec<(String, Vec<String>)> = nodes
         .iter()
         .map(|node| (node.id.clone(), node.write_scope.clone()))
@@ -166,6 +301,11 @@ pub fn write_scope_overlaps(nodes: &[GoalNode], involving: &BTreeSet<String>) ->
     for pair in topology::shared_scope_pairs(&scopes, &parents, true) {
         if pair.joined || ordered(&pair.first, &pair.second, &parents) {
             continue;
+        }
+        if let Some(checked) = editable {
+            if !checked.contains(&pair.first) || !checked.contains(&pair.second) {
+                continue;
+            }
         }
         if !involving.is_empty()
             && !involving.contains(&pair.first)
@@ -199,8 +339,14 @@ pub fn write_scope_overlaps(nodes: &[GoalNode], involving: &BTreeSet<String>) ->
 
 /// The hard rejects over a whole graph: references, cycles, and write scopes shared without an order.
 ///
-/// One refusal names every overlapping pair in the check, so a fix is not refused one pair per round.
-pub fn require_graph(nodes: &[GoalNode], involving: &BTreeSet<String>) -> Result<(), Refusal> {
+/// One refusal names every overlapping pair in the check, so a fix is not refused one pair per round. `editable`,
+/// `involving` and `before` mean what they mean in [`write_scope_overlaps`].
+pub fn require_graph(
+    nodes: &[GoalNode],
+    editable: Option<&BTreeSet<String>>,
+    involving: &BTreeSet<String>,
+    before: Option<&BTreeMap<String, Vec<String>>>,
+) -> Result<(), Refusal> {
     if nodes.is_empty() {
         return Err(Refusal::new(
             "empty_graph",
@@ -250,7 +396,7 @@ pub fn require_graph(nodes: &[GoalNode], involving: &BTreeSet<String>) -> Result
             ),
         ));
     }
-    let overlaps = write_scope_overlaps(nodes, involving);
+    let overlaps = write_scope_overlaps(nodes, editable, involving, before);
     if !overlaps.is_empty() {
         let named = overlaps
             .iter()
@@ -275,10 +421,15 @@ pub fn require_graph(nodes: &[GoalNode], involving: &BTreeSet<String>) -> Result
 }
 
 /// The verify node, when the graph has exactly one and it follows every producer.
+///
+/// A cancelled verify task is not one, so a replacement can be delegated; a verify task a repair stands in for is not
+/// one either, so repairing it does not leave two.
 pub fn require_verify_node(nodes: &[GoalNode]) -> Result<String, Refusal> {
     let verifiers: Vec<&GoalNode> = nodes
         .iter()
-        .filter(|node| role_of(node).is_verify())
+        .enumerate()
+        .filter(|(index, node)| role_of(node).is_verify() && !superseded(nodes, *index))
+        .map(|(_, node)| node)
         .collect();
     if verifiers.is_empty() {
         let producers = nodes.iter().filter(|node| is_producer(node)).count();
@@ -336,6 +487,84 @@ pub fn check_verify_scope(nodes: &[GoalNode]) -> Result<(), Refusal> {
     Ok(())
 }
 
+/// Check one repair task before it joins the run: the task it repairs, the cycle cap, its dependencies, and the write
+/// scopes it shares with everything that can still run.
+///
+/// The repaired root is not held against the repair: a repair writes what the task it repairs wrote. The nodes that
+/// wait on the root are ordered after the repair ([`repair_order`]), so a repair may also share their scope. The rule
+/// is the original's `_require_graph(..., editable=group | runnable, involving=group, before=below)` call.
+pub fn check_repair(run: &RunView, repair: &GoalNode) -> Result<(), Refusal> {
+    if run.nodes.iter().any(|node| node.id == repair.id) {
+        return Err(Refusal::new(
+            "duplicate_node_id",
+            "Each task id must be unique in the run.",
+        ));
+    }
+    let root_id = repair.repairs.clone().ok_or_else(|| {
+        Refusal::new(
+            "invalid_repair",
+            "A repair task must name the failed task it repairs.",
+        )
+    })?;
+    let root = run
+        .nodes
+        .iter()
+        .find(|node| node.id == root_id)
+        .ok_or_else(|| {
+            Refusal::new(
+                "unknown_repair_root",
+                format!("There is no task {root_id} in this run to repair."),
+            )
+        })?;
+    if root.cancelled {
+        return Err(Refusal::new(
+            "repair_of_cancelled",
+            format!(
+                "{root_id} was cancelled, so there is nothing to repair. Delegate a new task instead."
+            ),
+        ));
+    }
+    if !root.failed {
+        return Err(Refusal::new(
+            "repair_of_open_task",
+            format!("Only a failed or blocked task is repaired; {root_id} is not one."),
+        ));
+    }
+    let taken = run
+        .repairs
+        .get(&root_id)
+        .map(|cycles| cycles.len() as u32)
+        .unwrap_or(0);
+    if taken >= MAX_REPAIR_CYCLES {
+        return Err(Refusal::new(
+            "repair_limit_reached",
+            format!(
+                "{root_id} has had {MAX_REPAIR_CYCLES} repair cycles. Report what is still open instead of repairing \
+                 again, or delegate a new task for the rest."
+            ),
+        ));
+    }
+    // A verify task is repaired by another verify task, so a build task never stands in for a verification. And a
+    // repair's dependencies are the failed task's accepted ones (or the failed task itself), never an open branch.
+    if role_of(root).is_verify() && !role_of(repair).is_verify() {
+        return Err(Refusal::new(
+            "repair_of_verify_must_verify",
+            format!(
+                "The verify task {root_id} can only be repaired by another verify task; repair the task that writes \
+                 the work instead."
+            ),
+        ));
+    }
+    require_repair_edges(&[run.nodes.clone(), vec![repair.clone()]].concat())?;
+    let mut nodes = run.nodes.clone();
+    nodes.push(repair.clone());
+    let mut editable = runnable(&run.nodes);
+    editable.insert(repair.id.clone());
+    let involving: BTreeSet<String> = [repair.id.clone()].into_iter().collect();
+    let before = repair_order(run, &repair.id, &root_id);
+    require_graph(&nodes, Some(&editable), &involving, Some(&before))
+}
+
 // ---- the run ---------------------------------------------------------------------------------------------------------
 
 /// The nodes that can start now, in the run's order: not accepted, not dropped, every parent accepted, and any
@@ -382,13 +611,25 @@ pub fn goal_verdict(run: &RunView) -> (Verdict, Vec<String>) {
         Some(CheckOutcome::Passed) => {}
     }
 
+    // A gate that ran and failed fails the run. A gate that was held for the person, or was recorded as not run, is
+    // not a pass and does not fail it either: the run is unverified and says which tasks nothing checked. No gate
+    // outcome at all means no gate was configured for that task; `report` names those tasks as a finding so the
+    // absence is said out loud, never silently counted as a pass.
     let gated: Vec<String> = live
         .iter()
-        .filter(|node| node.accepted && !node.gates_passed)
+        .filter(|node| node.accepted && gates_failed(node))
         .map(|node| node.id.clone())
         .collect();
     if !gated.is_empty() {
         return failed(format!("gate_failed:{}", gated.join(",")));
+    }
+    let ungated: Vec<String> = live
+        .iter()
+        .filter(|node| node.accepted && node.gate_outcome.is_some() && !gates_passed(node))
+        .map(|node| node.id.clone())
+        .collect();
+    if !ungated.is_empty() {
+        reasons.push(format!("gate_not_run:{}", ungated.join(",")));
     }
 
     let failed_nodes: Vec<String> = live
@@ -423,10 +664,14 @@ pub fn goal_verdict(run: &RunView) -> (Verdict, Vec<String>) {
         reasons.push(format!("irreversible_unanswered:{}", parked.join(",")));
     }
 
-    let verifiers: Vec<&GoalNode> = live
+    let verifiers: Vec<&GoalNode> = run
+        .nodes
         .iter()
-        .copied()
-        .filter(|node| role_of(node).is_verify())
+        .enumerate()
+        .filter(|(index, node)| {
+            !dropped(node) && role_of(node).is_verify() && !superseded(&run.nodes, *index)
+        })
+        .map(|(_, node)| node)
         .collect();
     let built = live.iter().any(|node| is_producer(node));
     if verifiers.is_empty() {
@@ -535,7 +780,12 @@ pub fn lint(nodes: &[GoalNode]) -> Vec<String> {
 pub fn report(run: &RunView) -> GraphAnswer {
     let ids: Vec<String> = run.nodes.iter().map(|node| node.id.clone()).collect();
     let parents = parents_of(&run.nodes);
-    let refusal = require_graph(&run.nodes, &BTreeSet::new())
+    // A finished node is never re-checked: its checkout is gone and its changes are integrated. Only what can still
+    // run is held against the scopes, and a repair is ordered against the nodes waiting on the task it repairs.
+    let editable = runnable(&run.nodes);
+    let before = repair_orders(run);
+    let refusal = require_graph(&run.nodes, Some(&editable), &BTreeSet::new(), Some(&before))
+        .and_then(|()| require_repair_edges(&run.nodes))
         .and_then(|()| require_verify_node(&run.nodes))
         .and_then(|_| check_verify_scope(&run.nodes))
         .err();
@@ -547,8 +797,9 @@ pub fn report(run: &RunView) -> GraphAnswer {
     let verify = run
         .nodes
         .iter()
-        .find(|node| role_of(node).is_verify())
-        .map(|node| node.id.clone());
+        .enumerate()
+        .find(|(index, node)| role_of(node).is_verify() && !superseded(&run.nodes, *index))
+        .map(|(_, node)| node.id.clone());
     let cycles: BTreeMap<String, u32> = run
         .nodes
         .iter()
@@ -556,6 +807,17 @@ pub fn report(run: &RunView) -> GraphAnswer {
         .map(|node| (node.id.clone(), cycles_left(run, &node.id)))
         .collect();
     let mut findings = lint(&run.nodes);
+    // The tasks whose acceptance was never checked by a gate of the app's. The verdict cannot treat their absence as
+    // a pass, so it says so where the card and the lead can read it.
+    let no_gates: Vec<String> = run
+        .nodes
+        .iter()
+        .filter(|node| !dropped(node) && node.accepted && node.gate_outcome.is_none())
+        .map(|node| node.id.clone())
+        .collect();
+    if !no_gates.is_empty() {
+        findings.push(format!("no_gates:{}", no_gates.join(",")));
+    }
     if !run.goal.trim().is_empty() && run.baseline.is_none() {
         // The finish line was never proved to fail before the work started, so a green run proves less.
         findings.push("no_baseline".to_string());
@@ -601,7 +863,7 @@ mod tests {
             depends_on: Vec::new(),
             write_scope: vec!["src".to_string()],
             accepted: false,
-            gates_passed: false,
+            gate_outcome: None,
             failed: false,
             cancelled: false,
             handoff: None,
@@ -613,7 +875,7 @@ mod tests {
     fn accepted(id: &str) -> GoalNode {
         GoalNode {
             accepted: true,
-            gates_passed: true,
+            gate_outcome: Some("passed".to_string()),
             handoff: Some(Handoff {
                 path: format!("/worker/.hivra/handoff/{id}.md"),
                 sha256: "0".repeat(64),
@@ -661,13 +923,13 @@ mod tests {
     fn a_graph_refuses_unknown_and_self_edges_and_a_cycle() {
         let mut broken = node("a");
         broken.depends_on = vec!["ghost".into()];
-        let refused = require_graph(&[broken], &BTreeSet::new()).unwrap_err();
+        let refused = require_graph(&[broken], None, &BTreeSet::new(), None).unwrap_err();
         assert_eq!(refused.reason, "unknown_dependency");
 
         let mut itself = node("a");
         itself.depends_on = vec!["a".into()];
         assert_eq!(
-            require_graph(&[itself], &BTreeSet::new())
+            require_graph(&[itself], None, &BTreeSet::new(), None)
                 .unwrap_err()
                 .reason,
             "self_dependency"
@@ -683,18 +945,18 @@ mod tests {
             entry.depends_on = vec!["a".into()];
             entry
         };
-        let refused = require_graph(&[first, second], &BTreeSet::new()).unwrap_err();
+        let refused = require_graph(&[first, second], None, &BTreeSet::new(), None).unwrap_err();
         assert_eq!(refused.reason, "dependency_cycle");
         assert!(refused.message().contains("a, b"));
 
         let one = node("a");
         assert_eq!(
-            require_graph(&[one.clone(), one], &BTreeSet::new())
+            require_graph(&[one.clone(), one], None, &BTreeSet::new(), None)
                 .unwrap_err()
                 .reason,
             "duplicate_node_id"
         );
-        assert!(require_graph(&[], &BTreeSet::new()).is_err());
+        assert!(require_graph(&[], None, &BTreeSet::new(), None).is_err());
     }
 
     #[test]
@@ -703,8 +965,13 @@ mod tests {
         first.write_scope = vec!["src/".into()];
         let mut second = node("b");
         second.write_scope = vec!["./src/x.py".into()];
-        let refused =
-            require_graph(&[first.clone(), second.clone()], &BTreeSet::new()).unwrap_err();
+        let refused = require_graph(
+            &[first.clone(), second.clone()],
+            None,
+            &BTreeSet::new(),
+            None,
+        )
+        .unwrap_err();
         assert_eq!(refused.reason, "write_scope_overlap");
         assert!(refused.message().contains("src"));
         assert!(refused
@@ -714,7 +981,13 @@ mod tests {
         // Adding a dependency fixes it.
         let mut ordered_second = second.clone();
         ordered_second.depends_on = vec!["a".into()];
-        require_graph(&[first.clone(), ordered_second], &BTreeSet::new()).unwrap();
+        require_graph(
+            &[first.clone(), ordered_second],
+            None,
+            &BTreeSet::new(),
+            None,
+        )
+        .unwrap();
 
         // And so does an order through a third node: they never run at the same time.
         let mut middle = node("m");
@@ -725,7 +998,7 @@ mod tests {
         first_two.depends_on = Vec::new();
         let mut bridge = middle.clone();
         bridge.depends_on = vec!["a".into()];
-        require_graph(&[first_two, bridge, last], &BTreeSet::new()).unwrap();
+        require_graph(&[first_two, bridge, last], None, &BTreeSet::new(), None).unwrap();
     }
 
     #[test]
@@ -736,7 +1009,7 @@ mod tests {
             entry.write_scope = vec!["src/shared.rs".into()];
             nodes.push(entry);
         }
-        let refused = require_graph(&nodes, &BTreeSet::new()).unwrap_err();
+        let refused = require_graph(&nodes, None, &BTreeSet::new(), None).unwrap_err();
         assert_eq!(refused.reason, "write_scope_overlap");
         assert!(refused.message().contains("n0 writes src/shared.rs"));
         assert!(refused.message().contains("n1 writes src/shared.rs"));
@@ -744,21 +1017,33 @@ mod tests {
     }
 
     #[test]
-    fn a_scope_that_only_one_repair_touches_is_checked_against_the_run() {
-        let mut first = node("a");
-        first.write_scope = vec!["src/a.rs".into()];
-        let mut other = node("b");
-        other.write_scope = vec!["docs/b.md".into()];
+    fn a_repair_is_checked_against_the_run_not_against_the_node_it_repairs() {
+        let mut root = node("a");
+        root.write_scope = vec!["src/a.rs".into()];
+        root.failed = true;
+        let mut below = node("b");
+        below.depends_on = vec!["a".into()];
+        below.write_scope = vec!["src/b.rs".into()];
+        let mut elsewhere = node("c");
+        elsewhere.write_scope = vec!["docs/c.md".into()];
+        let record = run(vec![root, below, elsewhere]);
+
+        // The repair writes what its failed root wrote: the root is not held against it.
         let mut repair = node("r");
         repair.repairs = Some("a".into());
         repair.write_scope = vec!["src/a.rs".into()];
-        let involving: BTreeSet<String> = ["r".to_string()].into_iter().collect();
-        let refused =
-            require_graph(&[first.clone(), other.clone(), repair.clone()], &involving).unwrap_err();
+        check_repair(&record, &repair).unwrap();
+
+        // It may share a path with a node that waits on the root: that node waits for the repair.
+        repair.write_scope = vec!["src/b.rs".into()];
+        check_repair(&record, &repair).unwrap();
+
+        // But not with a task it can run beside.
+        repair.write_scope = vec!["docs/c.md".into()];
+        let refused = check_repair(&record, &repair).unwrap_err();
         assert_eq!(refused.reason, "write_scope_overlap");
-        // The same repair, with the node it repairs in front of it, is ordered and fine.
-        repair.depends_on = vec!["a".into()];
-        require_graph(&[first, other, repair], &involving).unwrap();
+        assert!(refused.message().contains("r writes docs/c.md"));
+        assert!(refused.message().contains("c writes docs/c.md"));
     }
 
     #[test]
@@ -799,7 +1084,7 @@ mod tests {
         let good = run(vec![accepted("a"), {
             let mut node = verify("v", &["a"]);
             node.accepted = true;
-            node.gates_passed = true;
+            node.gate_outcome = Some("passed".to_string());
             node.handoff = Some(Handoff {
                 path: "/w/.hivra/handoff/v.md".into(),
                 sha256: "0".repeat(64),
@@ -828,7 +1113,7 @@ mod tests {
         // Its handoff was never opened.
         let mut unread = verify("v", &["a"]);
         unread.accepted = true;
-        unread.gates_passed = true;
+        unread.gate_outcome = Some("passed".to_string());
         unread.handoff = Some(Handoff {
             path: "/w/.hivra/handoff/v.md".into(),
             sha256: "0".repeat(64),
@@ -847,7 +1132,7 @@ mod tests {
         // No handoff file at all.
         let mut absent = verify("v", &["a"]);
         absent.accepted = true;
-        absent.gates_passed = true;
+        absent.gate_outcome = Some("passed".to_string());
         let (verdict, reasons) = goal_verdict(&run(vec![accepted("a"), absent]));
         assert_eq!(verdict, Verdict::Unverified);
         assert!(
@@ -859,25 +1144,30 @@ mod tests {
 
         // A gate failed on an accepted task.
         let mut gated = accepted("a");
-        gated.gates_passed = false;
-        let mut checker = verify("v", &["a"]);
-        checker.accepted = true;
-        checker.gates_passed = true;
-        checker.handoff = Some(Handoff {
-            path: "/w/.hivra/handoff/v.md".into(),
-            sha256: "0".repeat(64),
-            bytes: 1,
-            read: true,
-        });
-        let (verdict, reasons) = goal_verdict(&run(vec![gated, checker]));
+        gated.gate_outcome = Some("failed".to_string());
+        let checker = accepted_verify("v", &["a"]);
+        let (verdict, reasons) = goal_verdict(&run(vec![gated, checker.clone()]));
         assert_eq!(verdict, Verdict::Failed);
         assert_eq!(reasons, vec!["gate_failed:a".to_string()]);
+
+        // A gate that was held for the person, or was not run, is not a pass: the run says which task nothing
+        // checked, and never says Verified.
+        for outcome in ["held", "notRun"] {
+            let mut ungated = accepted("a");
+            ungated.gate_outcome = Some(outcome.to_string());
+            let (verdict, reasons) = goal_verdict(&run(vec![ungated, checker.clone()]));
+            assert_eq!(verdict, Verdict::Unverified, "{outcome}");
+            assert!(
+                reasons.contains(&"gate_not_run:a".to_string()),
+                "{outcome}: {reasons:?}"
+            );
+        }
 
         // The app's own run of the check is red.
         let mut red = run(vec![accepted("a"), {
             let mut node = verify("v", &["a"]);
             node.accepted = true;
-            node.gates_passed = true;
+            node.gate_outcome = Some("passed".to_string());
             node.handoff = Some(Handoff {
                 path: "/w/.hivra/handoff/v.md".into(),
                 sha256: "0".repeat(64),
@@ -919,7 +1209,7 @@ mod tests {
         let mut run = run(vec![accepted("a"), {
             let mut node = verify("v", &["a"]);
             node.accepted = true;
-            node.gates_passed = true;
+            node.gate_outcome = Some("passed".to_string());
             node.handoff = Some(Handoff {
                 path: "/w/.hivra/handoff/v.md".into(),
                 sha256: "0".repeat(64),
@@ -948,13 +1238,45 @@ mod tests {
     }
 
     #[test]
+    fn a_task_whose_gate_failed_keeps_the_report_from_saying_verified() {
+        // Through `report()`, the path the card and `finish` read: a failed WP-40 gate is the run's own failure.
+        let mut gated = accepted("a");
+        gated.gate_outcome = Some("failed".to_string());
+        let answer = report(&run(vec![gated, accepted_verify("v", &["a"])]));
+        assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+        assert_eq!(answer.report.verdict, Verdict::Failed);
+        assert_eq!(answer.report.reasons, vec!["gate_failed:a".to_string()]);
+
+        // A gate that was held or never ran is not a pass.
+        for outcome in ["held", "notRun"] {
+            let mut ungated = accepted("a");
+            ungated.gate_outcome = Some(outcome.to_string());
+            let answer = report(&run(vec![ungated, accepted_verify("v", &["a"])]));
+            assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+            assert_eq!(answer.report.verdict, Verdict::Unverified, "{outcome}");
+            assert_eq!(answer.report.reasons, vec!["gate_not_run:a".to_string()]);
+        }
+
+        // A task with no gate configured says so, and the card must not read as if a gate had passed.
+        let mut ungated = accepted("a");
+        ungated.gate_outcome = None;
+        let answer = report(&run(vec![ungated, accepted_verify("v", &["a"])]));
+        assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+        assert!(
+            answer.report.lint.contains(&"no_gates:a".to_string()),
+            "{:?}",
+            answer.report.lint
+        );
+    }
+
+    #[test]
     fn a_producer_no_verify_task_follows_is_named() {
         let mut second = accepted("b");
         second.depends_on = Vec::new();
         let nodes = vec![accepted("a"), second, {
             let mut node = verify("v", &["a"]);
             node.accepted = true;
-            node.gates_passed = true;
+            node.gate_outcome = Some("passed".to_string());
             node.handoff = Some(Handoff {
                 path: "/w/.hivra/handoff/v.md".into(),
                 sha256: "0".repeat(64),
@@ -971,28 +1293,179 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_failed_task_with_an_accepted_repair_is_answered() {
-        let mut broken = node("a");
-        broken.failed = true;
-        let mut fixed = accepted("r");
-        fixed.repairs = Some("a".into());
-        let mut checker = verify("v", &["a", "r"]);
-        checker.accepted = true;
-        checker.gates_passed = true;
-        checker.handoff = Some(Handoff {
-            path: "/w/.hivra/handoff/v.md".into(),
+    fn accepted_verify(id: &str, depends_on: &[&str]) -> GoalNode {
+        let mut node = verify(id, depends_on);
+        node.accepted = true;
+        node.gate_outcome = Some("passed".to_string());
+        node.handoff = Some(Handoff {
+            path: format!("/w/.hivra/handoff/{id}.md"),
             sha256: "0".repeat(64),
             bytes: 1,
             read: true,
         });
-        let mut record = run(vec![broken, fixed, checker]);
+        node
+    }
+
+    #[test]
+    fn a_failed_task_whose_repair_writes_the_same_file_leaves_a_run_that_finishes() {
+        // The reported failure: a task writing src/a.rs fails, the repair writes the same file. Before `check_repair`
+        // and `report`'s editable set this was refused as an overlap forever, so `finish` could never pass.
+        let mut broken = node("a");
+        broken.write_scope = vec!["src/a.rs".into()];
+        broken.failed = true;
+        let mut repair = node("r");
+        repair.write_scope = vec!["src/a.rs".into()];
+        repair.repairs = Some("a".into());
+        // The repair is offered to the run and accepted by the rules before anything accepts it.
+        let mut record = run(vec![broken.clone(), accepted_verify("v", &["a", "r"])]);
+        check_repair(&record, &repair).unwrap();
+        assert!(ready_nodes(&run(vec![broken.clone(), repair.clone()])).contains(&"r".to_string()));
+
+        let mut fixed = accepted("r");
+        fixed.write_scope = repair.write_scope;
+        fixed.repairs = repair.repairs;
+        record.nodes.insert(1, fixed);
         record.repairs.insert("a".into(), vec![vec!["r".into()]]);
-        assert_eq!(goal_verdict(&record).0, Verdict::Verified);
-        // With the repair cancelled, the failure is open again.
-        record.nodes[1].cancelled = true;
-        record.nodes[1].accepted = false;
-        assert_eq!(goal_verdict(&record).0, Verdict::Failed);
+        let answer = report(&record);
+        assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+        assert_eq!(
+            answer.report.verdict,
+            Verdict::Verified,
+            "{:?}",
+            answer.report.reasons
+        );
+
+        // Dropping the failed root instead of accepting the repair leaves the run finishable too.
+        record.nodes[0].cancelled = true;
+        let answer = report(&record);
+        assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+        assert_eq!(
+            answer.report.verdict,
+            Verdict::Verified,
+            "{:?}",
+            answer.report.reasons
+        );
+    }
+
+    #[test]
+    fn a_cancelled_task_cannot_be_repaired() {
+        let mut gone = node("a");
+        gone.cancelled = true;
+        let record = run(vec![gone]);
+        let mut repair = node("r");
+        repair.repairs = Some("a".into());
+        let refused = check_repair(&record, &repair).unwrap_err();
+        assert_eq!(refused.reason, "repair_of_cancelled");
+        assert!(refused.message().contains("Delegate a new task instead"));
+    }
+
+    #[test]
+    fn a_repair_may_depend_only_on_accepted_tasks_or_the_failed_task_it_repairs() {
+        let mut broken = node("a");
+        broken.failed = true;
+        let mut still_open = node("b");
+        still_open.write_scope = vec!["docs/b.md".into()];
+        let record = run(vec![broken.clone(), still_open]);
+
+        let mut repair = node("r");
+        repair.repairs = Some("a".into());
+        repair.depends_on = vec!["b".into()];
+        let refused = check_repair(&record, &repair).unwrap_err();
+        assert_eq!(refused.reason, "repair_depends_on_open_node");
+        assert!(refused.message().contains("b"));
+
+        // The failed task itself, and an accepted task, are both allowed.
+        let mut accepted_parent = accepted("c");
+        accepted_parent.write_scope = vec!["docs/c.md".into()];
+        let record = run(vec![broken, accepted_parent]);
+        repair.depends_on = vec!["a".into(), "c".into()];
+        repair.write_scope = vec!["src/a.rs".into()];
+        check_repair(&record, &repair).unwrap();
+    }
+
+    #[test]
+    fn a_failed_verify_task_is_repaired_by_a_verify_task_and_the_run_then_finishes() {
+        let build = accepted("a");
+        let mut failed_verify = verify("v", &["a"]);
+        failed_verify.failed = true;
+        let mut record = run(vec![build.clone(), failed_verify.clone()]);
+
+        // A build task may not stand in for a verification.
+        let mut wrong = node("r");
+        wrong.repairs = Some("v".into());
+        wrong.depends_on = vec!["a".into()];
+        assert_eq!(
+            check_repair(&record, &wrong).unwrap_err().reason,
+            "repair_of_verify_must_verify"
+        );
+
+        // A verify task may.
+        let mut again = verify("v2", &["a"]);
+        again.repairs = Some("v".into());
+        check_repair(&record, &again).unwrap();
+
+        // Until it is accepted, the failed verification shows and the run is not done.
+        record.repairs.insert("v".into(), vec![vec!["v2".into()]]);
+        record.nodes.push(again.clone());
+        let open = report(&record);
+        assert!(open.refusal.is_none(), "{:?}", open.refusal);
+        assert_eq!(open.report.verdict, Verdict::Failed);
+        assert_eq!(open.report.reasons, vec!["task_failed:v".to_string()]);
+
+        // Once accepted it is the run's one verify task; the failed one is superseded, not left open.
+        let mut accepted_again = accepted_verify("v2", &["a"]);
+        accepted_again.repairs = Some("v".into());
+        record.nodes[2] = accepted_again;
+        let answer = report(&record);
+        assert!(answer.refusal.is_none(), "{:?}", answer.refusal);
+        assert_eq!(answer.report.verify.as_deref(), Some("v2"));
+        assert_eq!(
+            answer.report.verdict,
+            Verdict::Verified,
+            "{:?}",
+            answer.report.reasons
+        );
+    }
+
+    #[test]
+    fn a_second_failed_verification_takes_the_last_cycle_and_a_third_is_refused() {
+        let mut failed_verify = verify("v", &["a"]);
+        failed_verify.failed = true;
+        let mut record = run(vec![accepted("a"), failed_verify]);
+        record.repairs.insert("v".into(), vec![vec!["v2".into()]]);
+
+        // One cycle left: the re-verification may be offered again, and that is the re-plan.
+        let mut v2 = verify("v2", &["a"]);
+        v2.repairs = Some("v".into());
+        v2.failed = true;
+        record.nodes.push(v2);
+        let mut v3 = verify("v3", &["a"]);
+        v3.repairs = Some("v".into());
+        check_repair(&record, &v3).unwrap();
+        assert!(next_cycle_is_replan(&record, "v"));
+
+        // The second cycle failed too: the run stops repairing and says what is still open.
+        record
+            .repairs
+            .insert("v".into(), vec![vec!["v2".into()], vec!["v3".into()]]);
+        let mut v4 = verify("v4", &["a"]);
+        v4.repairs = Some("v".into());
+        assert_eq!(
+            check_repair(&record, &v4).unwrap_err().reason,
+            "repair_limit_reached"
+        );
+    }
+
+    #[test]
+    fn a_cancelled_verify_task_can_be_replaced_by_another_verify_task() {
+        let mut gone = verify("v", &["a"]);
+        gone.cancelled = true;
+        let mut fresh = accepted_verify("v2", &["a"]);
+        fresh.role = Some(Role::Verify);
+        assert_eq!(
+            require_verify_node(&[accepted("a"), gone, fresh]).unwrap(),
+            "v2"
+        );
     }
 
     #[test]
@@ -1074,7 +1547,7 @@ mod tests {
         gone.cancelled = true;
         let mut checker = verify("v", &[]);
         checker.accepted = true;
-        checker.gates_passed = true;
+        checker.gate_outcome = Some("passed".to_string());
         checker.handoff = Some(Handoff {
             path: "/w/.hivra/handoff/v.md".into(),
             sha256: "0".repeat(64),
@@ -1147,6 +1620,6 @@ mod tests {
             "{findings:?}"
         );
         // Advisory: the graph itself still holds.
-        require_graph(&nodes, &BTreeSet::new()).unwrap();
+        require_graph(&nodes, None, &BTreeSet::new(), None).unwrap();
     }
 }

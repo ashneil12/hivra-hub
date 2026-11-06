@@ -54,7 +54,7 @@ pub fn to_nodes(proposed: &[ProposedNode]) -> Vec<GoalNode> {
             depends_on: task.depends_on.clone(),
             write_scope: task.write_scope.clone(),
             accepted: false,
-            gates_passed: false,
+            gate_outcome: None,
             failed: false,
             cancelled: false,
             handoff: None,
@@ -85,7 +85,7 @@ pub fn check_plan(proposed: Vec<ProposedNode>) -> Result<PlanAnswer, Refusal> {
         }
     }
     let nodes = to_nodes(&proposed);
-    record::require_graph(&nodes, &BTreeSet::new())?;
+    record::require_graph(&nodes, None, &BTreeSet::new(), None)?;
     let verify = record::require_verify_node(&nodes)?;
     record::check_verify_scope(&nodes)?;
     let ids: Vec<String> = nodes.iter().map(|node| node.id.clone()).collect();

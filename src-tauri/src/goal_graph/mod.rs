@@ -58,9 +58,10 @@ pub struct GoalNode {
     /// The task is accepted: reviewed, with its changes integrated.
     #[serde(default)]
     pub accepted: bool,
-    /// The task's own gates (WP-40) met.
+    /// WP-40's word on the task's own gates, when anything ran them: `passed`, `failed`, `notRun` or `held`.
+    /// `None` means no gate ran, which is not a pass; any word that is not `passed` is not a pass either.
     #[serde(default)]
-    pub gates_passed: bool,
+    pub gate_outcome: Option<String>,
     /// The task failed or was blocked, and nothing accepted stands in for it.
     #[serde(default)]
     pub failed: bool,
@@ -232,12 +233,6 @@ pub fn goal_graph_report(run: RunView) -> GraphAnswer {
     record::report(&run)
 }
 
-/// Read the finish-line check out of a proposal, or say why it cannot be run.
-#[tauri::command(async)]
-pub fn goal_graph_check_spec(value: serde_json::Value) -> Result<check::CheckSpec, Refusal> {
-    check::parse_spec(&value)
-}
-
 /// Check a proposal's graph before any worker starts: references, a cycle, two tasks that can run at the same time
 /// sharing a write scope, and the one verify task that has to follow every task that writes.
 #[tauri::command(async)]
@@ -245,15 +240,27 @@ pub fn goal_graph_check_plan(nodes: Vec<plan::ProposedNode>) -> Result<plan::Pla
     plan::check_plan(nodes)
 }
 
+/// Check one repair task before it is added to the run: its dependencies, and the write scopes it shares with the
+/// nodes that can still run. A repair may share its own failed root's files.
+#[tauri::command(async)]
+pub fn goal_graph_check_repair(run: RunView, node: GoalNode) -> Result<(), Refusal> {
+    record::check_repair(&run, &node)
+}
+
 /// Run the finish-line check once, in `cwd`, and report what happened. A timeout or a command that cannot start is
 /// `notRun`, never a final failure and never a pass.
+///
+/// The spec crosses a process boundary, so it is checked here too: `parse_spec` is the bounds rule for a value this
+/// side did not build.
 #[tauri::command(async)]
 pub fn goal_graph_run_check(
     app: AppHandle,
     cwd: String,
     spec: check::CheckSpec,
 ) -> Result<CheckRun, String> {
-    check::run(&app, &cwd, &spec)
+    let value = serde_json::to_value(&spec).map_err(|error| error.to_string())?;
+    let checked = check::parse_spec(&value).map_err(|refusal| refusal.say)?;
+    check::run(&app, &cwd, &checked)
 }
 
 /// Read a worker's handoff file, proving it is inside the checkout, and answer its digest and text.

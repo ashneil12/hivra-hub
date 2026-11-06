@@ -630,6 +630,7 @@ pub fn run() {
             decisions::decisions_list,
             // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
             goal_graph::goal_graph_check_plan,
+            goal_graph::goal_graph_check_repair,
             goal_graph::goal_graph_report,
             goal_graph::goal_graph_run_check,
             goal_graph::goal_graph_read_handoff,
