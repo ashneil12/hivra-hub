@@ -54,3 +54,39 @@ it("keeps a Mono already named like a starter, and still seats it", async () => 
   expect(getChat("tally:leadership")?.memberIds).toContain("kept-coord");
   expect(listMonos()).toHaveLength(starterOffers().length);
 });
+
+it("says which starter each Mono is, so a bench never has to guess by name", async () => {
+  const seated = await benchAshTeam({ project: "tally" });
+  const offers = starterOffers();
+  for (const mono of seated.monos) {
+    const offer = offers.find((item) => item.name === mono.name);
+    expect(mono.specId).toBe(offer?.id);
+  }
+  expect(new Set(seated.monos.map((mono) => mono.specId)).size).toBe(offers.length);
+});
+
+it("ties every starter to the project it is seated in", async () => {
+  const seated = await benchAshTeam({ project: "/work/tally" });
+  for (const mono of seated.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/tally"]);
+  // A second call adds nothing and ties nothing twice.
+  const again = await benchAshTeam({ project: "/work/tally" });
+  for (const mono of again.monos) expect(findMono(mono.id)?.projects).toEqual(["/work/tally"]);
+});
+
+it("adds the project to a Mono already on the roster, once, and leaves its other projects alone", async () => {
+  // Before the bench runs, so this is the Mono it finds by name rather than a second Planner.
+  addMono({ id: "kept-planner", name: "Planner", mascot: "robot", color: "hsl(210 8% 58%)", projects: ["/work/other"], instructions: "mine" });
+  const tied = await benchAshTeam({ project: "/work/tally" });
+  expect(tied.monos.find((mono) => mono.name === "Planner")?.id).toBe("kept-planner");
+  expect(findMono("kept-planner")?.projects).toEqual(["/work/other", "/work/tally"]);
+  expect(findMono("kept-planner")?.instructions).toBe("mine");
+  await benchAshTeam({ project: "/work/tally" });
+  expect(findMono("kept-planner")?.projects).toEqual(["/work/other", "/work/tally"], "tied once, never twice");
+});
+
+it("ties nobody to a project when none is named", async () => {
+  const none = await benchAshTeam({});
+  expect(none.monos.length).toBe(starterOffers().length);
+  for (const mono of none.monos) expect(findMono(mono.id)?.projects).toEqual([]);
+  expect(getChat("tally:leadership")).toBeUndefined();
+});

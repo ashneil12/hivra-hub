@@ -1004,7 +1004,26 @@ function git(args) {
   }
 }
 
-function parseArgs(argv) {
+/**
+ * `--only a,b` narrows the verdict to those checks (the walk still runs; the rest are recorded as skipped). No flag is
+ * every check; a mistyped id fails loudly, so a typo can never come out as a green run of nothing.
+ */
+export function parseOnly(value) {
+  if (value === undefined || value === null) return null;
+  const ids = String(value).split(",").map((id) => id.trim()).filter(Boolean);
+  if (!ids.length) throw new Error(`--only needs at least one check id: ${WALK.join(", ")}`);
+  const unknown = ids.filter((id) => !WALK.includes(id));
+  if (unknown.length) throw new Error(`--only: no such check ${unknown.map((id) => `"${id}"`).join(", ")}. Checks: ${WALK.join(", ")}`);
+  return [...new Set(ids)];
+}
+
+/** A check nobody asked for is recorded as skipped; the run-wide "run" check keeps its own verdict. */
+export function onlySkipped(check, only) {
+  if (!only || check.id === "run" || only.includes(check.id)) return null;
+  return { ...check, status: "skipped", detail: `not asked for (--only ${only.join(",")})` };
+}
+
+export function parseArgs(argv) {
   const value = (flag, fallback) => {
     const index = argv.indexOf(flag);
     return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
@@ -1013,6 +1032,7 @@ function parseArgs(argv) {
     failGate: argv.includes("--fail-gate"),
     build: !argv.includes("--no-build"),
     keep: argv.includes("--keep"),
+    only: argv.includes("--only") ? parseOnly(argv[argv.indexOf("--only") + 1]) : null,
     slot: value("--slot", `${path.basename(ROOT)}-verify`),
     scale: Number(value("--timeout-scale", "1")) || 1,
   };
@@ -1143,8 +1163,9 @@ async function main() {
   const started = new Date().toISOString();
   const checks = [];
   const record = (check) => {
-    checks.push(check);
-    log(`${check.status.toUpperCase().padEnd(7)} ${check.id}: ${check.detail}`);
+    const kept = onlySkipped(check, options.only) ?? check;
+    checks.push(kept);
+    log(`${kept.status.toUpperCase().padEnd(7)} ${kept.id}: ${kept.detail}`);
   };
   const pass = (idName, title, detail, extra = {}) => record({ id: idName, title, status: "pass", detail, ...extra });
   const fail = (idName, title, detail, extra = {}) => record({ id: idName, title, status: "fail", detail, ...extra });
@@ -2822,6 +2843,7 @@ async function main() {
     finishedAt: new Date().toISOString(),
     build: { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]), sha: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain"]) !== "" },
     slot: options.slot,
+    ...(options.only ? { only: options.only } : {}),
     launches,
     checks,
     cleanup: cleanupResult,

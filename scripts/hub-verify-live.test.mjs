@@ -12,6 +12,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
   RUN_MONO_NAMES,
+  onlySkipped,
+  parseArgs,
+  parseOnly,
   insideScratch,
   teardownLeftovers,
   teardownList,
@@ -605,6 +608,34 @@ test("r59: leftovers are the listed chats not archived and the listed Monos stil
     { sessions: ["b", "c"], monos: ["m2"] },
   );
   assert.deepEqual(teardownLeftovers(list, { rows: list.sessions.map((id) => ({ id, archived: 1 })), windowMonos: [] }), { sessions: [], monos: [] });
+});
+
+test("--only picks the checks a person asked for, and refuses anything it cannot run", () => {
+  assert.deepEqual(parseOnly(undefined), null, "no flag: every check");
+  assert.deepEqual(parseOnly("question_routed"), ["question_routed"]);
+  assert.deepEqual(parseOnly(" cascade_stop , question_routed ,,cascade_stop "), ["cascade_stop", "question_routed"], "spaces, blanks and a repeat are tolerated");
+  for (const id of ["question_routed", "cascade_stop"]) assert.equal(WALK.includes(id), true);
+  assert.throws(() => parseOnly(""), /--only/);
+  assert.throws(() => parseOnly(" , ,"), /--only/, "a flag with nothing after it says so");
+  assert.throws(() => parseOnly("question_routd"), /question_routd/, "a mistyped id fails loudly instead of running nothing");
+  assert.throws(() => parseOnly("question_routed,room_agents_talk,nope"), /nope/);
+});
+
+test("--only reaches parseArgs, and leaving it out keeps today's run", () => {
+  assert.equal(parseArgs([]).only, null);
+  assert.deepEqual(parseArgs(["--only", "question_routed"]).only, ["question_routed"]);
+  assert.deepEqual(parseArgs(["--no-build", "--only", "cascade_stop,question_routed"]).only, ["cascade_stop", "question_routed"]);
+  assert.throws(() => parseArgs(["--only", "question_routd"]), /question_routd/);
+  assert.equal(parseArgs(["--only"]).only, null, "a flag with no value is no filter at all");
+  assert.equal(parseArgs([]).scale, 1);
+});
+
+test("--only records the checks nobody asked for as skipped, so the verdict only counts what ran", () => {
+  const one = ["question_routed"];
+  assert.deepEqual(onlySkipped({ id: "question_routed", status: "fail", detail: "x" }, one), null, "an asked-for check keeps its own record");
+  assert.equal(onlySkipped({ id: "cascade_stop", status: "pass", detail: "x" }, one)?.status, "skipped");
+  assert.equal(onlySkipped({ id: "cascade_stop", status: "pass", detail: "x" }, null), null, "no --only: nothing is skipped");
+  assert.equal(onlySkipped({ id: "run", status: "fail", detail: "boom" }, one), null, "a broken run keeps its own verdict, whatever was asked for");
 });
 
 test("live_activity_line: passes only on a timed step with the runner right after the timer", () => {
