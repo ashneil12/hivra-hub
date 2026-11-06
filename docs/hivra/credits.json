@@ -211,6 +211,12 @@
       "gave": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J"
     },
     {
+      "name": "T3 Code",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
@@ -501,6 +507,22 @@
       "copyright": "Copyright 2026 Row-Bot Contributors",
       "where": "src/features/memory/model/recallPolicy.ts",
       "how": "memory_policy.py translated to TypeScript, its test cases ported, for WP-99. The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review."
+    },
+    {
+      "name": "T3 Code's PR watch, Claude result and worktree cleanup rules",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs",
+      "how": "evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640."
+    },
+    {
+      "name": "T3 Code's recorded Claude transcripts",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
+      "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
     }
   ]
 }
