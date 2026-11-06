@@ -5,6 +5,7 @@
 // The app cannot prove the author was honest. It can prove the file exists, that it is inside the worker's checkout,
 // and that the lead opened it before accepting — which is what this module does.
 
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
@@ -114,18 +115,31 @@ pub fn read(checkout: &str, task_id: &str) -> Result<HandoffFile, Refusal> {
             ),
         ));
     }
-    let bytes = std::fs::read(&canonical).map_err(|error| {
+    // Read at most one byte past the cap, so a runaway or sparse handoff costs a bounded read: the old
+    // `fs::read` pulled the whole file into memory before capping it. The file's length comes from its metadata.
+    let file = std::fs::File::open(&canonical).map_err(|error| {
         Refusal::new(
             "handoff_missing",
             format!("The handoff could not be read ({error})."),
         )
     })?;
-    let whole = bytes.len() as u64;
-    let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(READ_MAX)]).to_string();
-    if whole > READ_MAX as u64 {
+    let whole = file.metadata().map(|meta| meta.len()).unwrap_or(0);
+    let mut head = Vec::with_capacity(READ_MAX + 1);
+    file.take(READ_MAX as u64 + 1)
+        .read_to_end(&mut head)
+        .map_err(|error| {
+            Refusal::new(
+                "handoff_missing",
+                format!("The handoff could not be read ({error})."),
+            )
+        })?;
+    let mut text = String::from_utf8_lossy(&head[..head.len().min(READ_MAX)]).to_string();
+    if whole > READ_MAX as u64 || head.len() > READ_MAX {
         text.push('…');
     }
-    let sha256 = format!("{:x}", Sha256::digest(&bytes));
+    // The digest covers what was read (the whole file unless it is over the cap), so it can be checked without
+    // reading more than the cap.
+    let sha256 = format!("{:x}", Sha256::digest(&head));
     let found: Vec<String> = HEADINGS
         .iter()
         .filter(|heading| names_heading(&text, heading))
@@ -275,17 +289,38 @@ mod tests {
     }
 
     #[test]
-    fn a_large_handoff_is_capped_but_its_digest_covers_the_whole_file() {
+    fn a_large_handoff_is_read_to_the_cap_and_its_length_is_told_by_metadata() {
         let dir = temp("large");
         let body = format!("## Changed\n{}", "x".repeat(READ_MAX + 500));
         write(&dir, "task-1", &body);
         let found = read(&dir.to_string_lossy(), "task-1").unwrap();
+        // The size is the file's own, not the bytes read.
         assert_eq!(found.bytes, body.len() as u64);
         assert!(found.text.len() <= READ_MAX + 4);
         assert!(found.text.ends_with('…'));
-        assert_eq!(
-            found.sha256,
-            format!("{:x}", Sha256::digest(body.as_bytes()))
+        // The digest covers what was read: one byte past the cap at most, never the whole file.
+        let head = &body.as_bytes()[..READ_MAX + 1];
+        assert_eq!(found.sha256, format!("{:x}", Sha256::digest(head)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sparse_handoff_does_not_pull_its_whole_length_into_memory() {
+        // A file that claims two gigabytes but holds almost nothing: the read is bounded, and the size still comes
+        // from the file's own metadata.
+        let dir = temp("sparse");
+        let path = write(&dir, "task-1", "## Changed\nnothing yet");
+        let file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+        file.set_len(2 * 1024 * 1024 * 1024).unwrap();
+        drop(file);
+        let started = std::time::Instant::now();
+        let found = read(&dir.to_string_lossy(), "task-1").unwrap();
+        assert_eq!(found.bytes, 2 * 1024 * 1024 * 1024);
+        assert!(found.text.starts_with("## Changed"));
+        assert!(found.text.ends_with('…'));
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the read should stop at the cap"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

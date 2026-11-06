@@ -20,7 +20,6 @@ pub const OUTPUT_MAX: usize = 4_000;
 /// The command itself, and what it may expect.
 const COMMAND_MAX: usize = 1_000;
 const EXPECT_TEXT_MAX: usize = 200;
-const CHECKS_MAX: usize = 20;
 const DEFAULT_TIMEOUT_SECONDS: u64 = 600;
 const MIN_TIMEOUT_SECONDS: u64 = 5;
 const MAX_TIMEOUT_SECONDS: u64 = 3_600;
@@ -35,10 +34,6 @@ pub struct CheckSpec {
     /// Text the output must hold, when the exit code alone is not the whole finish line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expect_text: Option<String>,
-    /// Project check ids to take a baseline of as well, so a failure that was there before the run is not counted
-    /// as the worker's.
-    #[serde(default)]
-    pub checks: Vec<String>,
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
 }
@@ -135,43 +130,6 @@ pub fn parse_spec(value: &Value) -> Result<CheckSpec, Refusal> {
             ))
         }
     };
-    let checks = match object.get("checks") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(entries)) => {
-            if entries.len() > CHECKS_MAX {
-                return Err(Refusal::new(
-                    "invalid_check",
-                    format!("Name at most {CHECKS_MAX} project checks to take a baseline of."),
-                ));
-            }
-            let mut out: Vec<String> = Vec::new();
-            for entry in entries {
-                let Some(word) = entry.as_str() else {
-                    return Err(Refusal::new(
-                        "invalid_check",
-                        "Name project checks by their ids.",
-                    ));
-                };
-                let word = word.trim();
-                if word.is_empty() || word.len() > 60 || has_control(word) || !one_line(word) {
-                    return Err(Refusal::new(
-                        "invalid_check",
-                        "Name project checks by their ids, at most 60 characters each.",
-                    ));
-                }
-                if !out.iter().any(|seen| seen == word) {
-                    out.push(word.to_string());
-                }
-            }
-            out
-        }
-        Some(_) => {
-            return Err(Refusal::new(
-                "invalid_check",
-                "Name project checks by their ids.",
-            ))
-        }
-    };
     let timeout_seconds = match object.get("timeoutSeconds") {
         None | Some(Value::Null) => None,
         Some(Value::Number(number)) => match number.as_u64() {
@@ -194,7 +152,6 @@ pub fn parse_spec(value: &Value) -> Result<CheckSpec, Refusal> {
         command: command.trim().to_string(),
         expect_exit,
         expect_text,
-        checks,
         timeout_seconds,
     })
 }
@@ -212,13 +169,18 @@ pub fn outcome_of(
     use crate::project_actions::RunStatus;
     match status {
         RunStatus::Succeeded | RunStatus::Failed => {
-            if exit_code != Some(spec.expect_exit) {
+            // A run the app could not start (or one killed before it could say) has no exit code. It did not fail the
+            // finish line: it never tried it.
+            let Some(code) = exit_code else {
+                return (
+                    CheckOutcome::NotRun,
+                    "could not start or did not finish, so it never said how it ended".to_string(),
+                );
+            };
+            if code != spec.expect_exit {
                 return (
                     CheckOutcome::Failed,
-                    match exit_code {
-                        Some(code) => format!("exited {code}, not {}", spec.expect_exit),
-                        None => "never said how it ended".to_string(),
-                    },
+                    format!("exited {code}, not {}", spec.expect_exit),
                 );
             }
             if let Some(text) = &spec.expect_text {
@@ -302,9 +264,10 @@ pub fn run(app: &AppHandle, cwd: &str, spec: &CheckSpec) -> Result<CheckRun, Str
         "verify",
         &crate::project_file::data_dir(app)?.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
-        // The action runner has already scrubbed credentials and app endpoints by the time this is set, so an empty
-        // list is the allow-listed environment: what the app itself has, and no secret borrowed from a worker.
         Vec::new(),
+        // A command from a proposal is untrusted, so it starts from an allow-listed environment: PATH, HOME and the
+        // locale, plus the project variables the runner sets. Never the app's own secrets.
+        true,
         Some(crate::project_actions::emitter(app)),
     )?;
     let limit = Duration::from_secs(spec.timeout()) + Duration::from_secs(30);
@@ -337,7 +300,6 @@ mod tests {
             command: "npm test".into(),
             expect_exit: 0,
             expect_text: None,
-            checks: Vec::new(),
             timeout_seconds: None,
         }
     }
@@ -412,17 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn named_project_checks_are_ids_at_most_twenty_of_them() {
-        let spec =
-            parse_spec(&json!({ "command": "x", "checks": ["web", "web", " rust "] })).unwrap();
-        assert_eq!(spec.checks, vec!["web".to_string(), "rust".to_string()]);
-        let many: Vec<String> = (0..21).map(|index| format!("c{index}")).collect();
-        assert!(parse_spec(&json!({ "command": "x", "checks": many })).is_err());
-        assert!(parse_spec(&json!({ "command": "x", "checks": [7] })).is_err());
-        assert!(parse_spec(&json!({ "command": "x", "checks": ["x".repeat(61)] })).is_err());
-    }
-
-    #[test]
     fn the_timeout_is_bounded() {
         assert_eq!(spec().timeout(), DEFAULT_TIMEOUT_SECONDS);
         assert_eq!(
@@ -481,6 +432,17 @@ mod tests {
         for status in [RunStatus::TimedOut, RunStatus::Stopped, RunStatus::Running] {
             let (outcome, _) = outcome_of(status, Some(0), "", &spec());
             assert_eq!(outcome, CheckOutcome::NotRun, "{status:?}");
+        }
+    }
+
+    #[test]
+    fn a_command_that_could_not_start_is_not_run_never_a_failure() {
+        // The runner records a spawn failure as `Failed` with no exit code (`ActionRuns::start`). Nothing ran, so
+        // the finish line was never tried: that is `notRun`, so the baseline is refused instead of reading as red.
+        for status in [RunStatus::Failed, RunStatus::Succeeded] {
+            let (outcome, detail) = outcome_of(status, None, "", &spec());
+            assert_eq!(outcome, CheckOutcome::NotRun, "{status:?}");
+            assert!(detail.contains("never said how it ended"), "{detail}");
         }
     }
 

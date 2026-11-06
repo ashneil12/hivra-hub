@@ -283,12 +283,13 @@ pub struct ScopePath {
 }
 
 /// `\\` reads as `/`, case is folded and the rest goes through `posixpath.normpath`, so `./`, a repeated or
-/// trailing `/` and `x/..` change nothing; a leading `/` stays a first `/` segment. A `*` or `?` glob writes under
-/// the directory before the segment holding it, and keeps its whole pattern, with `**/` read as `*` (`*` already
-/// crosses `/`) and `[` escaped (a path like `app/[slug]/page.tsx` names a file far more often than a write scope
-/// holds a character class).
+/// trailing `/` and `x/..` change nothing; a leading `/` stays a first `/` segment. Surrounding whitespace and a
+/// stray `\r` (a CRLF list read from a file) are dropped first, so `" src/a.rs\r"` is `src/a.rs`. A `*` or `?` glob
+/// writes under the directory before the segment holding it, and keeps its whole pattern, with `**/` read as `*`
+/// (`*` already crosses `/`) and `[` escaped (a path like `app/[slug]/page.tsx` names a file far more often than a
+/// write scope holds a character class).
 pub fn scope_path(entry: &str) -> ScopePath {
-    let text = entry.replace('\\', "/").to_lowercase();
+    let text = entry.trim().replace('\\', "/").to_lowercase();
     let absolute = text.starts_with('/');
     let stripped = text.trim_start_matches('/');
     let normal = posix_normpath(if stripped.is_empty() { "." } else { stripped });
@@ -775,6 +776,9 @@ mod tests {
             ("SRC/X.py", "src/x.py"),
             ("src/a?.py", "src/a1.py"),
             ("src\\x.py", "src/x.py"),
+            // A CRLF list read from a file, and a stray space either side.
+            ("src/a.rs\r", "src/a.rs"),
+            ("  src/b.rs  \r\n", "src/b.rs"),
             ("src/../lib/x.py", "lib/x.py"),
             ("/src/x.py", "/src/x.py"),
             ("app/[slug]/*.tsx", "app/[slug]/page.tsx"),

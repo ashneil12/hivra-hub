@@ -336,6 +336,7 @@ fn run_command(
         &project_file::data_dir(app)?.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
         env,
+        false,
         Some(project_actions::emitter(app)),
     )?;
     let limit = Duration::from_secs(

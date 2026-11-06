@@ -104,6 +104,9 @@ pub struct RunRequest<'a> {
     /// Extra variables for this command only (the verify stage hands its real-path recipe the file to write its
     /// verdict in). Set after the credential scrub, so a caller can never re-add an app endpoint.
     pub env: Vec<(String, String)>,
+    /// Start from [`ALLOWED_ENV`] rather than everything the app inherited. The finish-line check asks for this: a
+    /// command from a proposal must not see the app's own secrets in its environment.
+    pub env_clear: bool,
 }
 
 pub(crate) type Emit = Arc<dyn Fn(&str, Option<&str>, Option<&RunRecord>) + Send + Sync>;
@@ -414,6 +417,29 @@ const AGENT_CREDENTIALS: [&str; 4] = [
     "MONOCODE_CONTROL_TOKEN",
 ];
 
+/// What a child started with `env_clear` may keep from the app's own environment: the things a shell, a toolchain and
+/// a locale need to work at all. The project's own variables are set explicitly below, never inherited.
+#[cfg(windows)]
+const ALLOWED_ENV: [&str; 13] = [
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "WINDIR",
+    "PATHEXT",
+    "COMSPEC",
+];
+#[cfg(not(windows))]
+const ALLOWED_ENV: [&str; 7] = [
+    "PATH", "HOME", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+];
+
 /// The action's command line, environment and process group, not started yet.
 fn command(request: &RunRequest<'_>) -> Command {
     #[cfg(windows)]
@@ -429,6 +455,14 @@ fn command(request: &RunRequest<'_>) -> Command {
         command
     };
     crate::hide_window_console(&mut command);
+    if request.env_clear {
+        command.env_clear();
+        for name in ALLOWED_ENV {
+            if let Some(value) = std::env::var_os(name) {
+                command.env(name, value);
+            }
+        }
+    }
     command
         .current_dir(request.cwd)
         .stdin(Stdio::null())
@@ -568,6 +602,7 @@ pub(crate) fn run_action(
         &log_dir(app)?,
         Some(crate::harness::cached_gui_search_path()),
         stack_env,
+        false,
         Some(emitter(app)),
     )
 }
@@ -584,6 +619,7 @@ pub(crate) fn start_command(
     log_dir: &Path,
     path_env: Option<String>,
     env: Vec<(String, String)>,
+    env_clear: bool,
     emit: Option<Emit>,
 ) -> Result<RunRecord, String> {
     if let Some(running) = runs
@@ -605,6 +641,7 @@ pub(crate) fn start_command(
             log_dir,
             path_env,
             env,
+            env_clear,
         },
         emit,
     )
@@ -785,6 +822,7 @@ mod tests {
                     log_dir: &logs,
                     path_env: None,
                     env: Vec::new(),
+                    env_clear: false,
                 },
                 Some(emit),
             )
@@ -816,6 +854,7 @@ mod tests {
             log_dir: &temp.0,
             path_env: None,
             env: Vec::new(),
+            env_clear: false,
         };
         let command = command(&request);
         let removed: Vec<String> = command
@@ -837,6 +876,45 @@ mod tests {
     }
 
     #[test]
+    fn a_cleared_environment_keeps_only_the_allow_listed_variables() {
+        let temp = temp("monocode-actions-clear");
+        let logs = temp.0.join("logs");
+        let runs = ActionRuns::new();
+        // Set in the parent, as the app would be launched with them; the child must not see either.
+        std::env::set_var("GITHUB_TOKEN", "secret-github-token");
+        std::env::set_var("ANTHROPIC_API_KEY", "secret-anthropic-key");
+        #[cfg(not(windows))]
+        let script = "echo github=$GITHUB_TOKEN; echo anthropic=$ANTHROPIC_API_KEY; \
+                      if [ -n \"$PATH\" ]; then echo path-kept; fi";
+        #[cfg(windows)]
+        let script = "echo github=%GITHUB_TOKEN%& echo anthropic=%ANTHROPIC_API_KEY%& \
+                      if defined PATH echo path-kept";
+        let started = runs.start(
+            RunRequest {
+                project_root: &temp.0,
+                cwd: &temp.0,
+                action: &action(script),
+                trigger: "app",
+                log_dir: &logs,
+                path_env: None,
+                env: Vec::new(),
+                env_clear: true,
+            },
+            None,
+        );
+        std::env::remove_var("GITHUB_TOKEN");
+        std::env::remove_var("ANTHROPIC_API_KEY");
+        let done = runs
+            .wait(&started.unwrap().id, Duration::from_secs(15))
+            .unwrap();
+        let tail = done.tail.join("\n");
+        assert!(!tail.contains("secret-github-token"), "{tail}");
+        assert!(!tail.contains("secret-anthropic-key"), "{tail}");
+        // The allow list still reaches the child, so a shell and a toolchain work.
+        assert!(tail.contains("path-kept"), "{tail}");
+    }
+
+    #[test]
     fn a_timeout_or_a_stop_ends_the_whole_process_group() {
         let temp = temp("monocode-actions-stop");
         let logs = temp.0.join("logs");
@@ -853,6 +931,7 @@ mod tests {
                     log_dir: &logs,
                     path_env: None,
                     env: Vec::new(),
+                    env_clear: false,
                 },
                 None,
             )
@@ -873,6 +952,7 @@ mod tests {
                     log_dir: &logs,
                     path_env: None,
                     env: Vec::new(),
+                    env_clear: false,
                 },
                 None,
             )
