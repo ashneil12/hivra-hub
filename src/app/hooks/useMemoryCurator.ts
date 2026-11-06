@@ -9,6 +9,7 @@ import { collectAnswer, settleTurn, type CuratorContext } from "../../features/m
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
+import { noteOutcome } from "../../features/memory/model/health";
 import { commitDoc } from "../../features/memory/model/review";
 import type { Session } from "../../features/sessions/model/session";
 
@@ -118,8 +119,12 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           return;
         }
         try {
-          // WP-100: a turn the curator saw is a day the app lived, which memory fades over.
-          await commitDoc(loadDoc, saveDoc, (doc) => settleTurn(markLived(doc, ctx.now), ctx, result).doc);
+          // WP-100: a turn the curator saw is a day the app lived, which memory fades over, and a count for the
+          // Memory screen's health card.
+          await commitDoc(loadDoc, saveDoc, (doc) => {
+            const settled = settleTurn(markLived(doc, ctx.now), ctx, result);
+            return noteOutcome(settled.doc, settled.outcome, ctx.now);
+          });
         } catch {
           fedLast.current.delete(feed.sessionId);
         }

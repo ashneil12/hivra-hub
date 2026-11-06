@@ -4,7 +4,9 @@ import { useEffect, useRef, useState } from "react";
 import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
 import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
+import { healthOf } from "../model/health";
 import { MemoryAsk } from "./MemoryAsk";
+import { MemoryHealthCard } from "./MemoryHealthCard";
 import {
   acceptImport,
   acceptItem,
@@ -109,11 +111,13 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     }
   }
 
+  // One reading of the clock for the card and the questions, so a page shown across midnight is not half in each day.
+  const now = Date.now();
   const items = doc ? searchMemory(doc.items, query) : [];
   // WP-100: one faded fact, asked about once. The question picked is held here until it is answered, and counted as
   // shown straight away, so the same question does not appear on every visit.
   const askingItem = doc && showing ? doc.items.find((item) => item.id === showing) : undefined;
-  const asking = doc && askingItem && dueForAsk(doc, askingItem, Date.now()) ? askingItem : undefined;
+  const asking = doc && askingItem && dueForAsk(doc, askingItem, now) ? askingItem : undefined;
   useEffect(() => {
     if (!doc) return;
     if (showing && !asking) {
@@ -125,6 +129,9 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     if (!next) return;
     setShowing(next.id);
     void change((current) => askedNow(current, next.id, Date.now()));
+    // `now` is a new reading every render and must not stand in for `doc`; the question is picked when the doc (or
+    // the question on screen) changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, showing]);
   const answerNow = (answer: Parameters<typeof askAnswer>[2]) => {
     if (!asking) return;
@@ -147,6 +154,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
           className="rounded-md border border-content/15 bg-transparent px-2 py-1"
         />
       </label>
+      {doc ? <MemoryHealthCard health={healthOf(doc, now)} now={now} /> : null}
       {failed && !doc ? (
         <div className="flex flex-col gap-2">
           <p>Memory could not be read this time.</p>

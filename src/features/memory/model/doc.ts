@@ -38,6 +38,20 @@ export type MemoryItem = {
   asked?: number;
 };
 
+/** WP-100: why the curator dropped a turn's fact. */
+export type DropReason = "late" | "secret" | "ungrounded" | "invalid";
+
+/** WP-100: how memory has been going, for the Memory screen's health card. Absent on old data, which reads as zeros. */
+export type MemoryHealth = {
+  /** Turns the curator has looked at. */
+  turns: number;
+  stored: number;
+  deferred: number;
+  dropped: Record<DropReason, number>;
+  /** When the curator last looked at a turn (ms). */
+  lastRunAt?: number;
+};
+
 export type MemoryDoc = {
   revision: number;
   generation: number;
@@ -48,6 +62,8 @@ export type MemoryDoc = {
   livedDays?: string[];
   /** WP-100: the item last asked about in a sitting, and when that sitting began (ms). Absent on old data. */
   askSession?: { id: string; at: number };
+  /** WP-100: what the curator has done, since this build began counting. Absent on old data. */
+  health?: MemoryHealth;
 };
 
 const ITEM_ID = /^mem-[a-f0-9]{16}$/;
@@ -166,6 +182,31 @@ function loadedSession(value: unknown): { id: string; at: number } | undefined {
   return { id: row.id, at: row.at };
 }
 
+/** A count a person's eye will never see wrong: whole, never negative, missing reads as 0. */
+function count(value: unknown): number {
+  return finite(value) ? Math.floor(value) : 0;
+}
+
+/** The health record: each count read on its own, so one bad number does not throw the rest away. */
+function loadedHealth(value: unknown): MemoryHealth | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const raw = value as Partial<MemoryHealth> & { dropped?: Record<string, unknown> };
+  const dropped = (raw.dropped && typeof raw.dropped === "object" ? raw.dropped : {}) as Record<string, unknown>;
+  const health: MemoryHealth = {
+    turns: count(raw.turns),
+    stored: count(raw.stored),
+    deferred: count(raw.deferred),
+    dropped: {
+      late: count(dropped.late),
+      secret: count(dropped.secret),
+      ungrounded: count(dropped.ungrounded),
+      invalid: count(dropped.invalid),
+    },
+  };
+  if (finite(raw.lastRunAt)) health.lastRunAt = raw.lastRunAt;
+  return health;
+}
+
 /** Anything that is not a memory doc, or a doc with secrets in it, comes back empty of those parts. */
 export function parseDoc(value: unknown): MemoryDoc {
   if (!value || typeof value !== "object") return emptyDoc();
@@ -188,6 +229,7 @@ export function parseDoc(value: unknown): MemoryDoc {
   }
   const livedDays = loadedDays(raw.livedDays);
   const askSession = loadedSession(raw.askSession);
+  const health = loadedHealth(raw.health);
   return {
     revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
     generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
@@ -196,6 +238,7 @@ export function parseDoc(value: unknown): MemoryDoc {
     imports,
     ...(livedDays ? { livedDays } : {}),
     ...(askSession ? { askSession } : {}),
+    ...(health ? { health } : {}),
   };
 }
 
