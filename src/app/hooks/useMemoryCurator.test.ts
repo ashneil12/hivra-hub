@@ -34,3 +34,8 @@ it("asks nobody on the rules tier, and the crew on the others", async () => {
   const quiet = await curatorAsk("rules", { user: "Thanks.", assistant: "" })("");
   expect(quiet.ok && quiet.text).toBe('{"kind":"none"}');
 });
+
+it("defers on the cheap tier when the picked model is gone, rather than crashing", async () => {
+  const answer = await curatorAsk("cheap", { user: "Remember that it rains.", assistant: "" }, "xai-gone")("p");
+  expect(answer).toMatchObject({ ok: false, kind: "timeout" });
+});

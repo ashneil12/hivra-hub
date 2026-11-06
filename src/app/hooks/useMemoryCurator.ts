@@ -6,6 +6,7 @@ import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
 import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
+import { cheapAsk } from "../../features/memory/model/cheapAsk";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
@@ -95,13 +96,14 @@ function askModel(prompt: string) {
  * WP-103: the tier the person chose. Rules answers without asking anything; cheap asks the model they picked;
  * crew is today's brief to a signed-in CLI. The tier is read once per turn, so a change starts with the next turn.
  */
-export function curatorAsk(tier: MemoryTier, turn: { user: string; assistant: string }): (prompt: string) => Promise<CuratorAsk> {
+export function curatorAsk(tier: MemoryTier, turn: { user: string; assistant: string }, model?: string): (prompt: string) => Promise<CuratorAsk> {
   if (tier === "rules") {
     return async () => {
       const answer = rulesAnswer(turn);
       return { ok: true, text: answer.kind === "reply" ? answer.text : "" };
     };
   }
+  if (tier === "cheap") return cheapAsk(model);
   return askModel;
 }
 
@@ -130,7 +132,8 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           return;
         }
         // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one.
-        const result = await collectAnswer(loaded, ctx, curatorAsk(loadMemoryTier().tier, ctx));
+        const choice = loadMemoryTier();
+        const result = await collectAnswer(loaded, ctx, curatorAsk(choice.tier, ctx, choice.model));
         if (result.kind === "deferred") {
           fedLast.current.delete(feed.sessionId);
           return;

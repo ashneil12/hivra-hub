@@ -31,6 +31,10 @@ test("the memory tier can be chosen, and is kept", async ({ page }) => {
   await expect(page.getByLabel("A cheap model")).toBeChecked();
   await expect(page.getByLabel("The model to use")).toHaveValue("deepseek-def456");
 
+  // "Test this model" says in plain words whether it worked.
+  await page.getByRole("button", { name: "Test this model" }).click();
+  await expect(page.getByRole("status")).toHaveText("Connected, deepseek-chat replied");
+
   // The line about when a change starts is there throughout.
   await expect(page.getByText("A change starts with your next turn.")).toBeVisible();
 });

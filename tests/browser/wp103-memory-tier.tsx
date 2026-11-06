@@ -26,6 +26,12 @@ function Harness() {
       value={choice}
       models={listCustomModels().map((model) => ({ id: model.id, name: model.name }))}
       onChange={saveMemoryTier}
+      // No Keychain here: the stand-in answers the way the provider would, in the same plain words.
+      test={async (modelId) =>
+        modelId === "deepseek-def456"
+          ? { ok: true, message: "Connected, deepseek-chat replied" }
+          : { ok: false, message: "That key didn't work" }
+      }
     />
   );
 }

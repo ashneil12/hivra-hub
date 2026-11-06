@@ -59,4 +59,13 @@ describe("the memory tier choice", () => {
   it("says a change starts with the next turn", () => {
     expect(html({ tier: "rules" })).toContain("A change starts with your next turn.");
   });
+
+  it("offers a test of the picked model, and only once one is picked", () => {
+    expect(html({ tier: "crew" })).not.toContain("Test this model");
+    expect(html({ tier: "cheap", model: "deepseek-def456" })).toContain("Test this model");
+    // With the model gone, there is nothing to test yet.
+    const gone = renderToStaticMarkup(createElement(MemoryTierChoice, { value: { tier: "cheap", model: "xai-gone" }, models: MODELS, onChange: () => undefined }));
+    expect(gone).toContain("Test this model");
+    expect(gone).toMatch(/<button[^>]*disabled=""/);
+  });
 });

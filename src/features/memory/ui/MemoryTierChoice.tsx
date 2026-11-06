@@ -1,8 +1,9 @@
 // WP-103: the three memory tiers, in plain words, at the top of Settings > Memory. Presentational on purpose: the
 // wrapper below wires localStorage and the model list, and a browser test drives this one directly.
 
-import { useSyncExternalStore } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { customModelsVersion, listCustomModels, subscribeCustomModels } from "../../sessions/model/customModels";
+import { testCheapModel } from "../model/cheapAsk";
 import { saveMemoryTier, tierLabel, useMemoryTier, type MemoryTier, type TierChoice } from "../model/tier";
 
 export type TierModel = { id: string; name: string };
@@ -28,12 +29,17 @@ export function MemoryTierChoice({
   value,
   models,
   onChange,
+  test = testCheapModel,
 }: {
   value: TierChoice;
   models: readonly TierModel[];
   onChange: (choice: TierChoice) => void;
+  /** "Test this model": one tiny call. A parameter so the browser test can drive it without a key. */
+  test?: (modelId: string | undefined) => Promise<{ ok: boolean; message: string }>;
 }) {
   const picked = value.tier === "cheap" ? models.find((model) => model.id === value.model) : undefined;
+  const [checking, setChecking] = useState(false);
+  const [checked, setChecked] = useState<{ ok: boolean; message: string } | undefined>();
   return (
     <section className="flex flex-col gap-2" aria-label="How Hivra remembers">
       <p className="text-sm">How Hivra remembers</p>
@@ -64,22 +70,48 @@ export function MemoryTierChoice({
             Add a model under Other models first, with its key, then pick it here.
           </p>
         ) : (
-          <label className="flex flex-col gap-1 text-sm">
-            The model to use
-            <select
-              aria-label="The model to use"
-              className="rounded-md border border-content/15 bg-transparent px-2 py-1"
-              value={value.model && picked ? value.model : ""}
-              onChange={(event) => onChange({ tier: "cheap", ...(event.target.value ? { model: event.target.value } : {}) })}
+          <div className="flex flex-col gap-1">
+            <label className="flex flex-col gap-1 text-sm">
+              The model to use
+              <select
+                aria-label="The model to use"
+                className="rounded-md border border-content/15 bg-transparent px-2 py-1"
+                value={value.model && picked ? value.model : ""}
+                onChange={(event) => {
+                  setChecked(undefined);
+                  onChange({ tier: "cheap", ...(event.target.value ? { model: event.target.value } : {}) });
+                }}
+              >
+                {value.model && picked ? null : <option value="">Pick a model</option>}
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              disabled={checking || !picked}
+              className="self-start rounded-md border border-content/15 px-2 py-1 text-sm disabled:opacity-50"
+              onClick={async () => {
+                setChecking(true);
+                setChecked(undefined);
+                try {
+                  setChecked(await test(value.model));
+                } finally {
+                  setChecking(false);
+                }
+              }}
             >
-              {value.model && picked ? null : <option value="">Pick a model</option>}
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                </option>
-              ))}
-            </select>
-          </label>
+              {checking ? "Testing" : "Test this model"}
+            </button>
+            {checked ? (
+              <p className={checked.ok ? "text-sm" : "text-sm text-content/60"} role="status" data-tier-test>
+                {checked.message}
+              </p>
+            ) : null}
+          </div>
         )
       ) : null}
       <p className="text-xs text-content/50">A change starts with your next turn. What is already remembered stays.</p>
