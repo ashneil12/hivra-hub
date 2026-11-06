@@ -109,6 +109,7 @@ import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recordUse } from "../features/memory/model/memoryUse";
 import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
@@ -9579,8 +9580,18 @@ function Workspace({
             }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
+            // WP-99: one conversation shows each memory once; a compaction lets them all return.
             // WP-100: a fact an engine other than this chat's wrote is labelled with the engine that did.
-            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide, current.harness);
+            const recallScope = {
+              sessionId,
+              compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+            };
+            const recallNote = await recalledFence(
+              memoryMate,
+              turnPrompt,
+              recallWide ? { ...recallWide, ...recallScope } : recallScope,
+              current.harness,
+            );
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
+import { lastRecallFor, latestRecall, recallSummary } from "../model/lastRecall";
 import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
 import { deleteMemory } from "../model/deletion";
@@ -25,6 +26,8 @@ const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/8
 export type ImportRow = { id: string; project: string; markdown: string; status: string };
 
 export type MemoryPorts = {
+  /** Which Mono's memory this screen is showing, when it knows. The last recall is read for it. */
+  mateId?: string;
   load: () => Promise<MemoryDoc>;
   save: (revision: number, doc: MemoryDoc) => Promise<boolean>;
   proposals: () => Promise<ImportRow[]>;
@@ -159,12 +162,20 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     setShowing(null);
     void change((current) => askAnswer(current, id, answer, Date.now()));
   };
+  // WP-99: the last turn's recall, in plain words, folded away unless asked for.
+  const lastRecall = doc ? (ports.mateId ? lastRecallFor(ports.mateId) : latestRecall()) : undefined;
   const proposals = (doc ? imports : []).filter(
     (row) => row.status === "unreviewed" && !doc?.imports[row.id] && !mentionsSecret(row.markdown) && !mentionsSecret(row.project),
   );
 
   return (
     <section className="flex flex-col gap-4" aria-label="Memory">
+      {lastRecall ? (
+        <details data-recall-why>
+          <summary className="cursor-pointer text-sm">Why these were recalled</summary>
+          <p className="mt-2 text-sm">{recallSummary(lastRecall)}</p>
+        </details>
+      ) : null}
       <label className="flex flex-col gap-1 text-sm">
         Search memory
         <input

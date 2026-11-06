@@ -223,10 +223,16 @@
       "gave": "ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code"
     },
     {
+      "name": "Row-Bot",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "gave": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99)"
+    },
+    {
       "name": "Mnemos",
       "url": "https://github.com/Riley-Coyote/mnemos-mcp",
       "licence": "Apache-2.0",
-      "gave": "memory that fades over the days it was used rather than the calendar, with a lived-day clock, and one question to the person before a fact goes stale (WP-100)"
+      "gave": "ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100)"
     }
   ],
   "components": [
@@ -509,6 +515,14 @@
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
       "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+    },
+    {
+      "name": "Row-Bot's memory policy",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/memory/model/recallPolicy.ts",
+      "how": "memory_policy.py translated to TypeScript, its test cases ported, for WP-99. The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review."
     },
     {
       "name": "Mnemos's lived-day clock",
