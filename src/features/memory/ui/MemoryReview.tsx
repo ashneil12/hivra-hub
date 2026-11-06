@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
 import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
+import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
@@ -12,7 +13,6 @@ import {
   acceptItem,
   acceptSkill,
   commitDoc,
-  deleteItem,
   editItem,
   rejectImport,
   rejectItem,
@@ -83,6 +83,26 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     } catch {
       setNote("Memory could not be saved this time. It can be tried again.");
       return false;
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  // WP-100: a delete takes the fact out of its skill file too, and says plainly what still holds it.
+  async function remove(item: MemoryItem) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    setNote("");
+    try {
+      const result = await deleteMemory(portsRef.current.load, portsRef.current.save, portsRef.current.undoSkill, item.id);
+      setDoc(result.doc);
+      setFailed(false);
+      if (result.note) setNote(result.note);
+    } catch {
+      setNote("Memory could not be saved this time. It can be tried again.");
+      void refresh();
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -247,7 +267,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                     {`Edit ${item.text}`}
                   </button>
                 ) : null}
-                <button type="button" className={BTN} disabled={busy} onClick={() => void change((current) => deleteItem(current, item.id))}>
+                <button type="button" className={BTN} disabled={busy} onClick={() => void remove(item)}>
                   {`Delete ${item.text}`}
                 </button>
               </div>
