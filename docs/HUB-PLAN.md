@@ -195,7 +195,7 @@ way to make it easy"; the rest comes from T3 Code's self-hosting setup):
   - The controller, the EXO lead loop, the runners and the merge queue are replaced by the EXO Lead
     delegating.
 - From T3 Code: **PR and CI watch.** A Lead registers its PR and is woken only when checks fail or pass, someone
-  comments, or the branch conflicts. Built 20 Oct on `hub/4-prwatch` (`src-tauri/src/pr_watch/`; see T3-HARVEST).
+  comments, or the branch conflicts. Built 20 Oct on `hub/4-prwatch` (`src-tauri/src/pr_watch/`; design notes kept locally).
 
 T3 Code ideas we skip, with reasons, are in the 19 Oct harvest. Among them: usage-cost pages, the cloud relay,
 webhook triggers (a prompt-injection door into the Mac) and line-by-line PR review tools.
