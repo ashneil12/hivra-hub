@@ -1049,6 +1049,101 @@ describe("accepting a task", () => {
   });
 });
 
+describe("a task's own check", () => {
+  /** The real path: the worker's turn ends through `host.submit`'s callback, and the host's check runs on it. */
+  const finishTurn = async (
+    f: ReturnType<typeof fixture>,
+    taskId: string,
+    options: { text?: string } = {},
+  ) => {
+    const task = f.manager.run("lead")!.tasks.find((entry) => entry.id === taskId)!;
+    await vi.waitFor(() => expect(f.completions.has(task.sessionId)).toBe(true));
+    const done = f.completions.get(task.sessionId)!;
+    // This turn's callback is spent: a later wait must see the next turn's submit, not this one.
+    f.completions.delete(task.sessionId);
+    done({ status: "completed", text: options.text ?? "Done" });
+    await vi.waitFor(() =>
+      expect(
+        f.manager.run("lead")!.tasks.find((entry) => entry.id === taskId)!.status,
+      ).toBe("completed"),
+    );
+  };
+
+  it("carries WP-40's word onto the task, and a failed one keeps the card from saying Verified", async () => {
+    const f = fixture();
+    f.host.gateWorker = vi.fn(async () => "failed" as const);
+    await f.start();
+    const id = await f.delegate();
+    await finishTurn(f, id);
+
+    // The word is WP-40's own, read from the check on this worker's copy, and it is on the record.
+    expect(f.host.gateWorker).toHaveBeenCalledTimes(1);
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.gateOutcome,
+    ).toBe("failed");
+
+    // A gate that failed is the run's own failure. The rules are asked again after the acceptance, and the word they
+    // read is the one the check left: the report cannot say Verified, and names the task whose gate failed.
+    const asked = f.goals.report.mock.calls.map(([run]) => run as GoalRunView);
+    expect(asked.length).toBeGreaterThan(0);
+    expect(
+      asked[asked.length - 1].nodes.find((node) => node.id === id)!.gateOutcome,
+    ).toBe("failed");
+    const view = goalRunView(f.manager.run("lead")!);
+    expect(view.nodes.find((node) => node.id === id)!.gateOutcome).toBe("failed");
+    expect(f.manager.run("lead")!.goalReport?.verdict).not.toBe("verified");
+  });
+
+  it("reads a check that could not run as notRun, never as a pass or as no gate", async () => {
+    const f = fixture();
+    // The runner threw: the check exists but could not run.
+    f.host.gateWorker = vi.fn(async () => {
+      throw new Error("the checkout is gone");
+    });
+    await f.start();
+    const id = await f.delegate();
+    await finishTurn(f, id);
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.gateOutcome,
+    ).toBe("notRun");
+
+    // A retry clears it: the word was about the turn that ran, and the fresh turn is checked again when it ends. A
+    // project with no check then records no word at all, rather than inheriting the old one.
+    await f.call("retry", { taskId: id, text: "Do it again", files: ["src/a"] });
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.gateOutcome,
+    ).toBeUndefined();
+    f.host.gateWorker = vi.fn(async () => null);
+    await finishTurn(f, id);
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.gateOutcome,
+    ).toBeUndefined();
+  });
+
+  it("leaves a failed turn's word alone rather than checking a turn that did not finish", async () => {
+    const f = fixture();
+    f.host.gateWorker = vi.fn(async () => "passed" as const);
+    await f.start();
+    const id = await f.delegate();
+    const task = f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!;
+    await vi.waitFor(() => expect(f.completions.has(task.sessionId)).toBe(true));
+    f.completions.get(task.sessionId)!({
+      status: "failed",
+      text: "",
+      error: "boom",
+    });
+    await vi.waitFor(() =>
+      expect(
+        f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.status,
+      ).toBe("failed"),
+    );
+    expect(f.host.gateWorker).not.toHaveBeenCalled();
+    expect(
+      f.manager.run("lead")!.tasks.find((entry) => entry.id === id)!.gateOutcome,
+    ).toBeUndefined();
+  });
+});
+
 describe("finishing a run", () => {
   const proposal = () => ({
     version: 1 as const,

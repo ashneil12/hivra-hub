@@ -81,6 +81,13 @@ export type OrchestrationHost = {
     run: OrchestrationRun,
     task: OrchestrationTask,
   ): Promise<{ files: string[]; alreadyApplied: number }>;
+  /** WP-40's check on the worker's own copy, once its turn is in, in WP-40's own words. `null` means the project has no
+   * check configured, so nothing ran and the task records no word; `notRun` means one is configured but could not run.
+   * Both are not a pass: the run's report says which tasks no gate checked. */
+  gateWorker?(
+    run: OrchestrationRun,
+    task: OrchestrationTask,
+  ): Promise<"passed" | "failed" | "notRun" | null>;
   /** Returns false when unreviewed changes require the worktree to be kept. */
   cleanupWorker(
     run: OrchestrationRun,
@@ -1669,6 +1676,9 @@ Run the whole check again and report what you observed.`,
             delivered: true,
             activeDispatchId: undefined,
             acceptedDispatchId: undefined,
+            // WP-91: the word was about the turn that ran, not this one. A fresh turn is checked again when it ends,
+            // and until then the task has no gate result rather than a stale pass.
+            gateOutcome: undefined,
           },
           { taskId: target.id, status: "queued" },
         );
@@ -1715,6 +1725,9 @@ Run the whole check again and report what you observed.`,
             delivered: true,
             activeDispatchId: undefined,
             acceptedDispatchId: undefined,
+            // WP-91: the word was about the turn that ran, not this one. A fresh turn is checked again when it ends,
+            // and until then the task has no gate result rather than a stale pass.
+            gateOutcome: undefined,
           },
           { taskId: target.id, status: "queued", files },
         );
@@ -2528,6 +2541,26 @@ Run the whole check again and report what you observed.`,
     )
       return;
     this.writeChecks.delete(dispatchId);
+    // WP-91: WP-40's check on this worker's own copy, once its turn is in and before anything can be accepted. A
+    // check that could not run is `notRun`, never a pass, and a project with no check records no word at all; either
+    // way the verdict says which accepted tasks no gate checked rather than counting their silence as one.
+    let gateOutcome: OrchestrationTask["gateOutcome"];
+    if (this.host?.gateWorker && outcome.status === "completed") {
+      try {
+        gateOutcome =
+          (await this.host.gateWorker(this.run(leadId)!, task)) ?? undefined;
+      } catch {
+        // The check itself failed to answer: that is a gate that could not run, not a task failure.
+        gateOutcome = "notRun";
+      }
+      task = this.run(leadId)?.tasks.find((entry) => entry.id === taskId);
+    }
+    if (
+      !task ||
+      task.status !== "running" ||
+      task.activeDispatchId !== dispatchId
+    )
+      return;
     const run = this.run(leadId)!;
     await this.commit({
       ...run,
@@ -2543,6 +2576,7 @@ Run the whole check again and report what you observed.`,
               accepted: false,
               activeDispatchId: undefined,
               lastDispatchId: dispatchId,
+              ...(gateOutcome ? { gateOutcome } : { gateOutcome: undefined }),
             }
           : entry,
       ),

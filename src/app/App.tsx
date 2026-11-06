@@ -50,7 +50,7 @@ import {
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
-import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runTaskGate, runWorkerGate, signedOffFor, workerGateWord } from "../features/monos/model/workerGate";
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
@@ -12944,6 +12944,20 @@ function Workspace({
           fromCwd,
           orchestrationCheckoutCwd(run),
         );
+      },
+      // WP-91: WP-40's check on this worker's own copy, in its own words, so the run's verdict has a real input. The
+      // check runs in the worker's checkout (or the lead's, for a shared task), through the same runner WP-40 uses;
+      // only a project with no check returns null.
+      gateWorker: async (run, task) => {
+        const checkout = task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run);
+        const projectId =
+          hubProjectIdFor(orchestrationProjectCwd(run)) ??
+          orchestrationProjectCwd(run);
+        return workerGateWord(runTaskGate, {
+          projectId,
+          checkout,
+          signedOff: false,
+        });
       },
       cleanupWorker: async (run, task, onlyIfUnchanged) => {
         const workspace = task.workspace;
