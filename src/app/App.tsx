@@ -107,6 +107,7 @@ import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
@@ -9577,7 +9578,12 @@ function Workspace({
             }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
+            // WP-99: one conversation shows each memory once; a compaction lets them all return.
+            const recallScope = {
+              sessionId,
+              compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+            };
+            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide ? { ...recallWide, ...recallScope } : recallScope);
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);

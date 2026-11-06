@@ -9,6 +9,10 @@ export const RECALL_OPEN = "<untrusted_memory>";
 export const RECALL_CLOSE = "</untrusted_memory>";
 
 /** The fence, or undefined when the policy picked nothing. */
+export function recallFence(doc: MemoryDoc, picked: readonly string[]): string | undefined {
+  return fenceFor(doc, picked);
+}
+
 function fenceFor(doc: MemoryDoc, picked: readonly string[]): string | undefined {
   if (!picked.length) return undefined;
   const byId = new Map(doc.items.map((item) => [item.id, item]));
