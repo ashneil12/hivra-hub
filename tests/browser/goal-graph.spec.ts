@@ -94,6 +94,25 @@ function repairRun(): Run {
   );
 }
 
+/** The plan and its verify task accepted, then a node an extend round added from the verify task. */
+function extendRun(): Run {
+  return run(
+    [
+      task("t-plan", { status: "completed", accepted: true, handoff: handoff(true) }),
+      task("t-verify", {
+        role: "verify",
+        status: "completed",
+        accepted: true,
+        dependsOn: ["t-plan"],
+        handoff: handoff(true),
+      }),
+      task("t-more", { dependsOn: ["t-verify"], extendFrom: "t-verify" }),
+    ],
+    [["t-plan"], ["t-verify"], ["t-more"]],
+    { extends: 1 },
+  );
+}
+
 /** Fourteen tasks: layers one and two are all accepted, layer three has one running task, then the verify task. */
 function bigRun(extraCheck = false): Run {
   const accepted = (id: string, dependsOn: string[]) =>
@@ -171,6 +190,29 @@ test("a repair edge sits under the node it came from, and the verify node is mar
 
   await expect(page.locator("[data-goal-verify]")).toHaveCount(1);
   await expect(node(page, "t-verify")).toHaveAttribute("data-goal-verify", "");
+});
+
+test("an extend edge sits under the node whose check found the work", async ({ page }) => {
+  await open(page);
+  await commit(page, extendRun());
+
+  const edge = page.locator(
+    '[data-goal-edge="extend"][data-goal-from="t-verify"][data-goal-to="t-more"]',
+  );
+  await expect(edge).toBeVisible();
+  await expect(edge).toContainText("Extended");
+  await expect(node(page, "t-more")).toHaveAttribute("data-goal-extend", "");
+});
+
+test("a run whose tasks no gate checked says so beside its verdict", async ({ page }) => {
+  await open(page);
+  const ungated = liveRun();
+  (ungated.goalReport as { lint: string[] }).lint = ["no_gates:t-plan,t-data"];
+  await commit(page, ungated);
+
+  await expect(page.locator("[data-goal-verdict]")).toContainText(
+    "No gate ran on t-plan, t-data, so those were accepted without one.",
+  );
 });
 
 test("a settling task updates in place, without a reload", async ({ page }) => {

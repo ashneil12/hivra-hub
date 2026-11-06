@@ -47,6 +47,8 @@ type GraphNode = {
   handoff: "none" | "read" | "unread";
   repairs?: string;
   cycle?: number;
+  /** The node whose check found the work this extend-round node does. */
+  extendFrom?: string;
   /** An irreversible step's reason, while the person has not answered it. */
   waiting?: string;
 };
@@ -110,6 +112,7 @@ function runNodes(run: OrchestrationRun): GraphNode[] {
     handoff: task.handoff ? (task.handoff.read ? "read" : "unread") : "none",
     ...(task.repairs ? { repairs: task.repairs } : {}),
     ...(task.cycle ? { cycle: task.cycle } : {}),
+    ...(task.extendFrom ? { extendFrom: task.extendFrom } : {}),
     ...(task.irreversible && !task.irreversibleAnswered
       ? { waiting: task.irreversibleReason ?? "This step cannot be undone." }
       : {}),
@@ -157,15 +160,23 @@ function checkWords(result: GoalCheckRun | undefined, before: boolean): string {
 }
 
 function verdictLine(report: GoalNodeReport): { text: string; tone: string } {
+  // A task no gate ever looked at is not a pass: the card says so beside the verdict rather than hiding it.
+  const ungated = report.lint
+    .filter((entry) => entry.startsWith("no_gates:"))
+    .flatMap((entry) => entry.slice("no_gates:".length).split(","))
+    .join(", ");
+  const gate = ungated
+    ? ` No gate ran on ${ungated}, so those were accepted without one.`
+    : "";
   if (report.verdict === "verified")
     return {
-      text: "Verified: the finish line passes and every task is accepted.",
+      text: `Verified: the finish line passes and every task is accepted.${gate}`,
       tone: "text-emerald-400",
     };
   const reasons = report.reasons.length ? `: ${describeGoalReport(report)}.` : ".";
   return report.verdict === "failed"
-    ? { text: `Not done${reasons}`, tone: "text-amber-400" }
-    : { text: `Not verified yet${reasons}`, tone: "text-content/60" };
+    ? { text: `Not done${reasons}${gate}`, tone: "text-amber-400" }
+    : { text: `Not verified yet${reasons}${gate}`, tone: "text-content/60" };
 }
 
 function glyph(node: GraphNode): ReactNode {
@@ -324,6 +335,9 @@ export function GoalGraph({
                       !big || node.state !== "accepted",
                     );
                     const repairs = nodes.filter((other) => other.repairs === node.id);
+                    const extended = nodes.filter(
+                      (other) => other.extendFrom === node.id,
+                    );
                     const after = node.dependsOn
                       .map((id) => byId.get(id)?.title ?? id)
                       .join(", ");
@@ -339,6 +353,7 @@ export function GoalGraph({
                         data-goal-role={node.role}
                         data-goal-verify={node.role === "verify" ? "" : undefined}
                         data-goal-repair={node.repairs}
+                        data-goal-extend={node.extendFrom ? "" : undefined}
                         data-goal-handoff={node.handoff}
                         className="zen-phase-step orchestration-tree-step"
                       >
@@ -391,6 +406,16 @@ export function GoalGraph({
                               >
                                 Repair{repair.cycle ? `, cycle ${repair.cycle}` : ""} ·{" "}
                                 {repair.title}
+                              </p>
+                            ))}
+                            {extended.map((added) => (
+                              <p
+                                key={added.id}
+                                data-goal-edge="extend"
+                                data-goal-from={node.id}
+                                data-goal-to={added.id}
+                              >
+                                Extended · {added.title}
                               </p>
                             ))}
                           </div>
