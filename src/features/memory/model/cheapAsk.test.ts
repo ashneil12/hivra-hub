@@ -45,15 +45,19 @@ describe("the cheap tier's ask", () => {
       const answer = await cheapAsk("deepseek-def456", call(outcome))("p");
       expect(answer.ok).toBe(false);
     }
-    // Only a refusal is final; everything else stays a timeout, which the curator keeps deferred.
-    const refusals: CheapOutcome[] = [
+    // Every one of them comes back as a timeout, which the curator keeps deferred: the turn is never dropped.
+    const failures: CheapOutcome[] = [
       { ok: false, text: "", kind: "retryable", reason: "busy" },
       { ok: false, text: "", kind: "unreachable", reason: "shape" },
       { ok: false, text: "", kind: "timeout", reason: "slow" },
+      { ok: false, text: "", kind: "refused", reason: "That model turned this down." },
+      { ok: false, text: "", kind: "refused", reason: "No key is saved for that model." },
+      { ok: true, text: "", kind: "ok", reason: "" },
+      { ok: true, text: "I think they like small commits.", kind: "ok", reason: "" },
     ];
-    for (const outcome of refusals) {
+    for (const outcome of failures) {
       const answer = await cheapAsk("deepseek-def456", call(outcome))("p");
-      expect(answer.ok ? "" : answer.kind).toBe("timeout");
+      expect(answer.ok ? "ok" : answer.kind, outcome.kind).toBe("timeout");
     }
   });
 

@@ -6,7 +6,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
-import type { CuratorAsk } from "./curator";
+import { parseCuratorReply, type CuratorAsk } from "./curator";
 
 /** What the Rust side answers (AskOutcome in memory_cheap.rs). */
 export type CheapOutcome = { ok: boolean; text: string; kind: string; reason: string };
@@ -27,10 +27,15 @@ export function cheapProblem(modelId: string | undefined): string | undefined {
   return routeFor(modelId) ? undefined : "That model is no longer under Other models. Pick another one here.";
 }
 
-/** A reply that cannot be read is not a final failure: the turn is tried again next time. */
+/**
+ * Any failure at all is a "try again later": no key, a timeout, a reply that cannot be read, a 4xx or a 5xx. The turn
+ * is kept for next time rather than dropped; the background budget is what stops that becoming a retry storm.
+ */
 function unfinished(outcome: CheapOutcome): CuratorAsk {
-  if (outcome.ok && typeof outcome.text === "string") return { ok: true, text: outcome.text };
-  if (outcome.kind === "refused") return { ok: false, kind: "refused", reason: outcome.reason };
+  if (outcome.ok && typeof outcome.text === "string" && outcome.text.trim()) {
+    // An empty or unreadable reply is a bad reply, not a quiet turn: leaving it deferred is how it gets tried again.
+    if (parseCuratorReply(outcome.text).length > 0) return { ok: true, text: outcome.text };
+  }
   return { ok: false, kind: "timeout", reason: outcome.reason || "The model didn't answer this time." };
 }
 
