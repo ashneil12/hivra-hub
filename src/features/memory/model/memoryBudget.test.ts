@@ -114,9 +114,9 @@ describe("the background budget", () => {
     // A later pause replaces the earlier one.
     notePaused({ problem: "day", until: NOW + DAY });
     expect(pausedNow(NOW)).toEqual({ problem: "day", until: NOW + DAY });
-    // Once it has passed it is not shown again.
+    // Once it has passed it is not shown again, and reading the card never writes.
     expect(pausedNow(NOW + DAY)).toBeUndefined();
-    expect(localStorage.getItem(PAUSE_KEY)).toBeNull();
+    expect(localStorage.getItem(PAUSE_KEY)).not.toBeNull();
   });
 
   it("reads a pause that cannot be read as no pause at all", () => {

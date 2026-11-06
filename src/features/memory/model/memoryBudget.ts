@@ -116,22 +116,17 @@ export function notePaused(pause: BudgetPause): void {
   }
 }
 
-/** The pause the card should show now, or undefined. An expired or unreadable record is dropped on the way. */
+/**
+ * The pause the card should show now, or undefined. This is read while the screen renders, so it writes nothing: an
+ * expired or unreadable record simply reads as no pause, and the next pause overwrites it.
+ */
 export function pausedNow(now: number): BudgetPause | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(localStorage.getItem(PAUSE_KEY) ?? "null");
   } catch {
-    parsed = null;
-  }
-  if (!isPause(parsed)) return undefined;
-  if (parsed.until <= now) {
-    try {
-      localStorage.removeItem(PAUSE_KEY);
-    } catch {
-      // Leaving it is harmless: it still reads as expired.
-    }
     return undefined;
   }
+  if (!isPause(parsed) || parsed.until <= now) return undefined;
   return parsed;
 }
