@@ -46,6 +46,8 @@ export type MemoryDoc = {
   imports: Record<string, "confirmed" | "rejected">;
   /** WP-100: the days (UTC `2026-10-01`) the app was used, which memory fades over. Absent on old data. */
   livedDays?: string[];
+  /** WP-100: the item last asked about in a sitting, and when that sitting began (ms). Absent on old data. */
+  askSession?: { id: string; at: number };
 };
 
 const ITEM_ID = /^mem-[a-f0-9]{16}$/;
@@ -156,6 +158,14 @@ function loadedDays(value: unknown): string[] | undefined {
   return [...new Set(value.filter((day): day is string => typeof day === "string" && DAY.test(day)))].sort();
 }
 
+/** The sit-in record, when both parts can be read. */
+function loadedSession(value: unknown): { id: string; at: number } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as { id?: unknown; at?: unknown };
+  if (typeof row.id !== "string" || !ITEM_ID.test(row.id) || !finite(row.at)) return undefined;
+  return { id: row.id, at: row.at };
+}
+
 /** Anything that is not a memory doc, or a doc with secrets in it, comes back empty of those parts. */
 export function parseDoc(value: unknown): MemoryDoc {
   if (!value || typeof value !== "object") return emptyDoc();
@@ -177,6 +187,7 @@ export function parseDoc(value: unknown): MemoryDoc {
     }
   }
   const livedDays = loadedDays(raw.livedDays);
+  const askSession = loadedSession(raw.askSession);
   return {
     revision: finite(raw.revision) ? Math.floor(raw.revision) : 0,
     generation: finite(raw.generation) ? Math.floor(raw.generation) : 0,
@@ -184,6 +195,7 @@ export function parseDoc(value: unknown): MemoryDoc {
     doneTurns,
     imports,
     ...(livedDays ? { livedDays } : {}),
+    ...(askSession ? { askSession } : {}),
   };
 }
 

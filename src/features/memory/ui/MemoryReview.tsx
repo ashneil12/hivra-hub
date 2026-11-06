@@ -3,6 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { engineName, mentionsSecret, type MemoryDoc, type MemoryItem } from "../model/doc";
 import { markLived } from "../model/fade";
+import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
+import { MemoryAsk } from "./MemoryAsk";
 import {
   acceptImport,
   acceptItem,
@@ -42,6 +44,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   const [note, setNote] = useState("");
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
+  const [showing, setShowing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const portsRef = useRef(ports);
@@ -107,6 +110,28 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   }
 
   const items = doc ? searchMemory(doc.items, query) : [];
+  // WP-100: one faded fact, asked about once. The question picked is held here until it is answered, and counted as
+  // shown straight away, so the same question does not appear on every visit.
+  const askingItem = doc && showing ? doc.items.find((item) => item.id === showing) : undefined;
+  const asking = doc && askingItem && dueForAsk(doc, askingItem, Date.now()) ? askingItem : undefined;
+  useEffect(() => {
+    if (!doc) return;
+    if (showing && !asking) {
+      setShowing(null);
+      return;
+    }
+    if (showing) return;
+    const next = nextAsk(doc, Date.now());
+    if (!next) return;
+    setShowing(next.id);
+    void change((current) => askedNow(current, next.id, Date.now()));
+  }, [doc, showing]);
+  const answerNow = (answer: Parameters<typeof askAnswer>[2]) => {
+    if (!asking) return;
+    const id = asking.id;
+    setShowing(null);
+    void change((current) => askAnswer(current, id, answer, Date.now()));
+  };
   const proposals = (doc ? imports : []).filter(
     (row) => row.status === "unreviewed" && !doc?.imports[row.id] && !mentionsSecret(row.markdown) && !mentionsSecret(row.project),
   );
@@ -132,6 +157,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
       ) : null}
       {note ? <p>{note}</p> : null}
       {doc && items.length === 0 && proposals.length === 0 ? <p>No matches.</p> : null}
+      {asking ? <MemoryAsk item={asking} busy={busy} onAnswer={answerNow} /> : null}
       <ul className="flex flex-col gap-3">
         {items.map((item) => (
           <li key={item.id} data-id={item.id} data-kind={item.action} data-skill={item.skill?.name} className="flex flex-col gap-1">
