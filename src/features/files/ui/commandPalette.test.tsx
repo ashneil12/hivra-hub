@@ -254,6 +254,19 @@ describe("the command palette", () => {
     expect(loadPaletteState().uses[0]?.id).toBe("View: Reload");
   });
 
+  it("adds to the history as another window left it, not as this one saw it", () => {
+    renderPalette({ query: "reload" });
+    // Another window wrote a use and a pick after this palette loaded.
+    savePaletteState({
+      uses: [{ id: "App: Settings", at: Date.now(), count: 2 }],
+      picks: [{ query: "sett", id: "App: Settings", at: Date.now() }],
+    });
+    press("Enter");
+    const state = loadPaletteState();
+    expect(state.uses.map((use) => use.id)).toEqual(["View: Reload", "App: Settings"]);
+    expect(state.picks.map((pick) => pick.query)).toEqual(["reload", "sett"]);
+  });
+
   it("never throws on a palette with no context", () => {
     renderPalette({ context: undefined as unknown as PaletteContext });
     expect(options().length).toBeGreaterThan(30);

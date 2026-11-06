@@ -259,11 +259,14 @@ export function FilePicker({
   const runCommand = (item: Extract<PaletteItem, { kind: "command" }>) => {
     if (item.blockedReason) return;
     const row = rowsById.get(item.command.id);
+    // Another window shares this history, so read it as it is now and add to
+    // that, instead of writing back what this palette saw when it opened.
+    const at = Date.now();
     const next = recordPalettePick(
-      recordPaletteUse(paletteState, item.command.id, Date.now()),
+      recordPaletteUse(loadPaletteState(), item.command.id, at),
       actionQuery,
       item.command.id,
-      Date.now(),
+      at,
     );
     setPaletteState(next);
     savePaletteState(next);
