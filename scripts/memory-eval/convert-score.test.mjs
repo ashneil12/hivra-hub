@@ -49,6 +49,18 @@ test("a chat loses its speaker tag and the assistant's reply", () => {
   assert.equal(userTurn("Assistant: only a reply"), "", "a chat that opens with the assistant has no user turn");
 });
 
+test("a reply on its own line is cut, with the blank lines and spaces around it", () => {
+  const chat = "Leo: I like tea and long walks.  \nAssistant: That sounds nice.\nDo you walk daily?";
+  assert.equal(userTurn(chat), "I like tea and long walks.");
+  assert.equal(userTurn("Leo: I like tea.\nAssistant: Noted."), "I like tea.");
+  assert.equal(userTurn("Leo: I like tea. Assistant: Noted."), "I like tea.");
+});
+
+test("a chat that writes its line break as the two characters backslash and n gives up its reply too", () => {
+  assert.equal(userTurn("Leo: I like tea.  \\nAssistant: Noted."), "I like tea.");
+  assert.equal(userTurn("Leo: I like tea.\\n\\nAssistant: Noted."), "I like tea.");
+});
+
 test("a value that is not a chat becomes nothing, not a crash", () => {
   assert.equal(userTurn(undefined), "");
   assert.equal(userTurn(null), "");

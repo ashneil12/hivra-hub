@@ -15,17 +15,24 @@ export const EVAL_NOW = Date.UTC(2026, 0, 1);
 const MAX_FACT_CHARS = 400;
 
 /**
+ * Where the assistant's reply starts in a chat: on a line of its own, or after a space mid-line. A few rows
+ * carry the line break as the two characters `\n` instead of a newline, so both count as a break.
+ */
+const REPLY_AT = /(?:\s|\\+n)+Assistant:/;
+
+/**
  * The text of one chat's user turn, with the fixed speaker tag and the assistant's reply taken off. A chat
  * that starts with the assistant has no user turn, so it yields nothing: only the person's own words become
- * a memory, never the model's.
+ * a memory, never the model's. The test split writes a chat as "Leo: <turn>  \nAssistant: <reply>", but the
+ * reply is cut wherever it starts, so a chat glued onto one line still gives up its user turn alone.
  */
 export function userTurn(chat) {
   if (typeof chat !== "string") return "";
   let body = chat.trim();
   if (body.startsWith("Assistant:")) return "";
   if (body.startsWith("Leo:")) body = body.slice(4).trim();
-  const replyAt = body.indexOf(" Assistant:");
-  if (replyAt >= 0) body = body.slice(0, replyAt);
+  const reply = REPLY_AT.exec(body);
+  if (reply) body = body.slice(0, reply.index);
   return body.trim();
 }
 
