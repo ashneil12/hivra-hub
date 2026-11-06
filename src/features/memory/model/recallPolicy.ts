@@ -10,8 +10,10 @@
 // scores what comes back; here the store is small enough to score in one pass. Its memory statuses
 // (archived, needs review, superseded) become Hivra's: a fact with a removal waiting on the person
 // is archived, one with an update waiting is superseded, and an unreviewed proposal needs review.
-// The word gates follow Mnemos (mnemos/cue.py, Apache-2.0, ideas only): at least four content
-// words, two distinctive shared words, and at most three lines.
+// The word gates follow Mnemos (github.com/Riley-Coyote/mnemos-mcp, mnemos/cue.py and
+// mnemos/store/fts.py, Apache-2.0, ideas only, no code copied): at least four content words, two
+// distinctive shared words, at most three lines, and never the same memory twice in a conversation
+// (that last rule lives in shownMemory.ts).
 
 import { confidence, type Belief } from "../vendor/mercuryBelief";
 import { mentionsSecret, type MemoryDoc, type MemoryItem } from "./doc";

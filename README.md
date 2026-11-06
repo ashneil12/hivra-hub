@@ -66,6 +66,8 @@ in Settings, under About.
 - [emulate](https://github.com/vercel-labs/emulate): 14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90).
 - [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J.
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
+- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99).
+- [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas only: four content words, two distinctive shared words, at most three lines, and never the same memory twice in a conversation (WP-99).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
