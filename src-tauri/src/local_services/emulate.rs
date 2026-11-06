@@ -711,7 +711,8 @@ pub enum Probe {
     NotOurs,
     /// No such process.
     Gone,
-    /// The pid exists but its command line could not be read.
+    /// The pid is alive but cannot be proved either way: its command line could not be read,
+    /// or it is an emulate process that is not this stack's.
     Unknown,
 }
 
@@ -761,13 +762,14 @@ fn stop_with(
 #[cfg(unix)]
 fn probe_stand_in(pid: u32, stack_dir: &Path) -> Probe {
     match command_of(pid) {
+        Some(command) if !command.contains("emulate") => Probe::NotOurs,
         Some(command) => {
-            let ours = command.contains("emulate")
-                && command.contains(stack_dir.to_string_lossy().as_ref());
-            if ours {
+            if command.contains(stack_dir.to_string_lossy().as_ref()) {
                 Probe::Ours
             } else {
-                Probe::NotOurs
+                // Another stack's stand-in, or this one under a folder that moved: not ours
+                // to kill, and not provably a recycled pid either.
+                Probe::Unknown
             }
         }
         None => {
@@ -1658,9 +1660,10 @@ pub(crate) mod tests {
             .unwrap();
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(probe_stand_in(child.id(), &stack), Probe::Ours);
+        // An emulate process under another folder is kept, never killed.
         assert_eq!(
             probe_stand_in(child.id(), &temp.0.join("other")),
-            Probe::NotOurs
+            Probe::Unknown
         );
         let _ = child.kill();
         let _ = child.wait();
