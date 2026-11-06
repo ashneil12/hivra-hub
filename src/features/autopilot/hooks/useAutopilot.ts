@@ -37,7 +37,8 @@ import {
   type Resume,
 } from "../model/autopilot";
 import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
-import { approvalVerdict, chatProject, handBackText } from "../model/decide";
+import { approvalVerdict, approvalWhat, chatProject, handBackText } from "../model/decide";
+import { appWiredServers, type WiredServersReader } from "../model/mcpTrust";
 import { editStaysInside, type Locate } from "../model/safeApproval";
 import { gitLocateFiles } from "../../../platform/tauri/fs";
 import { formatUntil } from "../model/endTime";
@@ -108,6 +109,8 @@ export function useAutopilot(options: {
   openChat: (sessionId: string) => void;
   /** Where paths really are, links followed (the app's git_locate_files); tests pass their own. */
   locate?: Locate;
+  /** The MCP servers Hivra wired from installed plugins for a chat, read fresh for each decision (mcpTrust.ts). */
+  wiredServers?: WiredServersReader;
 }): void {
   const latest = useRef(options);
   latest.current = options;
@@ -268,21 +271,30 @@ export function useAutopilot(options: {
           handled.current.set(key, session.id);
           const requestId = block.approval.requestId;
           const folder = session.worktreeCwd || session.cwd;
-          const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now));
-          // It waits for Ash in the chat, as when autopilot is off; the log says why.
+          // It waits for Ash in the chat, as when autopilot is off; the log says why. A reason is read before the
+          // verdict's own words, so a held decision that throws still logs plainly.
           const hold = (red: string | null, why: string) =>
-            void log({ ...base, kind: "approval", outcome: "held", what: verdict.what, red, detail: `Not allowed by itself: ${why}`, dedupe: `${key}:${block.id}` });
-          if (verdict.kind === "held") {
-            hold(verdict.red, verdict.why);
-            continue;
-          }
-          // An edit its words allow is allowed only once the app has found where it really lands (links followed).
-          void editStaysInside(block.approval.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
-            if (why) return hold(null, why);
-            return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
-              () => latest.current.approve(session.id, requestId, "allow"),
-            );
-          });
+            void log({ ...base, kind: "approval", outcome: "held", what: approvalWhat(block), red, detail: `Not allowed by itself: ${why}`, dedupe: `${key}:${block.id}` });
+          // Which MCP servers are the ones Hivra wired for this chat is read fresh for each call; a failure to read it
+          // reads as none, so every MCP call then waits (mcpTrust.ts).
+          void (latest.current.wiredServers ?? appWiredServers)(folder ?? "", session.id)
+            .catch(() => new Set<string>())
+            .then((trusted) => {
+              const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now), trusted);
+              if (verdict.kind === "held") return hold(verdict.red, verdict.why);
+              // An edit its words allow is allowed only once the app has found where it really lands (links followed).
+              return editStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
+                if (why) return hold(null, why);
+                return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
+                  () => latest.current.approve(session.id, requestId, "allow"),
+                );
+              });
+            })
+            .catch((error) => {
+              // A decision that can't be made holds: never allow on an error (WP-101, fail closed).
+              console.warn("Autopilot approval:", error);
+              hold(null, "the app couldn't decide it");
+            });
         }
       }
     }

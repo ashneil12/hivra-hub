@@ -5,14 +5,7 @@
 // change too: Hivra lets nothing but a read pass. The rest are Hivra's own cases: the server a tool comes from, and
 // the names real servers use.
 import { describe, expect, it } from "vitest";
-import {
-  isHighImpactTool,
-  isInstalledPluginServer,
-  sanitizeNameComponent,
-  splitMcpTool,
-  toolEffect,
-  type McpHints,
-} from "./mcpEffect";
+import { isHighImpactTool, sanitizeNameComponent, splitMcpTool, toolEffect, type McpHints } from "./mcpEffect";
 
 describe("names", () => {
   it("reads a tool name as words", () => {
@@ -33,15 +26,6 @@ describe("names", () => {
       tool: "firecrawl_scrape",
     });
     for (const name of ["Bash", "mcp__x", "mcp____x", "mcp__x__", "mcp_x__y", ""]) expect(splitMcpTool(name), name).toBeNull();
-  });
-
-  it("knows which servers Hivra installed through a plugin", () => {
-    expect(isInstalledPluginServer("plugin-browser-browser")).toBe(true);
-    expect(isInstalledPluginServer("plugin-agent_plugins-notion")).toBe(true);
-    expect(isInstalledPluginServer("plugin-")).toBe(false);
-    expect(isInstalledPluginServer("plugin")).toBe(false);
-    expect(isInstalledPluginServer("claude_ai_Firecrawl")).toBe(false);
-    expect(isInstalledPluginServer("notion")).toBe(false);
   });
 });
 

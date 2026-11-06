@@ -27,6 +27,9 @@ function session(id: string, cwd: string, patch: Partial<Session> = {}): Session
 }
 
 let delegated = new Set<string>();
+/** The servers the app says it wired from installed plugins for a chat, by chat id. */
+let wired: Record<string, string[]> = {};
+const wiredServers = async (_cwd: string, sessionId: string) => new Set(wired[sessionId] ?? []);
 /** Folders that are links to elsewhere, as the app resolves them (fs.rs git_locate_files); outside git: null. */
 let links: Record<string, string> = {};
 const OUTSIDE_GIT = "/Users/ash/Scratch";
@@ -68,6 +71,7 @@ function Harness({ initial }: { initial: Session[] }) {
     isDelegated: (id) => delegated.has(id),
     openChat: () => undefined,
     locate,
+    wiredServers,
   });
   return null;
 }
@@ -98,6 +102,7 @@ beforeEach(async () => {
   resetWaitingChats();
   delegated = new Set();
   links = {};
+  wired = {};
   backend = memoryAutopilot();
   setAutopilotBackend(backend);
   setHubDataSource({
@@ -230,6 +235,25 @@ describe("useAutopilot", () => {
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
     expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/Users/ash/Projects/hivra/shared/config.ts, outside the chat's folder") });
     expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
+  });
+
+  it("allows an MCP read only from a server the app says it wired for that chat", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const hivra = "/Users/ash/Projects/hivra";
+    wired = { "wired-read": ["plugin-agent_plugins-notion"], "spoofed": ["plugin-agent_plugins-notion"] };
+    const mcp = (tool: string) => approval(tool, { tool });
+    await mount([
+      session("wired-read", hivra, { blocks: [mcp("mcp__plugin-agent_plugins-notion__get_page")] }),
+      // Same tool name, from a chat whose wiring doesn't include that server: the name proves nothing.
+      session("spoofed", hivra, { blocks: [mcp("mcp__plugin-evil-srv__get_page")] }),
+      // A chat the app couldn't answer for at all: every MCP call waits.
+      session("unwired", hivra, { blocks: [mcp("mcp__plugin-agent_plugins-notion__get_page")] }),
+    ]);
+    expect(approvals.map((a) => a.id)).toEqual(["wired-read"]);
+    const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
+    for (const id of ["spoofed", "unwired"])
+      expect(byChat[id], id).toMatchObject({ kind: "approval", outcome: "held", detail: expect.stringContaining("Hivra didn't install") });
   });
 
   it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {

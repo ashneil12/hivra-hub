@@ -14,7 +14,8 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { isInstalledPluginServer, splitMcpTool, toolEffect } from "./mcpEffect";
+import { splitMcpTool, toolEffect } from "./mcpEffect";
+import type { TrustedServers } from "./mcpTrust";
 
 /** Why a call isn't one autopilot may allow by itself, or null when it may. */
 export type SafeVerdict = string | null;
@@ -252,8 +253,12 @@ export function safeCommand(command: string): SafeVerdict {
   return check(words.slice(1));
 }
 
-/** Whether a tool call is one autopilot may allow by itself in a chat working in `folder`; why not otherwise. */
-export function safeCall(call: ApprovalCall | undefined, folder: string | undefined): SafeVerdict {
+/**
+ * Whether a tool call is one autopilot may allow by itself in a chat working in `folder`; why not otherwise.
+ * `trusted` is the exact set of MCP servers Hivra wired from installed plugins for this chat (mcpTrust.ts). A name
+ * alone never counts, and a missing set trusts nothing.
+ */
+export function safeCall(call: ApprovalCall | undefined, folder: string | undefined, trusted?: TrustedServers | null): SafeVerdict {
   if (!call) return "it doesn't say exactly what it runs";
   if (READ_ONLY_TOOLS.has(call.tool)) return null;
   if (EDIT_TOOLS.has(call.tool)) {
@@ -267,9 +272,10 @@ export function safeCall(call: ApprovalCall | undefined, folder: string | undefi
   if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command);
   const mcp = splitMcpTool(call.tool);
   if (mcp) {
-    // A hostile server can name a write tool `get_x`, so a name alone only counts for a server the person installed
-    // through Hivra's plugin flow. Every other server's tools wait, however they read.
-    if (!isInstalledPluginServer(mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
+    // A hostile server can name a write tool `get_x` and can call itself `plugin-anything`, so a name alone counts
+    // for nothing: only a server in the set Hivra itself wired from an installed plugin does. Every other server's
+    // tools wait, however they read, and so does every one of them when the set couldn't be read.
+    if (!trusted || !trusted.has(mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
     const effect = toolEffect(mcp.tool);
     return effect === "read_only" ? null : `it is an MCP ${effect === "change" ? "change" : effect === "high_impact" ? "high-impact action" : "call autopilot can't place"}, so it waits for Ash`;
   }

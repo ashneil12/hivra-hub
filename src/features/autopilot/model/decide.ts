@@ -9,6 +9,7 @@
 
 import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
+import type { TrustedServers } from "./mcpTrust";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
 import { reviewVeto } from "./reviewerRules";
 import { safeCall } from "./safeApproval";
@@ -67,8 +68,15 @@ export type ApprovalVerdict =
  * A tool approval while autopilot covers the chat, in a chat working in `folder` (its worktree when it has one):
  * allowed only when it is a read, a listed test or build command, or an edit inside that folder, and nothing it says
  * touches the red list. Everything else, and anything too long to read whole, waits for Ash as when autopilot is off.
+ * `trusted` is the exact set of MCP servers Hivra wired from installed plugins for this chat (mcpTrust.ts); without
+ * it, every MCP call waits.
  */
-export function approvalVerdict(block: ApprovalBlock, folder: string | undefined, forcedRed?: RedCategory): ApprovalVerdict {
+export function approvalVerdict(
+  block: ApprovalBlock,
+  folder: string | undefined,
+  forcedRed?: RedCategory,
+  trusted?: TrustedServers | null,
+): ApprovalVerdict {
   const what = approvalWhat(block);
   if (forcedRed) return { kind: "held", red: forcedRed, what, why: forUser("its chat was told to ask Ash") };
   const text = approvalText(block);
@@ -81,7 +89,7 @@ export function approvalVerdict(block: ApprovalBlock, folder: string | undefined
     action: { tool: block.approval?.call?.tool, command: block.approval?.call?.command, title: block.tool?.title },
   });
   if (reviewed) return { kind: "held", red: null, what, why: reviewed };
-  const why = safeCall(block.approval?.call, folder);
+  const why = safeCall(block.approval?.call, folder, trusted);
   return why ? { kind: "held", red: null, what, why } : { kind: "allow", what };
 }
 

@@ -109,18 +109,6 @@ export function splitMcpTool(name: string): { server: string; tool: string } | n
   return { server: rest.slice(0, split), tool };
 }
 
-/** The prefix every MCP server installed through a Hivra plugin goes by (plugins/wiring.rs native_name). */
-export const PLUGIN_SERVER_PREFIX = "plugin-";
-
-/**
- * Whether a server reached this session through a plugin the person installed in Hivra. Its tool names are
- * `mcp__plugin-<plugin>-<server>__<tool>`: the plugin prefix is what says the server's code came through the
- * install flow (and its scanner), rather than from a config file this app never saw.
- */
-export function isInstalledPluginServer(server: string): boolean {
-  return server.startsWith(PLUGIN_SERVER_PREFIX) && server.length > PLUGIN_SERVER_PREFIX.length;
-}
-
 /** The read object a word names and whether it is plural ("commits" is ("commit", true)), or null. */
 function readObject(word: string): [string, boolean] | null {
   if (READ_OBJECTS.has(word)) return [word, false];

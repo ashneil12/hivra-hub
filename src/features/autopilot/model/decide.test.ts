@@ -35,6 +35,7 @@ describe("a question with no pick", () => {
 
 describe("a tool approval under autopilot", () => {
   const FOLDER = "/Users/ash/Projects/hivra";
+  const SECRET_FILE = "/home/user/.ssh/id_ed25519";
   const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command } } });
 
   it("allows a listed check, a read, and an edit in the chat's folder", () => {
@@ -45,30 +46,35 @@ describe("a tool approval under autopilot", () => {
 
   it("allows a read-only MCP call from an installed plugin's server, and nothing else from MCP", () => {
     const mcp = (tool: string) => ({ text: "", tool: { title: tool, kind: "other" }, approval: { requestId: 6, call: { tool } } });
-    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER)).toMatchObject({ kind: "allow" });
-    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__create_page"), FOLDER)).toMatchObject({ kind: "held", red: null });
+    const wired = new Set(["plugin-agent_plugins-notion", "plugin-agent_plugins-blog"]);
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__create_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });
     // A server Hivra didn't install waits even for a name that reads as a read.
-    expect(approvalVerdict(mcp("mcp__notion__get_page"), FOLDER)).toMatchObject({ kind: "held", red: null });
+    expect(approvalVerdict(mcp("mcp__notion__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });
+    // A server whose name claims the prefix, never wired: held.
+    expect(approvalVerdict(mcp("mcp__plugin-evil-srv__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });
+    // Nothing says which servers were wired: every MCP call waits.
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER)).toMatchObject({ kind: "held", red: null });
   });
 
   it("lets the red list hold an MCP call the classifier would allow", () => {
     // The name says a read; the files it names say credentials, and the red list is checked first.
-    const read = { text: "", tool: { title: "mcp__plugin-x-memory__get_file" }, approval: { requestId: 7, call: { tool: "mcp__plugin-x-memory__get_file", paths: ["/Users/ash/.ssh/id_ed25519"] } } };
-    expect(approvalVerdict(read, FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+    const read = { text: "", tool: { title: "mcp__plugin-x-memory__get_file" }, approval: { requestId: 7, call: { tool: "mcp__plugin-x-memory__get_file", paths: [SECRET_FILE] } } };
+    expect(approvalVerdict(read, FOLDER, undefined, new Set(["plugin-x-memory"]))).toMatchObject({ kind: "held", red: "credentials" });
   });
 
   it("holds red-list commands, saying which list", () => {
     expect(approvalVerdict(bash("rm -rf ~/Library/Application Support/x"), FOLDER)).toMatchObject({ kind: "held", red: "delete" });
     expect(approvalVerdict(bash("git push --force origin main"), FOLDER)).toMatchObject({ kind: "held", red: "mass-destructive" });
     expect(approvalVerdict({ text: "", tool: { title: "mcp__slack__chat_postMessage", kind: "other" }, approval: { requestId: 4, call: { tool: "mcp__slack__chat_postMessage" } } }, FOLDER)).toMatchObject({ kind: "held", red: "send-as-ash" });
-    expect(approvalVerdict({ text: "", tool: { title: "Read file" }, approval: { requestId: 5, call: { tool: "Read", paths: ["/Users/ash/.ssh/id_ed25519"] } } }, FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
+    expect(approvalVerdict({ text: "", tool: { title: "Read file" }, approval: { requestId: 5, call: { tool: "Read", paths: [SECRET_FILE] } } }, FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
   });
 
   it("holds a send, a delete, a payment, a publish or an account change on reviewer rules too", () => {
     // The red list's own words miss each of these; the very rule that a judged reviewer follows holds them.
     expect(approvalVerdict(bash("npm run check && echo done"), FOLDER)).toMatchObject({ kind: "held", red: null, why: "it chains, substitutes or redirects" });
     const readNote = { text: "", tool: { title: "Read the note" }, approval: { requestId: 8, call: { tool: "mcp__plugin-agent_plugins-blog__get_post" } } };
-    expect(approvalVerdict(readNote, FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(readNote, FOLDER, undefined, new Set(["plugin-agent_plugins-blog"]))).toMatchObject({ kind: "allow" });
     const publish = { text: "", tool: { title: "Bash" }, approval: { requestId: 9, call: { tool: "Bash", command: "npm publish" } } };
     expect(approvalVerdict(publish, FOLDER)).toMatchObject({ kind: "held", red: null, why: "This publishes something for others to see, so it waits for you." });
   });
