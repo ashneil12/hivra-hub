@@ -417,7 +417,15 @@ fn refuse_changed(fresh: &scan::ScanResult, request: &PendingRequest) -> Result<
         return Err(scan::blocking_reason(fresh));
     }
     let shown = &request.scan;
-    let same_digest = shown.digest.is_empty() || fresh.digest == shown.digest;
+    // WP-101 fix round 2, item H(c): a request written without a hash (an older build, a hand-edited one) cannot
+    // prove the copy is the one that was read, so it stops rather than skipping the check.
+    if shown.digest.is_empty() {
+        return Err(
+            "That request was saved before the install check kept a hash, so the copy can't be proved. Start the install again."
+                .into(),
+        );
+    }
+    let same_digest = fresh.digest == shown.digest;
     if same_digest && fresh.findings.len() == shown.findings.len() {
         let mut had: Vec<(&str, &str, &str)> = fresh
             .findings
@@ -443,7 +451,48 @@ fn manifest_declared(loaded: &LoadedPlugin) -> Result<Declared, String> {
     Declared::from_manifest(&value)
 }
 
-/// Run what the request asked to (it was approved, or asked for nothing), validate again, then put it in place.
+/// Whether the staged copy, or a folder anywhere inside it, is now a link (WP-101 fix round 2, item H(d)). The scan
+/// that recorded the digest walked real folders; a link in their place reads whatever it points to, so it is a change
+/// however the files behind it look. A top-level link is refused by `scan`'s own walk ("it isn't a folder"); this
+/// catches the ones deeper in, which the walk follows silently.
+fn staged_swapped_for_link(staged: &Path) -> Option<String> {
+    fn visit(dir: &Path) -> bool {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            // A link is a link whatever it points at: `symlink_metadata` reports the link itself, so this checks the
+            // link before looking at whether a real folder would have been walked. Reading through the link's target
+            // would hide exactly the change this looks for.
+            if fsutil::link_target(&path).is_some() {
+                return true;
+            }
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if meta.is_dir() && visit(&path) {
+                return true;
+            }
+        }
+        false
+    }
+    if fsutil::link_target(staged).is_some() {
+        return Some(
+            "The downloaded copy was replaced by a link after it was read, so nothing was installed. Ask for it again."
+                .into(),
+        );
+    }
+    if visit(staged) {
+        return Some(
+            "A folder in the downloaded copy was replaced by a link after it was read, so nothing was installed. Ask for it again."
+                .into(),
+        );
+    }
+    None
+}
+
+/// Run what the request asked for (it was approved, or asked for nothing), validate again, then put it in place.
 fn commit(
     host: &Host,
     tools: &Tools,
@@ -473,6 +522,20 @@ fn commit(
     if already.is_none() && staged.is_dir() {
         // WP-101: the copy that lands is the copy that was read. Anything changed since the scan (a retry, a moved
         // tag, something writing in the data folder) stops the install rather than installing what nobody saw.
+        // WP-101 fix round 2, item H(c): a request with no hash can't prove anything, so it stops too.
+        if request.scan.digest.is_empty() {
+            drop_pending(host, dir);
+            return Err(
+                "That request was saved before the install check kept a hash, so the copy can't be proved. Start the install again."
+                    .into(),
+            );
+        }
+        // Item H(d): the staged folder, or a folder inside it, swapped for a link since the scan is a change, however
+        // the file behind the link reads.
+        if let Some(why) = staged_swapped_for_link(&staged) {
+            drop_pending(host, dir);
+            return Err(why);
+        }
         let now = scan::scan_untrusted(&staged);
         if now.blocked {
             drop_pending(host, dir);
@@ -481,7 +544,7 @@ fn commit(
                 scan::blocking_reason(&now)
             ));
         }
-        if !request.scan.digest.is_empty() && now.digest != request.scan.digest {
+        if now.digest != request.scan.digest {
             drop_pending(host, dir);
             return Err(
                 "The copy changed after it was read, so nothing was installed. Ask for it again to see what changed."

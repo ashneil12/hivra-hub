@@ -533,6 +533,65 @@ fn a_scan_records_the_copy_s_content_hash() {
     assert_ne!(first.digest, second.digest);
 }
 
+// WP-101 fix round 2, item H(a): a file that can be run is not the same file as one that cannot, so the digest reads
+// the executable bit. Without it a swap that turned a script into an executable (or back) would look unchanged.
+#[cfg(unix)]
+#[test]
+fn the_hash_reads_a_file_s_executable_bit() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = Tmp::new("digest-mode");
+    clean(tmp.path());
+    let script = tmp.path().join("run.sh");
+    write(&script, "#!/bin/sh\necho hi\n");
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let plain = fsutil::tree_digest(tmp.path());
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let runnable = fsutil::tree_digest(tmp.path());
+    assert_ne!(plain, runnable, "the mode bits are part of the digest");
+    let scan = scan::scan(tmp.path());
+    assert_eq!(scan.digest, runnable);
+    // Every executable bit is read, not just the owner's: runnable by the owner alone and runnable by anyone are not
+    // the same file, and a swap from one to the other must change the digest too.
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner_alone = fsutil::tree_digest(tmp.path());
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let anyone = fsutil::tree_digest(tmp.path());
+    assert_ne!(
+        owner_alone, anyone,
+        "the owner's executable bit is not the only one"
+    );
+}
+
+// WP-101 fix round 2, item H(b): a file that can't be read is not an empty file. Before, it hashed as empty, so a
+// swap could make two different copies (one with contents, one with nothing) hash the same.
+#[cfg(unix)]
+#[test]
+fn a_file_the_scan_cannot_read_blocks_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = Tmp::new("digest-unreadable");
+    clean(tmp.path());
+    let secret = tmp.path().join("references/guide.md");
+    write(&secret, "Read me.");
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let result = scan::scan(tmp.path());
+    // Running as root would still read it; a test that isn't exercising the block says so instead of passing quietly.
+    if std::fs::read(&secret).is_ok() {
+        std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+        eprintln!("skipped: this test runs as a user that can read a mode 000 file");
+        return;
+    }
+    std::fs::set_permissions(&secret, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(result.blocked, "{:?}", result.findings);
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|finding| finding.code == "unreadable_file"),
+        "{:?}",
+        result.findings
+    );
+}
+
 #[test]
 fn what_the_person_reads_is_one_clean_line() {
     // A finding carries text from a file on disk, so it is cut and stripped before any card shows it.

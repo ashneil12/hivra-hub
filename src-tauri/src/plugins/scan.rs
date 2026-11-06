@@ -129,6 +129,23 @@ pub fn scan(root: &Path) -> ScanResult {
     match walk(root) {
         Ok(entries) => {
             let mut result = scan_entries(root, &entries);
+            // WP-101 fix round 2, item H(b): a file the walk found but can't read can't be read for a reason, and a
+            // copy that hides one from the check is not the copy the person was told about. Read here, where the
+            // entries are real files, not in the pure pass above, so a swap to an unreadable file blocks.
+            for entry in &entries {
+                if entry.link || escapes(&entry.path) {
+                    continue;
+                }
+                if let Err(e) = std::fs::read(local(root, &entry.path)).map(|_| ()) {
+                    result.findings.push(finding(
+                        Severity::Block,
+                        "unreadable_file",
+                        &entry.path,
+                        format!("This file couldn't be read ({e}), so nothing was installed."),
+                    ));
+                    result.blocked = true;
+                }
+            }
             result.digest = super::fsutil::tree_digest(root);
             result
         }
