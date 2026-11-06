@@ -215,6 +215,12 @@
       "url": "https://runaether.dev",
       "licence": "closed source",
       "gave": "ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code"
+    },
+    {
+      "name": "Row-Bot",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "gave": "the automatic recall policy, the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-99, WP-101)"
     }
   ],
   "components": [
@@ -481,6 +487,38 @@
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
       "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
+    },
+    {
+      "name": "Row-Bot's MCP tool effects",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/autopilot/model/mcpEffect.ts",
+      "how": "WP-101: mcp_client/safety.py translated to TypeScript, with test_mcp_safety.py's cases ported. The verb patterns are written out as word lists; Row-Bot's interaction class is folded into a change so nothing but a read passes; and the provider's tool id is split into its server and tool, so a name-only read is trusted only for a server the person installed through Hivra's plugin flow."
+    },
+    {
+      "name": "Row-Bot's approval reviewer",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/autopilot/model/reviewerRules.ts",
+      "how": "WP-101: the rules of approval_review.py, and its answer reading with test_approval_reviewer.py's cases ported. Hivra asks no model to judge an approval, so only the checks a fixed rule can make are code, as a veto the decision path calls; the judgement rules are kept as REVIEWER_RULES for a judged step. Row-Bot's four levels are kept for narrowing."
+    },
+    {
+      "name": "Row-Bot's install scanner",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src-tauri/src/plugins/scan.rs",
+      "how": "WP-101: skills_hub/scanner.py translated to Rust, with test_skills_hub.py's cases ported. The thing scanned is a Hivra plugin, so no skills is fine and an unloadable skill only warns; a setup step the person already approves does not block; and the file list comes from the staged folder."
+    },
+    {
+      "name": "Row-Bot's proposal guard",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/memory/backpass/proposalGuard.ts",
+      "how": "WP-101: evolution.py's injection_problems translated to TypeScript, with its E9 cases ported. It checks what an edit adds rather than a whole draft, names each kind with a plain reason, and uses Hivra's own secret check."
     }
   ]
 }
