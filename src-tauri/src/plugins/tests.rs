@@ -915,6 +915,61 @@ fn a_plugin_server_never_takes_a_name_already_in_use() {
 }
 
 #[test]
+fn a_plugin_server_never_takes_a_name_a_config_spells_differently() {
+    // WP-101 fix round 2, item D: Claude Code turns every character outside letters, digits, `_` and `-` into `_` when
+    // it builds the tool id, so a config's `plugin-demo.tools-tools` reads as the plugin's `plugin-demo_tools-tools`.
+    // The plugin's server is left out rather than merged with the config's.
+    let tmp = Tmp::new("clash-spelling");
+    let host = host(&tmp);
+    // A plugin whose name holds a period: its server is wired as `plugin-demo_tools-tools` (native_name turns the
+    // period into `_`), and a config can spell that name any other way Claude Code reads the same.
+    let source = tmp.path().join("src/demo-tools");
+    full_plugin(&source, "demo.tools");
+    registry::install_local(&host, &source, Source::local(&source)).unwrap();
+    registry::enable(&host, "demo.tools", &Scope::Global).unwrap();
+    let wired_name = "plugin-demo_tools-tools";
+    // A config name that reads as some other server leaves the plugin's alone.
+    let taken: std::collections::BTreeSet<String> = ["plugin-demo_tools-other".to_string()].into();
+    let wired = wiring::session_wiring(&host, None, Some("/app/monocode"), &taken).unwrap();
+    assert!(wired.claude_mcp_servers.contains_key(wired_name));
+    for used in [
+        wired_name,
+        "plugin-demo.tools-tools",
+        "plugin-demo tools-tools",
+        "plugin-demo$tools-tools",
+    ] {
+        let taken: std::collections::BTreeSet<String> = [used.to_string()].into();
+        let wired = wiring::session_wiring(&host, None, Some("/app/monocode"), &taken).unwrap();
+        assert!(!wired.claude_mcp_servers.contains_key(wired_name), "{used}");
+        assert!(
+            wired
+                .reports
+                .iter()
+                .any(|r| r.message.contains("already set up")),
+            "{used}"
+        );
+    }
+    registry::uninstall(&host, "demo.tools").unwrap();
+}
+
+#[test]
+fn the_wiring_reports_the_config_names_as_claude_code_reads_them() {
+    // The autopilot compares the incoming server part with these, so they are reported in the same normalised form.
+    let tmp = Tmp::new("names-reported");
+    let host = host(&tmp);
+    let source = tmp.path().join("src/demo");
+    full_plugin(&source, "demo");
+    registry::install_local(&host, &source, Source::local(&source)).unwrap();
+    registry::enable(&host, "demo", &Scope::Global).unwrap();
+    let taken: std::collections::BTreeSet<String> =
+        ["plugin a.b".to_string(), "mine".to_string()].into();
+    let wired = wiring::session_wiring(&host, None, Some("/app/monocode"), &taken).unwrap();
+    assert_eq!(wired.names_in_use, vec!["mine", "plugin_a_b"]);
+    assert_eq!(wiring::session_name("plugin-a.b"), "plugin-a_b");
+    registry::uninstall(&host, "demo").unwrap();
+}
+
+#[test]
 fn names_in_use_come_from_every_cli_config() {
     // The app's discovery feeds `taken`; its own tests cover each file. Here: a Claude user server shows up.
     let tmp = Tmp::new("in-use");

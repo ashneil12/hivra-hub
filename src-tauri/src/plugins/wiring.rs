@@ -32,11 +32,31 @@ pub struct Wiring {
     pub claude_mcp_servers: Map<String, Value>,
     /// `mcp_servers.<name>` entries for Codex's thread config.
     pub codex_mcp_servers: Map<String, Value>,
+    /// Every server name the person's own configs already use for this folder, as Claude Code reads it
+    /// (`session_name`). A decision that trusts a wired server checks these too: a config's `plugin-a.b` and Hivra's
+    /// `plugin-a_b` are one name to Claude Code, so a call under it could come from either.
+    pub names_in_use: Vec<String>,
     pub reports: Vec<Report>,
 }
 
 /// The prefix every plugin server's session name starts with.
 pub const NAME_PREFIX: &str = "plugin-";
+
+/// A server name as Claude Code reads it (WP-101 fix round 2, item D). Claude Code builds the tool id
+/// `mcp__<server>__<tool>` and turns every character outside letters, digits, `_` and `-` into `_`, so a project's
+/// server `plugin-a.b` and the plugin's `plugin-a_b` are the same server to it: one would replace or merge with the
+/// other.
+pub fn session_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
 
 /// The name a server goes by in a session: `plugin-<plugin>-<server>`, a plugin's periods turned into `_`. It never
 /// holds `__` (plugin names can't hold `_`, server names can't hold `__`), because Claude Code splits tool names
@@ -76,7 +96,14 @@ pub fn session_wiring_for(
     agent: Option<&SessionAgent<'_>>,
 ) -> Result<Wiring, String> {
     let registry = registry::read(host)?;
-    let mut out = Wiring::default();
+    // Sorted and de-duplicated so the answer is the same every time it is read.
+    let mut in_use: Vec<String> = taken.iter().map(|name| session_name(name)).collect();
+    in_use.sort();
+    in_use.dedup();
+    let mut out = Wiring {
+        names_in_use: in_use,
+        ..Wiring::default()
+    };
     for entry in registry.plugins.values() {
         if !entry.active_for(cwd) {
             continue;
@@ -147,7 +174,11 @@ pub fn session_wiring_for(
                 }
             }
             let name = native_name(&entry.name, &server.name);
-            if taken.contains(&name) || out.claude_mcp_servers.contains_key(&name) {
+            // WP-101 fix round 2, item D: compared the way Claude Code reads both names, so a config's
+            // `plugin-a.b-srv` takes the place of the plugin's `plugin-a_b_srv` rather than merging with it.
+            if taken.iter().any(|used| session_name(used) == name)
+                || out.claude_mcp_servers.contains_key(&name)
+            {
                 out.reports.push(Report::new(
                     format!("{}/mcp.json", entry.name),
                     format!(

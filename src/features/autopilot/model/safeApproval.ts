@@ -16,7 +16,7 @@
 import type { ApprovalCall } from "../../sessions/model/session";
 import { walkHeld } from "./credentialPaths";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
-import type { TrustedServers } from "./mcpTrust";
+import { serverTrusted, type TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
 
 /** Why a call isn't one autopilot may allow by itself, or null when it may. */
@@ -291,7 +291,9 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     // A hostile server can name a write tool `get_x` and can call itself `plugin-anything`, so a name alone counts
     // for nothing: only a server in the set Hivra itself wired from an installed plugin does. Every other server's
     // tools wait, however they read, and so does every one of them when the set couldn't be read.
-    if (!trusted || !trusted.has(mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
+    // WP-101 fix round 2, item D: the server part is compared the way Claude Code makes the tool id, so a name a
+    // project's .mcp.json spells differently but Claude Code reads the same is that config's server, not Hivra's.
+    if (!serverTrusted(trusted, mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
     const effect = toolEffect(mcp.tool);
     return effect === "read_only" ? null : `it is an MCP ${effect === "change" ? "change" : effect === "high_impact" ? "high-impact action" : "call autopilot can't place"}, so it waits for Ash`;
   }

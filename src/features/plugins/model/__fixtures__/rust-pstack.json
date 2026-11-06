@@ -326,6 +326,7 @@
         "<TMP>/app-data/plugins/claude/hivra-rpi"
       ],
       "codexMcpServers": {},
+      "namesInUse": [],
       "reports": []
     }
   },
@@ -1136,6 +1137,7 @@
         "<TMP>/app-data/plugins/claude/pstack"
       ],
       "codexMcpServers": {},
+      "namesInUse": [],
       "reports": []
     }
   },
