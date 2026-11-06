@@ -44,7 +44,7 @@ export type GrantRow = {
 };
 
 export type RotateReport = { secret: SecretRow; updated: string[]; leftAlone: string[]; envFiles: string[] };
-export type DeleteReport = { removedGrants: number; removedEnvLines: string[] };
+export type DeleteReport = { removedGrants: number; removedEnvLines: string[]; keychainKept: boolean };
 export type SaveTicket = { request: RequestRow; token: string };
 
 /** `secrets.request`': a handle when the name already resolves, or the open request (a card). */

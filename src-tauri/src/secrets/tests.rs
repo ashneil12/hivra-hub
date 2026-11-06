@@ -474,17 +474,412 @@ fn a_key_that_was_deleted_during_a_run_says_so() {
     let bench = Bench::new();
     bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
     let conn = bench.conn();
-    delete(
+    delete(&bench.vault, &conn, SCOPE_GLOBAL, "stripe-api-key").unwrap();
+    let err = read_value(&bench.vault, SCOPE_GLOBAL, "stripe-api-key").unwrap_err();
+    assert!(err.contains("deleted"), "{err}");
+    assert!(!err.contains(VALUE));
+}
+
+/// A store that holds values as the bench does but refuses every write, as a denied Keychain prompt does.
+struct RefusesWrites(Memory);
+
+impl Vault for RefusesWrites {
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        self.0.read(service, account)
+    }
+    fn write(&self, _: &str, _: &str, _: &str) -> Result<(), String> {
+        Err(crate::platform::secrets::not_saved().to_string())
+    }
+    fn remove(&self, service: &str, account: &str) -> Result<bool, String> {
+        self.0.remove(service, account)
+    }
+}
+
+#[test]
+fn a_store_that_refuses_the_new_value_leaves_the_row_as_it_was() {
+    // The row is claimed first and the value second. If the store refuses, the claim is put back: no row may claim a
+    // value the store never took, and the old value stays the one a matching grant runs.
+    let bench = Bench::new();
+    let row = bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
+    let conn = bench.conn();
+    let store = RefusesWrites(Memory::new());
+    store.0.seed(
+        &service(SCOPE_GLOBAL, "stripe-api-key").unwrap(),
+        ACCOUNT,
+        VALUE,
+    );
+    let err = save_value(
+        &store,
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        None,
+        "sk_live_a_newer_key",
+        bench.now + 1,
+    )
+    .unwrap_err();
+    assert_eq!(err, crate::platform::secrets::not_saved());
+    let kept = get_secret(&conn, SCOPE_GLOBAL, "stripe-api-key")
+        .unwrap()
+        .unwrap();
+    assert_eq!(kept.version, row.version);
+    assert_eq!(kept.last4, row.last4);
+    assert_eq!(kept.label, row.label);
+    // Nothing claims a value that was never written.
+    assert_eq!(
+        read_value(&store.0, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .as_str(),
+        VALUE
+    );
+
+    // The same for a name with no row yet: a refused write leaves no row behind.
+    let err = save_value(
+        &store,
+        &conn,
+        SCOPE_GLOBAL,
+        "another-key",
+        None,
+        "sk_live_a_newer_key",
+        bench.now + 1,
+    )
+    .unwrap_err();
+    assert_eq!(err, crate::platform::secrets::not_saved());
+    assert!(get_secret(&conn, SCOPE_GLOBAL, "another-key")
+        .unwrap()
+        .is_none());
+    assert_eq!(list_secrets(&conn).unwrap().len(), 1);
+}
+
+#[test]
+fn a_row_write_that_fails_never_leaves_a_value_in_the_store() {
+    // The row is the claim. If it cannot be written, for any reason, the store is not given a value that no row names:
+    // a value under an old version would be run by a grant that approved the old one.
+    let bench = Bench::new();
+    let conn = bench.conn();
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_rows BEFORE INSERT ON secrets BEGIN SELECT RAISE(ABORT, 'no'); END;
+         CREATE TRIGGER refuse_changes BEFORE UPDATE ON secrets BEGIN SELECT RAISE(ABORT, 'no'); END;",
+    )
+    .unwrap();
+    assert!(save_value(
         &bench.vault,
         &conn,
         SCOPE_GLOBAL,
         "stripe-api-key",
+        None,
+        VALUE,
+        bench.now
+    )
+    .is_err());
+    assert!(bench.vault.is_empty());
+
+    // The same for a change to an existing row: its version and last four stay, and so does the store's value.
+    conn.execute_batch("DROP TRIGGER refuse_rows; DROP TRIGGER refuse_changes;")
+        .unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        None,
+        VALUE,
         bench.now,
     )
     .unwrap();
-    let err = read_value(&bench.vault, SCOPE_GLOBAL, "stripe-api-key").unwrap_err();
-    assert!(err.contains("deleted"), "{err}");
-    assert!(!err.contains(VALUE));
+    conn.execute_batch(
+        "CREATE TRIGGER refuse_changes BEFORE UPDATE ON secrets BEGIN SELECT RAISE(ABORT, 'no'); END;",
+    )
+    .unwrap();
+    assert!(save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        None,
+        "sk_live_a_newer_key",
+        bench.now + 1
+    )
+    .is_err());
+    assert_eq!(
+        read_value(&bench.vault, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .as_str(),
+        VALUE
+    );
+    assert_eq!(
+        get_secret(&conn, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .unwrap()
+            .last4
+            .as_deref(),
+        Some("IjKl")
+    );
+}
+
+#[test]
+fn a_lost_row_claim_never_writes_the_value() {
+    // Another window took the row (its version moved on) between this window's read and its write. The claim fails
+    // first, so the keychain is never given a value under a version nobody approved.
+    let bench = Bench::new();
+    bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
+    let conn = bench.conn();
+    conn.execute(
+        "UPDATE secrets SET version = version + 1 WHERE scope = ?1 AND name = ?2",
+        params![SCOPE_GLOBAL, "stripe-api-key"],
+    )
+    .unwrap();
+    let row = SecretRow {
+        scope: SCOPE_GLOBAL.into(),
+        name: "stripe-api-key".into(),
+        label: "stripe-api-key".into(),
+        last4: Some("9999".into()),
+        created_at: bench.now,
+        updated_at: bench.now,
+        last_used_at: None,
+        version: 2,
+        approved: Vec::new(),
+        executables: Vec::new(),
+        env_files: Vec::new(),
+        needs_value: false,
+    };
+    // Version 2 is taken now, so a claim at 2 from a read that saw 1 cannot land.
+    let err = write_row(&conn, &row, Some(1)).unwrap_err();
+    assert!(err.contains("another window"), "{err}");
+    assert_eq!(
+        read_value(&bench.vault, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .as_str(),
+        VALUE
+    );
+    assert_eq!(
+        get_secret(&conn, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .unwrap()
+            .last4
+            .as_deref(),
+        Some("IjKl")
+    );
+}
+
+/// A store that looks at the row in the database at the moment it receives a value. The order of the two writes is
+/// the whole of 5.1: a value must never reach the store while the row still names the old version.
+struct WatchesTheRowAtWrite {
+    values: Memory,
+    db: std::path::PathBuf,
+    seen: std::sync::Mutex<Vec<(Option<i64>, Option<String>)>>,
+}
+
+impl WatchesTheRowAtWrite {
+    fn new(db: &std::path::Path) -> Self {
+        Self {
+            values: Memory::new(),
+            db: db.to_path_buf(),
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl Vault for WatchesTheRowAtWrite {
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        self.values.read(service, account)
+    }
+    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        let conn = Connection::open(&self.db).map_err(|e| e.to_string())?;
+        let seen = conn
+            .query_row(
+                "SELECT version, last4 FROM secrets WHERE scope = ?1 AND name = ?2",
+                params![SCOPE_GLOBAL, "stripe-api-key"],
+                |row| {
+                    Ok((
+                        Some(row.get::<_, i64>(0)?),
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        self.seen.lock().unwrap().push(seen.unwrap_or((None, None)));
+        self.values.write(service, account, value)
+    }
+    fn remove(&self, service: &str, account: &str) -> Result<bool, String> {
+        self.values.remove(service, account)
+    }
+}
+
+#[test]
+fn the_value_is_written_only_after_the_row_names_its_version() {
+    // The exact dangerous case from the review: the value changes and the version does not. Reading the row at the
+    // instant the store receives the value proves the order rather than trusting it: with the old keychain-first code
+    // the row still said version 1 (and the old last four) here.
+    let dir = std::env::temp_dir().join(format!("wp92-order-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("monocode.db");
+    let store = SessionStore::open(db.clone()).unwrap();
+    let vault = WatchesTheRowAtWrite::new(&db);
+    const NEW: &str = "sk_live_zzzzzzzzzzzzNew";
+    {
+        let conn = store.lock_conn().unwrap();
+        save_value(
+            &vault,
+            &conn,
+            SCOPE_GLOBAL,
+            "stripe-api-key",
+            None,
+            VALUE,
+            1,
+        )
+        .unwrap();
+        let seen = vault.seen.lock().unwrap().clone();
+        // A name with no row: the row is created (version 1) before the store is given the value.
+        assert_eq!(seen, vec![(Some(1), Some("IjKl".to_string()))]);
+        save_value(&vault, &conn, SCOPE_GLOBAL, "stripe-api-key", None, NEW, 2).unwrap();
+    }
+    let seen = vault.seen.lock().unwrap().clone();
+    // The change: version 2 and the new last four were already in the row when the store was written.
+    assert_eq!(seen.last(), Some(&(Some(2), Some("zNew".to_string()))));
+    assert_eq!(
+        read_value(&vault, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .as_str(),
+        NEW
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_windows_saving_at_once_never_pair_a_new_value_with_an_old_version() {
+    // Two windows, two database connections to one file, each saving a different value for the same name. Whatever
+    // order they finish in, the row's version counts every save and its last four belong to the value the store holds:
+    // no grant for an earlier version can run a later value and be told it was the approved one.
+    let dir = std::env::temp_dir().join(format!("wp92-race-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("monocode.db");
+    let first = SessionStore::open(db.clone()).unwrap();
+    let second = SessionStore::open(db.clone()).unwrap();
+    let vault = Memory::new();
+    const A: &str = "sk_live_aaaaaaaaaaaaAA";
+    const B: &str = "sk_live_bbbbbbbbbbbbBB";
+    const SAVES: i64 = 5;
+    let vault_ref = &vault;
+    std::thread::scope(|scope| {
+        for (store, value) in [(&first, A), (&second, B)] {
+            scope.spawn(move || {
+                for step in 0..SAVES {
+                    let conn = store.lock_conn().unwrap();
+                    save_value(
+                        vault_ref,
+                        &conn,
+                        SCOPE_GLOBAL,
+                        "stripe-api-key",
+                        None,
+                        value,
+                        step,
+                    )
+                    .unwrap();
+                }
+            });
+        }
+    });
+    let conn = first.lock_conn().unwrap();
+    let row = get_secret(&conn, SCOPE_GLOBAL, "stripe-api-key")
+        .unwrap()
+        .unwrap();
+    let held = read_value(&vault, SCOPE_GLOBAL, "stripe-api-key").unwrap();
+    assert_eq!(row.version, SAVES * 2);
+    assert_eq!(row.last4.as_deref(), last4(&held).as_deref());
+    assert!(held.as_str() == A || held.as_str() == B);
+    assert_eq!(list_secrets(&conn).unwrap().len(), 1);
+}
+
+#[test]
+fn rotate_never_brings_back_a_deleted_secret() {
+    let bench = Bench::new();
+    bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
+    let conn = bench.conn();
+    delete(&bench.vault, &conn, SCOPE_GLOBAL, "stripe-api-key").unwrap();
+    let err = rotate(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "sk_live_a_newer_key",
+        bench.now + 1,
+    )
+    .unwrap_err();
+    assert!(err.contains("isn't here any more"), "{err}");
+    assert!(list_secrets(&conn).unwrap().is_empty());
+    assert!(read_value(&bench.vault, SCOPE_GLOBAL, "stripe-api-key").is_err());
+}
+
+struct RefusesRemoval(Memory);
+
+impl Vault for RefusesRemoval {
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        self.0.read(service, account)
+    }
+    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        self.0.write(service, account, value)
+    }
+    fn remove(&self, _: &str, _: &str) -> Result<bool, String> {
+        Err(crate::platform::secrets::not_removed().to_string())
+    }
+}
+
+#[test]
+fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
+    // A delete that cannot remove the keychain item still leaves nothing that names it: no grant can pass and then
+    // fail on a missing value forever. The item is unreachable, and the report says it stayed.
+    let bench = Bench::new();
+    bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
+    let conn = bench.conn();
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        "stripe-api-key",
+        "mono",
+        "mono-1",
+        "stripe",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    let store = RefusesRemoval(Memory::new());
+    store.0.seed(
+        &service(SCOPE_GLOBAL, "stripe-api-key").unwrap(),
+        ACCOUNT,
+        VALUE,
+    );
+    let report = delete(&store, &conn, SCOPE_GLOBAL, "stripe-api-key").unwrap();
+    assert_eq!(report.removed_grants, 1);
+    assert!(report.keychain_kept);
+    assert!(list_secrets(&conn).unwrap().is_empty());
+    assert!(grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        find_grant(
+            &conn,
+            SCOPE_GLOBAL,
+            "stripe-api-key",
+            Some("mono-1"),
+            None,
+            "stripe"
+        )
+        .unwrap(),
+        None
+    );
+    assert_eq!(store.0.len(), 1);
+}
+
+#[test]
+fn delete_says_nothing_about_the_keychain_when_the_item_is_gone() {
+    let bench = Bench::new();
+    bench.save(SCOPE_GLOBAL, "stripe-api-key", VALUE);
+    let conn = bench.conn();
+    let report = delete(&bench.vault, &conn, SCOPE_GLOBAL, "stripe-api-key").unwrap();
+    assert!(!report.keychain_kept);
+    assert!(bench.vault.is_empty());
 }
 
 struct Denied;
@@ -585,14 +980,7 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         bench.now,
     )
     .unwrap();
-    let report = delete(
-        &bench.vault,
-        &conn,
-        SCOPE_GLOBAL,
-        "stripe-api-key",
-        bench.now,
-    )
-    .unwrap();
+    let report = delete(&bench.vault, &conn, SCOPE_GLOBAL, "stripe-api-key").unwrap();
     assert_eq!(report.removed_grants, 2);
     assert!(grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
         .unwrap()

@@ -270,7 +270,7 @@ pub fn secrets_delete<R: tauri::Runtime>(
     name: String,
 ) -> Result<DeleteReport, String> {
     let conn = store.lock_conn()?;
-    let report = delete(vault(), &conn, &scope, &name, now_millis())?;
+    let report = delete(vault(), &conn, &scope, &name)?;
     let _ = app.emit(CHANGED, json!({}));
     Ok(report)
 }

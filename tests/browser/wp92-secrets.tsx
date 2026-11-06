@@ -163,7 +163,7 @@ const tauri = installFakeTauri("secrets-fixture", (command, args) => {
     case "secrets_delete": {
       const at = rows.findIndex((row) => row.scope === args.scope && row.name === args.name);
       if (at >= 0) rows.splice(at, 1);
-      return { removedGrants: 1, removedEnvLines: [] };
+      return { removedGrants: 1, removedEnvLines: [], keychainKept: false };
     }
     case "secrets_reveal":
       return REVEALED;

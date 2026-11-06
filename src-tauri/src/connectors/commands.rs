@@ -226,13 +226,8 @@ impl Service {
             ) {
                 // A partial move would leave copies in two places: take back the ones this attempt saved.
                 for saved in &names {
-                    let _ = crate::secrets::delete(
-                        vault,
-                        conn,
-                        crate::secrets::SCOPE_GLOBAL,
-                        saved,
-                        now,
-                    );
+                    let _ =
+                        crate::secrets::delete(vault, conn, crate::secrets::SCOPE_GLOBAL, saved);
                 }
                 return Err(why);
             }
@@ -243,8 +238,7 @@ impl Service {
         }
         if let Err(why) = self.store.put(id, &login) {
             for name in &names {
-                let _ =
-                    crate::secrets::delete(vault, conn, crate::secrets::SCOPE_GLOBAL, name, now);
+                let _ = crate::secrets::delete(vault, conn, crate::secrets::SCOPE_GLOBAL, name);
             }
             return Err(why);
         }
@@ -622,14 +616,8 @@ mod tests {
         assert!(err.contains("already uses the vault"), "{err}");
 
         // Deleting the vault key is what stops the connector; the login still names it.
-        crate::secrets::delete(
-            &vault,
-            &conn,
-            crate::secrets::SCOPE_GLOBAL,
-            "github-token",
-            2_000,
-        )
-        .unwrap();
+        crate::secrets::delete(&vault, &conn, crate::secrets::SCOPE_GLOBAL, "github-token")
+            .unwrap();
         let err = prepare_with_vault(&args, &svc.dir, memory.as_ref(), &vault).unwrap_err();
         assert!(err.contains("isn't saved any more"), "{err}");
         std::fs::remove_dir_all(svc.dir).unwrap();

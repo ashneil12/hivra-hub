@@ -550,7 +550,12 @@ function DeleteButton({
         className={BUTTON}
         onClick={async () => {
           try {
-            await deleteSecret(row.scope, row.name);
+            const report = await deleteSecret(row.scope, row.name);
+            if (report.keychainKept) {
+              setError(
+                `That key is gone from Hivra, but your Mac's keychain wouldn't remove the item. Remove "${row.label}" in Keychain Access to be sure it is gone.`,
+              );
+            }
             onDone();
           } catch {
             setError("That key wasn't deleted. Try again.");

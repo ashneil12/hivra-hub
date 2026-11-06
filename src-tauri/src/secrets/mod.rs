@@ -476,7 +476,9 @@ fn write_row(conn: &Connection, row: &SecretRow, expected: Option<i64>) -> Resul
     }
 }
 
-/// Save a value: the Keychain first, then the row, compare-and-swap on `version`.
+/// Save a value: the row's claim first (compare-and-swap on `version`), then the Keychain. The claim goes first so a
+/// lost race never leaves the store holding a value under a version nobody approved; a refused store write puts the
+/// claim back, so no row ever names a value the store does not hold.
 pub fn save_value(
     vault: &dyn Vault,
     conn: &Connection,
@@ -487,6 +489,19 @@ pub fn save_value(
     now: i64,
 ) -> Result<SecretRow, String> {
     let _guard = write_lock();
+    save_value_locked(vault, conn, scope, name, label, value, now)
+}
+
+/// `save_value` with the write lock already held.
+fn save_value_locked(
+    vault: &dyn Vault,
+    conn: &Connection,
+    scope: &str,
+    name: &str,
+    label: Option<&str>,
+    value: &str,
+    now: i64,
+) -> Result<SecretRow, String> {
     let name = normalize_name(name)?;
     if !valid_scope(scope) {
         return Err("That key's scope is unknown.".into());
@@ -498,8 +513,6 @@ pub fn save_value(
     };
     let label = label_text(label, &name)?;
     let service = service(scope, &name)?;
-    // The keychain first: a row without a value would claim a key it doesn't have.
-    vault.write(&service, ACCOUNT, value.expose())?;
     let existing = get_secret(conn, scope, &name)?;
     let row = SecretRow {
         scope: scope.to_string(),
@@ -516,7 +529,41 @@ pub fn save_value(
         needs_value: false,
     };
     write_row(conn, &row, existing.as_ref().map(|r| r.version))?;
+    if let Err(why) = vault.write(&service, ACCOUNT, value.expose()) {
+        unclaim_row(conn, &row, existing.as_ref())?;
+        return Err(why);
+    }
     Ok(row)
+}
+
+/// Put a claimed row back as it was, after the store refused the value. The version is the compare-and-swap, so a row
+/// something else has changed since is left alone.
+fn unclaim_row(
+    conn: &Connection,
+    claimed: &SecretRow,
+    before: Option<&SecretRow>,
+) -> Result<(), String> {
+    match before {
+        None => conn.execute(
+            "DELETE FROM secrets WHERE scope = ?1 AND name = ?2 AND version = ?3",
+            params![claimed.scope, claimed.name, claimed.version],
+        ),
+        Some(before) => conn.execute(
+            "UPDATE secrets SET label = ?3, last4 = ?4, updated_at = ?5, version = ?6
+             WHERE scope = ?1 AND name = ?2 AND version = ?7",
+            params![
+                claimed.scope,
+                claimed.name,
+                before.label,
+                before.last4,
+                before.updated_at,
+                before.version,
+                claimed.version
+            ],
+        ),
+    }
+    .map(|_| ())
+    .map_err(|e| e.to_string())
 }
 
 /// Rename changes the label only: the slug stays, so every agent and grant that names it keeps working.
@@ -544,7 +591,7 @@ pub fn rename(
 }
 
 /// Rotate writes a new value to the same item and bumps `version`; grants stay in place. A run whose grant names the
-/// old version is refused.
+/// old version is refused. A row deleted while the rotate was in flight stays deleted: rotate never recreates one.
 pub fn rotate(
     vault: &dyn Vault,
     conn: &Connection,
@@ -553,10 +600,12 @@ pub fn rotate(
     value: &str,
     now: i64,
 ) -> Result<SecretRow, String> {
-    let label = get_secret(conn, scope, &normalize_name(name)?)?
-        .map(|row| row.label)
-        .unwrap_or_default();
-    save_value(vault, conn, scope, name, Some(&label), value, now)
+    let _guard = write_lock();
+    let name = normalize_name(name)?;
+    let label = get_secret(conn, scope, &name)?
+        .ok_or_else(|| "That key isn't here any more.".to_string())?
+        .label;
+    save_value_locked(vault, conn, scope, &name, Some(&label), value, now)
 }
 
 /// Marque a secret as used, on its own, never touching `version`.
@@ -574,23 +623,48 @@ pub fn touch_used(conn: &Connection, scope: &str, name: &str, now: i64) -> Resul
 pub struct DeleteReport {
     pub removed_grants: usize,
     pub removed_env_lines: Vec<String>,
+    /// The store refused to remove the item. Nothing in Hivra names it any more, but the value is still in the
+    /// person's keychain and they have to remove it themselves.
+    pub keychain_kept: bool,
 }
 
-/// Revoke: the keychain item, the row, every grant, and the lines it wrote in `.env` files that still hold its value.
+/// Revoke: the row, every grant and every `.env` record first, in one transaction, then the `.env` lines that still
+/// hold its value, then the keychain item. Anything that fails part way leaves nothing in Hivra that could name a
+/// value it can no longer read.
 pub fn delete(
     vault: &dyn Vault,
     conn: &Connection,
     scope: &str,
     name: &str,
-    now: i64,
 ) -> Result<DeleteReport, String> {
     let _guard = write_lock();
     let name = normalize_name(name)?;
     let service = service(scope, &name)?;
+    // Read before any state changes: the lines can only be matched by the value itself.
     let value = vault.read(&service, ACCOUNT)?;
-    vault.remove(&service, ACCOUNT)?;
+    let writes = env_writes_for(conn, scope, &name)?;
     let mut report = DeleteReport::default();
-    for write in env_writes_for(conn, scope, &name)? {
+    {
+        let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+        report.removed_grants = tx
+            .execute(
+                "DELETE FROM secret_grants WHERE scope = ?1 AND name = ?2",
+                params![scope, name],
+            )
+            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM secret_env_writes WHERE scope = ?1 AND name = ?2",
+            params![scope, name],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM secrets WHERE scope = ?1 AND name = ?2",
+            params![scope, name],
+        )
+        .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+    }
+    for write in writes {
         if env_file::remove_line(
             std::path::Path::new(&write.worktree),
             &write.env_name,
@@ -599,23 +673,10 @@ pub fn delete(
             report.removed_env_lines.push(write.worktree.clone());
         }
     }
-    report.removed_grants = conn
-        .execute(
-            "DELETE FROM secret_grants WHERE scope = ?1 AND name = ?2",
-            params![scope, name],
-        )
-        .map_err(|e| e.to_string())?;
-    conn.execute(
-        "DELETE FROM secret_env_writes WHERE scope = ?1 AND name = ?2",
-        params![scope, name],
-    )
-    .map_err(|e| e.to_string())?;
-    conn.execute(
-        "DELETE FROM secrets WHERE scope = ?1 AND name = ?2",
-        params![scope, name],
-    )
-    .map_err(|e| e.to_string())?;
-    let _ = now;
+    match vault.remove(&service, ACCOUNT) {
+        Ok(_) => {}
+        Err(_) => report.keychain_kept = true,
+    }
     Ok(report)
 }
 
@@ -878,8 +939,9 @@ pub fn begin_save(conn: &Connection, id: &str, now: i64) -> Result<(RequestRow, 
     Ok((row, token))
 }
 
-/// The card's Save. Writes the Keychain first, then marks the request filled with its token, and returns only the
-/// handle.
+/// The card's Save. Takes the request's token first (the compare-and-swap), then writes the value, and returns only the
+/// handle. Taking it first means a lost race never changes the keychain; if the value write then fails, the request is
+/// put back to `saving` so the card's Save can be tried again.
 pub fn finish_save(
     vault: &dyn Vault,
     conn: &Connection,
@@ -889,15 +951,11 @@ pub fn finish_save(
     value: &str,
     now: i64,
 ) -> Result<SecretRow, String> {
+    let _guard = write_lock();
     let row = get_request(conn, id)?.ok_or_else(|| "That card is no longer open.".to_string())?;
     if row.state != SAVING {
         return Err("That key was already saved.".into());
     }
-    // The token is the compare-and-swap: a second answer, or a stale one, never writes.
-    if !same_token(conn, id, token)? {
-        return Err("That key was already saved.".into());
-    }
-    let saved = save_value(vault, conn, &row.scope, &row.name, label, value, now)?;
     let changed = conn
         .execute(
             "UPDATE secret_requests SET state = 'filled', answer_token = NULL, updated_at = ?3
@@ -908,7 +966,18 @@ pub fn finish_save(
     if changed == 0 {
         return Err("That key was already saved.".into());
     }
-    Ok(saved)
+    match save_value_locked(vault, conn, &row.scope, &row.name, label, value, now) {
+        Ok(saved) => Ok(saved),
+        Err(why) => {
+            // The card still holds the token, so its next Save must be able to try again.
+            let _ = conn.execute(
+                "UPDATE secret_requests SET state = 'saving', answer_token = ?2, updated_at = ?3
+                 WHERE id = ?1 AND state = 'filled'",
+                params![id, token, now],
+            );
+            Err(why)
+        }
+    }
 }
 
 fn same_token(conn: &Connection, id: &str, token: &str) -> Result<bool, String> {
