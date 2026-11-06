@@ -2,6 +2,11 @@
 // fm-watch.sh, MIT, Copyright (c) 2026 Kun Chen; Raven's once-per-stretch stall notice; PandaCode's silence watchdog,
 // ideas only).
 //
+// WP-102: the sleep rule (`SLEEP_TICKS`, `sleepGap`) is translated from OpenMausBot's server/turn-watchdog.ts at
+// e39d9b0d7 and da0309f6c, Apache-2.0, Copyright 2026 Milind Soni and OpenMausBot contributors. Changed: the gap is
+// measured by the caller's look interval, and one interval of it is kept as the tick's own; the rule is a small pure
+// function here so the headless watcher and the half-minute look share it.
+//
 // Plain code watches every crew and wakes a first mate only when something needs its judgment. Everything else updates
 // records and the UI, never the model. It is headless (no React, DOM or Tauri; watcher.headless.test.ts walks its
 // imports), so WP-60 can run it on a remote host, and it never calls a model, starts a CLI or spends a token.
