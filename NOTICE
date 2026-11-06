@@ -232,6 +232,15 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/local_services/
   base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as emulate's pinned Node package and are not copied (WP-90).
 
+- T3 Code's hidden-character pattern
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/sessions/model/hiddenText.ts, src-tauri/src/pr_watch/wake.rs
+  sanitizeLinkedPrompt from packages/shared/src/promptLinks.ts translated to TypeScript and to Rust,
+  with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts
+  of that file are not copied. A zero-width joiner stays only between two emoji, as in the original.
+
 - oh-my-hermes's dag-ulw planner
   Source: https://github.com/rlaope/oh-my-hermes
   License: MIT

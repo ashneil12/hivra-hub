@@ -475,6 +475,14 @@
       "how": "WP-90: base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as a pinned npm package and are not copied."
     },
     {
+      "name": "T3 Code's hidden-character pattern",
+      "url": "https://github.com/pingdotgg/t3code",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 T3 Tools Inc.",
+      "where": "src/features/sessions/model/hiddenText.ts, src-tauri/src/pr_watch/wake.rs",
+      "how": "sanitizeLinkedPrompt from packages/shared/src/promptLinks.ts translated to TypeScript and to Rust, with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts of that file are not copied. A zero-width joiner stays only between two emoji, as in the original."
+    },
+    {
       "name": "oh-my-hermes's dag-ulw planner",
       "url": "https://github.com/rlaope/oh-my-hermes",
       "licence": "MIT",
