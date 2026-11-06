@@ -1933,3 +1933,27 @@ fn wp92_an_export_carries_the_index_and_no_vault_value() {
         .unwrap();
     assert_eq!(grants, 0);
 }
+
+/// WP-92: the export's final scan refuses the whole export when a planted pattern survives the scrubber. A token
+/// used as a JSON key is not a value the scrubber rewrites, so the net has to catch it.
+#[test]
+fn wp92_the_final_scan_refuses_a_planted_pattern() {
+    let source_dir = TestDir::new("wp92-final-scan");
+    let out = TestDir::new("wp92-final-scan-out");
+    let source = env_for(&source_dir.0);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.files.insert(
+        "setup/setup.json".to_string(),
+        json!({ GITHUB: 1 }).to_string(),
+    );
+    request.memory = None;
+    request.workspace = false;
+
+    let refused = export(&source, &request).unwrap_err();
+    assert!(
+        refused.contains("still holds something that looks like a secret"),
+        "{refused}"
+    );
+    assert!(!refused.contains(GITHUB), "{refused}");
+}
