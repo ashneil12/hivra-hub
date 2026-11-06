@@ -45,6 +45,28 @@ test("memory can be searched, edited, deleted, and a proposal accepted or reject
   await expect(page.getByText("Uses tabs")).toHaveCount(0);
 });
 
+test("every memory says where it came from, in one plain line", async ({ page }) => {
+  await page.goto("/tests/browser/wp51-memory.html");
+  await page.getByRole("button", { name: "Try again" }).click();
+  await expect(page.getByText("Always use pnpm", { exact: true })).toBeVisible();
+
+  // Said by the person, in their own words, written by the rules.
+  await expect(page.locator("[data-kind='add']", { hasText: "Always use pnpm" }).locator("[data-provenance]")).toHaveText(
+    "Said by you on 28 Feb: 'always use pnpm, never npm' (written by the rules).",
+  );
+  // From the cheap model they picked.
+  await expect(page.locator("[data-kind='add']", { hasText: "Prefers two spaces" }).locator("[data-provenance]")).toHaveText(
+    "Proposed from a chat on 15 Jan by a cheap model you picked.",
+  );
+  // From a chat, naming the engine that wrote it.
+  await expect(page.locator("[data-kind='add']", { hasText: "Reviews happen on Friday" }).locator("[data-provenance]")).toHaveText(
+    "Proposed from a chat on 1 Mar by Codex.",
+  );
+  // Every memory has one, and it is short enough to read.
+  await expect(page.locator("[data-id] [data-provenance]")).toHaveCount(6);
+  for (const line of await page.locator("[data-id] [data-provenance]").allTextContents()) expect(line.length).toBeLessThan(160);
+});
+
 test("the memory screen can say why the last turn recalled what it did", async ({ page }) => {
   await page.goto("/tests/browser/wp51-memory.html");
   await page.getByRole("button", { name: "Try again" }).click();

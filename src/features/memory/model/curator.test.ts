@@ -176,4 +176,30 @@ describe("curateTurn", () => {
     expect(raced.doc.items).toHaveLength(1);
     expect(raced.outcome.status).toBe("none");
   });
+
+  it("keeps the tier that wrote the memory, on every item it writes", async () => {
+    const reply = JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" });
+    for (const via of ["rules", "cheap", "crew"] as const) {
+      const result = await curateTurn(freshDoc(), ctx({ via }), ask(reply));
+      expect(result.doc.items[0].via, via).toBe(via);
+    }
+    // A turn with no tier, or one this build does not know, still keeps the fact and says nothing about the tier.
+    expect((await curateTurn(freshDoc(), ctx({ turnId: "no-tier" }), ask(reply))).doc.items[0].via).toBeUndefined();
+    const unknown = await curateTurn(freshDoc(), ctx({ turnId: "bad-tier", via: "model" as unknown as "crew" }), ask(reply));
+    expect(unknown.doc.items[0]).toMatchObject({ text: "Likes small commits" });
+    expect(unknown.doc.items[0].via).toBeUndefined();
+    // A skill and an update carry it too.
+    const skill = JSON.stringify({
+      kind: "skill",
+      name: "Reviewing a diff",
+      lesson: "Read the diff before commenting.",
+      evidence: "I like small commits",
+    });
+    expect((await curateTurn(freshDoc(), ctx({ via: "cheap" }), ask(skill))).doc.items[0].via).toBe("cheap");
+    const first = await curateTurn(freshDoc(), ctx({ via: "rules" }), ask(reply));
+    const id = first.doc.items[0].id;
+    const update = JSON.stringify({ kind: "update", targetId: id, text: "Likes tiny commits", evidence: "I like small commits" });
+    const changed = await curateTurn(first.doc, ctx({ turnId: "turn-2", via: "crew" }), ask(update));
+    expect(changed.doc.items.find((item) => item.action === "update")?.via).toBe("crew");
+  });
 });

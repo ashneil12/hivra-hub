@@ -7,8 +7,10 @@ import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
 import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
+import { pausedNow } from "../model/memoryBudget";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
+import { MemoryProvenance } from "./MemoryProvenance";
 import {
   acceptImport,
   acceptItem,
@@ -185,7 +187,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
           className="rounded-md border border-content/15 bg-transparent px-2 py-1"
         />
       </label>
-      {doc ? <MemoryHealthCard health={healthOf(doc, now)} now={now} /> : null}
+      {doc ? <MemoryHealthCard health={healthOf(doc, now)} now={now} paused={pausedNow(now)} /> : null}
       {failed && !doc ? (
         <div className="flex flex-col gap-2">
           <p>Memory could not be read this time.</p>
@@ -204,6 +206,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
             <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : stateLabel(item.state)}</p>
             <p data-source>{item.source.label}</p>
             {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
+            <MemoryProvenance item={item} now={now} />
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">
                 <textarea aria-label="Memory text" value={editing.text} onChange={(event) => setEditing({ id: item.id, text: event.target.value })} />

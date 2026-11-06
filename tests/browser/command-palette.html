@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Command palette fixture</title>
+    <style>
+      :root {
+        --theme-hue: 240;
+        --theme-saturation: 0%;
+        --theme-dark-lightness: 9%;
+        --background-lightness: var(--theme-dark-lightness);
+        --color-background-base: hsl(var(--theme-hue) var(--theme-saturation) var(--background-lightness));
+      }
+      html, body { margin: 0; background: var(--color-background-base); color: white; }
+    </style>
+  </head>
+  <body>
+    <div id="root" style="width: 960px; padding: 16px"></div>
+    <script type="module" src="./command-palette.tsx"></script>
+  </body>
+</html>
