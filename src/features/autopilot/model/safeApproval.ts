@@ -16,6 +16,7 @@
 import type { ApprovalCall } from "../../sessions/model/session";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import type { TrustedServers } from "./mcpTrust";
+import { shellWords } from "./shellWords";
 
 /** Why a call isn't one autopilot may allow by itself, or null when it may. */
 export type SafeVerdict = string | null;
@@ -82,52 +83,26 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
 /** Chaining, substitution, redirection, subshells, a newline: never allowed by itself, quoted or not. */
 const SHELL_META = /[;&|`$<>()\n\r]/;
 
-/** Characters a word may carry unquoted. Wildcards, braces, ^ and # can expand into other words (a file named
- * "--pre=sh" would become an option), so they must be quoted to count. */
-const PLAIN = /[A-Za-z0-9_\-./:=,@%+~]/;
+/** Why a command it can't read waits, rather than throwing. */
+const UNREADABLE_COMMAND = "it can't be read plainly (a wildcard, an open quote or an expansion)";
+
+/** What a shell call would run: its words, or why it can't be read that way. */
+export type CommandWords = { words: readonly string[] } | { why: string };
 
 /**
- * The words the shell would pass, with quotes and backslashes as sh reads them. Null when it can't be read plainly: an
- * unclosed quote, or an unquoted character that could expand (a wildcard, a brace, ^ or #).
+ * The words a shell call runs with, or why not: undefined when the call isn't a shell command. The red list is judged
+ * on these words, so a quoted path reads as the path it is (`cat ~/.ne"t"rc` names the netrc).
  */
-export function shellWords(command: string): string[] | null {
-  const words: string[] = [];
-  let word = "";
-  let inWord = false;
-  for (let i = 0; i < command.length; i++) {
-    const c = command[i];
-    if (c === "'") {
-      const end = command.indexOf("'", i + 1);
-      if (end < 0) return null;
-      word += command.slice(i + 1, end);
-      inWord = true;
-      i = end;
-    } else if (c === '"') {
-      let j = i + 1;
-      for (; j < command.length && command[j] !== '"'; j++) {
-        if (command[j] === "\\" && j + 1 < command.length && '"\\'.includes(command[j + 1])) j++;
-        word += command[j];
-      }
-      if (j >= command.length) return null;
-      inWord = true;
-      i = j;
-    } else if (c === "\\") {
-      if (i + 1 >= command.length) return null;
-      word += command[++i];
-      inWord = true;
-    } else if (c === " " || c === "\t") {
-      if (inWord) words.push(word);
-      word = "";
-      inWord = false;
-    } else if (PLAIN.test(c)) {
-      word += c;
-      inWord = true;
-    } else {
-      return null;
-    }
+export function bashWords(call: ApprovalCall | undefined): CommandWords | undefined {
+  if (!call || typeof call.tool !== "string" || !SHELL_TOOLS.has(call.tool)) return undefined;
+  if (typeof call.command !== "string") return { why: "it doesn't say what it runs" };
+  if (SHELL_META.test(call.command)) return { why: "it chains, substitutes or redirects" };
+  try {
+    const words = shellWords(call.command.trim());
+    return words?.length ? { words } : { why: UNREADABLE_COMMAND };
+  } catch {
+    return { why: UNREADABLE_COMMAND };
   }
-  if (inWord) words.push(word);
-  return words;
 }
 
 const has = (args: readonly string[], ...flags: string[]) =>
@@ -262,8 +237,6 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
 };
 
 /** Why a command it can't read waits, rather than throwing. */
-const UNREADABLE_COMMAND = "it can't be read plainly (a wildcard or an open quote)";
-
 function safeCommandInner(command: string): SafeVerdict {
   if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";

@@ -1,7 +1,8 @@
 // What autopilot allows by itself on a tool approval: reads, a short list of checks with nothing chained or expanded,
 // and edits inside the chat's own folder. Everything else waits for Ash.
 import { describe, expect, it } from "vitest";
-import { editInside, editStaysInside, safeCall, safeCommand, shellWords, type Locate } from "./safeApproval";
+import { editInside, editStaysInside, safeCall, safeCommand, type Locate } from "./safeApproval";
+import { shellWords } from "./shellWords";
 
 const FOLDER = "/Users/ash/Worktrees/hub-x";
 

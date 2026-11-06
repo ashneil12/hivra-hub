@@ -10,9 +10,9 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
 import type { TrustedServers } from "./mcpTrust";
-import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
+import { callText, redListCategory, redListInWords, redVerdict, type RedCategory } from "./redList";
 import { questionVeto, reviewVeto } from "./reviewerRules";
-import { safeCall } from "./safeApproval";
+import { bashWords, safeCall } from "./safeApproval";
 import { forUser } from "../../hub/model/userName";
 
 export type CallVerdict =
@@ -99,6 +99,15 @@ export function approvalVerdict(
     if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
     const red = redListCategory(text);
     if (red) return { kind: "held", red, what, why: "it touches the red list" };
+    // WP-101 fix round 2, item A: a shell command is also read as the words the shell would pass. Quotes and
+    // backslashes can hide a path from the raw text (`cat ~/.ne"t"rc`), so the red list reads the real words, and a
+    // command it can't read that way waits here rather than reaching safeCall.
+    const words = bashWords(block.approval?.call);
+    if (words && "why" in words) return { kind: "held", red: null, what, why: words.why };
+    if (words) {
+      const fromWords = redListInWords(words.words);
+      if (fromWords) return { kind: "held", red: fromWords, what, why: "it touches the red list" };
+    }
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
     // (reviewerRules.ts). This can only hold, never allow.
     const reviewed = reviewVeto({

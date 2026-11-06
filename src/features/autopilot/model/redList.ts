@@ -139,6 +139,16 @@ export function redListCategory(text: string): RedCategory | null {
 }
 
 /**
+ * The first red-list category the words of a command touch, or null. A command is judged on the words the shell would
+ * pass (shellWords.ts), so a quoted path reads as the path it is: `cat ~/.ne"t"rc` names the netrc, and
+ * `cat ~/.s''sh/config` names the ssh config. Each word is read on its own as well as in a line, since a quote can
+ * join two pieces into one word whose characters are all the shell would pass.
+ */
+export function redListInWords(words: readonly string[]): RedCategory | null {
+  return redListCategory(words.join(" "));
+}
+
+/**
  * The red-list verdict for a call: the agent's own mark, else what the text says. An agent can make a call red; it can
  * never make a red call plain ("red":"none" is ignored when the text says otherwise).
  */

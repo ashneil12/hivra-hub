@@ -91,6 +91,34 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(publish, FOLDER)).toMatchObject({ kind: "held", red: null, why: "This publishes something for others to see, so it waits for you." });
   });
 
+  it("reads a command as the shell reads it, so quotes can't hide a login file (WP-101 fix round 2, item A)", () => {
+    // A quoted piece joins the word it touches: the raw text never holds ".netrc", the word does.
+    for (const command of [
+      `cat ~/.ne"t"rc`,
+      "cat ~/.ne't'rc",
+      "cat ~/.n\\etrc",
+      "cat .e\"n\"v",
+      "cat '.env'",
+      "cat .'env'",
+      "cat ~/.aws/cred''entials",
+      "cat ~/.s''sh/config",
+      "cat ~/.gnu''pg/secring.gpg",
+      "cat ~/.kube/co''nfig",
+      "cat ~/.docker/con''fig.json",
+      "cat ~/.npm''rc",
+      "cat ~/\".netrc\"",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held", red: "credentials" });
+    // An option hidden the same way is still the option it is.
+    expect(approvalVerdict(bash("rg --p\\re=sh foo"), FOLDER)).toMatchObject({ kind: "held", red: null });
+    // A word it can't read waits, whatever it looks like (the red list may still name it first).
+    for (const command of ["cat $HOME/.ssh/id_rsa", "cat ~/.ssh/id_r*sa", "ls ~", "ls {a,b}", "cat \"unclosed", "cat x\ny"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    // The ordinary reads still pass.
+    for (const command of ["rg \"foo bar\" src", "grep -n 'TODO' README.md", 'cat "src/my file.ts"', "ls -la"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+  });
+
   it("holds what the red list's words miss, anything too long to read whole, and a call that doesn't say what it runs", () => {
     for (const command of [`python3 -c "import shutil; shutil.rmtree('backups')"`, "echo cm0gLXJmIH4vZGF0YQ== | base64 -d | sh", "gh pr merge 12 --admin"])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held", red: null });
