@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MonoSessionCompletionResult } from "./monoSessionCompletion";
-import { gateAsk, gateDue, gateFailedResult, gateVerdict, GATE_TRIES, signedOffSince, type GateRun, type GateRunner } from "./workerGate";
+import { gateAsk, gateDue, gateFailedResult, gateVerdict, GATE_TRIES, signedOffSince, workerGateWord, type GateRun, type GateRunner } from "./workerGate";
 
 const done = (over: Partial<MonoSessionCompletionResult> = {}): MonoSessionCompletionResult =>
   ({
@@ -96,6 +96,33 @@ describe("the seam: a fake runner through the two tries", () => {
       verdicts.push(gateVerdict(run, failures));
     }
     expect(verdicts).toEqual(["resend", "deliver"]);
+  });
+});
+
+describe("WP-91: the check's word for a task", () => {
+  const input = { projectId: "tally", checkout: "/x", signedOff: false };
+  it("is WP-40's word: passed, failed, or no check at all", async () => {
+    expect(await workerGateWord(async () => passed, input)).toBe("passed");
+    expect(await workerGateWord(async () => failed, input)).toBe("failed");
+    // A project with no check configured: nothing ran, and the task records no word rather than a pass.
+    expect(await workerGateWord(async () => null, input)).toBeNull();
+  });
+  it("reads a check that could not run as notRun, never as no check", async () => {
+    const thrown: GateRunner = async () => {
+      throw new Error("The worker's checkout isn't there.");
+    };
+    expect(await workerGateWord(thrown, input)).toBe("notRun");
+  });
+  it("is asked on a task's own copy by the orchestrator, and the app passes the project and that checkout", () => {
+    const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
+    expect(app).toMatch(/gateWorker: async \(run, task\) => \{\n\s*const checkout = task\.workspace\?\.checkoutCwd \?\? orchestrationCheckoutCwd\(run\);/);
+    expect(app).toMatch(/workerGateWord\(runTaskGate, \{/);
+    const orchestrator = fs.readFileSync(
+      path.resolve(__dirname, "../../orchestration/model/orchestration.ts"),
+      "utf8",
+    );
+    // Once its turn is in, before anything can be accepted; the failed-turn case never asks.
+    expect(orchestrator).toMatch(/if \(this\.host\?\.gateWorker && outcome\.status === "completed"\) \{/);
   });
 });
 

@@ -216,6 +216,13 @@ Third-party components Hivra adds:
   Used in: src-tauri/src/outside
   Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored.
 
+- oh-my-hermes's dag-ulw planner
+  Source: https://github.com/rlaope/oh-my-hermes
+  License: MIT
+  Copyright (c) 2026 oh-my-hermes contributors
+  Used in: src-tauri/src/goal_graph/
+  dag_core.py translated line by line to Rust in topology.rs (WP-91), with test_dag_core.py's cases ported. The record rules in dag_run.py — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — are translated into record.rs, and the plan-time check into plan.rs. Read and not copied: tools/dag_tool.py, dag_scope_guard.py, dag_define_gate.py (hooks for a single-workspace model Hivra does not have) and the TUI, which informed the view's folding and wording only. One rule differs: dag-ulw treats two nodes as ordered only when one names the other directly, where Hivra refuses only a pair that can really run at the same time.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

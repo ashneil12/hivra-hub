@@ -480,7 +480,7 @@
       "licence": "MIT",
       "copyright": "Copyright (c) 2026 oh-my-hermes contributors",
       "where": "src-tauri/src/goal_graph/",
-      "how": "Planned for WP-91, code not copied yet: dag_core.py and dag_run.py translated to Rust with their tests at commit 2676c33. The Hermes-only tool, scope hook and TUI are not copied."
+      "how": "dag_core.py translated line by line to Rust (topology.rs) with test_dag_core.py's cases ported, and dag_run.py's record rules — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — translated into record.rs and plan.rs, at commit 2676c33 (WP-91). The Hermes-only tool, scope hook and TUI are not copied. One rule differs: Hivra refuses only a pair that can really run at the same time, where dag-ulw treats two nodes as ordered only when one names the other directly."
     }
   ]
 }
