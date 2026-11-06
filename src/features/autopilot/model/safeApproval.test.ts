@@ -270,8 +270,14 @@ describe("MCP tools", () => {
   const wired = new Set([SERVER]);
 
   it("allows a read from a server the person installed as a plugin", () => {
-    for (const tool of ["get_page", "list_issues", "search_docs", "search_issues"])
+    for (const tool of ["get_status", "list_issues", "search_issues", "get_issue", "list_pull_requests", "list_branches", "get_commit"])
       expect(safeCall({ tool: plugin(tool) }, FOLDER, wired), tool).toBeNull();
+  });
+
+  it("holds a page, URL, file or path tool whose arguments the request never carries (fix round 2, item E)", () => {
+    // The same trusted server; a name like this can only be judged once the call says what it is pointed at.
+    for (const tool of ["get_page", "read_page", "search_docs", "read_file", "get_file", "list_files", "get_url", "fetch_url", "query", "run_sql", "run_shell"])
+      expect(safeCall({ tool: plugin(tool) }, FOLDER, wired), tool).not.toBeNull();
   });
 
   it("holds a plugin server's tool that changes anything, or that can't be placed", () => {

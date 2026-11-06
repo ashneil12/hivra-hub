@@ -59,7 +59,9 @@ describe("a tool approval under autopilot", () => {
   it("allows a read-only MCP call from an installed plugin's server, and nothing else from MCP", () => {
     const mcp = (tool: string) => ({ text: "", tool: { title: tool, kind: "other" }, approval: { requestId: 6, call: { tool } } });
     const wired = new Set(["plugin-agent_plugins-notion", "plugin-agent_plugins-blog"]);
-    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_issue"), FOLDER, undefined, wired)).toMatchObject({ kind: "allow" });
+    // A page's arguments decide what it fetches, and the request carries none (fix round 2, item E).
+    expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });
     expect(approvalVerdict(mcp("mcp__plugin-agent_plugins-notion__create_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });
     // A server Hivra didn't install waits even for a name that reads as a read.
     expect(approvalVerdict(mcp("mcp__notion__get_page"), FOLDER, undefined, wired)).toMatchObject({ kind: "held", red: null });

@@ -102,6 +102,38 @@ function namesASecret(tokens: readonly string[] | null): boolean {
   return !!tokens?.some((word) => SENSITIVE_TOKENS.has(word));
 }
 
+// ---- what the arguments, not the name, decide (WP-101 fix round 2, item E) -----------------------------------------
+//
+// The approval request carries no arguments, so these rules judge a name alone. A name that names a page, a URL, a
+// file, a path, a shell or SQL can only be judged once the call says which one it is given: `get_page` fetches whatever
+// URL it is handed, and a URL can carry data out; `read_file` reads whatever path it is handed. Since nothing here
+// reads the arguments, every such name waits for Ash. This is a limit, stated plainly: the arguments are not checked,
+// so holding is the only safe answer for a name whose arguments decide what it does.
+//
+// One exception is kept: a name whose object is the server's own record (issue, commit, branch, workflow) is a read of
+// that record, whatever id it is given.
+
+/** Words that say the call's arguments decide where it reads or what it runs. "query" is a database server's. */
+const ARG_BLIND_WORDS: ReadonlySet<string> = new Set(
+  words(
+    "page|pages|link|links|uri|uris|url|urls|href|web|browse|file|files|content|contents|blob|blobs|document|documents|doc|docs|path|paths|folder|folders|directory|directories|dir|dirs|sql|query|queries|shell|shells|exec|execute|run|runs|eval|script|scripts|terminal|process|processes|socket|sockets",
+  ),
+);
+
+/** A bare verb with no object at all ("query", "search"): only the call's arguments say what it reads. */
+const BARE_VERBS: ReadonlySet<string> = new Set(words("query|search|fetch"));
+
+function namesNoObject(tokens: readonly string[] | null): boolean {
+  return tokens?.length === 1 && BARE_VERBS.has(tokens[0]) ? true : false;
+}
+
+/** Whether the name is one whose arguments decide what it does, so the name alone can't be read. */
+function argumentsDecide(tokens: readonly string[] | null): boolean {
+  if (!tokens?.length) return false;
+  if (namesNoObject(tokens)) return true;
+  return tokens.some((word) => ARG_BLIND_WORDS.has(word));
+}
+
 /**
  * A word that names something a read returns, once anything the module already knows is set aside: "operation" and
  * "result" are what a read returns, so "frobnicate"/"lookup" named with one is still a read if the server says so.
@@ -290,6 +322,9 @@ export function toolEffect(toolName: string, description = "", hints: McpHints =
   }
   if (closedReadName(tokens)) {
     if (hints.readOnlyHint === false) return "unknown";
+    // WP-101 fix round 2, item E: a page, URL, file, path, shell or SQL name is only as safe as the arguments it is
+    // given, and the approval request carries none. It waits, whatever its description or annotations say.
+    if (argumentsDecide(tokens)) return "unknown";
     let onlySaid = said.replace(RUNS_A_READ, "_");
     if (objects?.size) onlySaid = withoutObjects(onlySaid, objects);
     return SAYS_HIGH_IMPACT.test(onlySaid) || changeInDescription.test(onlySaid) ? "unknown" : "read_only";

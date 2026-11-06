@@ -58,7 +58,8 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "merge_pull_request", expected: "high_impact" },
   { name: "create_repository", expected: "high_impact" },
   { name: "create_branch", expected: "change" },
-  { name: "get_file_contents", expected: "read_only" },
+  // Held since WP-101 fix round 2, item E: a file name's arguments decide which file it reads, and they are not seen.
+  { name: "get_file_contents", expected: "unknown" },
   { name: "lookup", hints: { destructiveHint: true }, expected: "high_impact" },
   { name: "frobnicate", expected: "unknown" },
   { name: "frobnicate", hints: { readOnlyHint: false, destructiveHint: false }, expected: "unknown" },
@@ -66,7 +67,8 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   // test_runner_and_access.py, second table
   { name: "get_commit", description: "Get details for a commit from a GitHub repository", expected: "read_only" },
   { name: "list_commits", description: "Get list of commits of a branch in a GitHub repository", expected: "read_only" },
-  { name: "get_workflow_run", description: "Get details of a specific workflow run", expected: "read_only" },
+  // WP-101 fix round 2, item E: "run" names what a run script does, so the name alone can't be read.
+  { name: "get_workflow_run", description: "Get details of a specific workflow run", expected: "unknown" },
   { name: "get_order", description: "Get an order by its id", expected: "read_only" },
   { name: "get_and_push", expected: "high_impact" },
   { name: "get_commit", hints: { destructiveHint: true }, expected: "high_impact" },
@@ -76,7 +78,8 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "commit_changes", expected: "high_impact" },
   { name: "search_book_flight", description: "Search and book a flight", expected: "high_impact" },
   { name: "fetch_to_upload", expected: "high_impact" },
-  { name: "list_workflow_run_artifacts", expected: "read_only" },
+  // WP-101 fix round 2, item E: "run" and "artifact" say a run, whose arguments the check never sees.
+  { name: "list_workflow_run_artifacts", expected: "unknown" },
   { name: "get_post", description: "Get a post or post a new one", expected: "unknown" },
   { name: "run_query", expected: "high_impact" },
   { name: "edit_file", description: "Make line-based edits to a text file in an allowed folder", expected: "change" },
@@ -92,8 +95,10 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "check_stock", description: "Execute a stock check", hints: { readOnlyHint: true }, expected: "unknown" },
   { name: "delete_order", hints: { readOnlyHint: true }, expected: "high_impact" },
   { name: "save_purchase_orders", hints: { readOnlyHint: true }, expected: "change" },
-  { name: "read_query", description: "Execute a SELECT query on the SQLite database", expected: "read_only" },
-  { name: "search_docs", description: "Run a search over the docs", expected: "read_only" },
+  // Stricter than Row-Bot (WP-101 fix round 2, item E): the query the tool runs is an argument the check never sees.
+  { name: "read_query", description: "Execute a SELECT query on the SQLite database", expected: "unknown" },
+  // Same reason: a doc is read from wherever the server keeps it, which the name can't say.
+  { name: "search_docs", description: "Run a search over the docs", expected: "unknown" },
   { name: "append_insight", description: "Add a business insight to the memo", expected: "change" },
   { name: "save_purchase_orders", description: "Save purchase orders to the ledger", hints: { readOnlyHint: false }, expected: "change" },
   { name: "list_purchase_orders", description: "List purchase orders", hints: { readOnlyHint: false }, expected: "unknown" },
@@ -127,7 +132,8 @@ const TABLES: readonly { name: string; description?: string; hints?: McpHints; e
   { name: "browser_navigate", description: "Navigate to a URL", hints: { readOnlyHint: true, destructiveHint: false }, expected: "change" },
   { name: "xquik", description: "Execute API calls against your Xquik account.", expected: "high_impact" },
   // test_phase4_dispatch_authority.py
-  { name: "read_file", expected: "read_only" },
+  // Stricter than Row-Bot (WP-101 fix round 2, item E): a file read's arguments decide which file it names.
+  { name: "read_file", expected: "unknown" },
   { name: "browser_snapshot", expected: "read_only" },
   { name: "browser_click", expected: "change" },
   { name: "browser_click", hints: { destructiveHint: true, readOnlyHint: true }, expected: "high_impact" },
@@ -214,7 +220,8 @@ describe("a read is a closed vocabulary, never a guess (WP-101 fix round)", () =
   });
 
   it("still reads the plain read names for a trusted server", () => {
-    for (const name of ["get_status", "list_files", "read_file", "search_docs", "get_issue", "list_pull_requests"])
+    // WP-101 fix round 2, item E: a file, page or path name waits; the records a server keeps do not.
+    for (const name of ["get_status", "get_issue", "list_pull_requests", "search_issues", "list_issues", "list_branches", "get_commit"])
       expect(toolEffect(name), name).toBe("read_only");
   });
 
@@ -240,8 +247,10 @@ describe("a read is a closed vocabulary, never a guess (WP-101 fix round)", () =
 
 describe("Hivra's own cases", () => {
   it("reads the names real servers use", () => {
-    for (const name of ["get_file", "list_issues", "describe_instance", "status", "get_commit_status", "get_posts", "search_issues"])
+    // get_file waits since fix round 2, item E: which file it reads is an argument the approval request doesn't carry.
+    for (const name of ["list_issues", "describe_instance", "status", "get_commit_status", "get_posts", "search_issues"])
       expect(toolEffect(name), name).toBe("read_only");
+    expect(toolEffect("get_file")).toBe("unknown");
     for (const name of ["create_page", "update_settings", "move_file", "rename_file"]) expect(toolEffect(name), name).toBe("change");
     for (const name of ["delete_file", "send_message", "publish_site", "run_shell_command", "add_member"]) expect(toolEffect(name), name).toBe("high_impact");
   });
@@ -250,6 +259,48 @@ describe("Hivra's own cases", () => {
     expect(toolEffect("getUser")).toBe("read_only");
     expect(toolEffect("deleteUser")).toBe("high_impact");
     expect(toolEffect("listProjects")).toBe("read_only");
+  });
+
+  it("holds every name whose arguments, not its name, decide what it reads (fix round 2, item E)", () => {
+    // The review's rows 5 and 6: the approval request carries no arguments, so a page, URL, file, path, shell or SQL
+    // tool can be pointed anywhere. None of these may pass on a trusted server.
+    for (const name of [
+      "get_page",
+      "read_page",
+      "fetch_page",
+      "get_url",
+      "fetch_url",
+      "get_link",
+      "read_uri",
+      "fetch",
+      "get_document",
+      "read_doc",
+      "read_file",
+      "get_file",
+      "list_files",
+      "get_file_contents",
+      "read_blob",
+      "get_content",
+      "read_path",
+      "list_folder",
+      "get_directory",
+      "run_sql",
+      "get_sql",
+      "run_shell",
+      "exec_command",
+      "eval",
+      "browse",
+      "get_web_page",
+    ])
+      expect(toolEffect(name), name).not.toBe("read_only");
+    // A bare verb has no object at all, so only the call says what it reads.
+    for (const name of ["query", "read_query", "get_query", "search", "fetch"]) expect(toolEffect(name), name).not.toBe("read_only");
+  });
+
+  it("keeps the plain reads for a trusted server (fix round 2, item E)", () => {
+    // The names the brief keeps passing: records are read by id, which cannot point anywhere else.
+    for (const name of ["get_status", "list_issues", "list_pull_requests", "get_issue", "search_issues", "list_branches", "get_commit", "list_workflows"])
+      expect(toolEffect(name), name).toBe("read_only");
   });
 
   it("holds every name it can't place, rather than calling it a read", () => {

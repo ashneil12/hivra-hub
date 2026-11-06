@@ -262,7 +262,7 @@ describe("useAutopilot", () => {
     wired = { "wired-read": ["plugin-agent_plugins-notion"], "spoofed": ["plugin-agent_plugins-notion"] };
     const mcp = (tool: string) => approval(tool, { tool });
     await mount([
-      session("wired-read", hivra, { blocks: [mcp("mcp__plugin-agent_plugins-notion__get_page")] }),
+      session("wired-read", hivra, { blocks: [mcp("mcp__plugin-agent_plugins-notion__get_issue")] }),
       // Same tool name, from a chat whose wiring doesn't include that server: the name proves nothing.
       session("spoofed", hivra, { blocks: [mcp("mcp__plugin-evil-srv__get_page")] }),
       // A chat the app couldn't answer for at all: every MCP call waits.
