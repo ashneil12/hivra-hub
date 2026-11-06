@@ -81,7 +81,7 @@ Third-party components Hivra adds:
   License: Apache-2.0
   The upstream files do not carry a separate copyright line (Apache-2.0)
   Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
-  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
+  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.2.0, with Hivra's gate and consent rules added (WP-44)
 
 - Orbit's checked backups
   Source: https://github.com/coollabsio/orbit

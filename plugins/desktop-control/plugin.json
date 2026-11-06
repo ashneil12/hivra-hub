@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "desktop-control",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Workers use desktop apps through the accessibility tree. Off until it is turned on, then each new app asks for consent. Headless unless visible control is allowed.",
   "author": {
     "name": "Vercel Labs"
