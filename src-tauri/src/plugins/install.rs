@@ -26,6 +26,7 @@ use super::manifest::{load_plugin, LoadedPlugin, Report};
 use super::registry::{
     self, Contribution, Enablement, Entry, Host, Outcome, Registry, Snapshot, Source,
 };
+use super::scan::{self, scan as scan_staged};
 use super::source::{self, InstallSource, Tools};
 use super::wiring::passed_env;
 
@@ -124,6 +125,10 @@ pub struct PendingRequest {
     pub skills: Vec<String>,
     pub mcp_servers: Vec<String>,
     pub reports: Vec<Report>,
+    /// WP-101: what the scan of the staged copy found. Blocks never reach this (they refuse the install); warnings
+    /// are shown on the pending card. Defaulted so a request saved by an earlier build still reads.
+    #[serde(default)]
+    pub scan: scan::ScanResult,
     pub created_at_ms: u64,
     /// The project folder to turn this plugin on for, once the install lands. None leaves it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -279,7 +284,13 @@ fn restage(dir: &Path, request: &PendingRequest, tools: &Tools) -> Result<(), St
             ));
         }
         manifest_declared(&checked)?.check(&tools.target)?;
-        fsutil::copy_plugin_tree(&fetched.root, &staged)
+        fsutil::copy_plugin_tree(&fetched.root, &staged)?;
+        // WP-101: a re-fetched copy is scanned again; the pinned source could have changed under it.
+        let scanned = scan_staged(&staged);
+        if scanned.blocked {
+            return Err(scan::blocking_reason(&scanned));
+        }
+        Ok(())
     })();
     let _ = fsutil::remove_tree(&work);
     if outcome.is_err() {
@@ -338,6 +349,15 @@ fn prepare(
         fsutil::copy_plugin_tree(&fetched.root, &staged)?;
         let _ = fsutil::remove_tree(&work);
         let loaded = load_plugin(&staged).map_err(|e| e.0)?;
+        // WP-101: read the copy before anyone is asked to install it. A block refuses now, with nothing placed and
+        // the pending folder dropped by the caller; warnings travel on the request for the card.
+        let scanned = scan_staged(&staged);
+        if scanned.blocked {
+            return Err(format!(
+                "\"{name}\" didn't pass the install check: {}",
+                scan::blocking_reason(&scanned)
+            ));
+        }
         let steps = script_steps(&loaded)?;
         Ok(PendingRequest {
             id: id.clone(),
@@ -358,6 +378,7 @@ fn prepare(
             skills: loaded.skills.iter().map(|s| s.name.clone()).collect(),
             mcp_servers: loaded.mcp_servers.iter().map(|s| s.name.clone()).collect(),
             reports: loaded.reports,
+            scan: scanned,
             created_at_ms: registry::now_ms(),
             project,
         })

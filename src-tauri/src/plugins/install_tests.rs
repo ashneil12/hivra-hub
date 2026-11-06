@@ -781,6 +781,99 @@ fn installing_the_same_plugin_twice_keeps_the_first() {
     assert!(missing.contains("isn't installed"), "{missing}");
 }
 
+// WP-101: the install check runs on the staged copy before anything is placed or asked about.
+#[test]
+fn an_install_that_fails_the_check_is_refused_and_nothing_is_left_waiting() {
+    let tmp = Tmp::new("check-block");
+    let host = host(&tmp);
+    let dir = tmp.path().join("src");
+    plugin(&dir, "demo", "1.0.0", json!({}));
+    // A skill asking to be a tool guide: a plugin skill is instructions only.
+    write(
+        &dir.join("skills/alpha/SKILL.md"),
+        "---\nname: alpha\ndescription: Runs things.\ntools:\n  - bash\n---\n\n# alpha\n",
+    );
+    let why = install::install(
+        &host,
+        &quiet_tools(),
+        &local_source(&dir),
+        RequestedBy::person(),
+    )
+    .unwrap_err();
+    assert!(why.contains("didn't pass the install check"), "{why}");
+    assert!(why.contains("instructions only"), "{why}");
+    assert!(install::pending(&host).is_empty());
+    assert!(!host.pending().exists());
+    assert!(!host.installed("demo").exists());
+    assert!(!host.root.join("lock.json").exists());
+}
+
+#[test]
+fn an_install_with_warnings_waits_with_them_on_the_request() {
+    let tmp = Tmp::new("check-warn");
+    let host = host(&tmp);
+    let dir = tmp.path().join("src");
+    plugin(&dir, "demo", "1.0.0", json!({}));
+    write(
+        &dir.join("skills/alpha/scripts/helper.py"),
+        "print('copied only')\n",
+    );
+    let by = RequestedBy {
+        kind: "agent".into(),
+        ..RequestedBy::default()
+    };
+    let InstallResult::Waiting { request } =
+        install::install(&host, &quiet_tools(), &local_source(&dir), by).unwrap()
+    else {
+        panic!("an agent's install must wait");
+    };
+    assert!(!request.scan.blocked);
+    let codes: Vec<&str> = request
+        .scan
+        .findings
+        .iter()
+        .map(|f| f.code.as_str())
+        .collect();
+    assert!(codes.contains(&"scripts_present"), "{codes:?}");
+    // And it survives the trip through request.json, so the card shows what was found when it first loaded.
+    let again = install::pending(&host);
+    assert_eq!(again.len(), 1);
+    assert!(again[0]
+        .scan
+        .findings
+        .iter()
+        .any(|f| f.code == "scripts_present"));
+}
+
+#[test]
+fn a_request_saved_before_the_check_existed_still_reads() {
+    let tmp = Tmp::new("check-old-request");
+    let host = host(&tmp);
+    let dir = host.pending().join(uuid::Uuid::new_v4().to_string());
+    std::fs::create_dir_all(&dir).unwrap();
+    // The shape an earlier build wrote: no "scan" key at all.
+    write(
+        &dir.join("request.json"),
+        &json!({
+            "id": dir.file_name().unwrap().to_string_lossy(),
+            "op": "install",
+            "name": "demo",
+            "source": { "kind": "local", "path": "/tmp/demo" },
+            "resolved": { "kind": "local", "location": "/tmp/demo" },
+            "requestedBy": { "kind": "person" },
+            "steps": [],
+            "skills": [],
+            "mcpServers": [],
+            "reports": [],
+            "createdAtMs": 1
+        })
+        .to_string(),
+    );
+    let pending = install::pending(&host);
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].scan.findings.is_empty());
+}
+
 #[test]
 fn a_crlf_manifest_in_a_folder_still_installs() {
     let tmp = Tmp::new("crlf");

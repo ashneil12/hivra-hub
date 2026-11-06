@@ -14,6 +14,8 @@ mod install;
 pub mod manifest;
 pub mod mcp;
 pub mod registry;
+// WP-101: what a staged copy holds, read before the person is asked to install it.
+pub mod scan;
 mod source;
 pub mod verify;
 pub mod wiring;
@@ -28,6 +30,8 @@ mod defaults_tests;
 mod desktop_tests;
 #[cfg(test)]
 mod install_tests;
+#[cfg(test)]
+mod scan_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

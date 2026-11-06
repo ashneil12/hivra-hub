@@ -42,6 +42,22 @@ export type RequestedBy = {
   reason?: string;
 };
 
+/** WP-101: what the install check (Rust `plugins::scan`) found in the staged copy. */
+export type ScanFinding = {
+  severity: "block" | "warn" | "info";
+  code: string;
+  path: string;
+  message: string;
+};
+
+export type ScanResult = {
+  blocked: boolean;
+  findings: ScanFinding[];
+  files: number;
+  bytes: number;
+  tokenEstimate: number;
+};
+
 export type PendingRequest = {
   id: string;
   op: string;
@@ -56,6 +72,8 @@ export type PendingRequest = {
   skills: string[];
   mcpServers: string[];
   reports: { path: string; message: string }[];
+  /** Missing on a request saved before the install check existed: nothing to show, not a failure. */
+  scan?: ScanResult | null;
   createdAtMs: number;
 };
 

@@ -474,6 +474,16 @@ pub fn install_local(host: &Host, source_dir: &Path, source: Source) -> Result<O
         let _ = fsutil::remove_tree(&staging);
         return Err(why);
     }
+    // WP-101: a folder picked by hand gets the same read as a downloaded one. A block refuses before anything is
+    // placed; the copy made above goes with it.
+    let scanned = super::scan::scan(&staging);
+    if scanned.blocked {
+        let _ = fsutil::remove_tree(&staging);
+        return Err(format!(
+            "\"{name}\" didn't pass the install check: {}",
+            super::scan::blocking_reason(&scanned)
+        ));
+    }
     match install_staged(host, &staging, source) {
         Ok(outcome) => {
             // WP-78: the files are in place. The person asked; the app put them there.
