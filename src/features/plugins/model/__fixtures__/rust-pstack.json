@@ -52,11 +52,123 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-rpi/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"Research, plan and build phases. The first mate runs each skill by name. They are not part of the always-on skill index.\",\"name\":\"hivra-rpi\",\"version\":\"0.1.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/create-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-structure-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/create-structure-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/describe-pr",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/describe-pr"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/design-discussion",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/design-discussion"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/diagnosing-bugs",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/diagnosing-bugs"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grill-me",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/grill-me"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grilling",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/grilling"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/implement-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/implement-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-design",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-design"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-implementation",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-product",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-product"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research-questions",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-technical",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-technical"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/product-document",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/product-document"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research-questions",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/review-artifact-comments",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/review-artifact-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/rpi-tdd",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/rpi-tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/technical-document",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/technical-document"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data"
       },
       {
         "dir": true,
         "path": "app-data/plugins/data/hivra-creator"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/data/hivra-rpi"
       },
       {
         "dir": true,
@@ -71,12 +183,16 @@
         "path": "app-data/plugins/installed/hivra-creator"
       },
       {
+        "carried": "hivra-rpi",
+        "path": "app-data/plugins/installed/hivra-rpi"
+      },
+      {
         "carried": "pstack",
         "path": "app-data/plugins/installed/pstack"
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
@@ -89,6 +205,98 @@
       {
         "dir": true,
         "path": "home/.agents/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-plan",
+        "path": "home/.agents/skills/create-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-structure-outline",
+        "path": "home/.agents/skills/create-structure-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/describe-pr",
+        "path": "home/.agents/skills/describe-pr"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/design-discussion",
+        "path": "home/.agents/skills/design-discussion"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/diagnosing-bugs",
+        "path": "home/.agents/skills/diagnosing-bugs"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grill-me",
+        "path": "home/.agents/skills/grill-me"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grilling",
+        "path": "home/.agents/skills/grilling"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-outline",
+        "path": "home/.agents/skills/implement-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-plan",
+        "path": "home/.agents/skills/implement-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-design",
+        "path": "home/.agents/skills/iterate-design"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-implementation",
+        "path": "home/.agents/skills/iterate-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-outline",
+        "path": "home/.agents/skills/iterate-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-plan",
+        "path": "home/.agents/skills/iterate-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-product",
+        "path": "home/.agents/skills/iterate-product"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research",
+        "path": "home/.agents/skills/iterate-research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research-questions",
+        "path": "home/.agents/skills/iterate-research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-technical",
+        "path": "home/.agents/skills/iterate-technical"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/product-document",
+        "path": "home/.agents/skills/product-document"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research",
+        "path": "home/.agents/skills/research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research-questions",
+        "path": "home/.agents/skills/research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/review-artifact-comments",
+        "path": "home/.agents/skills/review-artifact-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/rpi-tdd",
+        "path": "home/.agents/skills/rpi-tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/technical-document",
+        "path": "home/.agents/skills/technical-document"
       },
       {
         "link": "app-data/plugins/installed/hivra-creator/skills/write-command",
@@ -114,7 +322,8 @@
     "wiring": {
       "claudeMcpServers": {},
       "claudePluginDirs": [
-        "<TMP>/app-data/plugins/claude/hivra-creator"
+        "<TMP>/app-data/plugins/claude/hivra-creator",
+        "<TMP>/app-data/plugins/claude/hivra-rpi"
       ],
       "codexMcpServers": {},
       "reports": []
@@ -169,6 +378,114 @@
       {
         "link": "app-data/plugins/installed/hivra-creator/skills/write-skill",
         "path": "app-data/plugins/claude/hivra-creator/skills/write-skill"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi/.claude-plugin"
+      },
+      {
+        "path": "app-data/plugins/claude/hivra-rpi/.claude-plugin/plugin.json",
+        "text": "{\"description\":\"Research, plan and build phases. The first mate runs each skill by name. They are not part of the always-on skill index.\",\"name\":\"hivra-rpi\",\"version\":\"0.1.0\"}"
+      },
+      {
+        "dir": true,
+        "path": "app-data/plugins/claude/hivra-rpi/skills"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/create-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-structure-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/create-structure-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/describe-pr",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/describe-pr"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/design-discussion",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/design-discussion"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/diagnosing-bugs",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/diagnosing-bugs"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grill-me",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/grill-me"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grilling",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/grilling"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/implement-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/implement-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-design",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-design"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-implementation",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-outline",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-plan",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-product",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-product"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research-questions",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-technical",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/iterate-technical"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/product-document",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/product-document"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research-questions",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/review-artifact-comments",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/review-artifact-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/rpi-tdd",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/rpi-tdd"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/technical-document",
+        "path": "app-data/plugins/claude/hivra-rpi/skills/technical-document"
       },
       {
         "dir": true,
@@ -428,6 +745,10 @@
       },
       {
         "dir": true,
+        "path": "app-data/plugins/data/hivra-rpi"
+      },
+      {
+        "dir": true,
         "path": "app-data/plugins/data/pstack"
       },
       {
@@ -439,12 +760,16 @@
         "path": "app-data/plugins/installed/hivra-creator"
       },
       {
+        "carried": "hivra-rpi",
+        "path": "app-data/plugins/installed/hivra-rpi"
+      },
+      {
         "carried": "pstack",
         "path": "app-data/plugins/installed/pstack"
       },
       {
         "path": "app-data/plugins/lock.json",
-        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
+        "text": "{\n  \"version\": 1,\n  \"plugins\": {\n    \"hivra-creator\": {\n      \"version\": \"1.0.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/ashneil12/hivra-hub/tree/ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6/src-tauri/plugins/hivra-creator\",\n        \"pin\": \"ff5b2b4fb7e432cb1ec2f74d07dc2339596bdba6\",\n        \"path\": \"src-tauri/plugins/hivra-creator\"\n      },\n      \"integrity\": \"sha256-d5591d33a5dc774501cbb64187c49fe3a7642a541a1e252743553313fb9b5900\"\n    },\n    \"hivra-rpi\": {\n      \"version\": \"0.1.0\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/humanlayer/humanlayer/tree/f9bd73534a9fb7099a274f951b698b1297122fd9/apps/riptide-rpi-claude-plugin\",\n        \"pin\": \"f9bd73534a9fb7099a274f951b698b1297122fd9\",\n        \"path\": \"apps/riptide-rpi-claude-plugin\"\n      },\n      \"integrity\": \"sha256-37b26fd43e51661aafdd392d36eba3e306b4dcb23ed1bed89acecef7ff4baaf3\"\n    },\n    \"pstack\": {\n      \"version\": \"0.15.36\",\n      \"source\": {\n        \"kind\": \"bundled\",\n        \"location\": \"https://github.com/cursor/plugins/tree/6ea74587e384e1a8035c09ae33a46fe3f881eb9b/pstack\",\n        \"pin\": \"6ea74587e384e1a8035c09ae33a46fe3f881eb9b\",\n        \"path\": \"pstack\"\n      },\n      \"integrity\": \"sha256-2e17267c45433bad5e001beee53c4c78919890fd15304d0700eb628506c59fbb\"\n    }\n  }\n}\n"
       },
       {
         "dir": true,
@@ -491,16 +816,52 @@
         "path": "home/.agents/skills/create-formal-verification-skill"
       },
       {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-plan",
+        "path": "home/.agents/skills/create-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/create-structure-outline",
+        "path": "home/.agents/skills/create-structure-outline"
+      },
+      {
         "link": "app-data/plugins/installed/pstack/skills/create-verification-skill",
         "path": "home/.agents/skills/create-verification-skill"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/describe-pr",
+        "path": "home/.agents/skills/describe-pr"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/design-discussion",
+        "path": "home/.agents/skills/design-discussion"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/diagnosing-bugs",
+        "path": "home/.agents/skills/diagnosing-bugs"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/figure-it-out",
         "path": "home/.agents/skills/figure-it-out"
       },
       {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grill-me",
+        "path": "home/.agents/skills/grill-me"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/grilling",
+        "path": "home/.agents/skills/grilling"
+      },
+      {
         "link": "app-data/plugins/installed/pstack/skills/how",
         "path": "home/.agents/skills/how"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-outline",
+        "path": "home/.agents/skills/implement-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/implement-plan",
+        "path": "home/.agents/skills/implement-plan"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/in-your-own-words",
@@ -509,6 +870,38 @@
       {
         "link": "app-data/plugins/installed/pstack/skills/interrogate",
         "path": "home/.agents/skills/interrogate"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-design",
+        "path": "home/.agents/skills/iterate-design"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-implementation",
+        "path": "home/.agents/skills/iterate-implementation"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-outline",
+        "path": "home/.agents/skills/iterate-outline"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-plan",
+        "path": "home/.agents/skills/iterate-plan"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-product",
+        "path": "home/.agents/skills/iterate-product"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research",
+        "path": "home/.agents/skills/iterate-research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-research-questions",
+        "path": "home/.agents/skills/iterate-research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/iterate-technical",
+        "path": "home/.agents/skills/iterate-technical"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/ketchup",
@@ -639,12 +1032,32 @@
         "path": "home/.agents/skills/principle-type-system-discipline"
       },
       {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/product-document",
+        "path": "home/.agents/skills/product-document"
+      },
+      {
         "link": "app-data/plugins/installed/pstack/skills/recall",
         "path": "home/.agents/skills/recall"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/reflect",
         "path": "home/.agents/skills/reflect"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research",
+        "path": "home/.agents/skills/research"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/research-questions",
+        "path": "home/.agents/skills/research-questions"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/review-artifact-comments",
+        "path": "home/.agents/skills/review-artifact-comments"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/rpi-tdd",
+        "path": "home/.agents/skills/rpi-tdd"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/setup-pstack",
@@ -673,6 +1086,10 @@
       {
         "link": "app-data/plugins/installed/pstack/skills/teach",
         "path": "home/.agents/skills/teach"
+      },
+      {
+        "link": "app-data/plugins/installed/hivra-rpi/skills/technical-document",
+        "path": "home/.agents/skills/technical-document"
       },
       {
         "link": "app-data/plugins/installed/pstack/skills/technical-writing",
@@ -715,6 +1132,7 @@
       "claudeMcpServers": {},
       "claudePluginDirs": [
         "<TMP>/app-data/plugins/claude/hivra-creator",
+        "<TMP>/app-data/plugins/claude/hivra-rpi",
         "<TMP>/app-data/plugins/claude/pstack"
       ],
       "codexMcpServers": {},

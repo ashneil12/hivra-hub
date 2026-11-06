@@ -29,6 +29,7 @@ const KINDS: Record<string, string> = {
   "git.merge": "Merge",
   "git.push": "Push",
   "git.pr": "Pull request",
+  "git.commit": "Commit",
   "plugin.install": "Plugin install",
   "plugin.update": "Plugin update",
   "plugin.rollback": "Plugin rollback",

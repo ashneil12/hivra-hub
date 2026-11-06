@@ -834,6 +834,7 @@ const AGENT_BASENAMES = new Set([
   "claude",
   "claude-deepseek",
   "claude-grok",
+  "claude-openrouter",
   "codex",
   "opencode",
   "cursor-agent",

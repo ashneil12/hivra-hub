@@ -22,6 +22,11 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+// WP-85: show Claude sessions started in a terminal.
+import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
+// WP-84: the project's default phase path.
+import { PhaseSettings } from "../../phases/ui/PhaseSettings";
+// WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
@@ -689,6 +694,8 @@ export function SettingsView({
               {section === "general" ? (
                 <GeneralPage onOpenWhatsNew={onOpenWhatsNew} />
               ) : null}
+              {/* WP-84: how much process a task gets, for this project. */}
+              {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   <ConnectionsSettings />
@@ -1086,6 +1093,11 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
+      </Group>
+
+      {/* WP-85: off until the person turns it on. */}
+      <Group title="Terminal" description="Claude sessions you start in a terminal, on this Mac.">
+        <TerminalSessionsSetting />
       </Group>
 
       <Group

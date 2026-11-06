@@ -22,6 +22,9 @@ import { subChatAttention, useSubChatFolds } from "../../features/monos/model/su
 import { countWork, useStuckDismissalsVersion, workSplit } from "../../features/monos/model/workerStuck";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { StuckMark, SubChatList } from "../../features/monos/ui/SubChatList";
+// WP-85: the mark on a Claude session started in a terminal.
+import { TerminalMark } from "../../features/terminalMirror/ui/TerminalMark";
+import { terminalStatusText } from "../../features/terminalMirror/model/list";
 import { confirmDelete } from "../../shared/ui/ConfirmDelete";
 import { leadRenameRow, subChatsByParent } from "../../features/hub/model/codingTeamList";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -2156,7 +2159,9 @@ function SidebarComponent({
         startedCount={startedCount}
         startedOpen={startedOpen}
         startedInView={startedInView}
-        badge={badge}
+        badge={badge ?? (session.terminal ? <TerminalMark /> : undefined)}
+        // WP-85: a terminal session shows its state and folder instead of the clock.
+        {...(session.terminal ? { statusLabel: terminalStatusText(session.terminal) } : {})}
         subChatsBelow={subChatsBelow}
         now={now}
         onSelect={cardActions.select}

@@ -1,0 +1,5 @@
+{
+  "name": "hivra-mirror",
+  "description": "Show this terminal's Claude session in Hivra, on this Mac only.",
+  "version": "0.1.0"
+}

@@ -219,7 +219,7 @@ test("an agent CLI outside the run's sandbox fails the scene; the wrapper and a 
   assert.equal(hit([row(100, 1, "/opt/homebrew/bin/codex")]), null);
   assert.equal(hit([row(270, 100, "/usr/local/bin/node /scripts/hub-realtest-claude.mjs REALTEST_REAL_CLAUDE=/Users/ash/.local/bin/claude")]), null);
   assert.equal(hit([row(10, 11, "/opt/homebrew/bin/codex"), row(11, 10, "/bin/sleep 1")]), null);
-  for (const name of ["opencode", "grok", "hermes", "pi", "omp", "fx", "devin", "claude-deepseek", "pi-coding-agent"]) {
+  for (const name of ["opencode", "grok", "hermes", "pi", "omp", "fx", "devin", "claude-deepseek", "claude-openrouter", "pi-coding-agent"]) {
     assert.equal(hit([row(280, 100, `/opt/homebrew/bin/${name}`)]).reason, `unsandboxed agent: ${name}`, name);
   }
   const stopped = [];

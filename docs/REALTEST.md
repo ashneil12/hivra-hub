@@ -288,5 +288,21 @@ every chat, helper call, tester, judge and the grader on DeepSeek V4.1 Flash thr
 (`--deepseek-sub`, `--agents deepseek-sub`). The Claude login is used only on an explicit `--agents claude` (realtest) or
 `--agents claude:<model>` (realconv). Haiku test workers (`--agents haiku-test`) use the Anthropic test key; their grader
 still runs on the DeepSeek launcher. `--agents grok-sub` points the chats at `~/.local/bin/claude-grok` (Claude Code on
-Grok through the local gateway). The grader stays on the DeepSeek launcher. That launcher is started with no
-`ANTHROPIC_*` or `CLAUDE_CODE_*` credential variables from the caller. DeepSeek stays the default.
+Grok through the local gateway). The grader there stays on the DeepSeek launcher, as it always has. Grok's launcher is
+started with no `ANTHROPIC_*` or `CLAUDE_CODE_*` credential variables from the caller. DeepSeek stays the default.
+
+**Everything on OpenRouter** (`--agents openrouter-sub`, or its own `--openrouter-sub`). The chats run Claude Code on
+OpenRouter through Ash's launcher `~/.local/bin/claude-openrouter`, and **the grader goes with them**: that launcher's own
+empty balance is the reason a run moves, so grading it on DeepSeek would leave every run UNGRADED. Its launcher is
+started with the same credentials stripped as Grok's.
+
+Inside a bench, that launcher can't read its own key: the seatbelt profile closes the real home (so no Keychain) and
+denies every outbound connection except named loopback ports (`scripts/bench-sandbox.mjs`). So the runner starts
+`scripts/bench-or-relay.mjs` — a loopback relay on `127.0.0.1`, outside the fence — which holds the key, and the wrapper
+script hands the launcher only the relay's URL and one random token for that run
+(`CLAUDE_OPENROUTER_RELAY_URL`, `CLAUDE_OPENROUTER_RELAY_TOKEN`; the launcher's own documented path). The profile then
+opens exactly that one port: the gateway's ports stay shut for this run. The key lives in the relay's closure and nowhere
+else: never in an environment, a file or a log line, never in an error message, and never in the headers of an answer it
+hands back. The one thing it can't inspect is the answer's body, which is streamed through byte for byte because
+buffering it would break a streamed (SSE) answer. A missing Keychain item stops the run before anything starts, with the
+line to add it. The relay is closed on every exit path, including a throw and a signal.

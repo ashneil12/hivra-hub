@@ -37,7 +37,33 @@ no test or run may use his Claude subscription), and the tester and judge follow
 (and the tester and judge still stay on DeepSeek unless named). `--agents grok-sub` points the hub's chats at
 `~/.local/bin/claude-grok` (Claude Code on Grok through the local gateway). The tester and the judge stay on DeepSeek
 unless you name them, and the launcher is started with no `ANTHROPIC_*` or `CLAUDE_CODE_*` credential variables from
-this shell. With `custom:<id>`, the hub runs its chats through its own model
+this shell.
+
+**Everything on OpenRouter.** `--agents openrouter-sub` points the hub's chats at Ash's launcher
+`~/.local/bin/claude-openrouter` (Claude Code on OpenRouter; it reads its own key from the Keychain and rewrites every
+`--model` to its own default). On its own it is a bridge like `grok-sub`: the tester and the judge stay on DeepSeek
+unless you name them.
+
+A bench chat runs inside a seatbelt that closes the real home (so no Keychain) and allows outbound connections only to
+loopback ports this run names. The launcher dials OpenRouter directly, so inside that fence it cannot read its own key.
+The runner therefore starts a loopback relay of its own — `scripts/bench-or-relay.mjs`, outside the sandbox — which holds
+the key, and the launcher is handed only that relay's URL and a token for the run. The profile opens exactly that one
+port, so the gateway ports the DeepSeek and Grok bridges use stay shut. The key is never written to an environment, a
+file, a log line or an error message, and never into the headers of an answer the relay hands back (the answer's body is
+streamed through untouched, which is what keeps a streamed answer intact); with no `hivra-openrouter` Keychain item the
+run stops before it starts, and says how to add it. Every chat is still started with no `ANTHROPIC_*` or
+`CLAUDE_CODE_*` credential variables from this shell.
+
+```bash
+npm run hub:realconv -- --scenes S10,S5,S14 --agents openrouter-sub --tester openrouter-sub --judge openrouter-sub
+```
+
+One gap, unchanged here: the tester and the judge are the runner's own children and are started under the same seatbelt,
+so naming `openrouter-sub` for one of *them* runs its launcher inside the fence, where it has no Keychain and no relay —
+the relay is the chats' route only. A tester or judge on an OpenAI-compatible provider you name (`xai`, `openrouter`,
+`deepseek`, …) with `--*-key-env` needs no Keychain and is the way to move them off DeepSeek today.
+
+With `custom:<id>`, the hub runs its chats through its own model
 router, exactly as it does when you pick that model:
 
 ```bash
