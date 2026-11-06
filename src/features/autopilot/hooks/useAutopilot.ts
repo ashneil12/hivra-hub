@@ -20,6 +20,7 @@ import type { ApprovalDecision } from "../../../integrations/harness/core/types"
 import type { Block, Session } from "../../sessions/model/session";
 import {
   answerInWords,
+  chatQuestionVeto,
   subscribeWaitingChats,
   takePick,
   waitingChats,
@@ -320,6 +321,12 @@ export function useAutopilot(options: {
       }
       if (chat.gate?.kind === "action") {
         // A sign-in, a code or a payment: only Ash can do it, so neither Autopilot nor the Lead can take it.
+        void log({ ...base, kind: "question", outcome: "held" });
+        return;
+      }
+      // WP-101: the rule a reviewed approval follows, on this door too. Taking the pick answers the question, and
+      // the question (or an option it points back to) can be the action itself.
+      if (chatQuestionVeto(chat)) {
         void log({ ...base, kind: "question", outcome: "held" });
         return;
       }

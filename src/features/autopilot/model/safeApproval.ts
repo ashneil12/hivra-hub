@@ -261,14 +261,28 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   ps: psRead,
 };
 
-/** Whether a shell command is one autopilot may run by itself; why not otherwise. */
-export function safeCommand(command: string): SafeVerdict {
+/** Why a command it can't read waits, rather than throwing. */
+const UNREADABLE_COMMAND = "it can't be read plainly (a wildcard or an open quote)";
+
+function safeCommandInner(command: string): SafeVerdict {
+  if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";
   const words = shellWords(command.trim());
-  if (!words?.length) return "it can't be read plainly (a wildcard or an open quote)";
+  if (!words?.length) return UNREADABLE_COMMAND;
+  // Own keys only: "valueOf" or "constructor" must not find Object's methods where the table should be (WP-101, row 21).
+  if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read, test or build autopilot runs by itself`;
   const check = COMMANDS[words[0]];
-  if (!check) return `${words[0]} isn't a read, test or build autopilot runs by itself`;
+  if (typeof check !== "function") return UNREADABLE_COMMAND;
   return check(words.slice(1));
+}
+
+/** Whether a shell command is one autopilot may run by itself; why not otherwise. A command it can't read waits. */
+export function safeCommand(command: string): SafeVerdict {
+  try {
+    return safeCommandInner(command);
+  } catch {
+    return UNREADABLE_COMMAND;
+  }
 }
 
 /**
@@ -277,7 +291,16 @@ export function safeCommand(command: string): SafeVerdict {
  * alone never counts, and a missing set trusts nothing.
  */
 export function safeCall(call: ApprovalCall | undefined, folder: string | undefined, trusted?: TrustedServers | null): SafeVerdict {
+  try {
+    return safeCallInner(call, folder, trusted);
+  } catch {
+    return "it can't be read plainly, so it waits for Ash";
+  }
+}
+
+function safeCallInner(call: ApprovalCall | undefined, folder: string | undefined, trusted?: TrustedServers | null): SafeVerdict {
   if (!call) return "it doesn't say exactly what it runs";
+  if (typeof call.tool !== "string" || !call.tool) return "it doesn't say exactly what it runs";
   if (READ_ONLY_TOOLS.has(call.tool)) return null;
   if (EDIT_TOOLS.has(call.tool)) {
     if (!call.paths?.length) return "it doesn't say which file it edits";

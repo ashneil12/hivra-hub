@@ -201,6 +201,25 @@ describe("autopilot.decide", () => {
     expect(marked).toMatchObject({ decision: "held", red: "send-as-ash" });
   });
 
+  it("never takes a call that sends, deletes, pays, publishes or changes access, and names no red category for it", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    for (const [question, recommendation] of [
+      ["Should I email Priya the invoice?", "Yes"],
+      ["Should I publish the release notes?", "Yes"],
+      ["Delete the old branch?", "Yes"],
+      ["Should I post the changelog to the public site?", "Yes"],
+    ] as const) {
+      const result = (await call(chat("hivra-chat"), "autopilot.decide", { question, recommendation }, s, `r-${question}`)) as Record<string, unknown>;
+      expect(result, question).toMatchObject({ decision: "held", act: "ask", red: null });
+      expect(result.redLabel, question).toBeUndefined();
+      expect(String(result.note)).toContain("sends, deletes, moves money, publishes or changes access");
+    }
+    expect(s.backend.entries.filter((e) => e.kind === "decision").every((e) => e.outcome === "held" && e.red === null)).toBe(true);
+    // It names no red category, so it doesn't hold the chat's next question.
+    expect(s.holds.has("hivra-chat")).toBe(false);
+  });
+
   it("covers a project only through its own switch or the one for everything", async () => {
     const s = setup();
     await on(s, ["vg-game"]);

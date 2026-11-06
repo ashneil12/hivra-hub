@@ -7,6 +7,8 @@ import {
   NO_REQUEST_REASON,
   UNCLEAR_REASON,
   actionHeads,
+  askKinds,
+  questionVeto,
   readAnswer,
   requestWords,
   reviewVeto,
@@ -76,13 +78,15 @@ describe("reading the reviewer's answer", () => {
 });
 
 describe("the actions that always wait for the person", () => {
-  it("reads the verb an action starts with, not every word in it", () => {
-    expect(actionHeads({ tool: "mcp__plugin-agent_plugins-slack__post_message" })).toEqual(["post"]);
+  it("reads every word a name uses for its action, and treats a leading read's object as what it reads", () => {
+    // WP-101 fix round: a name that doesn't open with a read verb says what it does with every word.
+    expect(actionHeads({ tool: "mcp__plugin-agent_plugins-slack__post_message" })).toEqual(["post", "message"]);
+    expect(actionHeads({ tool: "SendMessage" })).toEqual(["send", "message"]);
+    // A leading read verb's object is what it reads, not what it does.
     expect(actionHeads({ tool: "mcp__plugin-agent_plugins-blog__get_post" })).toEqual(["get"]);
-    expect(actionHeads({ tool: "SendMessage" })).toEqual(["send"]);
     expect(actionHeads({ tool: "Bash", command: "npm publish" })).toEqual(["npm", "publish"]);
-    expect(actionHeads({ tool: "Bash", command: "sudo gh auth login" })).toEqual(["gh", "auth"]);
-    expect(actionHeads({ tool: "Bash", command: "npm run check" })).toEqual(["npm", "run"]);
+    expect(actionHeads({ tool: "Bash", command: "sudo gh auth login" })).toEqual(["gh", "auth", "login"]);
+    expect(actionHeads({ tool: "Bash", command: "npm run check" })).toEqual(["npm", "run", "check"]);
     expect(actionHeads({ tool: "Write", title: "Write publish.sh" })).toEqual(["write"]);
   });
 
@@ -98,19 +102,72 @@ describe("the actions that always wait for the person", () => {
     expect(reviewVeto({ action })).toBe(ALWAYS_ASK_REASON[kind as keyof typeof ALWAYS_ASK_REASON]);
   });
 
+  it("reads every word of a tool name, not just its first", () => {
+    // The review's row 20: a risky word anywhere in the name now counts.
+    expect(askKinds({ tool: "mcp__plugin-a-b__read_secret" })).toEqual(["account"]);
+    expect(askKinds({ tool: "get_token" })).toEqual(["account"]);
+    expect(askKinds({ tool: "mcp__x__list_and_delete" })).toEqual(["delete"]);
+    expect(askKinds({ tool: "read_secret" })).toEqual(["account"]);
+    expect(askKinds({ tool: "SendMessage" })).toEqual(["send"]);
+  });
+
+  it("reads every word of a command, not just its first", () => {
+    expect(askKinds({ tool: "Bash", command: "git push origin main" })).toEqual(["publish"]);
+    expect(askKinds({ tool: "Bash", command: "npm run deploy" })).toEqual(["publish"]);
+    expect(askKinds({ tool: "Bash", command: "ls && rm -rf build" })).toEqual(["delete"]);
+    // A read's arguments are data: a path or a pattern is never the action.
+    expect(askKinds({ tool: "Bash", command: "cat src/billing/account.ts" })).toEqual([]);
+    expect(askKinds({ tool: "Bash", command: "git log --grep=publish" })).toEqual([]);
+  });
+
   it("lets reads through, however their name reads", () => {
+    // A read whose arguments are data: the program and its words are what it does.
     for (const action of [
       { tool: "Read", title: "Read notes.md" },
       { tool: "mcp__plugin-agent_plugins-blog__get_post" },
       { tool: "mcp__plugin-agent_plugins-slack__list_messages" },
       { tool: "Bash", command: "git log --grep=publish" },
       { tool: "Bash", command: "cat src/billing/account.ts" },
-      { tool: "Bash", command: "grep send src/billing/account.ts" },
-      { tool: "Bash", command: "rg 'delete' src/notes.ts" },
       { tool: "Bash", command: "npm run check" },
       { tool: "Edit", title: "Edit a.ts" },
     ])
       expect(reviewVeto({ action }), JSON.stringify(action)).toBeNull();
+    // A quoted pattern is data, not the action.
+    expect(reviewVeto({ action: { tool: "Bash", command: "rg 'delete' src/notes.ts" } })).toBeNull();
+  });
+
+  it("never throws on an action it can't read", () => {
+    for (const action of [null, undefined, 7, { command: 7 }, { tool: 7 }, { title: 7 }] as unknown as { tool?: string }[])
+      expect(() => reviewVeto({ action })).not.toThrow();
+    expect(reviewVeto({ action: { command: 7 } as unknown as { tool: string } })).not.toBeNull();
+  });
+});
+
+describe("the question path (WP-101 fix round, row 19)", () => {
+  it.each([
+    "Should I email Priya the invoice?",
+    "Should I publish the release notes?",
+    "Delete the old branch?",
+    "Should I post the changelog to the public site?",
+    "Shall I forward the thread to the client?",
+    "Do you want me to refund the charge?",
+  ])("holds a question that asks to send, delete, pay, publish or change access: %s", (question) => {
+    expect(questionVeto({ question })).not.toBeNull();
+  });
+
+  it("holds when the recommendation is the action, even if the question isn't", () => {
+    expect(questionVeto({ question: "What next?", recommendation: "Publish the release notes" })).toBe(ALWAYS_ASK_REASON.publish);
+    expect(questionVeto({ question: "Which option?", options: ["A: keep", "B: delete the branch"] })).toBe(ALWAYS_ASK_REASON.delete);
+  });
+
+  it("lets an ordinary question through", () => {
+    for (const question of ["Split into two PRs?", "Which first?", "Keep the old endpoint for a week?", "Which name do you prefer?", "Should I rename the test file?"])
+      expect(questionVeto({ question }), question).toBeNull();
+  });
+
+  it("never throws on text it can't read", () => {
+    for (const input of [null, undefined, 7, { question: 7 }, { question: "x", recommendation: 7 }, { question: "x", options: 7 }] as unknown[])
+      expect(() => questionVeto(input as never)).not.toThrow();
   });
 });
 

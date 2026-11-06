@@ -11,16 +11,20 @@ import { pathKey } from "../../../shared/lib/paths";
 import type { Block } from "../../sessions/model/session";
 import type { TrustedServers } from "./mcpTrust";
 import { callText, redListCategory, redVerdict, type RedCategory } from "./redList";
-import { reviewVeto } from "./reviewerRules";
+import { questionVeto, reviewVeto } from "./reviewerRules";
 import { safeCall } from "./safeApproval";
 import { forUser } from "../../hub/model/userName";
 
 export type CallVerdict =
   | { outcome: "off" }
-  | { outcome: "held"; red: RedCategory; until: number }
+  | { outcome: "held"; red: RedCategory | null; until: number }
   | { outcome: "taken"; answer: string; until: number };
 
-/** An agent's call: its recommendation is taken unless autopilot is off or the call is on the red list. */
+/**
+ * An agent's call: its recommendation is taken unless autopilot is off, the call is on the red list, or it is a send,
+ * a delete, a payment, a publish or an account change, which always wait for Ash (reviewerRules.ts questionVeto).
+ * A call the rules can't read holds.
+ */
 export function decideCall(input: {
   question: string;
   recommendation: string;
@@ -31,12 +35,22 @@ export function decideCall(input: {
   until: number | undefined;
 }): CallVerdict {
   if (input.until === undefined) return { outcome: "off" };
-  const red = redVerdict(
-    callText(input.question, input.recommendation, input.why, ...(input.options ?? [])),
-    input.declaredRed,
-  );
-  if (red) return { outcome: "held", red, until: input.until };
-  return { outcome: "taken", answer: input.recommendation, until: input.until };
+  const until = input.until;
+  try {
+    const red = redVerdict(
+      callText(input.question, input.recommendation, input.why, ...(input.options ?? [])),
+      input.declaredRed,
+    );
+    if (red) return { outcome: "held", red, until };
+    // WP-101: the same rule a reviewed approval follows, on the question path: asking is not a ground for answering.
+    if (questionVeto({ question: input.question, recommendation: input.recommendation, options: input.options }))
+      return { outcome: "held", red: null, until };
+    return { outcome: "taken", answer: input.recommendation, until };
+  } catch (error) {
+    // A call that can't be judged holds: never an answer on an error (WP-101, fail closed).
+    console.warn("Autopilot decision:", error);
+    return { outcome: "held", red: null, until };
+  }
 }
 
 /** What Ash's absence tells an agent whose question has no marked pick. */
@@ -77,20 +91,27 @@ export function approvalVerdict(
   forcedRed?: RedCategory,
   trusted?: TrustedServers | null,
 ): ApprovalVerdict {
-  const what = approvalWhat(block);
-  if (forcedRed) return { kind: "held", red: forcedRed, what, why: forUser("its chat was told to ask Ash") };
-  const text = approvalText(block);
-  if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
-  const red = redListCategory(text);
-  if (red) return { kind: "held", red, what, why: "it touches the red list" };
-  // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
-  // (reviewerRules.ts). This can only hold, never allow.
-  const reviewed = reviewVeto({
-    action: { tool: block.approval?.call?.tool, command: block.approval?.call?.command, title: block.tool?.title },
-  });
-  if (reviewed) return { kind: "held", red: null, what, why: reviewed };
-  const why = safeCall(block.approval?.call, folder, trusted);
-  return why ? { kind: "held", red: null, what, why } : { kind: "allow", what };
+  let what = "A tool call";
+  try {
+    what = approvalWhat(block);
+    if (forcedRed) return { kind: "held", red: forcedRed, what, why: forUser("its chat was told to ask Ash") };
+    const text = approvalText(block);
+    if (text.length > APPROVAL_TEXT_MAX) return { kind: "held", red: null, what, why: "it is too long to check whole" };
+    const red = redListCategory(text);
+    if (red) return { kind: "held", red, what, why: "it touches the red list" };
+    // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
+    // (reviewerRules.ts). This can only hold, never allow.
+    const reviewed = reviewVeto({
+      action: { tool: block.approval?.call?.tool, command: block.approval?.call?.command, title: block.tool?.title },
+    });
+    if (reviewed) return { kind: "held", red: null, what, why: reviewed };
+    const why = safeCall(block.approval?.call, folder, trusted);
+    return why ? { kind: "held", red: null, what, why } : { kind: "allow", what };
+  } catch (error) {
+    // A call that can't be judged holds: never an allow on an error (WP-101, fail closed).
+    console.warn("Autopilot approval:", error);
+    return { kind: "held", red: null, what, why: "the app couldn't decide it, so it waits for Ash" };
+  }
 }
 
 // ---- which project a chat belongs to -------------------------------------------------------------------------------

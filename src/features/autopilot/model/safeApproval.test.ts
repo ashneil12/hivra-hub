@@ -195,6 +195,21 @@ describe("shell commands", () => {
     expect(safeCommand(command)).not.toBeNull();
   });
 
+  it("never throws, and never finds a command in Object's own methods", () => {
+    // The review's row 21: `COMMANDS[name]` found Object.prototype methods, so valueOf threw a TypeError.
+    for (const name of ["valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable", "toString", "toLocaleString", "constructor", "__proto__", "__defineGetter__"])
+      expect(safeCommand(name), name).toMatch(/isn't a read/);
+    // A command shape it can't read is a hold, never an exception.
+    for (const command of ["", "   ", "\\", "'", '"', "ps -p 1 -o ", "ps -p 1 -o ,"]) expect(safeCommand(command), command).not.toBeNull();
+  });
+
+  it("holds a call whose tool isn't text, instead of throwing", () => {
+    for (const tool of [null, 7, {}, []]) {
+      const call = { tool } as unknown as { tool: string };
+      expect(safeCall(call, FOLDER), JSON.stringify(tool)).not.toBeNull();
+    }
+  });
+
   it("reads words as sh does", () => {
     expect(shellWords(`rg -n 'a b' "c\\"d" e\\ f`)).toEqual(["rg", "-n", "a b", 'c"d', "e f"]);
     expect(shellWords("rg foo *")).toBeNull();

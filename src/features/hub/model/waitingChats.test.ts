@@ -282,6 +282,31 @@ describe("hooks for Autopilot and H4", () => {
     off();
   });
 
+  it("Autopilot never takes a pick that sends, deletes, moves money, publishes or changes access (WP-101, row 19)", async () => {
+    const { calls } = host();
+    noteChats([
+      markerChat("mail", "Needs Ash: Send the invoice to Priya?\nMy pick: yes, send it"),
+      markerChat("notes", "Needs Ash: What next?\nMy pick: publish the release notes"),
+      markerChat("branch", "Needs Ash: Delete the old branch?\nMy pick: yes"),
+      markerChat("changelog", "Needs Ash: Next step?\nMy pick: keep it"),
+      markerChat("fine", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes"),
+    ]);
+    const vetoed = ["mail", "notes", "branch"];
+    for (const id of vetoed) {
+      const chat = findWaitingChat(id)!;
+      expect(autopilotMayTake(chat), id).toBe(false);
+      // Held either by the red line's own words or by the reviewer rule; both leave it for Ash.
+      const result = await takePick(id, { by: "autopilot" });
+      expect(result.ok, id).toBe(false);
+      if (!chat.redLine) expect(result, id).toEqual({ ok: false, reason: "That one sends, deletes, moves money, publishes or changes access, so it waits for Ash." });
+    }
+    expect(autopilotMayTake(findWaitingChat("fine")!)).toBe(true);
+    expect((await takePick("fine", { by: "autopilot" })).ok).toBe(true);
+    expect(calls.send.map(([id]) => id)).toEqual(["fine"]);
+    // Ash may still take a vetoed one himself: the rule only narrows what autopilot does.
+    for (const id of vetoed) expect((await takePick(id)).ok, id).toBe(true);
+  });
+
   it("a worker's question H4 routes to its Lead is not Ash's", () => {
     setWorkerQuestionRouter((c) => c.sessionId === "worker");
     noteChats([markerChat("worker", "Needs Ash: Which test runner?\nMy pick: vitest"), markerChat("lead", "Needs Ash: Ship it?\nMy pick: yes")]);

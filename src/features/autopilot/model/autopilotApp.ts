@@ -376,18 +376,23 @@ export async function handleAutopilotApp(
         dedupe: `decide:${source.id}:${requestId}`,
       };
       if (verdict.outcome === "held") {
-        deps.holdRed(source.id, verdict.red);
-        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: verdict.red });
+        // WP-101: a hold can come from the reviewer rules rather than the red list (a send, a delete, a payment, a
+        // publish, an account change); that one doesn't hold the chat's next question, since it names no category.
+        const red = verdict.red;
+        if (red) deps.holdRed(source.id, red);
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red });
         return {
           autopilot: "on",
           until: new Date(verdict.until).toISOString(),
           untilLabel,
           decision: "held",
           act: "ask",
-          red: verdict.red,
-          redLabel: redLabel(verdict.red),
+          red,
+          ...(red ? { redLabel: redLabel(red) } : {}),
           ...(logged ? { logged: logged.id } : {}),
-          note: forUser`This is on Ash's red list (${redLabel(verdict.red).toLowerCase()}), so autopilot never takes it. Ask Ash in your chat with your recommendation; it waits for him in Needs you. Carry on with other work meanwhile.`,
+          note: red
+            ? forUser`This is on Ash's red list (${redLabel(red).toLowerCase()}), so autopilot never takes it. Ask Ash in your chat with your recommendation; it waits for him in Needs you. Carry on with other work meanwhile.`
+            : forUser`This sends, deletes, moves money, publishes or changes access, so autopilot never takes it on its own. Ask Ash in your chat with your recommendation; it waits for him in Needs you. Carry on with other work meanwhile.`,
         };
       }
       const logged = await backend.log({ ...base, kind: "decision", outcome: "taken" });

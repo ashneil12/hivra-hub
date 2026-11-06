@@ -112,8 +112,16 @@ const ASK_WORDS: Record<AskKind, readonly string[]> = {
   delete: words("delete|deletes|delete_all|remove|removes|rm|unlink|erase|drop|purge|wipe|destroy|truncate|clear|trash|uninstall|revoke"),
   pay: words("pay|pays|paid|payment|payments|charge|charges|refund|refunds|transfer|transfers|withdraw|deposit|invoice|purchase|buy|sell|order|orders|stripe|checkout|billing|subscribe|subscription|payout|donate"),
   publish: words("publish|publishes|deploy|deploys|release|releases|push|pushes"),
-  account: words("login|logout|signin|signout|sign_up|auth|authenticate|authorization|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password"),
+  account: words(
+    "login|logout|signin|signout|sign_up|auth|authenticate|authorization|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password|env|ssh|keychain|cookie|cookies|session|sessions|private",
+  ),
 };
+
+/** Words that name something a person's own or a secret: anywhere in a tool's name they make it an account change. */
+const SECRET_WORDS = new Set(words("password|passwd|credential|credentials|key|keys|token|tokens|secret|secrets|env|ssh|keychain|cookie|cookies|session|sessions|auth|private"));
+
+/** Words that join two actions: everything after one of these is a second action ("list_and_delete"). */
+const JOINING_WORDS = new Set(words("and|or|then|with"));
 
 const WORD_KIND = new Map<string, AskKind>();
 for (const [kind, list] of Object.entries(ASK_WORDS) as [AskKind, readonly string[]][]) {
@@ -160,30 +168,88 @@ function commandHeads(command: string): string[] {
   return heads;
 }
 
-/** One word for the tool's own name: the tool part of an MCP id, or the tool as the provider names it. */
-function toolHead(tool: string): string {
+/**
+ * The words of the tool's own name that say what it does. Every word counts after a name that doesn't open with a
+ * read ("post_message", "email_status"), after a joining word ("list_and_delete") and when it names something personal
+ * or a secret ("get_token", "read_secret"); a plain object after a leading read is what the tool reads ("get_post").
+ */
+function toolWords(tool: string): string[] {
   const mcp = splitMcpTool(tool);
-  const name = sanitizeNameComponent(mcp ? mcp.tool : tool);
-  return name.split("_")[0] ?? "";
+  const parts = sanitizeNameComponent(mcp ? mcp.tool : tool).split("_").filter(Boolean);
+  if (!parts.length) return [];
+  const readFirst = READ_VERBS.has(parts[0]);
+  const words: string[] = [parts[0]];
+  for (let i = 1; i < parts.length; i++) {
+    const word = parts[i];
+    if (!readFirst || SECRET_WORDS.has(word) || JOINING_WORDS.has(word) || JOINING_WORDS.has(parts[i - 1])) words.push(word);
+  }
+  return words;
 }
+
+/** The verbs that read: a tool named with one first is doing something with its object, not to it. */
+const READ_VERBS = new Set(
+  words("read|get|list|search|find|inspect|describe|count|query|status|lookup|view|show|check|fetch|scan|load|report|export"),
+);
 
 /** What a proposed action is, as these rules read it. */
 export type ReviewAction = { tool?: string; command?: string; title?: string };
 
+/** The shell's own separators: each part of a command is read as a command of its own ("ls && rm -rf build"). */
+const SEGMENT_SPLIT = /&&|\|\||[;|]/;
+
+/** Where the program starts in a part of a command, past any wrapper and its options. */
+function programAt(parts: readonly string[]): number {
+  let index = 0;
+  while (index < parts.length && COMMAND_WRAPPERS.has(tidy(parts[index]))) {
+    index++;
+    while (index < parts.length && tidy(parts[index]).startsWith("-")) index++;
+  }
+  return index;
+}
+
+/** A word that is an option (with its value), or that carries a path or an assignment: never the action itself. */
+function isData(word: string): boolean {
+  return !word || word.startsWith("-") || word.includes("/") || word.includes(".") || word.includes("=");
+}
+
 /**
- * The opening words of an action: its tool's first word, or its command's first words. A person-readable title adds
- * its first word only when that word names one of the kinds above, so "Delete the old notes" is read as a delete
- * while "Write publish.sh" stays a write.
+ * The words a command runs: each part's opening words, then every plain word after a generic runner or a subcommand
+ * tool, since those words can be the action. A read's arguments stay data ("cat src/billing/account.ts", "git log
+ * --grep=publish").
+ */
+function commandActionWords(command: string): string[] {
+  const words: string[] = [];
+  for (const segment of command.split(SEGMENT_SPLIT)) {
+    const parts = segment.trim().split(/\s+/).filter(Boolean);
+    const at = programAt(parts);
+    if (at >= parts.length) continue;
+    words.push(...commandHeads(segment));
+    const program = tidy(parts[at]);
+    if (!GENERIC_RUNNERS.has(program) && !SUBCOMMAND_TOOLS.has(program)) continue;
+    for (const part of parts.slice(at + 1)) {
+      const word = tidy(part);
+      if (!isData(word)) words.push(word);
+    }
+  }
+  return words;
+}
+
+/**
+ * The words of an action that say what it does: every word of its tool's name or its command's action words. A
+ * person-readable title adds its first word only when that word names one of the kinds above, so "Delete the old
+ * notes" is read as a delete while "Write publish.sh" stays a write. A field that isn't text is one the rules can't
+ * read: it says so, rather than passing the action.
  */
 export function actionHeads(action: ReviewAction | null | undefined): string[] {
   if (!action || typeof action !== "object") return [];
   const heads: string[] = [];
+  for (const field of [action.command, action.tool, action.title]) if (field !== undefined && field !== null && typeof field !== "string") return [UNREADABLE];
   const command = typeof action.command === "string" && action.command.trim() ? action.command : "";
-  if (command) heads.push(...commandHeads(command));
+  if (command) heads.push(...commandActionWords(command));
   if (typeof action.tool === "string" && action.tool.trim()) {
-    const tool = toolHead(action.tool);
+    const words = toolWords(action.tool);
     // "bash npm publish" is a publish; the runner's own name says nothing about what it runs.
-    if (!command || !GENERIC_RUNNERS.has(tool)) heads.push(tool);
+    if (!command || !GENERIC_RUNNERS.has(words[0])) heads.push(...words);
   }
   if (typeof action.title === "string") {
     const first = tidy(action.title.split(/\s+/)[0]);
@@ -246,6 +312,12 @@ export const REVIEWER_RULES: readonly string[] = [
   "On any doubt, ask the person.",
 ];
 
+/** Why the reviewer couldn't read the action at all: it holds, rather than throwing and letting the caller guess. */
+export const UNREADABLE_REASON = "The reviewer couldn't read what this would do, so it waits for you.";
+
+/** The word an unreadable field stands in as, so the rules hold it without a word to look up. */
+const UNREADABLE = "unreadable";
+
 export type ReviewInput = {
   /** What the action would do. */
   action?: ReviewAction | null;
@@ -260,18 +332,14 @@ export type ReviewInput = {
   failed?: boolean;
 };
 
-/**
- * Why a reviewed approval may not be allowed, or null when it may. It only ever narrows: every answer here holds the
- * action for the person, and a null leaves the decision path's own rules to decide. Nothing here can approve an
- * action on its own, and a tool result, a file or another agent's note can never stand in for the person's words.
- */
-export function reviewVeto(input: ReviewInput): string | null {
+function reviewVetoInner(input: ReviewInput): string | null {
   if (!input || typeof input !== "object") return null;
   // A level may be narrowed, never widened.
   if (input.level !== undefined && input.ceiling !== undefined && RANK[normalizeLevel(input.level)] > RANK[normalizeLevel(input.ceiling)])
     return LOOSER_REASON;
   const kinds = askKinds(input.action);
   if (kinds.length) return ALWAYS_ASK_REASON[kinds[0]];
+  if (actionHeads(input.action).includes(UNREADABLE)) return UNREADABLE_REASON;
   if (input.failed === true) return FAILED_REASON;
   if (input.answer === undefined || input.answer === null) return null;
   // From here an answer decides, so the person's own words have to be behind it.
@@ -279,4 +347,52 @@ export function reviewVeto(input: ReviewInput): string | null {
   const answer = readAnswer(input.answer);
   if (!answer.reviewed) return UNCLEAR_REASON;
   return answer.decision === "ask" ? answer.reason : null;
+}
+
+/**
+ * Why a reviewed approval may not be allowed, or null when it may. It only ever narrows: every answer here holds the
+ * action for the person, and a null leaves the decision path's own rules to decide. Nothing here can approve an
+ * action on its own, and a tool result, a file or another agent's note can never stand in for the person's words.
+ * A shape it can't read holds rather than throws: a caller that never sees an error can't be pushed past this rule.
+ */
+export function reviewVeto(input: ReviewInput): string | null {
+  try {
+    return reviewVetoInner(input);
+  } catch {
+    return UNREADABLE_REASON;
+  }
+}
+
+// ---- the question path --------------------------------------------------------------------------------------------
+
+/** A question an agent asks the person, with the answer it recommends and any options it offers. */
+export type QuestionToAnswer = { question?: unknown; recommendation?: unknown; options?: unknown };
+
+/** The text that can carry an action, in the order it is spoken: the question, then what would be taken. */
+function questionParts(input: QuestionToAnswer | null | undefined): string[] {
+  if (!input || typeof input !== "object") return [];
+  const parts: string[] = [];
+  for (const value of [input.question, input.recommendation]) if (typeof value === "string" && value.trim()) parts.push(value);
+  if (Array.isArray(input.options)) for (const option of input.options) if (typeof option === "string" && option.trim()) parts.push(option);
+  return parts;
+}
+
+/**
+ * Why answering this question with the agent's recommendation may not be autopilot's to give, or null when it may.
+ * The same rule as a reviewed approval (send, delete, pay, publish, change access always waits), but read over every
+ * word of the question, the recommendation and each option: a question is prose, so the action can sit anywhere in
+ * it ("Should I email Priya the invoice?"). A question it can't read holds.
+ */
+export function questionVeto(input: QuestionToAnswer | null | undefined): string | null {
+  try {
+    for (const part of questionParts(input)) {
+      for (const word of part.toLowerCase().split(/[^a-z0-9']+/)) {
+        const kind = WORD_KIND.get(tidy(word));
+        if (kind) return ALWAYS_ASK_REASON[kind];
+      }
+    }
+    return null;
+  } catch {
+    return UNREADABLE_REASON;
+  }
 }

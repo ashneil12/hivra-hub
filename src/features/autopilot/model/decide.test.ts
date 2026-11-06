@@ -16,6 +16,18 @@ describe("autopilot.decide", () => {
     });
   });
 
+  it("holds a question that asks to send, delete, pay, publish or change access (WP-101 fix round, row 19)", () => {
+    const held = (input: { question: string; recommendation: string; options?: string[] }) =>
+      expect(decideCall({ ...input, until: UNTIL })).toMatchObject({ outcome: "held", red: null });
+    held({ question: "Should I email Priya the invoice?", recommendation: "Yes" });
+    held({ question: "Should I publish the release notes?", recommendation: "Yes" });
+    held({ question: "Delete the old branch?", recommendation: "Yes" });
+    held({ question: "Should I post the changelog to the public site?", recommendation: "Yes" });
+    // The action can be in the recommendation or in an option too.
+    held({ question: "Which next?", recommendation: "Publish the release notes" });
+    held({ question: "Which next?", recommendation: "Option B", options: ["A: keep", "B: delete the old branch"] });
+  });
+
   it("never takes a red-list call: by its words, its options, or the agent's own mark", () => {
     expect(decideCall({ question: "What about the duplicate charge?", recommendation: "Refund the customer", until: UNTIL })).toMatchObject({ outcome: "held", red: "money" });
     expect(decideCall({ question: "Clean up?", recommendation: "Option B", options: ["A: keep", "B: DROP TABLE sessions"], until: UNTIL })).toMatchObject({ outcome: "held", red: "delete" });

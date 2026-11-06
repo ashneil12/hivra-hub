@@ -6,7 +6,7 @@ import { act, createElement, useEffect, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setHubDataSource, type HubDataSource } from "../../hub/model/hubData";
-import { noteChats, resetWaitingChats, setWaitingChatsHost } from "../../hub/model/waitingChats";
+import { noteChats, resetWaitingChats, setWaitingChatsHost, waitingChats } from "../../hub/model/waitingChats";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import { refreshAutopilot, setAutopilotBackend } from "../model/autopilot";
@@ -235,6 +235,24 @@ describe("useAutopilot", () => {
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
     expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/Users/ash/Projects/hivra/shared/config.ts, outside the chat's folder") });
     expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
+  });
+
+  it("holds a waiting question whose answer would send, delete, pay, publish or change access (WP-101, row 19)", async () => {
+    await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
+    await refreshAutopilot();
+    const line = (id: string, text: string) => session(id, "/Users/ash/Projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text }] });
+    await mount([
+      line("mail", "Needs Ash: Send the invoice to Priya?\nMy pick: yes, send it"),
+      line("notes", "Needs Ash: Publish the release notes?\nMy pick: yes"),
+      line("branch", "Needs Ash: Delete the old branch?\nMy pick: yes"),
+      line("changelog", "Needs Ash: Post the changelog to the public site?\nMy pick: yes"),
+      line("plain", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag"),
+    ]);
+    expect(sent.map((m) => m.id)).toEqual(["plain"]);
+    const held = backend.entries.filter((e) => e.kind === "question" && e.outcome === "held").map((e) => e.chatId).sort();
+    expect(held).toEqual(["branch", "changelog", "mail", "notes"]);
+    // Held ones stay on Today's waiting list for Ash.
+    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual(["branch", "changelog", "mail", "notes"]);
   });
 
   it("allows an MCP read only from a server the app says it wired for that chat", async () => {
