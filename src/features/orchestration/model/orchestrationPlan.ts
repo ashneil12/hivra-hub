@@ -1,5 +1,13 @@
 import { HARNESSES, type Block, type HarnessId, type Session } from "../../sessions/model/session";
 import { isEqualOrInside, pathKey } from "../../../shared/lib/paths";
+import {
+  CHECK_COMMAND_MAX,
+  CHECK_TEXT_MAX,
+  GOAL_MAX,
+  refusalMessage,
+  type GoalCheck,
+  type GoalPlanAnswer,
+} from "./orchestrationGoal";
 
 export type OrchestrationChoice = {
   harness: HarnessId;
@@ -19,6 +27,12 @@ export type ProposedTask = {
   modelSettings?: Record<string, string>;
   files: string[];
   dependsOn: string[];
+  /** WP-91: the plain `build` role, or the one `verify` task that checks the goal. */
+  role?: "build" | "verify";
+  /** WP-91: a step that cannot be undone, so the person approves it before it starts. */
+  irreversible?: boolean;
+  /** The one line saying why it cannot be undone. */
+  irreversibleReason?: string;
 };
 export type OrchestrationProposal = {
   version: 1;
@@ -33,6 +47,12 @@ export type OrchestrationProposal = {
   status: "planning" | "ready" | "invalid" | "starting" | "approved";
   title: string;
   summary: string;
+  /** WP-91: the one line the run is for. */
+  goal: string;
+  /** WP-91: the finish line — a command that fails until the goal holds. */
+  check: GoalCheck;
+  /** WP-91: what the graph rules answered about this plan, once they were asked. */
+  graph?: GoalPlanAnswer;
   tasks: ProposedTask[];
   error?: string;
   /** Kept only for invalid cards so a retry can repair the response directly. */
@@ -61,8 +81,62 @@ function stringList(value: unknown, label: string, max: number): string[] {
   ];
 }
 
+/** The one line a run is for. A value from a model is untrusted: length, type and control characters are checked. */
+export function validateGoal(value: unknown): string {
+  const goal = required(value, "the goal this run is for", GOAL_MAX);
+  if (goal.includes("\n") || /\p{Cc}/u.test(goal))
+    throw new Error("Keep the goal to one line");
+  return goal;
+}
+
+/**
+ * The finish line: a command that fails until the goal holds, the exit code it must give, and optionally text it
+ * must print. An empty or over-long command, an exit code that is not a whole number in range, and text that is too
+ * long or spans lines are all refused with plain words.
+ */
+export function validateGoalCheck(value: unknown): GoalCheck {
+  const input = record(value);
+  const command = required(input.command, "the command that proves the goal", CHECK_COMMAND_MAX);
+  if (command.includes("\n") || command.includes("\r") || /\p{Cc}/u.test(command))
+    throw new Error("Keep the finish-line check's command to one line");
+  const expectExit = input.expectExit ?? 0;
+  if (
+    typeof expectExit !== "number" ||
+    !Number.isInteger(expectExit) ||
+    expectExit < -255 ||
+    expectExit > 255
+  )
+    throw new Error(
+      "The exit code the check expects must be a whole number between -255 and 255",
+    );
+  const expectText =
+    input.expectText == null || input.expectText === ""
+      ? undefined
+      : required(input.expectText, "the text the check must print", CHECK_TEXT_MAX);
+  if (expectText && (expectText.includes("\n") || /\p{Cc}/u.test(expectText)))
+    throw new Error("Keep the text the check must print to one line");
+  const timeoutSeconds =
+    input.timeoutSeconds == null
+      ? undefined
+      : typeof input.timeoutSeconds === "number" &&
+          Number.isInteger(input.timeoutSeconds) &&
+          input.timeoutSeconds > 0
+        ? input.timeoutSeconds
+        : (() => {
+            throw new Error("The check's timeout is a whole number of seconds");
+          })();
+  return {
+    command,
+    expectExit,
+    ...(expectText ? { expectText } : {}),
+    ...(timeoutSeconds ? { timeoutSeconds } : {}),
+  };
+}
+
 function scopePath(value: string): string {
-  const slashed = value.replace(/\\/g, "/");
+  // A scope written into a file or copied from a model can carry CRLF and stray spaces; strip them before comparing,
+  // so "src/a.ts\r" is the same path as "src/a.ts" (as Rust's `topology::scope_path` does).
+  const slashed = value.replace(/\r/g, "").trim().replace(/\\/g, "/");
   const prefix = slashed.startsWith("//")
     ? "//"
     : /^[A-Za-z]:\//.test(slashed)
@@ -189,6 +263,19 @@ export function validateProposedTasks(
       throw new Error(
         "Assignment IDs must contain letters, numbers, underscores or hyphens",
       );
+    const role = task.role ?? "build";
+    if (role !== "build" && role !== "verify")
+      throw new Error(`Assignment "${id}" has role "${String(task.role)}"; use build or verify`);
+    const irreversible = task.irreversible === true;
+    const irreversibleReason = irreversible
+      ? required(
+          task.irreversibleReason,
+          `a one-line reason ${id} cannot be undone`,
+          200,
+        )
+      : undefined;
+    if (irreversibleReason && irreversibleReason.includes("\n"))
+      throw new Error(`Assignment "${id}": keep the reason it cannot be undone to one line`);
     const files = [
       ...new Set(
         stringList(task.files, "file scopes", 64).map((path) =>
@@ -196,9 +283,13 @@ export function validateProposedTasks(
         ),
       ),
     ];
-    if (!files.length)
+    if (!files.length && role !== "verify")
       throw new Error(
         `Assignment "${id}" has no file scopes. Use project-relative paths, or '.' for the whole project`,
+      );
+    if (role === "verify" && files.includes("."))
+      throw new Error(
+        `Assignment "${id}" is the verify task and claims the whole project. A verify task checks the goal; give it the files it writes, or none`,
       );
     return {
       id,
@@ -213,6 +304,10 @@ export function validateProposedTasks(
           }),
       files,
       dependsOn: stringList(task.dependsOn ?? [], "dependencies", 40),
+      ...(role === "verify" ? { role: "verify" as const } : {}),
+      ...(irreversible
+        ? { irreversible: true, irreversibleReason: irreversibleReason! }
+        : {}),
     };
   });
   const ids = new Set(tasks.map((task) => task.id));
@@ -245,9 +340,12 @@ export function orchestrationPlanningPrompt(
     "You are the orchestrator: the user selected you in the composer model picker. Decide the task breakdown and choose each worker's harness and model from the available catalog below. Do not ask the user to assemble a team. They can change your choices in the card before confirming.",
     "Keep planning efficient: inspect only what is needed to understand the request and relevant project conventions. Use the fewest useful tasks, with clear deliverables and acceptance checks. Do not create agents for trivial steps or duplicate investigation. Prefer a fast, economical model for straightforward work and a more capable model when complexity warrants it; do not invent model capabilities or prices. Reuse a suitable harness/model across tasks when that is sufficient. Explain your overall division of work briefly in the summary.",
     'Use only exact harness/model pairs from the catalog. Give each task self-contained instructions and project-relative write scopes; directories own their descendants. Parallelize independent work with disjoint files. Serialize shared-file edits with dependencies and avoid concurrent repository-wide commands. Assign project-wide generation or final combined validation to a task with files ["."]. Workers must not commit, push, switch branches, or write outside the selected checkout. If the user requested Git or cross-checkout finalization, do not create a worker for it: the lead performs only those explicitly authorized final operations after every worker is reviewed, integrated, and the orchestration run is finished. All workers use app-managed isolated checkouts; do not ask them to create or switch worktrees.',
+    "State the goal in one line and the finish line as a command the app runs itself: it must be red on the untouched checkout before any work starts, and green when the goal holds. Give expectExit when a command reports success some other way, and expectText when the exit code alone is not the whole finish line.",
+    'Exactly one task must have "role":"verify". It must depend on every task that writes, change nothing itself (give it "files":[]), and be able to see the whole result. No other task may carry a role.',
+    'Two tasks that can run at the same time may not share a write scope, even indirectly: make one depend on the other, or split the files. A task that cannot be undone — a migration against a shared database, a call that spends money — gets "irreversible":true and a one-line "irreversibleReason"; the person approves it before it starts, and nothing downstream of it begins until they do.',
     `The exact checkout root is ${JSON.stringify(cwd)}. Every files entry must be "." or a path relative to this root. For example, a discovered absolute path beneath this root must be returned without the root prefix. Never use an absolute path or '..'.`,
     "Return your final proposal as one JSON object inside <monocode_proposal>...</monocode_proposal>. The app renders it as an editable card, so do not ask for approval in prose. No Markdown inside the JSON fields. Tasks may reference any task ID; the graph must be acyclic.",
-    'Schema: {"title":"Short project title","summary":"What you will do and how the work fits together","tasks":[{"id":"task-1","title":"Short task title","prompt":"Self-contained instructions, constraints and checks","harness":"exact harness ID","model":"exact model ID","files":["src/feature"],"dependsOn":[]}]}',
+    'Schema: {"title":"Short project title","summary":"What you will do and how the work fits together","goal":"One line: what this run is for","check":{"command":"the command that proves it","expectExit":0,"expectText":"optional text the output must hold"},"tasks":[{"id":"task-1","title":"Short task title","prompt":"Self-contained instructions, constraints and checks","harness":"exact harness ID","model":"exact model ID","files":["src/feature"],"dependsOn":[]},{"id":"verify","title":"Check the goal","prompt":"Verify the goal end to end","harness":"exact harness ID","model":"exact model ID","role":"verify","files":[],"dependsOn":["task-1"]}]}',
     `Parallel worker limit: ${settings.maxWorkers}`,
     `<available_models>\n${JSON.stringify(settings.choices)}\n</available_models>`,
     `<user_request>\n${request}\n</user_request>`,
@@ -271,6 +369,8 @@ export function completeOrchestrationProposal(
       ...draft,
       title: required(input.title, "a proposal title", 160),
       summary: required(input.summary, "a proposal summary", 2000),
+      goal: validateGoal(input.goal),
+      check: validateGoalCheck(input.check),
       tasks: validateProposedTasks(
         input.tasks,
         draft.settings,
@@ -307,28 +407,87 @@ export function orchestrationRepairPrompt(
   ].join("\n\n");
 }
 
+/**
+ * WP-91: the graph is checked as soon as the plan is read, so a plan two tasks could run at once on the same file,
+ * or one without its single verify task, is refused with the fix named — and the one repair turn can correct it.
+ */
+export async function checkProposalGraph(
+  proposal: OrchestrationProposal,
+  check: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<GoalPlanAnswer>,
+): Promise<OrchestrationProposal> {
+  try {
+    // The answer's layers are kept on the card, so the plan draws the same graph the run will.
+    return { ...proposal, graph: await check(goalPlanNodes(proposal.tasks)) };
+  } catch (reason) {
+    return {
+      ...proposal,
+      status: "invalid",
+      response: JSON.stringify({
+        title: proposal.title,
+        summary: proposal.summary,
+        goal: proposal.goal,
+        check: proposal.check,
+        tasks: proposal.tasks,
+      }).slice(-200_000),
+      error: `Could not accept the assignment card: ${refusalMessage(reason)}`,
+    };
+  }
+}
+
 /** At most one corrective turn; provider failures and cancellation never loop. */
 export async function completeOrRepairOrchestrationProposal(
   draft: OrchestrationProposal,
   response: string,
   repair: (prompt: string) => Promise<string>,
   canRepair: () => boolean,
+  checkGraph?: (nodes: ReturnType<typeof goalPlanNodes>) => Promise<GoalPlanAnswer>,
 ): Promise<OrchestrationProposal> {
-  const first = completeOrchestrationProposal(draft, response);
+  const read = (text: string) => completeOrchestrationProposal(draft, text);
+  let first = read(response);
+  if (first.status === "ready" && checkGraph)
+    first = await checkProposalGraph(first, checkGraph);
   if (first.status !== "invalid" || !canRepair()) return first;
   const corrected = await repair(orchestrationRepairPrompt(first));
-  return completeOrchestrationProposal(draft, corrected);
+  const fixed = read(corrected);
+  return fixed.status === "ready" && checkGraph
+    ? await checkProposalGraph(fixed, checkGraph)
+    : fixed;
 }
 
 export function proposalMarkdown(proposal: OrchestrationProposal): string {
   return [
     `# ${proposal.title}`,
     proposal.summary,
+    ...(proposal.goal ? [`Goal: ${proposal.goal}`] : []),
+    ...(proposal.check ? [`Finish line: ${goalCheckText(proposal.check)}`] : []),
     ...proposal.tasks.map(
       (task) =>
-        `## ${task.title}\n${task.harness} · ${proposal.settings.choices.find((choice) => choice.harness === task.harness && choice.model === task.model)?.name ?? task.model}\n${task.prompt}\nFiles: ${task.files.join(", ")}\nDepends on: ${task.dependsOn.join(", ") || "None"}`,
+        `## ${task.title}${task.role === "verify" ? " (verify)" : ""}\n${task.harness} · ${proposal.settings.choices.find((choice) => choice.harness === task.harness && choice.model === task.model)?.name ?? task.model}\n${task.prompt}\nFiles: ${task.files.join(", ") || "none"}\nDepends on: ${task.dependsOn.join(", ") || "None"}${task.irreversible ? `\nCannot be undone: ${task.irreversibleReason ?? "no reason given"}` : ""}`,
     ),
   ].join("\n\n");
+}
+
+/** The finish line in one line, for the card and the lead's prompt. */
+export function goalCheckText(check: GoalCheck): string {
+  const suffix = check.expectText ? `, printing ${JSON.stringify(check.expectText)}` : "";
+  return `${check.command} (exit ${check.expectExit}${suffix})`;
+}
+
+/** A proposal's tasks as the graph rules read them (WP-91's Rust side). */
+export function goalPlanNodes(tasks: ProposedTask[]): {
+  id: string;
+  title: string;
+  role: "build" | "verify";
+  dependsOn: string[];
+  writeScope: string[];
+}[] {
+  return tasks.map((task) => ({
+    id: task.id,
+    title: task.title,
+    role: task.role ?? "build",
+    dependsOn: task.dependsOn,
+    writeScope: task.files,
+  }));
 }
 
 export function withOrchestrationProposal(

@@ -240,3 +240,67 @@ fn an_answer_given_in_the_askers_chat_is_not_repeated_to_it() {
         .collect();
     assert_eq!(to, ["w1"]);
 }
+
+#[test]
+fn only_the_person_answers_an_irreversible_step() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "irreversible/lead/task-1";
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Deploy cannot be undone: it migrates the shared database.".into(),
+            options: vec!["Approve".into(), "Send back".into()],
+            recommended: Some("Send back".into()),
+            ..ask_input("lead", key, &[])
+        },
+        2,
+    )
+    .unwrap();
+    // A chat answering for the first mate cannot settle it, and neither can autopilot.
+    for machine in [Some("chat:lead"), Some("autopilot")] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Approve",
+            machine.map(str::to_string),
+            3,
+        )
+        .unwrap_err();
+        assert!(refusal.contains("Only the person answers"), "{refusal}");
+    }
+    // It is still open: a machine's answer did not settle it quietly.
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    // The person's own answer goes through, and the waiting worker hears it.
+    let out = answer(
+        &mut conn,
+        "hivra",
+        key,
+        "Send back: use the staging database first",
+        Some("user".into()),
+        4,
+    )
+    .unwrap();
+    assert!(out.applied);
+    assert_eq!(
+        out.decision.unwrap().answer.as_deref(),
+        Some("Send back: use the staging database first")
+    );
+    // The lead that parked it hears the person's words.
+    assert!(out.released.iter().any(|m| m.child_session == "lead"));
+    // An ordinary decision is still answered by a chat on the first mate's behalf, as before.
+    ask(&mut conn, ask_input("fm", "retention", &[]), 5).unwrap();
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "retention",
+            "Keep 30 days",
+            Some("chat:fm".into()),
+            6
+        )
+        .unwrap()
+        .applied
+    );
+}

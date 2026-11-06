@@ -195,6 +195,12 @@ export function OrchestrationSidebarAgents({
                 >
                   {task.title}
                 </span>
+                {/* WP-91: the run's verify task, or the repair that replaces a failed one. */}
+                {live?.role === "verify" || live?.repairs ? (
+                  <span className="shrink-0 text-[11px] text-content/45">
+                    {live?.role === "verify" ? "Verify" : "Repair"}
+                  </span>
+                ) : null}
                 <span
                   className={`flex shrink-0 items-center gap-1 text-[11px] ${
                     task.needsInput ||
@@ -238,6 +244,15 @@ export function OrchestrationSidebarAgents({
                     />
                     <span className="min-w-0 truncate">{model}</span>
                   </p>
+                  {live && (
+                    <p className="text-[11px] text-content/45">
+                      {live.handoff
+                        ? live.handoff.read
+                          ? "Handoff read"
+                          : "Handoff not read"
+                        : "No handoff yet"}
+                    </p>
+                  )}
                   {live?.error && (
                     <p className="text-[11px] text-red-400">{live.error}</p>
                   )}

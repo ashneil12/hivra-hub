@@ -652,8 +652,12 @@ pub(crate) fn send(
                 "Cannot connect to MonoCode at {address}: {error}. The app may have restarted, or this agent's sandbox may be blocking localhost."
             ))
         })?;
+    // WP-91: `finish` runs the run's own finish-line check in the lead's checkout before it answers, and a real
+    // check takes minutes. Every other action answers in well under a minute, and a long wait there would only hide
+    // a hung app. The app's own timeout for the check is at most an hour, so wait past it.
+    let read_seconds = if action == "finish" { 3_660 } else { 40 };
     stream
-        .set_read_timeout(Some(Duration::from_secs(40)))
+        .set_read_timeout(Some(Duration::from_secs(read_seconds)))
         .map_err(|e| unsent(e.to_string()))?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))

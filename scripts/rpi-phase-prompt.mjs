@@ -3,8 +3,11 @@
 //
 // The task is always a real task record, never free text:
 //
-//   node scripts/rpi-phase-prompt.mjs --phase <phase> --record <task.json> --repo <repo>
-//   node scripts/rpi-phase-prompt.mjs --phase <phase> --task <id> --tasks <store.json> --repo <repo>
+//   node scripts/rpi-phase-prompt.mjs --phase <phase> --record <task.json> --repo <repo> [--project <folder>]
+//   node scripts/rpi-phase-prompt.mjs --phase <phase> --task <id> --tasks <store.json> --repo <repo> [--project <folder>]
+//
+// --repo is the Hivra checkout the skill files and the prompt code are read from. --project is the folder
+// the prompt names as the worker's project; it defaults to --repo.
 //
 // A record file holds one task: { "id": "...", "title": "...", "description": "..." }.
 // A store file holds records as a list, as { "tasks": [ ... ] }, or as a map by id.
@@ -85,8 +88,8 @@ function readJson(file) {
 }
 
 export function parseArgs(argv) {
-  const out = { phase: "", task: "", tasks: "", record: "", repo: "" };
-  const flags = new Set(["--phase", "--task", "--tasks", "--record", "--repo"]);
+  const out = { phase: "", task: "", tasks: "", record: "", repo: "", project: "" };
+  const flags = new Set(["--phase", "--task", "--tasks", "--record", "--repo", "--project"]);
   for (let i = 2; i < argv.length; i += 1) {
     const arg = argv[i];
     if (!flags.has(arg)) return undefined;
@@ -96,6 +99,7 @@ export function parseArgs(argv) {
     i += 1;
   }
   if (!out.phase.trim() || !out.repo.trim()) return undefined;
+  if (!out.project.trim()) out.project = out.repo;
   if (out.record) return out.task.trim() || out.tasks.trim() ? undefined : out;
   if (!out.task.trim() || !out.tasks.trim()) return undefined;
   return out;
@@ -146,6 +150,13 @@ async function main() {
   } catch {
     fail("That repository is not a folder.");
   }
+  let project;
+  try {
+    project = realpathSync(parsed.project);
+    if (!statSync(project).isDirectory()) fail("That project is not a folder.");
+  } catch {
+    fail("That project is not a folder.");
+  }
   const contents = readJson(parsed.record || parsed.tasks);
   if (contents === undefined) fail("That task file is not readable JSON.");
   const record = parsed.record ? (isTaskRecord(contents) ? contents : undefined) : findRecord(contents, parsed.task);
@@ -161,7 +172,7 @@ async function main() {
   } catch {
     fail("That repository has no skill file for this phase.");
   }
-  const prompt = mod.promptForPhase?.(parsed.phase, record, repo, text);
+  const prompt = mod.promptForPhase?.(parsed.phase, record, project, text);
   if (typeof prompt !== "string" || !prompt) fail("Could not build the phase prompt.");
   process.stdout.write(prompt.endsWith("\n") ? prompt : `${prompt}\n`);
 }

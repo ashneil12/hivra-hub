@@ -28,6 +28,8 @@ mod delegations;
 mod dev_fault;
 mod finder; // WP-74: one search box for tasks, docs and everything else.
 mod github_issues;
+// WP-91: the goal graph — a finish line proved first, write scopes, handoffs, repairs and the run verdict.
+pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
 
 // Hivra WP-12: delivery modes and the one merge path.
@@ -662,6 +664,12 @@ pub fn run() {
             decisions::decisions_ask,
             decisions::decisions_answer,
             decisions::decisions_list,
+            // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
+            goal_graph::goal_graph_check_plan,
+            goal_graph::goal_graph_check_repair,
+            goal_graph::goal_graph_report,
+            goal_graph::goal_graph_run_check,
+            goal_graph::goal_graph_read_handoff,
             delegations::delegations_recent,
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
