@@ -10,6 +10,7 @@ import { healthOf } from "../model/health";
 import { pausedNow } from "../model/memoryBudget";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
+import { MemoryProvenance } from "./MemoryProvenance";
 import {
   acceptImport,
   acceptItem,
@@ -205,6 +206,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
             <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : stateLabel(item.state)}</p>
             <p data-source>{item.source.label}</p>
             {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
+            <MemoryProvenance item={item} now={now} />
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">
                 <textarea aria-label="Memory text" value={editing.text} onChange={(event) => setEditing({ id: item.id, text: event.target.value })} />

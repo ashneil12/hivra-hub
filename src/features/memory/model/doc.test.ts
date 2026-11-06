@@ -41,3 +41,24 @@ describe("the engine that wrote a memory", () => {
     }
   });
 });
+
+describe("the tier that wrote a memory", () => {
+  it("loads old data that has no tier at all", () => {
+    const doc = parseDoc({ items: [stored()] });
+    expect(doc.items[0].via).toBeUndefined();
+  });
+
+  it("keeps each tier it knows", () => {
+    for (const via of ["rules", "cheap", "crew"] as const) {
+      expect(parseDoc({ items: [stored({ via })] }).items[0].via).toBe(via);
+    }
+  });
+
+  it("drops a tier it cannot read, and keeps the memory", () => {
+    for (const bad of ["Crew", "model", "", 42, null, { tier: "crew" }, ["rules"]]) {
+      const doc = parseDoc({ items: [stored({ via: bad as unknown as MemoryItem["via"] })] });
+      expect(doc.items, String(bad)).toHaveLength(1);
+      expect(doc.items[0].via, String(bad)).toBeUndefined();
+    }
+  });
+});

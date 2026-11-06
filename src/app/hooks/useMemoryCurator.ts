@@ -147,13 +147,15 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           fedLast.current.delete(feed.sessionId);
           return;
         }
-        // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one.
+        // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one. The turn
+        // carries it from here, so the memory written says which tier wrote it.
         const choice = loadMemoryTier();
+        const tierCtx: CuratorContext = { ...ctx, via: choice.tier };
         if (!backgroundAskFits(choice.tier, choice.model, ctx.now)) {
           fedLast.current.delete(feed.sessionId);
           return;
         }
-        const result = await collectAnswer(loaded, ctx, curatorAsk(choice.tier, ctx, choice.model));
+        const result = await collectAnswer(loaded, tierCtx, curatorAsk(choice.tier, tierCtx, choice.model));
         if (result.kind === "deferred") {
           fedLast.current.delete(feed.sessionId);
           return;
@@ -162,8 +164,8 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           // WP-100: a turn the curator saw is a day the app lived, which memory fades over, and a count for the
           // Memory screen's health card.
           await commitDoc(loadDoc, saveDoc, (doc) => {
-            const settled = settleTurn(markLived(doc, ctx.now), ctx, result);
-            return noteOutcome(settled.doc, settled.outcome, ctx.now);
+            const settled = settleTurn(markLived(doc, tierCtx.now), tierCtx, result);
+            return noteOutcome(settled.doc, settled.outcome, tierCtx.now);
           });
         } catch {
           fedLast.current.delete(feed.sessionId);
