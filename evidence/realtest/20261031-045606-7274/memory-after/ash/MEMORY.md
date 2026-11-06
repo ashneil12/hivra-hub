@@ -1,3 +1,0 @@
-- Ash writes lowercase and fast; answer in plain English, outcome first, short.
-- Never use em dashes in anything written to Ash.
-- Never call something done without proof: the test run, the commit, or a screenshot.

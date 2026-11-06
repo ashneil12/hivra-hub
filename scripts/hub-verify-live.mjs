@@ -2,7 +2,7 @@
 // WIRING CHECK ONLY. A PASS here is never a behaviour result: the agents are a scripted fake (see WIRING_NOTE). Real
 // conversations with real models are `npm run hub:realconv` (docs/REALCONV.md).
 //
-// `npm run hub:verify-live`: the fake-Claude test bench (Phase 1b WP5, docs/PHASE-1B-DEV-SETUP.md, docs/T3-HARVEST.md
+// `npm run hub:verify-live`: the fake-Claude test bench (Phase 1b WP5, docs/PHASE-1B-DEV-SETUP.md, the Phase 1b design notes
 // "Fake-Claude test bench with evidence"). It runs this worktree's dev copy of the Hub, with a scripted fake Claude
 // (scripts/fake-claude.mjs), under a throwaway HOME, and walks the delegation chain through real restarts:
 //
