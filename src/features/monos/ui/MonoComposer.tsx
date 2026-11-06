@@ -37,6 +37,11 @@ import {
   stripHiddenCharacters,
   stripHiddenText,
 } from "../../sessions/model/hiddenText";
+import {
+  isLargePaste,
+  isPasteKey,
+  largePasteContents,
+} from "../../sessions/model/largePaste";
 
 // Loaded on first open, with its emoji data, so neither weighs on startup.
 const EmojiPickerPopover = lazy(() =>
@@ -134,6 +139,8 @@ export function MonoComposer({
   /** A send or paste where hidden characters were removed: news, not a failure. */
   const [dropNotice, setDropNotice] = useState<string | null>(null);
   const submittingRef = useRef(false);
+  /** The paste shortcut was held at the last keydown, since a paste event carries no modifier keys. */
+  const inlinePasteRef = useRef(false);
   const [submitting, setSubmitting] = useState(false);
   const ready =
     enabled &&
@@ -442,6 +449,10 @@ export function MonoComposer({
       onFocus={onFocus}
       onChange={(event) => update(event.target.value)}
       onKeyDown={(event) => {
+        inlinePasteRef.current =
+          (event.metaKey || event.ctrlKey) &&
+          event.shiftKey &&
+          isPasteKey(event.nativeEvent);
         if (
           event.key !== "Enter" ||
           event.shiftKey ||
@@ -455,9 +466,39 @@ export function MonoComposer({
       onPaste={(event) => {
         const files = filesFromClipboard(event.clipboardData);
         if (files.length === 0) {
-          // WP-94: a paste keeps its visible text and loses every hidden character.
           const plain = event.clipboardData?.getData("text/plain") ?? "";
           const paste = plain ? stripHiddenCharacters(plain) : null;
+          // WP-94: a big paste becomes a text file instead of flooding the prompt; Shift keeps it inline
+          // (largePaste.ts). A paste of only hidden characters falls through to the notice below.
+          if (
+            paste?.text &&
+            isLargePaste(paste.text) &&
+            !inlinePasteRef.current
+          ) {
+            event.preventDefault();
+            readAttachments(async () => {
+              let saved: Attachment[];
+              try {
+                saved = await attachmentsFromFiles([
+                  largePasteContents(paste.text),
+                ]);
+              } catch {
+                saved = [];
+              }
+              if (saved.length) {
+                setDropNotice(
+                  `That paste was large, so it became the file ${saved[0].name}. Hold Shift while pasting to keep it inline.`,
+                );
+              } else {
+                setDropError(
+                  "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+                );
+              }
+              return saved;
+            });
+            return;
+          }
+          // WP-94: a paste keeps its visible text and loses every hidden character.
           if (!paste || paste.removed === 0) return;
           event.preventDefault();
           if (paste.text) {

@@ -90,6 +90,11 @@ import {
 } from "../../../shared/lib/draftRestore";
 import { stripHiddenCharacters, stripHiddenText } from "../model/hiddenText";
 import {
+  isLargePaste,
+  isPasteKey,
+  largePasteContents,
+} from "../model/largePaste";
+import {
   createBlankSkill,
   rankSkills,
   hasNativeCommands,
@@ -444,6 +449,8 @@ export function Composer({
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
   const draftResetTokenRef = useRef(draftResetToken);
+  /** The paste shortcut was held at the last keydown; null before any key is seen. */
+  const inlinePasteRef = useRef<boolean | null>(null);
   /** Bumped when the draft is cleared, so a late file read cannot land on the next one. */
   const pasteGenerationRef = useRef(0);
   /** Pasted and dropped files still reading when Send is pressed. */
@@ -1556,6 +1563,9 @@ export function Composer({
     syncHasValue("", []);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // A paste event carries no modifier keys, so the shortcut is read here (largePaste.ts).
+    inlinePasteRef.current =
+      (e.metaKey || e.ctrlKey) && e.shiftKey && isPasteKey(e.nativeEvent);
     if (disabled) return;
     if (isImeComposition(e.nativeEvent)) return;
     if (creatingSkill) return;
@@ -1723,20 +1733,65 @@ export function Composer({
     // WP-94: a hidden character never reaches the draft, so it never reaches the agent (hiddenText.ts).
     const plain = e.clipboardData?.getData("text/plain") ?? "";
     const paste = plain ? stripHiddenCharacters(plain) : null;
+    if (paste && paste.removed > 0 && !paste.text) {
+      e.preventDefault();
+      setPasteNotice(null);
+      setPasteError(
+        "That paste had only hidden characters, so nothing was pasted.",
+      );
+      return;
+    }
+    // WP-94: a big paste becomes a text file instead of flooding the prompt; Shift keeps it inline (largePaste.ts).
+    if (
+      paste?.text &&
+      attachmentsSupported &&
+      isLargePaste(paste.text) &&
+      inlinePasteRef.current !== true
+    ) {
+      e.preventDefault();
+      const captured = captureDraft(e.currentTarget);
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles([largePasteContents(paste.text)]).then(
+          (pasted) => {
+            if (pasteGenerationRef.current !== generation) {
+              pasted.forEach(revokeAttachment);
+              return;
+            }
+            if (pasted.length === 0) {
+              // Saved nowhere, so it stays in the draft rather than disappearing.
+              if (captured) insertRestoredText(captured, paste.text);
+              setPasteNotice(null);
+              setPasteError(
+                "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+              );
+              return;
+            }
+            // WebKit can insert the paste after preventDefault; the new chip replaces it.
+            if (captured) dropPastedText(captured, plain);
+            addAttachments(pasted);
+            setPasteNotice(
+              `That paste was large, so it became the file ${pasted[0].name}. Hold Shift while pasting to keep it inline.`,
+            );
+          },
+          () => {
+            if (pasteGenerationRef.current !== generation) return;
+            if (captured) insertRestoredText(captured, paste.text);
+            setPasteError(
+              "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+            );
+          },
+        ),
+      );
+      return;
+    }
     if (paste && paste.removed > 0) {
       e.preventDefault();
       const captured = captureDraft(e.currentTarget);
-      if (captured && paste.text) insertRestoredText(captured, paste.text);
-      if (paste.text) {
-        setPasteNotice(
-          `Removed ${paste.removed} hidden ${paste.removed === 1 ? "character" : "characters"} from the paste.`,
-        );
-      } else {
-        setPasteNotice(null);
-        setPasteError(
-          "That paste had only hidden characters, so nothing was pasted.",
-        );
-      }
+      if (captured) insertRestoredText(captured, paste.text);
+      setPasteNotice(
+        `Removed ${paste.removed} hidden ${paste.removed === 1 ? "character" : "characters"} from the paste.`,
+      );
       return;
     }
     const messageFiles = messageFilesFromClipboard(e.clipboardData);
