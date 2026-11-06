@@ -1,5 +1,11 @@
+// @vitest-environment happy-dom
 import { describe, expect, it } from "vitest";
-import { isHiddenEditorHost, matchIndexAtSelection } from "./editorSearch";
+import {
+  isHiddenEditorHost,
+  matchIndexAtSelection,
+  openFindInActiveEditor,
+  openReplaceInActiveEditor,
+} from "./editorSearch";
 
 describe("matchIndexAtSelection", () => {
   const matches = [
@@ -16,6 +22,13 @@ describe("matchIndexAtSelection", () => {
   it("returns zero when the selection is not a match", () => {
     expect(matchIndexAtSelection(matches, { from: 6, to: 8 })).toBe(0);
     expect(matchIndexAtSelection([], { from: 2, to: 5 })).toBe(0);
+  });
+});
+
+describe("the palette's editor rows", () => {
+  it("opening Find or Replace with no editor open answers false", () => {
+    expect(openFindInActiveEditor()).toBe(false);
+    expect(openReplaceInActiveEditor()).toBe(false);
   });
 });
 
