@@ -10,12 +10,12 @@
 //! registry and a higher port range. Tests pass a stand-in; the `stand-in` file is read only when
 //! this crate is built for tests, so a release build never treats it as Docker.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +40,19 @@ const DOCKER_WAIT: Duration = Duration::from_secs(20);
 const DOCKER_LATER: &str =
     "Docker didn't answer. The stack was left as it was and can be tried again.";
 pub const STACKS_CHANGED: &str = "stacks://changed";
+
+/// One stand-in per stack at a time, in this process. A reset and a start that arrive
+/// together must not both stop-then-start, or one Node process is left running with the
+/// stack's service ports bound and nothing naming it.
+static STAND_IN_LOCKS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<()>>>>> = OnceLock::new();
+
+fn stand_in_lock(stack_dir: &Path) -> Arc<Mutex<()>> {
+    let locks = STAND_IN_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(locks.entry(stack_dir.to_path_buf()).or_default())
+}
 
 pub struct StackEnv {
     pub dev: bool,
@@ -757,6 +770,12 @@ fn start_stand_in(env: &StackEnv, entry: &Entry) -> Result<Option<String>, Strin
         return Ok(None);
     };
     let dir = stack_dir(&env.data_dir, &entry.id);
+    // Stop-then-start is one step: a second reset waits for this one rather than interleaving
+    // and leaving the first stand-in running.
+    let lock = stand_in_lock(&dir);
+    let _one_at_a_time = lock
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     stand_in.stop(&dir)?;
     if entry.emulated.is_empty() {
         return Ok(None);
@@ -2547,6 +2566,36 @@ mod tests {
         }
     }
 
+    /// A stand-in whose start and stop take a moment, so two of them overlap unless the
+    /// stack's own lock serialises them. Tracks the pids that are alive.
+    #[derive(Default)]
+    struct RacyStandIn {
+        live: Mutex<HashSet<u32>>,
+        next: Mutex<u32>,
+        starts: Mutex<Vec<u32>>,
+    }
+
+    impl StandIn for RacyStandIn {
+        fn start(&self, _request: &StandInRequest) -> Result<StandInOutcome, String> {
+            std::thread::sleep(Duration::from_millis(40));
+            let mut next = self.next.lock().unwrap();
+            *next += 1;
+            let pid = *next;
+            self.live.lock().unwrap().insert(pid);
+            self.starts.lock().unwrap().push(pid);
+            Ok(StandInOutcome {
+                pid: Some(pid),
+                note: None,
+            })
+        }
+
+        fn stop(&self, _stack_dir: &Path) -> Result<(), String> {
+            std::thread::sleep(Duration::from_millis(40));
+            self.live.lock().unwrap().clear();
+            Ok(())
+        }
+    }
+
     #[derive(Default)]
     struct MemoryStandIn {
         started: Mutex<Vec<(String, Vec<ServicePort>)>>,
@@ -4277,6 +4326,46 @@ mod tests {
             running.url.as_deref(),
             Some("http://main-a.localhost:7500")
         );
+    }
+
+    #[test]
+    fn two_resets_of_one_stack_leave_one_stand_in() {
+        use std::sync::Barrier;
+        let fix = Fix::new();
+        let stand_in = Arc::new(RacyStandIn::default());
+        let env = Arc::new(StackEnv {
+            stand_in: Some(stand_in.clone()),
+            ..fix.env()
+        });
+        maybe_start(
+            &env,
+            &fix.main,
+            &fix.first,
+            true,
+            Some(&emulated_decl()),
+            false,
+            true,
+        )
+        .unwrap();
+        assert_eq!(stand_in.live.lock().unwrap().len(), 1);
+
+        let barrier = Arc::new(Barrier::new(2));
+        let spawn_reset = || {
+            let env = Arc::clone(&env);
+            let tree = fix.first.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                reset(&env, &tree)
+            })
+        };
+        let first = spawn_reset();
+        let second = spawn_reset();
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+        // Both resets stopped and started; only one of the two stand-ins may be left running.
+        assert_eq!(*stand_in.next.lock().unwrap(), 3);
+        assert_eq!(stand_in.live.lock().unwrap().len(), 1);
     }
 
     #[test]
