@@ -877,12 +877,14 @@ fn first_use_asks_once_and_always_for_this_mono_stops_the_asking() {
     assert_eq!(asked.options, vec!["Once", "Always for this Mono", "No"]);
     assert!(asked.question.contains("stripe"));
     // Answer "Always for this Mono".
+    // The person answers on their own path (the Inbox sends `user`); a bare `None` is no one's and never settles a
+    // secret card.
     crate::decisions::answer(
         &mut conn,
         "",
         &decision_key,
         "Always for this Mono",
-        None,
+        Some("user".into()),
         bench.now + 1,
     )
     .unwrap();
@@ -934,7 +936,15 @@ fn once_asks_again_after_it_is_spent() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 1).unwrap();
+    crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        Some("user".into()),
+        bench.now + 1,
+    )
+    .unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -972,7 +982,15 @@ fn no_writes_nothing_and_says_so() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(&mut conn, "", &decision_key, "No", None, bench.now + 1).unwrap();
+    crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "No",
+        Some("user".into()),
+        bench.now + 1,
+    )
+    .unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -1013,7 +1031,7 @@ fn always_for_this_project_covers_every_mono_in_it_and_no_other_project() {
         "/p",
         &decision_key,
         "Always for this project",
-        None,
+        Some("user".into()),
         bench.now + 1,
     )
     .unwrap();

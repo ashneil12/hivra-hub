@@ -55,6 +55,19 @@ fn every_table_text(conn: &rusqlite::Connection) -> String {
     all
 }
 
+fn run_request(mono: &str) -> RunRequest {
+    RunRequest {
+        chat: "chat-1".into(),
+        mono: Some(mono.into()),
+        project: None,
+        name: NAME.into(),
+        env: "STRIPE_API_KEY".into(),
+        command: vec!["stripe".into(), "customers".into(), "list".into()],
+        cwd: None,
+        timeout_seconds: None,
+    }
+}
+
 fn worker_request() -> worker::WorkerRequest {
     worker::WorkerRequest {
         chat: "chat-1".into(),
@@ -351,11 +364,265 @@ fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     worker::apply_to_child("never-armed", &bench.vault, &mut cmd, &conn, bench.now).unwrap();
     assert_eq!(cmd.get_envs().count(), 0);
     // "Once" is a grant for exactly one worker.
-    crate::decisions::answer(&mut conn, "", &key, "Once", None, bench.now + 1).unwrap();
+    crate::decisions::answer(
+        &mut conn,
+        "",
+        &key,
+        "Once",
+        Some("user".into()),
+        bench.now + 1,
+    )
+    .unwrap();
     let second = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 2).unwrap();
     assert!(matches!(second, worker::WorkerOutcome::Ready { .. }));
     let third = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 3).unwrap();
     assert!(matches!(third, worker::WorkerOutcome::Waiting { .. }));
+}
+
+// ---- only the person approves ---------------------------------------------------------------------------------------
+
+#[test]
+fn a_chat_forwarding_an_answer_on_a_secret_key_leaves_it_open_and_waiting() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    // The first run asks the person. This is the card the ask_person tool's `answer` argument would try to settle.
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+    else {
+        panic!("the first use must ask");
+    };
+    assert!(decision_key.starts_with("secret/"));
+    // A chat forwarding an answer is not the person: the refusal says so and nothing is recorded.
+    let refused = crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        Some("chat:chat-1".into()),
+        bench.now + 1,
+    )
+    .unwrap_err();
+    assert_eq!(
+        refused,
+        "Only the person can approve a secret run. Ask them on their card."
+    );
+    let still = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(still.state, "open");
+    assert!(still.answer.is_none());
+    // So the run still waits, and there is no grant.
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
+        RunOutcome::Waiting { .. }
+    ));
+    assert!(grants_for(&conn, SCOPE_GLOBAL, NAME).unwrap().is_empty());
+}
+
+#[test]
+fn only_the_persons_own_paths_settle_a_secret_card() {
+    // The Inbox sends no answerer, the Needs sheet `user`, the check cards `person`. An agent names itself.
+    for (by, settles) in [
+        (None, true),
+        (Some("user"), true),
+        (Some("person"), true),
+        (Some("chat:chat-1"), false),
+        (Some("Tally"), false),
+        (Some("worker-1"), false),
+    ] {
+        let bench = Bench::new();
+        let mut conn = bench.store.lock_conn().unwrap();
+        save_value(
+            &bench.vault,
+            &conn,
+            SCOPE_GLOBAL,
+            NAME,
+            None,
+            VALUE,
+            bench.now,
+        )
+        .unwrap();
+        let RunOutcome::Waiting { decision_key, .. } =
+            prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+        else {
+            panic!("the first use must ask");
+        };
+        let out = crate::decisions::answer(
+            &mut conn,
+            "",
+            &decision_key,
+            "Once",
+            by.map(str::to_string),
+            bench.now + 1,
+        );
+        if !settles {
+            assert_eq!(
+                out.unwrap_err(),
+                "Only the person can approve a secret run. Ask them on their card.",
+                "{by:?}"
+            );
+        }
+        crate::decisions::answer(
+            &mut conn,
+            "",
+            &decision_key,
+            "Once",
+            Some("user".into()),
+            bench.now + 2,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 3).unwrap(),
+                RunOutcome::Granted { .. }
+            ),
+            "{by:?} then the person must grant"
+        );
+    }
+}
+
+#[test]
+fn the_person_answering_through_their_own_path_still_grants() {
+    for by in [None, Some("person".to_string()), Some("user".to_string())] {
+        let bench = Bench::new();
+        let mut conn = bench.store.lock_conn().unwrap();
+        save_value(
+            &bench.vault,
+            &conn,
+            SCOPE_GLOBAL,
+            NAME,
+            None,
+            VALUE,
+            bench.now,
+        )
+        .unwrap();
+        let RunOutcome::Waiting { decision_key, .. } =
+            prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+        else {
+            panic!("the first use must ask");
+        };
+        crate::decisions::answer(
+            &mut conn,
+            "",
+            &decision_key,
+            "Once",
+            by.clone(),
+            bench.now + 1,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
+                RunOutcome::Granted { .. }
+            ),
+            "{by:?} must grant"
+        );
+    }
+}
+
+#[test]
+fn an_answered_secret_row_not_answered_by_the_person_is_never_a_grant() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+    else {
+        panic!("the first use must ask");
+    };
+    // A row answered any other way (a build before the guard, or a rogue write): it is treated as not answered.
+    conn.execute(
+        "UPDATE decisions SET state = 'answered', answer = 'Once', answered_by = 'chat:chat-1', answered_at = ?1 \
+         WHERE project = '' AND decision_key = ?2",
+        rusqlite::params![bench.now + 1, decision_key],
+    )
+    .unwrap();
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 2).unwrap(),
+        RunOutcome::Waiting { .. }
+    ));
+    assert!(grants_for(&conn, SCOPE_GLOBAL, NAME).unwrap().is_empty());
+    // Nothing was deleted either: the person's own answer can still land on that row.
+    assert!(crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .is_some());
+    crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        Some("user".into()),
+        bench.now + 3,
+    )
+    .unwrap();
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 4).unwrap(),
+        RunOutcome::Granted { .. }
+    ));
+}
+
+#[test]
+fn a_once_answer_for_one_mono_is_not_spent_by_another() {
+    let bench = Bench::new();
+    let mut conn = bench.store.lock_conn().unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now).unwrap()
+    else {
+        panic!("the first use must ask");
+    };
+    // The person answered the card Tally's first run put up.
+    crate::decisions::answer(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        Some("user".into()),
+        bench.now + 1,
+    )
+    .unwrap();
+    // Another Mono never gets that answer as its own run.
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Other"), bench.now + 2).unwrap(),
+        RunOutcome::Waiting { .. }
+    ));
+    assert!(grants_for(&conn, SCOPE_GLOBAL, NAME)
+        .unwrap()
+        .iter()
+        .all(|grant| grant.subject_id != "Other"));
+    // Tally's run is the one the answer was for.
+    assert!(matches!(
+        prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 3).unwrap(),
+        RunOutcome::Granted { .. }
+    ));
 }
 
 #[test]

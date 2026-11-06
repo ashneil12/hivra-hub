@@ -293,6 +293,18 @@ describe("ask_person and the decision Needs", () => {
     await expect(source.act("question", { id: "decision::nope" })).rejects.toThrow("isn't waiting on you");
   });
 
+  it("never forwards an answer for a secret's card: only the person approves one", async () => {
+    const store = fakeStore();
+    const answered = vi.fn(async () => ({ applied: true, decision: null, released: [], releasedTasks: [] }));
+    const host = { backend: { ...store.backend, answer: answered } };
+    const key = "secret/stripe-api-key/stripe";
+    const input = { key, question: "Let Tally run `stripe` with Stripe API key?", options: ["Once", "No"] };
+    const out = await askPerson({ id: "fm" }, { ...input, answer: "Once" }, { mono: "Tally" }, [row()], host);
+    expect(answered).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ state: "open" });
+    expect(String(out.note)).toContain("waits in the person's Inbox");
+  });
+
   it("records an answer the person gave in chat, and an answered key gives the answer back", async () => {
     const store = fakeStore();
     const host = { backend: store.backend };

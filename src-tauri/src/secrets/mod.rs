@@ -1348,6 +1348,9 @@ pub enum ApprovalOutcome {
 
 /// The grant check shared by one command and one worker: the Mono's own first, then its project's, then the person's
 /// card. An answer becomes the grant and the answered card is cleared, so revoking a grant asks again.
+///
+/// Only the person's own answer counts. A row answered any other way (a chat forwarding an `ask_person` answer, or a
+/// write that got past them) is treated as not answered: nothing is granted and nothing is deleted.
 pub fn ensure_grant(
     conn: &mut Connection,
     input: Approval,
@@ -1368,16 +1371,26 @@ pub fn ensure_grant(
     let project = input.project.as_deref().unwrap_or("");
     let key = decision_key(&input.name, &input.executable);
     let decision = crate::decisions::get(conn, project, &key)?;
-    match decision {
-        Some(decision) if decision.state == crate::decisions::ANSWERED => {
+    // The card is put up for one Mono's run (or one worker's), and only that Mono may spend its answer.
+    let asked_for = input
+        .mono
+        .as_deref()
+        .ok_or_else(|| "Which Mono is asking?".to_string())?;
+    let answered_by_person_for_this_mono = decision.as_ref().is_some_and(|decision| {
+        decision.state == crate::decisions::ANSWERED
+            && crate::decisions::answered_by_person(decision.answered_by.as_deref())
+            && match decision.asked_by_mono.as_deref() {
+                Some(mono) => mono == asked_for,
+                None => true,
+            }
+    });
+    match decision.filter(|_| answered_by_person_for_this_mono) {
+        Some(decision) => {
             let answer = decision.answer.clone().unwrap_or_default();
             if answer == "No" {
                 return Ok(ApprovalOutcome::Denied { decision_key: key });
             }
-            let mono = input
-                .mono
-                .as_deref()
-                .ok_or_else(|| "Which Mono is asking?".to_string())?;
+            let mono = asked_for;
             if answer == "Always for this project" {
                 if let Some(project) = input.project.as_deref() {
                     put_grant(

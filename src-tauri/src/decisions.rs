@@ -467,6 +467,22 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
+/// WP-92: a secret's approval card is answered by the person alone. The person's own paths are the Inbox (which sends
+/// no answerer), the Needs sheet (`user`) and the check cards (`person`). An agent's `ask_person` forwards `chat:<id>`,
+/// and a Monos or a worker that names itself never counts.
+fn is_person(by: Option<&str>) -> bool {
+    match by.map(str::trim).filter(|b| !b.is_empty()) {
+        None => true,
+        Some(by) => by == "person" || by == "user",
+    }
+}
+
+/// Whether a decision's recorded answerer is the person's own path. WP-92's grant check reads it: an answer recorded
+/// any other way (a chat, a Mono, a worker) is not the person's and never becomes a secret grant.
+pub fn answered_by_person(answered_by: Option<&str>) -> bool {
+    is_person(answered_by)
+}
+
 pub fn answer(
     conn: &mut Connection,
     project: &str,
@@ -475,6 +491,9 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
+    if key.trim().starts_with("secret/") && !is_person(by.as_deref()) {
+        return Err("Only the person can approve a secret run. Ask them on their card.".into());
+    }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -488,12 +507,20 @@ pub fn answer(
         });
     };
     if decision.state != OPEN {
-        return Ok(AnswerOutcome {
-            applied: false,
-            decision: Some(decision),
-            released: Vec::new(),
-            released_tasks: Vec::new(),
-        });
+        // WP-92: a secret row an agent's answer had settled is still the person's to settle. Their own answer replaces
+        // it; anything else leaves it as it is.
+        let person_settles_an_agents_answer = is_person(by.as_deref())
+            && decision.decision_key.starts_with("secret/")
+            && decision.state == ANSWERED
+            && !answered_by_person(decision.answered_by.as_deref());
+        if !person_settles_an_agents_answer {
+            return Ok(AnswerOutcome {
+                applied: false,
+                decision: Some(decision),
+                released: Vec::new(),
+                released_tasks: Vec::new(),
+            });
+        }
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);

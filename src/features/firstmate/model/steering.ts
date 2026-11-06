@@ -214,7 +214,8 @@ export async function askPerson(
   });
   let d = outcome.decision;
   // The person answered it in this chat: their words are the answer, recorded once, and the waiting tasks carry on.
-  if (input.answer !== undefined && d.state === "open") {
+  // Never on a secret's own card (`secret/<name>/<executable>`): only the person approves one, on their card.
+  if (input.answer !== undefined && d.state === "open" && !d.decisionKey.startsWith("secret/")) {
     const words = nonEmpty(input.answer, "answer");
     const answered = await host.backend.answer(d.project, d.decisionKey, words, `chat:${source.id}`);
     if (answered.decision) d = answered.decision;
