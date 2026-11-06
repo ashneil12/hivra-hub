@@ -214,32 +214,6 @@ function related(a: string, b: string): boolean {
   return short.length >= BUCKET && long.startsWith(short);
 }
 
-/**
- * Every pair of words `related` calls a match shares its first four letters, so bucketing by that
- * keeps matching to a lookup and a very short scan instead of a pass over every word in a store.
- */
-function bucketOf(word: string): string {
-  return word.length >= BUCKET ? word.slice(0, BUCKET) : word;
-}
-
-type WordIndex = Map<string, string[]>;
-
-function indexOf(list: readonly string[]): WordIndex {
-  const index: WordIndex = new Map();
-  for (const word of list) {
-    const key = bucketOf(word);
-    const bucket = index.get(key);
-    if (bucket) bucket.push(word);
-    else index.set(key, [word]);
-  }
-  return index;
-}
-
-function holds(index: WordIndex, term: string): boolean {
-  const bucket = index.get(bucketOf(term));
-  return Boolean(bucket?.some((word) => related(term, word)));
-}
-
 /** True when the words say the message is about the person, their memory, or what they told me before. */
 function asksFromSelf(text: string): boolean {
   return words(text).some((word) => SELF_WORDS.has(word));
@@ -311,55 +285,80 @@ function beliefOf(item: MemoryItem): Belief {
   };
 }
 
+/** One memory, as the words of each field it can be matched on. */
 type Row = {
   item: MemoryItem;
-  fact: WordIndex;
-  evidence: WordIndex;
-  label: WordIndex;
-  all: WordIndex;
+  fact: readonly string[];
+  evidence: readonly string[];
+  label: readonly string[];
 };
 
+/** The same word twice in one field says no more than once. */
+function distinct(list: readonly string[]): string[] {
+  return [...new Set(list)];
+}
+
 function rowOf(item: MemoryItem): Row {
-  const fact = words(item.text);
-  const evidence = words(item.evidence);
-  const label = words(item.source.label);
   return {
     item,
-    fact: indexOf(fact),
-    evidence: indexOf(evidence),
-    label: indexOf(label),
-    all: indexOf([...new Set([...fact, ...evidence, ...label])]),
+    fact: distinct(words(item.text)),
+    evidence: distinct(words(item.evidence)),
+    label: distinct(words(item.source.label)),
   };
 }
 
-/** How many of the query's words this field carries, against a denominator no longer than RECALL_LEXICAL_TERMS. */
-function coverage(terms: readonly string[], index: WordIndex): number {
-  if (!terms.length) return 0;
-  let hits = 0;
-  for (const term of terms) if (holds(index, term)) hits++;
-  return Math.min(1, hits / Math.min(terms.length, RECALL_LEXICAL_TERMS));
+/** Every word of one field of the store, filed under its first four letters. */
+type WordIndex = Map<string, Map<string, number[]>>;
+
+function file(index: WordIndex, list: readonly string[], row: number): void {
+  for (const word of list) {
+    const bucket = word.slice(0, BUCKET);
+    let byWord = index.get(bucket);
+    if (!byWord) {
+      byWord = new Map();
+      index.set(bucket, byWord);
+    }
+    const rows = byWord.get(word);
+    if (rows) rows.push(row);
+    else byWord.set(word, [row]);
+  }
 }
 
-function scoreRow(
-  row: Row,
-  terms: readonly string[],
-  now: number,
-): { parts: RecallScoreParts; matchedField: RecallField; score: number } {
-  const factField = FIELD_FACT * coverage(terms, row.fact);
-  const evidenceField = FIELD_EVIDENCE * coverage(terms, row.evidence);
-  const labelField = FIELD_LABEL * coverage(terms, row.label);
-  const lexical = Math.max(factField, evidenceField, labelField);
-  const matchedField: RecallField =
-    lexical === 0 ? "none" : lexical === factField ? "fact" : lexical === evidenceField ? "evidence" : "label";
-  const tier = tierOf(row.item);
-  const parts: RecallScoreParts = {
-    lexical,
-    recency: recencyComponent(row.item.updatedAt, now),
-    tier: TIER_COMPONENT[tier],
-    evidence: confidence(beliefOf(row.item), now),
-  };
-  const score = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
-  return { parts, matchedField, score: Math.round(score * 10_000) / 10_000 };
+/** Adds one to the count of every row in one field that holds a word matching the term. */
+function take(index: WordIndex, term: string, marks: Int32Array, mark: number, counts: Int32Array): void {
+  const byWord = index.get(term.slice(0, BUCKET));
+  if (!byWord) return;
+  for (const [word, rows] of byWord) {
+    if (!related(term, word)) continue;
+    for (const row of rows) {
+      if (marks[row] === mark) continue;
+      marks[row] = mark;
+      counts[row] += 1;
+    }
+  }
+}
+
+/** Every row any field reaches through the term, once each. */
+function gather(indexes: readonly WordIndex[], term: string, marks: Int32Array, mark: number, out: number[]): void {
+  out.length = 0;
+  for (const index of indexes) {
+    const byWord = index.get(term.slice(0, BUCKET));
+    if (!byWord) continue;
+    for (const [word, rows] of byWord) {
+      if (!related(term, word)) continue;
+      for (const row of rows) {
+        if (marks[row] === mark) continue;
+        marks[row] = mark;
+        out.push(row);
+      }
+    }
+  }
+}
+
+/** A count of matched words turned into a share of the query, no more than one. */
+function ratio(hits: number, denominator: number): number {
+  if (!hits || !denominator) return 0;
+  return Math.min(1, hits / denominator);
 }
 
 /**
@@ -416,32 +415,78 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
   }
 
   const terms = queryTerms(query);
-  const rows = new Map<string, Row>();
-  const rowFor = (item: MemoryItem): Row => {
-    const kept = rows.get(item.id);
-    if (kept) return kept;
-    const made = rowOf(item);
-    rows.set(item.id, made);
-    return made;
-  };
-  const facts = mine.filter((item) => item.action === "add").map(rowFor);
   const wantedHistory = contentWords(query).some((term) => HISTORY_WORDS.has(term));
 
-  // A word is common when it is in more than a quarter of the facts.
-  const measurable = facts.length >= RECALL_COMMON_MIN_STORE;
-  const distinctive = measurable
-    ? terms.filter((term) => facts.filter((row) => holds(row.all, term)).length <= facts.length * RECALL_COMMON_SHARE)
-    : terms;
+  const rows = mine.map(rowOf);
+  const factIndex: WordIndex = new Map();
+  const evidenceIndex: WordIndex = new Map();
+  const labelIndex: WordIndex = new Map();
+  rows.forEach((row, index) => {
+    file(factIndex, row.fact, index);
+    file(evidenceIndex, row.evidence, index);
+    file(labelIndex, row.label, index);
+  });
 
-  const candidates: RecallCandidate[] = mine.map((item) => {
-    const row = rowFor(item);
-    const { parts, matchedField, score } = scoreRow(row, terms, now);
+  // One store-wide index means the cost no longer grows with the store: each query word is looked
+  // up in its bucket instead of being compared against every memory.
+  const factHits = new Int32Array(rows.length);
+  const evidenceHits = new Int32Array(rows.length);
+  const labelHits = new Int32Array(rows.length);
+  const sharedHits = new Int32Array(rows.length);
+  const marks = new Int32Array(rows.length);
+  const reached: number[] = [];
+  let mark = 0;
+
+  const reachedBy: number[][] = [];
+  for (const term of terms) {
+    mark += 1;
+    take(factIndex, term, marks, mark, factHits);
+    mark += 1;
+    take(evidenceIndex, term, marks, mark, evidenceHits);
+    mark += 1;
+    take(labelIndex, term, marks, mark, labelHits);
+    mark += 1;
+    gather([factIndex, evidenceIndex, labelIndex], term, marks, mark, reached);
+    reachedBy.push([...reached]);
+  }
+
+  // A word is common when it is in more than a quarter of the facts.
+  const factCount = rows.reduce((count, row) => count + (row.item.action === "add" ? 1 : 0), 0);
+  const measurable = factCount >= RECALL_COMMON_MIN_STORE;
+  const distinctive = terms.filter((_, index) => {
+    if (!measurable) return true;
+    let inFacts = 0;
+    for (const row of reachedBy[index]) if (rows[row].item.action === "add") inFacts += 1;
+    return inFacts <= factCount * RECALL_COMMON_SHARE;
+  });
+  const distinct = new Set(distinctive);
+  terms.forEach((term, index) => {
+    if (!distinct.has(term)) return;
+    for (const row of reachedBy[index]) sharedHits[row] += 1;
+  });
+
+  const denominator = Math.min(terms.length, RECALL_LEXICAL_TERMS);
+  const candidates: RecallCandidate[] = mine.map((item, index) => {
+    const factField = FIELD_FACT * ratio(factHits[index], denominator);
+    const evidenceField = FIELD_EVIDENCE * ratio(evidenceHits[index], denominator);
+    const labelField = FIELD_LABEL * ratio(labelHits[index], denominator);
+    const lexical = Math.max(factField, evidenceField, labelField);
+    const matchedField: RecallField =
+      lexical === 0 ? "none" : lexical === factField ? "fact" : lexical === evidenceField ? "evidence" : "label";
+    const tier = tierOf(item);
+    const parts: RecallScoreParts = {
+      lexical,
+      recency: recencyComponent(item.updatedAt, now),
+      tier: TIER_COMPONENT[tier],
+      evidence: confidence(beliefOf(item), now),
+    };
+    const score = W_LEXICAL * parts.lexical + W_RECENCY * parts.recency + W_TIER * parts.tier + W_EVIDENCE * parts.evidence;
     const candidate: RecallCandidate = {
       id: item.id,
-      score,
+      score: Math.round(score * 10_000) / 10_000,
       parts,
       matchedField,
-      tier: tierOf(item),
+      tier,
       picked: false,
     };
     if (item.action !== "add") return { ...candidate, reason: "not_a_fact" };
@@ -450,9 +495,8 @@ export function recallDecision(input: RecallDecisionInput): RecallDecision {
     if (item.state === "unreviewed") return { ...candidate, reason: "needs_review" };
     if (pendingUpdate.has(item.id) && !wantedHistory) return { ...candidate, reason: "superseded" };
     if (mode === "automatic") {
-      const shared = distinctive.filter((term) => holds(row.all, term)).length;
-      if (shared < RECALL_MIN_SHARED_WORDS) return { ...candidate, reason: "too_few_shared_words" };
-      if (score < RECALL_MIN_SCORE) return { ...candidate, reason: "below_threshold" };
+      if (sharedHits[index] < RECALL_MIN_SHARED_WORDS) return { ...candidate, reason: "too_few_shared_words" };
+      if (candidate.score < RECALL_MIN_SCORE) return { ...candidate, reason: "below_threshold" };
     } else if (matchedField === "none") {
       // An explicit search has no gates, but it still needs a word in common.
       return { ...candidate, reason: "below_threshold" };

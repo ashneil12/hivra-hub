@@ -28,23 +28,12 @@ function fenceFor(doc: MemoryDoc, picked: readonly string[]): string | undefined
 }
 
 /**
- * The decision and the block for one Mono and one search.
- *
- * `recallBlock` is a search the Mono asked for by name, so it runs explicit: no gates, no score
- * floor. The per-turn recall inside App runs automatic: the policy's gates and margin rule apply.
+ * The fence for one Mono and one search the Mono asked for by name: no gates and no score floor.
+ * The per-turn recall inside App calls recallTurnBlock, which runs automatic instead.
  */
 export function recallBlock(doc: MemoryDoc, mateId: string, query: string, now: number): string | undefined {
-  return recallBlockWithTrace(doc, mateId, query, now).block;
-}
-
-export function recallBlockWithTrace(
-  doc: MemoryDoc,
-  mateId: string,
-  query: string,
-  now: number,
-): { block?: string; decision: ReturnType<typeof recallDecision> } {
   const decision = recallDecision({ doc, mateId, message: query, now, mode: "explicit" });
-  return { block: fenceFor(doc, decision.picked), decision };
+  return fenceFor(doc, decision.picked);
 }
 
 /** The system string comes back unchanged. The fence is appended to the user message. */
