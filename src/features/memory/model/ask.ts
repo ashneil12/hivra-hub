@@ -29,6 +29,8 @@ export function askedOf(item: MemoryItem): number {
 
 /** A fact that can be questioned at all: one of the person's own, confirmed or edited, not a skill or a removal. */
 function questionOf(item: MemoryItem): boolean {
+  // WP-111: a parked fact is waiting on the person's choice, so the ask card stays quiet.
+  if (item.dispute) return false;
   return item.action === "add" && (item.state === "confirmed" || item.state === "edited");
 }
 

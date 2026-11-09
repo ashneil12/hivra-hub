@@ -301,6 +301,13 @@ Third-party components Hivra adds:
   Used in: src/integrations/harness/providers/claude/fixtures/t3code/
   18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them.
 
+- Row-Bot's injection scan
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/model/orderScan.ts
+  external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
