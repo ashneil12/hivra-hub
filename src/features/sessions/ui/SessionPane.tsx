@@ -108,6 +108,11 @@ import {
   type AddToChatRequest,
   type QuoteRequest,
 } from "../model/quoteDraft";
+import {
+  earlierEditNeedsConfirm,
+  type EarlierPromptSeed,
+} from "../model/editEarlierPrompt";
+import { EarlierPromptConfirm } from "./EarlierPromptConfirm";
 import { createNote, noteTitle } from "../../notes";
 import {
   loadNotesEnabled,
@@ -527,6 +532,19 @@ const LocalSessionPane = memo(function LocalSessionPane({
       void orchestrator.hydrate(session.id).catch(console.error);
   }, [remote, session.id, session.inboxAsk, session.worktreeRemoved]);
   const [quoteRequest, setQuoteRequest] = useState<QuoteRequest>();
+  // WP-124: an earlier prompt loaded into the composer, confirmed before later replies are removed.
+  const blocksRef = useRef(session.blocks);
+  blocksRef.current = session.blocks;
+  const [earlierPrompt, setEarlierPrompt] = useState<EarlierPromptSeed | null>(null);
+  const earlierSeedId = useRef(0);
+  const confirmResolve = useRef<((ok: boolean) => void) | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  useEffect(() => {
+    setEarlierPrompt(null);
+    setConfirmOpen(false);
+    confirmResolve.current?.(false);
+    confirmResolve.current = null;
+  }, [session.id]);
   const btw = useBtwConversation({
     available:
       !remote &&
@@ -628,6 +646,29 @@ const LocalSessionPane = memo(function LocalSessionPane({
   const acknowledgeQuote = useCallback((handledId: number) => {
     setQuoteRequest((current) => acknowledgeQuoteRequest(current, handledId));
   }, []);
+  const beginEarlierEdit = useCallback((block: Block) => {
+    earlierSeedId.current += 1;
+    setEarlierPrompt({
+      id: earlierSeedId.current,
+      blockId: block.id,
+      text: block.text,
+    });
+  }, []);
+  const confirmEarlierEdit = useCallback((blockId: string) => {
+    if (!earlierEditNeedsConfirm(blocksRef.current, blockId)) return true;
+    return new Promise<boolean>((resolve) => {
+      confirmResolve.current = resolve;
+      setConfirmOpen(true);
+    });
+  }, []);
+  const settleEarlierConfirm = useCallback((ok: boolean) => {
+    setConfirmOpen(false);
+    const resolve = confirmResolve.current;
+    confirmResolve.current = null;
+    resolve?.(ok);
+  }, []);
+  const cancelEarlierEdit = useCallback(() => setEarlierPrompt(null), []);
+  const finishEarlierEdit = useCallback(() => setEarlierPrompt(null), []);
   const notesEnabled = useSyncExternalStore(
     subscribeNotesEnabled,
     loadNotesEnabled,
@@ -753,6 +794,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       handoffCard={session.handoffCard}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
+      earlierPrompt={earlierPrompt}
+      onConfirmEarlierEdit={confirmEarlierEdit}
+      onEarlierEditDone={finishEarlierEdit}
+      onCancelEarlierEdit={cancelEarlierEdit}
       onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
       onNoteCardDismiss={() => onNoteCardDismiss?.(session.id)}
       onHandoffCardDismiss={() => onHandoffCardDismiss?.(session.id)}
@@ -1131,6 +1176,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       const quoted = quotedMessage(speaker, text);
                       if (quoted) addSelectionToChat(quoted);
                     }}
+                    onEditEarlierPrompt={beginEarlierEdit}
                     onSaveNote={notesEnabled ? saveNote : undefined}
                     onSendDraft={
                       draftBlock
@@ -1339,6 +1385,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     enabled={visible}
                     quoteRequest={quoteRequest}
                     onQuoteRequestConsumed={acknowledgeQuote}
+                    earlierPrompt={earlierPrompt}
+                    onConfirmEarlierEdit={confirmEarlierEdit}
+                    onEarlierEditDone={finishEarlierEdit}
+                    onCancelEarlierEdit={cancelEarlierEdit}
                     onDraftChange={(text) => {
                       draftRef.current = text;
                     }}
@@ -1348,8 +1398,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         : undefined
                     }
                     onFocus={() => onFocus(session.id)}
-                    onSubmit={(text, attachments) =>
-                      onSubmit(session.id, text, attachments)
+                    onSubmit={(text, attachments, options) =>
+                      onSubmit(session.id, text, attachments, options)
                     }
                     // The plan's usage, as the session footer shows it,
                     // which a Mono in full view covers. Its account moves
@@ -1451,6 +1501,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onSaveNote={notesEnabled ? saveNote : undefined}
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
+          />
+          <EarlierPromptConfirm
+            open={confirmOpen}
+            onKeep={() => settleEarlierConfirm(false)}
+            onRemove={() => settleEarlierConfirm(true)}
           />
         </div>
       </div>

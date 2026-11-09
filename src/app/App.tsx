@@ -592,6 +592,10 @@ import {
 } from "../features/sessions/model/handoff";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
+  applyEarlierEdit,
+  earlierEditDecision,
+} from "../features/sessions/model/editEarlierPrompt";
+import {
   applyBtwHarnessEvent,
   btwTurnHarness,
   buildBtwPrompt,
@@ -8175,6 +8179,18 @@ function Workspace({
         )
       )
         return false;
+      // WP-124: an earlier-prompt edit rewrites the local transcript only, and only while that prompt is still there.
+      if (options?.earlierEdit) {
+        if (
+          options.resendEdited ||
+          earlierEditDecision(
+            !!storedCurrent.busy,
+            storedCurrent.blocks,
+            options.earlierEdit.blockId,
+          ) === "reject"
+        )
+          return false;
+      }
       // Ash typed while the agent waits on its own question (AskUserQuestion): his words answer it, the way Claude
       // Code's picker takes a typed answer, never a message queued behind the question (messageQueue.ts).
       const typed = typedQuestionAnswer(storedCurrent, text, options ?? {});
@@ -8819,10 +8835,13 @@ function Workspace({
       }
 
       dismissNoticesForContinuedSession(sessionId);
+      let earlierEditKept = true;
       const commitSubmittedTurn = () => {
+        let sawSession = false;
         setSessions((prev) =>
           prev.map((s) => {
             if (s.id !== sessionId) return s;
+            sawSession = true;
             const draftRemoved = draftBlock
               ? {
                   ...s,
@@ -8867,6 +8886,22 @@ function Workspace({
             };
             if (editedResend) {
               next = editedResend.replace(next);
+            }
+            // WP-124: drop the transcript from the earlier prompt, re-checked at commit time.
+            if (options?.earlierEdit) {
+              if (s.busy) {
+                earlierEditKept = false;
+                return s;
+              }
+              const editedBlocks = applyEarlierEdit(
+                next.blocks,
+                options.earlierEdit.blockId,
+              );
+              if (!editedBlocks) {
+                earlierEditKept = false;
+                return s;
+              }
+              next = { ...next, blocks: editedBlocks };
             }
             if (approvedPlan && intent === "build") {
               next = {
@@ -8957,9 +8992,12 @@ function Workspace({
                 );
           }),
         );
+        if (options?.earlierEdit && !sawSession) earlierEditKept = false;
       };
       if (!options?.resendEdited) {
         flushSync(commitSubmittedTurn);
+        // WP-124: the prompt was gone or the chat went busy before the commit, so nothing was sent.
+        if (options?.earlierEdit && !earlierEditKept) return false;
         options?.onStarted?.();
       }
 

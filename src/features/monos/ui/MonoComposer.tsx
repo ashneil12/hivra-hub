@@ -13,7 +13,8 @@ import {
 import { isImeComposition } from "../../../shared/lib/keyboard";
 import { ArrowUp, File as FileIcon, ImagePlus, Plus, SmilePlus } from "../../../shared/ui/icons";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
-import type { Attachment } from "../../sessions/model/session";
+import type { Attachment, ComposerTurnOptions } from "../../sessions/model/session";
+import type { EarlierPromptSeed } from "../../sessions/model/editEarlierPrompt";
 import {
   attachmentsFromFiles,
   filesFromClipboard,
@@ -71,11 +72,17 @@ type Props = {
   focusToken?: number;
   quoteRequest?: QuoteRequest;
   onQuoteRequestConsumed?: (id: number) => void;
+  /** WP-124: replace the draft once with this earlier prompt. */
+  earlierPrompt?: EarlierPromptSeed | null;
+  onConfirmEarlierEdit?: (blockId: string) => Promise<boolean> | boolean;
+  onEarlierEditDone?: () => void;
+  onCancelEarlierEdit?: () => void;
   onDraftChange?: (text: string) => void;
   /** Returns false when the message wasn't taken, so the draft stays. */
   onSubmit: (
     text: string,
     attachments: Attachment[],
+    options?: ComposerTurnOptions,
   ) => boolean | void | Promise<boolean | void>;
   onFocus?: () => void;
   /**
@@ -110,6 +117,10 @@ export function MonoComposer({
   focusToken,
   quoteRequest,
   onQuoteRequestConsumed,
+  earlierPrompt,
+  onConfirmEarlierEdit,
+  onEarlierEditDone,
+  onCancelEarlierEdit,
   onDraftChange,
   onSubmit,
   onFocus,
@@ -128,6 +139,13 @@ export function MonoComposer({
   const textRef = useRef(text);
   const attachmentsRef = useRef(attachments);
   const consumedQuote = useRef<number | null>(null);
+  const consumedEarlierId = useRef<number | null>(null);
+  const earlierEditRef = useRef<string | null>(null);
+  const confirmEarlierRef = useRef(onConfirmEarlierEdit);
+  confirmEarlierRef.current = onConfirmEarlierEdit;
+  const earlierDoneRef = useRef(onEarlierEditDone);
+  earlierDoneRef.current = onEarlierEditDone;
+  const [editingEarlier, setEditingEarlier] = useState(false);
   const readGeneration = useRef(0);
   const pendingReadsRef = useRef(0);
   const [pendingReads, setPendingReads] = useState(0);
@@ -237,6 +255,20 @@ export function MonoComposer({
     }
     if (next.consumedId != null) onQuoteRequestConsumed?.(next.consumedId);
   }, [quoteRequest, onQuoteRequestConsumed, enabled]);
+  // WP-124: an earlier prompt replaces the draft once. Clearing the seed cancels the edit and leaves the text.
+  useLayoutEffect(() => {
+    if (!earlierPrompt) {
+      earlierEditRef.current = null;
+      setEditingEarlier(false);
+      return;
+    }
+    earlierEditRef.current = earlierPrompt.blockId;
+    setEditingEarlier(true);
+    if (earlierPrompt.id === consumedEarlierId.current) return;
+    consumedEarlierId.current = earlierPrompt.id;
+    update(earlierPrompt.text);
+    if (enabled) field.current?.focus();
+  }, [earlierPrompt, enabled]);
   useLayoutEffect(
     () => () => {
       readGeneration.current++;
@@ -300,7 +332,7 @@ export function MonoComposer({
     read: readDropped,
     onError: setDropError,
   });
-  const send = () => {
+  const send = async () => {
     // An empty box while the turn runs: Enter or the button stops it (UniiChat View.ts view_act "Send").
     if (
       showsStop({
@@ -333,9 +365,22 @@ export function MonoComposer({
     const draft = hidden.text;
     const files = attachmentsRef.current;
     if (!message && !files.length) return;
+    // WP-124: confirm before an earlier-prompt edit drops later replies. Cancel keeps the draft.
+    const earlierBlockId = earlierEditRef.current;
+    let turnOptions: ComposerTurnOptions | undefined;
+    if (earlierBlockId) {
+      const confirmed = await confirmEarlierRef.current?.(earlierBlockId);
+      if (confirmed !== true) return;
+      turnOptions = { earlierEdit: { blockId: earlierBlockId } };
+    }
     const generation = readGeneration.current;
     const clear = (accepted: boolean | void) => {
       if (accepted === false) return;
+      if (earlierBlockId) {
+        earlierEditRef.current = null;
+        setEditingEarlier(false);
+        earlierDoneRef.current?.();
+      }
       if (generation !== readGeneration.current) {
         if (getComposerDraft(sessionId) === draft)
           setComposerDraft(sessionId, "");
@@ -346,7 +391,7 @@ export function MonoComposer({
       setAttachments([]);
       setDropError(null);
     };
-    const result = onSubmit(message, files);
+    const result = onSubmit(message, files, turnOptions);
     if (result instanceof Promise) {
       submittingRef.current = true;
       setSubmitting(true);
@@ -574,6 +619,23 @@ export function MonoComposer({
         ) : dropNotice ? (
           <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
             {dropNotice}
+          </p>
+        ) : null}
+        {editingEarlier ? (
+          <p className="flex items-center gap-2 px-3 pt-2 text-xs text-content/55">
+            Editing an earlier prompt.
+            <button
+              type="button"
+              aria-label="Cancel earlier edit"
+              className="rounded px-1 py-0.5 text-content/70 hover:bg-content/8"
+              onClick={() => {
+                earlierEditRef.current = null;
+                setEditingEarlier(false);
+                onCancelEarlierEdit?.();
+              }}
+            >
+              Cancel earlier edit
+            </button>
           </p>
         ) : null}
         {attachments.length > 0 ? (

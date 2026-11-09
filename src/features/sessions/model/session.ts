@@ -104,6 +104,8 @@ export type ComposerTurnOptions = {
   onResendRejected?: (recovery: EditedResendRejection) => void;
   /** Promote an existing unsent transcript block instead of appending a turn. */
   draftBlockId?: string;
+  /** WP-124: resend replaces the local transcript from this earlier user prompt. */
+  earlierEdit?: { blockId: string };
 };
 
 export type PlanStatus = "streaming" | "ready" | "building" | "built";

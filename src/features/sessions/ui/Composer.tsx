@@ -131,6 +131,7 @@ import { MessageQueue } from "./MessageQueue";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
+import type { EarlierPromptSeed } from "../model/editEarlierPrompt";
 import { useTabGroupLogos } from "../../projects/hooks/useTabGroupLogos";
 import { useProjectBranchesState } from "../../source-control/hooks/useProjectBranches";
 import {
@@ -247,6 +248,13 @@ type Props = {
   context?: ContextUsage;
   compactSupported?: boolean;
   quoteRequest?: QuoteRequest;
+  /** WP-124: replace the draft once with this earlier prompt. */
+  earlierPrompt?: EarlierPromptSeed | null;
+  onEarlierPromptConsumed?: (id: number) => void;
+  /** Return false to keep the draft. True sends it as an edit of that prompt. */
+  onConfirmEarlierEdit?: (blockId: string) => Promise<boolean> | boolean;
+  onEarlierEditDone?: () => void;
+  onCancelEarlierEdit?: () => void;
   initialDraft?: string;
   draftResetToken?: number;
   inboxCard?: InboxComposerCard;
@@ -380,6 +388,11 @@ export function Composer({
   context,
   compactSupported = false,
   quoteRequest,
+  earlierPrompt,
+  onEarlierPromptConsumed,
+  onConfirmEarlierEdit,
+  onEarlierEditDone,
+  onCancelEarlierEdit,
   initialDraft,
   draftResetToken,
   inboxCard,
@@ -447,6 +460,13 @@ export function Composer({
   const borrowedAttachmentIdsRef = useRef(new Set<string>());
   const attachmentLifecycleRef = useRef(0);
   const consumedQuoteId = useRef<number | null>(null);
+  const consumedEarlierId = useRef<number | null>(null);
+  const earlierEditRef = useRef<string | null>(null);
+  const confirmEarlierRef = useRef(onConfirmEarlierEdit);
+  confirmEarlierRef.current = onConfirmEarlierEdit;
+  const earlierDoneRef = useRef(onEarlierEditDone);
+  earlierDoneRef.current = onEarlierEditDone;
+  const [editingEarlier, setEditingEarlier] = useState(false);
   const draftRevisionRef = useRef(0);
   const draftResetTokenRef = useRef(draftResetToken);
   /** The paste shortcut was held at the last keydown; null before any key is seen. */
@@ -1045,6 +1065,30 @@ export function Composer({
     onQuoteRequestConsumed?.(quoteRequest.id);
   }, [onQuoteRequestConsumed, quoteRequest, syncHasValue]);
 
+  // WP-124: an earlier prompt replaces the draft once. Clearing the seed cancels the edit and leaves the text.
+  useLayoutEffect(() => {
+    if (!earlierPrompt) {
+      earlierEditRef.current = null;
+      setEditingEarlier(false);
+      return;
+    }
+    earlierEditRef.current = earlierPrompt.blockId;
+    setEditingEarlier(true);
+    if (earlierPrompt.id === consumedEarlierId.current) return;
+    consumedEarlierId.current = earlierPrompt.id;
+    const el = ref.current;
+    if (!el) return;
+    el.value = earlierPrompt.text;
+    resizeComposer(el);
+    draftRevisionRef.current += 1;
+    setDraft(earlierPrompt.text);
+    onDraftChange?.(earlierPrompt.text);
+    syncHasValue(earlierPrompt.text, attachmentsRef.current);
+    el.setSelectionRange(earlierPrompt.text.length, earlierPrompt.text.length);
+    el.focus();
+    onEarlierPromptConsumed?.(earlierPrompt.id);
+  }, [earlierPrompt, onDraftChange, onEarlierPromptConsumed, syncHasValue]);
+
   // `/btw ` opens the side conversation as soon as it is typed, carrying any
   // text after it over as the unsent side question.
   const enterBtwFromPrefix = useCallback(
@@ -1492,6 +1536,12 @@ export function Composer({
         : text;
     const files = attachmentsRef.current;
     if (!text && files.length === 0 && !noteCard && !handoffCard) return;
+    // WP-124: confirm before an earlier-prompt edit drops later replies. Cancel keeps the draft.
+    const earlierBlockId = earlierEditRef.current;
+    if (earlierBlockId) {
+      const confirmed = await confirmEarlierRef.current?.(earlierBlockId);
+      if (confirmed !== true) return;
+    }
     // Clear the parent draft before onSubmit. The app can synchronously remount
     // the composer when the first message leaves an empty session (EmptySession →
     // docked layout). If draftRef still holds the sent text, the new instance
@@ -1527,6 +1577,7 @@ export function Composer({
               },
             }
           : {}),
+        ...(earlierBlockId ? { earlierEdit: { blockId: earlierBlockId } } : {}),
       },
     );
     // The app can reject a turn before it is recorded (for example while an
@@ -1535,6 +1586,11 @@ export function Composer({
     if (accepted === false) {
       restoreDraft(text, files);
       return;
+    }
+    if (earlierBlockId) {
+      earlierEditRef.current = null;
+      setEditingEarlier(false);
+      earlierDoneRef.current?.();
     }
     pasteGenerationRef.current += 1;
     if (ref.current) {
@@ -2221,6 +2277,23 @@ export function Composer({
           ) : pasteNotice ? (
             <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
               {pasteNotice}
+            </p>
+          ) : null}
+          {editingEarlier ? (
+            <p className="flex items-center gap-2 px-3 pt-2 text-xs text-content/55">
+              Editing an earlier prompt.
+              <button
+                type="button"
+                aria-label="Cancel earlier edit"
+                className="rounded px-1 py-0.5 text-content/70 hover:bg-content/8"
+                onClick={() => {
+                  earlierEditRef.current = null;
+                  setEditingEarlier(false);
+                  onCancelEarlierEdit?.();
+                }}
+              >
+                Cancel earlier edit
+              </button>
             </p>
           ) : null}
 
