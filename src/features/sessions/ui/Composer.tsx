@@ -126,6 +126,7 @@ import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { FanOutPicker } from "./FanOutPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
@@ -293,6 +294,11 @@ type Props = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: send this prompt to several models. Absent on surfaces that cannot start those chats. */
+  onCompareModels?: (
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | Promise<boolean | void> | void;
   /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
   onBtwCommand?: (
     text: string,
@@ -418,6 +424,7 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  onCompareModels,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
@@ -2637,15 +2644,37 @@ export function Composer({
               showsStop({ enabled, busy, text: draft, attachments: attachments.length, canStop: !!onStop }) ? (
                 <TurnStopButton onClick={() => onStop?.()} />
               ) : (
-              <ComposerAction
-                busy={busy}
-                disabled={disabled}
-                hasValue={hasValue && !worktreeRemoved}
-                allowBusySubmit={allowBusySubmit}
-                label={draftActive ? "Save draft" : "Send"}
-                onSend={() => submit(ref.current?.value ?? "")}
-                onStop={() => onStop?.()}
-              />
+                <>
+                  {onCompareModels && !compact && !remoteSession ? (
+                    <FanOutPicker
+                      prompt={draft}
+                      disabled={disabled || worktreeRemoved}
+                      allowedHarnesses={allowedModelHarnesses}
+                      onLaunch={async (prompt, targets) => {
+                        const accepted = await onCompareModels(prompt, targets);
+                        if (accepted === false) return false;
+                        pasteGenerationRef.current += 1;
+                        if (ref.current) {
+                          ref.current.value = "";
+                          ref.current.style.height = "auto";
+                        }
+                        setDraft("");
+                        onDraftChange?.("");
+                        syncHasValue("", attachmentsRef.current);
+                        return true;
+                      }}
+                    />
+                  ) : null}
+                  <ComposerAction
+                    busy={busy}
+                    disabled={disabled}
+                    hasValue={hasValue && !worktreeRemoved}
+                    allowBusySubmit={allowBusySubmit}
+                    label={draftActive ? "Save draft" : "Send"}
+                    onSend={() => submit(ref.current?.value ?? "")}
+                    onStop={() => onStop?.()}
+                  />
+                </>
               )}
             </div>
           </div>

@@ -197,6 +197,12 @@ export type SessionPaneProps = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: start the same prompt on several models. */
+  onCompareModels?: (
+    sessionId: string,
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | Promise<boolean | void> | void;
   onSaveDraft: (
     sessionId: string,
     text: string,
@@ -356,6 +362,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
+  onCompareModels,
   onStop,
   onStopTurn,
   onCompactContext,
@@ -813,6 +820,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
         if (!dockComposer) composerDockMotion.captureLaunch();
         return onSubmit(session.id, text, attachments, options);
       }}
+      onCompareModels={
+        onCompareModels
+          ? (prompt, targets) => onCompareModels(session.id, prompt, targets)
+          : undefined
+      }
       onBtwCommand={btw.openWith}
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
       onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}

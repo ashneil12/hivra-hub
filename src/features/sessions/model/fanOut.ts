@@ -6,6 +6,12 @@ import { HARNESSES, type HarnessId } from "./session";
 /** Documented maximum. A fan-out must not start a dozen paid chats by accident. */
 export const FAN_OUT_MAX = 4;
 
+export const FAN_OUT_CAP_LINE = `You can compare up to ${FAN_OUT_MAX} models.`;
+
+export const FAN_OUT_PAID_LINE = `Each chat can use a paid turn. You can compare up to ${FAN_OUT_MAX}.`;
+
+export type FanOutTargetRef = { provider: HarnessId; model: string };
+
 export type FanOutWorktree =
   | { kind: "assigned"; path: string; branch: string }
   | { kind: "pending"; reason: "git-unknown" }
@@ -81,6 +87,24 @@ function readTarget(
   const trimmed = model.trim();
   if (!trimmed || /[\0\r\n]/.test(trimmed)) return { ok: false };
   return { ok: true, provider: provider as HarnessId, model: trimmed };
+}
+
+/** Tick a model on or off. A fifth tick is refused and the earlier four stay. */
+export function toggleFanOutTarget(
+  selected: readonly FanOutTargetRef[],
+  target: { provider: string; model: string },
+): { selected: FanOutTargetRef[]; refused?: "over-cap" | "bad-target" } {
+  const read = readTarget(target);
+  if (!read.ok) return { selected: selected.map((item) => ({ ...item })), refused: "bad-target" };
+  const key = `${read.provider}\0${read.model}`;
+  const index = selected.findIndex((item) => `${item.provider}\0${item.model.trim()}` === key);
+  if (index >= 0) {
+    return { selected: selected.filter((_, item) => item !== index) };
+  }
+  if (selected.length >= FAN_OUT_MAX) {
+    return { selected: selected.map((item) => ({ ...item })), refused: "over-cap" };
+  }
+  return { selected: [...selected, { provider: read.provider, model: read.model }] };
 }
 
 /** A compare record for two to FAN_OUT_MAX models. Over the cap, nothing is planned. */

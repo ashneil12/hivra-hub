@@ -365,6 +365,7 @@ import {
   checkWorktreeRemoval,
   listWorktrees,
   namedWorktreeBranch,
+  temporaryWorktreeBranchName,
   orchestrationWorktreeBranchName,
   removeOrchestrationBranch,
   removeOrchestrationWorktree,
@@ -723,6 +724,8 @@ import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../fea
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
+import { launchFanOut } from "../features/sessions/model/fanOutLaunch";
+import { putCompare } from "../features/sessions/model/fanOutStore";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -16389,6 +16392,50 @@ function Workspace({
     create: () => createMono().id,
   });
 
+  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model.
+  const fanOutBusy = useRef(new Set<string>());
+  const onCompareModels = useCallback(
+    async (
+      sessionId: string,
+      prompt: string,
+      targets: readonly { provider: HarnessId; model: string }[],
+    ) => {
+      if (fanOutBusy.current.has(sessionId)) return false;
+      const source = sessionsRef.current.find((session) => session.id === sessionId);
+      if (!source || source.worktreeRemoved) return false;
+      fanOutBusy.current.add(sessionId);
+      try {
+        const result = await launchFanOut(
+          {
+            prompt,
+            targets,
+            cwd: source.cwd,
+            runtimeMode: source.runtimeMode,
+          },
+          {
+            git: gitRepositoryOnThisComputer,
+            branchName: temporaryWorktreeBranchName,
+            createWorktree: async (cwd, branch) => {
+              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false);
+              return { path: tree.path, branch: tree.branch ?? branch };
+            },
+          },
+        );
+        if (!result.ok || !putCompare(result.record)) return false;
+        const known = new Set(sessionsRef.current.map((session) => session.id));
+        const added = result.sessions.filter((session) => !known.has(session.id));
+        if (added.length === 0) return false;
+        sessionsRef.current = [...sessionsRef.current, ...added];
+        setSessions(sessionsRef.current);
+        for (const session of added) onSubmit(session.id, result.record.prompt);
+        return true;
+      } finally {
+        fanOutBusy.current.delete(sessionId);
+      }
+    },
+    [onSubmit],
+  );
+
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -16410,6 +16457,7 @@ function Workspace({
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
+    onCompareModels,
     onStop: onStopFromUser,
     // A Mono's own Stop: its turn only (UniiChat stops "Unii's turn", not the agents at work).
     onStopTurn: (sessionId: string) => onStop(sessionId),
