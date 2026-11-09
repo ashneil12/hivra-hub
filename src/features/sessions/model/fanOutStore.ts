@@ -1,7 +1,13 @@
 // WP-135: the compare records a window is showing. A value read back is
 // untrusted, and a record that claims to merge winners is dropped.
 import { HARNESSES, type HarnessId } from "./session";
-import { FAN_OUT_MAX, type CompareRecord, type FanOutChild, type FanOutWorktree } from "./fanOut";
+import {
+  FAN_OUT_MAX,
+  type CompareRecord,
+  type FanOutChild,
+  type FanOutCleanup,
+  type FanOutWorktree,
+} from "./fanOut";
 
 const PROVIDERS = new Set<string>(HARNESSES);
 
@@ -97,6 +103,9 @@ export function compareFromUnknown(value: unknown): CompareRecord | null {
     typeof row.winnerId === "string" && seen.has(row.winnerId) && !discardedIds.includes(row.winnerId)
       ? row.winnerId
       : undefined;
+  const sourceId =
+    typeof row.sourceId === "string" && /^[A-Za-z0-9_-]+$/.test(row.sourceId) ? row.sourceId : undefined;
+  const cleanup = cleanupFrom(row.cleanup, discardedIds);
   return {
     id: row.id,
     revision: row.revision,
@@ -104,9 +113,28 @@ export function compareFromUnknown(value: unknown): CompareRecord | null {
     createdAt: row.createdAt,
     children,
     discardedIds,
+    ...(sourceId ? { sourceId } : {}),
     ...(winnerId ? { winnerId } : {}),
+    ...(cleanup ? { cleanup } : {}),
     autoMerge: false,
   };
+}
+
+const CLEANUP: readonly FanOutCleanup[] = ["pending", "removed", "kept", "none", "blocked"];
+
+function cleanupFrom(
+  value: unknown,
+  discardedIds: readonly string[],
+): Partial<Record<string, FanOutCleanup>> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const cleanup: Partial<Record<string, FanOutCleanup>> = {};
+  for (const id of discardedIds) {
+    const state = (value as Record<string, unknown>)[id];
+    if (typeof state === "string" && (CLEANUP as readonly string[]).includes(state)) {
+      cleanup[id] = state as FanOutCleanup;
+    }
+  }
+  return Object.keys(cleanup).length > 0 ? cleanup : undefined;
 }
 
 export function comparesFromUnknown(value: unknown): CompareRecord[] {

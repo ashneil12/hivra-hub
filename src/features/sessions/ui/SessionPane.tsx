@@ -54,6 +54,7 @@ import {
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
+import { FanOutCompare, type FanOutCompareModel } from "./FanOutCompare";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
@@ -203,6 +204,8 @@ export type SessionPaneProps = {
     prompt: string,
     targets: readonly { provider: HarnessId; model: string }[],
   ) => boolean | Promise<boolean | void> | void;
+  /** WP-135: the compare started from this chat, when there is one. */
+  fanOutForSession?: (sessionId: string) => FanOutCompareModel | null;
   onSaveDraft: (
     sessionId: string,
     text: string,
@@ -363,6 +366,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onRemoveDraft,
   onSubmit,
   onCompareModels,
+  fanOutForSession,
   onStop,
   onStopTurn,
   onCompactContext,
@@ -715,6 +719,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => observer.disconnect();
   }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  const fanOutView = fanOutForSession?.(session.id) ?? null;
+  const fanOutCompare = fanOutView ? <FanOutCompare view={fanOutView} /> : null;
   const composer = (
     <Composer
       key={session.id}
@@ -1054,6 +1060,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ref={composerDockMotion.centeredRef}
                         data-session-composer
                       >
+                        {fanOutCompare}
                         {composer}
                       </div>
                     )
@@ -1441,6 +1448,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       crewLines={delegationPane.crewLines}
                     />
                   ) : null}
+                  {fanOutCompare}
                   {composer}
                 </>
               )}

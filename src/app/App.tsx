@@ -724,8 +724,11 @@ import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../fea
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
 import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
+import { discardFanOutLoser, pickFanOutInStore } from "../features/sessions/model/fanOutDecide";
+import { fanOutJanitorPort } from "../features/sessions/model/fanOutJanitor";
 import { launchFanOut } from "../features/sessions/model/fanOutLaunch";
-import { putCompare } from "../features/sessions/model/fanOutStore";
+import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
+import { fanOutCompareRows } from "../features/sessions/model/fanOutView";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -16411,6 +16414,7 @@ function Workspace({
             targets,
             cwd: source.cwd,
             runtimeMode: source.runtimeMode,
+            sourceId: sessionId,
           },
           {
             git: gitRepositoryOnThisComputer,
@@ -16436,6 +16440,24 @@ function Workspace({
     [onSubmit],
   );
 
+  // WP-135: the compare sits on the chat it was started from. Picking leaves the winner's worktree.
+  const fanOutCompares = useSyncExternalStore(subscribeCompares, listCompares, listCompares);
+  const fanOutForSession = (sessionId: string) => {
+    const record = [...fanOutCompares].reverse().find((item) => item.sourceId === sessionId);
+    if (!record) return null;
+    return {
+      rows: fanOutCompareRows(record, sessionsRef.current),
+      onPick: (childId: string) => {
+        pickFanOutInStore(record.id, childId);
+      },
+      onDiscard: (childId: string) => {
+        const source = sessionsRef.current.find((item) => item.id === sessionId);
+        if (!source) return;
+        return discardFanOutLoser(record.id, childId, fanOutJanitorPort(source.cwd, onRemoveWorktree));
+      },
+    };
+  };
+
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -16458,6 +16480,7 @@ function Workspace({
     onRemoveDraft,
     onSubmit,
     onCompareModels,
+    fanOutForSession,
     onStop: onStopFromUser,
     // A Mono's own Stop: its turn only (UniiChat stops "Unii's turn", not the agents at work).
     onStopTurn: (sessionId: string) => onStop(sessionId),

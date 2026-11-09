@@ -24,15 +24,22 @@ export type FanOutChild = {
   worktree: FanOutWorktree;
 };
 
+/** How far a discarded child's worktree clean-up got. Pending is not a final answer. */
+export type FanOutCleanup = "pending" | "removed" | "kept" | "none" | "blocked";
+
 export type CompareRecord = {
   id: string;
   /** Bumped on every accepted write. A write must name the revision it read. */
   revision: number;
   prompt: string;
   createdAt: number;
+  /** The chat the compare was started from, when it is a real session id. */
+  sourceId?: string;
   children: FanOutChild[];
   winnerId?: string;
   discardedIds: string[];
+  /** Clean-up state for discarded children only. Missing means still pending. */
+  cleanup?: Partial<Record<string, FanOutCleanup>>;
   /** Always false. The person picks one child; nothing is merged for them. */
   autoMerge: false;
 };

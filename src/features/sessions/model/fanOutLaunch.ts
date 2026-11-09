@@ -60,6 +60,7 @@ export async function launchFanOut(
     cwd: string;
     runtimeMode?: RuntimeMode;
     claimed?: readonly string[];
+    sourceId?: unknown;
     ids?: { next: () => string };
     now?: number;
   },
@@ -130,9 +131,13 @@ export async function launchFanOut(
   const written = replaceFanOutChildren(planned.record, planned.record.revision, children);
   if (!written.ok) return written;
   const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+  const sourceId =
+    typeof input.sourceId === "string" && /^[A-Za-z0-9_-]+$/.test(input.sourceId)
+      ? input.sourceId
+      : undefined;
   return {
     ok: true,
-    record: written.record,
+    record: sourceId ? { ...written.record, sourceId } : written.record,
     sessions: written.record.children.map((child) =>
       fanOutSession(child, input.cwd, written.record.prompt, runtimeMode),
     ),
