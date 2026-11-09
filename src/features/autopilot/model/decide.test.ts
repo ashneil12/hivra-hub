@@ -238,6 +238,27 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(bash("grep -n TODO README.md"), FOLDER)).toMatchObject({ kind: "allow" });
   });
 
+  // WP-101 fix round 3, finding 7: a shell startup file or a preferences file under the home folder waits. A relative
+  // name in the chat's folder does not. `less` is not a listed read, so it waits for any path.
+  it("holds a read of a home shell startup file or a preferences file (fix round 3, finding 7)", () => {
+    for (const command of [
+      "cat ~/.zshrc",
+      "cat ~/.bashrc",
+      "cat ~/.profile",
+      "head ~/.zshrc",
+      "tail ~/.bashrc",
+      "cat ~/Library/Preferences/com.apple.foo.plist",
+      "cat /Users/ash/.zshrc",
+      "cat /home/user/.profile",
+      "cat /Users/ash/Library/Preferences/com.apple.foo.plist",
+      "less ~/.zshrc",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(bash("cat .zshrc"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("cat README.md"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("cat ~/notes.txt"), FOLDER)).toMatchObject({ kind: "allow" });
+  });
+
   it("reads a command as the shell reads it, so quotes can't hide a login file (WP-101 fix round 2, item A)", () => {
     // A quoted piece joins the word it touches: the raw text never holds ".netrc", the word does.
     for (const command of [

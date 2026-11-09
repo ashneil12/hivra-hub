@@ -142,6 +142,33 @@ describe("words a command runs with", () => {
     expect(credentialInWords(["rg", "--glob=.env", "x"])).toBe("--glob=.env");
   });
 
+  // WP-101 fix round 3, finding 7: a shell startup file or a preferences file under the home folder is not a project
+  // file. A relative name in the chat's folder is, and stays a read.
+  it("holds a home shell startup file or a preferences file", () => {
+    for (const words of [
+      ["cat", "~/.zshrc"],
+      ["cat", "~/.bashrc"],
+      ["cat", "~/.profile"],
+      ["cat", "~/.bash_profile"],
+      ["cat", "~/.zprofile"],
+      ["cat", "~/.zshenv"],
+      ["cat", "~/.zlogin"],
+      ["head", "~/.zshrc"],
+      ["tail", "~/.bashrc"],
+      ["cat", "~/Library/Preferences/com.apple.foo.plist"],
+      ["cat", "/Users/ash/.zshrc"],
+      ["cat", "/home/user/.profile"],
+      ["cat", "/Users/ash/Library/Preferences/com.apple.foo.plist"],
+      ["cat", "/home/user/Library/Preferences/foo.plist"],
+      ["cat", "~/Library/Preferences"],
+    ])
+      expect(credentialInWords(words), words.join(" ")).not.toBeNull();
+    expect(credentialInWords(["cat", ".zshrc"])).toBeNull();
+    expect(credentialInWords(["cat", "src/.zshrc"])).toBeNull();
+    expect(credentialInWords(["cat", "~/notes.txt"])).toBeNull();
+    expect(credentialInWords(["cat", "/Users/ash/Worktrees/hub-x/README.md"])).toBeNull();
+  });
+
   it("does not mistake a search for a word for a file that holds one", () => {
     expect(credentialInWords(["grep", "token", "src/app.ts"])).toBeNull();
     expect(credentialInWords(["rg", "token"])).toBeNull();

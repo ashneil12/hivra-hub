@@ -168,6 +168,21 @@ function patternLike(word: string): boolean {
 /** `*`, `?` or `[`: a filename glob. A content pattern may hold one too, and that is held rather than read. */
 const GLOB = /[*?\[]/;
 
+/** Shell startup files. A copy under the home folder is that person's shell, not a file in the chat. */
+const SHELL_RC = new Set([".zshrc", ".bashrc", ".profile", ".bash_profile", ".zprofile", ".zshenv", ".zlogin"]);
+
+/**
+ * Whether a word is a shell startup file or a preferences file under a home folder (`~/…`, `/Users/…`, `/home/…`).
+ * A relative `.zshrc` in the chat's folder is not: it has to start at one of those roots. History files are already
+ * credential names.
+ */
+function homeShellFile(word: string): boolean {
+  if (!word.startsWith("~/") && !word.startsWith("/Users/") && !word.startsWith("/home/")) return false;
+  const lower = word.toLowerCase();
+  if (lower.includes("/library/preferences/") || lower.endsWith("/library/preferences")) return true;
+  return SHELL_RC.has(lower.slice(lower.lastIndexOf("/") + 1));
+}
+
 /**
  * The credential place or file a command names, or null. A command that searches (`grep`, `rg`, `ag`, `fd`) reads its
  * first bare word as a pattern, so a search for the word `token` is a search, not a file, and passes. A word that
@@ -182,7 +197,7 @@ export function credentialInWords(words: readonly string[]): string | null {
     if (searches && pieces(word).some((piece) => GLOB.test(piece))) return word;
     if (searches && head !== "find" && patternLike(word)) continue;
     for (const piece of pieces(word)) {
-      if (piece && credentialPath(piece)) return piece;
+      if (piece && (homeShellFile(piece) || credentialPath(piece))) return piece;
     }
   }
   return null;
