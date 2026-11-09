@@ -67,8 +67,9 @@ in Settings, under About.
 - [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J.
 - [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench.
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
-- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99); the correction rule behind the rules tier (WP-103); the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-101).
+- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99); the correction rule behind the rules tier (WP-103); the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-101); and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
+- [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
@@ -77,13 +78,13 @@ Also [poteto](https://x.com/poteto)'s writing on skills and verification, includ
 
 Early. Expect the code and this page to change a lot. The build plan, split into work packages for the
 agents that build it, is in [docs/hivra](docs/hivra/README.md). Agents working in this repo should read
-[CLAUDE.md](CLAUDE.md) first.
+[AGENTS.md](AGENTS.md) first: every agent CLI reads that file, and [CLAUDE.md](CLAUDE.md) imports it.
 
 ## Building
 
 Same as MonoCode: Node.js 20+ and a stable Rust toolchain. See [build setup](docs/building.md). This fork
 has its own build and dev scripts (`npm run hub:dev`, `npm run hub:build`), described in
-[CLAUDE.md](CLAUDE.md).
+[AGENTS.md](AGENTS.md).
 
 ## License
 

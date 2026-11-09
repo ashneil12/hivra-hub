@@ -378,3 +378,25 @@ jobs:
             echo "monocode cannot load on EL 10" >&2
             exit 1
           fi
+
+  # WP-105: one required check that adds up the rest, so branch protection names one job instead of
+  # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
+  # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
+  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check skips when packaging files
+  # did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm, rpm-clean-install]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Every required job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci-ok.mjs

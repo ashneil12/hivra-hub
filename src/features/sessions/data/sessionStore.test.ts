@@ -29,6 +29,21 @@ it("persists sidebar visibility without making the session ephemeral", () => {
   expect(persistFingerprint(hidden)).not.toBe(persistFingerprint(session));
 });
 
+it("persists a private chat and its boundary, and drops a boundary that is not an id", () => {
+  const session = newSession("codex", "/tmp");
+  session.blocks = [{ id: "u", role: "user", text: "Review" }];
+  const priv = { ...session, private: true, privateBoundaryId: "u" };
+  expect(sanitizeSessionForPersist(priv).private).toBe(true);
+  expect(sanitizeSessionForPersist(priv).privateBoundaryId).toBe("u");
+  expect(persistFingerprint(priv)).not.toBe(persistFingerprint(session));
+  const old = sanitizeSessionForPersist(session);
+  expect(old.private).toBeUndefined();
+  expect(old.privateBoundaryId).toBeUndefined();
+  expect(sanitizeSessionForPersist({ ...session, privateBoundaryId: "../no" }).privateBoundaryId).toBe(
+    "private-boundary-unreadable",
+  );
+});
+
 it("fingerprints queued message edits, ordering, errors and pause state", () => {
   const session = newSession("codex", "/tmp");
   const first = { id: "first", text: "One", attachments: [] };
@@ -606,6 +621,24 @@ describe("sanitizeSessionForPersist", () => {
       cacheReadTokens: 80,
       cacheHitPercent: 40,
     });
+  });
+
+  // WP-108: a reported price is stored with the turn; a broken one is dropped, not zeroed.
+  it("persists the cost a CLI reported and drops one that is not a number", () => {
+    const session = newSession("claude", "/tmp/project");
+    session.blocks = [
+      { id: "u1", role: "user", text: "one", turnMetrics: { costUsd: 0.0042 } },
+      {
+        id: "u2",
+        role: "user",
+        text: "two",
+        turnMetrics: { costUsd: -3, inputTokens: 7 },
+      },
+    ];
+
+    const blocks = sanitizeSessionForPersist(session).blocks;
+    expect(blocks[0]?.turnMetrics).toEqual({ costUsd: 0.0042 });
+    expect(blocks[1]?.turnMetrics).toEqual({ inputTokens: 7 });
   });
 
   it("persists a canonical GitHub work-item identity", () => {

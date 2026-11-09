@@ -22,6 +22,8 @@ import {
 import { recordRejection } from "../backpass/rejection";
 import { crewMemoryBrief } from "../model/crewBrief";
 import { HARNESSES } from "../../sessions/model/session";
+import { learnableChats } from "../model/privateChat";
+import { loadPrivateChatKeys } from "../../sessions/data/privateKeys";
 import type { LearnPorts, LearnProfiles, ShownProposal } from "./LearnFromChats";
 
 type Listed = CostChat & { id: string; mtimeMs: number };
@@ -65,7 +67,8 @@ async function listedChats(): Promise<Listed[]> {
       mtimeMs: typeof item.mtimeMs === "number" ? item.mtimeMs : 0,
     });
   }
-  return out;
+  // WP-111: a private chat is not offered. A failed check reads nothing this time.
+  return learnableChats(out, await loadPrivateChatKeys());
 }
 
 async function loadState(): Promise<Loaded> {

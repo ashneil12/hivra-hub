@@ -12,9 +12,9 @@ Read in this order:
 4. [SOURCES.md](SOURCES.md) when your package takes an idea or code from another project: what we take from where,
    under which licence, and how to credit it.
 
-The repo's [CLAUDE.md](../../CLAUDE.md) still governs how you build, run and ship anything here (dev copies,
-`npm run check`, never touching the daily app). Where this folder and CLAUDE.md disagree, CLAUDE.md wins until a
-package changes it.
+The repo's [AGENTS.md](../../AGENTS.md) still governs how you build, run and ship anything here (dev copies,
+`npm run check`, never touching the daily app), and [CLAUDE.md](../../CLAUDE.md) imports it. Where this folder
+and those disagree, they win until a package changes them.
 
 ## The short version
 

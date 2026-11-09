@@ -392,6 +392,11 @@ export type TurnMetrics = {
   cacheWriteTokens?: number;
   /** Provider-normalized share of input served from cache, as a percentage. */
   cacheHitPercent?: number;
+  /**
+   * Price in US dollars the CLI reported for this turn, when it reports one (Claude's `total_cost_usd`, OpenCode's
+   * `cost`). Absent means the engine did not say: nothing ever estimates it from a price table.
+   */
+  costUsd?: number;
 };
 
 /**
@@ -586,6 +591,13 @@ export type CutWork = {
 export type Session = {
   /** Saved and accessible by id, but omitted from the normal session sidebar. */
   sidebarHidden?: boolean;
+  /**
+   * WP-111: memory does not read this chat or take a memory from it. Missing on a chat saved
+   * before the flag existed, and those stay readable.
+   */
+  private?: boolean;
+  /** WP-111: after a private chat is switched off, this message and everything before it stay unread. */
+  privateBoundaryId?: string;
   /**
    * Hivra WP-10: a first mate's chat (the coding team's, a Mono's; set by WP-20 and WP-21). It reads and never edits
    * the project: CLIs that can start read-only do, and every turn's checkout is checked (features/firstmate/).
