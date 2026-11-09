@@ -24,7 +24,12 @@ import {
   supportsBtwHarness,
   withSideThread,
 } from "./btw";
-import type { Block, BtwThread } from "./session";
+import { summaryFromSession } from "../data/sessionHistory";
+import {
+  buildSessionList,
+  sessionListNavigationIds,
+} from "./sessionFolders";
+import { newSession, type Block, type BtwThread } from "./session";
 
 function block(id: string, role: Block["role"], text = id): Block {
   return { id, role, text };
@@ -814,5 +819,34 @@ describe("withSideThread", () => {
     expect(withSideThread(blocks, "user-1", second)!.find((entry) => entry.id === "user-1")?.btwThreads).toEqual([
       second,
     ]);
+  });
+});
+
+describe("side chats stay off the chat list", () => {
+  it("lists the parent chat only and keeps the thread on that turn", () => {
+    const session = {
+      ...newSession("claude", "/repo", "claude:sonnet-4.6"),
+      id: "parent-chat",
+      blocks: withSideThread(
+        [
+          block("u1", "user", "Parent question"),
+          block("a1", "assistant", "Parent answer"),
+        ],
+        "u1",
+        thread({ id: "side-1" }),
+      )!,
+    };
+    const row = summaryFromSession(session);
+    const ids = sessionListNavigationIds(
+      buildSessionList([row], [], [row]),
+      true,
+    );
+
+    expect(ids).toEqual(["parent-chat"]);
+    expect(ids).not.toContain("side-1");
+    expect(sessionBtwThreads(session.blocks).map((entry) => entry.thread.id)).toEqual([
+      "side-1",
+    ]);
+    expect(row.id).toBe(session.id);
   });
 });
