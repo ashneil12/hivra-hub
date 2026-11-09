@@ -17549,6 +17549,8 @@ function Workspace({
                                         onTerminalMetaChange={
                                           onTerminalMetaChange
                                         }
+                                        // WP-109: pane headers split through the same handler as the shortcut.
+                                        onSplit={onSplit}
                                       />
                                     </div>
                                   </div>
