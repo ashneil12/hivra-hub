@@ -3,6 +3,7 @@
 
 import { ftsMatch } from "../vendor/mercuryBelief";
 import { contradicts } from "./contradicts";
+import { givesOrders } from "./orderScan";
 import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
 import { touch } from "./fade";
 
@@ -201,7 +202,7 @@ export function acceptImport(doc: MemoryDoc, proposal: ImportProposal, now: numb
   const items = [...doc.items];
   for (const line of proposal.markdown.replace(/\r\n/g, "\n").split("\n")) {
     const text = normalizeFact(line);
-    if (!text || !CITE.test(text) || mentionsSecret(text)) continue;
+    if (!text || !CITE.test(text) || mentionsSecret(text) || givesOrders(text)) continue;
     const id = memoryId([mateId, "add", text.toLowerCase()]);
     if (items.some((item) => item.id === id)) continue;
     items.push({

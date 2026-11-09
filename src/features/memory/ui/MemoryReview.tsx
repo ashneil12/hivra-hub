@@ -7,6 +7,7 @@ import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
 import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
+import { importOrderRefusal } from "../model/orderScan";
 import { pausedNow } from "../model/memoryBudget";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
@@ -117,8 +118,8 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     }
   }
 
-  async function decideImport(row: ImportRow, update: (doc: MemoryDoc) => MemoryDoc) {
-    if (busyRef.current) return;
+  async function decideImport(row: ImportRow, update: (doc: MemoryDoc) => MemoryDoc): Promise<boolean> {
+    if (busyRef.current) return false;
     busyRef.current = true;
     setBusy(true);
     setNote("");
@@ -126,13 +127,15 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
       const result = await stampImport(portsRef.current.load, portsRef.current.save, portsRef.current.reviewImport, update, row.id);
       setDoc(result.doc);
       setFailed(false);
-      if (!result.stamped) return;
+      if (!result.stamped) return false;
       const decision = result.doc.imports[row.id];
-      if (decision !== "confirmed" && decision !== "rejected") return;
+      if (decision !== "confirmed" && decision !== "rejected") return false;
       setImports((current) => current.map((item) => (item.id === row.id ? { ...item, status: decision } : item)));
+      return true;
     } catch {
       setNote("Memory could not be saved this time. It can be tried again.");
       void refresh();
+      return false;
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -337,7 +340,13 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                   type="button"
                   className={BTN}
                   disabled={busy}
-                  onClick={() => void decideImport(row, (current) => acceptImport(current, row, Date.now()))}
+                  onClick={() => {
+                    const reason = importOrderRefusal(row.markdown);
+                    void (async () => {
+                      const ok = await decideImport(row, (current) => acceptImport(current, row, Date.now()));
+                      if (ok && reason) setNote(reason);
+                    })();
+                  }}
                 >
                   {`Accept import from ${row.project}`}
                 </button>

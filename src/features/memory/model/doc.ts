@@ -53,7 +53,7 @@ export type MemoryDispute = {
 };
 
 /** WP-100: why the curator dropped a turn's fact. */
-export type DropReason = "late" | "secret" | "ungrounded" | "invalid";
+export type DropReason = "late" | "secret" | "ungrounded" | "invalid" | "orders";
 
 /** WP-100: how memory has been going, for the Memory screen's health card. Absent on old data, which reads as zeros. */
 export type MemoryHealth = {
@@ -235,6 +235,7 @@ function loadedHealth(value: unknown): MemoryHealth | undefined {
       secret: count(dropped.secret),
       ungrounded: count(dropped.ungrounded),
       invalid: count(dropped.invalid),
+      orders: count(dropped.orders),
     },
   };
   if (finite(raw.lastRunAt)) health.lastRunAt = raw.lastRunAt;
