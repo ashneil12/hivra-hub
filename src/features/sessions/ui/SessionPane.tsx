@@ -1,4 +1,6 @@
 import { GripVertical, X } from "../../../shared/ui/icons";
+import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
+import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
 import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
@@ -14,6 +16,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -286,6 +289,10 @@ export type SessionPaneProps = {
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
+  /** The tab's split tree, so a full group can disable one direction. */
+  layout?: LayoutNode;
+  /** Same handler as the split shortcut. Absent hides the buttons. */
+  onSplit?: (dir: SplitDir) => void;
 };
 
 type Props = SessionPaneProps & {
@@ -397,6 +404,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
+  layout,
+  onSplit,
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -873,6 +882,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
     />
   );
 
+  const splitButtons =
+    onSplit && layout ? (
+      <PaneSplitButtons
+        layout={layout}
+        paneId={session.id}
+        onFocus={onFocus}
+        onSplit={onSplit}
+      />
+    ) : null;
+
   return (
     <div
       data-session-drop={session.id}
@@ -931,6 +950,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {splitButtons}
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -947,7 +967,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
+      ) : splitButtons ? (
+        <div
+          data-pane-header=""
+          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
+        >
+          {splitButtons}
+        </div>
       ) : null}
+      {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
+      <NewChatWorktreeBanner session={session} />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
