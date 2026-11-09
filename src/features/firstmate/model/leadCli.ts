@@ -7,6 +7,7 @@
 // the session request, which the webview must not see, so they cannot lead yet.
 import type { HarnessId } from "../../sessions/model/session";
 import { HARNESS_TITLE, HARNESSES } from "../../sessions/model/session";
+import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
 
 export type LeadAttach = "claude-args" | "codex-config" | "none";
 
@@ -53,6 +54,59 @@ export function leadBlockReason(harness: string): string | null {
       ? LEAD_CAPABILITY[harness as HarnessId].reason
       : "This CLI is not in the lead table.";
   return `${name} cannot lead yet. ${reason}`;
+}
+
+export type LeadCliPresence = {
+  cli: string;
+  installed: boolean;
+  /** Absent counts as signed in. False keeps it out of the picker. */
+  signedIn?: boolean;
+};
+
+export type LeadChoice = { cli: HarnessId; label: string };
+
+/** Capable CLIs that are installed and signed in, in crew order, once each. */
+export function leadPickerChoices(present: readonly LeadCliPresence[]): LeadChoice[] {
+  const ready = new Set<string>();
+  for (const row of present) {
+    if (!row || !row.installed || row.signedIn === false) continue;
+    if (!isCli(row.cli) || !canLead(row.cli)) continue;
+    ready.add(row.cli);
+  }
+  return CLI_ORDER.filter((cli) => ready.has(cli)).map((cli) => ({
+    cli,
+    label: cliLabel(cli),
+  }));
+}
+
+/**
+ * A switch when the current CLI cannot lead. The choices are the capable CLIs
+ * that are here. Null when this CLI can already lead.
+ */
+export function leadSwitchOffer(
+  current: string,
+  present: readonly LeadCliPresence[],
+): { reason: string; choices: LeadChoice[] } | null {
+  const reason = leadBlockReason(current);
+  if (!reason) return null;
+  return { reason, choices: leadPickerChoices(present) };
+}
+
+/**
+ * Point the same chat at a capable CLI. Crew and memory stay the same objects.
+ * Null when the CLI cannot lead, so a bad value changes nothing.
+ */
+export function applyLeadSwitch<T extends { harness: string }, C, M>(
+  session: T,
+  cli: string,
+  kept: { crew: C; memory: M },
+): { session: T; crew: C; memory: M } | null {
+  if (!isCli(cli) || !canLead(cli)) return null;
+  return {
+    session: session.harness === cli ? session : { ...session, harness: cli },
+    crew: kept.crew,
+    memory: kept.memory,
+  };
 }
 
 /** The monocode server Codex stores under mcp_servers.monocode. */

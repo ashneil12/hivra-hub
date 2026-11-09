@@ -115,7 +115,7 @@ import {
 } from "../../settings/model/settings";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
-import { resolveModel } from "../model/models";
+import { preferredModelId, resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
 import { AstraWelcome } from "./AstraWelcome";
@@ -967,8 +967,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
-      {/* WP-120: a first mate on a CLI that cannot lead yet says why, in the chat. */}
-      {session.firstMate ? <LeadCliNotice harness={session.harness} /> : null}
+      {/* WP-120: the lead picker, and a switch when this CLI cannot lead yet. */}
+      {session.firstMate ? (
+        <LeadCliNotice
+          harness={session.harness}
+          onSwitch={(cli) => onModelChange(session.id, cli, preferredModelId(cli))}
+        />
+      ) : null}
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"

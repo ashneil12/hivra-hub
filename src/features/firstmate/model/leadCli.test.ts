@@ -10,9 +10,12 @@ import {
 import { mergeCodexLead } from "../../../integrations/harness/providers/codex/codexLeadConfig";
 import {
   LEAD_CAPABILITY,
+  applyLeadSwitch,
   canLead,
   codexLeadServer,
   leadBlockReason,
+  leadPickerChoices,
+  leadSwitchOffer,
 } from "./leadCli";
 
 const CLI = "/app/MonoCode Hub.app/Contents/MacOS/monocode";
@@ -99,6 +102,55 @@ describe("lead capability", () => {
       if (previous === undefined) delete process.env.MONOCODE_APP_TOKEN;
       else process.env.MONOCODE_APP_TOKEN = previous;
     }
+  });
+
+  it("lists every capable CLI in the picker, and not the ones that cannot lead", () => {
+    const present = [
+      { cli: "opencode", installed: true, signedIn: true },
+      { cli: "claude", installed: true, signedIn: true },
+      { cli: "claude", installed: true, signedIn: true },
+      { cli: "cursor", installed: true, signedIn: true },
+      { cli: "codex", installed: true, signedIn: true },
+      { cli: "pi", installed: true, signedIn: false },
+      { cli: "grok", installed: false, signedIn: true },
+      { cli: "not-a-cli", installed: true, signedIn: true },
+    ];
+    expect(leadPickerChoices(present)).toEqual([
+      { cli: "claude", label: "Claude Code" },
+      { cli: "codex", label: "Codex" },
+    ]);
+    expect(leadPickerChoices([])).toEqual([]);
+    expect(leadPickerChoices([{ cli: "codex", installed: true }])).toEqual([
+      { cli: "codex", label: "Codex" },
+    ]);
+  });
+
+  it("offers a switch off a CLI that cannot lead, and keeps the crew and memory", () => {
+    const present = [
+      { cli: "claude", installed: true, signedIn: true },
+      { cli: "codex", installed: true, signedIn: true },
+      { cli: "opencode", installed: true, signedIn: true },
+    ];
+    expect(leadSwitchOffer("claude", present)).toBeNull();
+    const offer = leadSwitchOffer("opencode", present);
+    expect(offer?.reason).toContain("OpenCode cannot lead yet");
+    expect(offer?.choices.map((choice) => choice.cli)).toEqual(["claude", "codex"]);
+    expect(leadSwitchOffer("pi", []).choices).toEqual([]);
+    expect(leadSwitchOffer("pi", []).reason).toContain("cannot lead yet");
+
+    const crew = { rules: ["keep"] };
+    const memory = { lines: ["one"] };
+    const session = { id: "chat-1", harness: "opencode" as const, blocks: [1] };
+    const switched = applyLeadSwitch(session, "codex", { crew, memory });
+    expect(switched?.session).toMatchObject({ id: "chat-1", harness: "codex", blocks: [1] });
+    expect(switched?.session).not.toBe(session);
+    expect(switched?.crew).toBe(crew);
+    expect(switched?.memory).toBe(memory);
+    const same = applyLeadSwitch(switched!.session, "codex", { crew, memory });
+    expect(same?.session).toBe(switched?.session);
+    expect(applyLeadSwitch(session, "opencode", { crew, memory })).toBeNull();
+    expect(applyLeadSwitch(session, "cursor", { crew, memory })).toBeNull();
+    expect(session.harness).toBe("opencode");
   });
 
   it("keeps plugin servers and lets the lead win the monocode name", () => {
