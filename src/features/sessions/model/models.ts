@@ -64,6 +64,12 @@ export const MODELS: AgentModel[] = [
     nativeId: "claude-opus-5-5",
   },
   {
+    id: "claude:fable-5-2",
+    harness: "claude",
+    name: "Claude Fable 5.2",
+    nativeId: "claude-fable-5-2",
+  },
+  {
     id: "claude:fable-5",
     harness: "claude",
     name: "Claude Fable 5",

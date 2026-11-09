@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { modelNote } from "../../../../features/sessions/model/modelNotes";
 import {
   modelsForClaudeVersion,
   modelsFromClaudeListModels,
@@ -423,6 +424,31 @@ describe("modelsForClaudeVersion", () => {
     const missing = modelsForClaudeVersion(null).map((model) => model.nativeId);
     expect(missing).not.toContain("claude-sonnet-5");
   });
+
+  it("hides Fable 5.2 until 2.1.280, and rejects a missing version", () => {
+    const before = modelsForClaudeVersion("2.1.279").map(
+      (model) => model.nativeId,
+    );
+    expect(before).not.toContain("claude-fable-5-2");
+    expect(before).toContain("claude-fable-5");
+
+    const at = modelsForClaudeVersion("2.1.280");
+    const native = at.map((model) => model.nativeId);
+    expect(native).toContain("claude-fable-5-2");
+    expect(native).toContain("claude-fable-5");
+    const next = at.find((model) => model.nativeId === "claude-fable-5-2");
+    const previous = at.find((model) => model.nativeId === "claude-fable-5");
+    expect(next).toMatchObject({
+      id: "claude:fable-5-2",
+      name: "Claude Fable 5.2",
+      nativeId: "claude-fable-5-2",
+    });
+    expect(next?.settings).toEqual(previous?.settings);
+
+    const missing = modelsForClaudeVersion(null).map((model) => model.nativeId);
+    expect(missing).not.toContain("claude-fable-5-2");
+    expect(missing).not.toContain("claude-fable-5");
+  });
 });
 
 describe("list_models catalog", () => {
@@ -643,6 +669,42 @@ describe("list_models catalog", () => {
       id: "claude:opus",
       nativeId: "opus",
     });
+  });
+
+  it("maps a live Fable 5.2 row without dropping the concrete id", () => {
+    const note = "Effort levels may behave differently from Fable 5.1.";
+    const models = modelsFromClaudeListModels([
+      {
+        value: "fable",
+        resolvedModel: "claude-fable-5-2",
+        displayName: "Fable",
+        description: "Fast and capable",
+      },
+      {
+        value: "claude-fable-5-2[1m]",
+        resolvedModel: "claude-fable-5-2",
+        displayName: "Claude Fable 5.2",
+      },
+    ]);
+
+    expect(models.map((model) => model.name)).toEqual([
+      "Fable 5.2",
+      "Claude Fable 5.2",
+    ]);
+    expect(models[0]).toMatchObject({
+      id: "claude:fable",
+      nativeId: "fable",
+      aliasTarget: "claude-fable-5-2",
+    });
+    expect(models[1]).toMatchObject({
+      id: "claude:fable-5-2",
+      nativeId: "claude-fable-5-2",
+    });
+    expect(
+      models[1]?.settings?.find((setting) => setting.id === "context")?.value,
+    ).toBe("1m");
+    expect(modelNote(models[0]!)).toBe(note);
+    expect(modelNote(models[1]!)).toBe(note);
   });
 
   it("parses success and error control responses", () => {
