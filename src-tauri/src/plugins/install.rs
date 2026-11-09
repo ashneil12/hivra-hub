@@ -492,6 +492,44 @@ fn staged_swapped_for_link(staged: &Path) -> Option<String> {
     None
 }
 
+/// Read the staged copy again. A link, a scan that blocks, or (when `expected` is set) a different hash is a change,
+/// and the same sentences the earlier check uses are returned. With no expected hash, the hash of this read is
+/// returned so a later read can be compared with it: an approved script is allowed to write, and that result is what
+/// gets installed.
+fn read_staged(staged: &Path, expected: Option<&str>) -> Result<String, String> {
+    if let Some(why) = staged_swapped_for_link(staged) {
+        return Err(why);
+    }
+    let now = scan::scan_untrusted(staged);
+    if now.blocked {
+        return Err(format!(
+            "The copy changed after it was read: {} Ask for it again.",
+            scan::blocking_reason(&now)
+        ));
+    }
+    if expected.is_some_and(|expected| expected != now.digest) || now.digest.is_empty() {
+        return Err(
+            "The copy changed after it was read, so nothing was installed. Ask for it again to see what changed."
+                .into(),
+        );
+    }
+    Ok(now.digest)
+}
+
+/// After the approved steps. Their writes are part of the copy; a link or a blocked scan is not.
+fn seal_after_steps(staged: &Path, sealed: &mut String) -> Result<(), String> {
+    *sealed = read_staged(staged, None)?;
+    Ok(())
+}
+
+/// Inside the registry lock, immediately before the copy is moved. A test may write one file first; either way a
+/// difference from `sealed` stops the install.
+fn prove_unchanged(staged: &Path, sealed: &str) -> Result<(), String> {
+    tamper_before_install(staged);
+    read_staged(staged, Some(sealed))?;
+    Ok(())
+}
+
 /// Run what the request asked for (it was approved, or asked for nothing), validate again, then put it in place.
 fn commit(
     host: &Host,
@@ -519,6 +557,9 @@ fn commit(
             ));
         }
     }
+    // The hash of the copy last read. An approved script may write into the staged folder, and then this
+    // becomes the hash of that result. With no script it is the hash matched to the card.
+    let mut sealed = String::new();
     if already.is_none() && staged.is_dir() {
         // WP-101: the copy that lands is the copy that was read. Anything changed since the scan (a retry, a moved
         // tag, something writing in the data folder) stops the install rather than installing what nobody saw.
@@ -530,26 +571,12 @@ fn commit(
                     .into(),
             );
         }
-        // Item H(d): the staged folder, or a folder inside it, swapped for a link since the scan is a change, however
-        // the file behind the link reads.
-        if let Some(why) = staged_swapped_for_link(&staged) {
-            drop_pending(host, dir);
-            return Err(why);
-        }
-        let now = scan::scan_untrusted(&staged);
-        if now.blocked {
-            drop_pending(host, dir);
-            return Err(format!(
-                "The copy changed after it was read: {} Ask for it again.",
-                scan::blocking_reason(&now)
-            ));
-        }
-        if now.digest != request.scan.digest {
-            drop_pending(host, dir);
-            return Err(
-                "The copy changed after it was read, so nothing was installed. Ask for it again to see what changed."
-                    .into(),
-            );
+        match read_staged(&staged, Some(request.scan.digest.as_str())) {
+            Ok(digest) => sealed = digest,
+            Err(why) => {
+                drop_pending(host, dir);
+                return Err(why);
+            }
         }
     }
     if already.is_none() && !request.steps.is_empty() {
@@ -559,6 +586,12 @@ fn commit(
         if let Err(why) = run_steps(&staged, &request.steps, tools) {
             drop_pending(host, dir);
             return Err(format!("{why} Nothing was installed."));
+        }
+        // The steps ran in the staged copy. Read that copy before it is trusted: a link, or a scan that blocks,
+        // is not what was approved. The hash of this read is what must still be there when the copy is put in place.
+        if let Err(why) = seal_after_steps(&staged, &mut sealed) {
+            drop_pending(host, dir);
+            return Err(why);
         }
     }
     let mut placed = false;
@@ -570,10 +603,18 @@ fn commit(
                 reports: Vec::new(),
             })
         } else {
-            placed = true;
-            match request.op.as_str() {
-                "update" => update_staged(host, &request.name, &staged, request.resolved.clone()),
-                _ => registry::install_staged(host, &staged, request.resolved.clone()),
+            // Immediately before the copy is moved. A change since the last read, including one a test writes here,
+            // stops the install. The pending folder is removed by the caller once this lock is released.
+            if let Err(why) = prove_unchanged(&staged, &sealed) {
+                Err(why)
+            } else {
+                placed = true;
+                match request.op.as_str() {
+                    "update" => {
+                        update_staged(host, &request.name, &staged, request.resolved.clone())
+                    }
+                    _ => registry::install_staged(host, &staged, request.resolved.clone()),
+                }
             }
         }
     };
@@ -797,6 +838,19 @@ fn run_steps(root: &Path, steps: &[ScriptStep], tools: &Tools) -> Result<(), Str
 thread_local! {
     /// Tests: fail an update or rollback right after its swap, to prove the way back.
     pub(super) static FAIL_AFTER_SWAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Tests: write one file into the staged copy after it was last read and before it is put in place.
+    pub(super) static TAMPER_BEFORE_INSTALL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A test writes one file here, once, and the flag is cleared as it is read so a later install on this thread is
+/// left alone. A real install never sets the flag.
+fn tamper_before_install(staged: &Path) {
+    #[cfg(test)]
+    if TAMPER_BEFORE_INSTALL.with(|flag| flag.replace(false)) {
+        let _ = std::fs::write(staged.join("tamper.txt"), b"tampered");
+    }
+    #[cfg(not(test))]
+    let _ = staged;
 }
 
 fn failed_after_swap() -> Result<(), String> {

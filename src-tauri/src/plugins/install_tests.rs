@@ -180,6 +180,14 @@ impl Drop for ResetFail {
     }
 }
 
+struct ResetTamper;
+
+impl Drop for ResetTamper {
+    fn drop(&mut self) {
+        install::TAMPER_BEFORE_INSTALL.with(|flag| flag.set(false));
+    }
+}
+
 #[test]
 fn the_browser_plugin_installs_from_the_index_pin_without_the_network() {
     let index: serde_json::Value = serde_json::from_str(super::discover::BUNDLED_INDEX).unwrap();
@@ -669,6 +677,75 @@ fn an_approved_script_runs_inside_the_plugin_and_sees_no_secrets() {
         "{env}"
     );
     assert!(host.root.join("lock.json").exists());
+}
+
+/// WP-101 fix round 3: an approved script runs after the scan that was shown. A link it plants is a different copy
+/// from the one that was read, so the install stops and nothing is left in place.
+#[cfg(unix)]
+#[test]
+fn a_script_that_plants_a_link_is_refused_and_nothing_is_installed() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = Tmp::new("plant-link");
+    let host = host(&tmp);
+    let dir = tmp.path().join("src");
+    plugin(
+        &dir,
+        "demo",
+        "1.0.0",
+        json!({
+            "extensions": {
+                "hivra": { "setup": [{ "run": ["./plant"], "cwd": ".", "why": "It plants a link." }] }
+            }
+        }),
+    );
+    let plant = dir.join("plant");
+    write(&plant, "#!/bin/sh\nln -s /tmp \"$PLUGIN_ROOT/outside\"\n");
+    std::fs::set_permissions(&plant, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let InstallResult::Waiting { request } = install::install(
+        &host,
+        &quiet_tools(),
+        &local_source(&dir),
+        RequestedBy::person(),
+    )
+    .unwrap() else {
+        panic!("a setup script must wait");
+    };
+    let why = install::approve(&host, &quiet_tools(), &request.id).unwrap_err();
+    assert!(
+        why.contains("replaced by a link") || why.contains("changed after it was read"),
+        "{why}"
+    );
+    assert!(!host.installed("demo").exists());
+    assert!(install::pending(&host).is_empty());
+}
+
+/// WP-101 fix round 3: the copy can still change after the last read and before it is moved into place. That change
+/// is not the copy that was read, so nothing is installed.
+#[test]
+fn a_copy_changed_after_the_last_read_and_before_it_is_placed_is_refused() {
+    let tmp = Tmp::new("before-place");
+    let host = host(&tmp);
+    let dir = tmp.path().join("src");
+    plugin(&dir, "demo", "1.0.0", json!({}));
+    let by = RequestedBy {
+        kind: "agent".into(),
+        ..RequestedBy::default()
+    };
+    let InstallResult::Waiting { request } =
+        install::install(&host, &quiet_tools(), &local_source(&dir), by).unwrap()
+    else {
+        panic!("an agent's install must wait");
+    };
+    let _reset = ResetTamper;
+    install::TAMPER_BEFORE_INSTALL.with(|flag| flag.set(true));
+    let why = install::approve(&host, &quiet_tools(), &request.id).unwrap_err();
+    assert!(why.contains("changed after it was read"), "{why}");
+    assert!(!host.installed("demo").exists());
+    assert!(install::pending(&host).is_empty());
+    assert!(
+        !install::TAMPER_BEFORE_INSTALL.with(|flag| flag.get()),
+        "the read immediately before install did not run"
+    );
 }
 
 #[test]
