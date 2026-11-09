@@ -57,6 +57,8 @@ mod hub_keychain;
 mod terminal_mirror;
 // WP-51: memory the person reviews.
 mod memory_review;
+// WP-103: the cheap memory tier asks a model the person added, on its own key.
+mod memory_cheap;
 // WP-83: learn from past chats. Readers, and the write after an accept.
 mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.

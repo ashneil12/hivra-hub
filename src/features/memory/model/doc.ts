@@ -14,6 +14,9 @@ export type MemorySource = {
 
 export type MemorySkill = { name: string; lesson: string };
 
+/** WP-103: which tier wrote a memory. Absent on old data and on imports. */
+export type MemoryVia = "rules" | "cheap" | "crew";
+
 export type MemoryItem = {
   id: string;
   mateId: string;
@@ -24,6 +27,8 @@ export type MemoryItem = {
   state: MemoryState;
   /** WP-100: the engine whose conversation wrote this (claude, codex, …). Absent on old data. */
   by?: string;
+  /** WP-103: the tier that wrote it (rules, cheap, crew). Absent on old data and on imports. */
+  via?: MemoryVia;
   source: MemorySource;
   evidence: string;
   support: number;
@@ -162,6 +167,7 @@ function loadedItem(value: unknown): MemoryItem | undefined {
   if (!isItem(value)) return undefined;
   const rest: MemoryItem = { ...value };
   if (rest.by !== undefined && !(typeof rest.by === "string" && ENGINE_ID.test(rest.by))) delete rest.by;
+  if (rest.via !== undefined && rest.via !== "rules" && rest.via !== "cheap" && rest.via !== "crew") delete rest.via;
   if (rest.fade !== undefined && !(finite(rest.fade) && rest.fade <= 1)) delete rest.fade;
   if (rest.lastUsedAt !== undefined && !finite(rest.lastUsedAt)) delete rest.lastUsedAt;
   if (rest.asked !== undefined && !(finite(rest.asked) && Number.isInteger(rest.asked))) delete rest.asked;

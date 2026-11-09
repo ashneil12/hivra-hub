@@ -6,6 +6,7 @@ import type { RecentProject } from "../../projects/model/recents";
 import type { OpenFileFn } from "../model/search";
 import type { FinderHit } from "../model/finder";
 import { useFinderSearch, type FinderHistoryRow, type FinderSessionRow } from "../model/finderSearch";
+import type { PaletteContext, PaletteRow } from "../model/commandRegistry";
 
 type Props = {
   /** When set, the palette searches every kind. File search stays as it was. */
@@ -21,6 +22,10 @@ type Props = {
   onRunAction: (id: string) => void;
   onClose: () => void;
   onOpenHit: (hit: FinderHit, beside: boolean, query: string) => void;
+  /** WP-93: what the app can do now, so a command that cannot run says why. */
+  paletteContext?: PaletteContext;
+  /** WP-93: runs a palette command through its shortcut's own handler. */
+  onRunCommand?: (command: PaletteRow) => void;
 };
 
 export function FinderHost({
@@ -36,6 +41,8 @@ export function FinderHost({
   onRunAction,
   onClose,
   onOpenHit,
+  paletteContext,
+  onRunCommand,
 }: Props) {
   const [query, setQuery] = useState(initialQuery);
   const search = useFinderSearch({
@@ -55,6 +62,8 @@ export function FinderHost({
       initialQuery={initialQuery}
       onOpenFile={onOpenFile}
       onRunAction={onRunAction}
+      paletteContext={paletteContext}
+      onRunCommand={onRunCommand}
       onClose={onClose}
       finder={
         finder

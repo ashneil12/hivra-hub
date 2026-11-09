@@ -880,6 +880,54 @@ fn a_secret_in_a_finding_is_not_stored() {
     assert!(stored.contains("[redacted]"), "{stored}");
 }
 
+// WP-102 item 3: the tail scrubber knew four prefixes. A test run's last lines can carry any of these, and the tail is
+// stored on the row and shown in the chat.
+#[test]
+fn a_tail_masks_the_other_common_secret_shapes_and_leaves_prose_alone() {
+    // SendGrid is `SG.` then 22 characters, a dot, then 43.
+    let sendgrid = format!("SG.PLANTED{}.PLANTED{}", "a".repeat(15), "b".repeat(36));
+    let pypi = format!("pypi-AgEIcHlwaS5vcmcPLANTED{}", "x".repeat(40));
+    let cases = [
+        ("glpat-PLANTEDtoken0123456789ab".to_string(), "[redacted]"),
+        (pypi, "[redacted]"),
+        (sendgrid, "[redacted]"),
+        (
+            "xapp-1-A0PLANTED01-1234567890123-PLANTEDappsecret".to_string(),
+            "[redacted]",
+        ),
+        (
+            "whsec_PLANTEDwebhooksecret0123456789".to_string(),
+            "[redacted]",
+        ),
+        ("ASIAPLANTED2ABCDEFGH".to_string(), "[redacted]"),
+    ];
+    for (token, want) in cases {
+        let out = scrub(&format!("before {token} after"));
+        assert_eq!(out, format!("before {want} after"), "{token}");
+    }
+    let prose = "From GitLab to PyPI with SendGrid, the xapp- prefix, whsec_, and the ASIA region.";
+    assert_eq!(scrub(prose), prose);
+    // A short `code=` value, as an OAuth callback or a device sign-in prints it, goes; a code that spells a word in
+    // prose does not.
+    assert_eq!(
+        scrub("visit http://127.0.0.1:54321/?code=PLANTEDcode9&state=abc now"),
+        "visit http://127.0.0.1:54321/?code=[redacted]&state=abc now"
+    );
+    assert_eq!(
+        scrub("the error code=404 and this code=abcd are not secrets"),
+        "the error code=404 and this code=abcd are not secrets"
+    );
+    // A private key's body goes; its header and footer stay so a reader knows what it was.
+    let pem =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nPLANTEDkeybody\n-----END OPENSSH PRIVATE KEY-----";
+    let out = scrub(pem);
+    assert!(!out.contains("PLANTEDkeybody"), "{out}");
+    assert!(
+        out.contains("BEGIN OPENSSH PRIVATE KEY") && out.contains("END OPENSSH PRIVATE KEY"),
+        "{out}"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn the_daemon_command_and_environment_stay_allow_listed() {

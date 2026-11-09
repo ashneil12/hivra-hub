@@ -50,7 +50,7 @@ fn source_plugin() -> PathBuf {
 fn assert_installed(host: &Host, outcome: &registry::Outcome) {
     let entry = outcome.entry.as_ref().unwrap();
     assert_eq!(entry.name, "desktop-control");
-    assert_eq!(entry.version.as_deref(), Some("1.1.0"));
+    assert_eq!(entry.version.as_deref(), Some("1.2.0"));
     assert!(!entry.enabled.global);
     assert!(entry.enabled.projects.is_empty());
     let loaded = load_plugin(&host.installed("desktop-control")).unwrap();
@@ -65,7 +65,7 @@ fn assert_installed(host: &Host, outcome: &registry::Outcome) {
     let installed = host.installed("desktop-control");
     let pin: serde_json::Value =
         serde_json::from_slice(&std::fs::read(installed.join("pin.json")).unwrap()).unwrap();
-    assert_eq!(pin["version"], "1.1.0");
+    assert_eq!(pin["version"], "1.2.0");
     assert!(installed.join("bin").join("gate.mjs").is_file());
     assert!(!installed.join("package.json").exists());
 }
@@ -97,7 +97,7 @@ fn install_bundled_matches_and_a_second_install_is_refused() {
     assert_eq!(outcome.entry.as_ref().unwrap().source.kind, "bundled");
     assert_eq!(
         outcome.entry.as_ref().unwrap().source.pin.as_deref(),
-        Some("1.1.0")
+        Some("1.2.0")
     );
     let again = desktop::install_bundled(&host).unwrap_err();
     assert!(again.contains("already installed"), "{again}");
@@ -807,49 +807,49 @@ fn the_shipped_pin_is_the_published_program() {
         (
             "darwin-arm64",
             "agent-desktop-darwin-arm64",
-            "a89c781a3b2cf29bc0467c30a4e1063b6f564858540f2dc58a75c79ce2c9d9f3",
+            "dec75e0bba0d1f9b589bdb88188770ad1a199cde9e02cf0a5b94175491f738e9",
             Some((
                 "agent-desktop-macos-helper-darwin-arm64",
-                "d81e5aa7ad8edb0e3eda72f010b1947ce7d6ad6d6d4ae95a69f4cce39bbbfe63",
+                "4a795a40ba7fc93b726b0834342f0225779c30d83e28f1f219db479860c38a78",
             )),
         ),
         (
             "darwin-x64",
             "agent-desktop-darwin-x64",
-            "bfbb387446e615687dfe345158f7ac1e37197f5de203fa36bb621e474e016d77",
+            "5dae755fee4af37d1a245f058139b262d358352cce15aeb49d0100ff46b12156",
             Some((
                 "agent-desktop-macos-helper-darwin-x64",
-                "e32196af41669f531cb1d7779a84e53e865c6c05d224b9dc30239b749906e865",
+                "bdf060658b93f326efa06ac24d521e88025bf88109cecc257fa7fa40e65801cd",
             )),
         ),
         (
             "linux-x64",
             "agent-desktop-linux-x64",
-            "e03d67b7e61d358eb62c411376fc7bbd3dc5923cb01131c968f3113c56687bbf",
+            "da52a1eb2152cdc21b756ab20e6208d242da8062c73cd20bc8a8ae2a0384392c",
             Some((
                 "agent-desktop-linux-clipboard-owner-linux-x64",
-                "0ce10ee444a570f1485234ba4111ff07e4cafd420a2f2d0f35de8fb2ce8f8d84",
+                "3e96f92b805c0d1f9de309935d62f4189b8e11e1385ad022bb878487bb3942ec",
             )),
         ),
         (
             "linux-arm64",
             "agent-desktop-linux-arm64",
-            "7fb3d9a08ca5c8c7019d85520dca174d0e066c65f069513d6d2e8d4cee423bbc",
+            "915de59a8b3d22c9ad33023740bbcc5fe0b4fa830de9587bbf761237eafeb76f",
             Some((
                 "agent-desktop-linux-clipboard-owner-linux-arm64",
-                "278976a31a84d764fede58cfb923639a688f44d91f7f7a8d17ece6e56d9ea0f4",
+                "a6bfde6778dadcf9fd04ba94de17cdf205eb0b23b643c3f34073d264d2117cc3",
             )),
         ),
         (
             "win32-x64",
             "agent-desktop-win32-x64.exe",
-            "2c8e9a627d87649a4562bfe5678450d045b793ab6f3fdec8af05c9571f32d5ef",
+            "d274667031322e50b9c2b1ab81c2ca46835d52cc932769a5c34bd4d481fd94c3",
             None,
         ),
         (
             "win32-arm64",
             "agent-desktop-win32-arm64.exe",
-            "bb8eb196e8ee8292617b15995561a85d51a0207b6c150eddb4ee3004310e3378",
+            "f1577d9f8cb6c9b1e767584fed96c72fbe1591fefbd67100965607d1a337a2fb",
             None,
         ),
     ];

@@ -17,7 +17,7 @@ import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { isOpenDelegation, storedResult, type DelegationTracker } from "../model/delegations";
 import { currentWakeQueue } from "../../firstmate/watcher/wakeQueue";
 import type { MonoSessionCompletionResult } from "../model/monoSessionCompletion";
-import { providerStallChatLine, providerStallNote, StallWatch } from "../model/workerStall";
+import { providerStallChatLine, providerStallNote, sleepGap, StallWatch } from "../model/workerStall";
 import { careFaults, type DatabaseHealth } from "../model/careFaults";
 import { HarnessCare, resumeStoppedNote, SAFE_FIXES } from "../model/harnessCare";
 import { addHarnessIssue, clearHarnessIssue } from "../../hub/model/harnessIssues";
@@ -319,11 +319,17 @@ export function useStallWatch(options: {
     // The fake-Claude bench stalls in seconds: it looks twice per stall time.
     const bench = appIdentity()?.verify?.stallMs;
     const every = bench ? Math.max(1_000, Math.min(STALL_LOOK_MS, bench / 2)) : STALL_LOOK_MS;
+    // WP-102: a sleeping Mac suspends this process while the wall clock runs on, so the first look after wake arrives
+    // far later than its interval. That time is forgiven, never counted as a worker's silence (classifier.ts sleepGap).
+    let lastLookAt = Date.now();
     const timer = setInterval(() => {
+      const at = Date.now();
+      const sleptMs = sleepGap(at - lastLookAt, every);
+      lastLookAt = at;
       // Reading a folder can fail; one bad read must never stop the loop or the stall watcher.
       void hourly(HOUR_MS).catch(() => undefined);
       // Self-repair reads first (its gave-up line is what the stall watcher writes), then the stall watcher judges.
-      void repair.current!.tick().finally(() => watch.current!.tick());
+      void repair.current!.tick().finally(() => watch.current!.tick(sleptMs));
       // The chats' own failed turns: two automatic tries, then one plain line and no more.
       harness.current!.tick(harnessFaults());
       // The app's surroundings: what care can fix, it fixes; what it can't, it tells Ash once.

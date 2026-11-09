@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { memoryId, parseDoc, type MemoryDoc, type MemoryItem } from "./doc";
 import { ASK_BELOW } from "./fade";
-import { healthOf, noteOutcome } from "./health";
+import { healthOf, noteDeferred, noteOutcome } from "./health";
 
 const NOW = Date.parse("2026-06-01T12:00:00Z");
 const DAY = 86_400_000;
@@ -35,6 +35,22 @@ function doc(items: MemoryItem[], days = 200): MemoryDoc {
     livedDays: Array.from({ length: days }, (_, i) => new Date(NOW - (days - i) * DAY).toISOString().slice(0, 10)),
   };
 }
+
+describe("noteDeferred", () => {
+  it("counts a turn left for later without calling it a looked-at turn", () => {
+    const next = noteDeferred(doc([]), NOW);
+    expect(next.health).toEqual({
+      turns: 0,
+      stored: 0,
+      deferred: 1,
+      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0 },
+      lastRunAt: NOW,
+    });
+    // Once the same turn goes through, it is counted as a looked-at turn then, and the deferred count stays.
+    const done = noteOutcome(next, { status: "stored", ignored: 0 }, NOW + 1);
+    expect(done.health).toMatchObject({ turns: 1, stored: 1, deferred: 1 });
+  });
+});
 
 describe("noteOutcome", () => {
   it("counts what the curator did, and marks when it last looked", () => {

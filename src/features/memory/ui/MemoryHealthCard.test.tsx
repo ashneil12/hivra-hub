@@ -20,8 +20,8 @@ function view(extra: Partial<MemoryHealthView> = {}): MemoryHealthView {
   };
 }
 
-function html(health: MemoryHealthView): string {
-  return renderToStaticMarkup(createElement(MemoryHealthCard, { health, now: NOW }));
+function html(health: MemoryHealthView, paused?: { problem: "hour" | "day"; until: number }): string {
+  return renderToStaticMarkup(createElement(MemoryHealthCard, { health, now: NOW, paused }));
 }
 
 it("says memory has not been looked at yet on a fresh setup", () => {
@@ -55,4 +55,15 @@ it("says what is fading and what is waiting for the person", () => {
   const text = html(view({ fading: 3, asksWaiting: 1 }));
   expect(text).toContain("3 facts are fading from not being used.");
   expect(text).toContain("1 fact is waiting for you to say whether it is still true.");
+});
+
+it("says when memory work is paused on the budget, and stays quiet once it has passed", () => {
+  const until = new Date(2026, 5, 1, 14, 30).getTime();
+  const paused = html(view(), { problem: "hour", until });
+  expect(paused).toContain('data-health-paused');
+  expect(paused).toContain("Paused until 14:30: the hourly limit was reached.");
+  expect(html(view(), { problem: "day", until })).toContain("Paused until 14:30: the daily limit was reached.");
+  // Once the moment has passed the line is not shown, and with no pause at all it never appears.
+  expect(html(view(), { problem: "hour", until: NOW - 1 })).not.toContain("data-health-paused");
+  expect(html(view())).not.toContain("data-health-paused");
 });
