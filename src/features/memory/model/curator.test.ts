@@ -202,4 +202,48 @@ describe("curateTurn", () => {
     const changed = await curateTurn(first.doc, ctx({ turnId: "turn-2", via: "crew" }), ask(update));
     expect(changed.doc.items.find((item) => item.action === "update")?.via).toBe("crew");
   });
+
+  it("parks a confirmed fact when a newer one contradicts it, and does not decide", async () => {
+    const first = await curateTurn(
+      freshDoc(),
+      ctx({ user: "The project uses npm.", assistant: "Noted." }),
+      ask(JSON.stringify({ kind: "add", text: "uses npm", evidence: "uses npm" })),
+    );
+    const confirmed = acceptItem(first.doc, first.doc.items[0].id, NOW).doc;
+    const next = settleTurn(confirmed, ctx({ turnId: "turn-2", via: "rules", user: "The project uses pnpm.", assistant: "Noted." }), {
+      kind: "reply",
+      text: JSON.stringify({ kind: "add", text: "uses pnpm", evidence: "uses pnpm" }),
+    });
+    expect(next.outcome.status).toBe("stored");
+    const old = next.doc.items.find((item) => item.text === "uses npm");
+    const added = next.doc.items.find((item) => item.text === "uses pnpm");
+    expect(old).toMatchObject({ state: "unreviewed", dispute: { otherId: added?.id, was: "confirmed" } });
+    expect(added).toMatchObject({ state: "unreviewed", via: "rules", dispute: { otherId: old?.id } });
+    expect(added?.dispute).not.toHaveProperty("was");
+    expect(old?.text).toBe("uses npm");
+    expect(next.doc.items).toHaveLength(2);
+  });
+
+  it("does not park a fact that only adds words, or a fact kept for another mono", async () => {
+    const first = await curateTurn(
+      freshDoc(),
+      ctx({ user: "The project uses pnpm.", assistant: "Noted." }),
+      ask(JSON.stringify({ kind: "add", text: "uses pnpm", evidence: "uses pnpm" })),
+    );
+    const confirmed = acceptItem(first.doc, first.doc.items[0].id, NOW).doc;
+    const longer = settleTurn(confirmed, ctx({ turnId: "turn-2", user: "uses pnpm for scripts", assistant: "Noted." }), {
+      kind: "reply",
+      text: JSON.stringify({ kind: "add", text: "uses pnpm for scripts", evidence: "uses pnpm for scripts" }),
+    });
+    expect(longer.doc.items.find((item) => item.text === "uses pnpm")?.state).toBe("confirmed");
+    expect(longer.doc.items.find((item) => item.text === "uses pnpm")?.dispute).toBeUndefined();
+    expect(longer.doc.items.find((item) => item.text === "uses pnpm for scripts")?.dispute).toBeUndefined();
+    const other = settleTurn(confirmed, ctx({ mateId: "other-lead", turnId: "turn-3", user: "uses npm", assistant: "Noted." }), {
+      kind: "reply",
+      text: JSON.stringify({ kind: "add", text: "uses npm", evidence: "uses npm" }),
+    });
+    expect(other.doc.items.find((item) => item.mateId === "notes-lead")?.state).toBe("confirmed");
+    expect(other.doc.items.find((item) => item.mateId === "notes-lead")?.dispute).toBeUndefined();
+    expect(other.doc.items.find((item) => item.text === "uses npm")?.dispute).toBeUndefined();
+  });
 });

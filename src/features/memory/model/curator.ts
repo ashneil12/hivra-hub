@@ -4,6 +4,7 @@
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
 import { bump, emptyDoc, ENGINE_ID, memoryId, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
 import { touch } from "./fade";
+import { withContradiction } from "./review";
 
 /** Same sentence as skillLearn.plainLesson. Not imported: loading that module registers a change kind. */
 function oneSentence(raw: string): string {
@@ -280,7 +281,9 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       createdAt: ctx.now,
       updatedAt: ctx.now,
     };
-    return counted(addItem(doc, item, key), ignored);
+    // WP-111: a fact that disagrees with a confirmed one is parked beside it. Nothing is overwritten.
+    const parked = withContradiction(doc, item);
+    return counted(addItem(parked.doc, parked.item, key), ignored);
   }
 
   if (chosen.kind === "skill") {
