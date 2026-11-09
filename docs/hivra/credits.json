@@ -239,6 +239,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "Elephant-Goldfish",
+      "url": "https://github.com/google/elephant-goldfish-model",
+      "licence": "Apache-2.0",
+      "gave": "a zero-context review of a plan before a crew starts (WP-144)"
     }
   ],
   "components": [
