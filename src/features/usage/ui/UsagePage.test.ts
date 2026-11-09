@@ -249,4 +249,67 @@ describe("UsagePage", () => {
     expect(container.textContent).toContain("newer");
     expect(container.textContent).not.toContain("older");
   });
+
+  function pick(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  it("filters by provider and model, and starts on all", async () => {
+    await render({ sessions: seeded(), now: NOW });
+    const provider = container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!;
+    expect(provider.value).toBe("");
+    expect(model.value).toBe("");
+    expect([...provider.options].map((option) => option.text)).toEqual(["All", "Claude Code", "Codex"]);
+    expect([...model.options].map((option) => option.text)).toEqual(["All", "gpt-5", "sonnet-5"]);
+
+    await act(async () => pick(provider, "codex"));
+    expect(container.textContent).toContain("gpt-5");
+    expect(container.textContent).not.toContain("sonnet-5");
+    expect(container.textContent).not.toContain("secret-project");
+    expect(
+      [...container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.options].map(
+        (option) => option.value,
+      ),
+    ).toEqual(["", "gpt-5"]);
+
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, ""));
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!, "sonnet-5"));
+    const modelTable = [...container.querySelectorAll("table")].find(
+      (table) => table.querySelector("caption")?.textContent === "By model",
+    );
+    expect(modelTable?.textContent).toContain("sonnet-5");
+    expect(modelTable?.textContent).not.toContain("gpt-5");
+
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, "codex"));
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.value).toBe("");
+    expect(container.textContent).toContain("gpt-5");
+    expect(container.textContent).not.toContain("sonnet-5");
+  });
+
+  it("says when the chosen filter has no turns in the window", async () => {
+    await render({
+      sessions: [
+        session("old", "/work/old", "grok", "grok-1", [
+          {
+            id: "b",
+            role: "user",
+            startedAt: new Date(2020, 0, 1).getTime(),
+            turnMetrics: { inputTokens: 4 },
+            turnModel: { harness: "grok", name: "grok-1" },
+          },
+        ]),
+        ...seeded(),
+      ],
+      now: NOW,
+    });
+    await act(async () =>
+      pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, "grok"),
+    );
+    expect(container.textContent).toContain("No turns for this filter.");
+    expect(container.textContent).not.toContain("No turns in the last 30 days.");
+    expect(container.textContent).not.toContain("secret-project");
+  });
 });
