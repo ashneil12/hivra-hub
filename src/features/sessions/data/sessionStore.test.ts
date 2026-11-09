@@ -623,6 +623,24 @@ describe("sanitizeSessionForPersist", () => {
     });
   });
 
+  // WP-108: a reported price is stored with the turn; a broken one is dropped, not zeroed.
+  it("persists the cost a CLI reported and drops one that is not a number", () => {
+    const session = newSession("claude", "/tmp/project");
+    session.blocks = [
+      { id: "u1", role: "user", text: "one", turnMetrics: { costUsd: 0.0042 } },
+      {
+        id: "u2",
+        role: "user",
+        text: "two",
+        turnMetrics: { costUsd: -3, inputTokens: 7 },
+      },
+    ];
+
+    const blocks = sanitizeSessionForPersist(session).blocks;
+    expect(blocks[0]?.turnMetrics).toEqual({ costUsd: 0.0042 });
+    expect(blocks[1]?.turnMetrics).toEqual({ inputTokens: 7 });
+  });
+
   it("persists a canonical GitHub work-item identity", () => {
     const session = newSession("codex", "/tmp/project");
     session.blocks = [{ id: "u1", role: "user", text: "fix PR #42" }];

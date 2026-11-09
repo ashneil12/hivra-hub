@@ -1007,6 +1007,8 @@ pub fn run() {
             session_store::session_list_by_project,
             session_store::session_rebase_project,
             session_store::session_list_linked,
+            // WP-108: counts and names only, for the usage history page.
+            session_store::session_usage_rows,
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,

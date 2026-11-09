@@ -506,6 +506,163 @@ pub fn session_list_linked(store: State<'_, SessionStore>) -> Result<Vec<Session
     list_linked(&conn).map_err(|e| e.to_string())
 }
 
+/// WP-108: every saved turn's metrics for the usage page, as a narrow projection.
+///
+/// Only the fields the history counts are read out of each transcript: the chat's engine, model and folder, and each
+/// user turn's start time plus token and price counts. The prompt and reply text never leave this function. Rows with
+/// nothing to count are dropped here so the webview does not carry a long list of empty turns, and a transcript that
+/// cannot be read is skipped rather than failing the whole page.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSessionRow {
+    pub id: String,
+    pub cwd: String,
+    pub harness: String,
+    pub model: String,
+    pub blocks: Value,
+}
+
+#[tauri::command(async)]
+pub fn session_usage_rows(
+    store: State<'_, SessionStore>,
+    since: i64,
+) -> Result<Vec<UsageSessionRow>, String> {
+    let read_conn = store
+        .read_conn
+        .lock()
+        .map_err(|_| "Session read store is locked")?;
+    if let Some(conn) = read_conn.as_ref() {
+        usage_rows(conn, since)
+    } else {
+        let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+        usage_rows(&conn, since)
+    }
+}
+
+/// The projection `session_usage_rows` runs. Split out so the test can run it on any connection.
+fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, cwd, harness, model, blocks_json
+             FROM sessions
+             WHERE has_user_message = 1
+               AND updated_at >= ?1
+               AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
+             ORDER BY updated_at DESC, id ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![since], |row| {
+            let blocks_json: String = row.get(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                blocks_json,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let Ok((id, cwd, harness, model, blocks_json)) = row else {
+            continue;
+        };
+        let Ok(blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+            continue;
+        };
+        let turns = usage_turns(&blocks);
+        if turns.is_empty() {
+            continue;
+        }
+        out.push(UsageSessionRow {
+            id,
+            cwd,
+            harness,
+            model,
+            blocks: Value::Array(turns),
+        });
+    }
+    Ok(out)
+}
+
+/// A finite, non-negative number. A string, a negative, or anything else is dropped, never copied through.
+fn usage_number(value: &Value) -> Option<Value> {
+    let number = value.as_f64()?;
+    if number.is_finite() && number >= 0.0 {
+        Some(value.clone())
+    } else {
+        None
+    }
+}
+
+/// One user turn with a count to tally, reduced to the fields the page reads: no text, no tool output, no filename.
+///
+/// A time or a count that is not a number is left out, and the model record keeps only the engine and the model name.
+/// Anything else on the block (a prompt, a reply, a note) stays in the database.
+fn usage_turns(blocks: &Value) -> Vec<Value> {
+    let Some(blocks) = blocks.as_array() else {
+        return Vec::new();
+    };
+    let mut turns = Vec::new();
+    for block in blocks {
+        if block.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(metrics) = block.get("turnMetrics").and_then(Value::as_object) else {
+            continue;
+        };
+        let mut kept = serde_json::Map::new();
+        for (key, value) in metrics {
+            if USAGE_METRIC_KEYS.contains(&key.as_str()) {
+                if let Some(number) = usage_number(value) {
+                    kept.insert(key.clone(), number);
+                }
+            }
+        }
+        if kept.is_empty() {
+            continue;
+        }
+        let mut turn = serde_json::Map::new();
+        if let Some(id) = block.get("id").and_then(Value::as_str) {
+            if !id.is_empty() {
+                turn.insert("id".into(), Value::String(id.to_string()));
+            }
+        }
+        turn.insert("role".into(), Value::String("user".into()));
+        for stamp in ["startedAt", "sentAt"] {
+            if let Some(value) = block.get(stamp).and_then(usage_number) {
+                turn.insert(stamp.into(), value);
+            }
+        }
+        if let Some(model) = block.get("turnModel").and_then(Value::as_object) {
+            let mut kept_model = serde_json::Map::new();
+            for key in ["harness", "name"] {
+                if let Some(value) = model.get(key).and_then(Value::as_str) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        kept_model.insert(key.into(), Value::String(trimmed.to_string()));
+                    }
+                }
+            }
+            if !kept_model.is_empty() {
+                turn.insert("turnModel".into(), Value::Object(kept_model));
+            }
+        }
+        turn.insert("turnMetrics".into(), Value::Object(kept));
+        turns.push(Value::Object(turn));
+    }
+    turns
+}
+
+const USAGE_METRIC_KEYS: [&str; 5] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "costUsd",
+];
+
 #[tauri::command(async)]
 pub fn session_get(
     store: State<'_, SessionStore>,
@@ -2660,6 +2817,117 @@ mod tests {
         .unwrap();
         assert_eq!(result.hits.len(), 1);
         assert_eq!(result.hits[0].block_id.as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn usage_rows_keep_only_counts_and_drop_prompt_text() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = sample("s1", "/tmp/project", "Secret plan");
+        session.blocks = json!([
+            {
+                "id": "b1",
+                "role": "user",
+                "text": "my bank password is hunter2",
+                "startedAt": 1_700_000_000_000_i64,
+                "turnModel": { "harness": "claude", "name": "sonnet-5", "note": "note that must not travel" },
+                "turnMetrics": { "inputTokens": 12, "outputTokens": 3, "costUsd": 0.02, "hidden": "no" },
+                "toolUses": [{ "output": "ls output that must not travel" }]
+            },
+            { "id": "b2", "role": "assistant", "text": "the reply that must not travel" },
+            { "id": "b3", "role": "user", "text": "no metrics here" },
+            {
+                "id": "b4",
+                "role": "user",
+                "startedAt": "time that must not travel",
+                "turnMetrics": { "inputTokens": "count that must not travel", "outputTokens": 4, "costUsd": -3 }
+            }
+        ]);
+        // The row's updated_at is the real time, which the window filter reads.
+        upsert_session(&conn, &session).unwrap();
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        let kept = serde_json::to_string(&rows[0].blocks).unwrap();
+        assert!(!kept.contains("hunter2"));
+        assert!(!kept.contains("must not travel"));
+        assert!(!kept.contains("/tmp/project"));
+        assert!(!kept.contains("hidden"));
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["id"], "b1");
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 12);
+        assert_eq!(blocks[0]["turnModel"]["name"], "sonnet-5");
+        assert!(blocks[0]["turnModel"].get("note").is_none());
+        // A time or a count that is not a usable number is left out. The negative price is too.
+        assert!(blocks[1].get("startedAt").is_none());
+        assert!(blocks[1]["turnMetrics"].get("inputTokens").is_none());
+        assert!(blocks[1]["turnMetrics"].get("costUsd").is_none());
+        assert_eq!(blocks[1]["turnMetrics"]["outputTokens"], 4);
+        // A user block with no metrics is dropped entirely, and the reply role never appears.
+        assert!(blocks.iter().all(|block| block["role"] == "user"));
+    }
+
+    #[test]
+    fn usage_rows_skip_a_trashed_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut gone = sample("gone", "/tmp/secret", "Gone");
+        gone.blocks = json!([{
+            "id": "b1",
+            "role": "user",
+            "text": "trashed prompt",
+            "startedAt": 1_i64,
+            "turnMetrics": { "inputTokens": 9 }
+        }]);
+        upsert_session(&conn, &gone).unwrap();
+        conn.execute(
+            "INSERT INTO trash_items (
+               kind, item_id, title, deleted_at, trashed_with_kind, trashed_with_id, version
+             ) VALUES ('chat', 'gone', 'Gone', 1, 'chat', 'gone', 1)",
+            [],
+        )
+        .unwrap();
+        let mut kept = sample("kept", "/tmp/ok", "Kept");
+        kept.blocks = json!([{
+            "id": "b1",
+            "role": "user",
+            "startedAt": 1_i64,
+            "turnMetrics": { "inputTokens": 2 }
+        }]);
+        upsert_session(&conn, &kept).unwrap();
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "kept");
+        let kept_json = serde_json::to_string(&rows).unwrap();
+        assert!(!kept_json.contains("trashed prompt"));
+    }
+
+    #[test]
+    fn usage_rows_respect_the_since_cutoff_and_skip_unreadable_transcripts() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut recent = sample("recent", "/tmp/a", "Recent");
+        recent.blocks = json!([{ "id": "b1", "role": "user", "startedAt": 1_i64,
+                                 "turnMetrics": { "inputTokens": 5 } }]);
+        upsert_session(&conn, &recent).unwrap();
+        let now = now_millis();
+        // A transcript that is not valid JSON is skipped, not fatal. Its updated_at is inside the window, so the
+        // cutoff is not what leaves it out.
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json,
+                                   created_at, updated_at, has_user_message)
+             VALUES ('broken', '/tmp/b', 'claude', 'm', 'supervised', 'Broken', 'not json', ?1, ?1, 1)",
+            [now],
+        )
+        .unwrap();
+
+        let rows = usage_rows(&conn, now - 60_000).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "recent");
+        // Older than the cutoff: left out.
+        assert!(usage_rows(&conn, now + 60_000).unwrap().is_empty());
     }
 
     #[test]

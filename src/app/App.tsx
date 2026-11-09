@@ -371,11 +371,18 @@ import {
   removeWorktree,
   renameWorktreeBranch,
   sessionInWorktree,
-  temporaryWorktreeBranchName,
   worktreeDeletedExternally,
   worktreeSessionIds,
   type Worktree,
 } from "../features/source-control/model/worktrees";
+import {
+  attachNewChatWorktree,
+  forgetNewChatFolderChoice,
+  gitRepositoryOnThisComputer,
+  newChatStaysHere,
+  noteNewChatFolderChoice,
+  openNewChatWorktree,
+} from "../features/source-control/model/newChatWorktree";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
@@ -1082,6 +1089,7 @@ import {
   subscribeMonosEnabled,
   loadDiffViewer,
   loadFollowUpBehavior,
+  loadNewChatWorktree,
   loadIdleAgentLimit,
   loadKeybindingOverrides,
   loadSettingsSection,
@@ -1501,6 +1509,11 @@ function Workspace({
     useWorkspaceSessionState(
       () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
     );
+  // WP-110: the first chat in a new window follows the worktree setting.
+  useEffect(() => {
+    if (!sessionsRef.current.some((session) => session.id === seed.session.id)) return;
+    attachNewChatWorktree(seed.session.id, seed.session.cwd, setSessions);
+  }, [seed.session.cwd, seed.session.id, sessionsRef, setSessions]);
   // The app's Try again, lent to harness self-repair (features/monos/model/harnessRepair.ts): the same path as the
   // failure card's button, so a retried turn sends Ash's held message, its unsent one, or carries on.
   const retryFailedTurnRef = useRef<(sessionId: string) => boolean>(() => false);
@@ -3464,6 +3477,8 @@ function Workspace({
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, cwd, setSessions);
       return tab.id;
     },
     [appendTab, sessionDefaults?.runtimeMode],
@@ -3492,6 +3507,8 @@ function Workspace({
     appendTab(tab, cwd);
     setActiveTabId(tab.id);
     setComposerFocused(true);
+    // WP-110: a new chat follows the worktree setting.
+    attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
 
@@ -3548,6 +3565,8 @@ function Workspace({
         appendTab(tab, cwd);
         setActiveTabId(tab.id);
         setComposerFocused(true);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, cwd, setSessions);
       };
 
       start(await inboxTrackerDescription(item, body));
@@ -3587,6 +3606,8 @@ function Workspace({
       appendTab(tab, cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, cwd, setSessions);
     },
     [
       active?.cwd,
@@ -3686,6 +3707,8 @@ function Workspace({
         }),
       );
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, session.cwd, setSessions);
     },
     [activeTab, projectCwd, sessionDefaults?.cwd, sessionDefaults?.runtimeMode],
   );
@@ -4433,6 +4456,8 @@ function Workspace({
         };
 
         setSessions((prev) => [...prev, session]);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, session.cwd, setSessions);
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
           for (const file of closingFiles) updated.delete(file.id);
@@ -4566,6 +4591,8 @@ function Workspace({
         // The tab held no session: seed one so the workspace stays usable.
         const session = seedSession(keptFiles[0]?.cwd || projectCwd);
         setSessions((prev) => [...prev, session]);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, session.cwd, setSessions);
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
           for (const file of keptFiles) updated.delete(file.id);
@@ -6893,6 +6920,8 @@ function Workspace({
         appendTab(tab, normalized);
         setActiveTabId(tab.id);
         setComposerFocused(true);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, normalized, setSessions);
         return;
       }
       if (previous && !sameProjectPath(previous, normalized)) {
@@ -6929,6 +6958,11 @@ function Workspace({
           };
         }),
       );
+      // WP-110: a blank chat moved to another folder follows the worktree setting.
+      if (!previous || !sameProjectPath(previous, normalized)) {
+        forgetNewChatFolderChoice(sessionId);
+        attachNewChatWorktree(sessionId, normalized, setSessions);
+      }
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -6976,6 +7010,8 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
+      // WP-110: choosing this folder keeps this chat out of a default worktree.
+      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7414,6 +7450,8 @@ function Workspace({
       appendTab(tab, project.folder);
       setActiveTabId(tab.id);
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, project.folder, setSessions);
       return session.id;
     },
     [openCodingTeam, sessionDefaults?.runtimeMode, appendTab, setActiveTabId],
@@ -9076,13 +9114,31 @@ function Workspace({
             await upsertSession(sent).catch(() => null);
         }
         let workCwd = initialWorkCwd;
-        if (createDraftWorktree) {
-          const tree = await createWorktree(
-            current.cwd,
-            temporaryWorktreeBranchName(),
-            current.worktreeBase || "HEAD",
-            false,
-          );
+        // WP-110: ask and always start a new chat in a worktree. A refusal keeps
+        // the creation function's own message.
+        const tree = await openNewChatWorktree(
+          {
+            setting: loadNewChatWorktree(),
+            firstTurn:
+              isFirstTurn &&
+              !current.worktreeCwd &&
+              !current.providerSessionId &&
+              !current.orchestrationLeadId &&
+              !current.inboxAsk &&
+              !current.worktreeRemoved &&
+              !current.automationId &&
+              !current.ephemeral,
+            toggleOn: createDraftWorktree,
+            declined: newChatStaysHere(sessionId),
+            cwd: current.cwd,
+            base: current.worktreeBase || "HEAD",
+          },
+          {
+            gitOnThisComputer: gitRepositoryOnThisComputer,
+            createWorktree,
+          },
+        );
+        if (tree) {
           workCwd = tree.path;
           // r86 (c02 run 2, +364s: the README worker's copy was the last commit, so it never saw the health route or the
           // shared type that had already landed, uncommitted, in the project): a delegated worker's new copy starts from
@@ -17595,6 +17651,8 @@ function Workspace({
                                         onTerminalMetaChange={
                                           onTerminalMetaChange
                                         }
+                                        // WP-109: pane headers split through the same handler as the shortcut.
+                                        onSplit={onSplit}
                                       />
                                     </div>
                                   </div>

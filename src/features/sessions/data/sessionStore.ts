@@ -1496,6 +1496,8 @@ function sanitizeTurnMetrics(value: unknown): TurnMetrics | undefined {
     ...(number("cacheHitPercent") != null
       ? { cacheHitPercent: number("cacheHitPercent") }
       : {}),
+    // WP-108: the CLI's own price, kept only when it is a usable number.
+    ...(number("costUsd") != null ? { costUsd: number("costUsd") } : {}),
   };
   return Object.keys(metrics).length > 0 ? metrics : undefined;
 }
