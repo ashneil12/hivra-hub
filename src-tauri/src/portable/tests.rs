@@ -121,6 +121,8 @@ fn add_session(
             linked_work_item: None,
             automation_id: None,
             goal: None,
+            private_chat: false,
+            private_boundary_id: None,
         },
     )
     .unwrap();
@@ -1854,4 +1856,91 @@ fn docs_history_comes_back_and_a_copy_keeps_its_own_parent() {
         )
         .unwrap();
     assert_eq!(copied_mention, *new_parent);
+}
+
+#[test]
+fn a_private_chat_stays_private_across_export_and_an_old_file_stays_readable() {
+    let source_dir = TestDir::new("private-source");
+    let target_dir = TestDir::new("private-target");
+    let out = TestDir::new("private-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "secret",
+        "Secret",
+        "claude",
+        json!([block("b1", "user", "hello")]),
+        5_000,
+    );
+    conn.execute(
+        "UPDATE sessions SET private_chat = 1, private_boundary_id = 'b1' WHERE id = 'secret'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+    drop(store);
+
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    let file: Value = serde_json::from_str(
+        &fs::read_to_string(dest.join("workspace/sessions/secret.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(file["private"], true);
+    assert_eq!(file["privateBoundaryId"], "b1");
+
+    let target = env_for(&target_dir.0);
+    let target_store = open_store(&target);
+    let conn = target_store.lock_conn().unwrap();
+    import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["secret".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    let stored = session_store::get_session(&conn, "secret")
+        .unwrap()
+        .unwrap();
+    assert!(stored.private_chat);
+    assert_eq!(stored.private_boundary_id.as_deref(), Some("b1"));
+
+    // An old export has neither key, so the chat comes back readable.
+    let old = json!({
+        "title": "Old",
+        "cwd": "/tmp",
+        "blocks": [block("u", "user", "hi")],
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
+    });
+    insert_session(&target, &conn, "old", "Old", &old).unwrap();
+    let old_row = session_store::get_session(&conn, "old").unwrap().unwrap();
+    assert!(!old_row.private_chat);
+    assert_eq!(old_row.private_boundary_id, None);
+
+    // A boundary that is not a message id must not unlock what came before the switch.
+    let bad = json!({
+        "title": "Bad",
+        "cwd": "/tmp",
+        "private": false,
+        "privateBoundaryId": "../no",
+        "blocks": [block("u", "user", "hi")],
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"}
+    });
+    insert_session(&target, &conn, "bad", "Bad", &bad).unwrap();
+    let bad_row = session_store::get_session(&conn, "bad").unwrap().unwrap();
+    assert_eq!(
+        bad_row.private_boundary_id.as_deref(),
+        Some("private-boundary-unreadable")
+    );
 }
