@@ -217,6 +217,12 @@
       "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
     },
     {
+      "name": "T3 Code",
+      "url": "https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/composer.md",
+      "licence": "MIT",
+      "gave": "per-CLI skills, MCP servers and project rules, and a plain warning when a switch would drop them (WP-126, docs/user/composer.md at e85e0094)"
+    },
+    {
       "name": "Aether",
       "url": "https://runaether.dev",
       "licence": "closed source",
