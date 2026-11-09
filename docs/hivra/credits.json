@@ -226,7 +226,7 @@
       "name": "Row-Bot",
       "url": "https://github.com/siddsachar/row-bot",
       "licence": "Apache-2.0",
-      "gave": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), and the correction rule behind the rules tier (WP-103)"
+      "gave": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111)"
     },
     {
       "name": "Mnemos",
@@ -563,6 +563,14 @@
       "copyright": "Copyright (c) 2026 T3 Tools Inc.",
       "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
       "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
+    },
+    {
+      "name": "Row-Bot's injection scan",
+      "url": "https://github.com/siddsachar/row-bot",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 Row-Bot Contributors",
+      "where": "src/features/memory/model/orderScan.ts",
+      "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one."
     }
   ]
 }
