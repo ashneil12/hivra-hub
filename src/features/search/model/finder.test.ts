@@ -152,15 +152,16 @@ describe("rankFinderHits", () => {
   });
 });
 
+// WP-93: the palette is now its own registry (commandRegistry.ts) with its own
+// ranking, and the finder no longer carries commands. What is left to guard
+// here is the route: a > query never falls through to the finder's search.
 describe("commands, monos and the index", () => {
-  it("lists commands only in command mode and does not search", () => {
+  it("keeps a > query out of the finder's search", () => {
     const commands = [
-      { id: "reload", label: "Reload MonoCode" },
+      { id: "reload", label: "Reload" },
       { id: "", label: "Missing" },
     ];
     expect(commandHits("", commands).map((hit) => hit.commandId)).toEqual(["reload"]);
-    expect(commandHits("reload", commands)).toHaveLength(1);
-    expect(commandHits("zzzz", commands)).toEqual([]);
     const found = assembleFinder({
       query: ">reload",
       scope: "all",

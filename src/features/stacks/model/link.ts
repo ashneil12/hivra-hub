@@ -4,9 +4,9 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
-/** A local app URL, or null. Anything else read from disk is not a link. */
+/** A loopback URL or one published name (`shop-wp-90.localhost`), or null. */
 export function appLink(url: string | null | undefined): string | null {
-  if (!url || url.length > 200) return null;
+  if (!url || url.length > 300) return null;
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -15,7 +15,11 @@ export function appLink(url: string | null | undefined): string | null {
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
   if (parsed.username || parsed.password) return null;
-  if (parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") return null;
+  const host = parsed.hostname;
+  // `.localhost` resolves to loopback by itself (RFC 6761); anything else is not ours.
+  const name = host.endsWith(".localhost") ? host.slice(0, -".localhost".length) : "";
+  const named = name.length > 0 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name);
+  if (host !== "127.0.0.1" && host !== "localhost" && !named) return null;
   return url;
 }
 

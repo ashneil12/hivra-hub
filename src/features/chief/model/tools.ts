@@ -3,7 +3,7 @@
 import { readEntries } from "../../activity/model/activity";
 import type { AgentAppHost } from "../../agent-app/model/agentApp";
 import { parseDoc } from "../../memory/model/doc";
-import { recallBlock } from "../../memory/model/recall";
+import { recallBlock, recallItems } from "../../memory/model/recall";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
 import type { Session } from "../../sessions/model/session";
 import { looksLikeProject } from "../../projects/model/recents";
@@ -117,5 +117,14 @@ export async function handleMemoryRecall(
     const block = recallBlock(doc, mateId, query, now);
     return block ? [block] : [];
   });
+  // WP-100: the Mono read these through its own tool, which is a use. Recall in a turn's fence is not: this is.
+  if (recall.length && host.markMemoryUsed) {
+    const ids = mates.flatMap((mateId) => recallItems(doc, mateId, query, now).map((item) => item.id));
+    try {
+      await host.markMemoryUsed(ids, now);
+    } catch {
+      // A use that could not be saved costs one fade step, not the read.
+    }
+  }
   return { untrusted: true, notice: NOTICE, recall };
 }

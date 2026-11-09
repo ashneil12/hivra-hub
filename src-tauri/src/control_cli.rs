@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 78] = [
+const APP_ACTIONS: [&str; 79] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -99,6 +99,8 @@ const APP_ACTIONS: [&str; 78] = [
     "worktrees.create",
     "actions.list",
     "actions.run",
+    // WP-90: the same stack rows the stack card shows, names and fake services included.
+    "stacks.list",
     "folders.list",
     "folders.move",
     "notes.list",
@@ -286,6 +288,9 @@ Actions:
                   worktrees.list). It returns at once with a run ID;
                   waitSeconds (0-25) waits that long for it to end. Check how
                   a longer run ended with actions.list.
+  stacks.list    {}  This checkout's stack, the name its app opens at
+                  (name.localhost:<proxy port>), the fake outside services it
+                  runs, and whether it reaches the real internet. Read only.
   folders.list   {}  Folders in your current project.
   folders.move   {"sessionId":"...","folderId":"..."}
                   Or use "newFolderName":"Research" to create a folder.
@@ -647,8 +652,12 @@ pub(crate) fn send(
                 "Cannot connect to MonoCode at {address}: {error}. The app may have restarted, or this agent's sandbox may be blocking localhost."
             ))
         })?;
+    // WP-91: `finish` runs the run's own finish-line check in the lead's checkout before it answers, and a real
+    // check takes minutes. Every other action answers in well under a minute, and a long wait there would only hide
+    // a hung app. The app's own timeout for the check is at most an hour, so wait past it.
+    let read_seconds = if action == "finish" { 3_660 } else { 40 };
     stream
-        .set_read_timeout(Some(Duration::from_secs(40)))
+        .set_read_timeout(Some(Duration::from_secs(read_seconds)))
         .map_err(|e| unsent(e.to_string()))?;
     stream
         .set_write_timeout(Some(Duration::from_secs(5)))
@@ -912,6 +921,7 @@ mod tests {
             "worktrees.create",
             "actions.list",
             "actions.run",
+            "stacks.list",
             "artifacts.list",
             "artifacts.read",
             "artifacts.write",

@@ -151,6 +151,57 @@ describe("cross-project reads", () => {
     expect(JSON.stringify(own)).not.toContain("Site uses the notes.");
   });
 
+  it("counts what memory.recall read as used, and a miss does not fail the read", async () => {
+    const fact = (mateId: string, text: string) => ({
+      id: memoryId([mateId, text]),
+      mateId,
+      action: "add",
+      text,
+      state: "confirmed",
+      source: { kind: "turn", ref: "turn-1", label: "chat" },
+      evidence: "said in chat",
+      support: 1,
+      against: 0,
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const memoryDoc = vi.fn(async () => ({
+      revision: 1,
+      generation: 0,
+      items: [fact("coord", "Crew keeps the notes."), fact("coord", "Reviews run on Fridays.")],
+      doneTurns: [],
+      imports: {},
+    }));
+    const markMemoryUsed = vi.fn(async () => true);
+    const own = host({
+      monoOf: () => ({ id: "coord", projects: ["/work/crew"] }),
+      memoryDoc,
+      markMemoryUsed,
+      now: () => new Date(50),
+    });
+    const read = await handleAgentApp(source, "r", "memory.recall", { query: "notes" }, own);
+    expect(JSON.stringify(read)).toContain("Crew keeps the notes.");
+    expect(markMemoryUsed).toHaveBeenCalledTimes(1);
+    const [ids, at] = markMemoryUsed.mock.calls[0] as unknown as [string[], number];
+    expect(ids).toEqual([memoryId(["coord", "Crew keeps the notes."])]);
+    expect(at).toBe(50);
+
+    // A query that recalls nothing is not a use, and a store that is away does not fail the read.
+    markMemoryUsed.mockClear();
+    const miss = await handleAgentApp(source, "r", "memory.recall", { query: "zzzz" }, own);
+    expect(JSON.stringify(miss)).not.toContain("notes");
+    expect(markMemoryUsed).not.toHaveBeenCalled();
+    const away = host({
+      monoOf: () => ({ id: "coord", projects: ["/work/crew"] }),
+      memoryDoc,
+      markMemoryUsed: async () => {
+        throw new Error("busy");
+      },
+      now: () => new Date(50),
+    });
+    await expect(handleAgentApp(source, "r", "memory.recall", { query: "notes" }, away)).resolves.toBeTruthy();
+  });
+
   it("updates a task filed under the hub id, and still one filed under the folder", async () => {
     const rows = new Map<string, string>([["task-old", "/work/crew"]]);
     const taskStore = vi.fn(async (command: string, args: { actor: { project: string }; input?: { id?: string; project?: string } }) => {

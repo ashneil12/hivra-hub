@@ -163,6 +163,48 @@ describe("StallWatch", () => {
     expect(t.stops).toEqual([{ id: t.row.id, error: expect.stringContaining("Silent for 20 minutes") }]);
   });
 
+  it("WP-102: a look that arrives after the computer slept stops nobody, and its clock moves forward by the gap", async () => {
+    const t = await setup();
+    t.sessions.set("w1", chat([asked(), said("Looking")]));
+    for (const minute of [0, 6, 7]) {
+      t.at(minute * MIN);
+      t.watch.tick();
+      await t.settle();
+    }
+    // It went quiet after re-arming at minute 6: one stall notice, as any quiet worker gets.
+    expect(t.wakes.map((w) => w.key)).toEqual([`stall:${t.row.id}:1:${0}`]);
+    const before = t.wakes.length;
+    // The computer slept from minute 7 to minute 187. The look at 187 judges nothing, so no stop and no new notice.
+    const woke = 187 * MIN;
+    t.at(woke);
+    t.watch.tick(180 * MIN);
+    await t.settle();
+    expect(t.stops).toEqual([]);
+    expect(t.wakes).toHaveLength(before);
+    // A worker that stays silent after the wake is still stopped 20 minutes of real silence later. Its clock now starts
+    // at the wake (the gap was 180 minutes, and 180 was given up, so last activity reads as minute 7 + 180 = 187).
+    t.at(woke + 6 * MIN);
+    t.watch.tick();
+    await t.settle();
+    expect(t.stops).toEqual([]);
+    t.at(woke + 20 * MIN);
+    t.watch.tick(0);
+    await t.settle();
+    expect(t.stops).toEqual([{ id: t.row.id, error: expect.stringContaining("Silent for 20 minutes") }]);
+  });
+
+  it("WP-102: without a sleep the same silence still stops the worker at 20 minutes", async () => {
+    const t = await setup();
+    t.sessions.set("w1", chat([asked(), said("Looking")]));
+    t.at(0);
+    t.watch.tick();
+    await t.settle();
+    t.at(20 * MIN);
+    t.watch.tick(0);
+    await t.settle();
+    expect(t.stops).toEqual([{ id: t.row.id, error: expect.stringContaining("Silent for 20 minutes") }]);
+  });
+
   it("Hivra WP-11: a worker waiting on an approval is never silent, and activity re-arms the notice", async () => {
     const t = await setup();
     const approval = { ...tool("Bash", "pending", ""), approval: { decided: false } } as unknown as Block;

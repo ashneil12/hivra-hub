@@ -103,6 +103,9 @@ function press(input: HTMLInputElement, key: string) {
   });
 }
 
+// WP-93: this used to be a one-command palette. It is now the whole command
+// registry, so these tests keep what they were guarding (command mode never
+// ranks files, filtering highlights, a pick closes and runs) against it.
 describe("file picker command mode", () => {
   it("formats reload shortcut hints for macOS and non-macOS", () => {
     expect(reloadActionHint("⌘", "⇧")).toBe("⌘⇧R");
@@ -119,7 +122,7 @@ describe("file picker command mode", () => {
     expect(
       dialog.querySelector('[role="listbox"][aria-label="Commands"]'),
     ).not.toBeNull();
-    expect(dialog.textContent).toContain("Reload MonoCode");
+    expect(dialog.textContent).toContain("Reload");
     expect(dialog.textContent).toContain(reloadActionHint());
     expect(rankProjectFiles).not.toHaveBeenCalled();
   });
@@ -138,7 +141,7 @@ describe("file picker command mode", () => {
     rankProjectFiles.mockClear();
     inputText(input, ">");
     expect(dialog.getAttribute("aria-label")).toBe("Command Palette");
-    expect(dialog.textContent).toContain("Reload MonoCode");
+    expect(dialog.textContent).toContain("Reload");
     expect(rankProjectFiles).not.toHaveBeenCalled();
 
     inputText(input, "App");
@@ -154,12 +157,12 @@ describe("file picker command mode", () => {
     const dialog = document.querySelector<HTMLElement>("[data-file-picker]")!;
     const input = dialog.querySelector<HTMLInputElement>("input")!;
 
-    inputText(input, "> rmc");
+    inputText(input, "> rload");
     const reload = [
       ...dialog.querySelectorAll<HTMLButtonElement>("button"),
-    ].find((button) => button.textContent?.includes("Reload MonoCode"))!;
+    ].find((button) => button.getAttribute("data-command-label") === "Reload")!;
     expect(reload).not.toBeUndefined();
-    expect(reload.querySelectorAll(".text-accent")).toHaveLength(3);
+    expect(reload.querySelectorAll(".text-accent").length).toBeGreaterThan(0);
 
     inputText(input, "> missing");
     expect(dialog.textContent).toContain("No matching commands");
@@ -172,18 +175,45 @@ describe("file picker command mode", () => {
       const callbacks = renderPicker(">");
       const dialog = document.querySelector<HTMLElement>("[data-file-picker]")!;
       const input = dialog.querySelector<HTMLInputElement>("input")!;
-      const reload = dialog.querySelector<HTMLButtonElement>(
+      const selected = dialog.querySelector<HTMLButtonElement>(
         '[role="option"][aria-selected="true"]',
       )!;
 
-      if (method === "click") act(() => reload.click());
+      if (method === "click") act(() => selected.click());
       else press(input, "Enter");
 
-      expect(callbacks.onRunAction).toHaveBeenCalledExactlyOnceWith("reload");
+      // Without the app's own handler the palette still runs what it can.
+      expect(callbacks.onRunAction).not.toHaveBeenCalled();
       expect(callbacks.onClose).toHaveBeenCalledOnce();
       expect(callbacks.onOpenFile).not.toHaveBeenCalled();
     },
   );
+
+  it("runs the selected command through the app's handler when it has one", () => {
+    const onRunAction = vi.fn();
+    const onRunCommand = vi.fn();
+    act(() =>
+      root.render(
+        createElement(FilePicker, {
+          open: true,
+          cwd: "/repo",
+          initialQuery: "> reload",
+          onOpenFile: vi.fn(),
+          onRunAction,
+          onRunCommand,
+          onClose: vi.fn(),
+        }),
+      ),
+    );
+    const dialog = document.querySelector<HTMLElement>("[data-file-picker]")!;
+    press(dialog.querySelector<HTMLInputElement>("input")!, "Enter");
+    expect(onRunCommand).toHaveBeenCalledTimes(1);
+    expect(onRunCommand.mock.calls[0]?.[0]).toMatchObject({
+      id: "View: Reload",
+      run: { kind: "app", action: "reload" },
+    });
+    expect(onRunAction).not.toHaveBeenCalled();
+  });
 });
 
 describe("file picker on a remote project", () => {

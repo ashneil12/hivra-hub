@@ -315,15 +315,26 @@ mod tests {
         let script = dir.join("slow.sh");
         std::fs::write(&script, "#!/bin/sh\nexec sleep 5\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let (ok, said) = run_script(
-            &script,
-            Path::new("/tmp"),
-            &[],
-            None,
-            Duration::from_millis(300),
-        );
-        assert!(!ok);
-        assert!(said.contains("was stopped"));
+        // A script written a moment ago can still be "busy" if another test's fork
+        // copied its open write handle (ETXTBSY, seen on Linux CI). Try again; the
+        // assertion still shows what was said if it never starts.
+        let mut said = String::new();
+        let mut ok = true;
+        for _ in 0..5 {
+            (ok, said) = run_script(
+                &script,
+                Path::new("/tmp"),
+                &[],
+                None,
+                Duration::from_millis(300),
+            );
+            if !said.contains("Text file busy") {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!ok, "{said}");
+        assert!(said.contains("was stopped"), "{said}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

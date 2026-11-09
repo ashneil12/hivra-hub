@@ -5,10 +5,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 import { codingTeamChatProject } from "../../features/hub/model/codingTeam";
 import { findMono, monoForSession } from "../../features/monos/model/mono";
-import { collectAnswer, settleTurn, type CuratorContext } from "../../features/memory/model/curator";
+import { collectAnswer, settleTurn, type CuratorAsk, type CuratorContext } from "../../features/memory/model/curator";
+import { cheapAsk, cheapProblem } from "../../features/memory/model/cheapAsk";
 import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
+import { markLived } from "../../features/memory/model/fade";
+import { noteDeferred, noteOutcome } from "../../features/memory/model/health";
+import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
 import { commitDoc } from "../../features/memory/model/review";
+import { rulesAnswer } from "../../features/memory/model/ruleCurator";
+import { loadMemoryTier, tierSendsText, type MemoryTier } from "../../features/memory/model/tier";
 import type { Session } from "../../features/sessions/model/session";
 
 type Loaded = { revision: number; doc: unknown };
@@ -87,13 +93,67 @@ function askModel(prompt: string) {
   return askCrew(prompt);
 }
 
+/**
+ * WP-103: the tier the person chose. Rules answers without asking anything; cheap asks the model they picked;
+ * crew is today's brief to a signed-in CLI. The tier is read once per turn, so a change starts with the next turn.
+ */
+export function curatorAsk(tier: MemoryTier, turn: { user: string; assistant: string }, model?: string): (prompt: string) => Promise<CuratorAsk> {
+  if (tier === "rules") {
+    return async () => {
+      const answer = rulesAnswer(turn);
+      return { ok: true, text: answer.kind === "reply" ? answer.text : "" };
+    };
+  }
+  if (tier === "cheap") return cheapAsk(model);
+  return askModel;
+}
+
+/**
+ * WP-103: the background budget. Only a turn that will call a model spends it: the crew always does, the cheap tier
+ * only once a model is picked (a cheap tier with no model hands back a deferral of its own, and spends nothing). A
+ * turn that does not fit is left for later (the caller unfeds it, so a later turn tries again), and the pause is
+ * recorded for the Memory screen's health card. A manual action on that screen never comes through here.
+ */
+export function backgroundAskFits(tier: MemoryTier, model: string | undefined, now: number): boolean {
+  if (!tierSendsText(tier)) return true;
+  if (tier === "cheap" && cheapProblem(model)) return true;
+  const budget = takeBudget(now);
+  if (budget.ok) return true;
+  notePaused({ problem: budget.problem, until: budget.until });
+  return false;
+}
+
+/**
+ * WP-103: a turn left for later is counted once on the health card, however many times it is tried again. Bounded so
+ * a long session cannot grow the set without limit.
+ */
+export function firstDeferral(counted: Set<string>, key: string): boolean {
+  if (counted.has(key)) return false;
+  counted.add(key);
+  if (counted.size > 500) {
+    const oldest = counted.values().next().value;
+    if (oldest !== undefined) counted.delete(oldest);
+  }
+  return true;
+}
+
 export function useMemoryCurator(sessions: readonly Session[], enabled: boolean): void {
   const on = enabled && isMainWindow();
   const fedLast = useRef(new Map<string, string | undefined>());
+  const countedDeferrals = useRef(new Set<string>());
   useEffect(() => {
     if (!on) return;
     for (const feed of curatorFeeds(sessions, fedLast.current, mateForSession)) {
-      const ctx: CuratorContext = { mateId: feed.mateId, turnId: feed.turnId, user: feed.user, assistant: feed.assistant, now: Date.now() };
+      // WP-100: the engine whose chat this turn ran in, so a memory one engine wrote is labelled for another.
+      const engine = sessions.find((session) => session.id === feed.sessionId)?.harness;
+      const ctx: CuratorContext = {
+        mateId: feed.mateId,
+        turnId: feed.turnId,
+        user: feed.user,
+        assistant: feed.assistant,
+        now: Date.now(),
+        ...(engine ? { by: engine } : {}),
+      };
       void (async () => {
         let loaded: MemoryDoc;
         try {
@@ -102,13 +162,36 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
           fedLast.current.delete(feed.sessionId);
           return;
         }
-        const result = await collectAnswer(loaded, ctx, askModel);
+        // WP-103: the tier is read here, once per turn: a change lands on the next turn, never on a past one. The turn
+        // carries it from here, so the memory written says which tier wrote it.
+        const choice = loadMemoryTier();
+        const tierCtx: CuratorContext = { ...ctx, via: choice.tier };
+        if (!backgroundAskFits(choice.tier, choice.model, ctx.now)) {
+          fedLast.current.delete(feed.sessionId);
+          return;
+        }
+        const result = await collectAnswer(loaded, tierCtx, curatorAsk(choice.tier, tierCtx, choice.model));
         if (result.kind === "deferred") {
+          // WP-103: the card should say a model failed to answer, not stay silent about it. The turn is not done, so
+          // the next turn tries it again; the count moves on its first failure only.
+          if (firstDeferral(countedDeferrals.current, `${ctx.mateId}:${ctx.turnId}`)) {
+            const at = Date.now();
+            try {
+              await commitDoc(loadDoc, saveDoc, (doc) => noteDeferred(markLived(doc, at), at));
+            } catch {
+              // The count is a nicety: not being able to write it never holds the turn back.
+            }
+          }
           fedLast.current.delete(feed.sessionId);
           return;
         }
         try {
-          await commitDoc(loadDoc, saveDoc, (doc) => settleTurn(doc, ctx, result).doc);
+          // WP-100: a turn the curator saw is a day the app lived, which memory fades over, and a count for the
+          // Memory screen's health card.
+          await commitDoc(loadDoc, saveDoc, (doc) => {
+            const settled = settleTurn(markLived(doc, tierCtx.now), tierCtx, result);
+            return noteOutcome(settled.doc, settled.outcome, tierCtx.now);
+          });
         } catch {
           fedLast.current.delete(feed.sessionId);
         }

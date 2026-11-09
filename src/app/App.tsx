@@ -54,7 +54,7 @@ import {
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
-import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runTaskGate, runWorkerGate, signedOffFor, workerGateWord } from "../features/monos/model/workerGate";
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
@@ -106,7 +106,10 @@ import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/m
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
+import { recordUse } from "../features/memory/model/memoryUse";
+import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
@@ -1001,6 +1004,10 @@ import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
 import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
+// WP-93: the command palette reads what the app can do and runs each row.
+import type { PaletteContext } from "../features/search/model/commandRegistry";
+import { runPaletteRow } from "../features/search/model/paletteRun";
+import { runPaletteCommand } from "../features/search/model/paletteWiring";
 import {
   finderFileOptions,
   requestDocFocus,
@@ -1089,6 +1096,7 @@ import {
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
+  openReplaceInActiveEditor,
 } from "../features/files/editor/editorSearch";
 
 import {
@@ -8711,6 +8719,9 @@ function Workspace({
             status: "planning",
             title: "Orchestration plan",
             summary: "",
+            // WP-91: the model fills these from the request; a plan without a finish line is refused.
+            goal: "",
+            check: { command: "", expectExit: 0 },
             tasks: [],
           }
         : undefined;
@@ -9574,7 +9585,18 @@ function Workspace({
             }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
+            // WP-99: one conversation shows each memory once; a compaction lets them all return.
+            // WP-100: a fact an engine other than this chat's wrote is labelled with the engine that did.
+            const recallScope = {
+              sessionId,
+              compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+            };
+            const recallNote = await recalledFence(
+              memoryMate,
+              turnPrompt,
+              recallWide ? { ...recallWide, ...recallScope } : recallScope,
+              current.harness,
+            );
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);
@@ -9618,6 +9640,9 @@ function Workspace({
               () =>
                 turnGen.current.get(sessionId) === gen &&
                 !isProviderFailureText(nativeProposalText || proposalText),
+              // WP-91: the graph is checked as the plan is read, so two tasks that could run at once on the same
+              // files, or a plan with no verify task, are refused with the fix named.
+              (nodes) => orchestrator.checkPlan(nodes),
             );
           }
           if (turnGen.current.get(sessionId) !== gen) return;
@@ -12943,6 +12968,20 @@ function Workspace({
           orchestrationCheckoutCwd(run),
         );
       },
+      // WP-91: WP-40's check on this worker's own copy, in its own words, so the run's verdict has a real input. The
+      // check runs in the worker's checkout (or the lead's, for a shared task), through the same runner WP-40 uses;
+      // only a project with no check returns null.
+      gateWorker: async (run, task) => {
+        const checkout = task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run);
+        const projectId =
+          hubProjectIdFor(orchestrationProjectCwd(run)) ??
+          orchestrationProjectCwd(run);
+        return workerGateWord(runTaskGate, {
+          projectId,
+          checkout,
+          signedOff: false,
+        });
+      },
       cleanupWorker: async (run, task, onlyIfUnchanged) => {
         const workspace = task.workspace;
         if (!workspace || workspace.kind !== "worktree") return true;
@@ -14093,6 +14132,8 @@ function Workspace({
             createWorktree: (cwd, branch, base, existing, options) =>
               createWorktree(cwd, branch, base, existing, options),
             projectActions: (cwd) => listProjectActions(cwd),
+            // WP-90: a crew reads the stack's names and fake services, never starts a real one.
+            stacks: (cwd) => invoke("stack_status", { cwd }),
             runProjectAction: (checkoutCwd, actionId) =>
               runProjectAction(checkoutCwd, actionId, "agent"),
             waitProjectAction: (runId, timeoutMs) =>
@@ -14201,6 +14242,8 @@ function Workspace({
               const loaded = await invoke<{ doc?: unknown } | null>("memory_review_load");
               return loaded?.doc ?? null;
             },
+            // WP-100: a Mono reading memory through its tool is a use, so those facts are topped up.
+            markMemoryUsed: (ids, at) => recordUse(memoryUsePorts(), ids, at),
             mateIds: () => listMonos().map((item) => item.id),
             monoOf: (id) => {
               const mono =
@@ -15679,6 +15722,79 @@ function Workspace({
     debounce.current = { name, at: now };
     fn();
   }, []);
+
+  // WP-93: the command palette's rows for what the app can do right now, and
+  // the one runner that sends each row to the handler its shortcut uses.
+  // Read fresh on the render that opens the palette, so "now" means now.
+  const paletteContext: PaletteContext = {
+    project:
+      isLocalProject(sidebarCwd) || isRemoteProjectPath(sidebarCwd)
+        ? sidebarCwd
+        : null,
+    terminal: isLocalProject(projectCwd),
+    chat: Boolean(activeSessionId),
+    busy: Boolean(
+      activeSessionId &&
+        sessions.find((session) => session.id === activeSessionId)?.busy,
+    ),
+    // The chord treats an input, a terminal or a dialog as not the chat's.
+    control:
+      document.activeElement instanceof Element &&
+      Boolean(
+        document.activeElement.closest(
+          'input, textarea, select, [contenteditable="true"], .cm-editor, .monocode-terminal, [role="dialog"]',
+        ),
+      ),
+    editor: Boolean(activeFile && isFilesystemTab(activeFile)),
+  };
+  // WP-93: the two commands that act on the chat in focus. The key handlers
+  // work these out from the event; the palette has no event, so it reads the
+  // same refs they do.
+  const paletteTargetsRef = useRef<{ archive: string | null; stop: string | null }>({
+    archive: null,
+    stop: null,
+  });
+  paletteTargetsRef.current = {
+    archive:
+      activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+        ? activeSessionId
+        : null,
+    stop:
+      activeSessionId &&
+      sessions.find((session) => session.id === activeSessionId)?.busy
+        ? activeSessionId
+        : null,
+  };
+  const runPaletteCommandFromFinder = useCallback(
+    (row: Parameters<typeof runPaletteRow>[0]) =>
+      runPaletteCommand(row, actions.current, {
+        run,
+        archiveChat: () => paletteTargetsRef.current.archive,
+        stopChat: () => paletteTargetsRef.current.stop,
+        archive: (id) => void onArchiveHistorySession(id, true),
+        stop: (id) => onStopFromUser(id),
+        showHome: () => showAppItem("home"),
+        showChanges: onShowSourceControl,
+        openModelPicker: () =>
+          window.dispatchEvent(new Event("open_model_picker")),
+        newWindow: () => void invoke("open_new_window"),
+        zoom: (action) => {
+          const next =
+            action === "zoom-in"
+              ? saveUiScale(zoomInUiScale(loadUiScale()))
+              : action === "zoom-out"
+                ? saveUiScale(zoomOutUiScale(loadUiScale()))
+                : UI_SCALE_DEFAULT;
+          saveUiScale(next);
+          void applyUiScale(next);
+        },
+        editor: (action) => {
+          if (action === "replace") openReplaceInActiveEditor();
+          else openFindInActiveEditor();
+        },
+      }),
+    [run, onShowSourceControl, onStopFromUser, onArchiveHistorySession],
+  );
 
   useEffect(() => {
     if (!IS_MAC) return;
@@ -17785,6 +17901,8 @@ function Workspace({
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
               }}
+              paletteContext={paletteContext}
+              onRunCommand={runPaletteCommandFromFinder}
               onClose={() => setFilePickerOpen(false)}
               onOpenHit={(hit, beside, query) => {
                 setFilePickerOpen(false);

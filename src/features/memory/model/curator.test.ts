@@ -113,7 +113,7 @@ describe("curateTurn", () => {
     expect(JSON.stringify(result.doc)).not.toContain("sk-ant");
   });
 
-  it("drops a fact whose evidence is not in the turn, and a duplicate of one already kept", async () => {
+  it("drops a fact whose evidence is not in the turn, and counts a fact it sees again as a use", async () => {
     const madeUp = await curateTurn(
       freshDoc(),
       ctx(),
@@ -128,11 +128,42 @@ describe("curateTurn", () => {
     );
     const twice = await curateTurn(
       { ...once.doc, doneTurns: [] },
-      ctx({ turnId: "turn-9" }),
+      ctx({ turnId: "turn-9", now: NOW + 86_400_000 }),
       ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "small commits" })),
     );
-    expect(twice.outcome).toMatchObject({ status: "dropped", reason: "duplicate" });
+    // WP-100: the same fact again is a use, so the row is kept, its support grows, and its fade is topped up.
+    expect(twice.outcome).toMatchObject({ status: "stored" });
     expect(twice.doc.items).toHaveLength(1);
+    expect(twice.doc.items[0]).toMatchObject({
+      text: "Likes small commits",
+      support: 2,
+      fade: 1,
+      lastUsedAt: NOW + 86_400_000,
+    });
+    // The first row's own fields are kept; only the use changes.
+    expect(twice.doc.items[0].createdAt).toBe(once.doc.items[0].createdAt);
+    expect(twice.doc.items[0].state).toBe(once.doc.items[0].state);
+  });
+
+  it("writes down which engine wrote the memory, and leaves it off when the turn had none", async () => {
+    const withEngine = await curateTurn(
+      freshDoc(),
+      ctx({ by: "codex" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(withEngine.doc.items[0].by).toBe("codex");
+    const without = await curateTurn(
+      freshDoc(),
+      ctx({ turnId: "turn-2" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(without.doc.items[0].by).toBeUndefined();
+    const nonsense = await curateTurn(
+      freshDoc(),
+      ctx({ turnId: "turn-3", by: "Codex!" }),
+      ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })),
+    );
+    expect(nonsense.doc.items[0].by).toBeUndefined();
   });
 
   it("applies a late reply onto the doc as it is now, still only once", () => {
@@ -144,5 +175,31 @@ describe("curateTurn", () => {
     const raced = settleTurn(first.doc, ctx(), answer);
     expect(raced.doc.items).toHaveLength(1);
     expect(raced.outcome.status).toBe("none");
+  });
+
+  it("keeps the tier that wrote the memory, on every item it writes", async () => {
+    const reply = JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" });
+    for (const via of ["rules", "cheap", "crew"] as const) {
+      const result = await curateTurn(freshDoc(), ctx({ via }), ask(reply));
+      expect(result.doc.items[0].via, via).toBe(via);
+    }
+    // A turn with no tier, or one this build does not know, still keeps the fact and says nothing about the tier.
+    expect((await curateTurn(freshDoc(), ctx({ turnId: "no-tier" }), ask(reply))).doc.items[0].via).toBeUndefined();
+    const unknown = await curateTurn(freshDoc(), ctx({ turnId: "bad-tier", via: "model" as unknown as "crew" }), ask(reply));
+    expect(unknown.doc.items[0]).toMatchObject({ text: "Likes small commits" });
+    expect(unknown.doc.items[0].via).toBeUndefined();
+    // A skill and an update carry it too.
+    const skill = JSON.stringify({
+      kind: "skill",
+      name: "Reviewing a diff",
+      lesson: "Read the diff before commenting.",
+      evidence: "I like small commits",
+    });
+    expect((await curateTurn(freshDoc(), ctx({ via: "cheap" }), ask(skill))).doc.items[0].via).toBe("cheap");
+    const first = await curateTurn(freshDoc(), ctx({ via: "rules" }), ask(reply));
+    const id = first.doc.items[0].id;
+    const update = JSON.stringify({ kind: "update", targetId: id, text: "Likes tiny commits", evidence: "I like small commits" });
+    const changed = await curateTurn(first.doc, ctx({ turnId: "turn-2", via: "crew" }), ask(update));
+    expect(changed.doc.items.find((item) => item.action === "update")?.via).toBe("crew");
   });
 });

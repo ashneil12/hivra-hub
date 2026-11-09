@@ -25,6 +25,9 @@ const draft: OrchestrationProposal = {
   status: "planning",
   title: "Planning",
   summary: "",
+  // WP-91: the goal and the finish line the app runs itself.
+  goal: "The settings screen saves and reloads",
+  check: { command: "npm test", expectExit: 0 },
   tasks: [],
 };
 const task = {
@@ -36,10 +39,23 @@ const task = {
   files: ["src/settings"],
   dependsOn: [],
 };
+// WP-91: a run has exactly one verify task, and it follows every task that writes.
+const verifyTask = {
+  id: "verify",
+  title: "Check the goal",
+  prompt: "Verify the settings screen end to end",
+  harness: "codex",
+  model: "codex:test",
+  role: "verify",
+  files: [],
+  dependsOn: ["ui"],
+};
 const payload = {
   title: "Settings",
   summary: "Build the view, then validate",
-  tasks: [task],
+  goal: draft.goal,
+  check: draft.check,
+  tasks: [task, verifyTask],
 };
 
 describe("orchestration proposals", () => {
@@ -284,6 +300,14 @@ describe("orchestration proposals", () => {
         "C:\\Work\\Repo",
       ),
     ).toThrow('Assignment "ui" has invalid file scope "C:src\\settings"');
+  });
+  it("reads a scope written with CRLF or padding as the path it names", () => {
+    expect(
+      validateProposedTasks(
+        [{ ...task, files: ["src/settings\r", "  src/shared\r\n"] }],
+        draft.settings,
+      )[0].files,
+    ).toEqual(["src/settings", "src/shared"]);
   });
   it("keeps an explicitly selected worker effort and rejects malformed settings", () => {
     expect(
