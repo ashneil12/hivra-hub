@@ -26,6 +26,41 @@ describe("context ceiling", () => {
     expect(contextCeilingFor({ harness: "codex", model: "gpt-5" })).toBeUndefined();
   });
 
+  it("asks the bundled catalogue before the family ceiling, and only for a custom model", () => {
+    const catalogue = {
+      "widget-7": { context: 128_000, tools: true },
+      "claude-opus-5-5": { context: 180_000, tools: true },
+      "claude:claude-opus-5-5": { context: 180_000, tools: true },
+      tiny: { context: 50_000, tools: false },
+      huge: { context: 1_500_000, tools: true },
+      stringy: { context: "128000", tools: true },
+    };
+    const save = (id: string, modelId: string) =>
+      storage.set(
+        "monocode:custom-models",
+        JSON.stringify([{ id, name: id, provider: "custom", baseUrl: "http://127.0.0.1:9/v1", modelId }]),
+      );
+    save("m1", "widget-7");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(128_000);
+    save("m1", "tiny");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(100_000);
+    save("m1", "huge");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(1_000_000);
+    save("m1", "claude-opus-5-5");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(180_000);
+    save("m1", "stringy");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", catalogue)).toBe(400_000);
+    save("m1", "widget-opus");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", {})).toBe(350_000);
+    save("m1", "widget-7");
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "model", {})).toBe(400_000);
+    expect(contextCeilingFor({ harness: "claude", model: "claude:claude-opus-5-5" }, "model", catalogue)).toBe(350_000);
+    expect(contextCeilingFor({ harness: "codex", model: "custom:m1" }, "model", catalogue)).toBeUndefined();
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, 300_000, catalogue)).toBe(300_000);
+    expect(contextCeilingFor({ harness: "claude", model: "custom:m1" }, "off", catalogue)).toBeUndefined();
+    expect(contextCeilingFor({ harness: "claude", model: "custom:missing" }, "model", catalogue)).toBe(400_000);
+  });
+
   it("takes the Settings choice, and nothing for Claude Code's default", () => {
     saveContextCeilingChoice(300_000);
     expect(loadContextCeilingChoice()).toBe(300_000);

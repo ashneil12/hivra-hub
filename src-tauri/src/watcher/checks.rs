@@ -387,11 +387,7 @@ trait Runner {
 /// Claim, run, settle. Tests pass a fake runner and a fake `now`. The real look is `watcher_tick`, which claims, drops
 /// the lock, then settles.
 #[cfg(test)]
-fn poll(
-    conn: &mut Connection,
-    now: i64,
-    runner: &impl Runner,
-) -> Result<Vec<Wake>, String> {
+fn poll(conn: &mut Connection, now: i64, runner: &impl Runner) -> Result<Vec<Wake>, String> {
     let due = claim_due(conn, now)?;
     let mut woke = Vec::new();
     for item in due {
