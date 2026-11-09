@@ -33,6 +33,7 @@ import {
   ROOM_BUSY,
   ROOM_DM,
   ROOM_ID,
+  ROOM_SEATS,
   GOAL_A_WORKER,
   GOAL_B_WORKER,
   HELPER,
