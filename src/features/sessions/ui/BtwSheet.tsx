@@ -10,7 +10,9 @@ import {
   btwOpenTargetTurnId,
   btwThreadBlocks,
   btwSurfaceHarness,
+  buildSideRecap,
   sessionBtwThreads,
+  type SideRecap,
 } from "../model/btw";
 import { groupTurns } from "../model/transcriptActivity";
 import {
@@ -290,6 +292,7 @@ export function useBtwConversation({
     model: selectedModel,
     modelSettings: selectedModelSettings,
     canStartDraft: btwOpenTargetTurnId(turns, blocks, harness, managed) != null,
+    recapAnchorId: active?.turn[active.turn.length - 1]?.id,
     finishClose,
     selectTab,
     /**
@@ -472,6 +475,7 @@ function morphClips(sheet: HTMLElement, origin: HTMLElement | null) {
  */
 export function BtwSheet({
   btw,
+  blocks,
   cwd,
   visible = true,
   origin,
@@ -480,6 +484,8 @@ export function BtwSheet({
   onOpenDiff,
 }: {
   btw: BtwConversation;
+  /** Parent transcript the recap is drawn from. */
+  blocks?: Block[];
   cwd?: string;
   visible?: boolean;
   /** The session composer's box, which the sheet grows out of. */
@@ -525,6 +531,11 @@ export function BtwSheet({
       btw.model,
     ],
   );
+  const recap = useMemo<SideRecap | null>(() => {
+    if (!blocks || !btw.recapAnchorId) return null;
+    const built = buildSideRecap(blocks, btw.recapAnchorId, cwd);
+    return built.turns.length > 0 || built.file ? built : null;
+  }, [blocks, btw.recapAnchorId, cwd]);
 
   // Morph between the composer box and the full sheet. The panel grows out
   // of the session composer's box and folds back into it; a frame in the
@@ -781,6 +792,32 @@ export function BtwSheet({
             </button>
           </div>
 
+          {recap ? (
+            <div
+              data-side-recap
+              className="btw-sheet-body shrink-0 border-b border-content/8 px-4 py-2.5 text-xs leading-4.5 text-content/70"
+            >
+              <div className="text-[10px] font-medium uppercase tracking-[0.08em] text-content/45">
+                Recap
+              </div>
+              {recap.turns.map((turn, index) => (
+                <p key={`${turn.role}-${index}`} className="mt-1">
+                  <span className="text-content/45">
+                    {turn.role === "user" ? "You" : "Assistant"}:{" "}
+                  </span>
+                  {turn.text}
+                </p>
+              ))}
+              {recap.file ? (
+                <p className="mt-1">
+                  Current file: {recap.file.path}
+                  {recap.file.additions != null || recap.file.deletions != null
+                    ? ` (+${recap.file.additions ?? 0} -${recap.file.deletions ?? 0})`
+                    : ""}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
           <div className="btw-sheet-body min-h-0 flex-1">
             <AgentTranscript
               key={activeTabId ?? ""}

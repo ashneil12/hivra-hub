@@ -5,12 +5,14 @@ import {
   BTW_MAX_BLOCK_CHARS,
   BTW_MAX_SNAPSHOT_CHARS,
   buildBtwPrompt,
+  buildSideRecap,
   btwOpenTargetTurnId,
   btwThreadBlocks,
   btwTurnHarness,
   btwVisibleBlocks,
   consumeBtwCommand,
   consumeBtwPrefix,
+  formatSideRecap,
   replaceBtwThread,
   resolveBtwHarness,
   sessionHasBtwEligibleTurn,
@@ -18,6 +20,7 @@ import {
   serializeBtwBlock,
   serializeBtwSnapshot,
   sessionBtwThreads,
+  SIDE_COMMAND,
   supportsBtwHarness,
 } from "./btw";
 import type { Block, BtwThread } from "./session";
@@ -82,6 +85,23 @@ describe("consumeBtwCommand", () => {
       matched: false,
     });
   });
+
+  it("treats /side as the same command, including a bare alias", () => {
+    expect(SIDE_COMMAND).toMatchObject({ kind: "builtin", invocation: "side" });
+    expect(consumeBtwCommand("/side")).toEqual({ text: "", matched: true });
+    expect(consumeBtwCommand(" /SIDE  why this file? ")).toEqual({
+      text: "why this file?",
+      matched: true,
+    });
+    expect(consumeBtwCommand("/sidebar")).toEqual({
+      text: "/sidebar",
+      matched: false,
+    });
+    expect(consumeBtwCommand("see /side later")).toEqual({
+      text: "see /side later",
+      matched: false,
+    });
+  });
 });
 
 describe("consumeBtwPrefix", () => {
@@ -96,6 +116,13 @@ describe("consumeBtwPrefix", () => {
   it("ignores other commands and mid-text mentions", () => {
     expect(consumeBtwPrefix("/btwx ")).toBeNull();
     expect(consumeBtwPrefix("ask /btw later")).toBeNull();
+  });
+
+  it("commits /side the same way, and not a longer word", () => {
+    expect(consumeBtwPrefix("/side")).toBeNull();
+    expect(consumeBtwPrefix("/side ")).toBe("");
+    expect(consumeBtwPrefix(" /SIDE  the diff")).toBe("the diff");
+    expect(consumeBtwPrefix("/sideways ")).toBeNull();
   });
 });
 
@@ -425,6 +452,140 @@ describe("serializeBtwSnapshot", () => {
   });
 });
 
+describe("buildSideRecap", () => {
+  it("keeps the latest few turns and the newest file, relative to the project", () => {
+    const blocks: Block[] = [
+      block("u0", "user", "oldest"),
+      block("a0", "assistant", "old answer"),
+      block("u1", "user", "first line\r\nsecond"),
+      block("a1", "assistant", "  parser  "),
+      {
+        ...block("tool-old", "tool", "old"),
+        tool: {
+          title: "Read",
+          preview: { kind: "read", path: "/repo/old.ts" },
+        },
+      },
+      {
+        ...block("tool-new", "tool", "new"),
+        tool: {
+          title: "Edit",
+          preview: {
+            kind: "edit",
+            path: "/repo/src/parser.ts",
+            additions: 3,
+            deletions: 1,
+          },
+        },
+      },
+      block("u2", "user", "   "),
+      block("a2", "assistant", "café is fine"),
+    ];
+
+    const recap = buildSideRecap(blocks, "a2", "/repo");
+
+    expect(recap.turns.map((turn) => turn.text)).toEqual([
+      "old answer",
+      "first line\nsecond",
+      "parser",
+      "café is fine",
+    ]);
+    expect(recap.turns[1]?.role).toBe("user");
+    expect(recap.file).toEqual({
+      path: "src/parser.ts",
+      additions: 3,
+      deletions: 1,
+    });
+    expect(formatSideRecap(recap)).toBe(
+      "Assistant: old answer\nYou: first line\nsecond\nAssistant: parser\nAssistant: café is fine\nCurrent file: src/parser.ts (+3 -1)",
+    );
+  });
+
+  it("caps the recap at four messages and shortens a long one", () => {
+    const blocks: Block[] = [
+      block("u0", "user", "drop me"),
+      block("a1", "assistant", "one"),
+      block("u2", "user", "two"),
+      block("a3", "assistant", "three"),
+      block("u4", "user", "four"),
+      block("a5", "assistant", "z".repeat(400)),
+    ];
+    const recap = buildSideRecap(blocks, "a5");
+    expect(recap.turns.map((turn) => turn.text.slice(0, 4))).toEqual([
+      "two",
+      "thre",
+      "four",
+      "zzzz",
+    ]);
+    expect(recap.turns.some((turn) => turn.text === "drop me")).toBe(false);
+    expect(recap.turns.some((turn) => turn.text === "one")).toBe(false);
+    expect(recap.turns[3]?.text.endsWith("…")).toBe(true);
+    expect(recap.turns[3]?.text.length).toBeLessThanOrEqual(280);
+    expect(recap.file).toBeUndefined();
+    expect(formatSideRecap(recap)).not.toContain("Current file");
+  });
+
+  it("uses a file name when there is no path, and skips a tool with neither", () => {
+    const blocks: Block[] = [
+      block("u", "user", "look"),
+      {
+        ...block("blank", "tool", ""),
+        tool: { title: "Search", preview: { kind: "search", path: "  " } },
+      },
+      {
+        ...block("named", "tool", ""),
+        tool: {
+          title: "Read",
+          preview: { kind: "read", fileName: "notes.md" },
+        },
+      },
+    ];
+    expect(buildSideRecap(blocks, "named").file).toEqual({ path: "notes.md" });
+  });
+
+  it("keeps a windows path and a path outside the project as display text", () => {
+    const inside = buildSideRecap(
+      [
+        block("u", "user", "go"),
+        {
+          ...block("t", "tool", ""),
+          tool: {
+            title: "Read",
+            preview: { kind: "read", path: "C:\\repo\\src\\parser.ts" },
+          },
+        },
+      ],
+      "t",
+      "C:/repo",
+    );
+    expect(inside.file?.path).toBe("src/parser.ts");
+
+    const outside = buildSideRecap(
+      [
+        block("u", "user", "go"),
+        {
+          ...block("t", "tool", ""),
+          tool: {
+            title: "Read",
+            preview: { kind: "read", path: "/repo/src/../secret.txt" },
+          },
+        },
+      ],
+      "t",
+      "/repo",
+    );
+    expect(outside.file?.path).toBe("src/../secret.txt");
+    expect(outside.file?.path.startsWith("/repo")).toBe(false);
+  });
+
+  it("is empty when the anchor is gone, without throwing", () => {
+    expect(buildSideRecap([block("u", "user", "hi")], "missing")).toEqual({
+      turns: [],
+    });
+    expect(formatSideRecap({ turns: [] })).toBe("");
+  });
+});
+
 describe("buildBtwPrompt", () => {
   it("combines safety instructions, transcript context, and side messages", () => {
     const prompt = buildBtwPrompt({
@@ -450,6 +611,12 @@ describe("buildBtwPrompt", () => {
     expect(prompt).toContain(
       "The main conversation snapshot below is reference context only",
     );
+    expect(prompt).toContain("Do not change files");
+    expect(prompt.indexOf("## Recap of the main chat")).toBeLessThan(
+      prompt.indexOf("## Main conversation snapshot"),
+    );
+    expect(prompt).toContain("You: Explain this\n  change.");
+    expect(prompt).toContain("Assistant: It changes the parser.");
     expect(prompt).toContain("User: Explain this\n  change.");
     expect(prompt).toContain("Assistant: It changes the parser.");
     expect(prompt).toContain(

@@ -1400,6 +1400,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       crewLines={delegationPane.crewLines}
                     />
                   ) : null}
+                  {btw.canStartDraft && !btw.open ? (
+                    <div className="flex justify-end px-1.5 pb-1">
+                      <button
+                        type="button"
+                        data-side-question
+                        onClick={() => btw.openWith("")}
+                        className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                      >
+                        Side question
+                      </button>
+                    </div>
+                  ) : null}
                   {composer}
                 </>
               )}
@@ -1407,6 +1419,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           ) : null}
           <BtwSheet
             btw={btw}
+            blocks={session.blocks}
             cwd={workCwd}
             visible={visible}
             origin={() =>

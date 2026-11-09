@@ -88,7 +88,7 @@ describe("BTW conversation", () => {
 
   function Harness(options: Options) {
     btw = useBtwConversation(options);
-    return createElement(BtwSheet, { btw });
+    return createElement(BtwSheet, { btw, blocks: options.blocks, cwd: "/repo" });
   }
 
   async function render(overrides: Partial<Options> = {}) {
@@ -126,6 +126,40 @@ describe("BTW conversation", () => {
   it("stays hidden until opened", async () => {
     await render();
     expect(container.querySelector("[data-btw-overlay]")).toBeNull();
+  });
+
+  it("shows a recap of the parent chat when a side question opens", async () => {
+    await render({
+      blocks: [
+        {
+          id: "u1",
+          role: "user",
+          text: "Explain the parser",
+          durationMs: 1000,
+        },
+        { id: "a1", role: "assistant", text: "It changes the parser." },
+        {
+          id: "t1",
+          role: "tool",
+          text: "Read",
+          tool: {
+            title: "Read",
+            preview: {
+              kind: "read",
+              path: "/repo/src/parser.ts",
+              additions: 2,
+              deletions: 0,
+            },
+          },
+        },
+      ],
+    });
+    await act(async () => void btw.openWith(""));
+    const recap = container.querySelector("[data-side-recap]");
+    expect(recap?.textContent).toContain("Recap");
+    expect(recap?.textContent).toContain("You: Explain the parser");
+    expect(recap?.textContent).toContain("Assistant: It changes the parser.");
+    expect(recap?.textContent).toContain("Current file: src/parser.ts (+2 -0)");
   });
 
   it("opens an empty tab for a bare /btw without sending", async () => {
