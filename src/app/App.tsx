@@ -581,7 +581,6 @@ import {
   isPreparingHandoff,
   pendingHandoff,
   pendingComposerSwitch,
-  planComposerSwitch,
   sessionChildHarnesses,
   sessionThroughTurn,
   shouldAskOutgoingAgent,
@@ -590,6 +589,12 @@ import {
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
+import {
+  applyMidThreadSwitch,
+  commitMidThreadSwitch,
+  restoreUnsentPortableResume,
+  wrapPortableResume,
+} from "../features/sessions/model/midThreadSwitch";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
   applyBtwHarnessEvent,
@@ -779,7 +784,6 @@ import {
   fetchCodexRateLimits,
 } from "../features/providers/model/rateLimitsFetch";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
-import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
   deleteSession,
@@ -1306,66 +1310,18 @@ function userTurnCards(
   };
 }
 
-function withHarnessChoice(
-  session: Session,
-  harness: HarnessId,
-  model: string,
-  modelSettings: Record<string, string>,
-): Session {
-  return {
-    ...session,
-    harness,
-    model,
-    modelSettings,
-    title:
-      session.blocks.length === 0
-        ? HARNESS_LABEL[harness]
-        : formatSessionTitle(
-            harness,
-            sessionDisplayTitle(session.title, session.harness),
-          ),
-    ...(session.model === model
-      ? {}
-      : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness
-      ? {}
-      : { providerSessionId: undefined, providerAccountId: undefined }),
-  };
-}
-
 function withPlanBuildTarget(
   session: Session,
   target: PlanBuildTarget,
 ): Session {
   const resolved = resolveModel(target.harness, target.model);
   const modelSettings = mergeModelSettings(resolved, target.modelSettings);
-  const plan = planComposerSwitch(session, target.harness);
-  const next = withHarnessChoice(
-    session,
-    target.harness,
-    resolved.id,
+  // WP-121: the same switch the picker uses, including a resume or a labelled recap.
+  return applyMidThreadSwitch(session, {
+    harness: target.harness,
+    model: resolved.id,
     modelSettings,
-  );
-
-  if (plan.kind === "arm") {
-    return { ...next, pendingSwitch: plan.pending };
-  }
-  if (plan.kind === "revert") {
-    return {
-      ...next,
-      pendingSwitch: undefined,
-      ...(plan.restoreProviderSessionId
-        ? { providerSessionId: plan.restoreProviderSessionId }
-        : { providerSessionId: undefined }),
-      ...(plan.restoreProviderAccountId
-        ? { providerAccountId: plan.restoreProviderAccountId }
-        : { providerAccountId: undefined }),
-    };
-  }
-  if (plan.kind === "empty") {
-    return { ...next, pendingSwitch: undefined };
-  }
-  return next;
+  }).session;
 }
 
 function openSessionIds(tabs: WorkspaceTab[]): Set<string> {
@@ -7903,41 +7859,47 @@ function Workspace({
         resolved,
         current.modelSettings,
       );
-      const plan = planComposerSwitch(current, harness);
       const recoverLimit =
         !current.busy &&
         !!current.usageLimit &&
         (current.harness !== harness || current.model !== resolved.id);
-      if (plan.kind === "empty") {
-        void forgetHarnessSession(plan.forget, sessionId);
-      }
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== sessionId) return s;
-          let next = withHarnessChoice(s, harness, resolved.id, modelSettings);
-          if (plan.kind === "arm") {
-            next = { ...next, pendingSwitch: plan.pending };
-          } else if (plan.kind === "revert") {
-            next = {
-              ...next,
-              pendingSwitch: undefined,
-              ...(plan.restoreProviderSessionId
-                ? { providerSessionId: plan.restoreProviderSessionId }
-                : { providerSessionId: undefined }),
-              ...(plan.restoreProviderAccountId
-                ? { providerAccountId: plan.restoreProviderAccountId }
-                : { providerAccountId: undefined }),
-            };
-          } else if (plan.kind === "empty") {
-            next = { ...next, pendingSwitch: undefined };
-          }
-          return recoverLimit
-            ? isMonoSession(sessionId)
-              ? resumeMonoUsageLimit(next)
-              : resumeUsageLimitedSession(next)
-            : next;
-        }),
+      // WP-121: keep this thread when the target can resume. A refusal still arms the recap.
+      const switched = commitMidThreadSwitch(
+        {
+          get: (id) => sessionsRef.current.find((session) => session.id === id),
+          compareAndPut: (session, seen) => {
+            let applied = false;
+            // The updater runs during render. flushSync runs it now so a refused write is visible here.
+            flushSync(() => {
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== session.id) return s;
+                  if (
+                    s.blocks.length !== seen.blocks ||
+                    s.harness !== seen.harness ||
+                    s.model !== seen.model
+                  ) {
+                    return s;
+                  }
+                  applied = true;
+                  const next = recoverLimit
+                    ? isMonoSession(sessionId)
+                      ? resumeMonoUsageLimit(session)
+                      : resumeUsageLimitedSession(session)
+                    : session;
+                  return next;
+                }),
+              );
+            });
+            return applied;
+          },
+        },
+        sessionId,
+        { harness, model: resolved.id, modelSettings },
       );
+      if (switched.kind === "ok" && switched.outcome.forget) {
+        void forgetHarnessSession(switched.outcome.forget, sessionId);
+      }
     },
     [],
   );
@@ -8369,6 +8331,10 @@ function Workspace({
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
+      // WP-121: a resumable switch sends its portable transcript. A refusal still uses pendingSwitch.
+      // A repair is not the person's next message, so it leaves the transcript for that message.
+      const portableResume =
+        pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8864,6 +8830,11 @@ function Workspace({
                 rawCommand || options?.ciRepair ? s.noteCard : undefined,
               handoffCard:
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
+              // WP-121: this send consumes the switch notice. The timeline marker stays.
+              // A slash command or a repair is not that send.
+              ...(rawCommand || options?.ciRepair
+                ? {}
+                : { portableResume: undefined, midThread: undefined }),
             };
             if (editedResend) {
               next = editedResend.replace(next);
@@ -9185,7 +9156,12 @@ function Workspace({
             ),
           );
         }
-        let wrap = handoffCard
+        let wrap: {
+          from: HarnessId;
+          to: HarnessId;
+          text: string;
+          portable?: boolean;
+        } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
@@ -9218,6 +9194,17 @@ function Workspace({
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
+        } else if (portableResume) {
+          if (portableResume.from !== current.harness) {
+            await forgetHarnessSession(portableResume.from, sessionId);
+          }
+          if (turnGen.current.get(sessionId) !== gen) return;
+          wrap = {
+            from: portableResume.from,
+            to: current.harness,
+            text: portableResume.transcript,
+            portable: true,
+          };
         }
 
         const revealHandoff = (brief: string) => {
@@ -9263,6 +9250,8 @@ function Workspace({
           return event;
         };
 
+        // WP-121: set once the provider has accepted the portable transcript.
+        let portableDelivered = false;
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
@@ -9278,6 +9267,8 @@ function Workspace({
               event.type === "session.providerBound")
           ) {
             revealHandoff(wrap.text);
+            // WP-121: the provider has the transcript. A later failure must not send it again.
+            if (wrap.portable) portableDelivered = true;
           }
           nudgeOpenEditors(event, workCwd);
           if (!orchestrator.forSession(sessionId))
@@ -9458,12 +9449,19 @@ function Workspace({
             inboxAskPrompt(
               rawCommand ? undefined : current.inboxAsk,
               wrap && !rawCommand
-                ? wrapHandoffPrompt(
-                    wrap.text,
-                    wrap.from,
-                    turnPrompt.trim() || CONTINUE_PROMPT,
-                    earlier,
-                  )
+                ? wrap.portable
+                  ? wrapPortableResume(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
+                  : wrapHandoffPrompt(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
                 : turnPrompt,
             ),
           );
@@ -9659,6 +9657,8 @@ function Workspace({
             if (profile) sendText = `${sendText}\n\n${profile}`;
           }
           await sendTurn(sendText);
+          // WP-121: the turn was handed over, so the transcript is not sent again.
+          if (wrap?.portable && !rawCommand) portableDelivered = true;
           if (teamHanded && teamPlan?.soul && !providerLost) {
             recordAgentContext(
               sessionId,
@@ -9721,6 +9721,20 @@ function Workspace({
           recoverEditedResend();
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) revealHandoff(wrap.text);
+          // WP-121: a timeout or a provider that never started is not the end of the switch.
+          if (wrap?.portable && !portableDelivered && portableResume) {
+            const resume = portableResume;
+            const notice = current.midThread;
+            sessionsRef.current = sessionsRef.current.map((session) =>
+              session.id === sessionId
+                ? restoreUnsentPortableResume(session, resume, notice, {
+                    harness: current.harness,
+                    model: current.model,
+                  })
+                : session,
+            );
+            setSessions(sessionsRef.current);
+          }
           const message =
             error instanceof Error
               ? error.message

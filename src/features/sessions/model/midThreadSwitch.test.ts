@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { buildDeterministicHandoff } from "./handoff";
 import {
+  applyMidThreadSwitch,
+  commitMidThreadSwitch,
   continueThisChatLine,
   harnessCanResumePortable,
   planPortableHandoff,
   recapNewChatLine,
   refuseResumeReason,
+  restoreUnsentPortableResume,
+  wrapPortableResume,
+  type ThreadPort,
 } from "./midThreadSwitch";
 import { newSession, type Block, type Session } from "./session";
 
@@ -146,6 +151,232 @@ describe("harnessCanResumePortable", () => {
     expect(harnessCanResumePortable("codex")).toBe(true);
     expect(harnessCanResumePortable("fx")).toBe(false);
     expect(harnessCanResumePortable("devin")).toBe(false);
+  });
+});
+
+function portOver(initial: Session): { port: ThreadPort; read: () => Session | undefined } {
+  let live = initial;
+  return {
+    read: () => live,
+    port: {
+      get: (id) => (live.id === id ? live : undefined),
+      compareAndPut: (session, seen) => {
+        if (
+          live.blocks.length !== seen.blocks ||
+          live.harness !== seen.harness ||
+          live.model !== seen.model
+        ) {
+          return false;
+        }
+        live = session;
+        return true;
+      },
+    },
+  };
+}
+
+describe("commitMidThreadSwitch", () => {
+  const target = {
+    harness: "codex" as const,
+    model: "codex:gpt-5",
+    modelSettings: { effort: "medium" },
+  };
+
+  it("keeps the thread id and a marker when the target can resume", () => {
+    const session = sessionWith([user("u1", "keep going")], {
+      providerSessionId: "claude-1",
+    });
+    const { port, read } = portOver(session);
+    const result = commitMidThreadSwitch(port, session.id, target);
+    expect(result.kind).toBe("ok");
+    const next = read();
+    expect(next?.id).toBe(session.id);
+    expect(next?.harness).toBe("codex");
+    expect(next?.providerSessionId).toBeUndefined();
+    expect(next?.pendingSwitch).toBeUndefined();
+    expect(next?.portableResume?.from).toBe("claude");
+    expect(next?.portableResume?.fromProviderSessionId).toBe("claude-1");
+    expect(next?.portableResume?.transcript).toContain("keep going");
+    expect(next?.midThread).toEqual({
+      kind: "resume",
+      line: "Continue this chat with Codex",
+    });
+    const marker = next?.blocks.find((block) => block.handoff?.switchTo);
+    expect(marker?.handoff?.switchTo?.label).toBe("Switched to Codex");
+    expect(marker?.text).toBe("Switched to Codex");
+  });
+
+  it("keeps the provider session when only the model changes", () => {
+    const session = sessionWith([user("u1", "hello")], {
+      providerSessionId: "claude-1",
+      model: "claude:opus",
+    });
+    const { port, read } = portOver(session);
+    const result = commitMidThreadSwitch(port, session.id, {
+      harness: "claude",
+      model: "claude:sonnet",
+      modelSettings: {},
+    });
+    expect(result.kind).toBe("ok");
+    const next = read();
+    expect(next?.id).toBe(session.id);
+    expect(next?.providerSessionId).toBe("claude-1");
+    expect(next?.portableResume).toBeUndefined();
+    expect(next?.pendingSwitch).toBeUndefined();
+    expect(next?.blocks.some((block) => block.handoff?.switchTo)).toBe(true);
+    expect(next?.midThread?.kind).toBe("resume");
+    expect(next?.midThread?.line.startsWith("Continue this chat with ")).toBe(true);
+  });
+
+  it("arms today's recap, and says so, when the target cannot resume", () => {
+    const session = sessionWith([user("u1", "fix the header")], {
+      providerSessionId: "claude-1",
+    });
+    const { port, read } = portOver(session);
+    const result = commitMidThreadSwitch(port, session.id, {
+      harness: "fx",
+      model: "fx:default",
+      modelSettings: {},
+    });
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") return;
+    expect(result.outcome.plan.kind).toBe("recap");
+    if (result.outcome.plan.kind !== "recap") return;
+    expect(result.outcome.plan.recap).toBe(buildDeterministicHandoff(session));
+    expect(result.outcome.plan.reason).toContain("cannot resume");
+    const next = read();
+    expect(next?.id).toBe(session.id);
+    expect(next?.portableResume).toBeUndefined();
+    expect(next?.pendingSwitch?.from).toBe("claude");
+    expect(next?.pendingSwitch?.fromProviderSessionId).toBe("claude-1");
+    expect(next?.midThread).toEqual({
+      kind: "recap",
+      line: "Start a new chat with a recap, because fx cannot resume",
+    });
+  });
+
+  it("restores the original provider session when the person switches back before sending", () => {
+    const session = sessionWith([user("u1", "hello")], {
+      providerSessionId: "claude-1",
+    });
+    const { port, read } = portOver(session);
+    commitMidThreadSwitch(port, session.id, target);
+    const back = commitMidThreadSwitch(port, session.id, {
+      harness: "claude",
+      model: session.model,
+      modelSettings: session.modelSettings,
+    });
+    expect(back.kind).toBe("ok");
+    const next = read();
+    expect(next?.harness).toBe("claude");
+    expect(next?.providerSessionId).toBe("claude-1");
+    expect(next?.portableResume).toBeUndefined();
+    expect(next?.pendingSwitch).toBeUndefined();
+    expect(next?.midThread).toBeUndefined();
+    expect(next?.blocks.some((block) => block.handoff?.switchTo)).toBe(false);
+  });
+
+  it("does not overwrite a thread that changed while the switch was decided", () => {
+    const session = sessionWith([user("u1", "hello")]);
+    let live = session;
+    const port: ThreadPort = {
+      get: (id) => (live.id === id ? live : undefined),
+      compareAndPut: (_session, seen) => {
+        live = {
+          ...live,
+          blocks: [...live.blocks, user("late", "arrived first")],
+        };
+        return (
+          live.blocks.length === seen.blocks &&
+          live.harness === seen.harness &&
+          live.model === seen.model
+        );
+      },
+    };
+    const result = commitMidThreadSwitch(port, session.id, target);
+    expect(result.kind).toBe("conflict");
+    expect(live.harness).toBe("claude");
+    expect(live.blocks.map((block) => block.id)).toEqual(["u1", "late"]);
+  });
+
+  it("reports a missing thread and leaves the port alone", () => {
+    const { port, read } = portOver(sessionWith([user("u1", "hello")]));
+    const before = read();
+    expect(commitMidThreadSwitch(port, "missing", target).kind).toBe("missing");
+    expect(read()).toEqual(before);
+  });
+
+  it("forgets an empty thread's old harness and does not invent a marker", () => {
+    const session = sessionWith([]);
+    const outcome = applyMidThreadSwitch(session, target);
+    expect(outcome.forget).toBe("claude");
+    expect(outcome.session.id).toBe(session.id);
+    expect(outcome.session.blocks).toEqual([]);
+    expect(outcome.session.midThread).toBeUndefined();
+    expect(outcome.session.pendingSwitch).toBeUndefined();
+  });
+});
+
+describe("restoreUnsentPortableResume", () => {
+  const resume = {
+    from: "claude" as const,
+    fromModel: "claude:opus",
+    fromSettings: {},
+    transcript: "User:\nhello",
+    markerId: "m1",
+  };
+  const notice = {
+    kind: "resume" as const,
+    line: "Continue this chat with Codex",
+  };
+
+  it("puts the transcript back when the send never reached the provider", () => {
+    const cleared = sessionWith([user("u1", "hello")], {
+      harness: "codex",
+      model: "codex:gpt-5",
+    });
+    const restored = restoreUnsentPortableResume(cleared, resume, notice, {
+      harness: "codex",
+      model: "codex:gpt-5",
+    });
+    expect(restored.portableResume).toEqual(resume);
+    expect(restored.midThread).toEqual(notice);
+  });
+
+  it("leaves a newer switch and a moved thread alone", () => {
+    const newer = sessionWith([user("u1", "hello")], {
+      harness: "codex",
+      model: "codex:gpt-5",
+      portableResume: { ...resume, transcript: "newer" },
+    });
+    expect(
+      restoreUnsentPortableResume(newer, resume, notice, {
+        harness: "codex",
+        model: "codex:gpt-5",
+      }),
+    ).toBe(newer);
+    const moved = sessionWith([user("u1", "hello")], { harness: "claude" });
+    expect(
+      restoreUnsentPortableResume(moved, resume, notice, {
+        harness: "codex",
+        model: "codex:gpt-5",
+      }),
+    ).toBe(moved);
+    expect(restoreUnsentPortableResume(moved, undefined, notice, {
+      harness: "claude",
+      model: "claude:opus",
+    })).toBe(moved);
+  });
+});
+
+describe("wrapPortableResume", () => {
+  it("keeps the new request outside the transcript", () => {
+    const text = wrapPortableResume("User:\nfix the header", "claude", "now the footer");
+    expect(text).toContain("<thread>");
+    expect(text).toContain("fix the header");
+    expect(text).toContain("now the footer");
+    expect(text.indexOf("now the footer")).toBeLessThan(text.indexOf("<thread>"));
+    expect(text).not.toMatch(/[—–]/);
   });
 });
 

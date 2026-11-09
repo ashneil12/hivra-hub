@@ -1,9 +1,14 @@
-import { buildDeterministicHandoff } from "./handoff";
+import { dropContextWindow } from "./contextUsage";
+import { buildDeterministicHandoff, planComposerSwitch } from "./handoff";
 import { resolveModel } from "./models";
 import {
+  formatSessionTitle,
+  HARNESS_LABEL,
   HARNESS_TITLE,
+  sessionDisplayTitle,
   type Block,
   type HarnessId,
+  type PendingHarnessSwitch,
   type Session,
 } from "./session";
 
@@ -135,4 +140,397 @@ function renderTranscript(messages: readonly PortableMessage[]): string {
 function modelLabel(target: SwitchTarget): string {
   const name = resolveModel(target.harness, target.model).name.trim();
   return name || target.model;
+}
+
+export function switchMarkerLabel(from: SwitchTarget, to: SwitchTarget): string {
+  if (from.harness !== to.harness) return `Switched to ${HARNESS_TITLE[to.harness]}`;
+  return `Switched to ${modelLabel(to)}`;
+}
+
+/** The prompt for a harness that can start from the portable transcript. The new request stays outside it. */
+export function wrapPortableResume(
+  transcript: string,
+  from: HarnessId,
+  userText: string,
+  earlierRequests: string[] = [],
+): string {
+  const request = userText.trim();
+  const earlier = earlierRequests.map((text) => text.trim()).filter(Boolean);
+  const earlierBlock =
+    earlier.length > 0
+      ? `\n\nAfter the switch, before this message, the user also sent:\n\n${earlier.join("\n\n")}`
+      : "";
+  const lead = `You are continuing this same chat. It was on ${HARNESS_TITLE[from]}. This is not a new task. Do not say you have no prior context.\n\n${request}${earlierBlock}`;
+  const body = transcript.trim();
+  if (!body) {
+    return `${lead}\n\nThis chat has no earlier messages. Do not invent prior work.`;
+  }
+  return `${lead}\n\nThe thread so far, in order. Tool calls, reasoning and attachments are not included:\n\n<thread>\n${body}\n</thread>`;
+}
+
+export type ThreadSeen = {
+  blocks: number;
+  harness: HarnessId;
+  model: string;
+};
+
+/** A session store. `compareAndPut` writes only when the thread still matches `seen`. */
+export type ThreadPort = {
+  get(threadId: string): Session | undefined;
+  compareAndPut(session: Session, seen: ThreadSeen): boolean;
+};
+
+export type SwitchRequest = SwitchTarget & {
+  modelSettings: Record<string, string>;
+};
+
+export type SwitchOutcome = {
+  session: Session;
+  plan: PortableHandoff;
+  /** An empty thread dropped its previous harness child. The caller forgets it. */
+  forget?: HarnessId;
+};
+
+export type CommitResult =
+  | { kind: "missing" }
+  | { kind: "conflict" }
+  | { kind: "ok"; outcome: SwitchOutcome };
+
+type Origin = {
+  from: HarnessId;
+  fromModel: string;
+  fromSettings: Record<string, string>;
+  fromProviderSessionId?: string;
+  fromProviderAccountId?: string;
+};
+
+function hasUser(session: Session): boolean {
+  return session.blocks.some((block) => block.role === "user");
+}
+
+function originOf(session: Session): Origin {
+  if (session.portableResume) {
+    const saved = session.portableResume;
+    return {
+      from: saved.from,
+      fromModel: saved.fromModel,
+      fromSettings: saved.fromSettings,
+      ...(saved.fromProviderSessionId
+        ? { fromProviderSessionId: saved.fromProviderSessionId }
+        : {}),
+      ...(saved.fromProviderAccountId
+        ? { fromProviderAccountId: saved.fromProviderAccountId }
+        : {}),
+    };
+  }
+  if (session.pendingSwitch) {
+    const saved = session.pendingSwitch;
+    return {
+      from: saved.from,
+      fromModel: saved.fromModel,
+      fromSettings: saved.fromSettings,
+      ...(saved.fromProviderSessionId
+        ? { fromProviderSessionId: saved.fromProviderSessionId }
+        : {}),
+      ...(saved.fromProviderAccountId
+        ? { fromProviderAccountId: saved.fromProviderAccountId }
+        : {}),
+    };
+  }
+  return {
+    from: session.harness,
+    fromModel: session.model,
+    fromSettings: session.modelSettings,
+    ...(session.providerSessionId
+      ? { fromProviderSessionId: session.providerSessionId }
+      : {}),
+    ...(session.providerAccountId
+      ? { fromProviderAccountId: session.providerAccountId }
+      : {}),
+  };
+}
+
+function withChoice(session: Session, target: SwitchRequest): Session {
+  const harnessChanged = session.harness !== target.harness;
+  const modelChanged = session.model !== target.model;
+  return {
+    ...session,
+    harness: target.harness,
+    model: target.model,
+    modelSettings: target.modelSettings,
+    title:
+      session.blocks.length === 0
+        ? HARNESS_LABEL[target.harness]
+        : formatSessionTitle(
+            target.harness,
+            sessionDisplayTitle(session.title, session.harness),
+          ),
+    ...(modelChanged ? { context: dropContextWindow(session.context) } : {}),
+    ...(harnessChanged
+      ? { providerSessionId: undefined, providerAccountId: undefined }
+      : {}),
+  };
+}
+
+function withoutUnsentMarker(session: Session, markerId: string | undefined): Session {
+  if (!markerId) return session;
+  const index = session.blocks.findIndex((block) => block.id === markerId);
+  if (index < 0) return session;
+  const sent = session.blocks
+    .slice(index + 1)
+    .some((block) => block.role === "user");
+  if (sent) return session;
+  return {
+    ...session,
+    blocks: session.blocks.filter((block) => block.id !== markerId),
+  };
+}
+
+function withMarker(
+  session: Session,
+  from: SwitchTarget,
+  to: SwitchTarget,
+): { session: Session; markerId: string } {
+  const markerId = crypto.randomUUID();
+  const label = switchMarkerLabel(from, to);
+  const block: Block = {
+    id: markerId,
+    role: "handoff",
+    text: label,
+    handoff: {
+      from: from.harness,
+      to: to.harness,
+      status: "ready",
+      switchTo: { harness: to.harness, model: to.model, label },
+    },
+  };
+  return {
+    markerId,
+    session: { ...session, blocks: [...session.blocks, block] },
+  };
+}
+
+function clearSwitch(session: Session): Session {
+  return {
+    ...session,
+    pendingSwitch: undefined,
+    portableResume: undefined,
+    midThread: undefined,
+  };
+}
+
+function restored(session: Session, origin: Origin, target: SwitchRequest): Session {
+  const base = clearSwitch(
+    withChoice(withoutUnsentMarker(session, session.portableResume?.markerId), {
+      ...target,
+      harness: origin.from,
+      model: target.harness === origin.from ? target.model : origin.fromModel,
+      modelSettings:
+        target.harness === origin.from && target.model === origin.fromModel
+          ? origin.fromSettings
+          : target.modelSettings,
+    }),
+  );
+  return {
+    ...base,
+    ...(origin.fromProviderSessionId
+      ? { providerSessionId: origin.fromProviderSessionId }
+      : { providerSessionId: undefined }),
+    ...(origin.fromProviderAccountId
+      ? { providerAccountId: origin.fromProviderAccountId }
+      : { providerAccountId: undefined }),
+  };
+}
+
+function armPending(session: Session, origin: Origin): PendingHarnessSwitch {
+  return {
+    from: origin.from,
+    fromModel: origin.fromModel,
+    fromSettings: origin.fromSettings,
+    ...(session.usageLimit ? { skipOutgoingRecap: true } : {}),
+    ...(origin.fromProviderSessionId
+      ? { fromProviderSessionId: origin.fromProviderSessionId }
+      : {}),
+    ...(origin.fromProviderAccountId
+      ? { fromProviderAccountId: origin.fromProviderAccountId }
+      : {}),
+  };
+}
+
+/**
+ * The next session for a picker change. The thread id never changes. A target
+ * that can resume keeps a portable transcript for the next send. A target that
+ * cannot resume arms today's recap (`pendingSwitch`) and is labelled as a new chat.
+ */
+export function applyMidThreadSwitch(
+  session: Session,
+  target: SwitchRequest,
+  options?: {
+    messageIds?: readonly string[] | null;
+    canResume?: (harness: HarnessId) => boolean;
+  },
+): SwitchOutcome {
+  const canResume = options?.canResume ?? harnessCanResumePortable;
+  const planFor = (allow: boolean) =>
+    planPortableHandoff(
+      session,
+      target,
+      options?.messageIds,
+      allow ? () => true : () => false,
+    );
+
+  if (
+    !hasUser(session) &&
+    !session.pendingSwitch &&
+    !session.portableResume
+  ) {
+    return {
+      session: clearSwitch(withChoice(session, target)),
+      plan: planPortableHandoff(session, target, options?.messageIds, canResume),
+      ...(session.harness === target.harness
+        ? {}
+        : { forget: session.harness }),
+    };
+  }
+
+  const origin = originOf(session);
+  if (target.harness === origin.from && (session.pendingSwitch || session.portableResume)) {
+    const back = restored(session, origin, target);
+    if (target.model === origin.fromModel) {
+      return { session: back, plan: planFor(true) };
+    }
+    const marked = withMarker(back, { harness: origin.from, model: origin.fromModel }, target);
+    return {
+      session: {
+        ...marked.session,
+        midThread: { kind: "resume", line: continueThisChatLine(target, origin.from) },
+      },
+      plan: planFor(true),
+    };
+  }
+
+  if (
+    session.harness === target.harness &&
+    session.model === target.model &&
+    !session.pendingSwitch &&
+    !session.portableResume
+  ) {
+    return { session, plan: planFor(canResume(target.harness)) };
+  }
+
+  const crossProvider = target.harness !== origin.from;
+  if (crossProvider && !canResume(target.harness)) {
+    const composer = session.portableResume || session.pendingSwitch
+      ? { kind: "arm" as const, pending: armPending(session, origin) }
+      : planComposerSwitch(session, target.harness);
+    let next = clearSwitch(
+      withChoice(withoutUnsentMarker(session, session.portableResume?.markerId), target),
+    );
+    if (composer.kind === "arm") {
+      next = {
+        ...next,
+        pendingSwitch: composer.pending,
+        midThread: { kind: "recap", line: recapNewChatLine(target.harness) },
+      };
+    } else if (composer.kind === "revert") {
+      next = {
+        ...next,
+        ...(composer.restoreProviderSessionId
+          ? { providerSessionId: composer.restoreProviderSessionId }
+          : { providerSessionId: undefined }),
+        ...(composer.restoreProviderAccountId
+          ? { providerAccountId: composer.restoreProviderAccountId }
+          : { providerAccountId: undefined }),
+      };
+    }
+    return {
+      session: next,
+      plan: planFor(false),
+      ...(composer.kind === "empty" ? { forget: composer.forget } : {}),
+    };
+  }
+
+  let next = clearSwitch(
+    withChoice(withoutUnsentMarker(session, session.portableResume?.markerId), target),
+  );
+  const fromNow: SwitchTarget = { harness: session.harness, model: session.model };
+  const moved = fromNow.harness !== target.harness || fromNow.model !== target.model;
+  let markerId = "";
+  if (hasUser(session) && moved) {
+    const marked = withMarker(next, fromNow, target);
+    next = marked.session;
+    markerId = marked.markerId;
+  }
+  const nativeContinue = origin.from === target.harness && !session.pendingSwitch && !session.portableResume;
+  if (!nativeContinue && origin.from !== target.harness) {
+    const seeded = planPortableHandoff(
+      withoutUnsentMarker(session, session.portableResume?.markerId),
+      target,
+      options?.messageIds,
+      () => true,
+    );
+    next = {
+      ...next,
+      portableResume: {
+        ...origin,
+        transcript: seeded.kind === "resume" ? seeded.transcript : "",
+        markerId,
+      },
+      midThread: {
+        kind: "resume",
+        line: continueThisChatLine(target, origin.from),
+      },
+    };
+  } else if (moved) {
+    next = {
+      ...next,
+      midThread: {
+        kind: "resume",
+        line: continueThisChatLine(target, origin.from),
+      },
+    };
+  }
+  return { session: next, plan: planFor(true) };
+}
+
+export function commitMidThreadSwitch(
+  port: ThreadPort,
+  threadId: string,
+  target: SwitchRequest,
+  options?: {
+    messageIds?: readonly string[] | null;
+    canResume?: (harness: HarnessId) => boolean;
+  },
+): CommitResult {
+  const current = port.get(threadId);
+  if (!current || current.id !== threadId) return { kind: "missing" };
+  const seen: ThreadSeen = {
+    blocks: current.blocks.length,
+    harness: current.harness,
+    model: current.model,
+  };
+  const outcome = applyMidThreadSwitch(current, target, options);
+  if (outcome.session === current) return { kind: "ok", outcome };
+  if (!port.compareAndPut(outcome.session, seen)) return { kind: "conflict" };
+  return { kind: "ok", outcome };
+}
+
+/**
+ * Put a resume back when the send that took it never reached the provider.
+ * A newer switch, or a thread that has already moved on, is left alone.
+ */
+export function restoreUnsentPortableResume(
+  session: Session,
+  resume: Session["portableResume"],
+  notice: Session["midThread"],
+  target: SwitchTarget,
+): Session {
+  if (!resume) return session;
+  if (session.portableResume || session.pendingSwitch) return session;
+  if (session.harness !== target.harness || session.model !== target.model) return session;
+  return {
+    ...session,
+    portableResume: resume,
+    midThread: notice,
+  };
 }
