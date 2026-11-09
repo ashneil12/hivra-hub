@@ -247,7 +247,7 @@ function safeCommandInner(command: string, folder: string | undefined): SafeVerd
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
-  if (walkHeld(words, folder)) return "it walks folders outside the chat's own, so it waits for Ash";
+  if (walkHeld(words, folder)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
   return check(words.slice(1));
 }
 

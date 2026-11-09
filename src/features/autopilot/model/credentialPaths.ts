@@ -201,14 +201,46 @@ export function credentialInText(text: string): boolean {
 
 // ---- reads that walk folders --------------------------------------------------------------------------------------
 
-/** Options that make a search ignore the project's ignore rules. */
-const UNRESTRICTED = new Set(["--unrestricted", "--no-ignore", "--no-ignore-vcs", "--no-ignore-parent", "--no-ignore-global", "--no-ignore-dot"]);
+/** Options that make a search ignore the project's ignore rules. `--no-ignore*` is matched by prefix, not listed one by one. */
+const UNRESTRICTED = new Set(["--unrestricted"]);
 
-/** Whether an argument is one of those options: a long name exactly, or a short cluster that carries `u`. */
+/**
+ * Whether an argument turns a search's ignore rules off: `--no-ignore` and anything that starts that way, `--hidden`
+ * (with `=` stripped), `--unrestricted`, or a short cluster that carries `u` (`-u`, `-uu`, `-uuu`, `-nu`). A prefix is
+ * one way only, so `--no-heading` and `--no-filename` are not `--no-ignore`.
+ */
 function unrestricted(arg: string): boolean {
   const name = arg.split("=", 1)[0].toLowerCase();
-  if (UNRESTRICTED.has(name)) return true;
+  if (name === "--hidden" || name.startsWith("--no-ignore") || UNRESTRICTED.has(name)) return true;
   return /^-[^-]/.test(name) && name.slice(1).includes("u");
+}
+
+/**
+ * Whether this command turns its ignore rules off. `find`'s short options include `-prune` and `-user`, and a `u` in
+ * those is not this, so `find` only matches the long names.
+ */
+function ignoreOff(head: string, args: readonly string[]): boolean {
+  if (head === "find") {
+    return args.some((arg) => {
+      const name = arg.split("=", 1)[0].toLowerCase();
+      return name === "--hidden" || name.startsWith("--no-ignore");
+    });
+  }
+  return (head === "rg" || head === "ag" || head === "grep" || head === "fd") && args.some(unrestricted);
+}
+
+/** Whether `grep` walks the tree. It has no ignore list, so any of these is held wherever it starts. */
+function grepRecurses(args: readonly string[]): boolean {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    const name = arg.split("=", 1)[0];
+    if ((/^-[^-]/.test(name) && /[rR]/.test(name.slice(1))) || name === "--recursive" || name === "--dereference-recursive") return true;
+    if (name === "-d" || name === "--directories") {
+      const mode = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : args[i + 1];
+      if (mode === "recurse") return true;
+    }
+  }
+  return false;
 }
 
 /** Whether a command walks folders rather than reading the files it is named. */
@@ -257,17 +289,19 @@ function folderParts(folder: string | undefined): string[] | null {
 }
 
 /**
- * Whether a command that walks folders starts inside the chat's own folder. A walk from the home folder, a parent of
- * it, `/`, a credential folder, `..` or anywhere else outside the folder is held. A search with the ignore rules off
- * is held the same way, since it reads what a project keeps out of git. When no folder is known, a walk still has to
- * start at a relative place below it: the shell's working folder is the chat's own, but nothing absolute can be shown
- * to be inside it.
+ * Whether a folder walk waits for Ash. A walk from the home folder, a parent of the chat's folder, `/`, a credential
+ * folder, `..` or anywhere else outside the folder is held. A search that turns the ignore rules off (`-u`, `-uu`,
+ * `-uuu`, `--no-ignore*`, `--hidden`) is held even inside the chat's folder, because it reads what a project keeps out
+ * of git. Recursive `grep` (`-r`, `-R`, `--recursive`, `-d recurse`) has no ignore list, so it is held wherever it
+ * starts. When no folder is known, any other walk still has to start at a relative place: the shell's working folder
+ * is the chat's own, but nothing absolute can be shown to be inside it.
  */
 export function walkHeld(words: readonly string[], folder: string | undefined): boolean {
   if (!words.length) return true;
   const head = words[0];
   const args = words.slice(1);
-  if (!walksFolders(head, args) && !(args.some(unrestricted) && (head === "rg" || head === "ag" || head === "grep"))) return false;
+  if (ignoreOff(head, args) || (head === "grep" && grepRecurses(args))) return true;
+  if (!walksFolders(head, args)) return false;
   const root = folderParts(folder);
   for (const arg of args) {
     if (arg.startsWith("-")) continue;

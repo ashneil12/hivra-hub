@@ -166,11 +166,14 @@ describe("a tool approval under autopilot", () => {
       "cat ~/.ssh/config",
     ])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
-    // A recursive read inside the chat's folder stays allowed, unless it names a credential file too.
-    expect(approvalVerdict(bash("grep -rn TODO src"), FOLDER)).toMatchObject({ kind: "allow" });
+    // A search that still has its ignore rules, and names nothing secret, stays allowed inside the chat's folder.
     expect(approvalVerdict(bash("rg -n 'foo' src"), FOLDER)).toMatchObject({ kind: "allow" });
-    // A recursive read by a relative place stays inside the working folder; an absolute one can't be shown to.
-    expect(approvalVerdict(bash("grep -rn TODO src"), undefined)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("rg foo src"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("grep -n TODO README.md"), FOLDER)).toMatchObject({ kind: "allow" });
+    // Fix round 3, finding 2: ignore rules off, or recursive grep, waits even inside the chat's folder.
+    for (const command of ["rg -uuu . .", "rg -uu . .", "rg --no-ignore . .", "rg --hidden foo src", "grep -r BEGIN .", "grep -rn TODO src", "grep -d recurse BEGIN ."])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    // An absolute place can't be shown to be inside the working folder.
     expect(approvalVerdict(bash("grep -rn TODO /Users/ash/Projects/other"), undefined)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("find . -name '.env'"), FOLDER)).toMatchObject({ kind: "held", red: "credentials" });
     // A search for the word is not a file: the names that merely hold a word pass.

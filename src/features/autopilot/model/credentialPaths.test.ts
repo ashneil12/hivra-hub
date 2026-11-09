@@ -217,7 +217,8 @@ describe("a read that walks folders", () => {
     ])
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
     // A folder too broad to be a chat's own: only a relative place can be shown to stay inside the working folder.
-    expect(walkHeld(["grep", "-r", "x", "src"], "/Users/ash")).toBe(false);
+    // Recursive grep is held everywhere, so this is a search that still has its ignore rules.
+    expect(walkHeld(["rg", "foo", "src"], "/Users/ash")).toBe(false);
     expect(walkHeld(["grep", "-r", "x", "/Users/ash/src"], "/Users/ash")).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "/etc"], undefined)).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "../.."], undefined)).toBe(true);
@@ -225,11 +226,10 @@ describe("a read that walks folders", () => {
 
   it("stays allowed inside the chat's folder, and for reads that name their files", () => {
     for (const words of [
-      ["grep", "-rn", "TODO", "src"],
-      ["grep", "-r", "x", "."],
       ["rg", "foo", "src"],
       ["rg", "-n", "foo"],
-      ["rg", "-uuu", "foo", "src"],
+      ["rg", "--no-heading", "foo", "src"],
+      ["rg", "--no-filename", "foo", "src"],
       ["find", ".", "-name", "*.ts"],
       ["find", "src", "-type", "f"],
       ["fd", "foo"],
@@ -239,7 +239,49 @@ describe("a read that walks folders", () => {
       ["ag", "foo", "src"],
       ["cat", "README.md"],
       ["grep", "TODO", "README.md"],
+      ["grep", "-n", "TODO", "README.md"],
+      ["grep", "-d", "skip", "TODO", "README.md"],
+      ["grep", "--directories=read", "TODO", "README.md"],
     ])
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(false);
+  });
+
+  // WP-101 fix round 3, finding 2: an ignore-off search reads what a project keeps out of git, and grep has no ignore
+  // list once it recurses. Both wait even when every path is inside the chat's folder.
+  it("holds a search that turns ignores off, and recursive grep, even inside the chat's folder", () => {
+    for (const words of [
+      ["rg", "-u", "foo", "src"],
+      ["rg", "-uu", ".", "."],
+      ["rg", "-uuu", ".", "."],
+      ["rg", "-uuu", "foo", "src"],
+      ["rg", "-nu", "foo", "src"],
+      ["rg", "--no-ignore", ".", "."],
+      ["rg", "--no-ignore-vcs", "foo", "src"],
+      ["rg", "--no-ignore-parent", "foo", "src"],
+      ["rg", "--no-ignore-dot", "foo", "src"],
+      ["rg", "--no-ignore-global", "foo", "src"],
+      ["rg", "--no-ignore-files", "foo", "src"],
+      ["rg", "--hidden", "foo", "src"],
+      ["rg", "--hidden=true", "foo", "src"],
+      ["ag", "--hidden", "foo", "src"],
+      ["fd", "--hidden", "foo"],
+      ["grep", "--no-ignore", "TODO", "README.md"],
+      ["grep", "-r", "BEGIN", "."],
+      ["grep", "-rn", "TODO", "src"],
+      ["grep", "-R", "BEGIN", "."],
+      ["grep", "--recursive", "BEGIN", "."],
+      ["grep", "--dereference-recursive", "BEGIN", "."],
+      ["grep", "-d", "recurse", "BEGIN", "."],
+      ["grep", "-d=recurse", "BEGIN", "."],
+      ["grep", "-drecurse", "BEGIN", "."],
+      ["grep", "--directories=recurse", "BEGIN", "."],
+      ["grep", "--directories", "recurse", "BEGIN", "."],
+      ["grep", "-r", "x", "src"],
+    ])
+      expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
+    // Recursive grep waits wherever it starts, including a missing folder and one too shallow to be a chat's own.
+    expect(walkHeld(["grep", "-r", "x", "src"], undefined)).toBe(true);
+    expect(walkHeld(["grep", "-r", "x", "src"], "/Users/ash")).toBe(true);
+    expect(walkHeld(["rg", "-uuu", "foo", "src"], undefined)).toBe(true);
   });
 });

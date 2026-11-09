@@ -21,7 +21,8 @@ describe("shell commands", () => {
     "cat README.md",
     "rg -n 'foo bar' src",
     'rg "fn main" src-tauri',
-    "grep -rn TODO src",
+    "rg foo src",
+    "grep -n TODO README.md",
     "head -50 src/app.ts",
     "wc -l src/app.ts",
     "pwd",
@@ -240,8 +241,33 @@ describe("shell commands", () => {
 
   it("keeps an ordinary option that merely starts like an unsafe one", () => {
     // -L and -a are not -o, and --depth is not --delete.
-    for (const command of ["tree -L 2 -a src", "find . --depth 2 -name '*.md'", "fd --hidden --type f foo", "du -d 2 src"])
+    for (const command of ["tree -L 2 -a src", "find . --depth 2 -name '*.md'", "du -d 2 src"])
       expect(safeCommand(command), command).toBeNull();
+  });
+
+  // WP-101 fix round 3, finding 2: grep has no ignore list once it recurses, and a search that turns ignores off reads
+  // what a project keeps out of git. Both wait even inside the chat's folder. --no-heading is not --no-ignore.
+  it("holds recursive grep and a search that turns ignores off (fix round 3, finding 2)", () => {
+    for (const command of [
+      "grep -rn TODO src",
+      "grep -r BEGIN .",
+      "grep -R BEGIN .",
+      "grep --recursive BEGIN .",
+      "grep -d recurse BEGIN .",
+      "grep --directories=recurse BEGIN .",
+      "grep --directories recurse BEGIN .",
+      "rg -u foo src",
+      "rg -uu . .",
+      "rg -uuu . .",
+      "rg --no-ignore . .",
+      "rg --no-ignore-vcs foo src",
+      "rg --hidden foo src",
+      "fd --hidden --type f foo",
+    ])
+      expect(safeCommand(command, FOLDER), command).not.toBeNull();
+    expect(safeCommand("rg foo src", FOLDER)).toBeNull();
+    expect(safeCommand("grep -n TODO README.md", FOLDER)).toBeNull();
+    expect(safeCommand("rg --no-heading foo src", FOLDER)).toBeNull();
   });
 });
 
