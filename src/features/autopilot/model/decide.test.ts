@@ -178,6 +178,39 @@ describe("a tool approval under autopilot", () => {
     expect(approvalVerdict(bash("cat src/features/autopilot/model/tokenizer.ts"), FOLDER)).toMatchObject({ kind: "allow" });
   });
 
+  // WP-101 fix round 3, finding 1 and finding 6: a quoted filename glob is not a content pattern. Ripgrep's `-g` matches
+  // a leading dot, so these print the secret file. A glob that names nothing secret is held too.
+  it("holds a search or a find whose pattern is a filename glob (fix round 3, finding 1)", () => {
+    for (const command of [
+      "rg -g '*netrc*' .",
+      "rg -g '*history*' .",
+      "rg -g 'id_*' .",
+      "rg --hidden -g '*netrc*' .",
+      "rg -uu -g '*netrc*' .",
+      "rg -uuu -g '*history*' .",
+      "rg --glob='*netrc*' .",
+      "rg --iglob='*history*' x",
+      "ag -G '*netrc*' .",
+      "ag -G '*history*' .",
+      "fd -g '*netrc*'",
+      "grep -r --include='*netrc*' . .",
+      "grep -r --include='*history*' .",
+      "grep -r --exclude='*netrc*' .",
+      "rg 'foo*' src",
+      "rg 'foo?' src",
+      "rg 'foo[0-9]' src",
+      "find . -name '*netrc*'",
+      "find . -iname '*history*'",
+      "find . -path '*netrc*'",
+    ])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    // A glob on a command that does not search for files is still that command: node and git were already allowed.
+    expect(approvalVerdict(bash("node --test 'scripts/**/*.test.mjs'"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("git branch --list 'hub/*'"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("rg -n 'foo' src"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("grep -n TODO README.md"), FOLDER)).toMatchObject({ kind: "allow" });
+  });
+
   it("reads a command as the shell reads it, so quotes can't hide a login file (WP-101 fix round 2, item A)", () => {
     // A quoted piece joins the word it touches: the raw text never holds ".netrc", the word does.
     for (const command of [

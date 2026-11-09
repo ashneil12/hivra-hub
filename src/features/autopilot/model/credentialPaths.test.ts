@@ -150,6 +150,39 @@ describe("words a command runs with", () => {
     expect(credentialInWords(["git", "log", "--oneline"])).toBeNull();
   });
 
+  // WP-101 fix round 3, finding 1: a search skips a plain word as a content pattern. A word with `*`, `?` or `[` is a
+  // filename glob, and ripgrep's `-g` matches a leading dot, so `*netrc*` prints the netrc. Holding a glob that names
+  // nothing secret (`foo*`) is the safe side.
+  it("holds a filename glob given to a search, including one glued on with =", () => {
+    for (const words of [
+      ["rg", "-g", "*netrc*", "."],
+      ["rg", "-g", "*history*", "."],
+      ["rg", "-g", "id_*", "."],
+      ["rg", "--hidden", "-g", "*netrc*", "."],
+      ["rg", "-uu", "-g", "*netrc*", "."],
+      ["rg", "-uuu", "-g", "*history*", "."],
+      ["rg", "--glob=*netrc*", "."],
+      ["rg", "--iglob=*history*", "x"],
+      ["rg", "--glob", "*netrc*", "."],
+      ["ag", "-G", "*netrc*", "."],
+      ["ag", "-G", "*history*", "."],
+      ["ag", "-G=*netrc*", "."],
+      ["fd", "-g", "*netrc*"],
+      ["grep", "-r", "--include=*netrc*", ".", "."],
+      ["grep", "-r", "--include=*history*", "."],
+      ["grep", "-r", "--exclude=*netrc*", "."],
+      ["rg", "foo*", "src"],
+      ["rg", "foo?", "src"],
+      ["rg", "foo[0-9]", "src"],
+      ["rg", "-g", "id_?sa", "."],
+      // Finding 6: find's -name / -iname / -path values are the same kind of glob.
+      ["find", ".", "-name", "*netrc*"],
+      ["find", ".", "-iname", "*history*"],
+      ["find", ".", "-path", "*netrc*"],
+    ])
+      expect(credentialInWords(words), words.join(" ")).not.toBeNull();
+  });
+
   it("reads prose for a path, not for a word", () => {
     expect(credentialInText("cat ~/.aws/credentials")).toBe(true);
     expect(credentialInText("read .env")).toBe(true);

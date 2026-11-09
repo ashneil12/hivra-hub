@@ -165,15 +165,22 @@ function patternLike(word: string): boolean {
   return !/[./~\\]/.test(word) && !word.startsWith("-");
 }
 
+/** `*`, `?` or `[`: a filename glob. A content pattern may hold one too, and that is held rather than read. */
+const GLOB = /[*?\[]/;
+
 /**
  * The credential place or file a command names, or null. A command that searches (`grep`, `rg`, `ag`, `fd`) reads its
- * first bare word as a pattern, so a search for the word `token` is a search, not a file, and passes.
+ * first bare word as a pattern, so a search for the word `token` is a search, not a file, and passes. A word that
+ * contains a glob does not: `rg -g '*netrc*'` names files, and ripgrep matches a leading dot, so the command is held
+ * whether or not the glob itself is a credential name. The same holds for `find -name`, `-iname` and `-path`. A glob
+ * glued on with `=` (`--include=*netrc*`, `--glob=*history*`) is the same word.
  */
 export function credentialInWords(words: readonly string[]): string | null {
   const head = words[0]?.replace(/^-+/, "") ?? "";
-  const searches = head === "grep" || head === "rg" || head === "ag" || head === "fd";
+  const searches = head === "grep" || head === "rg" || head === "ag" || head === "fd" || head === "find";
   for (const word of words) {
-    if (searches && patternLike(word)) continue;
+    if (searches && pieces(word).some((piece) => GLOB.test(piece))) return word;
+    if (searches && head !== "find" && patternLike(word)) continue;
     for (const piece of pieces(word)) {
       if (piece && credentialPath(piece)) return piece;
     }
