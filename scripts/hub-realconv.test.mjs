@@ -16,6 +16,12 @@ import { hardChecks, isAckOnly } from "./realconv/checks.mjs";
 import { replyScores, verdict } from "./realconv/judge.mjs";
 import { makeClient, providerSpec } from "./realconv/llm.mjs";
 
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
+
 const book = JSON.parse(fs.readFileSync(SCENES_FILE, "utf8"));
 
 test("a bench that never proved its shell is not a pass, even when every scene was skipped", () => {
