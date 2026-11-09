@@ -67,6 +67,7 @@ Adding a source or vendoring a component? Add it to [credits.json](credits.json)
 | [Aether](https://runaether.dev) | closed source | A machine per task, the person's own subscription, watching and steering from the phone, work that continues with the laptop closed, a reviewer that runs the changed code | Ideas only; no code and no credit | none yet |
 | [Row-Bot](https://github.com/siddsachar/row-bot) | Apache-2.0 | The automatic recall policy: skip gates for greetings, runtime questions and file-only turns, a query builder, a weighted score (match, recency, tier, evidence), rejection reasons, a broad-query margin, a cap on lines and a trace of why each memory was picked or skipped; and a conservative correction rule over the opening words of the person's next message | Translate `memory_policy.py` to TypeScript with its tests; semantic and graph terms folded into lexical matching. Translate `learning/corrections.py` line for line with its cases, behind the rules tier | 99, 103 |
 | [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp) | Apache-2.0 | The cue rules: four content words before a turn recalls anything, two shared words that are not common in the store, at most three lines, and never the same memory twice in a conversation; and memory that fades over the days it was used, with a lived-day clock, and one question to the person before a fact goes stale | Recall rules: ideas only. Fade: translate `mnemos/consolidation/lived.py` to TypeScript with its tests; the curve, the clocks and the ask are Hivra's | 99, 100 |
+| [mcode-stack](https://github.com/MiniMax-AI/mcode-stack) | MIT | Team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check | Copy with credit, called by name only | 117 |
 
 ## Vision to packages
 
@@ -93,3 +94,4 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Agents learn from past chats with evidence; the person's opinions and voice | 83 |
 | Research and plan before building, terminal sessions in Hivra, who made each commit, a stack per worktree (HumanLayer, 4 Nov) | 84, 85, 86, 87 |
 | Each worktree has its own web address, and its tests meet fake outside services (portless, emulate, 5 Nov) | 82, 87, 90 |
+| Skills a first mate calls by name: split only for a measured reason, review a diff from a clean context, and turn a repeated correction into a check (mcode-stack, 9 Nov) | 117 |

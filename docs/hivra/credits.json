@@ -233,6 +233,12 @@
       "url": "https://github.com/Riley-Coyote/mnemos-mcp",
       "licence": "Apache-2.0",
       "gave": "ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100)"
+    },
+    {
+      "name": "mcode-stack",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "gave": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
     }
   ],
   "components": [
@@ -563,6 +569,14 @@
       "copyright": "Copyright (c) 2026 T3 Tools Inc.",
       "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
       "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
+    },
+    {
+      "name": "Hivra subagent-split-check, independent-review and taste-to-checks",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 MiniMax Code",
+      "where": "src-tauri/plugins/hivra-mcode",
+      "how": "Planned for WP-117, code not copied yet: three team skills called by name only, from stacks/ronny/skills at 88f84be"
     }
   ]
 }
