@@ -17,6 +17,7 @@ import {
 } from "react";
 import { Composer } from "./Composer";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
+import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -966,6 +967,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
+      {/* WP-120: a first mate on a CLI that cannot lead yet says why, in the chat. */}
+      {session.firstMate ? <LeadCliNotice harness={session.harness} /> : null}
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
