@@ -73,6 +73,8 @@ mod land;
 mod launch_guard;
 // WP-104: daily log and crash records.
 mod diagnostics;
+// WP-104: machine facts for the health list.
+mod health;
 mod linear;
 mod link_preview;
 mod live_turns;
@@ -1214,6 +1216,8 @@ pub fn run() {
             // WP-104: the logs folder, and the lines the copy action masks.
             diagnostics::diagnostics_folder,
             diagnostics::diagnostics_sources,
+            // WP-104: machine facts for the health list.
+            health::health_facts,
         ])
         .build(context)
         .expect("error while building MonoCode");

@@ -3,6 +3,9 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { buildDiagnosticsReport, type DiagnosticsReportInput } from "../model/report";
+import { HEALTH_REFRESH_MS, type HealthFacts } from "../model/health";
+import { loadHealthFacts } from "../model/healthLoad";
+import { HealthList, useHealth } from "./HealthList";
 
 type Sources = {
   version: string;
@@ -29,8 +32,8 @@ export function DiagnosticsCopy({
     <section className="mt-8 flex flex-col gap-2">
       <h2 className="text-sm font-medium">Diagnostics</h2>
       <p className="text-sm text-content/70">
-        Copy a short report to send when something goes wrong. It has the version, the recent log and any crash
-        records. Keys are removed.
+        Copy a short report to send when something goes wrong. It has the health list, the version, the recent log and
+        any crash records. Keys are removed.
       </p>
       <button
         type="button"
@@ -77,13 +80,26 @@ async function loadFromApp(): Promise<DiagnosticsReportInput> {
   };
 }
 
-export function DiagnosticsPanel() {
+async function copyToClipboard(text: string): Promise<void> {
+  await navigator.clipboard.writeText(text);
+}
+
+export function DiagnosticsPanel({
+  loadFacts = loadHealthFacts,
+  loadReport = loadFromApp,
+  copy = copyToClipboard,
+  intervalMs = HEALTH_REFRESH_MS,
+}: {
+  loadFacts?: () => Promise<HealthFacts>;
+  loadReport?: () => Promise<DiagnosticsReportInput>;
+  copy?: (text: string) => Promise<void>;
+  intervalMs?: number;
+} = {}) {
+  const health = useHealth(loadFacts, intervalMs);
   return (
-    <DiagnosticsCopy
-      load={loadFromApp}
-      copy={async (text) => {
-        await navigator.clipboard.writeText(text);
-      }}
-    />
+    <>
+      <HealthList rows={health.rows} pending={health.pending} note={health.note} />
+      <DiagnosticsCopy load={loadReport} copy={copy} health={health.lines} />
+    </>
   );
 }
