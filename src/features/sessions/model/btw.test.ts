@@ -5,12 +5,14 @@ import {
   BTW_MAX_BLOCK_CHARS,
   BTW_MAX_SNAPSHOT_CHARS,
   buildBtwPrompt,
+  buildSideRecap,
   btwOpenTargetTurnId,
   btwThreadBlocks,
   btwTurnHarness,
   btwVisibleBlocks,
   consumeBtwCommand,
   consumeBtwPrefix,
+  formatSideRecap,
   replaceBtwThread,
   resolveBtwHarness,
   sessionHasBtwEligibleTurn,
@@ -18,9 +20,18 @@ import {
   serializeBtwBlock,
   serializeBtwSnapshot,
   sessionBtwThreads,
+  SIDE_COMMAND,
+  composerDraftWithSideAnswer,
+  sideAnswerToBringBack,
   supportsBtwHarness,
+  withSideThread,
 } from "./btw";
-import type { Block, BtwThread } from "./session";
+import { summaryFromSession } from "../data/sessionHistory";
+import {
+  buildSessionList,
+  sessionListNavigationIds,
+} from "./sessionFolders";
+import { newSession, type Block, type BtwThread } from "./session";
 
 function block(id: string, role: Block["role"], text = id): Block {
   return { id, role, text };
@@ -82,6 +93,23 @@ describe("consumeBtwCommand", () => {
       matched: false,
     });
   });
+
+  it("treats /side as the same command, including a bare alias", () => {
+    expect(SIDE_COMMAND).toMatchObject({ kind: "builtin", invocation: "side" });
+    expect(consumeBtwCommand("/side")).toEqual({ text: "", matched: true });
+    expect(consumeBtwCommand(" /SIDE  why this file? ")).toEqual({
+      text: "why this file?",
+      matched: true,
+    });
+    expect(consumeBtwCommand("/sidebar")).toEqual({
+      text: "/sidebar",
+      matched: false,
+    });
+    expect(consumeBtwCommand("see /side later")).toEqual({
+      text: "see /side later",
+      matched: false,
+    });
+  });
 });
 
 describe("consumeBtwPrefix", () => {
@@ -96,6 +124,13 @@ describe("consumeBtwPrefix", () => {
   it("ignores other commands and mid-text mentions", () => {
     expect(consumeBtwPrefix("/btwx ")).toBeNull();
     expect(consumeBtwPrefix("ask /btw later")).toBeNull();
+  });
+
+  it("commits /side the same way, and not a longer word", () => {
+    expect(consumeBtwPrefix("/side")).toBeNull();
+    expect(consumeBtwPrefix("/side ")).toBe("");
+    expect(consumeBtwPrefix(" /SIDE  the diff")).toBe("the diff");
+    expect(consumeBtwPrefix("/sideways ")).toBeNull();
   });
 });
 
@@ -425,6 +460,140 @@ describe("serializeBtwSnapshot", () => {
   });
 });
 
+describe("buildSideRecap", () => {
+  it("keeps the latest few turns and the newest file, relative to the project", () => {
+    const blocks: Block[] = [
+      block("u0", "user", "oldest"),
+      block("a0", "assistant", "old answer"),
+      block("u1", "user", "first line\r\nsecond"),
+      block("a1", "assistant", "  parser  "),
+      {
+        ...block("tool-old", "tool", "old"),
+        tool: {
+          title: "Read",
+          preview: { kind: "read", path: "/repo/old.ts" },
+        },
+      },
+      {
+        ...block("tool-new", "tool", "new"),
+        tool: {
+          title: "Edit",
+          preview: {
+            kind: "edit",
+            path: "/repo/src/parser.ts",
+            additions: 3,
+            deletions: 1,
+          },
+        },
+      },
+      block("u2", "user", "   "),
+      block("a2", "assistant", "café is fine"),
+    ];
+
+    const recap = buildSideRecap(blocks, "a2", "/repo");
+
+    expect(recap.turns.map((turn) => turn.text)).toEqual([
+      "old answer",
+      "first line\nsecond",
+      "parser",
+      "café is fine",
+    ]);
+    expect(recap.turns[1]?.role).toBe("user");
+    expect(recap.file).toEqual({
+      path: "src/parser.ts",
+      additions: 3,
+      deletions: 1,
+    });
+    expect(formatSideRecap(recap)).toBe(
+      "Assistant: old answer\nYou: first line\nsecond\nAssistant: parser\nAssistant: café is fine\nCurrent file: src/parser.ts (+3 -1)",
+    );
+  });
+
+  it("caps the recap at four messages and shortens a long one", () => {
+    const blocks: Block[] = [
+      block("u0", "user", "drop me"),
+      block("a1", "assistant", "one"),
+      block("u2", "user", "two"),
+      block("a3", "assistant", "three"),
+      block("u4", "user", "four"),
+      block("a5", "assistant", "z".repeat(400)),
+    ];
+    const recap = buildSideRecap(blocks, "a5");
+    expect(recap.turns.map((turn) => turn.text.slice(0, 4))).toEqual([
+      "two",
+      "thre",
+      "four",
+      "zzzz",
+    ]);
+    expect(recap.turns.some((turn) => turn.text === "drop me")).toBe(false);
+    expect(recap.turns.some((turn) => turn.text === "one")).toBe(false);
+    expect(recap.turns[3]?.text.endsWith("…")).toBe(true);
+    expect(recap.turns[3]?.text.length).toBeLessThanOrEqual(280);
+    expect(recap.file).toBeUndefined();
+    expect(formatSideRecap(recap)).not.toContain("Current file");
+  });
+
+  it("uses a file name when there is no path, and skips a tool with neither", () => {
+    const blocks: Block[] = [
+      block("u", "user", "look"),
+      {
+        ...block("blank", "tool", ""),
+        tool: { title: "Search", preview: { kind: "search", path: "  " } },
+      },
+      {
+        ...block("named", "tool", ""),
+        tool: {
+          title: "Read",
+          preview: { kind: "read", fileName: "notes.md" },
+        },
+      },
+    ];
+    expect(buildSideRecap(blocks, "named").file).toEqual({ path: "notes.md" });
+  });
+
+  it("keeps a windows path and a path outside the project as display text", () => {
+    const inside = buildSideRecap(
+      [
+        block("u", "user", "go"),
+        {
+          ...block("t", "tool", ""),
+          tool: {
+            title: "Read",
+            preview: { kind: "read", path: "C:\\repo\\src\\parser.ts" },
+          },
+        },
+      ],
+      "t",
+      "C:/repo",
+    );
+    expect(inside.file?.path).toBe("src/parser.ts");
+
+    const outside = buildSideRecap(
+      [
+        block("u", "user", "go"),
+        {
+          ...block("t", "tool", ""),
+          tool: {
+            title: "Read",
+            preview: { kind: "read", path: "/repo/src/../secret.txt" },
+          },
+        },
+      ],
+      "t",
+      "/repo",
+    );
+    expect(outside.file?.path).toBe("src/../secret.txt");
+    expect(outside.file?.path.startsWith("/repo")).toBe(false);
+  });
+
+  it("is empty when the anchor is gone, without throwing", () => {
+    expect(buildSideRecap([block("u", "user", "hi")], "missing")).toEqual({
+      turns: [],
+    });
+    expect(formatSideRecap({ turns: [] })).toBe("");
+  });
+});
+
 describe("buildBtwPrompt", () => {
   it("combines safety instructions, transcript context, and side messages", () => {
     const prompt = buildBtwPrompt({
@@ -450,6 +619,12 @@ describe("buildBtwPrompt", () => {
     expect(prompt).toContain(
       "The main conversation snapshot below is reference context only",
     );
+    expect(prompt).toContain("Do not change files");
+    expect(prompt.indexOf("## Recap of the main chat")).toBeLessThan(
+      prompt.indexOf("## Main conversation snapshot"),
+    );
+    expect(prompt).toContain("You: Explain this\n  change.");
+    expect(prompt).toContain("Assistant: It changes the parser.");
     expect(prompt).toContain("User: Explain this\n  change.");
     expect(prompt).toContain("Assistant: It changes the parser.");
     expect(prompt).toContain(
@@ -507,5 +682,211 @@ describe("replaceBtwThread", () => {
     const source = { ...block("user-1", "user"), btwThreads: [thread()] };
 
     expect(replaceBtwThread(source, thread({ id: "missing" }))).toBe(source);
+  });
+});
+
+describe("withSideThread", () => {
+  const question = thread({
+    id: "side-1",
+    messages: [
+      { id: "question", role: "user", text: "Why this parser?", createdAt: 1 },
+      { id: "answer", role: "assistant", text: "Because.", createdAt: 2 },
+    ],
+  });
+
+  function parent(): Block[] {
+    return [
+      block("older", "user", "Oldest question"),
+      block("older-answer", "assistant", "Oldest answer"),
+      {
+        id: "edit",
+        role: "tool",
+        text: "Edit",
+        tool: {
+          title: "Edit",
+          preview: {
+            kind: "write",
+            path: "src/parser.ts",
+            additions: 2,
+            deletions: 1,
+          },
+        },
+      },
+      block("user-1", "user", "Explain the parser\r\nplease"),
+      block("assistant-1", "assistant", "It changes the parser."),
+    ];
+  }
+
+  it("does not append the side question to the parent", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question);
+
+    expect(next).toBeDefined();
+    expect(next).toHaveLength(blocks.length);
+    expect(next!.map((entry) => entry.text)).toEqual(
+      blocks.map((entry) => entry.text),
+    );
+    expect(
+      next!.filter((entry) => entry.role === "user").map((entry) => entry.text),
+    ).not.toContain("Why this parser?");
+    expect(next!.some((entry) => entry.id === question.id)).toBe(false);
+  });
+
+  it("does not start a parent turn", () => {
+    const blocks = parent();
+    const session = { id: "chat-1", busy: false, blocks };
+    const nextBlocks = withSideThread(blocks, "user-1", question);
+    const next = nextBlocks ? { ...session, blocks: nextBlocks } : session;
+
+    expect(next.busy).toBe(false);
+    expect(next.id).toBe("chat-1");
+    expect(next.blocks.filter((entry) => entry.role === "user")).toHaveLength(
+      blocks.filter((entry) => entry.role === "user").length,
+    );
+    expect(next.blocks.filter((entry) => entry.draft || entry.streaming)).toEqual(
+      [],
+    );
+  });
+
+  it("does not compact the parent", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question)!;
+
+    expect(next).toHaveLength(blocks.length);
+    expect(next[0]).toBe(blocks[0]);
+    expect(next[0].text).toBe("Oldest question");
+  });
+
+  it("does not change files or the read-only instruction", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question)!;
+    const attached = next.find((entry) => entry.id === "user-1")!;
+
+    expect(next.find((entry) => entry.id === "edit")).toBe(
+      blocks.find((entry) => entry.id === "edit"),
+    );
+    expect(next.find((entry) => entry.id === "edit")?.tool?.preview).toEqual({
+      kind: "write",
+      path: "src/parser.ts",
+      additions: 2,
+      deletions: 1,
+    });
+    expect(
+      buildBtwPrompt({ blocks: next, thread: question, cwd: "/repo" }),
+    ).toContain("Do not change files");
+    expect(attached.text).toBe("Explain the parser\r\nplease");
+  });
+
+  it("returns undefined and leaves the transcript alone when the turn is gone", () => {
+    const blocks = parent();
+    const snapshot = blocks.map((entry) => ({ ...entry }));
+
+    expect(withSideThread(blocks, "missing", question)).toBeUndefined();
+    expect(withSideThread(blocks, "assistant-1", question)).toBeUndefined();
+    expect(withSideThread([], "user-1", question)).toBeUndefined();
+    expect(blocks.map((entry) => entry.text)).toEqual(
+      snapshot.map((entry) => entry.text),
+    );
+    expect(blocks.every((entry) => entry.btwThreads == null)).toBe(true);
+  });
+
+  it("replaces the same thread id and keeps the other one", () => {
+    const other = thread({ id: "side-2", createdAt: 9 });
+    const blocks = parent();
+    blocks[3] = { ...blocks[3], btwThreads: [question, other] };
+    const updated = thread({
+      id: "side-1",
+      status: "error",
+      error: "Timed out",
+    });
+
+    const next = withSideThread(blocks, "user-1", updated)!;
+    const threads = next.find((entry) => entry.id === "user-1")?.btwThreads;
+
+    expect(threads?.map((entry) => entry.id)).toEqual(["side-1", "side-2"]);
+    expect(threads?.[0]).toEqual(updated);
+    expect(threads?.[1]).toBe(other);
+    expect(blocks[3].btwThreads?.[0].status).toBe("ready");
+  });
+
+  it("keeps an earlier thread when a second one arrives on the latest blocks", () => {
+    const blocks = parent();
+    const first = withSideThread(blocks, "user-1", question)!;
+    const second = thread({ id: "side-2" });
+    const next = withSideThread(first, "user-1", second)!;
+
+    expect(
+      next.find((entry) => entry.id === "user-1")?.btwThreads?.map((entry) => entry.id),
+    ).toEqual(["side-1", "side-2"]);
+    expect(withSideThread(blocks, "user-1", second)!.find((entry) => entry.id === "user-1")?.btwThreads).toEqual([
+      second,
+    ]);
+  });
+});
+
+describe("side chats stay off the chat list", () => {
+  it("lists the parent chat only and keeps the thread on that turn", () => {
+    const session = {
+      ...newSession("claude", "/repo", "claude:sonnet-4.6"),
+      id: "parent-chat",
+      blocks: withSideThread(
+        [
+          block("u1", "user", "Parent question"),
+          block("a1", "assistant", "Parent answer"),
+        ],
+        "u1",
+        thread({ id: "side-1" }),
+      )!,
+    };
+    const row = summaryFromSession(session);
+    const ids = sessionListNavigationIds(
+      buildSessionList([row], [], [row]),
+      true,
+    );
+
+    expect(ids).toEqual(["parent-chat"]);
+    expect(ids).not.toContain("side-1");
+    expect(sessionBtwThreads(session.blocks).map((entry) => entry.thread.id)).toEqual([
+      "side-1",
+    ]);
+    expect(row.id).toBe(session.id);
+  });
+});
+
+describe("sideAnswerToBringBack", () => {
+  const parent = [
+    block("u1", "user", "Parent question"),
+    block("a1", "assistant", "Parent answer"),
+  ];
+
+  it("uses a selection instead of the full answer", () => {
+    expect(sideAnswerToBringBack("Because the parser changed.", "just this")).toBe(
+      "just this",
+    );
+    expect(sideAnswerToBringBack("Because.", "line\r\none")).toBe("line\none");
+  });
+
+  it("falls back to the answer when the selection is blank", () => {
+    expect(sideAnswerToBringBack("Because.", "  \r\n  ")).toBe("Because.");
+    expect(sideAnswerToBringBack("Because.", "")).toBe("Because.");
+    expect(sideAnswerToBringBack("line\r\ntwo", "")).toBe("line\ntwo");
+  });
+
+  it("returns nothing when both are blank", () => {
+    expect(sideAnswerToBringBack("  ", " \r\n")).toBe("");
+    expect(sideAnswerToBringBack("", "")).toBe("");
+  });
+
+  it("appends the answer to the existing draft and leaves the parent alone", () => {
+    const blocks = parent.map((entry) => ({ ...entry }));
+    const draft = composerDraftWithSideAnswer("Keep this", "Because.");
+
+    expect(draft).toBe("Keep this\n\nBecause.\n\n");
+    expect(composerDraftWithSideAnswer("", "Because.")).toBe("Because.\n\n");
+    expect(composerDraftWithSideAnswer("Keep this\n", "Because.")).toBe(
+      "Keep this\n\nBecause.\n\n",
+    );
+    expect(composerDraftWithSideAnswer("Keep this", "  \r\n")).toBe("Keep this");
+    expect(blocks).toEqual(parent);
   });
 });
