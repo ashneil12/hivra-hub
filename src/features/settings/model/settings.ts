@@ -156,8 +156,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "memory",
     group: "app",
     label: "Memory",
-    description: "What a first mate remembers, with its source, for you to confirm, edit or delete.",
-    keywords: "memory fact skill recall review",
+    description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
+    keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",

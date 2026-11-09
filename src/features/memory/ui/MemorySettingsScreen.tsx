@@ -7,6 +7,7 @@ import { parseDoc, type MemoryDoc } from "../model/doc";
 import { LearnFromChats } from "./LearnFromChats";
 import { learnPorts } from "./learnHost";
 import { MemoryReview, type ImportRow, type MemoryPorts } from "./MemoryReview";
+import { MemoryTierSetting } from "./MemoryTierChoice";
 
 type Loaded = { revision: number; doc: unknown };
 type Listed = { id: string; project: string; conversationId: string; source: string; status: string; markdown: string };
@@ -38,6 +39,10 @@ export function MemorySettingsScreen() {
   const learn = useMemo(() => learnPorts(), []);
   return (
     <>
+      {/* WP-103: how Hivra remembers, above what it remembers. */}
+      <div className="mb-6">
+        <MemoryTierSetting />
+      </div>
       <MemoryReview ports={ports} />
       <LearnFromChats ports={learn} />
     </>
