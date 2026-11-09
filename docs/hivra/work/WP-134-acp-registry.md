@@ -60,6 +60,67 @@ GitHub Copilot as a model inside Pi and omp is not one of the eleven and is not 
 
 The plugin registry (WP-30) is also a different thing. It records skills and contributions for agents that already run. An ACP agent does not belong in `plugin.json`.
 
+### A registry agent
+
+A registry agent is a local command that speaks ACP version 1, listed under the eleven, and launched on the generic ACP path. It does not get a `HarnessId`, a `Kind`, a `providers/<id>/` package, a crew name, a first-mate row, or an arm in `acp.rs`. The eleven never appear in its list. T3 writes the same rule: an agent Hivra already supports as its own provider stays in Agent CLIs, and an agent-id check does not go in the generic adapter. A quirk the spec does not cover is a flavor module for that one agent. If the flavor grows into launch arguments, timeouts and permission policy, it is a first-class CLI and it pays the bar above.
+
+A chat is one or the other. The session record keeps `harness` for the eleven only, because `sessionStore.ts` drops anything else. A registry chat stores its agent id in its own field. Loading a chat whose agent is gone keeps the transcript and shows "This agent is no longer in your list." It does not launch, and it does not go through `Kind::from_id`, which would turn an unknown id into Codex.
+
+The screen label is "More agents", on the providers settings page, below Agent CLIs. Not under Plugins.
+
+### Where the manifest lives
+
+The list sits with the other provider settings the desktop already keeps. Not a new database table, not `plugin.json`, and not a file the person has to hand-edit as the only way in. A person may also point at a manifest file. Either way the result is the same list.
+
+Each entry is untrusted, the same as any settings read from disk. On read, check the fields below. A bad entry is shown as unusable and skipped. The rest of the list still loads. Unknown fields are ignored. A write carries the revision that window last read, the same rule as the local project documents, so one window cannot wipe an agent another window just added. Removing an entry drops the link only. It does not delete the agent's own files, its sign-in, or the chats.
+
+The first slice does not download anything. The person names an executable that is already installed. Arguments are a list of literal strings, not a shell line, and Hivra does not expand them. Importing from the public ACP registry, checking a SHA-256, and choosing a folder for a downloaded binary are a later decision. Hivra does not run an installer it cannot checksum, and it does not copy T3's install layout.
+
+Fields:
+
+- `id`: a stable slug, not empty, not one of the eleven.
+- `name`: the words the person sees.
+- `command`: an executable name or a path.
+- `args`: a list of strings.
+- `protocol`: `acp-v1` only. Hivra's client sends protocol version 1. Anything else is "unsupported" and is not launched.
+- Claimed abilities (cancel, permissions, previews, models, resume, steer). These are hints. The live `initialize` is what Hivra believes.
+
+Extra environment variables are the names on that entry and the values the person typed there. They are not logged, and one entry's variables are not passed to another agent.
+
+### What it has to be able to do
+
+Usable means: the command starts, `initialize` succeeds at protocol version 1, and a turn can be sent with `session/new` (or `session/load` when continuing) and `session/prompt`. That is the generic path already used when a kind falls through to `command.arg("acp")`: an empty mode string, and the standard permission card. The registry path uses that and adds no kind arm.
+
+Queue, approvals, diffs and cancel are the subset. Missing one does not hide the agent. The screen says what is missing.
+
+- **Queue.** The chat uses the queue Hivra already has (`messageQueue.ts`). The person's own messages stay ahead of app deliveries. A registry agent does not get mid-turn steer. `canSteer` stays false, as it already does for Grok, fx, Antigravity and Devin. A follow-up waits until the turn finishes. Steer is a first-class extra, earned per CLI, not part of the subset.
+- **Approvals.** A `session/request_permission` ask is the card the shared path already builds. The registry default is to show the ask. Do not copy the per-CLI shortcuts (fx allows for the rest of the session, Devin is one-time, Antigravity auto-accepts only edits). Do not pretend a mode the agent does not enforce. If the agent never asks, say so. Hivra still does not read, write or run a terminal for it. Those client capabilities stay false.
+- **Diffs.** A tool update that carries `locations` or `preview` is shown, as today. A tool with neither still shows its title, plus "No preview from this agent." The project changes panel reads git, not the agent, so a file the agent wrote still appears there once git can see it.
+- **Cancel.** Hivra sends `session/cancel` and marks the turn stopped locally. ACP does not promise a reply, and `acp_cancel` already treats it that way. The screen says "Stop sent." If the process is still running, the person can end the process. The screen does not say the agent confirmed it.
+
+A command that is missing stays in the list. A command that does not answer, or a timeout, is "Not answering", with Retry. It is not a deleted entry and not a final failure.
+
+| What is missing | What the person sees |
+| --- | --- |
+| The command was not found | "This agent was not found. Check the command in More agents." |
+| `initialize` fails, or the protocol is not version 1 | "This agent does not speak the version Hivra supports." It is not launched as another CLI. |
+| The agent never asks permission | "This agent does not ask before it acts." |
+| The agent asks with a method Hivra does not know | "This agent asked for something Hivra cannot answer. The ask was declined." Today that ask is only a JSON-RPC -32601, with no line in the chat. The registry path shows the line. |
+| A tool has no preview | "No preview from this agent." The changes panel still lists what git sees. |
+| A message is sent while a turn runs | "Your message waits until this turn finishes." |
+| Cancel is not confirmed | "Stop sent. This agent does not confirm it stopped." |
+| Continuing the old session fails | "This chat cannot continue in the agent's last session. Start a new one." The transcript stays. |
+| The entry was removed or no longer validates | "This agent is no longer in your list." The transcript stays. Nothing launches. |
+| The agent names no models | "This agent did not name any models." The person can still send, on the agent's own default. |
+
+Also outside the subset, until a later package proves one agent: a crew slot, a first-mate read-only row, a default model record, a subscription meter, an account waterfall, title or commit or pull request text, rewind, compaction, and attachments. Child agents stay ordinary tool rows. A crew tree for them is a flavor, not the generic path. Cursor's model-picker flag and Grok's extra session flags are not sent.
+
+### What a later package would build
+
+Not this one. The smallest build is More agents, add a local command, and one generic ACP session on the desktop TypeScript path, which is the path `App.tsx` already uses to send a turn. Tests have to show that an unknown id does not become Codex, and that a bad entry does not wipe the list.
+
+`Kind` stays the eleven. The native shell shows a registry agent as unavailable until it reads the same list. It does not call `from_id`.
+
 ## Done when
 
 - [ ] The design names the first-class bar and the registry subset.
