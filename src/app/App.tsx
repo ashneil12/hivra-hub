@@ -697,6 +697,8 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+// WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+import { watchIdleClaudeCompaction } from "../integrations/harness/providers/claude/idleCompactWatch";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -10820,6 +10822,33 @@ function Workspace({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [ensureAutomationRecovery, launchAutomation, shipHold]);
+
+  // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+  const idleCompactEvent = useRef(enqueueHarnessEvent);
+  idleCompactEvent.current = enqueueHarnessEvent;
+  useEffect(() => {
+    return watchIdleClaudeCompaction({
+      sessions: () => sessionsRef.current,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: sessionWorkCwd(session),
+        model: session.model,
+        modelSettings: session.modelSettings,
+        providerAccountId: supportsProviderAccounts(session.harness)
+          ? (session.providerAccountId ??
+            selectedProviderAccountId(session.harness, session.cwd))
+          : undefined,
+        runtimeMode: session.runtimeMode,
+        ephemeral: session.ephemeral === true,
+        controlsAgents:
+          isMonoSession(session.id) ||
+          operatorEnabledInThread(session.blocks) ||
+          orchestrator.run(session.id)?.status === "active",
+        ...firstMateLaunch(session),
+      }),
+      onEvent: (id, event) => idleCompactEvent.current(id, event),
+    });
+  }, []);
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
