@@ -7,6 +7,7 @@ import { markLived } from "../model/fade";
 import { askAnswer, askedNow, dueForAsk, nextAsk } from "../model/ask";
 import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
+import { importOrderRefusal } from "../model/orderScan";
 import { pausedNow } from "../model/memoryBudget";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
@@ -17,10 +18,13 @@ import {
   acceptSkill,
   commitDoc,
   editItem,
+  parkedDisputes,
   rejectImport,
   rejectItem,
+  resolveDispute,
   searchMemory,
   stampImport,
+  type DisputeChoice,
 } from "../model/review";
 
 const BTN = "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 disabled:opacity-50";
@@ -114,8 +118,8 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
     }
   }
 
-  async function decideImport(row: ImportRow, update: (doc: MemoryDoc) => MemoryDoc) {
-    if (busyRef.current) return;
+  async function decideImport(row: ImportRow, update: (doc: MemoryDoc) => MemoryDoc): Promise<boolean> {
+    if (busyRef.current) return false;
     busyRef.current = true;
     setBusy(true);
     setNote("");
@@ -123,13 +127,15 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
       const result = await stampImport(portsRef.current.load, portsRef.current.save, portsRef.current.reviewImport, update, row.id);
       setDoc(result.doc);
       setFailed(false);
-      if (!result.stamped) return;
+      if (!result.stamped) return false;
       const decision = result.doc.imports[row.id];
-      if (decision !== "confirmed" && decision !== "rejected") return;
+      if (decision !== "confirmed" && decision !== "rejected") return false;
       setImports((current) => current.map((item) => (item.id === row.id ? { ...item, status: decision } : item)));
+      return true;
     } catch {
       setNote("Memory could not be saved this time. It can be tried again.");
       void refresh();
+      return false;
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -139,6 +145,9 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   // One reading of the clock for the card and the questions, so a page shown across midnight is not half in each day.
   const now = Date.now();
   const items = doc ? searchMemory(doc.items, query) : [];
+  // WP-111: a parked pair is its own card. The newer fact is not also listed on its own.
+  const disputes = doc ? parkedDisputes(doc.items, query) : [];
+  const plain = items.filter((item) => !item.dispute);
   // WP-100: one faded fact, asked about once. The question picked is held here until it is answered, and counted as
   // shown straight away, so the same question does not appear on every visit.
   const askingItem = doc && showing ? doc.items.find((item) => item.id === showing) : undefined;
@@ -197,10 +206,39 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
         </div>
       ) : null}
       {note ? <p>{note}</p> : null}
-      {doc && items.length === 0 && proposals.length === 0 ? <p>No matches.</p> : null}
+      {doc && plain.length === 0 && disputes.length === 0 && proposals.length === 0 ? <p>No matches.</p> : null}
       {asking ? <MemoryAsk item={asking} busy={busy} onAnswer={answerNow} /> : null}
       <ul className="flex flex-col gap-3">
-        {items.map((item) => (
+        {disputes.map((item) => {
+          const other = doc?.items.find((row) => row.id === item.dispute?.otherId);
+          const choose = (choice: DisputeChoice) => {
+            void change((current) => resolveDispute(current, item.id, choice, Date.now()));
+          };
+          return (
+            <li key={item.id} data-dispute={item.id} className="flex flex-col gap-2">
+              <p>Needs review</p>
+              <p>{item.dispute?.reason}</p>
+              <div className="flex gap-4">
+                <p data-old>{item.text}</p>
+                <p data-new>{other?.text}</p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={BTN} disabled={busy} onClick={() => choose("keep-old")}>
+                  Keep the old one
+                </button>
+                <button type="button" className={BTN} disabled={busy || !other} onClick={() => choose("use-new")}>
+                  Use the new one
+                </button>
+                <button type="button" className={BTN} disabled={busy} onClick={() => choose("keep-both")}>
+                  Keep both
+                </button>
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      <ul className="flex flex-col gap-3">
+        {plain.map((item) => (
           <li key={item.id} data-id={item.id} data-kind={item.action} data-skill={item.skill?.name} className="flex flex-col gap-1">
             <p>{item.text}</p>
             <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : stateLabel(item.state)}</p>
@@ -302,7 +340,13 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                   type="button"
                   className={BTN}
                   disabled={busy}
-                  onClick={() => void decideImport(row, (current) => acceptImport(current, row, Date.now()))}
+                  onClick={() => {
+                    const reason = importOrderRefusal(row.markdown);
+                    void (async () => {
+                      const ok = await decideImport(row, (current) => acceptImport(current, row, Date.now()));
+                      if (ok && reason) setNote(reason);
+                    })();
+                  }}
                 >
                   {`Accept import from ${row.project}`}
                 </button>
