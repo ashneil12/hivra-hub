@@ -109,6 +109,7 @@ describe("UsagePage", () => {
     expect(container.textContent).toContain("sonnet-5");
     expect(container.textContent).toContain("gpt-5");
     expect(container.textContent).toContain("$0.50");
+    expect(container.textContent).toContain("estimated, not your bill");
     expect(container.textContent).toContain("Cost reported for 1 of 2 turns");
     expect(container.textContent).toContain("Cost not reported by this engine");
     expect(container.textContent).not.toContain(secret);
@@ -124,6 +125,38 @@ describe("UsagePage", () => {
     await render({ sessions: [], now: NOW });
     expect(container.textContent).toContain("No turns in the last 30 days.");
     expect(container.textContent).toContain("No turns yet");
+    expect(container.textContent).not.toContain("estimated, not your bill");
+  });
+
+  it("labels a dollar figure as an estimate and leaves an unpriced engine alone", async () => {
+    await render({
+      sessions: [
+        session("priced", "/work/priced", "claude", "sonnet-5", [
+          {
+            id: "b1",
+            role: "user",
+            startedAt: at(6, 9),
+            turnMetrics: { inputTokens: 10, outputTokens: 2, costUsd: 1.25 },
+          },
+        ]),
+        session("plain", "/work/plain", "codex", "gpt-5", [
+          {
+            id: "b1",
+            role: "user",
+            startedAt: at(6, 10),
+            turnMetrics: { inputTokens: 8, outputTokens: 1 },
+          },
+        ]),
+      ],
+      now: NOW,
+    });
+    expect(container.textContent).toContain("$1.25 (estimated, not your bill)");
+    expect(container.textContent).toContain("Cost not reported by this engine");
+    const unpriced = [...container.querySelectorAll("td")].find((cell) =>
+      cell.textContent?.includes("Cost not reported by this engine"),
+    );
+    expect(unpriced?.textContent).not.toContain("estimated, not your bill");
+    expect(container.textContent.match(/estimated, not your bill/g)?.length).toBeGreaterThan(0);
   });
 
   it("copies the history as CSV", async () => {

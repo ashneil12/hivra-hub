@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { ESTIMATE_LABEL, labelEstimate } from "../model/estimateLabel";
 import {
   applyUsageFilter,
   defaultUsageFilter,
@@ -256,8 +257,10 @@ function Summary({ title, totals }: { title: string; totals: UsageTotals }) {
 function costLine(totals: UsageTotals): string {
   if (totals.turns === 0) return "No turns yet";
   if (totals.costTurns === 0) return costNote(totals);
-  if (totals.costTurns < totals.turns) return `${formatUsd(totals.costUsd)}. ${costNote(totals)}`;
-  return formatUsd(totals.costUsd);
+  if (totals.costTurns < totals.turns) {
+    return `${formatUsd(totals.costUsd)}. ${costNote(totals)}, ${ESTIMATE_LABEL}`;
+  }
+  return labelEstimate(formatUsd(totals.costUsd));
 }
 
 function DayBars({ history }: { history: UsageHistory }) {
@@ -300,8 +303,10 @@ function DayBars({ history }: { history: UsageHistory }) {
 
 function costCell(totals: UsageTotals): string {
   if (totals.costTurns === 0) return "Cost not reported by this engine";
-  if (totals.costTurns < totals.turns) return `${formatUsd(totals.costUsd)} (${costNote(totals)})`;
-  return formatUsd(totals.costUsd);
+  if (totals.costTurns < totals.turns) {
+    return `${formatUsd(totals.costUsd)} (${costNote(totals)}, ${ESTIMATE_LABEL})`;
+  }
+  return labelEstimate(formatUsd(totals.costUsd));
 }
 
 function TotalsTable({ caption, rows }: { caption: string; rows: UsageGroup[] }) {
