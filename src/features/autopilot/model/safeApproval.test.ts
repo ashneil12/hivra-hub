@@ -94,6 +94,12 @@ describe("shell commands", () => {
     "rg '--pre=sh' foo",
     "rg --p\\re=sh foo",
     "rg --hostname-bin=/tmp/x foo",
+    // WP-101 fix round 3, finding 5: a build that abbreviates long options would run --pr as --pre, and --pr-glob as
+    // --pre-glob. --pretty is not --pre, but it abbreviates the same way, so it waits too.
+    "rg --pr echo",
+    "rg --pr-glob '*.txt' foo",
+    "rg --pr-glob='*.txt' foo",
+    "rg --pretty foo",
     "git diff --output=/Users/ash/.zshrc",
     "git log --ext-diff",
     "git branch -D main",

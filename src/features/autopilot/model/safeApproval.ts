@@ -234,9 +234,26 @@ function psRead(args: readonly string[]): SafeVerdict {
   return "ps only runs by itself for one process, as ps -p <pid> -o <fields>, with the fields from pid, ppid, etime, state, stat, %cpu, %mem and rss";
 }
 
+/**
+ * Whether `given` abbreviates `option` one dash-separated piece at a time. `--pr` is `--pre` by the ordinary prefix
+ * rule; `--pr-glob` is not, because neither string starts with the other, but each piece of it is a prefix of the same
+ * piece of `--pre-glob`. A longer word such as `--pretty` abbreviates the same way and waits too.
+ */
+function abbreviatesLongOption(given: string, option: string): boolean {
+  const name = given.split("=", 1)[0].toLowerCase();
+  if (!name.startsWith("--") || !option.startsWith("--")) return false;
+  const left = name.slice(2).split("-");
+  const right = option.slice(2).split("-");
+  if (left.length !== right.length || left.some((part) => !part)) return false;
+  return left.every((part, i) => right[i].startsWith(part) || part.startsWith(right[i]));
+}
+
 function rgRead(args: readonly string[]): SafeVerdict {
-  // --pre runs a program on every file; --hostname-bin runs one too.
-  return has(args, "--pre", "--pre-glob", "--hostname-bin") ? "rg --pre runs a program" : null;
+  // --pre runs a program on every file; --hostname-bin runs one too. A short form of either does as well.
+  const options = ["--pre", "--pre-glob", "--hostname-bin"];
+  if (usesOption(args, options) || args.some((arg) => options.some((option) => abbreviatesLongOption(arg, option))))
+    return "rg --pre runs a program";
+  return null;
 }
 
 const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict>> = {
