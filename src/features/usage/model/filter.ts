@@ -133,7 +133,7 @@ export function applyUsageFilter(
       kept.push(session);
       continue;
     }
-    const blocks = Array.isArray(session.blocks) ? session.blocks : [];
+    const blocks: UsageBlock[] = Array.isArray(session.blocks) ? session.blocks : [];
     const next = blocks.filter((block) => !isCountedTurn(block) || matches(session, block, chosen));
     if (!next.some((block) => isCountedTurn(block))) continue;
     if (next.length === blocks.length) kept.push(session);
