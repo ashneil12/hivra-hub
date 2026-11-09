@@ -595,9 +595,9 @@ import {
   applyBtwHarnessEvent,
   btwTurnHarness,
   buildBtwPrompt,
-  replaceBtwThread,
   sealBtwResponseBlocks,
   supportsBtwHarness,
+  withSideThread,
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
@@ -803,12 +803,14 @@ import {
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
+  setSessionPrivate,
   shouldPersistSession,
   upsertSession,
   flushSessionWrites,
   type SessionSummary,
 } from "../features/sessions/data/sessionStore";
 import { rememberLoadedSession } from "../features/sessions/data/sessionCache";
+import { privateChatKeys, replaceLivePrivateKeys, withPrivate } from "../features/memory/model/privateChat";
 import {
   TranscriptPool,
   TranscriptPoolOutlet,
@@ -6684,6 +6686,42 @@ function Workspace({
     [onPinHistorySession],
   );
 
+  // WP-111: private is per chat. Off keeps only the messages after the switch readable.
+  const onPrivateHistorySession = useCallback((sessionId: string, on: boolean) => {
+    const apply = (session: Session) => {
+      const live = sessionsRef.current.find((item) => item.id === sessionId) ?? session;
+      const next = withPrivate(live, on);
+      if (next === live) return;
+      if (sessionsRef.current.some((item) => item.id === sessionId)) {
+        const nextSessions = sessionsRef.current.map((item) => (item.id === sessionId ? next : item));
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+      }
+      setHistory((current) =>
+        current.map((item) =>
+          item.id === sessionId ? { ...item, private: next.private === true || undefined } : item,
+        ),
+      );
+      void upsertSession(next).catch(() => undefined);
+      // After the transcript write, so a save already in flight cannot leave the flag behind.
+      void setSessionPrivate(sessionId, next.private === true, next.privateBoundaryId).catch(() => undefined);
+    };
+    const open = sessionsRef.current.find((session) => session.id === sessionId);
+    if (open) {
+      apply(open);
+      return;
+    }
+    void getSession(sessionId)
+      .then((loaded) => {
+        if (loaded) apply(loaded);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    replaceLivePrivateKeys(privateChatKeys([...sessions, ...history]));
+  }, [sessions, history]);
+
   const onDeleteWorktreeSessions = useCallback(
     async (sessionIds: readonly string[]): Promise<boolean> => {
       for (const sessionId of sessionIds) {
@@ -9658,6 +9696,8 @@ function Workspace({
             const recallScope = {
               sessionId,
               compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+              // WP-111: a private chat is not given memory.
+              private: (sessionsRef.current.find((s) => s.id === sessionId) ?? current).private === true,
             };
             const recallNote = await recalledFence(
               memoryMate,
@@ -9928,7 +9968,7 @@ function Workspace({
         saveMonoName(mono.id, name);
         return mono.id;
       },
-      // A plan naming an existing Mono (the built-in Chief of Staff) waits until the hub has tied it to the project.
+      // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
         return !!mono && monoWorksOn(mono, project);
@@ -11648,14 +11688,9 @@ function Workspace({
         );
         const nextThread = update(current);
         if (!nextThread) return session;
-        const nextBlock = current
-          ? replaceBtwThread(block, nextThread)
-          : {
-              ...block,
-              btwThreads: [...(block.btwThreads ?? []), nextThread],
-            };
-        const blocks = session.blocks.slice();
-        blocks[blockIndex] = nextBlock;
+        // WP-112: attach the side thread only. Do not append, compact, or start a parent turn.
+        const blocks = withSideThread(session.blocks, userBlockId, nextThread);
+        if (!blocks) return session;
         updatedSession = { ...session, blocks };
         return updatedSession;
       });
@@ -17247,6 +17282,7 @@ function Workspace({
       onArchiveSessions={onArchiveHistorySessions}
       onPinSession={onPinHistorySession}
       onPinSessions={onPinHistorySessions}
+      onPrivateSession={onPrivateHistorySession}
       onSetSessionLinkedWorkItem={onSetHistorySessionLinkedWorkItem}
       reminders={sessionReminders.reminders}
       onSetReminders={sessionReminders.schedule}
