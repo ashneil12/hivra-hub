@@ -659,6 +659,9 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // WP-104: a check waits on a safe command, then one wake.
+            watcher::watcher_check_set,
+            watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
             crew::crew_rules_set,
