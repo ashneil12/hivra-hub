@@ -157,6 +157,8 @@ mod window_transfer;
 mod windows;
 mod worker_queue;
 pub mod worktree_janitor;
+// WP-138: copy the files named in .worktreeinclude when a worktree is created.
+mod worktree_include;
 mod worktree_lifecycle;
 mod worktrees;
 
