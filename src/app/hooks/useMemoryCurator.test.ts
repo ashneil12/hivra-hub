@@ -27,6 +27,25 @@ it("curates a finished first-mate turn once, and not a worker or a busy chat", (
   expect(curatorFeeds([chat("lead-chat"), chat("worker")], fed, mateOf).map((feed) => feed.turnId)).toEqual(["a"]);
   expect(curatorFeeds([chat("lead-chat")], fed, mateOf)).toEqual([]);
   expect(curatorFeeds([chat("lead-chat", true)], new Map(), mateOf)).toEqual([]);
+  // WP-111: a private chat is never read, by the model curator or the rules curator (both use this list).
+  const fedPrivate = new Map<string, string | undefined>();
+  expect(curatorFeeds([{ ...chat("lead-chat"), private: true }], fedPrivate, mateOf)).toEqual([]);
+  expect(fedPrivate.size).toBe(0);
+  // An old chat with no flag is still read.
+  expect(curatorFeeds([chat("lead-chat")], new Map(), mateOf).map((feed) => feed.turnId)).toEqual(["a"]);
+  // After it is switched off, only an exchange past the boundary is read. The boundary message itself is not.
+  const opened = {
+    ...chat("lead-chat"),
+    privateBoundaryId: "a",
+    blocks: [
+      { id: "u", role: "user", text: "secret" },
+      { id: "a", role: "assistant", text: "Noted." },
+      { id: "u2", role: "user", text: "I like small commits" },
+      { id: "a2", role: "assistant", text: "Noted again." },
+    ],
+  };
+  expect(curatorFeeds([opened], new Map(), mateOf).map((feed) => feed.turnId)).toEqual(["a2"]);
+  expect(curatorFeeds([{ ...opened, privateBoundaryId: "missing" }], new Map(), mateOf)).toEqual([]);
   expect(lastExchange([{ id: "u", role: "user", text: "hi" }, { id: "a", role: "assistant", text: "ok", streaming: true }])).toBeUndefined();
   expect(lastExchange([{ id: "t", role: "tool", text: "x".repeat(100) }])).toBeUndefined();
   expect(lastExchange([])).toBeUndefined();

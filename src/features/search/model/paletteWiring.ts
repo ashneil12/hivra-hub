@@ -1,7 +1,12 @@
 // WP-93: the table that sends each palette row to the very callback its
 // shortcut calls. App hands in its `actions` ref and its `run` debounce; this
 // file holds the one mapping, so the two key paths and the palette agree.
+import {
+  loadNewChatWorktree,
+  saveNewChatWorktree,
+} from "../../settings/model/settings";
 import type { ZoomAction } from "../../settings/model/zoomKeybinding";
+import { flippedNewChatWorktree } from "../../source-control/model/newChatWorktree";
 import type { PaletteAppAction, PaletteRow } from "./commandRegistry";
 import { runPaletteRow, type PaletteRunHandlers } from "./paletteRun";
 
@@ -127,6 +132,9 @@ function appHandlers(
       const id = side.stopChat();
       if (id) side.stop(id);
     },
+    // WP-110: flip the next-chat worktree between off and ask. Not a composer action.
+    "next-chat-worktree": () =>
+      saveNewChatWorktree(flippedNewChatWorktree(loadNewChatWorktree())),
   };
 }
 
