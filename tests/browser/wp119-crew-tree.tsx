@@ -2,8 +2,10 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { crewTree } from "../../src/features/crew/model/crewTree";
+import { inboxItems } from "../../src/features/crew/model/inbox";
 import type { CrewWorkerInput } from "../../src/features/crew/model/rows";
 import { CrewTab } from "../../src/features/crew/ui/CrewTab";
+import { FirstMateInbox } from "../../src/features/crew/ui/FirstMateInbox";
 import "../../src/styles/index.css";
 
 const NOW = 1_700_000_000_000;
@@ -79,6 +81,61 @@ createRoot(document.getElementById("tree")!).render(<Tree />);
 createRoot(document.getElementById("empty")!).render(
   <CrewTab rows={[]} tree={crewTree({ project: PROJECT, now: NOW })} />,
 );
+const minute = 60_000;
+const inbox = inboxItems({
+  project: PROJECT,
+  decisions: [
+    {
+      project: PROJECT,
+      decisionKey: "new",
+      question: "Newer question",
+      askedBy: "chat-new",
+      state: "open",
+      waiting: [],
+      updatedAt: NOW - 5 * minute,
+    },
+    {
+      project: PROJECT,
+      decisionKey: "old",
+      question: "Oldest question",
+      askedBy: "chat-old",
+      state: "open",
+      waiting: [],
+      updatedAt: NOW - 20 * minute,
+    },
+  ],
+  rows: [
+    worker({
+      id: "cred",
+      status: "paused",
+      title: "Sign in",
+      errorClass: "auth",
+      error: "not signed in",
+      updatedAt: NOW - 90 * minute,
+      childSession: "chat-cred",
+    }),
+    worker({
+      id: "boom",
+      status: "failed",
+      title: "It failed",
+      updatedAt: NOW - 40 * minute,
+      statusNotice: "The save did not finish.",
+      childSession: "chat-boom",
+    }),
+  ],
+});
+
+function Inbox() {
+  const [opened, setOpened] = useState("");
+  return (
+    <div>
+      <FirstMateInbox items={inbox} now={NOW} onOpenChat={setOpened} />
+      <p data-inbox-opened>{opened}</p>
+    </div>
+  );
+}
+
+createRoot(document.getElementById("inbox")!).render(<Inbox />);
 createRoot(document.getElementById("mate")!).render(
   <CrewTab
     rows={[]}

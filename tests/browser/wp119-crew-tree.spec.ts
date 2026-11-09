@@ -24,4 +24,16 @@ test("the crew tree and its detail", async ({ page }) => {
   await expect(page.locator("#empty [data-crew-node]")).toHaveCount(0);
   await expect(page.locator("#mate [data-crew-node='mate:lead']")).toContainText("Lead");
   await expect(page.locator("#mate")).not.toContainText("No one is on this yet.");
+
+  const inbox = page.locator("#inbox");
+  const rows = inbox.locator("[data-inbox-kind]");
+  await expect(rows.first()).toHaveAttribute("data-inbox-kind", "decision");
+  await expect(rows.first()).toContainText("Oldest question");
+  await expect(rows.first()).toContainText("waiting 20 minutes");
+  await expect(rows.nth(1)).toContainText("Newer question");
+  const kinds = await rows.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-inbox-kind")));
+  expect(kinds.indexOf("credential")).toBeGreaterThan(kinds.lastIndexOf("decision"));
+  expect(kinds.indexOf("failure")).toBeGreaterThan(kinds.indexOf("credential"));
+  await rows.first().getByRole("button", { name: "Open the chat" }).click();
+  await expect(inbox.locator("[data-inbox-opened]")).toHaveText("chat-old");
 });

@@ -5,7 +5,7 @@ import type { Notice } from "./digest";
 import { firstPlainLine, type CrewDeliveryInput, type CrewWorkerInput } from "./rows";
 import { knownStatus, statusWord } from "./words";
 
-export type FirstMateInboxKind = "decision" | "review" | "failure" | "credential";
+export type FirstMateInboxKind = "decision" | "question" | "review" | "failure" | "credential";
 
 export type DecisionInput = {
   project?: string | null;
@@ -51,6 +51,40 @@ function firstLine(value: string | null | undefined, max: number): string {
   return line.slice(0, max);
 }
 
+/** Em dashes and en dashes never reach a person. A number range keeps a hyphen. */
+function plain(value: string): string {
+  return value
+    .replace(/(\d)\s*[—–]\s*(?=\d)/g, "$1-")
+    .replace(/[ \t]*[—–][ \t]*/g, ", ")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/^[,\s]+|[,\s]+$/g, "")
+    .trim();
+}
+
+function shown(value: string): string {
+  return plain(value);
+}
+
+/**
+ * How long a row has been waiting, from the timestamp the row already has.
+ * Nothing is said when that start, or the clock, is missing.
+ */
+export function waitingPhrase(since: number, now: number): string | null {
+  if (typeof since !== "number" || !Number.isFinite(since) || since <= 0) return null;
+  if (typeof now !== "number" || !Number.isFinite(now) || now < since) return null;
+  const minutes = Math.floor((now - since) / 60_000);
+  if (minutes < 1) return "waiting under a minute";
+  if (minutes < 60) return minutes === 1 ? "waiting 1 minute" : `waiting ${minutes} minutes`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return hours === 1 ? "waiting 1 hour" : `waiting ${hours} hours`;
+  const days = Math.floor(hours / 24);
+  return days === 1 ? "waiting 1 day" : `waiting ${days} days`;
+}
+
+function waitKey(value: number): number {
+  return value > 0 && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+}
+
 /** The first plain line of a failure. A stack frame or a secret is not shown. */
 export function failureWords(notice?: string | null, error?: string | null): string {
   return firstPlainLine(`${notice ?? ""}\n${error ?? ""}`) ?? "This work failed.";
@@ -69,6 +103,13 @@ function credentialTitle(row: CrewWorkerInput): string {
   if (kind === "usage_limit" || /usage limit|quota/.test(text)) return "Waiting for a usage limit";
   if (/missing cli|isn't installed|is not installed/.test(text)) return "The CLI is missing";
   return "Needs a sign-in";
+}
+
+/** A needs-you row that is blocked on a permission, not on a question. */
+function permissionAsk(row: CrewWorkerInput): boolean {
+  if (knownStatus(row.status) !== "needs-you") return false;
+  const text = `${row.title ?? ""}\n${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  return /permission|access denied|not allowed/.test(text);
 }
 
 function optionsOf(value: unknown, recommended: string | null | undefined): { options: string[]; recommended: string | null } {
@@ -112,8 +153,9 @@ function newest(id: string, deliveries: readonly CrewDeliveryInput[]): CrewDeliv
 }
 
 /**
- * What the Inbox shows for one project: open decisions, results ready for review,
- * failures, and credential needs. A row's status word is copied, never chosen here.
+ * What the Inbox shows for one project. Questions first, then a sign-in or a
+ * permission, then failures and reviews together. Within a group, the longest
+ * wait first. A row's status word is copied, never chosen here.
  */
 export function inboxItems(input: {
   project: string;
@@ -141,7 +183,7 @@ export function inboxItems(input: {
     items.push({
       id: `decision:${project}:${key}`,
       kind: "decision",
-      title: firstLine(decision.question, 160) || "A decision is waiting",
+      title: shown(firstLine(decision.question, 160)) || "A decision is waiting",
       body: "",
       statusWord: "needs you",
       chatId: firstLine(decision.askedBy, 200) || null,
@@ -167,8 +209,25 @@ export function inboxItems(input: {
       items.push({
         id: `credential:${row.id}`,
         kind: "credential",
-        title: credentialTitle(row),
-        body: failureWords(row.statusNotice, row.error),
+        title: shown(credentialTitle(row)),
+        body: shown(failureWords(row.statusNotice, row.error)),
+        statusWord: word,
+        chatId: row.childSession ?? null,
+        workerIds: [row.id],
+        options: [],
+        recommended: null,
+        project,
+        key: null,
+        updatedAt: row.updatedAt ?? 0,
+      });
+      continue;
+    }
+    if (permissionAsk(row)) {
+      items.push({
+        id: `credential:${row.id}`,
+        kind: "credential",
+        title: "Needs a permission",
+        body: shown(firstPlainLine(`${row.statusNotice ?? ""}\n${row.error ?? ""}`) ?? ""),
         statusWord: word,
         chatId: row.childSession ?? null,
         workerIds: [row.id],
@@ -184,8 +243,8 @@ export function inboxItems(input: {
       items.push({
         id: `failure:${row.id}`,
         kind: "failure",
-        title: firstLine(row.title, 120) || "This work failed",
-        body: failureWords(row.statusNotice, row.error),
+        title: shown(firstLine(row.title, 120)) || "This work failed",
+        body: shown(failureWords(row.statusNotice, row.error)),
         statusWord: word,
         chatId: row.childSession ?? null,
         workerIds: [row.id],
@@ -202,7 +261,26 @@ export function inboxItems(input: {
         id: `review:${row.id}`,
         kind: "review",
         title: "Ready for review",
-        body: firstLine(row.title, 160),
+        body: shown(firstLine(row.title, 160)),
+        statusWord: word,
+        chatId: row.childSession ?? null,
+        workerIds: [row.id],
+        options: [],
+        recommended: null,
+        project,
+        key: null,
+        updatedAt: row.updatedAt ?? 0,
+      });
+      continue;
+    }
+    if (status === "needs-you") {
+      const title = shown(firstLine(row.title, 160) || firstLine(row.statusNotice, 160)) || "This work needs you";
+      const notice = shown(firstPlainLine(row.statusNotice) ?? "");
+      items.push({
+        id: `question:${row.id}`,
+        kind: "question",
+        title,
+        body: notice && notice !== title ? notice : "",
         statusWord: word,
         chatId: row.childSession ?? null,
         workerIds: [row.id],
@@ -214,8 +292,8 @@ export function inboxItems(input: {
       });
     }
   }
-  const rank: Record<FirstMateInboxKind, number> = { decision: 0, credential: 1, failure: 2, review: 3 };
-  items.sort((a, b) => rank[a.kind] - rank[b.kind] || a.updatedAt - b.updatedAt || a.id.localeCompare(b.id));
+  const rank: Record<FirstMateInboxKind, number> = { decision: 0, question: 0, credential: 1, failure: 2, review: 2 };
+  items.sort((a, b) => rank[a.kind] - rank[b.kind] || waitKey(a.updatedAt) - waitKey(b.updatedAt) || a.id.localeCompare(b.id));
   return items;
 }
 
@@ -276,7 +354,7 @@ export function noticesFrom(items: readonly FirstMateItem[], rows: readonly Crew
   const covered = new Set(items.flatMap((item) => item.workerIds));
   const notices: Notice[] = items.map((item) => ({
     id: `${item.id}:${item.updatedAt}`,
-    immediate: item.kind === "decision" || (item.kind === "credential" && credentialNeedsPerson(item, rows)),
+    immediate: item.kind === "decision" || item.kind === "question" || (item.kind === "credential" && credentialNeedsPerson(item, rows)),
     title: item.title,
     at: item.updatedAt,
   }));
