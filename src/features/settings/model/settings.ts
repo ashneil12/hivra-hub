@@ -562,6 +562,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "wallpaper image picture opacity backdrop",
   },
   {
+    id: "chat-list-inbox",
+    section: "chat",
+    label: "Settle and snooze",
+    keywords:
+      "finished chats hide until time needs you top list sort shelf wake",
+  },
+  {
     id: "transcript-layout",
     section: "chat",
     label: "Transcript layout",
