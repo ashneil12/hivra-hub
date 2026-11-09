@@ -241,6 +241,8 @@ type Props = {
   hideProjectPicker?: boolean;
   hideBranchPicker?: boolean;
   hideTopBar?: boolean;
+  /** WP-127: the open chat draws the meter outside the scroller, so this bar does not draw a second one. */
+  hideContextMeter?: boolean;
   /** Keeps local file mentions, skills, and app modes off for host sessions. */
   remoteSession?: boolean;
   remoteFeatures?: { attachments: boolean; plan: boolean; draft: boolean };
@@ -375,6 +377,7 @@ export function Composer({
   hideProjectPicker = false,
   hideBranchPicker = false,
   hideTopBar = false,
+  hideContextMeter = false,
   remoteSession = false,
   remoteFeatures,
   context,
@@ -1963,16 +1966,18 @@ export function Composer({
           />
         </>
       )}
-      <div className="ml-auto flex shrink-0 items-center">
-        <ContextMeter
-          usage={context}
-          onCompact={
-            compactSupported && !worktreeRemoved ? onCompactContext : undefined
-          }
-          compactDisabled={busy}
-          ceiling={contextCeilingFor({ harness, model })}
-        />
-      </div>
+      {hideContextMeter ? null : (
+        <div className="ml-auto flex shrink-0 items-center">
+          <ContextMeter
+            usage={context}
+            onCompact={
+              compactSupported && !worktreeRemoved ? onCompactContext : undefined
+            }
+            compactDisabled={busy}
+            ceiling={contextCeilingFor({ harness, model })}
+          />
+        </div>
+      )}
     </div>
   );
   return (

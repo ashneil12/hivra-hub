@@ -389,7 +389,10 @@ it("passes the current session context reading to the Mono composer", () => {
   pane.session.context = { used: 275765, window: 1048576 };
   act(() => root.render(createElement(SessionPane, pane)));
   const last = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
-  expect(last[0]).toMatchObject({ showContext: true, context: { used: 275765, window: 1048576 }, contextEmpty: false });
+  expect(last[0]).toMatchObject({ showContext: false, context: { used: 275765, window: 1048576 }, contextEmpty: false });
+  const meter = container.querySelector("[data-open-thread-context]");
+  expect(meter?.textContent).toContain("Context");
+  expect(container.querySelector(".agent-transcript")?.contains(meter ?? null)).toBe(false);
   pane.session = { ...pane.session, context: { used: 120000, window: 1048576 } };
   act(() => root.render(createElement(SessionPane, pane)));
   const updated = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
