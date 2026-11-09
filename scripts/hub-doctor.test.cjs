@@ -7,7 +7,14 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+
 const { pathToFileURL } = require("node:url");
+
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
 
 const skip = process.platform !== "darwin" && "bundles are read with macOS PlistBuddy";
 const load = () => import(pathToFileURL(path.join(__dirname, "hub-doctor.mjs")).href);

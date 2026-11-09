@@ -234,6 +234,7 @@ export function FirstMateInboxPanel({
         selectedKey={selectedKey}
         onAnswer={(item, answer) => void onAnswer(item, answer)}
         onOpenChat={onOpenSession}
+        now={clock}
         onOpenWorker={(id) => {
           const chat = rows.find((row) => row.id === id)?.childSession;
           if (chat) onOpenSession?.(chat);

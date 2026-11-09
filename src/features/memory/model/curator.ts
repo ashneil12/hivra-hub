@@ -4,6 +4,8 @@
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
 import { bump, emptyDoc, ENGINE_ID, memoryId, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
 import { touch } from "./fade";
+import { givesOrders } from "./orderScan";
+import { withContradiction } from "./review";
 
 /** Same sentence as skillLearn.plainLesson. Not imported: loading that module registers a change kind. */
 function oneSentence(raw: string): string {
@@ -22,7 +24,7 @@ export type CuratorOutcome =
   | { status: "none"; ignored: number }
   | { status: "deferred" }
   | { status: "stored"; ignored: number }
-  | { status: "dropped"; reason: "late" | "secret" | "ungrounded" | "invalid"; ignored: number };
+  | { status: "dropped"; reason: "late" | "secret" | "ungrounded" | "invalid" | "orders"; ignored: number };
 
 export type CuratorContext = {
   mateId: string;
@@ -265,6 +267,8 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
   if (chosen.kind === "add") {
     const text = normalizeFact(chosen.text);
     if (!text || mentionsSecret(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "secret", ignored } };
+    // WP-111: instructions aimed at the model are not stored. What is already kept stays.
+    if (givesOrders(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
     const item: MemoryItem = {
       id: memoryId([ctx.mateId, "add", text.toLowerCase()]),
       mateId: ctx.mateId,
@@ -280,7 +284,9 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       createdAt: ctx.now,
       updatedAt: ctx.now,
     };
-    return counted(addItem(doc, item, key), ignored);
+    // WP-111: a fact that disagrees with a confirmed one is parked beside it. Nothing is overwritten.
+    const parked = withContradiction(doc, item);
+    return counted(addItem(parked.doc, parked.item, key), ignored);
   }
 
   if (chosen.kind === "skill") {
@@ -289,6 +295,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
     if (!isValidSkillName(name) || !lesson || mentionsSecret(lesson) || mentionsSecret(name)) {
       return { doc: markDone(doc, key), outcome: { status: "dropped", reason: mentionsSecret(lesson) ? "secret" : "invalid", ignored } };
     }
+    if (givesOrders(lesson)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
     const item: MemoryItem = {
       id: memoryId([ctx.mateId, "skill", name, lesson.toLowerCase()]),
       mateId: ctx.mateId,
@@ -313,6 +320,10 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
   }
   const target = doc.items.find((item) => item.id === chosen.targetId && item.mateId === ctx.mateId && item.action === "add");
   if (!target) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "invalid", ignored } };
+  // A removal whose text matches is refused too, so the fact is not deleted from here.
+  if (chosen.kind === "remove" && givesOrders(target.text)) {
+    return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
+  }
 
   if (chosen.kind === "remove") {
     const item: MemoryItem = {
@@ -336,6 +347,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
 
   const text = normalizeFact(chosen.text);
   if (!text || mentionsSecret(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "secret", ignored } };
+  if (givesOrders(text)) return { doc: markDone(doc, key), outcome: { status: "dropped", reason: "orders", ignored } };
   const item: MemoryItem = {
     id: memoryId([ctx.mateId, "update", chosen.targetId, text.toLowerCase()]),
     mateId: ctx.mateId,

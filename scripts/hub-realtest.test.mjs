@@ -11,6 +11,12 @@ import os from "node:os";
 import path from "node:path";
 import { DEEPSEEK_BRIDGE_MODEL, OPENROUTER_BRIDGE, bridgeLauncher, claudeWrapperScript, deepseekBridge, graderUsesDeepSeek, graderVia, grokBridge, openrouterBridge, parseArgs as benchArgs, planFlags, usageOf, wrapperModel } from "./hub-realtest.mjs";
 
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
+
 test("every chat is held to Sonnet and medium; Haiku helpers run as the app asked, and low effort stays", () => {
   const chat = rewriteArgs(["--input-format", "stream-json", "--model", "claude-opus-4-1", "--effort", "max"]);
   assert.deepEqual(chat.slice(2), ["--model", "sonnet", "--effort", "medium"]);
