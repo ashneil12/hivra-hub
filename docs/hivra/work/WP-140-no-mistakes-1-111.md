@@ -6,11 +6,11 @@
 
 ## Goal
 
-The delivery gate runs the current last non-prerelease no-mistakes release, **v1.111.0**, with checksums taken from that release's `checksums.txt`, and the existing pin tests updated to match. Do not pin an untagged commit.
+The delivery gate runs no-mistakes **v1.111.0**, with checksums taken from that release's `checksums.txt`, and the existing pin tests updated to match. Do not pin an untagged commit. GitHub's latest release (not marked prerelease) is still v1.106.1, checked with `gh repo view` on 9 Nov 2026. Tag v1.111.0 is commit `13b991eefeb618aaff699e95dcb16a358abb5fee`, and that tag's release workflow publishes with `--prerelease=true`, the same way v1.110.0 was published. The pin moves to v1.111.0 anyway.
 
 ## Why
 
-Hivra does not vendor no-mistakes (it is Go). `src-tauri/src/pinned_tool.rs` `NO_MISTAKES` pins **v1.110.0**, and `src-tauri/src/delivery_gate/mod.rs` starts that binary. A 9 Nov 2026 quality pass found the latest release is **v1.111.0** (tag `13b991e`, changelog 5 Nov 2026).
+Hivra does not vendor no-mistakes (it is Go). `src-tauri/src/pinned_tool.rs` `NO_MISTAKES` pins **v1.110.0**, and `src-tauri/src/delivery_gate/mod.rs` starts that binary. A 9 Nov 2026 quality pass pointed at **v1.111.0** (tag `13b991e`, changelog 5 Nov 2026). That tag and changelog were checked. GitHub does not list it as the latest release.
 
 Worth taking from 1.111.0, because the gate actually runs this binary:
 
