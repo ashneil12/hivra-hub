@@ -1,6 +1,7 @@
 import { applyHarnessEvent } from "../../../integrations/harness/core/apply";
 import type { HarnessEvent } from "../../../integrations/harness/core/types";
 import { displayPath } from "../../../shared/lib/paths";
+import { appendComposerInsert } from "./quoteDraft";
 import type {
   Attachment,
   Block,
@@ -602,6 +603,25 @@ export function withSideThread(
   const next = blocks.slice();
   next[index] = { ...block, text: block.text, btwThreads: nextThreads };
   return next;
+}
+
+function bringBackText(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim();
+}
+
+/**
+ * Text for the parent composer. A non-blank selection wins. Otherwise the
+ * side answer. Both blank means nothing to add, and nothing is sent.
+ */
+export function sideAnswerToBringBack(answer: string, selection = ""): string {
+  const picked = bringBackText(selection);
+  if (picked) return picked;
+  return bringBackText(answer);
+}
+
+/** Append a side answer to a composer draft. A blank answer leaves the draft. */
+export function composerDraftWithSideAnswer(draft: string, answer: string): string {
+  return appendComposerInsert(draft, answer);
 }
 
 export function replaceBtwThread(block: Block, thread: BtwThread): Block {

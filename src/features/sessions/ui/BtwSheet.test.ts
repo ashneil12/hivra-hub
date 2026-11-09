@@ -86,12 +86,21 @@ describe("BTW conversation", () => {
   let root: Root;
   let btw: BtwConversation;
 
-  function Harness(options: Options) {
+  function Harness(
+    options: Options & { onAddToMainChat?: (text: string) => void },
+  ) {
     btw = useBtwConversation(options);
-    return createElement(BtwSheet, { btw, blocks: options.blocks, cwd: "/repo" });
+    return createElement(BtwSheet, {
+      btw,
+      blocks: options.blocks,
+      cwd: "/repo",
+      onAddToMainChat: options.onAddToMainChat,
+    });
   }
 
-  async function render(overrides: Partial<Options> = {}) {
+  async function render(
+    overrides: Partial<Options> & { onAddToMainChat?: (text: string) => void } = {},
+  ) {
     await act(async () =>
       root.render(
         createElement(Harness, {
@@ -120,6 +129,7 @@ describe("BTW conversation", () => {
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
@@ -160,6 +170,81 @@ describe("BTW conversation", () => {
     expect(recap?.textContent).toContain("You: Explain the parser");
     expect(recap?.textContent).toContain("Assistant: It changes the parser.");
     expect(recap?.textContent).toContain("Current file: src/parser.ts (+2 -0)");
+  });
+
+  it("copies the side answer back without sending or changing the parent", async () => {
+    const onSubmit = vi.fn();
+    const onAddToMainChat = vi.fn();
+    const blocks = session([thread("t1", "Earlier", 1)]);
+    const before = JSON.stringify(blocks);
+    await render({ blocks, onSubmit, onAddToMainChat });
+    await act(async () => void btw.openWith(""));
+    await act(async () => tabs()[0].click());
+
+    const button = container.querySelector<HTMLButtonElement>(
+      "[data-add-to-main-chat]",
+    );
+    expect(button?.textContent).toBe("Add to the main chat");
+    await act(async () => button?.click());
+
+    expect(onAddToMainChat).toHaveBeenCalledWith("Earlier answered");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(JSON.stringify(blocks)).toBe(before);
+  });
+
+  it("copies a selection inside the sheet instead of the full answer", async () => {
+    const onAddToMainChat = vi.fn();
+    await render({
+      blocks: session([thread("t1", "Earlier", 1)]),
+      onAddToMainChat,
+    });
+    await act(async () => void btw.openWith(""));
+    await act(async () => tabs()[0].click());
+    const sheet = container.querySelector('[role="dialog"]');
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: sheet,
+      toString: () => "just this\r\nline",
+    } as unknown as Selection);
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>("[data-add-to-main-chat]")
+        ?.click(),
+    );
+
+    expect(onAddToMainChat).toHaveBeenCalledWith("just this\nline");
+  });
+
+  it("ignores a selection outside the sheet", async () => {
+    const onAddToMainChat = vi.fn();
+    await render({
+      blocks: session([thread("t1", "Earlier", 1)]),
+      onAddToMainChat,
+    });
+    await act(async () => void btw.openWith(""));
+    await act(async () => tabs()[0].click());
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      rangeCount: 1,
+      anchorNode: document.body,
+      toString: () => "not in the sheet",
+    } as unknown as Selection);
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>("[data-add-to-main-chat]")
+        ?.click(),
+    );
+
+    expect(onAddToMainChat).toHaveBeenCalledWith("Earlier answered");
+  });
+
+  it("hides add to the main chat until there is an answer", async () => {
+    await render();
+    await act(async () => void btw.openWith(""));
+    expect(container.querySelector("[data-add-to-main-chat]")).toBeNull();
   });
 
   it("opens an empty tab for a bare /btw without sending", async () => {

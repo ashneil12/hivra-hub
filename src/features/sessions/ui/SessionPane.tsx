@@ -1430,6 +1430,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onSaveNote={notesEnabled ? saveNote : undefined}
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
+            onAddToMainChat={(text) => {
+              // WP-112: a draft in the parent composer. It does not send.
+              addSelectionToChat(text, "plain");
+              btw.close();
+            }}
           />
         </div>
       </div>

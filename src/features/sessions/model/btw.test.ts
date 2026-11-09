@@ -21,6 +21,8 @@ import {
   serializeBtwSnapshot,
   sessionBtwThreads,
   SIDE_COMMAND,
+  composerDraftWithSideAnswer,
+  sideAnswerToBringBack,
   supportsBtwHarness,
   withSideThread,
 } from "./btw";
@@ -848,5 +850,43 @@ describe("side chats stay off the chat list", () => {
       "side-1",
     ]);
     expect(row.id).toBe(session.id);
+  });
+});
+
+describe("sideAnswerToBringBack", () => {
+  const parent = [
+    block("u1", "user", "Parent question"),
+    block("a1", "assistant", "Parent answer"),
+  ];
+
+  it("uses a selection instead of the full answer", () => {
+    expect(sideAnswerToBringBack("Because the parser changed.", "just this")).toBe(
+      "just this",
+    );
+    expect(sideAnswerToBringBack("Because.", "line\r\none")).toBe("line\none");
+  });
+
+  it("falls back to the answer when the selection is blank", () => {
+    expect(sideAnswerToBringBack("Because.", "  \r\n  ")).toBe("Because.");
+    expect(sideAnswerToBringBack("Because.", "")).toBe("Because.");
+    expect(sideAnswerToBringBack("line\r\ntwo", "")).toBe("line\ntwo");
+  });
+
+  it("returns nothing when both are blank", () => {
+    expect(sideAnswerToBringBack("  ", " \r\n")).toBe("");
+    expect(sideAnswerToBringBack("", "")).toBe("");
+  });
+
+  it("appends the answer to the existing draft and leaves the parent alone", () => {
+    const blocks = parent.map((entry) => ({ ...entry }));
+    const draft = composerDraftWithSideAnswer("Keep this", "Because.");
+
+    expect(draft).toBe("Keep this\n\nBecause.\n\n");
+    expect(composerDraftWithSideAnswer("", "Because.")).toBe("Because.\n\n");
+    expect(composerDraftWithSideAnswer("Keep this\n", "Because.")).toBe(
+      "Keep this\n\nBecause.\n\n",
+    );
+    expect(composerDraftWithSideAnswer("Keep this", "  \r\n")).toBe("Keep this");
+    expect(blocks).toEqual(parent);
   });
 });
