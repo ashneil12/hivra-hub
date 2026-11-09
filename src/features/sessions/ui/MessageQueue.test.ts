@@ -39,6 +39,53 @@ it("labels a pending completion and offers removal without editing or steering i
   ).not.toBeNull();
 });
 
+it("hides Steer and shows one plain sentence when the agent cannot redirect", () => {
+  const note = "Grok Build can't redirect a running turn. Stop it, then send.";
+  const container = document.createElement("div");
+  container.innerHTML = renderToStaticMarkup(
+    createElement(MessageQueue, {
+      messages: [
+        { id: "a", text: "first", attachments: [] },
+        { id: "b", text: "second", attachments: [] },
+      ],
+      onSteer: vi.fn(),
+      steerNote: note,
+    }),
+  );
+  expect(container.querySelectorAll('[role="note"]')).toHaveLength(1);
+  expect(container.textContent).toContain(note);
+  expect(container.textContent).not.toContain("Steer");
+  expect(note).not.toMatch(/[—–]/);
+});
+
+it("still offers Steer when the agent can redirect", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessageQueue, {
+      messages: [{ id: "a", text: "first", attachments: [] }],
+      onSteer: vi.fn(),
+    }),
+  );
+  expect(markup).toContain("Steer");
+  expect(markup).not.toContain('role="note"');
+});
+
+it("does not show the sentence for an app note that never sits in the queue", () => {
+  const markup = renderToStaticMarkup(
+    createElement(MessageQueue, {
+      messages: [
+        {
+          id: "note",
+          text: "[MonoCode latest result] From the app: newer",
+          attachments: [],
+        },
+      ],
+      onSteer: vi.fn(),
+      steerNote: "fx can't redirect a running turn. Stop it, then send.",
+    }),
+  );
+  expect(markup).toBe("");
+});
+
 it("labels a combined report without exposing the app prompt", () => {
   const message = monoSessionCompletionMessage({
     sessionId: "worker",

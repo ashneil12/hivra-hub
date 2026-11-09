@@ -533,6 +533,7 @@ import {
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
+  harnessCannotSteer,
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
@@ -699,6 +700,8 @@ import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
 import { watchIdleClaudeCompaction } from "../integrations/harness/providers/claude/idleCompactWatch";
+// WP-115: plain sentence when this agent cannot redirect a running turn.
+import { cantRedirectTurn, cantTakeFollowUp } from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -8561,11 +8564,13 @@ function Workspace({
           return true;
         }
         if (!steerable) {
-          // Harnesses that cannot steer (fx) used to drop the message on the
-          // floor here, so a follow-up sent mid-turn just vanished. Say so.
+          // WP-115: a stale button must not drop the message. A known refusal
+          // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
+            text: harnessCannotSteer(current.harness)
+              ? cantRedirectTurn(current.harness)
+              : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;

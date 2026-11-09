@@ -27,6 +27,7 @@ import { sessionEditPaths } from "../model/checkpointEdits";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
+  harnessCannotSteer,
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
@@ -106,9 +107,11 @@ import {
 } from "../model/quoteDraft";
 import { createNote, noteTitle } from "../../notes";
 import {
+  loadFollowUpBehavior,
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
+import { blocksBusySend, cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
 import { resolveModel } from "../model/models";
@@ -699,6 +702,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => observer.disconnect();
   }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  // WP-115: hide a redirect this agent cannot do, and say what to do instead.
+  const cannotRedirect = harnessCannotSteer(session.harness);
+  const steerNote =
+    session.busy && cannotRedirect ? cantRedirectTurn(session.harness) : undefined;
   const composer = (
     <Composer
       key={session.id}
@@ -835,8 +842,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onQueuedMessageEditingChange={(messageId) =>
         onQueuedMessageEditingChange(session.id, messageId)
       }
-      onSteerQueuedMessage={(messageId) =>
-        onSteerQueuedMessage(session.id, messageId)
+      onSteerQueuedMessage={
+        session.busy && cannotRedirect
+          ? undefined
+          : (messageId) => onSteerQueuedMessage(session.id, messageId)
       }
       onResumeQueue={() => onResumeQueue(session.id)}
       usageLimit={session.usageLimit}
@@ -853,6 +862,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onOpenFile={onOpenFile}
       busy={!!session.busy}
+      allowBusySubmit={!blocksBusySend(cannotRedirect, loadFollowUpBehavior())}
+      steerNote={steerNote}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
       onRecallLastTurnReady={(recall) => {
