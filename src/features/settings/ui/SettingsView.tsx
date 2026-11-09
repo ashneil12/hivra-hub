@@ -24,6 +24,8 @@ import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
+// WP-104: copy diagnostics, and the health list.
+import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
@@ -694,6 +696,8 @@ export function SettingsView({
               ) : null}
               {/* WP-84: how much process a task gets, for this project. */}
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
+              {/* WP-104: diagnostics a person can send, and the health list. */}
+              {section === "general" ? <DiagnosticsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   <ConnectionsSettings />
