@@ -32,6 +32,14 @@ const INITIAL: MemoryDoc = {
   items: [
     fact("Likes small commits", "unreviewed"),
     fact("Reviews happen on Friday", "confirmed", { updatedAt: NOW + 1, by: "codex" }),
+    // WP-103: where it came from. One said by the person, one from the cheap model they picked.
+    fact("Always use pnpm", "confirmed", {
+      via: "rules",
+      evidence: "always use pnpm, never npm",
+      createdAt: Date.parse("2026-02-28T09:00:00Z"),
+      updatedAt: Date.parse("2026-02-28T09:00:00Z"),
+    }),
+    fact("Prefers two spaces in JSON", "unreviewed", { via: "cheap", createdAt: Date.parse("2026-01-15T09:00:00Z") }),
     fact("Read the diff before commenting.", "unreviewed", {
       action: "skill",
       skill: { name: "reviewing-a-diff", lesson: "Read the diff before commenting." },

@@ -2,7 +2,7 @@
 // A timeout is not a decision. A secret is never stored and never sent on.
 
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
-import { bump, emptyDoc, ENGINE_ID, memoryId, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem } from "./doc";
+import { bump, emptyDoc, ENGINE_ID, memoryId, mentionsSecret, normalizeFact, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
 import { touch } from "./fade";
 
 /** Same sentence as skillLearn.plainLesson. Not imported: loading that module registers a change kind. */
@@ -32,6 +32,8 @@ export type CuratorContext = {
   now: number;
   /** WP-100: the engine whose conversation this turn is (session.harness). Absent when unknown. */
   by?: string;
+  /** WP-103: the tier answering this turn, so the memory it writes can say where it came from. */
+  via?: MemoryVia;
 };
 
 type Proposal =
@@ -195,6 +197,11 @@ function byOf(ctx: CuratorContext): { by?: string } {
   return by && ENGINE_ID.test(by) ? { by } : {};
 }
 
+/** WP-103: the tier that answered this turn, kept only when it is one this build knows. */
+function viaOf(ctx: CuratorContext): { via?: MemoryVia } {
+  return ctx.via === "rules" || ctx.via === "cheap" || ctx.via === "crew" ? { via: ctx.via } : {};
+}
+
 /**
  * WP-100: a fact the curator sees again in a later turn is a use, not a duplicate. The item it already has keeps
  * its row: its support grows by one and it is topped up (fade, lastUsedAt). A skill is not used this way, because a
@@ -264,6 +271,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       action: "add",
       text,
       ...byOf(ctx),
+      ...viaOf(ctx),
       state: "unreviewed",
       source: sourceOf(ctx),
       evidence: normalizeFact(chosen.evidence),
@@ -288,6 +296,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       text: lesson,
       skill: { name, lesson },
       ...byOf(ctx),
+      ...viaOf(ctx),
       state: "unreviewed",
       source: sourceOf(ctx),
       evidence: normalizeFact(chosen.evidence),
@@ -313,6 +322,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
       text: target.text,
       targetId: chosen.targetId,
       ...byOf(ctx),
+      ...viaOf(ctx),
       state: "unreviewed",
       source: sourceOf(ctx),
       evidence: normalizeFact(chosen.evidence),
@@ -333,6 +343,7 @@ export function settleTurn(doc: MemoryDoc, ctx: CuratorContext, answer: CuratorA
     text,
     targetId: chosen.targetId,
     ...byOf(ctx),
+    ...viaOf(ctx),
     state: "unreviewed",
     source: sourceOf(ctx),
     evidence: normalizeFact(chosen.evidence),
