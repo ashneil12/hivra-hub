@@ -790,12 +790,14 @@ import {
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
+  setSessionPrivate,
   shouldPersistSession,
   upsertSession,
   flushSessionWrites,
   type SessionSummary,
 } from "../features/sessions/data/sessionStore";
 import { rememberLoadedSession } from "../features/sessions/data/sessionCache";
+import { privateChatKeys, replaceLivePrivateKeys, withPrivate } from "../features/memory/model/privateChat";
 import {
   TranscriptPool,
   TranscriptPoolOutlet,
@@ -6645,6 +6647,42 @@ function Workspace({
     [onPinHistorySession],
   );
 
+  // WP-111: private is per chat. Off keeps only the messages after the switch readable.
+  const onPrivateHistorySession = useCallback((sessionId: string, on: boolean) => {
+    const apply = (session: Session) => {
+      const live = sessionsRef.current.find((item) => item.id === sessionId) ?? session;
+      const next = withPrivate(live, on);
+      if (next === live) return;
+      if (sessionsRef.current.some((item) => item.id === sessionId)) {
+        const nextSessions = sessionsRef.current.map((item) => (item.id === sessionId ? next : item));
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+      }
+      setHistory((current) =>
+        current.map((item) =>
+          item.id === sessionId ? { ...item, private: next.private === true || undefined } : item,
+        ),
+      );
+      void upsertSession(next).catch(() => undefined);
+      // After the transcript write, so a save already in flight cannot leave the flag behind.
+      void setSessionPrivate(sessionId, next.private === true, next.privateBoundaryId).catch(() => undefined);
+    };
+    const open = sessionsRef.current.find((session) => session.id === sessionId);
+    if (open) {
+      apply(open);
+      return;
+    }
+    void getSession(sessionId)
+      .then((loaded) => {
+        if (loaded) apply(loaded);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    replaceLivePrivateKeys(privateChatKeys([...sessions, ...history]));
+  }, [sessions, history]);
+
   const onDeleteWorktreeSessions = useCallback(
     async (sessionIds: readonly string[]): Promise<boolean> => {
       for (const sessionId of sessionIds) {
@@ -9590,6 +9628,8 @@ function Workspace({
             const recallScope = {
               sessionId,
               compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+              // WP-111: a private chat is not given memory.
+              private: (sessionsRef.current.find((s) => s.id === sessionId) ?? current).private === true,
             };
             const recallNote = await recalledFence(
               memoryMate,
@@ -17178,6 +17218,7 @@ function Workspace({
       onArchiveSessions={onArchiveHistorySessions}
       onPinSession={onPinHistorySession}
       onPinSessions={onPinHistorySessions}
+      onPrivateSession={onPrivateHistorySession}
       onSetSessionLinkedWorkItem={onSetHistorySessionLinkedWorkItem}
       reminders={sessionReminders.reminders}
       onSetReminders={sessionReminders.schedule}

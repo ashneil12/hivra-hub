@@ -1,5 +1,6 @@
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
+import { boundaryFromDisk } from "../../memory/model/privateChat";
 import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
 import { parseCard } from "../../monos/model/monoCards";
@@ -66,6 +67,8 @@ import type { OrchestrationSummary } from "../../orchestration/model/orchestrati
 
 export type SessionSummary = {
   sidebarHidden?: boolean;
+  /** WP-111: memory leaves this chat alone. */
+  private?: boolean;
   orchestrationLeadId?: string;
   orchestration?: OrchestrationSummary;
   id: string;
@@ -94,6 +97,9 @@ export type SessionSummary = {
 
 type SessionRecord = {
   sidebarHidden?: boolean;
+  /** WP-111 */
+  private?: boolean;
+  privateBoundaryId?: string;
   monoTranscript?: Session["monoTranscript"];
   orchestrationLeadId?: string;
   id: string;
@@ -124,6 +130,9 @@ type SessionRecord = {
 
 type SessionUpsertPayload = {
   sidebarHidden?: boolean;
+  /** WP-111 */
+  private?: boolean;
+  privateBoundaryId?: string;
   id: string;
   cwd: string;
   harness: string;
@@ -181,6 +190,11 @@ function persistableMeta(
     runtimeMode: session.runtimeMode,
     title: session.title,
     ...(session.sidebarHidden === true ? { sidebarHidden: true } : {}),
+    // WP-111: omitted when off, so an old chat stays readable. The boundary is only a real message id.
+    ...(session.private === true ? { private: true } : {}),
+    ...(boundaryFromDisk(session.privateBoundaryId)
+      ? { privateBoundaryId: boundaryFromDisk(session.privateBoundaryId) }
+      : {}),
     ...(queuedMessages.length
       ? {
           queuedMessages,
@@ -955,6 +969,30 @@ export async function setSessionPinned(
   await invoke<void>("session_set_pinned", { sessionId, pinned });
 }
 
+/** WP-111: the private flag, on its own so a transcript save cannot clear it. A miss is tried again. */
+export async function setSessionPrivate(
+  sessionId: string,
+  on: boolean,
+  boundaryId?: string,
+): Promise<void> {
+  await enqueueSessionWrite(sessionId, async () => {
+    let last: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await invoke<void>("session_set_private", {
+          sessionId,
+          privateChat: on,
+          privateBoundaryId: boundaryId && boundaryId.length > 0 ? boundaryId : null,
+        });
+        return;
+      } catch (error) {
+        last = error;
+      }
+    }
+    throw last instanceof Error ? last : new Error("Couldn't update this chat.");
+  });
+}
+
 export async function setSessionLinkedWorkItem(
   sessionId: string,
   value: LinkedWorkItem | undefined,
@@ -1645,6 +1683,7 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
     pinned: summary.pinned || undefined,
     draft: summary.draft || undefined,
     sidebarHidden: summary.sidebarHidden === true || undefined,
+    private: summary.private === true || undefined,
     linkedWorkItem,
     ...(typeof summary.automationId === "string" &&
     isPersistableId(summary.automationId)
@@ -1665,6 +1704,10 @@ function recordToSession(record: SessionRecord): Session {
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
+    private: record.private === true || undefined,
+    ...(boundaryFromDisk(record.privateBoundaryId)
+      ? { privateBoundaryId: boundaryFromDisk(record.privateBoundaryId) }
+      : {}),
     cwd: record.cwd,
     harness: asHarness(record.harness),
     // WP-16: the retired Grok model id reads as the default Claude model. Nothing is written back.

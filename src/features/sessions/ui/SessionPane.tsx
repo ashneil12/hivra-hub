@@ -14,6 +14,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { PrivateMark } from "./PrivateMark";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -920,6 +921,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {/* WP-111 */}
+          <PrivateMark on={session.private === true} />
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -935,6 +938,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             <X className="size-3" strokeWidth={1.75} />
           </button>
+        </div>
+      ) : session.private === true ? (
+        <div className="flex h-7 shrink-0 items-center px-3">
+          {/* WP-111 */}
+          <PrivateMark on />
         </div>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1">
