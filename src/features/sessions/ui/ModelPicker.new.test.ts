@@ -113,13 +113,19 @@ describe("new model badge", () => {
     );
     expect(badges).toEqual(["new", "new"]);
     const options = [...container.querySelectorAll('[role="option"]')];
-    expect(options.map((option) => option.textContent)).toEqual([
+    expect(options.map((option) => option.querySelector("span")?.textContent)).toEqual([
       "Claude Fable 5.2",
       "Claude Opus 5.5",
     ]);
     expect(options[0]?.getAttribute("aria-label")).toBe(
       "Claude Fable 5.2, Claude Code",
     );
+    const notes = [...container.querySelectorAll("[data-model-note]")];
+    expect(notes.map((node) => node.textContent)).toEqual([
+      "Effort levels may behave differently from Fable 5.1.",
+    ]);
+    expect(options[0]?.contains(notes[0] ?? null)).toBe(true);
+    expect(options[1]?.querySelector("[data-model-note]")).toBeNull();
   });
 
   it("hides the badge once the first-seen day is past seven days", () => {
