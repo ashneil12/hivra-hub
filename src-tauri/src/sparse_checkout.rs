@@ -1,9 +1,10 @@
-//! WP-118: the per-project switch for a sparse checkout on the next new worktree.
+//! WP-118: an optional sparse checkout for a new worktree, off unless this project asks.
 //!
 //! Missing, empty and unreadable settings stay off. Only projects that are on are
 //! stored. A second window has to send the value it last saw; a stale write is
 //! refused and the file is left as it was. Nothing here downloads gion or runs an
-//! installer. The pin stays unset until a release asset is checksummed.
+//! installer. The pin stays unset until a release asset is checksummed, and a new
+//! worktree then refuses instead of falling back to git.
 
 use std::collections::BTreeSet;
 use std::fs::OpenOptions;
@@ -27,10 +28,44 @@ pub const LINK_REFUSED: &str = "The sparse checkout setting is a link, so it was
 pub const OUTSIDE: &str = "Refusing to write the sparse checkout setting outside its folder.";
 pub const BUSY: &str = "This setting is busy in another window. Try again.";
 pub const CANT_SAVE: &str = "The sparse checkout setting can't be saved.";
+pub const PIN_UNSET: &str = "The pin for gion isn't set, so a sparse checkout was not created.";
+pub const SPARSE_NOTICE: &str = "This checkout is sparse. Git does not see it as a worktree, so actions on it stay on the pinned tool.";
+pub const NOT_CREATED: &str = "The sparse checkout was not created.";
+
+const MARKER_NAME: &str = ".gion-workspace.json";
+/// Names the test double reads. A real gion does not. Forwarded only when set, never logged.
+const STANDIN_ENV: &[&str] = &[
+    "GION_STANDIN_LOG",
+    "GION_STANDIN_FAIL",
+    "GION_STANDIN_ENV_LOG",
+    "GION_STANDIN_LINK",
+];
+
+/// How a test starts the stand-in. Production leaves this empty until a checksum exists.
+#[derive(Clone, Debug)]
+pub struct Launch {
+    pub program: PathBuf,
+    pub args: Vec<std::ffi::OsString>,
+}
 
 /// Where this copy of the app keeps its own settings. A dev copy has its own data folder.
+#[derive(Clone, Debug)]
 pub struct SparseEnv {
     pub data_dir: PathBuf,
+    /// Home the tool may see. The same home git already uses. Tests point it at a scratch folder.
+    pub home: PathBuf,
+    pub launch: Option<Launch>,
+}
+
+impl SparseEnv {
+    pub fn new(data_dir: PathBuf) -> Self {
+        let home = dirs::home_dir().unwrap_or_else(|| data_dir.clone());
+        Self {
+            data_dir,
+            home,
+            launch: None,
+        }
+    }
 }
 
 pub fn env_from_app(app: &AppHandle) -> SparseEnv {
@@ -40,7 +75,7 @@ pub fn env_from_app(app: &AppHandle) -> SparseEnv {
             std::process::id()
         ))
     });
-    SparseEnv { data_dir }
+    SparseEnv::new(data_dir)
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -71,9 +106,7 @@ struct Place {
 }
 
 /// True only when this project was saved as on. Any problem reading the file is off,
-/// so a bad file cannot turn a new worktree sparse. The new-worktree path calls this;
-/// until that lands, only the tests do.
-#[allow(dead_code)]
+/// so a bad file cannot turn a new worktree sparse.
 pub fn enabled_for(env: &SparseEnv, repo: &Path) -> bool {
     let Ok(key) = project_key(repo) else {
         return false;
@@ -410,6 +443,365 @@ pub async fn sparse_checkout_set(
     .map_err(|error| error.to_string())?
 }
 
+/// `Ok(None)` when this project is off: nothing is spawned. `Ok(Some)` when the tool
+/// made the checkout. `Err` when it is on and the tool cannot, including an unset pin.
+/// Callers must not use git after `Err`.
+pub fn open_if_enabled(
+    env: &SparseEnv,
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+) -> Result<Option<crate::worktrees::Worktree>, String> {
+    if !enabled_for(env, root) {
+        return Ok(None);
+    }
+    let plan = crate::worktrees::plan_new(root, branch, base, existing)?;
+    let Some(launch) = env.launch.as_ref() else {
+        return Err(PIN_UNSET.to_string());
+    };
+    if launch.program.as_os_str().is_empty() {
+        return Err(PIN_UNSET.to_string());
+    }
+    if plan.path == plan.main || plan.path.starts_with(&plan.main) {
+        return Err("Refusing to rewrite the main checkout.".to_string());
+    }
+    let repo = project_key(root)?;
+    let dest = crate::fs::path_to_js(&plan.path);
+    let ran = run_tool(
+        env,
+        launch,
+        root,
+        &[
+            "create".to_string(),
+            "--repo".to_string(),
+            repo,
+            "--dest".to_string(),
+            dest,
+            "--branch".to_string(),
+            plan.branch.clone(),
+            "--commit".to_string(),
+            plan.commit.clone(),
+        ],
+    );
+    if !ran.ok {
+        cleanup_failed(&plan.parent, &plan.path);
+        return Err(ran.message());
+    }
+    if let Ok(trees) = crate::worktrees::list(root) {
+        if let Some(tree) = trees
+            .into_iter()
+            .find(|tree| crate::worktrees::same_path(Path::new(&tree.path), &plan.path))
+        {
+            return Ok(Some(tree));
+        }
+    }
+    match slot_tree(&plan.main, &plan.path) {
+        Some(tree) => Ok(Some(tree)),
+        None => {
+            cleanup_failed(&plan.parent, &plan.path);
+            Err(NOT_CREATED.to_string())
+        }
+    }
+}
+
+/// Print one relative path from the checkout's repo. Nothing else is copied in.
+/// The create tests call this. There is no separate read command.
+#[allow(dead_code)]
+pub fn read_path(env: &SparseEnv, dest: &Path, relative: &str) -> Result<String, String> {
+    let launch = env.launch.as_ref().ok_or(PIN_UNSET)?;
+    let ran = run_tool(
+        env,
+        launch,
+        dest,
+        &[
+            "read".to_string(),
+            "--dest".to_string(),
+            crate::fs::path_to_js(dest),
+            "--path".to_string(),
+            relative.to_string(),
+        ],
+    );
+    if ran.ok {
+        Ok(ran.stdout)
+    } else {
+        Err(ran.message())
+    }
+}
+
+/// Sparse checkouts git does not list, beside this repo's main checkout.
+pub fn unlisted_slots(main: &Path) -> Vec<crate::worktrees::Worktree> {
+    let parent = crate::worktrees::default_root(main);
+    let Ok(entries) = std::fs::read_dir(&parent) else {
+        return Vec::new();
+    };
+    let mut slots = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_link(&path) {
+            continue;
+        }
+        if let Some(tree) = slot_tree(main, &path) {
+            slots.push(tree);
+        }
+    }
+    slots.sort_by(|left, right| left.path.cmp(&right.path));
+    slots
+}
+
+/// Delete a failed create only when the record is inside the worktree folder.
+fn cleanup_failed(parent: &Path, dest: &Path) {
+    if !marked_child(parent, dest) {
+        return;
+    }
+    remove_contained(dest);
+}
+
+fn marked_child(parent: &Path, dest: &Path) -> bool {
+    if is_link(dest) {
+        return false;
+    }
+    let marker = dest.join(MARKER_NAME);
+    if is_link(&marker) || !marker.is_file() {
+        return false;
+    }
+    direct_child(parent, dest)
+}
+
+fn slot_tree(main: &Path, path: &Path) -> Option<crate::worktrees::Worktree> {
+    if is_link(path) {
+        return None;
+    }
+    let marker_path = path.join(MARKER_NAME);
+    if is_link(&marker_path) || !marker_path.is_file() {
+        return None;
+    }
+    let main_key = project_key(main).ok()?;
+    let bytes = std::fs::read(&marker_path).ok()?;
+    let marker: Marker = serde_json::from_slice(&bytes).ok()?;
+    let repo = crate::fs::canonical(Path::new(&marker.repo)).ok()?;
+    if repo.to_str() != Some(main_key.as_str()) {
+        return None;
+    }
+    if marker.branch.is_empty()
+        || marker.branch.starts_with('-')
+        || marker.branch.starts_with('@')
+        || marker.commit.is_empty()
+    {
+        return None;
+    }
+    let parent = crate::worktrees::default_root(main);
+    if !direct_child(&parent, path) {
+        return None;
+    }
+    let main_canon = crate::fs::canonical(main).ok()?;
+    let path_canon = crate::fs::canonical(path).ok()?;
+    if same_dir(&path_canon, &main_canon) {
+        return None;
+    }
+    Some(crate::worktrees::Worktree {
+        path: crate::fs::path_to_js(&path_canon),
+        branch: Some(marker.branch),
+        head: marker.commit,
+        is_main: false,
+        sparse_notice: Some(SPARSE_NOTICE.to_string()),
+        ..crate::worktrees::Worktree::default()
+    })
+}
+
+#[derive(Deserialize)]
+struct Marker {
+    repo: String,
+    branch: String,
+    commit: String,
+}
+
+struct Ran {
+    ok: bool,
+    stdout: String,
+    stderr: String,
+}
+
+impl Ran {
+    fn message(&self) -> String {
+        let text = scrub(self.stderr.trim());
+        if text.is_empty() {
+            NOT_CREATED.to_string()
+        } else {
+            text
+        }
+    }
+}
+
+fn run_tool(env: &SparseEnv, launch: &Launch, cwd: &Path, args: &[String]) -> Ran {
+    let mut command = crate::delivery::child(&launch.program);
+    crate::hide_window_console(&mut command);
+    command.args(&launch.args);
+    command.args(args);
+    if cwd.is_dir() {
+        command.current_dir(cwd);
+    }
+    command.env("HOME", &env.home);
+    command.env("USERPROFILE", &env.home);
+    command.env("GIT_TERMINAL_PROMPT", "0");
+    for key in STANDIN_ENV {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    match command.output() {
+        Ok(output) => Ran {
+            ok: output.status.success(),
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        },
+        Err(error) => Ran {
+            ok: false,
+            stdout: String::new(),
+            stderr: format!("The sparse tool could not be started ({error})."),
+        },
+    }
+}
+
+/// Hide credentials a tool might print. The placeholder is fixed so a log cannot rebuild the value.
+pub fn scrub(text: &str) -> String {
+    scrub_tokens(&scrub_userinfo(text))
+}
+
+fn scrub_userinfo(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("://") {
+        let scheme = &rest[..at];
+        let scheme_start = scheme
+            .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-'))
+            .map(|index| {
+                index
+                    + scheme[index..]
+                        .chars()
+                        .next()
+                        .map(|c| c.len_utf8())
+                        .unwrap_or(1)
+            })
+            .unwrap_or(0);
+        let name = &scheme[scheme_start..];
+        let scheme_ok = name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '.' || c == '-');
+        let auth_start = at + 3;
+        let authority = &rest[auth_start..];
+        let end = authority
+            .find(['/', '?', '#', ' ', '\t', '\r', '\n'])
+            .unwrap_or(authority.len());
+        let authority = &authority[..end];
+        if scheme_ok {
+            if let Some(at_sign) = authority.rfind('@') {
+                if authority[..at_sign].contains(':') {
+                    out.push_str(&rest[..auth_start]);
+                    out.push_str("[hidden]");
+                    rest = &rest[auth_start + at_sign..];
+                    continue;
+                }
+            }
+        }
+        let ch = rest.chars().next().unwrap_or(' ');
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn scrub_tokens(text: &str) -> String {
+    const PREFIXES: &[&str] = &[
+        "github_pat_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "glpat-",
+    ];
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("Bearer ") {
+            if let Some(len) = token_body(after) {
+                out.push_str("[hidden]");
+                rest = &after[len..];
+                continue;
+            }
+        }
+        if let Some(after) = PREFIXES.iter().find_map(|prefix| rest.strip_prefix(prefix)) {
+            if let Some(len) = token_body(after) {
+                out.push_str("[hidden]");
+                rest = &after[len..];
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+fn token_body(text: &str) -> Option<usize> {
+    let len: usize = text
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+        .map(char::len_utf8)
+        .sum();
+    if len == 0 {
+        None
+    } else {
+        Some(len)
+    }
+}
+
+fn direct_child(parent: &Path, path: &Path) -> bool {
+    let Ok(parent) = crate::fs::canonical(parent) else {
+        return false;
+    };
+    let Ok(path) = crate::fs::canonical(path) else {
+        return false;
+    };
+    match path.parent() {
+        Some(got) => same_dir(got, &parent),
+        None => false,
+    }
+}
+
+fn same_dir(left: &Path, right: &Path) -> bool {
+    if cfg!(windows) {
+        left.to_string_lossy()
+            .eq_ignore_ascii_case(&right.to_string_lossy())
+    } else {
+        left == right
+    }
+}
+
+fn remove_contained(path: &Path) {
+    if is_link(path) {
+        let _ = std::fs::remove_file(path);
+        return;
+    }
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if meta.is_dir() {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                remove_contained(&entry.path());
+            }
+        }
+        let _ = std::fs::remove_dir(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -436,7 +828,10 @@ mod tests {
         fn env(&self) -> SparseEnv {
             let data = self.root.join("data");
             std::fs::create_dir_all(&data).unwrap();
-            SparseEnv { data_dir: data }
+            let mut env = SparseEnv::new(data);
+            env.home = self.root.join("home");
+            std::fs::create_dir_all(&env.home).unwrap();
+            env
         }
 
         fn repo(&self, name: &str) -> PathBuf {
@@ -679,7 +1074,7 @@ mod tests {
             let repo = repo.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                set_enabled(&SparseEnv { data_dir: env_dir }, &repo, true, false)
+                set_enabled(&SparseEnv::new(env_dir), &repo, true, false)
             })
         };
         let right = {
@@ -687,7 +1082,7 @@ mod tests {
             let repo = repo.clone();
             std::thread::spawn(move || {
                 barrier.wait();
-                set_enabled(&SparseEnv { data_dir: env_dir }, &repo, true, false)
+                set_enabled(&SparseEnv::new(env_dir), &repo, true, false)
             })
         };
         let results = [left.join().unwrap(), right.join().unwrap()];
@@ -740,5 +1135,330 @@ mod tests {
             LINK_REFUSED
         );
         assert_eq!(std::fs::read(&outside).unwrap(), body.as_bytes());
+    }
+
+    fn git_ok(root: &Path, args: &[&str]) {
+        crate::fs::git_checked(root, args)
+            .unwrap_or_else(|error| panic!("git {args:?} failed: {error}"));
+    }
+
+    fn git_repo(scratch: &Scratch) -> PathBuf {
+        let repo = scratch.repo("repo name");
+        git_ok(&repo, &["init", "-b", "main"]);
+        std::fs::write(repo.join("keep.txt"), b"keep-this\n").unwrap();
+        std::fs::write(repo.join("bulky.bin"), vec![7u8; 64]).unwrap();
+        git_ok(&repo, &["add", "keep.txt", "bulky.bin"]);
+        git_ok(
+            &repo,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "files",
+            ],
+        );
+        repo
+    }
+
+    fn standin() -> Launch {
+        Launch {
+            program: PathBuf::from("node"),
+            args: vec![std::ffi::OsString::from(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/gion_standin.mjs"
+            ))],
+        }
+    }
+
+    fn with_tool(env: &SparseEnv) -> SparseEnv {
+        let mut env = env.clone();
+        env.launch = Some(standin());
+        env
+    }
+
+    static TOOL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct ToolVars {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl ToolVars {
+        fn set(
+            log: &Path,
+            fail: Option<&str>,
+            env_log: Option<&Path>,
+            link: bool,
+            probe: bool,
+        ) -> Self {
+            let lock = TOOL_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+            std::env::set_var("GION_STANDIN_LOG", log);
+            match fail {
+                Some(value) => std::env::set_var("GION_STANDIN_FAIL", value),
+                None => std::env::remove_var("GION_STANDIN_FAIL"),
+            }
+            match env_log {
+                Some(path) => std::env::set_var("GION_STANDIN_ENV_LOG", path),
+                None => std::env::remove_var("GION_STANDIN_ENV_LOG"),
+            }
+            if link {
+                std::env::set_var("GION_STANDIN_LINK", "1");
+            } else {
+                std::env::remove_var("GION_STANDIN_LINK");
+            }
+            if probe {
+                std::env::set_var("HIVRA_SPARSE_PROBE", "not-a-token");
+            } else {
+                std::env::remove_var("HIVRA_SPARSE_PROBE");
+            }
+            Self { _lock: lock }
+        }
+    }
+
+    impl Drop for ToolVars {
+        fn drop(&mut self) {
+            for key in [
+                "GION_STANDIN_LOG",
+                "GION_STANDIN_FAIL",
+                "GION_STANDIN_ENV_LOG",
+                "GION_STANDIN_LINK",
+                "HIVRA_SPARSE_PROBE",
+            ] {
+                std::env::remove_var(key);
+            }
+        }
+    }
+
+    fn only_main(repo: &Path) {
+        let listed = crate::worktrees::list(repo).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].is_main);
+    }
+
+    #[test]
+    fn scrub_hides_tokens_and_leaves_ordinary_text() {
+        assert_eq!(scrub("ghp_EXAMPLETOKEN1234567890"), "[hidden]");
+        assert_eq!(scrub("github_pat_abcDEF123"), "[hidden]");
+        assert_eq!(
+            scrub("gho_abc ghu_def ghs_ghi ghr_jkl"),
+            "[hidden] [hidden] [hidden] [hidden]"
+        );
+        assert_eq!(scrub("glpat-abc_def-1"), "[hidden]");
+        let bearer = scrub("Bearer ghp_abc");
+        assert!(!bearer.contains("ghp_"), "a bearer token stayed visible");
+        let url = scrub("https://user:s3cret@github.com/a");
+        assert!(!url.contains("s3cret"), "a url password stayed visible");
+        assert!(url.contains("[hidden]"));
+        assert_eq!(scrub("https://github.com/a"), "https://github.com/a");
+        assert_eq!(scrub("the pin isn't set"), "the pin isn't set");
+        assert_eq!(scrub("ghp_"), "ghp_");
+    }
+
+    #[test]
+    fn off_never_calls_the_tool_and_git_copies_both_files() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        assert!(open_if_enabled(&env, &repo, "plain", "HEAD", false)
+            .unwrap()
+            .is_none());
+        assert!(!log.exists());
+        let tree = crate::worktrees::create(&repo, "plain", "HEAD", false).unwrap();
+        assert!(tree.sparse_notice.is_none());
+        let path = PathBuf::from(&tree.path);
+        assert_eq!(
+            std::fs::read(path.join("keep.txt")).unwrap(),
+            b"keep-this\n"
+        );
+        assert_eq!(std::fs::read(path.join("bulky.bin")).unwrap().len(), 64);
+        assert!(!log.exists());
+    }
+
+    #[test]
+    fn on_reads_one_path_and_leaves_bulky_files_out() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        std::fs::write(repo.join("uncommitted.bin"), b"nope").unwrap();
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        let opened = open_if_enabled(&env, &repo, "sparse-one", "HEAD", false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(opened.sparse_notice.as_deref(), Some(SPARSE_NOTICE));
+        assert_eq!(opened.branch.as_deref(), Some("sparse-one"));
+        assert!(opened.dirty.is_none());
+        let dest = PathBuf::from(&opened.path);
+        assert!(!dest.join("keep.txt").exists());
+        assert!(!dest.join("bulky.bin").exists());
+        assert!(!dest.join("uncommitted.bin").exists());
+        assert!(dest.join(MARKER_NAME).is_file());
+        assert_eq!(read_path(&env, &dest, "keep.txt").unwrap(), "keep-this\n");
+        assert!(!dest.join("bulky.bin").exists());
+        assert!(read_path(&env, &dest, "../keep.txt").is_err());
+        assert!(read_path(&env, &dest, "/keep.txt").is_err());
+        assert!(read_path(&env, &dest, "sub\\keep.txt").is_err());
+        assert_eq!(
+            std::fs::read(repo.join("keep.txt")).unwrap(),
+            b"keep-this\n"
+        );
+        assert!(repo.join("bulky.bin").is_file());
+        only_main(&repo);
+        let slots = unlisted_slots(&repo);
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].sparse_notice.as_deref(), Some(SPARSE_NOTICE));
+        let foreign = crate::worktrees::default_root(&repo).join("foreign");
+        std::fs::create_dir_all(&foreign).unwrap();
+        std::fs::write(
+            foreign.join(MARKER_NAME),
+            b"{\"repo\":\"/elsewhere\",\"branch\":\"foreign\",\"commit\":\"abc\"}\n",
+        )
+        .unwrap();
+        assert_eq!(unlisted_slots(&repo).len(), 1);
+        let before = std::fs::read_to_string(&log).unwrap();
+        assert!(before.contains("create"));
+        let again = open_if_enabled(&env, &repo, "sparse-one", "HEAD", false).unwrap_err();
+        assert!(again.contains("already exists"));
+        assert_eq!(std::fs::read_to_string(&log).unwrap(), before);
+    }
+
+    #[test]
+    fn refusals_do_not_call_the_tool() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        assert_eq!(
+            open_if_enabled(&env, &repo, "-nope", "HEAD", false).unwrap_err(),
+            "Enter a valid branch name"
+        );
+        assert_eq!(
+            open_if_enabled(&env, &repo, "", "HEAD", false).unwrap_err(),
+            "Enter a valid branch name"
+        );
+        assert_eq!(
+            open_if_enabled(&env, &repo, "@{-1}", "HEAD", false).unwrap_err(),
+            "Enter a valid branch name"
+        );
+        crate::worktrees::create(&repo, "taken", "HEAD", false).unwrap();
+        assert_eq!(
+            open_if_enabled(&env, &repo, "taken", "HEAD", false).unwrap_err(),
+            "This branch already has a working copy. Select it from the picker."
+        );
+        assert!(!log.exists());
+        assert_eq!(crate::worktrees::list(&repo).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_failed_tool_does_not_fall_back_to_git() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, Some("1"), None, false, false);
+        let err = open_if_enabled(&env, &repo, "broken", "HEAD", false).unwrap_err();
+        assert!(!err.contains("ghp_"), "tool output leaked a token prefix");
+        assert!(err.contains("[hidden]"));
+        let dest = crate::worktrees::default_root(&repo).join("broken");
+        assert!(!dest.exists());
+        only_main(&repo);
+        assert!(std::fs::read(repo.join("bulky.bin")).unwrap().len() == 64);
+    }
+
+    #[test]
+    fn a_failure_without_a_record_leaves_the_folder() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, Some("nomarker"), None, false, false);
+        let err = open_if_enabled(&env, &repo, "partial", "HEAD", false).unwrap_err();
+        assert_eq!(err, "stopped");
+        let dest = crate::worktrees::default_root(&repo).join("partial");
+        assert!(dest.is_dir());
+        assert!(!dest.join(MARKER_NAME).exists());
+        only_main(&repo);
+    }
+
+    #[test]
+    fn an_unset_pin_creates_nothing() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = scratch.env();
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        assert_eq!(
+            open_if_enabled(&env, &repo, "missing-pin", "HEAD", false).unwrap_err(),
+            PIN_UNSET
+        );
+        assert!(!crate::worktrees::default_root(&repo)
+            .join("missing-pin")
+            .exists());
+        assert!(!log.exists());
+        assert!(!env.data_dir.join("tools").exists());
+        only_main(&repo);
+    }
+
+    #[test]
+    fn the_tool_sees_home_and_not_an_unlisted_variable() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let keys = scratch.root.join("env.keys");
+        let _vars = ToolVars::set(&log, None, Some(&keys), false, true);
+        open_if_enabled(&env, &repo, "env-check", "HEAD", false)
+            .unwrap()
+            .unwrap();
+        let text = std::fs::read_to_string(&keys).unwrap();
+        assert!(
+            text.lines().any(|line| line == "HOME"),
+            "home was not passed"
+        );
+        assert!(
+            text.lines().all(|line| line != "HIVRA_SPARSE_PROBE"),
+            "an unlisted variable was passed"
+        );
+        assert!(
+            text.lines().all(|line| !line.contains('=')
+                && !line.contains("not-a-token")
+                && !line.contains("ghp_")),
+            "env log is not keys only"
+        );
+    }
+
+    #[test]
+    fn a_git_worktree_from_the_tool_has_no_sparse_notice() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, true, false);
+        let opened = open_if_enabled(&env, &repo, "linked", "HEAD", false)
+            .unwrap()
+            .unwrap();
+        assert!(opened.sparse_notice.is_none());
+        let dest = PathBuf::from(&opened.path);
+        assert_eq!(
+            std::fs::read(dest.join("keep.txt")).unwrap(),
+            b"keep-this\n"
+        );
+        assert_eq!(std::fs::read(dest.join("bulky.bin")).unwrap().len(), 64);
+        let listed = crate::worktrees::list(&repo).unwrap();
+        assert!(listed
+            .iter()
+            .any(|tree| crate::worktrees::same_path(Path::new(&tree.path), &dest)));
     }
 }

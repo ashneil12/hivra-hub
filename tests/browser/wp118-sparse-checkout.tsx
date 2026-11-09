@@ -1,6 +1,9 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { SparseCheckout } from "../../src/features/source-control/ui/SparseCheckout";
+import {
+  SparseCheckout,
+  SparseSlotNote,
+} from "../../src/features/source-control/ui/SparseCheckout";
 import "../../src/styles/index.css";
 
 function Page() {
@@ -13,6 +16,7 @@ function Page() {
         note="The saved setting can't be read, so sparse checkout stays off."
         onChange={() => {}}
       />
+      <SparseSlotNote text="This checkout is sparse. Git does not see it as a worktree, so actions on it stay on the pinned tool." />
     </div>
   );
 }

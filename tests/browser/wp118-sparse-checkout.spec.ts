@@ -26,3 +26,12 @@ test("an unreadable saved setting stays off", async ({ page }) => {
   ).toBeVisible();
   await expect(section.getByRole("switch")).toHaveAttribute("aria-checked", "false");
 });
+
+test("a sparse checkout says git does not see it", async ({ page }) => {
+  await page.goto(pageUrl);
+  await expect(
+    page.getByText(
+      "This checkout is sparse. Git does not see it as a worktree, so actions on it stay on the pinned tool.",
+    ),
+  ).toBeVisible();
+});

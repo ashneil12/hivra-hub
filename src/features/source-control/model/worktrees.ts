@@ -30,6 +30,8 @@ export type Worktree = {
   setup?: WorktreeSetup;
   /** Said once, when this checkout was a plain git worktree because the pool was off or not installed. */
   poolNotice?: string;
+  /** Set when git does not list this checkout, so later actions stay on the pinned tool. */
+  sparseNotice?: string;
 };
 export type Worktrees = { worktrees: Worktree[]; defaultRoot: string };
 

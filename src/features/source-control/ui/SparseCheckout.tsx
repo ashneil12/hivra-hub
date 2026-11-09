@@ -42,3 +42,11 @@ export function SparseCheckout({ enabled, note, onChange }: SparseCheckoutProps)
     </section>
   );
 }
+
+export const SPARSE_SLOT_NOTE =
+  "This checkout is sparse. Git does not see it as a worktree, so actions on it stay on the pinned tool.";
+
+/** Shown on a checkout git does not list. Later actions stay on the pinned tool. */
+export function SparseSlotNote({ text }: { text: string }) {
+  return <p className="mt-2 text-[11px] text-content/55">{text}</p>;
+}
