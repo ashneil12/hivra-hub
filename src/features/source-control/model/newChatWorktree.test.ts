@@ -7,6 +7,7 @@ import {
   beginNewChatWorktreeOffer,
   clearUnconfirmedNewChatWorktree,
   confirmNewChatWorktreeOffer,
+  flippedNewChatWorktree,
   forgetNewChatFolderChoice,
   newChatStaysHere,
   newChatWorktreeAskLine,
@@ -437,5 +438,18 @@ describe("what the chat says", () => {
       ),
     ).toBeNull();
     expect(NEW_CHAT_WORKTREE_ASK).not.toMatch(/[—–]/);
+  });
+});
+
+describe("the palette flip", () => {
+  it("moves between off and ask, and never writes always", () => {
+    expect(flippedNewChatWorktree("off")).toBe("ask");
+    expect(flippedNewChatWorktree("ask")).toBe("off");
+    expect(flippedNewChatWorktree("always")).toBe("ask");
+    expect(flippedNewChatWorktree("ask")).toBe("off");
+    for (const value of ["off", "ask", "always"] as const) {
+      expect(flippedNewChatWorktree(value)).not.toBe("always");
+    }
+    expect(flippedNewChatWorktree("nope" as NewChatWorktree)).toBe("ask");
   });
 });

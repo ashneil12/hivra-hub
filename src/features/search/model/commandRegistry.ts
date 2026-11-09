@@ -41,7 +41,8 @@ export type PaletteAppAction =
   | "home"
   | "changes"
   | "archive-chat"
-  | "stop-chat";
+  | "stop-chat"
+  | "next-chat-worktree";
 
 export type PaletteRun =
   | { kind: "tab"; command: TabCommand }
@@ -223,6 +224,15 @@ const EXTRAS: PaletteCommand[] = [
     binding: null,
     run: { kind: "app", action: "changes" },
     needs: "project",
+  },
+  {
+    id: "git.next-chat-worktree",
+    label: "Next chat: use its own worktree",
+    group: "Git",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "next-chat-worktree" },
+    needs: "none",
   },
 ];
 

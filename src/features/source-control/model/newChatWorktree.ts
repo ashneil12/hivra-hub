@@ -215,6 +215,11 @@ export async function openNewChatWorktree(
   );
 }
 
+/** The palette moves between off and ask. Always becomes ask, and is never written. */
+export function flippedNewChatWorktree(value: NewChatWorktree): NewChatWorktree {
+  return value === "ask" ? "off" : "ask";
+}
+
 export function newChatWorktreeAskLine(
   session: Session,
   setting: NewChatWorktree,

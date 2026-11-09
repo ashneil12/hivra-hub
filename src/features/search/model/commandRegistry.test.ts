@@ -65,6 +65,7 @@ describe("the palette command registry", () => {
         "app.inbox",
         "app.commit",
         "app.create-pr",
+        "git.next-chat-worktree",
       ]),
     );
     expect(row("app.new-chat").label).toBe("New chat");
@@ -72,6 +73,13 @@ describe("the palette command registry", () => {
     expect(row("app.commit").label).toBe("Commit");
     expect(row("app.create-pr").label).toBe("Create PR");
     expect(row("app.commit").group).toBe("Git");
+    const next = row("git.next-chat-worktree", nowhere);
+    expect(next.label).toBe("Next chat: use its own worktree");
+    expect(next.group).toBe("Git");
+    expect(next.needs).toBe("none");
+    expect(next.blockedReason).toBeNull();
+    expect(next.run).toEqual({ kind: "app", action: "next-chat-worktree" });
+    expect(next.label).not.toMatch(/[—–]/);
   });
 
   it("shows the person's current shortcut, and nothing when it is disabled", () => {
