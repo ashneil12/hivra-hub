@@ -595,9 +595,9 @@ import {
   applyBtwHarnessEvent,
   btwTurnHarness,
   buildBtwPrompt,
-  replaceBtwThread,
   sealBtwResponseBlocks,
   supportsBtwHarness,
+  withSideThread,
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
@@ -11636,14 +11636,9 @@ function Workspace({
         );
         const nextThread = update(current);
         if (!nextThread) return session;
-        const nextBlock = current
-          ? replaceBtwThread(block, nextThread)
-          : {
-              ...block,
-              btwThreads: [...(block.btwThreads ?? []), nextThread],
-            };
-        const blocks = session.blocks.slice();
-        blocks[blockIndex] = nextBlock;
+        // WP-112: attach the side thread only. Do not append, compact, or start a parent turn.
+        const blocks = withSideThread(session.blocks, userBlockId, nextThread);
+        if (!blocks) return session;
         updatedSession = { ...session, blocks };
         return updatedSession;
       });
