@@ -233,6 +233,12 @@
       "url": "https://github.com/Riley-Coyote/mnemos-mcp",
       "licence": "Apache-2.0",
       "gave": "ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100)"
+    },
+    {
+      "name": "Pierre",
+      "url": "https://github.com/pierrecomputer/pierre",
+      "licence": "Apache-2.0",
+      "gave": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
     }
   ],
   "components": [
