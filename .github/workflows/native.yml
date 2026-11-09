@@ -63,3 +63,21 @@ jobs:
       - run: cargo test --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev -- --test-threads=1
       - run: cargo build --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev
 
+  # WP-105: one required check that adds up this workflow's jobs, the same shape as ci.yml's.
+  # A skipped job (a path filter ran nothing) counts as fine; a failure or a cancel fails this job.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [core, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Every required job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci-ok.mjs

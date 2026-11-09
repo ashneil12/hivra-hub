@@ -17,7 +17,10 @@ import {
   isTerminalTab,
   type EditorPane,
   type FilePaneTab,
+  type LayoutNode,
+  type SplitDir,
 } from "../../workspace/model/layout";
+import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
 import { isImagePath, isVideoPath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
@@ -83,6 +86,10 @@ type Props = {
   editorNavigation?: EditorNavigationTarget | null;
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
+  /** The tab's split tree, so a full group can disable one direction. */
+  layout?: LayoutNode;
+  /** Same handler as the split shortcut. Absent hides the buttons. */
+  onSplit?: (dir: SplitDir) => void;
 };
 
 function FilePaneComponent({
@@ -108,7 +115,18 @@ function FilePaneComponent({
   editorNavigation,
   onPaneDragStart,
   onTerminalMetaChange,
+  layout,
+  onSplit,
 }: Props) {
+  const splitButtons =
+    onSplit && layout ? (
+      <PaneSplitButtons
+        layout={layout}
+        paneId={pane.id}
+        onFocus={onFocus}
+        onSplit={onSplit}
+      />
+    ) : null;
   const diffViewer = useSyncExternalStore(
     subscribeDiffViewer,
     loadDiffViewer,
@@ -131,7 +149,15 @@ function FilePaneComponent({
           onPinFile={onPinFile}
           onReorder={(ids) => onReorderFiles(pane.id, ids)}
           onPaneDragStart={onPaneDragStart}
+          trailing={splitButtons}
         />
+      ) : splitButtons ? (
+        <div
+          data-pane-header=""
+          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
+        >
+          {splitButtons}
+        </div>
       ) : null}
       <div data-pane-body="" className="relative min-h-0 flex-1">
         {(deferBody ? [] : pane.files).map((file) => {
@@ -257,7 +283,9 @@ export const FilePane = memo(FilePaneComponent, (previous, next) => {
     previous.onBuildPlan !== next.onBuildPlan ||
     previous.editorNavigation !== next.editorNavigation ||
     Boolean(previous.onPaneDragStart) !== Boolean(next.onPaneDragStart) ||
-    previous.onTerminalMetaChange !== next.onTerminalMetaChange
+    previous.onTerminalMetaChange !== next.onTerminalMetaChange ||
+    previous.layout !== next.layout ||
+    previous.onSplit !== next.onSplit
   ) {
     return false;
   }
