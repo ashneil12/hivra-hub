@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # GitHub's default job limit is 360 minutes. That is too long for a hang, so the long jobs set their own limit.
   release-channel:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Release channel isolation
@@ -62,7 +63,10 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
+    # The install step is capped at 8 minutes and retried once, so the job limit is 25 minutes: one full attempt
+    # plus the tests. A second attempt that also runs to the cap can meet this limit, and that still fails the hang.
     name: browser (${{ matrix.shard }}/4)
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -79,7 +83,39 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
+      - name: Playwright browser cache directory
+        id: playwright-path
+        run: node scripts/ci-playwright-install.mjs --print-cache-path >> "$GITHUB_OUTPUT"
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        # A cache outage must not skip the browsers. An empty hit flag fails open to a full install.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ms-playwright-v1-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        id: playwright-install
+        timeout-minutes: 8
+        continue-on-error: true
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}"
+      - name: Retry Playwright browser install
+        id: playwright-install-retry
+        if: steps.playwright-install.outcome == 'failure'
+        timeout-minutes: 8
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}"
+      - name: Save Playwright browsers
+        # Four shards miss together and would all try to write one key. A lost race must not fail the tests.
+        # The save also waits until an install attempt actually succeeded, so a partial download is not cached.
+        continue-on-error: true
+        if: >-
+          steps.playwright-cache.outputs.cache-hit != 'true'
+          && steps.playwright-cache.outputs.cache-primary-key != ''
+          && (steps.playwright-install.outcome == 'success' || steps.playwright-install-retry.outcome == 'success')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
       # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
       - name: Hivra layout (Hub flag)
         if: matrix.shard == 1
@@ -96,6 +132,7 @@ jobs:
 
   host:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +160,7 @@ jobs:
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
     # macOS stays one job: it was already quick, and macOS runners are the scarce ones.
     name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -174,6 +212,7 @@ jobs:
   ship:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: Ship drill
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -262,6 +301,7 @@ jobs:
   rpm:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     name: RPM build (${{ matrix.image }})
+    timeout-minutes: 25
     runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
