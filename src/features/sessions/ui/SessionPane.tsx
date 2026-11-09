@@ -16,6 +16,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
@@ -750,6 +751,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
+      midThreadLine={session.midThread?.line}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
       onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
@@ -966,6 +968,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
+      {/* WP-121: continue this chat, or a labelled recap, until the next send. */}
+      <MidThreadSwitchNotice line={session.midThread?.line} place="header" />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
