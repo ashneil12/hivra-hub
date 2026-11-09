@@ -6,7 +6,7 @@ Measured 9 Nov 2026 from 13 completed red CI runs, plus titles the lead already 
 
 | Test | OS / browser | Last seen | Cause | Status |
 | --- | --- | --- | --- | --- |
-| `tests/browser/agents-page.spec.ts` "every button stays on one line, and rows still fit, from a wide page to a narrow one" | WebKit | 9 Nov 2026, 10 of 13 red runs | The width loop sleeps a fixed 250 ms, then measures layout inside the iframe before WebKit has flushed it. | open |
+| `tests/browser/agents-page.spec.ts` "every button stays on one line, and rows still fit, from a wide page to a narrow one" | WebKit | 9 Nov 2026, 10 of 13 red runs | The width loop slept a fixed 250 ms, then measured the iframe before WebKit had flushed layout. It now waits two frames and polls the same measure (2 s). A wrap that stays still fails. | fixed |
 | `tests/browser/agents-page.spec.ts` "the Agents page follows the agents live, and answers, takes a pick and stops through the app's own hands" | WebKit | 9 Nov 2026, 4 of 13 red runs | After the fixture moves, `[data-item="w:d5"]` in the attention list is missing. Not yet pinned to a missed fixture write, a late paint, or another list. | open |
 | `tests/browser/video-preview.spec.ts` "file preview decodes, plays and seeks a video, then pauses on tab change" | WebKit | 9 Nov 2026, 3 of 13 red runs | Cold WebKit media pipeline. The test already polls 15 s for metadata, then calls `play()` once. | open |
 | `tests/browser/workflow-run.spec.ts` "a Stop that fails comes back with the reason instead of Stopping… for good" | WebKit | 6 Nov 2026 (0 of the 13 runs on 9 Nov; still on the lead's known list) | The failed-stop reason is read once, while the row can still say "Stopping…". | open |
