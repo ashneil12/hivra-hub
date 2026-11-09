@@ -109,6 +109,7 @@ export function summaryFromSession(
     id: session.id,
     orchestrationLeadId: session.orchestrationLeadId,
     sidebarHidden: session.sidebarHidden,
+    private: session.private === true || undefined,
     cwd: session.cwd,
     harness: session.harness,
     model: session.model,
@@ -220,12 +221,14 @@ export function historyWithLiveSessions(
         stored.automationId !== automationId ||
         stored.title !== session.title ||
         !!stored.sidebarHidden !== !!session.sidebarHidden ||
+        !!stored.private !== !!session.private ||
         stored.linkedWorkItem?.url !== linkedWorkItem?.url
       ) {
         rows[storedIndex] = {
           ...stored,
           title: session.title,
           sidebarHidden: session.sidebarHidden,
+          private: session.private === true || undefined,
           draft: draft || undefined,
           ...(automationId ? { automationId } : {}),
           ...(linkedWorkItem ? { linkedWorkItem } : {}),
