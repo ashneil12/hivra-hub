@@ -155,6 +155,8 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
+import { insertFork } from "../features/sessions/model/threadFork";
+import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
   SessionStateContext,
@@ -3509,6 +3511,24 @@ function Workspace({
     attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
+
+  // WP-123: open a forked chat. The original is not written.
+  const openForkedSession = useCallback(
+    (session: Session) => {
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        insertFork(sessions, session),
+      );
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+    },
+    [appendTab],
+  );
 
   const onSelectRemoteSession = useCallback(
     (project: string, remoteSessionId: string) => {
@@ -18064,6 +18084,8 @@ function Workspace({
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
+          {/* WP-123: fork a chat from one message. */}
+          <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

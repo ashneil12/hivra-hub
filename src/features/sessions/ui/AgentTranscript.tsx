@@ -48,6 +48,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { ForkFromHereButton } from "./ForkFromHereButton";
 import { GeneratedImage } from "./GeneratedImage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
@@ -311,6 +312,8 @@ type Props = {
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
+  /** WP-123: copy this chat up to the chosen message. */
+  onForkFromHere?: (blockId: string) => void;
   editingLastTurn?: boolean;
   onJumpToBottomChange?: (show: boolean) => void;
 
@@ -384,6 +387,7 @@ function AgentTranscriptComponent({
   onSecondOpinion,
   onHandoff,
   onEditLastTurn,
+  onForkFromHere,
   editingLastTurn = false,
   onJumpToBottomChange,
   onJumpToBottomReady,
@@ -1629,6 +1633,13 @@ function AgentTranscriptComponent({
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
                 }
+                onForkFromHere={
+                  onForkFromHere &&
+                  !item.block.internal &&
+                  (item.block.role === "user" || item.block.role === "assistant")
+                    ? onForkFromHere
+                    : undefined
+                }
               />
             );
           // The fold reaches across a stack of delegated runs, but those rows
@@ -2547,6 +2558,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
+  onForkFromHere,
   askedBefore,
 }: {
   /** r99: questions an earlier reply already asked (one per line, a string so memo holds); left out of this one. */
@@ -2583,6 +2595,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
+  /** WP-123: copy this chat up to this message. */
+  onForkFromHere?: (blockId: string) => void;
 }) {
   if (block.role === "user") {
     // r93: the app's note to the chat is one small neutral line, never a bubble in Ash's name.
@@ -2611,6 +2625,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onEdit={onEditLastTurn}
         editing={editing}
+        onFork={onForkFromHere}
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
         onRemoveDraft={onRemoveDraft}
@@ -2748,6 +2763,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
+      {onForkFromHere && !block.streaming ? (
+        <div className="user-message-actions flex items-center gap-1 pt-1">
+          <ForkFromHereButton blockId={block.id} onFork={onForkFromHere} />
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -2814,6 +2834,7 @@ function UserMessageBlock({
   stickyIndex,
   onEdit,
   editing = false,
+  onFork,
   cwd,
   onSaveNote,
   onSendDraft,
@@ -2830,6 +2851,7 @@ function UserMessageBlock({
   stickyIndex: number;
   onEdit?: () => void;
   editing?: boolean;
+  onFork?: (blockId: string) => void;
   cwd?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -3195,6 +3217,9 @@ function UserMessageBlock({
                 label="Copy message"
               />
             ) : null}
+            {onFork ? (
+              <ForkFromHereButton blockId={block.id} onFork={onFork} />
+            ) : null}
             {onEdit ? (
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
             ) : null}
@@ -3210,6 +3235,10 @@ function UserMessageBlock({
                 {formatClockTime(messageAt)}
               </time>
             ) : null}
+          </div>
+        ) : compactFollowUp && onFork ? (
+          <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
+            <ForkFromHereButton blockId={block.id} onFork={onFork} />
           </div>
         ) : null}
       </div>
