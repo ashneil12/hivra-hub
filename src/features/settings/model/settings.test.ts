@@ -714,6 +714,7 @@ describe("settings navigation", () => {
       "changes",
       "decisions",
       "activity",
+      "usage",
       "connected",
       "dashboards",
       "portable",

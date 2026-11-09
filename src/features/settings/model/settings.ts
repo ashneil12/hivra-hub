@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "usage"
   | "connected"
   | "dashboards"
   | "portable"
@@ -113,6 +114,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "usage",
+    group: "app",
+    label: "Usage",
+    description:
+      "Tokens and cost for the last 30 days, by day, project, engine and model. A cost is shown only when the engine reported one.",
+    keywords: "usage cost tokens spend price history",
   },
   {
     id: "connected",
