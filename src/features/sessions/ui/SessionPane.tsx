@@ -1,4 +1,6 @@
 import { GripVertical, X } from "../../../shared/ui/icons";
+import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
+import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
 import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
@@ -14,6 +16,8 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { PrivateMark } from "./PrivateMark";
+import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -283,6 +287,10 @@ export type SessionPaneProps = {
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   /** Keeps this transcript mounted after the pane closes. */
   transcriptPool?: TranscriptPool;
+  /** The tab's split tree, so a full group can disable one direction. */
+  layout?: LayoutNode;
+  /** Same handler as the split shortcut. Absent hides the buttons. */
+  onSplit?: (dir: SplitDir) => void;
 };
 
 type Props = SessionPaneProps & {
@@ -394,6 +402,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onNewTerminal,
   onPaneDragStart,
   transcriptPool,
+  layout,
+  onSplit,
 }: Props) {
   const orchestrationRuns = useSyncExternalStore(
     orchestrator.subscribe,
@@ -862,6 +872,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
     />
   );
 
+  const splitButtons =
+    onSplit && layout ? (
+      <PaneSplitButtons
+        layout={layout}
+        paneId={session.id}
+        onFocus={onFocus}
+        onSplit={onSplit}
+      />
+    ) : null;
+
   return (
     <div
       data-session-drop={session.id}
@@ -920,6 +940,9 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {/* WP-111 */}
+          <PrivateMark on={session.private === true} />
+          {splitButtons}
           <button
             type="button"
             title={`Close Pane (${MOD}W)`}
@@ -936,7 +959,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
+      ) : session.private === true && !splitButtons ? (
+        <div className="flex h-7 shrink-0 items-center px-3">
+          {/* WP-111 */}
+          <PrivateMark on />
+        </div>
+      ) : splitButtons ? (
+        <div
+          data-pane-header=""
+          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
+        >
+          {/* WP-111 */}
+          {session.private === true ? <PrivateMark on /> : null}
+          {splitButtons}
+        </div>
       ) : null}
+      {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
+      <NewChatWorktreeBanner session={session} />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -1400,6 +1439,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       crewLines={delegationPane.crewLines}
                     />
                   ) : null}
+                  {btw.canStartDraft && !btw.open ? (
+                    <div className="flex justify-end px-1.5 pb-1">
+                      <button
+                        type="button"
+                        data-side-question
+                        onClick={() => btw.openWith("")}
+                        className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                      >
+                        Side question
+                      </button>
+                    </div>
+                  ) : null}
                   {composer}
                 </>
               )}
@@ -1407,6 +1458,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           ) : null}
           <BtwSheet
             btw={btw}
+            blocks={session.blocks}
             cwd={workCwd}
             visible={visible}
             origin={() =>
@@ -1417,6 +1469,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
             onSaveNote={notesEnabled ? saveNote : undefined}
             onOpenFile={onOpenFile}
             onOpenDiff={onOpenDiff}
+            onAddToMainChat={(text) => {
+              // WP-112: a draft in the parent composer. It does not send.
+              addSelectionToChat(text, "plain");
+              btw.close();
+            }}
           />
         </div>
       </div>

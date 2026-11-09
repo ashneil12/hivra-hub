@@ -526,6 +526,32 @@ describe("a cancel, a shared id, and a key-name secret", () => {
     secrets: 0,
   });
 
+  it("does not offer a private chat, and does not mark it done", async () => {
+    const store = disk();
+    const asked: string[] = [];
+    const summary = await runImport(
+      harness(
+        store,
+        [
+          { kind: "chat", conversation: one("secret") },
+          { kind: "chat", conversation: { ...one("public", "two.jsonl"), id: "public-sess" } },
+        ],
+        {
+          ask: async (prompt) => {
+            asked.push(prompt);
+            return citingAsk([])(prompt);
+          },
+          excludedKeys: new Set(["sess-1"]),
+        },
+      ),
+    );
+    expect(summary.total).toBe(1);
+    expect(summary.submitted).toBe(1);
+    expect(asked.some((prompt) => prompt.includes("secret"))).toBe(false);
+    expect(isSubmitted(store.get(), "claude_code", "one.jsonl")).toBe(false);
+    expect(isSubmitted(store.get(), "claude_code", "two.jsonl")).toBe(true);
+  });
+
   it("does not save a chat cancelled while the model call is in flight", async () => {
     const store = disk();
     let stop = false;
