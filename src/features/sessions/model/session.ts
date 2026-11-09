@@ -392,6 +392,11 @@ export type TurnMetrics = {
   cacheWriteTokens?: number;
   /** Provider-normalized share of input served from cache, as a percentage. */
   cacheHitPercent?: number;
+  /**
+   * Price in US dollars the CLI reported for this turn, when it reports one (Claude's `total_cost_usd`, OpenCode's
+   * `cost`). Absent means the engine did not say: nothing ever estimates it from a price table.
+   */
+  costUsd?: number;
 };
 
 /**

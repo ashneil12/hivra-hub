@@ -1280,12 +1280,18 @@ function contextUsedFromUsage(usage: Record<string, unknown> | null): number {
   );
 }
 
-/** Aggregate token accounting for the completed Claude turn. */
+/**
+ * Aggregate token accounting for the completed Claude turn.
+ *
+ * The result record also carries `total_cost_usd`, the CLI's own price for the turn (WP-108). It is kept as reported
+ * and never derived: a CLI that doesn't send it gets a turn with tokens and no price.
+ */
 export function turnMetricsFromResult(
   rec: Record<string, unknown>,
 ): TurnMetrics | undefined {
   const usage = asRecord(rec.usage);
-  if (!usage) return undefined;
+  const costUsd = reportedCost(rec.total_cost_usd);
+  if (!usage) return costUsd == null ? undefined : { costUsd };
   const inputTokens = numberField(usage, "input_tokens");
   const outputTokens = numberField(usage, "output_tokens");
   const cacheReadTokens = numberField(usage, "cache_read_input_tokens");
@@ -1294,7 +1300,9 @@ export function turnMetricsFromResult(
     "cache_read_input_tokens" in usage ||
     "cache_creation_input_tokens" in usage;
   const cacheableInput = inputTokens + cacheReadTokens + cacheWriteTokens;
-  if (!inputTokens && !outputTokens && !cacheableInput) return undefined;
+  if (!inputTokens && !outputTokens && !cacheableInput) {
+    return costUsd == null ? undefined : { costUsd };
+  }
   return {
     ...(inputTokens ? { inputTokens } : {}),
     ...(outputTokens ? { outputTokens } : {}),
@@ -1303,7 +1311,15 @@ export function turnMetricsFromResult(
     ...(cacheReported && cacheableInput
       ? { cacheHitPercent: (cacheReadTokens / cacheableInput) * 100 }
       : {}),
+    ...(costUsd != null ? { costUsd } : {}),
   };
+}
+
+/** A price is money: a finite, non-negative number, or nothing at all. */
+function reportedCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 /**

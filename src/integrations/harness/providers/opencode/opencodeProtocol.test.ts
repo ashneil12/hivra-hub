@@ -460,6 +460,33 @@ describe("contextUsedFromMessageInfo", () => {
       cacheHitPercent: (40_000 / 46_200) * 100,
     });
   });
+
+  // WP-108: OpenCode reports its own cost per message.
+  it("keeps the cost OpenCode reported", () => {
+    expect(
+      turnMetricsFromMessageInfo({
+        cost: 0.0212,
+        tokens: { input: 10, output: 20 },
+      }),
+    ).toEqual({ inputTokens: 10, outputTokens: 20, costUsd: 0.0212 });
+  });
+
+  it("reports no cost when OpenCode sent none", () => {
+    const metrics = turnMetricsFromMessageInfo({
+      tokens: { input: 10, output: 20 },
+    });
+    expect(metrics?.costUsd).toBeUndefined();
+    expect("costUsd" in (metrics ?? {})).toBe(false);
+  });
+
+  it("ignores a cost it cannot read as a number", () => {
+    for (const bad of ["0.01", null, -1, Number.NaN]) {
+      expect(
+        turnMetricsFromMessageInfo({ cost: bad, tokens: { input: 10 } })
+          ?.costUsd,
+      ).toBeUndefined();
+    }
+  });
 });
 
 describe("flattenOpenCodeModels context window", () => {
