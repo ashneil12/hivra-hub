@@ -9916,7 +9916,7 @@ function Workspace({
         saveMonoName(mono.id, name);
         return mono.id;
       },
-      // A plan naming an existing Mono (the built-in Chief of Staff) waits until the hub has tied it to the project.
+      // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
         return !!mono && monoWorksOn(mono, project);
