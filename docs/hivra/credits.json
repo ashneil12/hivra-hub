@@ -575,7 +575,7 @@
       "url": "https://github.com/baz-scm/gion",
       "licence": "Apache-2.0",
       "copyright": "No copyright line was present in the studied tree. Do not invent a holder.",
-      "where": "src-tauri/src/sparse_checkout.rs",
+      "where": "",
       "how": "Planned for WP-118, code not copied yet: a pinned gion binary for an opted-in sparse worktree. The Go source is not vendored."
     }
   ]

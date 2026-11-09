@@ -348,6 +348,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "git branch working copy create delete manage",
   },
   {
+    id: "sparse-checkout",
+    section: "worktrees",
+    label: "Use a sparse checkout for new worktrees on this project",
+    keywords: "sparse partial paths large repo new worktree",
+  },
+  {
     id: "project-actions",
     section: "worktrees",
     label: "Project actions",

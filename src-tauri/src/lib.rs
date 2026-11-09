@@ -134,6 +134,8 @@ mod skills;
 pub mod ssh_askpass;
 // Hivra WP-82: ready worktrees, driven by the pinned treehouse tool.
 mod worktree_pool;
+// Hivra WP-118: optional sparse checkouts for new worktrees. Off unless this project asks.
+mod sparse_checkout;
 // WP-87: a stack per worktree, with its own ports and Compose project.
 mod local_services; // WP-90: the fake outside service each stack can run
 mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
@@ -849,6 +851,9 @@ pub fn run() {
             worktree_pool::worktree_pool_settings,
             worktree_pool::worktree_pool_set_settings,
             worktree_pool::worktree_pool_prune,
+            // WP-118: the per-project sparse checkout switch. Missing reads as off.
+            sparse_checkout::sparse_checkout_settings,
+            sparse_checkout::sparse_checkout_set,
             stacks::stack_status,
             stacks::stack_down,
             stacks::stack_reset,
