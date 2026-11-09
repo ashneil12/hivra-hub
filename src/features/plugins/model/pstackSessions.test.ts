@@ -168,7 +168,8 @@ describe("pstack reaches every chat", () => {
     const claude = await claudeSees("claude-pstack-on");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
     const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
-    const expected = [...snapshot.skills, ...creator, ...rpi];
+    const mcode = readdirSync(join(CARRIED, "hivra-mcode", "skills"));
+    const expected = [...snapshot.skills, ...creator, ...rpi, ...mcode];
     expect(claude.args).toContain("--plugin-dir");
     expect(claude.skills).toEqual(expect.arrayContaining(expected));
     expect(claude.skills).toHaveLength(expected.length);
@@ -182,7 +183,8 @@ describe("pstack reaches every chat", () => {
     const claude = await claudeSees("claude-pstack-off");
     const creator = ["write-command", "write-mono", "write-panel", "write-persona", "write-skill"];
     const rpi = readdirSync(join(CARRIED, "hivra-rpi", "skills"));
-    const staying = [...creator, ...rpi];
+    const mcode = readdirSync(join(CARRIED, "hivra-mcode", "skills"));
+    const staying = [...creator, ...rpi, ...mcode];
     expect(claude.args).toContain("--plugin-dir");
     expect(claude.skills).toEqual(expect.arrayContaining(staying));
     expect(claude.skills).toHaveLength(staying.length);
