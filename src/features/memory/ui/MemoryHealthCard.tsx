@@ -10,6 +10,7 @@ const DROP_NAMES: Array<{ key: keyof MemoryHealthView["dropped"]; label: string 
   { key: "ungrounded", label: "not backed by the chat" },
   { key: "late", label: "from a chat that had already moved on" },
   { key: "invalid", label: "the curator could not read" },
+  { key: "orders", label: "it looks like instructions the person never gave" },
 ];
 
 function when(at: number | undefined, now: number): string {
