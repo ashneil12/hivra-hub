@@ -160,6 +160,32 @@ describe("the palette wiring", () => {
     }
   });
 
+  it("flips the next chat between off and ask without touching the composer", () => {
+    localStorage.clear();
+    const calls: string[] = [];
+    const run = vi.fn((_name: string, fn: () => void) => fn());
+    const side = sideEffects(calls);
+    side.run = run;
+    const command = row("git.next-chat-worktree");
+
+    expect(runPaletteCommand(command, actions(calls), side)).toBe(true);
+    expect(localStorage.getItem("monocode.newChatWorktree")).toBe("ask");
+
+    expect(runPaletteCommand(command, actions(calls), side)).toBe(true);
+    expect(localStorage.getItem("monocode.newChatWorktree")).toBe("off");
+
+    localStorage.setItem("monocode.newChatWorktree", "always");
+    expect(runPaletteCommand(command, actions(calls), side)).toBe(true);
+    expect(localStorage.getItem("monocode.newChatWorktree")).toBe("ask");
+
+    localStorage.setItem("monocode.newChatWorktree", "nope");
+    expect(runPaletteCommand(command, actions(calls), side)).toBe(true);
+    expect(localStorage.getItem("monocode.newChatWorktree")).toBe("ask");
+
+    expect(calls).toEqual([]);
+    expect(run).not.toHaveBeenCalled();
+  });
+
   it("sends zoom and editor rows to their own helpers", () => {
     const calls: string[] = [];
     runPaletteCommand(row("View: Zoom In"), actions(calls), sideEffects(calls));

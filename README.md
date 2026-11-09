@@ -78,13 +78,13 @@ Also [poteto](https://x.com/poteto)'s writing on skills and verification, includ
 
 Early. Expect the code and this page to change a lot. The build plan, split into work packages for the
 agents that build it, is in [docs/hivra](docs/hivra/README.md). Agents working in this repo should read
-[CLAUDE.md](CLAUDE.md) first.
+[AGENTS.md](AGENTS.md) first: every agent CLI reads that file, and [CLAUDE.md](CLAUDE.md) imports it.
 
 ## Building
 
 Same as MonoCode: Node.js 20+ and a stable Rust toolchain. See [build setup](docs/building.md). This fork
 has its own build and dev scripts (`npm run hub:dev`, `npm run hub:build`), described in
-[CLAUDE.md](CLAUDE.md).
+[AGENTS.md](AGENTS.md).
 
 ## License
 
