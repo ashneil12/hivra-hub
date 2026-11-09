@@ -42,6 +42,7 @@ mod crew;
 mod devin_config;
 mod devin_usage;
 pub mod disclaim;
+mod explore_pin; // WP-143: cheap Explore and Plan agent files in the session folder.
 mod external_editor;
 mod firstmate;
 mod fs;
@@ -894,6 +895,8 @@ pub fn run() {
             fs::omp_active_assistant_texts,
             fs::claude_shell_commands,
             fs::write_text_file,
+            // WP-143: create a missing Explore or Plan agent file. Never overwrites.
+            explore_pin::ensure_cheap_explore_pin,
             skills::list_skills,
             // WP-30: plugins.
             plugins::plugins_list,

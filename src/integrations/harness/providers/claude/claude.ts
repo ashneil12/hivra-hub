@@ -94,6 +94,7 @@ import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
+import { ensureCheapExplorePin } from "./explorePin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -1020,6 +1021,15 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       }
     },
   );
+
+  // WP-143: pin Explore to a cheap model in this session's folder. A failure here does not stop the launch.
+  const pinned = await ensureCheapExplorePin({
+    cwd: input.cwd,
+    offAnthropicModel: claudeBridgeKind() ? launch.model : launch.routedModel,
+  });
+  if (pinned.sentence) {
+    input.onEvent({ type: "status", key: "explore-pin", text: pinned.sentence });
+  }
 
   await spawnChild(
     input.sessionId,
