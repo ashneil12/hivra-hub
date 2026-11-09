@@ -217,6 +217,72 @@ export function flavourOf(platform: NodeJS.Platform | undefined): PathFlavour {
   return platform === "win32" ? path.win32 : path.posix;
 }
 
+/**
+ * Node 22.1 added `fileURLToPath(url, { windows })`. There is no engines field and no root .nvmrc;
+ * the check job is Node 20, which ignores the flag and always uses the platform it started on.
+ * Probed once, at load: a later test that sets process.platform must not change the answer.
+ */
+function fileURLToPathHonoursPlatform(): boolean {
+  try {
+    const posix = fileURLToPath(new URL("file:///posix/probe"), { windows: false });
+    const win = fileURLToPath(new URL("file:///C:/probe"), { windows: true });
+    return posix === "/posix/probe" && win === "C:\\probe";
+  } catch {
+    return false;
+  }
+}
+
+const FILE_URL_HONOURS_PLATFORM = fileURLToPathHonoursPlatform();
+/** The platform Node started on. Tests spoof process.platform after this module has loaded. */
+const HOST_IS_WINDOWS = process.platform === "win32";
+
+/** Node rejects a file URL whose path contains an encoded slash (and, on Windows, an encoded backslash). */
+function rejectEncodedSeparators(pathname: string, windows: boolean): void {
+  for (let index = 0; index < pathname.length; index++) {
+    if (pathname[index] !== "%") continue;
+    const third = pathname.charCodeAt(index + 2) | 0x20;
+    const encodedSlash = pathname[index + 1] === "2" && third === 102; // %2f / %2F
+    const encodedBackslash = windows && pathname[index + 1] === "5" && third === 99; // %5c / %5C
+    if (encodedSlash || encodedBackslash) {
+      throw new TypeError("File URL path must not include encoded \\ or / characters");
+    }
+  }
+}
+
+/** Posix path for a file URL, for Node 20 where `{ windows: false }` is ignored. Same checks as Node. */
+function posixPathFromFileURL(file: URL): string {
+  if (file.hostname !== "") throw new TypeError("File URL host must be empty");
+  rejectEncodedSeparators(file.pathname, false);
+  return decodeURIComponent(file.pathname);
+}
+
+/** Windows path for a file URL, for Node 20 on a posix host where `{ windows: true }` is ignored. */
+function windowsPathFromFileURL(file: URL): string {
+  rejectEncodedSeparators(file.pathname, true);
+  const pathname = decodeURIComponent(file.pathname);
+  if (file.hostname !== "") return `\\\\${file.hostname}${pathname}`.split("/").join("\\");
+  const letter = pathname.charCodeAt(1);
+  const isLetter = (letter >= 65 && letter <= 90) || (letter >= 97 && letter <= 122);
+  if (!isLetter || pathname.charCodeAt(2) !== 58) {
+    throw new TypeError("File URL path must be absolute");
+  }
+  return pathname.slice(1).split("/").join("\\");
+}
+
+/** Node 20 stand-in for `fileURLToPath(url, { windows })`. Node 22.1 and later have the flag. */
+export function fileURLToPathForPlatform(file: URL, windows: boolean): string {
+  return windows ? windowsPathFromFileURL(file) : posixPathFromFileURL(file);
+}
+
+/** A file URL as a path on `windows`, whatever platform this process started on. */
+function pathFromFileURL(file: URL, windows: boolean): string {
+  if (FILE_URL_HONOURS_PLATFORM) return fileURLToPath(file, { windows });
+  // Node 20 already converts with the host's rules. Use that when it is the platform we want,
+  // and the manual decode only for the other one (a darwin URL on Windows, a Windows URL on Mac).
+  if (windows === HOST_IS_WINDOWS) return fileURLToPath(file);
+  return fileURLToPathForPlatform(file, windows);
+}
+
 /** A path as the guard compares it: URL and Buffer inputs, an unexpanded "~", and relative paths. */
 export function normalisePath(file: unknown, home: string, flavour: PathFlavour = path.posix): string | null {
   if (file === undefined || file === null) return null;
@@ -224,7 +290,9 @@ export function normalisePath(file: unknown, home: string, flavour: PathFlavour 
   if (typeof file === "string") text = file;
   else if (file instanceof URL) {
     try {
-      text = fileURLToPath(file);
+      // The flavour is the platform the caller asked for. fileURLToPath by itself uses the
+      // platform Node started on, so on Windows a darwin file URL throws and the guard misses it.
+      text = pathFromFileURL(file, flavour === path.win32);
     } catch {
       return null;
     }

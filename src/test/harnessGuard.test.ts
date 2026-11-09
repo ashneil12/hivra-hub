@@ -4,6 +4,7 @@
 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -14,6 +15,7 @@ import {
   endTest,
   fetchTarget,
   GUARD_ERROR_NAME,
+  fileURLToPathForPlatform,
   isGuardedWritePath,
   isLoopbackHost,
   isWriteFlag,
@@ -203,6 +205,84 @@ describe("guarded data folders", () => {
     // A relative path is where the test runs, not under a home folder it did not name.
     expect(guarded(".claude/x")).toBe(false);
     expect(guarded("Documents/x")).toBe(false);
+  });
+
+  it("converts a file URL with the platform it was given, not the one the process is running on", () => {
+    // fileURLToPath follows the platform Node started on. It does not notice a later change to
+    // process.platform, so pretending to be Windows does not by itself make a drive-less file URL
+    // throw on this Mac. On a Windows runner it does throw ("File URL path must be absolute"), and
+    // this darwin check is then false. The Windows file URL is the half that fails here: posix
+    // conversion yields `/C:/...`, and a win32 resolve does not put that under `C:\Users\...`.
+    // The platform is still set to win32, the same way as the stand-in home regression, and put back.
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    const original = process.platform;
+    const spoof = original !== "win32";
+    if (spoof && descriptor?.configurable !== true) {
+      throw new Error("process.platform is not configurable, so this Windows regression cannot be simulated");
+    }
+    try {
+      if (spoof) Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: "win32" });
+      expect(
+        isGuardedWritePath(new URL("file:///Users/example/.codex/a"), { home: "/Users/example", platform: "darwin", env: {} }),
+      ).toBe(true);
+      expect(
+        isGuardedWritePath(new URL("file:///C:/Users/example/.claude/x"), {
+          home: "C:\\Users\\example",
+          platform: "win32",
+          env: {},
+        }),
+      ).toBe(true);
+    } finally {
+      if (spoof && descriptor) Object.defineProperty(process, "platform", descriptor);
+    }
+    expect(process.platform).toBe(original);
+  });
+
+  it("the Node 20 file URL fallback matches fileURLToPath where that flag exists", () => {
+    // The check job is Node 20, which has no `windows` flag, so the guard decodes the URL itself.
+    // Where the flag does exist, that decode has to agree with Node, including the URLs Node rejects.
+    let honours = false;
+    try {
+      honours =
+        fileURLToPath(new URL("file:///posix/probe"), { windows: false }) === "/posix/probe" &&
+        fileURLToPath(new URL("file:///C:/probe"), { windows: true }) === "C:\\probe";
+    } catch {
+      honours = false;
+    }
+    // These do not need the flag, so the Node 20 check job still runs them.
+    expect(fileURLToPathForPlatform(new URL("file:///Users/example/.codex/a"), false)).toBe("/Users/example/.codex/a");
+    expect(fileURLToPathForPlatform(new URL("file:///C:/Users/example/.claude/x"), true)).toBe(
+      "C:\\Users\\example\\.claude\\x",
+    );
+    expect(() => fileURLToPathForPlatform(new URL("file:///Users/example/a%2Fb"), false)).toThrow();
+    expect(() => fileURLToPathForPlatform(new URL("file:///not-a-drive/x"), true)).toThrow();
+    if (!honours) return;
+    const agreed = [
+      ["file:///Users/example/.codex/a", false],
+      ["file:///Users/example/.codex/a%20b", false],
+      ["file:///C:/Users/example/.claude/x", true],
+      ["file:///c:/Users/example/.claude/x", true],
+      ["file:///C:/Users/example/a%20b", true],
+      ["file://server/share/x", true],
+      // WHATWG file URLs drop a localhost host, so this is a local path, not a throw.
+      ["file://localhost/Users/example/.codex/a", false],
+    ] as const;
+    for (const [href, windows] of agreed) {
+      const url = new URL(href);
+      expect(fileURLToPathForPlatform(url, windows), href).toBe(fileURLToPath(url, { windows }));
+    }
+    const rejected = [
+      ["file:///Users/example/a%2Fb", false],
+      ["file://other/Users/example/.codex/a", false],
+      ["file:///C:/Users/example/a%2Fb", true],
+      ["file:///C:/Users/example/a%5Cb", true],
+      ["file:///Users/example/.codex/a", true],
+    ] as const;
+    for (const [href, windows] of rejected) {
+      const url = new URL(href);
+      expect(() => fileURLToPath(url, { windows }), href).toThrow();
+      expect(() => fileURLToPathForPlatform(url, windows), href).toThrow();
+    }
   });
 
   it("does not block reads, and does not treat an unrelated home as the real one", () => {
