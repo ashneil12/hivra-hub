@@ -296,6 +296,16 @@ describe("buildUsageHistory", () => {
     expect(history.days[0].totals.turns).toBe(1);
   });
 
+  it("counts a turn late on the last day, including a day that lasts 25 hours", () => {
+    const late = at(2026, 11, 1, 23, 30);
+    const history = buildUsageHistory(
+      [session("s1", "/w", "claude", "sonnet-5", [turn("late", late, 7)])],
+      { now: late },
+    );
+    expect(history.today.turns).toBe(1);
+    expect(history.days.at(-1)?.totals.inputTokens).toBe(7);
+  });
+
   it("puts a turn stamped in the future into today, never a day past the window", () => {
     const history = buildUsageHistory(
       [
@@ -432,6 +442,8 @@ describe("labels", () => {
   it("writes a price with enough digits to be true", () => {
     expect(formatUsd(0)).toBe("$0.00");
     expect(formatUsd(1.5)).toBe("$1.50");
+    expect(formatUsd(0.5)).toBe("$0.50");
+    expect(formatUsd(0.125)).toBe("$0.125");
     expect(formatUsd(0.0042)).toBe("$0.0042");
     expect(formatUsd(Number.NaN)).toBe("$0.00");
   });

@@ -345,7 +345,6 @@ export function buildUsageHistory(
   const keys = windowDays(now, days);
   if (keys.length === 0) return emptyHistory([]);
   const firstStart = dayStart(keys[0])!;
-  const lastStart = dayStart(keys[keys.length - 1])!;
   const slotOf = new Map<string, number>();
   keys.forEach((key, index) => slotOf.set(key, index));
 
@@ -389,9 +388,10 @@ export function buildUsageHistory(
             : undefined;
       if (stamp == null || !Number.isFinite(stamp)) continue;
       // A stamp in the future (a clock that moved) belongs to today, so it never lands past the window.
+      // The day name, not a fixed 24 hours, decides the slot: the last day of a daylight-saving change can last 25
+      // hours, and a turn in that extra hour is still today.
       const at = Math.min(stamp, now);
       if (at < firstStart) continue;
-      if (at > lastStart + 86_400_000) continue;
       const slot = slotOf.get(dayKey(at));
       if (slot == null) continue;
 
@@ -471,7 +471,13 @@ export function formatUsd(value: number): string {
       maximumFractionDigits: 2,
     })}`;
   }
-  return `$${number.toFixed(number >= 0.01 ? 3 : 4)}`;
+  // Cents when the price lands on a cent. A fraction of a cent keeps enough digits to not read as $0.00.
+  if (number >= 0.01) {
+    const cents = number * 100;
+    if (Math.abs(cents - Math.round(cents)) < 1e-6) return `$${number.toFixed(2)}`;
+    return `$${number.toFixed(3)}`;
+  }
+  return `$${number.toFixed(4)}`;
 }
 
 const CSV_HEADER =
