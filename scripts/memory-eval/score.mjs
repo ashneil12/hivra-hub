@@ -148,13 +148,17 @@ export function questionTermsOf(question, contentWords) {
 
 /** The totals one arm's judged questions come to. */
 export function summarise(judged) {
-  if (!judged.length) return { questions: 0, hitAt3: 0, hitAt10: 0, shown: 0, meanLines: 0, meanShare: 0 };
-  const hitAt = (limit) => judged.filter((row) => row.hit && row.lines <= limit).length / judged.length;
+  if (!judged.length) return { questions: 0, hit: 0, hitAt3: 0, hitAt10: 0, shown: 0, meanLines: 0, meanShare: 0 };
+  const rate = (rows) => rows.length / judged.length;
+  const hitAt = (limit) => rate(judged.filter((row) => row.hit && row.lines <= limit));
   return {
     questions: judged.length,
+    // A hit is the lines this arm showed carrying the claim, however many it showed. hitAt3 is the same
+    // count limited to arms that stayed within three lines, so a wider arm is not reported as a miss.
+    hit: rate(judged.filter((row) => row.hit)),
     hitAt3: hitAt(3),
     hitAt10: hitAt(10),
-    shown: judged.filter((row) => row.lines > 0).length / judged.length,
+    shown: rate(judged.filter((row) => row.lines > 0)),
     meanLines: judged.reduce((total, row) => total + row.lines, 0) / judged.length,
     meanShare: judged.reduce((total, row) => total + row.share, 0) / judged.length,
   };

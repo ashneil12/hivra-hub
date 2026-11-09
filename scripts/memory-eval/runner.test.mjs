@@ -113,10 +113,10 @@ test("the rows of a parquet file come back as questions with their user's chats"
 
 test("the table prints one row per arm and the columns the doc names", () => {
   const text = formatTable([
-    { arm: "policy", questions: 10, hitAt3: 0.1, meanShare: 0.2, shown: 0.5, meanLines: 1.5, medianMs: 2.25 },
+    { arm: "policy", questions: 10, hit: 0.1, meanShare: 0.2, shown: 0.5, meanLines: 1.5, medianMs: 2.25 },
   ]);
   const [header, rule, body] = text.split("\n");
-  assert.match(header, /^arm\s+questions\s+hit@3\s+claim covered\s+showed a line\s+mean lines\s+median ms$/);
+  assert.match(header, /^arm\s+questions\s+hit\s+claim covered\s+showed a line\s+mean lines\s+median ms$/);
   assert.match(rule, /^-+(  -+)+$/);
   assert.match(body, /^policy\s+10\s+10\.0%\s+20\.0%\s+50\.0%\s+1\.5\s+2\.25$/);
 });
@@ -156,9 +156,15 @@ test("a full pass over the hand-made file runs the real policy and every arm", a
   );
   for (const row of report.table) {
     assert.ok(row.questions > 0);
+    assert.ok(row.hit >= 0 && row.hit <= 1);
     assert.ok(row.meanLines >= 0);
     assert.ok(Number.isFinite(row.medianMs));
   }
+  const byArm = Object.fromEntries(report.table.map((row) => [row.arm, row]));
+  assert.ok(
+    byArm["all lines"].hit >= byArm["policy (at most 3)"].hit,
+    "showing every line cannot score below the three the policy picked",
+  );
   assert.match(report.proxyNote, /does not name the chat/);
   assert.equal(report.share, 0.5);
   assert.ok(Array.isArray(report.misses));

@@ -25,8 +25,11 @@ Six arms run over the same store, so they differ only in which lines they pick:
 | best 3 lines | the 3 lines that together carry the most of the answer's claim, the realistic ceiling for a 3-line turn |
 | all lines | every memory, the upper bound |
 
-The table reports, per arm: questions run, hit rate at 3 lines, mean share of the answer's claim carried,
+The table reports, per arm: questions run, hit rate, mean share of the answer's claim carried,
 the share of questions where any line was shown, mean lines shown, and the median time per decision.
+A hit means the lines that arm showed carried at least half the claim's weight. The policy and the other
+three-line arms never show more than three lines, so their hit rate is a hit at three. The all-lines hit
+rate is the upper bound: the claim was somewhere in the store, with no cap on how many lines it took.
 
 ## What it does not measure
 

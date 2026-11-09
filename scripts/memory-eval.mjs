@@ -197,11 +197,11 @@ function runArm({ name, items, questions, hivra, topN }) {
 
 /** The plain table the report prints. */
 export function formatTable(rows) {
-  const header = ["arm", "questions", "hit@3", "claim covered", "showed a line", "mean lines", "median ms"];
+  const header = ["arm", "questions", "hit", "claim covered", "showed a line", "mean lines", "median ms"];
   const body = rows.map((row) => [
     row.arm,
     String(row.questions),
-    percent(row.hitAt3),
+    percent(row.hit),
     percent(row.meanShare),
     percent(row.shown),
     row.meanLines.toFixed(1),
@@ -331,6 +331,7 @@ async function main() {
     console.log(`\nMisses (${report.misses.length} of the policy's):`);
     for (const miss of report.misses) {
       console.log(`\n${miss.number}. user ${miss.user}: ${miss.question}`);
+      console.log(`   right answer: ${String(miss.answer).replace(/\s+/g, " ")}`);
       console.log(`   claim words: ${miss.terms.join(", ")}`);
       if (!miss.shown.length) console.log("   the policy showed nothing");
       for (const shown of miss.shown) console.log(`   [${shown.source}] ${shown.text.slice(0, 300)}`);

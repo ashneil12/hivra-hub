@@ -314,6 +314,7 @@ test("the totals count a hit at three only when the arm showed three lines or fe
   ];
   const totals = summarise(judged);
   assert.equal(totals.questions, 4);
+  assert.equal(totals.hit, 0.5, "a hit counts whatever the arm showed");
   assert.equal(totals.hitAt3, 0.25);
   assert.equal(totals.hitAt10, 0.5);
   assert.equal(totals.shown, 0.75);
@@ -324,6 +325,7 @@ test("the totals count a hit at three only when the arm showed three lines or fe
 test("an empty arm summarises to zeros, not NaN", () => {
   const totals = summarise([]);
   assert.equal(totals.questions, 0);
+  assert.equal(totals.hit, 0);
   assert.equal(totals.hitAt3, 0);
   assert.equal(totals.meanLines, 0);
 });
