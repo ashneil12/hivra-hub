@@ -22,6 +22,7 @@ import {
   sessionBtwThreads,
   SIDE_COMMAND,
   supportsBtwHarness,
+  withSideThread,
 } from "./btw";
 import type { Block, BtwThread } from "./session";
 
@@ -674,5 +675,144 @@ describe("replaceBtwThread", () => {
     const source = { ...block("user-1", "user"), btwThreads: [thread()] };
 
     expect(replaceBtwThread(source, thread({ id: "missing" }))).toBe(source);
+  });
+});
+
+describe("withSideThread", () => {
+  const question = thread({
+    id: "side-1",
+    messages: [
+      { id: "question", role: "user", text: "Why this parser?", createdAt: 1 },
+      { id: "answer", role: "assistant", text: "Because.", createdAt: 2 },
+    ],
+  });
+
+  function parent(): Block[] {
+    return [
+      block("older", "user", "Oldest question"),
+      block("older-answer", "assistant", "Oldest answer"),
+      {
+        id: "edit",
+        role: "tool",
+        text: "Edit",
+        tool: {
+          title: "Edit",
+          preview: {
+            kind: "write",
+            path: "src/parser.ts",
+            additions: 2,
+            deletions: 1,
+          },
+        },
+      },
+      block("user-1", "user", "Explain the parser\r\nplease"),
+      block("assistant-1", "assistant", "It changes the parser."),
+    ];
+  }
+
+  it("does not append the side question to the parent", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question);
+
+    expect(next).toBeDefined();
+    expect(next).toHaveLength(blocks.length);
+    expect(next!.map((entry) => entry.text)).toEqual(
+      blocks.map((entry) => entry.text),
+    );
+    expect(
+      next!.filter((entry) => entry.role === "user").map((entry) => entry.text),
+    ).not.toContain("Why this parser?");
+    expect(next!.some((entry) => entry.id === question.id)).toBe(false);
+  });
+
+  it("does not start a parent turn", () => {
+    const blocks = parent();
+    const session = { id: "chat-1", busy: false, blocks };
+    const nextBlocks = withSideThread(blocks, "user-1", question);
+    const next = nextBlocks ? { ...session, blocks: nextBlocks } : session;
+
+    expect(next.busy).toBe(false);
+    expect(next.id).toBe("chat-1");
+    expect(next.blocks.filter((entry) => entry.role === "user")).toHaveLength(
+      blocks.filter((entry) => entry.role === "user").length,
+    );
+    expect(next.blocks.filter((entry) => entry.draft || entry.streaming)).toEqual(
+      [],
+    );
+  });
+
+  it("does not compact the parent", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question)!;
+
+    expect(next).toHaveLength(blocks.length);
+    expect(next[0]).toBe(blocks[0]);
+    expect(next[0].text).toBe("Oldest question");
+  });
+
+  it("does not change files or the read-only instruction", () => {
+    const blocks = parent();
+    const next = withSideThread(blocks, "user-1", question)!;
+    const attached = next.find((entry) => entry.id === "user-1")!;
+
+    expect(next.find((entry) => entry.id === "edit")).toBe(
+      blocks.find((entry) => entry.id === "edit"),
+    );
+    expect(next.find((entry) => entry.id === "edit")?.tool?.preview).toEqual({
+      kind: "write",
+      path: "src/parser.ts",
+      additions: 2,
+      deletions: 1,
+    });
+    expect(
+      buildBtwPrompt({ blocks: next, thread: question, cwd: "/repo" }),
+    ).toContain("Do not change files");
+    expect(attached.text).toBe("Explain the parser\r\nplease");
+  });
+
+  it("returns undefined and leaves the transcript alone when the turn is gone", () => {
+    const blocks = parent();
+    const snapshot = blocks.map((entry) => ({ ...entry }));
+
+    expect(withSideThread(blocks, "missing", question)).toBeUndefined();
+    expect(withSideThread(blocks, "assistant-1", question)).toBeUndefined();
+    expect(withSideThread([], "user-1", question)).toBeUndefined();
+    expect(blocks.map((entry) => entry.text)).toEqual(
+      snapshot.map((entry) => entry.text),
+    );
+    expect(blocks.every((entry) => entry.btwThreads == null)).toBe(true);
+  });
+
+  it("replaces the same thread id and keeps the other one", () => {
+    const other = thread({ id: "side-2", createdAt: 9 });
+    const blocks = parent();
+    blocks[3] = { ...blocks[3], btwThreads: [question, other] };
+    const updated = thread({
+      id: "side-1",
+      status: "error",
+      error: "Timed out",
+    });
+
+    const next = withSideThread(blocks, "user-1", updated)!;
+    const threads = next.find((entry) => entry.id === "user-1")?.btwThreads;
+
+    expect(threads?.map((entry) => entry.id)).toEqual(["side-1", "side-2"]);
+    expect(threads?.[0]).toEqual(updated);
+    expect(threads?.[1]).toBe(other);
+    expect(blocks[3].btwThreads?.[0].status).toBe("ready");
+  });
+
+  it("keeps an earlier thread when a second one arrives on the latest blocks", () => {
+    const blocks = parent();
+    const first = withSideThread(blocks, "user-1", question)!;
+    const second = thread({ id: "side-2" });
+    const next = withSideThread(first, "user-1", second)!;
+
+    expect(
+      next.find((entry) => entry.id === "user-1")?.btwThreads?.map((entry) => entry.id),
+    ).toEqual(["side-1", "side-2"]);
+    expect(withSideThread(blocks, "user-1", second)!.find((entry) => entry.id === "user-1")?.btwThreads).toEqual([
+      second,
+    ]);
   });
 });

@@ -577,6 +577,33 @@ export function btwThreadBlocks(input: {
   return blocks;
 }
 
+/**
+ * Attach a side thread to one user turn. Undefined when that turn is gone,
+ * so a late result does not write. Every other block, its text, and the
+ * transcript length stay as they were: nothing is appended, dropped, or
+ * rewritten, and no file change is recorded here.
+ */
+export function withSideThread(
+  blocks: Block[],
+  userBlockId: string,
+  thread: BtwThread,
+): Block[] | undefined {
+  const index = blocks.findIndex(
+    (block) => block.id === userBlockId && block.role === "user",
+  );
+  if (index < 0) return undefined;
+  const block = blocks[index];
+  const threads = block.btwThreads ?? [];
+  const existing = threads.findIndex((entry) => entry.id === thread.id);
+  const nextThreads =
+    existing < 0
+      ? [...threads, thread]
+      : threads.map((entry, at) => (at === existing ? thread : entry));
+  const next = blocks.slice();
+  next[index] = { ...block, text: block.text, btwThreads: nextThreads };
+  return next;
+}
+
 export function replaceBtwThread(block: Block, thread: BtwThread): Block {
   const threads = block.btwThreads ?? [];
   const index = threads.findIndex((entry) => entry.id === thread.id);
