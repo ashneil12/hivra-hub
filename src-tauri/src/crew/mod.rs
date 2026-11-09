@@ -7,6 +7,7 @@
 
 mod budget;
 mod failure;
+mod policy;
 mod reroute;
 mod resolve;
 mod rules;
@@ -39,6 +40,8 @@ pub(crate) struct RulesResponse {
     budget: Option<serde_json::Value>,
     /// Installed and signed-in CLIs, from the files the CLIs already wrote. Nothing is asked over the network.
     signed_in: Vec<Presence>,
+    /// WP-141: always use my default, never use, and the fallback order.
+    policy: serde_json::Value,
 }
 
 fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -> RulesResponse {
@@ -48,6 +51,7 @@ fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -
         revision: stored.revision,
         budget: stored.budget,
         signed_in,
+        policy: stored.policy,
     }
 }
 
@@ -178,6 +182,31 @@ pub fn crew_rules_set(
         &rules,
         revision,
         budget.as_ref(),
+    )?;
+    Ok(response(
+        stored,
+        plugin_rules(&app, project.as_deref()),
+        live_presence(&app),
+    ))
+}
+
+/// WP-141: the lock, the never-use list and the fallback order. The same revision as the rules.
+#[tauri::command(async)]
+pub fn crew_policy_set(
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+    scope: String,
+    scope_id: String,
+    policy: serde_json::Value,
+    revision: i64,
+    project: Option<String>,
+) -> Result<RulesResponse, String> {
+    let stored = store::set_policy(
+        &mut *store.lock_conn()?,
+        &scope,
+        &scope_id,
+        &policy,
+        revision,
     )?;
     Ok(response(
         stored,

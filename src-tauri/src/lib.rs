@@ -656,6 +656,8 @@ pub fn run() {
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
             crew::crew_rules_set,
+            // WP-141: the person's lock, never-use list and fallback order.
+            crew::crew_policy_set,
             crew::crew_route,
             crew::crew_on_failure,
             crew::crew_note_pause,

@@ -1060,6 +1060,7 @@ fn settings_reports_the_signed_in_list_it_is_given() {
         rules: vec![],
         revision: 4,
         budget: None,
+        policy: json!({ "lockDefault": false, "neverUse": [], "fallback": [] }),
     };
     let view = super::response(
         stored,
@@ -1418,4 +1419,49 @@ fn a_route_skips_a_cli_that_failed_its_account_in_the_last_half_hour() {
     let kept =
         store::route_at(&pause, &query("", "", "", "", None, None, who), &[], minute).unwrap();
     assert_eq!(kept.cli.as_deref(), Some("claude"));
+}
+
+#[test]
+fn a_policy_round_trips_and_a_stale_save_does_not_write() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let first = store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({
+            "lockDefault": true,
+            "neverUse": ["codex", "codex", "../ada", "ada", "nope\ncli", "C:\\mono"],
+            "fallback": ["grok", "nope", "claude", "grok"]
+        }),
+        0,
+    )
+    .unwrap();
+    assert_eq!(first.revision, 1);
+    assert_eq!(first.policy["lockDefault"], true);
+    assert_eq!(first.policy["neverUse"], json!(["codex", "ada"]));
+    assert_eq!(first.policy["fallback"], json!(["grok", "claude"]));
+    let stale = store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false }),
+        0,
+    );
+    assert!(stale.unwrap_err().contains("Reload"));
+    let kept = store::get_rules(&conn, "system", "system").unwrap();
+    assert_eq!(kept.policy["lockDefault"], true);
+    let saved = save(&mut conn, "system", "system", vec![], 1, None).unwrap();
+    assert_eq!(saved.revision, 2);
+    assert_eq!(saved.policy["neverUse"], json!(["codex", "ada"]));
+    let project = store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": ["pi"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    assert_eq!(project.policy["neverUse"], json!(["pi"]));
+    assert!(store::set_policy(&mut conn, "system", "other", &json!({}), 0).is_err());
 }

@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use super::budget::normalize_failure_policy;
 use super::failure::is_account_class;
+use super::policy::sanitize_policy;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
 use super::resolve::{
     default_cli_except, resolve_route, role_model, CatalogModel, Pick, Presence, Route,
@@ -62,7 +63,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            effort TEXT,
            claim INTEGER NOT NULL DEFAULT 0
          );",
-    )
+    )?;
+    // WP-141: older stores grew this table before the policy column. An older build never reads it.
+    let has_policy = conn
+        .prepare("SELECT 1 FROM pragma_table_info('crew_rule_meta') WHERE name = 'policy'")?
+        .exists([])?;
+    if !has_policy {
+        conn.execute_batch("ALTER TABLE crew_rule_meta ADD COLUMN policy TEXT;")?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -86,6 +95,8 @@ pub struct StoredRules {
     pub rules: Vec<Rule>,
     pub revision: i64,
     pub budget: Option<Value>,
+    /// WP-141. Always an object: lockDefault, neverUse, fallback.
+    pub policy: Value,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -178,6 +189,13 @@ fn scope_key(scope: &str, raw: &str) -> Result<(String, String), String> {
                 return Err("Name the Mono with letters, numbers, - and _.".into());
             }
             Ok(("mono".into(), id.to_string()))
+        }
+        // WP-141: the defaults that are not for one project or one Mono.
+        "system" => {
+            if raw.trim() != "system" {
+                return Err("The whole-app settings have one place.".into());
+            }
+            Ok(("system".into(), "system".into()))
         }
         _ => Err("Rules belong to a project or a Mono.".into()),
     }
@@ -343,15 +361,30 @@ fn read_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Vec<Rule
     Ok(out)
 }
 
-fn meta(conn: &Connection, scope: &str, scope_id: &str) -> Result<(i64, Option<String>), String> {
+fn meta(
+    conn: &Connection,
+    scope: &str,
+    scope_id: &str,
+) -> Result<(i64, Option<String>, Option<String>), String> {
     conn.query_row(
-        "SELECT revision, budget FROM crew_rule_meta WHERE scope = ?1 AND scope_id = ?2",
+        "SELECT revision, budget, policy FROM crew_rule_meta WHERE scope = ?1 AND scope_id = ?2",
         params![scope, scope_id],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        },
     )
     .optional()
-    .map(|found| found.unwrap_or((0, None)))
+    .map(|found| found.unwrap_or((0, None, None)))
     .map_err(|e| e.to_string())
+}
+
+fn policy_value(text: Option<String>) -> Value {
+    let parsed = text.and_then(|text| serde_json::from_str::<Value>(&text).ok());
+    sanitize_policy(parsed.as_ref().unwrap_or(&Value::Null))
 }
 
 fn parse_budget(text: Option<String>) -> Option<Value> {
@@ -368,11 +401,12 @@ fn load_optional(conn: &Connection, scope: &str, raw: &str) -> Result<Vec<Rule>,
 pub fn get_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<StoredRules, String> {
     let (scope, scope_id) = scope_key(scope, scope_id)?;
     let rules = read_rules(conn, &scope, &scope_id)?;
-    let (revision, budget) = meta(conn, &scope, &scope_id)?;
+    let (revision, budget, policy) = meta(conn, &scope, &scope_id)?;
     Ok(StoredRules {
         rules,
         revision,
         budget: parse_budget(budget),
+        policy: policy_value(policy),
     })
 }
 
@@ -435,7 +469,7 @@ pub fn set_rules(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    let (current, _) = meta(&tx, &scope, &scope_id)?;
+    let (current, _, _) = meta(&tx, &scope, &scope_id)?;
     if current != expected {
         return Err(CONFLICT.into());
     }
@@ -455,6 +489,45 @@ pub fn set_rules(
         tx.execute(
             "UPDATE crew_rule_meta SET revision = ?3 WHERE scope = ?1 AND scope_id = ?2 AND revision = ?4",
             params![scope, scope_id, next, expected],
+        )
+    };
+    match wrote {
+        Ok(0) => return Err(CONFLICT.into()),
+        Ok(_) => {}
+        Err(error) if constraint(&error) => return Err(CONFLICT.into()),
+        Err(error) => return Err(error.to_string()),
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    get_rules(conn, &scope, &scope_id)
+}
+
+/// The lock and lists. A save does not touch the rules or the budget. A stale revision does not write.
+pub fn set_policy(
+    conn: &mut Connection,
+    scope: &str,
+    scope_id: &str,
+    policy: &Value,
+    expected: i64,
+) -> Result<StoredRules, String> {
+    let (scope, scope_id) = scope_key(scope, scope_id)?;
+    let text = sanitize_policy(policy).to_string();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let (current, _, _) = meta(&tx, &scope, &scope_id)?;
+    if current != expected {
+        return Err(CONFLICT.into());
+    }
+    let next = expected + 1;
+    let wrote = if current == 0 {
+        tx.execute(
+            "INSERT INTO crew_rule_meta (scope, scope_id, budget, revision, policy) VALUES (?1, ?2, NULL, ?3, ?4)",
+            params![scope, scope_id, next, text],
+        )
+    } else {
+        tx.execute(
+            "UPDATE crew_rule_meta SET revision = ?3, policy = ?4 WHERE scope = ?1 AND scope_id = ?2 AND revision = ?5",
+            params![scope, scope_id, next, text, expected],
         )
     };
     match wrote {
@@ -597,7 +670,7 @@ fn budget_for(
         let Ok((scope, id)) = scope_key(scope, raw) else {
             continue;
         };
-        let (_, text) = meta(conn, &scope, &id)?;
+        let (_, text, _) = meta(conn, &scope, &id)?;
         if text.is_some() {
             return Ok(parse_budget(text));
         }
