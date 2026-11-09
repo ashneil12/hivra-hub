@@ -55,6 +55,13 @@ describe("a recalled fence per conversation", () => {
     expect(other).toContain("Likes small commits");
   });
 
+  it("gives a private chat nothing", async () => {
+    const note = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-private", private: true });
+    expect(note).toBeUndefined();
+    const after = await recalledFence("notes-lead", MESSAGE, { sessionId: "s-private" });
+    expect(after).toContain("Likes small commits");
+  });
+
   it("still recalls when no conversation is given, without repeating rules", async () => {
     const first = await recalledFence("notes-lead", MESSAGE);
     const second = await recalledFence("notes-lead", MESSAGE);

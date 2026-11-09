@@ -16,6 +16,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { PrivateMark } from "./PrivateMark";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
@@ -939,6 +940,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           >
             {title}
           </span>
+          {/* WP-111 */}
+          <PrivateMark on={session.private === true} />
           {splitButtons}
           <button
             type="button"
@@ -956,11 +959,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
+      ) : session.private === true && !splitButtons ? (
+        <div className="flex h-7 shrink-0 items-center px-3">
+          {/* WP-111 */}
+          <PrivateMark on />
+        </div>
       ) : splitButtons ? (
         <div
           data-pane-header=""
           className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
         >
+          {/* WP-111 */}
+          {session.private === true ? <PrivateMark on /> : null}
           {splitButtons}
         </div>
       ) : null}

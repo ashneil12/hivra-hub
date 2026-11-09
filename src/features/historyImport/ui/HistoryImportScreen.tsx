@@ -5,6 +5,7 @@ import { useMemo } from "react";
 import { askCrew } from "../../memory/model/crewBrief";
 import type { CuratorAsk } from "../../memory/model/curator";
 import { listCustomModels } from "../../sessions/model/customModels";
+import { loadPrivateChatKeys } from "../../sessions/data/privateKeys";
 import { importModelAsk } from "../model/askRoute";
 import type { AskResult, ImportStateFile, ListReport, ProposalMeta, SourceId } from "../model/types";
 import { HistoryImportPage, type HistoryPorts, type HistoryRoots, type ModelChoice } from "./HistoryImportPage";
@@ -67,6 +68,8 @@ function realPorts(): HistoryPorts {
           }
         },
       }),
+    // WP-111: private chats are not offered.
+    excludedChats: loadPrivateChatKeys,
     models: async () =>
       listCustomModels()
         .filter((model) => typeof model.provider === "string" && typeof model.baseUrl === "string")
