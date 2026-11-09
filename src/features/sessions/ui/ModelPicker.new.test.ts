@@ -1,0 +1,149 @@
+// @vitest-environment happy-dom
+import { act, createElement, type CSSProperties, type ReactNode } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../../../integrations/harness/core/availability", () => ({
+  getHarnessAvailabilitySnapshot: () => 0,
+  hasProbedHarnessAvailability: () => true,
+  isHarnessAvailable: () => true,
+  probeHarnessAvailability: () => Promise.resolve(),
+  subscribeHarnessAvailability: () => () => undefined,
+}));
+
+vi.mock("../../../integrations/harness/core/registry", () => ({
+  refreshHarnessCatalogs: () => Promise.resolve(),
+}));
+
+vi.mock("../../../shared/ui/Popover", () => ({
+  Popover: ({
+    children,
+    role,
+    className,
+    tabIndex,
+    onKeyDown,
+    ...props
+  }: {
+    children: ReactNode;
+    role?: string;
+    className?: string;
+    tabIndex?: number;
+    onKeyDown?: React.KeyboardEventHandler<HTMLDivElement>;
+    minHeight?: number;
+    maxHeight?: number;
+    style?: CSSProperties;
+    anchor?: unknown;
+    side?: string;
+    "aria-label"?: string;
+    "data-model-picker"?: boolean;
+  }) =>
+    createElement(
+      "div",
+      {
+        role,
+        className,
+        tabIndex,
+        onKeyDown,
+        style: props.style,
+        "aria-label": props["aria-label"],
+        "data-model-picker": props["data-model-picker"] ? "" : undefined,
+      },
+      children,
+    ),
+}));
+
+import { ModelPicker } from "./ModelPicker";
+import { resetHarnessModelOverlays, setHarnessModels } from "../model/models";
+import { recordLiveCatalog } from "../model/modelFirstSeen";
+
+let container: HTMLDivElement;
+let root: Root;
+
+beforeEach(() => {
+  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  localStorage.clear();
+  resetHarnessModelOverlays();
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+});
+
+afterEach(() => {
+  act(() => root.unmount());
+  resetHarnessModelOverlays();
+  container.remove();
+  localStorage.clear();
+  vi.unstubAllGlobals();
+});
+
+const model = (id: string, name: string) => ({
+  id,
+  harness: "claude" as const,
+  name,
+  nativeId: id.slice("claude:".length),
+});
+
+function openPicker() {
+  act(() =>
+    root.render(
+      createElement(ModelPicker, {
+        harness: "claude",
+        model: "claude:fable-5-2",
+        values: {},
+        hideSettings: true,
+        onChange: vi.fn(),
+        onSettingsChange: vi.fn(),
+      }),
+    ),
+  );
+  act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-haspopup="dialog"]')!.click(),
+  );
+}
+
+describe("new model badge", () => {
+  it("shows new beside a model first seen in the last seven days", () => {
+    setHarnessModels("claude", [
+      model("claude:fable-5-2", "Claude Fable 5.2"),
+      model("claude:opus-5-5", "Claude Opus 5.5"),
+    ]);
+    openPicker();
+    const badges = [...container.querySelectorAll("[data-model-new]")].map(
+      (node) => node.textContent,
+    );
+    expect(badges).toEqual(["new", "new"]);
+    const options = [...container.querySelectorAll('[role="option"]')];
+    expect(options.map((option) => option.textContent)).toEqual([
+      "Claude Fable 5.2",
+      "Claude Opus 5.5",
+    ]);
+    expect(options[0]?.getAttribute("aria-label")).toBe(
+      "Claude Fable 5.2, Claude Code",
+    );
+  });
+
+  it("hides the badge once the first-seen day is past seven days", () => {
+    recordLiveCatalog("claude", ["claude:opus-5-5"], "2020-01-01");
+    setHarnessModels("claude", [
+      model("claude:opus-5-5", "Claude Opus 5.5"),
+      model("claude:fable-5-2", "Claude Fable 5.2"),
+    ]);
+    openPicker();
+    const badges = [...container.querySelectorAll("[data-model-new]")];
+    expect(badges).toHaveLength(1);
+    expect(badges[0]?.textContent).toBe("new");
+    const labeled = container.querySelector(
+      '[role="option"][aria-label="Claude Fable 5.2, Claude Code"]',
+    );
+    expect(labeled?.parentElement?.querySelector("[data-model-new]")).not.toBeNull();
+    const older = container.querySelector(
+      '[role="option"][aria-label="Claude Opus 5.5, Claude Code"]',
+    );
+    expect(older?.parentElement?.querySelector("[data-model-new]")).toBeNull();
+  });
+
+  it("does not badge the built-in list before a live catalog arrives", () => {
+    openPicker();
+    expect(container.querySelector("[data-model-new]")).toBeNull();
+  });
+});

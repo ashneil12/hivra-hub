@@ -46,6 +46,7 @@ import {
 import { AddModelForm, addModelEscRef, OtherModelsSection, useCustomModels } from "./CustomModels";
 import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
+import { isModelNew } from "../model/modelFirstSeen";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -1857,6 +1858,14 @@ function ModelFlyout({
                           {item.name}
                         </span>
                       </button>
+                      {isModelNew(item.harness, item.id) ? (
+                        <span
+                          data-model-new=""
+                          className="shrink-0 rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium text-content/60"
+                        >
+                          new
+                        </span>
+                      ) : null}
                       {tab === "favorites" ? (
                         <span className="max-w-24 shrink-0 truncate text-[10px] text-content/40">
                           {provenance}

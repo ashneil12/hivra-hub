@@ -1,4 +1,5 @@
 import { DEFAULT_CLAUDE_MODEL_ID, useDefaultClaudeModelId } from "./defaultClaudeModel";
+import { recordLiveCatalog } from "./modelFirstSeen";
 import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE } from "./deepseekBridge";
 import { readRetiredGrokModel } from "./grokRetirement";
 import type { HarnessId } from "./session";
@@ -286,6 +287,10 @@ export function getModelSnapshot(): number {
 
 export function setHarnessModels(harness: HarnessId, models: AgentModel[]) {
   if (models.length === 0) return;
+  recordLiveCatalog(
+    harness,
+    models.map((model) => model.id),
+  );
   overlays = { ...overlays, [harness]: models };
   overlayDefaults = {
     ...overlayDefaults,

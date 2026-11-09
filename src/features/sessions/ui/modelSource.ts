@@ -35,7 +35,11 @@ export const LOCAL_MODEL_SOURCE: ModelSource = {
   probed: hasProbedHarnessAvailability,
   refresh: (harnesses) => {
     void probeHarnessAvailability();
-    void refreshHarnessCatalogs(harnesses);
+    // The picker calls this when it opens, and again if its provider tab
+    // changes. One forced read, not a timer. A model the CLI learns later
+    // shows the next time the picker opens. Changing the active harness
+    // still skips a catalog that already loaded.
+    void refreshHarnessCatalogs(harnesses, { force: true });
   },
 };
 
