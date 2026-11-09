@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::plugins::hivra::{CREW_CLIS, CREW_EFFORTS};
 
@@ -154,16 +155,91 @@ fn chain<'a>(
     rows
 }
 
-fn pick_cli(rows: &[Source<'_>], present: &[Presence]) -> (Option<String>, &'static str) {
+fn never_reason(cli: &str) -> String {
+    format!("{} is on Never use, so it was skipped.", cli_label(cli))
+}
+
+fn listed(policy: Option<&Value>, key: &str) -> Vec<String> {
+    let clean = super::policy::sanitize_policy(policy.unwrap_or(&Value::Null));
+    clean
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn lock_on(policy: Option<&Value>) -> bool {
+    super::policy::sanitize_policy(policy.unwrap_or(&Value::Null))
+        .get("lockDefault")
+        .and_then(Value::as_bool)
+        == Some(true)
+}
+
+fn on_never(never: &[String], cli: &str) -> bool {
+    never.iter().any(|id| id == cli)
+}
+
+fn cli_banned(cli: Option<&String>, never: &[String]) -> bool {
+    usable(cli).is_some_and(|value| CREW_CLIS.contains(&value.as_str()) && on_never(never, &value))
+}
+
+/// Installed and signed in. Claude Code is first when it is one of them, otherwise the given order.
+fn signed_in_order(present: &[Presence]) -> Vec<&Presence> {
+    let usable: Vec<&Presence> = present
+        .iter()
+        .filter(|row| row.installed && row.signed_in && CREW_CLIS.contains(&row.cli.as_str()))
+        .collect();
+    let Some(claude) = usable.iter().copied().find(|row| row.cli == "claude") else {
+        return usable;
+    };
+    let mut order = vec![claude];
+    order.extend(usable.iter().copied().filter(|row| row.cli != "claude"));
+    order
+}
+
+fn pick_cli(
+    rows: &[Source<'_>],
+    present: &[Presence],
+    never: &[String],
+    skipped: &mut Vec<Skipped>,
+) -> (Option<String>, &'static str) {
     for row in rows {
         if let Some(value) = usable(row.cli) {
             if CREW_CLIS.contains(&value.as_str()) {
+                if on_never(never, &value) {
+                    skipped.push(Skipped {
+                        field: "cli".into(),
+                        from: row.from.into(),
+                        value: value.clone(),
+                        reason: never_reason(&value),
+                    });
+                    continue;
+                }
                 return (Some(value), row.from);
             }
         }
     }
-    let fallback = default_cli(present);
-    (fallback, "default")
+    if never.is_empty() {
+        return (default_cli(present), "default");
+    }
+    for row in signed_in_order(present) {
+        if on_never(never, &row.cli) {
+            skipped.push(Skipped {
+                field: "cli".into(),
+                from: "default".into(),
+                value: row.cli.clone(),
+                reason: never_reason(&row.cli),
+            });
+            continue;
+        }
+        return (Some(row.cli.clone()), "default");
+    }
+    (None, "default")
 }
 
 fn catalog_on(catalog: &BTreeMap<String, Vec<CatalogModel>>) -> bool {
@@ -305,6 +381,8 @@ fn cheap_model(cli: &str) -> Option<&'static str> {
 }
 
 /// An empty catalog means no catalog: a model stays a free string, as before.
+/// A CLI on Never use is skipped, with the reason, and so are that source's model and effort.
+/// Always use my default drops a per-task override. The brief still wins. A role label is an ordinary rule.
 // The query, the rules, who is signed in, the defaults and the catalog stay separate arguments.
 // Folding them would hide which one a caller passed.
 #[allow(clippy::too_many_arguments)]
@@ -317,15 +395,41 @@ pub fn resolve_route(
     present: &[Presence],
     defaults: Option<&RouteDefaults>,
     catalog: &BTreeMap<String, Vec<CatalogModel>>,
+    policy: Option<&Value>,
 ) -> Route {
     let rule_index = first_match(rules, labels, paths);
     let rule = rule_index.map(|index| &rules[index]);
-    let rows = chain(override_pick, brief, rule, defaults);
+    let never = listed(policy, "neverUse");
     let mut skipped = Vec::new();
-    let (cli, cli_from) = pick_cli(&rows, present);
-    let (model, model_from) = pick_model(&rows, defaults, cli.as_deref(), catalog, &mut skipped);
+    let override_cli = override_pick.and_then(|pick| {
+        usable(pick.cli.as_ref()).filter(|value| CREW_CLIS.contains(&value.as_str()))
+    });
+    let has_override = override_cli.is_some()
+        || override_pick.is_some_and(|pick| usable(pick.model.as_ref()).is_some())
+        || override_pick.is_some_and(|pick| {
+            usable(pick.effort.as_ref()).is_some_and(|value| CREW_EFFORTS.contains(&value.as_str()))
+        });
+    let override_pick = if lock_on(policy) && has_override {
+        skipped.push(Skipped {
+            field: "cli".into(),
+            from: "override".into(),
+            value: override_cli.unwrap_or_default(),
+            reason: "Always use my default is on, so this override was not applied.".into(),
+        });
+        None
+    } else {
+        override_pick
+    };
+    let rows = chain(override_pick, brief, rule, defaults);
+    let open: Vec<Source<'_>> = rows
+        .iter()
+        .copied()
+        .filter(|row| !cli_banned(row.cli, &never))
+        .collect();
+    let (cli, cli_from) = pick_cli(&rows, present, &never, &mut skipped);
+    let (model, model_from) = pick_model(&open, defaults, cli.as_deref(), catalog, &mut skipped);
     let chosen = catalog_model(catalog, cli.as_deref(), model.as_deref());
-    let (effort, effort_from) = pick_effort(&rows, defaults, chosen, catalog, &mut skipped);
+    let (effort, effort_from) = pick_effort(&open, defaults, chosen, catalog, &mut skipped);
     let mut route = Route {
         cli: cli.clone(),
         model: model.clone(),

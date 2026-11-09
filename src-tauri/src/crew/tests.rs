@@ -1465,3 +1465,211 @@ fn a_policy_round_trips_and_a_stale_save_does_not_write() {
     assert_eq!(project.policy["neverUse"], json!(["pi"]));
     assert!(store::set_policy(&mut conn, "system", "other", &json!({}), 0).is_err());
 }
+
+fn pick_cli(cli: &str, model: &str, effort: &str) -> Pick {
+    Pick {
+        cli: some(cli),
+        model: some(model),
+        effort: some(effort),
+    }
+}
+
+/// Never use skips the named CLI. A role label is an ordinary rule. The lock drops an override, not the brief.
+#[test]
+fn never_use_skips_a_named_cli_and_a_role_label_is_a_rule() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let who = &[
+        ("claude", true, true),
+        ("codex", true, true),
+        ("cursor", true, true),
+    ];
+    save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![
+            draft("builder", "", "codex", "gpt-codex", "high"),
+            draft("reviewer", "", "cursor", "", ""),
+        ],
+        0,
+        None,
+    )
+    .unwrap();
+    let built = store::route(
+        &conn,
+        &query("builder", "", PROJECT, "", None, None, who),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(built.cli.as_deref(), Some("codex"));
+    assert_eq!(built.cli_from, "rule");
+    assert_eq!(built.model.as_deref(), Some("gpt-codex"));
+    let other = store::route(
+        &conn,
+        &query("reviewer", "", PROJECT, "", None, None, who),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(other.cli.as_deref(), Some("cursor"));
+
+    let over = store::route(
+        &conn,
+        &query(
+            "builder",
+            "",
+            PROJECT,
+            "",
+            Some(pick_cli("claude", "opus", "")),
+            None,
+            who,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(over.cli.as_deref(), Some("claude"));
+    assert_eq!(over.cli_from, "override");
+    assert_eq!(over.model.as_deref(), Some("opus"));
+    assert!(over.skipped.is_empty());
+
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        1,
+    )
+    .unwrap();
+    let banned = store::route(
+        &conn,
+        &query("builder", "", PROJECT, "", None, None, who),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(banned.cli.as_deref(), Some("claude"));
+    assert_eq!(banned.cli_from, "default");
+    assert_eq!(banned.model, None);
+    assert_eq!(banned.effort, None);
+    assert_eq!(banned.skipped.len(), 1);
+    assert_eq!(banned.skipped[0].from, "rule");
+    assert_eq!(banned.skipped[0].value, "codex");
+    assert_eq!(
+        banned.skipped[0].reason,
+        "Codex is on Never use, so it was skipped."
+    );
+
+    let through = store::route(
+        &conn,
+        &query(
+            "builder",
+            "",
+            PROJECT,
+            "",
+            Some(pick_cli("codex", "from-override", "max")),
+            Some(pick_cli("cursor", "from-brief", "")),
+            who,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(through.cli.as_deref(), Some("cursor"));
+    assert_eq!(through.cli_from, "brief");
+    assert_eq!(through.model.as_deref(), Some("from-brief"));
+    assert_eq!(through.effort, None);
+
+    let own = store::route(
+        &conn,
+        &query("builder", "", PROJECT, "ada", None, None, who),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(own.cli.as_deref(), Some("codex"));
+    assert!(own.skipped.is_empty());
+
+    store::set_policy(
+        &mut conn,
+        "project",
+        PROJECT,
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        2,
+    )
+    .unwrap();
+    let locked = store::route(
+        &conn,
+        &query(
+            "builder",
+            "",
+            PROJECT,
+            "",
+            Some(pick_cli("grok", "big", "max")),
+            Some(pick_cli("cursor", "", "")),
+            who,
+        ),
+        &[],
+    )
+    .unwrap();
+    assert_eq!(locked.cli.as_deref(), Some("cursor"));
+    assert_eq!(locked.cli_from, "brief");
+    assert_eq!(locked.model.as_deref(), Some("gpt-codex"));
+    assert_eq!(locked.effort.as_deref(), Some("high"));
+    assert_eq!(
+        locked.skipped[0].reason,
+        "Always use my default is on, so this override was not applied."
+    );
+
+    let fresh = memory();
+    let mut bare = fresh.lock_conn().unwrap();
+    store::set_policy(
+        &mut bare,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["claude"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let fell = store::route(&bare, &query("", "", "", "", None, None, who), &[]).unwrap();
+    assert_eq!(fell.cli.as_deref(), Some("codex"));
+    assert_eq!(fell.skipped[0].from, "default");
+    assert_eq!(fell.skipped[0].value, "claude");
+    assert_eq!(
+        fell.skipped[0].reason,
+        "Claude Code is on Never use, so it was skipped."
+    );
+}
+
+/// A cooled CLI stays put while Always use my default is on. The usual swap still runs with no policy.
+#[test]
+fn a_lock_keeps_a_cooled_cli() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let now = 1_000_000;
+    let who = &[("claude", true, true), ("codex", true, true)];
+    let failed = fail_row(&mut conn, "worker-lock", Some("auth"), None);
+    store::on_failure(
+        &mut conn,
+        &failure(&failed.id, None, None, "claude", who, None, None),
+        now,
+    )
+    .unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let stayed = store::route_at(
+        &conn,
+        &query("", "", "", "", None, None, who),
+        &[],
+        now + 60_000,
+    )
+    .unwrap();
+    assert_eq!(stayed.cli.as_deref(), Some("claude"));
+    assert_eq!(stayed.cli_from, "default");
+    assert_eq!(
+        stayed.skipped[0].reason,
+        "Always use my default is on, so another CLI was not used."
+    );
+}

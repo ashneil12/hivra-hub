@@ -12,7 +12,7 @@ use super::policy::sanitize_policy;
 use super::reroute::{decide, Attempt, Decision, FailureInput};
 use super::resolve::{
     default_cli_except, resolve_route, role_model, CatalogModel, Pick, Presence, Route,
-    RouteDefaults,
+    RouteDefaults, Skipped,
 };
 use super::rules::{self, Rule};
 
@@ -572,6 +572,38 @@ fn cooled_clis(conn: &Connection, now: i64) -> Result<Vec<String>, String> {
     Ok(cooled)
 }
 
+/// A saved policy is the column, not a missing row. A Mono does not borrow the project or the system.
+/// A project uses its own when that column is set, and otherwise the system.
+fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Value>, String> {
+    let Ok((scope, id)) = scope_key(scope, raw) else {
+        return Ok(None);
+    };
+    let (_, _, text) = meta(conn, &scope, &id)?;
+    Ok(text.map(|text| policy_value(Some(text))))
+}
+
+fn policy_in_force(conn: &Connection, query: &RouteQuery) -> Result<Value, String> {
+    if let Some(id) = query
+        .mono
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        return Ok(saved_policy(conn, "mono", id)?.unwrap_or_else(|| sanitize_policy(&Value::Null)));
+    }
+    if let Some(id) = query
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if let Some(policy) = saved_policy(conn, "project", id)? {
+            return Ok(policy);
+        }
+    }
+    Ok(saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)))
+}
+
 pub fn route_at(
     conn: &Connection,
     query: &RouteQuery,
@@ -600,6 +632,8 @@ pub fn route_at(
         None => Vec::new(),
     };
     let merged = rules::merge_rules(&mono, &project, plugins);
+    let policy = policy_in_force(conn, query)?;
+    let lock = policy.get("lockDefault").and_then(Value::as_bool) == Some(true);
     let mut route = resolve_route(
         &query.labels,
         &query.paths,
@@ -609,24 +643,35 @@ pub fn route_at(
         &query.present,
         query.defaults.as_ref(),
         &query.catalog,
+        Some(&policy),
     );
     let cooled = cooled_clis(conn, now)?;
     if route.cli_from != "override" {
         if let Some(cli) = route.cli.clone() {
             if cooled.iter().any(|have| have == &cli) {
-                let next = default_cli_except(&query.present, &cooled);
-                route.cli_from = if next.is_some() {
-                    "default".into()
+                // WP-141: the lock means this CLI stays. An empty policy still moves to the next signed-in CLI.
+                if lock {
+                    route.skipped.push(Skipped {
+                        field: "cli".into(),
+                        from: route.cli_from.clone(),
+                        value: cli,
+                        reason: "Always use my default is on, so another CLI was not used.".into(),
+                    });
                 } else {
-                    "none".into()
-                };
-                route.cli = next;
-                let (plan_model, plan_effort) = role_model("plan", &route);
-                let (verdict_model, verdict_effort) = role_model("verdict", &route);
-                route.plan_model = plan_model;
-                route.plan_effort = plan_effort;
-                route.verdict_model = verdict_model;
-                route.verdict_effort = verdict_effort;
+                    let next = default_cli_except(&query.present, &cooled);
+                    route.cli_from = if next.is_some() {
+                        "default".into()
+                    } else {
+                        "none".into()
+                    };
+                    route.cli = next;
+                    let (plan_model, plan_effort) = role_model("plan", &route);
+                    let (verdict_model, verdict_effort) = role_model("verdict", &route);
+                    route.plan_model = plan_model;
+                    route.plan_effort = plan_effort;
+                    route.verdict_model = verdict_model;
+                    route.verdict_effort = verdict_effort;
+                }
             }
         }
     }
