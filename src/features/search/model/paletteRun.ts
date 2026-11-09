@@ -80,6 +80,7 @@ export const PALETTE_APP_ACTIONS = [
   "changes",
   "archive-chat",
   "stop-chat",
+  "next-chat-worktree",
 ] as const satisfies readonly PaletteAppAction[];
 
 const APP_ACTIONS = new Set<string>(PALETTE_APP_ACTIONS);

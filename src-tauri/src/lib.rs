@@ -1017,6 +1017,8 @@ pub fn run() {
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,
+            // WP-111: ids of chats memory must not read.
+            session_store::session_private_keys,
             session_store::session_tool_detail,
             mono_transcript::mono_session_get,
             mono_transcript::mono_session_page,
@@ -1025,6 +1027,8 @@ pub fn run() {
             session_store::session_delete,
             session_store::session_set_archived,
             session_store::session_set_pinned,
+            // WP-111: the private flag, written on its own so a transcript save cannot clear it.
+            session_store::session_set_private,
             session_store::session_set_linked_work_item,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { CreateWorktreeDialog } from "./CreateWorktreeDialog";
 import { DeleteWorktreeDialog } from "./DeleteWorktreeDialog";
 import { ProjectActionsPanel } from "./ProjectActionsPanel";
+import { NewChatWorktreeSetting } from "./NewChatWorktreeSetting";
 import { WorktreeCleanup } from "./WorktreeCleanup";
 import { SparseSlotNote } from "./SparseCheckout";
 import { SparseCheckoutSection } from "./SparseCheckoutSection";
@@ -76,6 +77,8 @@ export function WorktreesPage({
       id="setting-project-worktrees"
       className="flex flex-col gap-4"
     >
+      {/* WP-110: whether a new chat starts in its own worktree. */}
+      <NewChatWorktreeSetting />
       <div className="flex flex-wrap items-center gap-1">
         <SearchableProjectPicker
           cwd={project || "~"}

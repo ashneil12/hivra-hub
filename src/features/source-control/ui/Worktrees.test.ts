@@ -1110,6 +1110,23 @@ it("uses searchable custom selects in the create worktree dialog", async () => {
   expect(onCancel).not.toHaveBeenCalled();
 });
 
+it("puts the new chat worktree choice first on the worktrees page", async () => {
+  await act(async () =>
+    root.render(
+      createElement(WorktreesPage, {
+        cwd: "/repo",
+        onRemove: vi.fn(),
+      }),
+    ),
+  );
+  const page = container.querySelector('[data-setting-id="project-worktrees"]');
+  const choice = page?.firstElementChild;
+  expect(choice?.id).toBe("setting-new-chat-worktree");
+  expect(choice?.getAttribute("data-setting-id")).toBe("new-chat-worktree");
+  expect(choice?.textContent).toContain("Off. A new chat uses this folder.");
+  expect(choice?.textContent).not.toMatch(/[—–]/);
+});
+
 it("keeps associated sessions by default when deleting a worktree", async () => {
   vi.mocked(listWorktrees).mockResolvedValue({
     ...result(),

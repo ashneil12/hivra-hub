@@ -348,6 +348,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "git branch working copy create delete manage",
   },
   {
+    id: "new-chat-worktree",
+    section: "worktrees",
+    label: "New chats and worktrees",
+    keywords:
+      "new chat worktree branch default ask every chat git project checkout",
+  },
+  {
     id: "sparse-checkout",
     section: "worktrees",
     label: "Use a sparse checkout for new worktrees on this project",
@@ -923,6 +930,57 @@ export function saveFollowUpBehavior(value: FollowUpBehavior) {
   } catch {
     // private mode / quota
   }
+}
+
+const NEW_CHAT_WORKTREE_KEY = "monocode.newChatWorktree";
+
+/** Whether a new chat starts in its own worktree: off, ask, or always. */
+export type NewChatWorktree = "off" | "ask" | "always";
+
+export const NEW_CHAT_WORKTREE_DEFAULT: NewChatWorktree = "off";
+
+export const NEW_CHAT_WORKTREE_CHANGE_EVENT = "monocode:new-chat-worktree-change";
+
+export function isNewChatWorktree(value: unknown): value is NewChatWorktree {
+  return value === "off" || value === "ask" || value === "always";
+}
+
+export function loadNewChatWorktree(): NewChatWorktree {
+  try {
+    const raw = localStorage.getItem(NEW_CHAT_WORKTREE_KEY);
+    return isNewChatWorktree(raw) ? raw : NEW_CHAT_WORKTREE_DEFAULT;
+  } catch {
+    return NEW_CHAT_WORKTREE_DEFAULT;
+  }
+}
+
+export function saveNewChatWorktree(value: NewChatWorktree) {
+  if (!isNewChatWorktree(value)) return;
+  try {
+    localStorage.setItem(NEW_CHAT_WORKTREE_KEY, value);
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<NewChatWorktree>(NEW_CHAT_WORKTREE_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+/** Follow the setting in this window and in any other window that changes it. */
+export function subscribeNewChatWorktree(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === NEW_CHAT_WORKTREE_KEY) onStoreChange();
+  };
+  window.addEventListener(NEW_CHAT_WORKTREE_CHANGE_EVENT, onStoreChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(NEW_CHAT_WORKTREE_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 export type FileTabMode = "pane" | "workspace";
