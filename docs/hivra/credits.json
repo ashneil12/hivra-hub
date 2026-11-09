@@ -569,6 +569,14 @@
       "copyright": "Copyright (c) 2026 T3 Tools Inc.",
       "where": "src/integrations/harness/providers/claude/fixtures/t3code/",
       "how": "18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them."
+    },
+    {
+      "name": "Pierre Diffs",
+      "url": "https://github.com/pierrecomputer/pierre/tree/main/packages/diffs",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2025 Pierre Computer Company",
+      "where": "package.json, src/features/source-control/ui/pierreDiff.tsx",
+      "how": "Pinned npm package for the optional split diff view (WP-116)."
     }
   ]
 }

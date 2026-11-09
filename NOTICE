@@ -300,6 +300,13 @@ Third-party components Hivra adds:
   Used in: src/integrations/harness/providers/claude/fixtures/t3code/
   18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them.
 
+- Pierre Diffs
+  Source: https://github.com/pierrecomputer/pierre/tree/main/packages/diffs
+  License: Apache-2.0
+  Copyright 2025 Pierre Computer Company
+  Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
+  Pinned npm package for the optional split diff view (WP-116).
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the
