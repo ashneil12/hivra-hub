@@ -52,7 +52,7 @@ What a twelfth first-class id has to touch, using Devin's addition as the shape:
 - The host process: `host/providers.ts` imports every provider module by path.
 - The phone app and the native shell: Devin's id also landed in `mobile/src/features/workspace/types.ts`, `mobile/src/features/sessions/providerSvgs.ts`, `crates/monocode-gpui` (theme and assets) and `crates/monocode-core` (kind, catalog, usage, skills, the remote protocol).
 - Rust, if the CLI is ACP: a `Kind` arm, plus the branches in `acp.rs`. If it is not ACP: a new transport module and a branch in `run_operation`, the way OpenCode, Codex and Claude each have one.
-- Sessions on disk only load a harness that is in `HARNESSES` (`sessionStore.ts`). An unknown harness string is not a session.
+- A session read from disk runs its harness through `asHarness` in `sessionStore.ts`. An unknown string becomes `cursor`, not a refusal. The Rust `Kind::from_id` becomes Codex instead. A registry id left in that field would open as Cursor on the desktop and as Codex in the native shell.
 
 That list is the bar. A registry agent does not clear it, and this design does not lower it.
 
@@ -64,7 +64,7 @@ The plugin registry (WP-30) is also a different thing. It records skills and con
 
 A registry agent is a local command that speaks ACP version 1, listed under the eleven, and launched on the generic ACP path. It does not get a `HarnessId`, a `Kind`, a `providers/<id>/` package, a crew name, a first-mate row, or an arm in `acp.rs`. The eleven never appear in its list. T3 writes the same rule: an agent Hivra already supports as its own provider stays in Agent CLIs, and an agent-id check does not go in the generic adapter. A quirk the spec does not cover is a flavor module for that one agent. If the flavor grows into launch arguments, timeouts and permission policy, it is a first-class CLI and it pays the bar above.
 
-A chat is one or the other. The session record keeps `harness` for the eleven only, because `sessionStore.ts` drops anything else. A registry chat stores its agent id in its own field. Loading a chat whose agent is gone keeps the transcript and shows "This agent is no longer in your list." It does not launch, and it does not go through `Kind::from_id`, which would turn an unknown id into Codex.
+A chat is one or the other. `harness` stays one of the eleven. A registry chat stores its agent id in its own field, and neither `asHarness` nor `Kind::from_id` is allowed to see it. Those two already disagree: the desktop turns an unknown harness into Cursor, and the native shell turns an unknown kind into Codex. Loading a chat whose agent is gone keeps the transcript and shows "This agent is no longer in your list." It does not launch.
 
 The screen label is "More agents", on the providers settings page, below Agent CLIs. Not under Plugins.
 
@@ -117,15 +117,43 @@ Also outside the subset, until a later package proves one agent: a crew slot, a 
 
 ### What a later package would build
 
-Not this one. The smallest build is More agents, add a local command, and one generic ACP session on the desktop TypeScript path, which is the path `App.tsx` already uses to send a turn. Tests have to show that an unknown id does not become Codex, and that a bad entry does not wipe the list.
+Not this one. The smallest build is More agents, add a local command, and one generic ACP session on the desktop TypeScript path, which is the path `App.tsx` already uses to send a turn. Tests have to show that an unknown id does not become Cursor or Codex, and that a bad entry does not wipe the list.
 
 `Kind` stays the eleven. The native shell shows a registry agent as unavailable until it reads the same list. It does not call `from_id`.
 
+### Copilot CLI
+
+Copilot CLI is the request to take most care over. T3 issue 193 drew 130 +1 and was closed once T3 supported it. In the tree this design read, Copilot is not its own provider package. It is a flavor on the registry adapter (`packages/provider-acp-registry/src/server/copilotAcp.ts`). The flavor does three things the generic ACP path does not:
+
+- It asks, in client metadata, for subagent and assistant-delta events.
+- It routes those events onto a child session, so a subagent's text is not mixed into the parent.
+- It treats two `session/prompt` errors as a lost session and replaces the process: "session event delivery failed: session not found" and "session lock unavailable during is_session_generation_current". Older Copilot puts the cause in `data.details`. A later native layer puts it in the message. The flavor accepts either.
+
+Queue, approvals, diffs and cancel still come from the shared adapter. The flavor is why a purely generic entry is not enough, and why a twelfth CLI is too much.
+
+Recommendation: registry, and the first named flavor. Not first-class.
+
+Not first-class, because the bar above is a kind in both runtimes, a provider package, settings, a crew name, a first-mate row, the host, the phone app and the native shell. Copilot's extra behaviour needs none of that. Being the most asked-for agent is not a reason to pretend it is Claude.
+
+Not generic with the flavor forgotten. A lost session that fails every later prompt must say "This chat's session is gone. Start it again." and replace the process. It must not look like an empty success, and it must not keep retrying the dead process. Subagent events Hivra cannot route stay on the parent as normal text. The chat does not draw a crew tree it cannot trust. That flavor is a later package, named here so it is not dropped, and it stays out of the generic adapter as its own module.
+
+Not the GitHub Copilot models inside Pi and omp. Those stay. Copilot CLI is a different program. The person installs it and names the command under More agents. Hivra does not download it.
+
+This can be overridden. If Copilot should sit in the Agent CLIs row beside Claude before any of the registry work exists, that is a first-class package and it pays the full bar, including a written reason the generic path cannot hold the lost-session errors. This design says do not do that.
+
+### Sources this design does not take a row for
+
+Orca's same-prompt fan-out is a different package. Paseo's relay is a different package. Cursor, Claude and Codex are already three of the eleven, and the rule that they stay out of the registry list is the T3 idea already credited. No separate source row.
+
+### Not in this package
+
+No provider package, no change to `HarnessId` or `Kind`, no settings key, and no manifest parser. The only edits are this doc, the T3 row in `docs/hivra/SOURCES.md`, and the matching inspiration line.
+
 ## Done when
 
-- [ ] The design names the first-class bar and the registry subset.
-- [ ] Copilot has a recommended path.
-- [ ] No provider code was added.
+- [x] The design names the first-class bar and the registry subset.
+- [x] Copilot has a recommended path.
+- [x] No provider code was added.
 
 ## Licence
 
