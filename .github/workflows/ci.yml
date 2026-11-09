@@ -298,8 +298,37 @@ jobs:
         if: steps.packaging.outputs.run == 'true'
         run: bash scripts/assert-appimage-host-libs.sh
 
-  rpm:
+  # Same base-sha diff as the AppImage job. A change that does not touch RPM inputs does not build the two images.
+  # The clean install needs the rpm job, so a skipped build skips that check too.
+  rpm-changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    name: RPM packaging changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.packaging.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Skip unless RPM packaging files changed
+        id: packaging
+        env:
+          PACKAGING_BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          PACKAGING_HEAD: ${{ github.sha }}
+        run: node scripts/ci-packaging-changed.mjs --kind rpm >> "$GITHUB_OUTPUT"
+
+  rpm:
+    needs: rpm-changes
+    if: >-
+      needs.rpm-changes.result == 'success'
+      && needs.rpm-changes.outputs.run == 'true'
+      && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: RPM build (${{ matrix.image }})
     timeout-minutes: 25
     runs-on: ubuntu-latest
@@ -422,12 +451,12 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check skips when packaging files
-  # did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage and RPM checks skip when packaging
+  # files did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
