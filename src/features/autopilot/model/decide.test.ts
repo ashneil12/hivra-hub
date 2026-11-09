@@ -54,6 +54,30 @@ describe("autopilot.decide", () => {
       expect(decideCall({ ...input, until: UNTIL }), input.question).toMatchObject({ outcome: "held", red: null });
   });
 
+  // WP-101 fix round 3, finding 3. "Should I read the README?" and "Split into two PRs?" stay taken.
+  it("holds the questions the third review found passing (fix round 3, finding 3)", () => {
+    for (const question of [
+      "Should I close the account?",
+      "Should I unsubscribe from the plan?",
+      "Should I rebase onto main?",
+      "Should I squash the commits?",
+      "Should I expose the bucket?",
+      "Should I chmod 777 the folder?",
+      "Should I chown the folder?",
+      "Should I disable the user?",
+      "Should I ban the user?",
+      "Should I lock the account?",
+      "Should I archive the repo?",
+      "Should I force push?",
+      "Should I close the repo?",
+      "Should I close the issue?",
+    ])
+      expect(decideCall({ question, recommendation: "Yes", until: UNTIL }), question).toMatchObject({ outcome: "held", red: null });
+    expect(decideCall({ question: "Should I read the README?", recommendation: "Yes", until: UNTIL })).toMatchObject({ outcome: "taken" });
+    expect(decideCall({ question: "Split into two PRs?", recommendation: "Yes", until: UNTIL })).toMatchObject({ outcome: "taken" });
+    expect(decideCall({ question: "Should I close the file?", recommendation: "Yes", until: UNTIL })).toMatchObject({ outcome: "taken" });
+  });
+
   it("holds a call whose words it can't read, instead of taking it (fix round 2, item F)", () => {
     for (const input of [
       { question: null, recommendation: "Yes" },

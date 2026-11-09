@@ -123,19 +123,19 @@ const ASK_WORDS: Record<AskKind, readonly string[]> = {
     "send|sends|sent|email|emails|emailed|mail|message|messages|dm|dms|sms|tweet|tweets|tweeted|post|posts|posted|reply|replies|forward|forwards|share|shares|shared|sharing|invite|invites|invited|inviting|broadcast|broadcasts|announce|announces|announced|comment|comments|notify|notifies|notified|mention|mentions|ping|pings|pinged|remind|reminds|reminded|text|texted|tell|tells|told|contact|contacts|submit|submits|submitted|submitting",
   ),
   delete: words(
-    "delete|deletes|deleted|deleting|delete_all|remove|removes|removed|removing|removal|rm|unlink|erase|erases|erased|drop|drops|dropped|dropping|purge|purges|purged|wipe|wipes|wiped|destroy|destroys|destroyed|destroying|truncate|truncates|truncated|clear|clears|cleared|clearing|trash|uninstall|uninstalls|revoke|revokes|revoked|revoking|overwrite|overwrites|overwrote|overwriting|terminate|terminates|terminated|kill|kills|killed|reset|resets|resetting",
+    "delete|deletes|deleted|deleting|delete_all|remove|removes|removed|removing|removal|rm|unlink|erase|erases|erased|drop|drops|dropped|dropping|purge|purges|purged|wipe|wipes|wiped|destroy|destroys|destroyed|destroying|truncate|truncates|truncated|clear|clears|cleared|clearing|trash|uninstall|uninstalls|revoke|revokes|revoked|revoking|overwrite|overwrites|overwrote|overwriting|terminate|terminates|terminated|kill|kills|killed|reset|resets|resetting|archive|archives|archived|archiving",
   ),
   pay: words(
-    "pay|pays|paid|paying|payment|payments|wire|wires|wired|wiring|remit|remits|remitted|remittance|transfer|transfers|transferred|transferring|charge|charges|charged|refund|refunds|refunded|withdraw|withdraws|withdrew|deposit|deposits|invoice|invoices|purchase|purchases|buy|buys|bought|buying|sell|sells|sold|order|orders|ordered|ordering|stripe|checkout|billing|subscribe|subscribes|subscribed|subscription|subscriptions|payout|payouts|donate|donates|donation|book|books|booked|booking|reserve|reserves|reserved|reservation",
+    "pay|pays|paid|paying|payment|payments|wire|wires|wired|wiring|remit|remits|remitted|remittance|transfer|transfers|transferred|transferring|charge|charges|charged|refund|refunds|refunded|withdraw|withdraws|withdrew|deposit|deposits|invoice|invoices|purchase|purchases|buy|buys|bought|buying|sell|sells|sold|order|orders|ordered|ordering|stripe|checkout|billing|subscribe|subscribes|subscribed|subscription|subscriptions|unsubscribe|unsubscribes|unsubscribed|unsubscribing|payout|payouts|donate|donates|donation|book|books|booked|booking|reserve|reserves|reserved|reservation",
   ),
   publish: words(
-    "publish|publishes|published|publishing|unpublish|unpublishes|unpublished|unpublishing|republish|republishes|deploy|deploys|deployed|deploying|deployment|release|releases|released|releasing|push|pushes|pushed|pushing|ship|ships|shipped|merge|merges|merged|merging|upload|uploads|uploaded|uploading|public",
+    "publish|publishes|published|publishing|unpublish|unpublishes|unpublished|unpublishing|republish|republishes|deploy|deploys|deployed|deploying|deployment|release|releases|released|releasing|push|pushes|pushed|pushing|ship|ships|shipped|merge|merges|merged|merging|upload|uploads|uploaded|uploading|public|expose|exposes|exposed|exposing",
   ),
   account: words(
-    "login|logout|signin|signout|sign_up|signup|auth|authenticate|authentication|authorization|authorise|authorises|authorised|authorizing|authorize|authorizes|authorized|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|grants|granted|granting|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password|env|ssh|keychain|cookie|cookies|session|sessions|private|collaborator|collaborators|collaboration|migrate|migrates|migrated|migrating|migration|migrations|rotate|rotates|rotating",
+    "login|logout|signin|signout|sign_up|signup|auth|authenticate|authentication|authorization|authorise|authorises|authorised|authorizing|authorize|authorizes|authorized|oauth|sso|password|passwd|credential|credentials|permission|permissions|grant|grants|granted|granting|role|roles|admin|admin_access|key|keys|token|tokens|secret|secrets|identity|mfa|2fa|totp|reset_password|change_password|env|ssh|keychain|cookie|cookies|session|sessions|private|collaborator|collaborators|collaboration|migrate|migrates|migrated|migrating|migration|migrations|rotate|rotates|rotating|account|accounts|disable|disables|disabled|disabling|ban|bans|banned|banning|lock|locks|locked|locking|chmod|chown",
   ),
   commit: words("sign|signs|signed|signing|signature"),
-  forceful: words("force|forces|forced|forcing|killall|pkill"),
+  forceful: words("force|forces|forced|forcing|killall|pkill|rebase|rebases|rebased|rebasing|squash|squashes|squashed|squashing"),
 };
 
 /**
@@ -154,6 +154,12 @@ const ASK_PHRASES: readonly { pattern: RegExp; kind: AskKind }[] = [
   { pattern: /\breset\s+(?:--?)?hard\b|\breset\s+-{1,2}[a-z]*h[a-z]*\b/, kind: "forceful" },
   { pattern: /\bdirect (?:message|messages|messaging|dm)\b/, kind: "send" },
   { pattern: /\bloop (?:in|into)\b/, kind: "send" },
+  // "close" alone is left as the plain word it is: "Should I close the file?" is not an account change. Closing an
+  // account is. Closing a repository, an issue or a request takes it away, so that is a delete.
+  { pattern: /\bclos(?:e|es|ed|ing) (?:a |an |the |my |our |this )?(?:user )?accounts?\b/, kind: "account" },
+  { pattern: /\bclos(?:e|es|ed|ing) (?:a |an |the |this |our )?(?:repo|repos|repository|repositories|issue|issues|pr|prs|pull requests?|merge requests?)\b/, kind: "delete" },
+  // "force" is already a word that holds. The phrase covers "force-push" written as one action.
+  { pattern: /\bforce[- ]push(?:es|ed|ing)?\b/, kind: "forceful" },
 ];
 
 /** Words that name something a person's own or a secret: anywhere in a tool's name they make it an account change. */

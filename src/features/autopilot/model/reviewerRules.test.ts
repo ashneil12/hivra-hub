@@ -244,6 +244,38 @@ describe("the question path (WP-101 fix round, row 19)", () => {
       expect(questionVeto({ question }), question).not.toBeNull();
   });
 
+  // WP-101 fix round 3, finding 3: these questions were taken. "close" is only an action when it closes an account, a
+  // repository or an issue; "Should I close the file?" stays a question. "force" already holds, and the phrase does too.
+  it.each([
+    ["Should I close the account?", ALWAYS_ASK_REASON.account],
+    ["Should I close my account?", ALWAYS_ASK_REASON.account],
+    ["Should I close the repo?", ALWAYS_ASK_REASON.delete],
+    ["Should I close the repository?", ALWAYS_ASK_REASON.delete],
+    ["Should I close the issue?", ALWAYS_ASK_REASON.delete],
+    ["Should I close the PR?", ALWAYS_ASK_REASON.delete],
+    ["Should I close the pull request?", ALWAYS_ASK_REASON.delete],
+    ["Should I close the merge request?", ALWAYS_ASK_REASON.delete],
+    ["Should I unsubscribe from the plan?", ALWAYS_ASK_REASON.pay],
+    ["Should I rebase onto main?", ALWAYS_ASK_REASON.forceful],
+    ["Should I squash the commits?", ALWAYS_ASK_REASON.forceful],
+    ["Should I expose the bucket?", ALWAYS_ASK_REASON.publish],
+    ["Should I chmod 777 the folder?", ALWAYS_ASK_REASON.account],
+    ["Should I chown the folder?", ALWAYS_ASK_REASON.account],
+    ["Should I disable the user?", ALWAYS_ASK_REASON.account],
+    ["Should I ban the user?", ALWAYS_ASK_REASON.account],
+    ["Should I lock the account?", ALWAYS_ASK_REASON.account],
+    ["Should I archive the repo?", ALWAYS_ASK_REASON.delete],
+    ["Should I force push?", ALWAYS_ASK_REASON.forceful],
+    ["Should I force-push the branch?", ALWAYS_ASK_REASON.forceful],
+  ])("holds a question the third review found passing: %s", (question, reason) => {
+    expect(questionVeto({ question })).toBe(reason);
+  });
+
+  it("still takes a question that only reads, or that closes nothing that matters", () => {
+    for (const question of ["Should I read the README?", "Split into two PRs?", "Should I close the file?", "Should I close the tab?"])
+      expect(questionVeto({ question }), question).toBeNull();
+  });
+
   it("still matches whole words only, so an ordinary word that merely contains one passes (item F)", () => {
     for (const question of ["Should I fix the wardrobe door handle?", "Which folder holds the wireframe?", "Should I test the wireless driver?", "Should I rename the shipwreck asset?"])
       expect(questionVeto({ question }), question).toBeNull();
