@@ -33,6 +33,7 @@ import {
   type LayoutRect,
   type LayoutSash,
   type PaneEdge,
+  type SplitDir,
 } from "../model/layout";
 import {
   evenSashBoundary,
@@ -79,6 +80,8 @@ type Shared = {
   recents: RecentProject[];
   hideProjectPicker?: boolean;
   onFocus: (paneId: string) => void;
+  /** Same handler as the split shortcut. Absent hides the header buttons. */
+  onSplit?: (dir: SplitDir) => void;
   onClose: (sessionId: string) => void;
   onSelectFile: (paneId: string, fileId: string) => void;
   onCloseFile: (paneId: string, fileId: string) => void;
@@ -226,6 +229,7 @@ function PaneTreeComponent({
   hideProjectPicker,
   workspaceSwitchingSessionId,
   onFocus,
+  onSplit,
   onClose,
   onSelectFile,
   onCloseFile,
@@ -777,6 +781,8 @@ function PaneTreeComponent({
                   editorNavigation={editorNavigation}
                   onPaneDragStart={onPaneDragStart}
                   onTerminalMetaChange={onTerminalMetaChange}
+                  layout={layout}
+                  onSplit={leaving ? undefined : onSplit}
                 />
               ) : session ? (
                 <SessionPane
@@ -850,6 +856,8 @@ function PaneTreeComponent({
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
+                  layout={layout}
+                  onSplit={leaving ? undefined : onSplit}
                 />
               ) : null}
             </div>
