@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "usage"
   | "connected"
   | "dashboards"
   | "portable"
@@ -115,6 +116,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "activity log audit history who did what",
   },
   {
+    id: "usage",
+    group: "app",
+    label: "Usage",
+    description:
+      "Tokens and cost for the last 30 days, by day, project, engine and model. A cost is shown only when the engine reported one.",
+    keywords: "usage cost tokens spend price history",
+  },
+  {
     id: "connected",
     group: "app",
     label: "Connected apps",
@@ -156,8 +165,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "memory",
     group: "app",
     label: "Memory",
-    description: "What a first mate remembers, with its source, for you to confirm, edit or delete.",
-    keywords: "memory fact skill recall review",
+    description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
+    keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",

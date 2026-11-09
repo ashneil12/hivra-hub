@@ -24,6 +24,15 @@ export function noteOutcome(doc: MemoryDoc, outcome: CuratorOutcome, at: number)
   return bump({ ...doc, health: next });
 }
 
+/**
+ * WP-103: one turn left for later, counted once. It is not a looked-at turn: the same turn is tried again and, when it
+ * goes through, noteOutcome counts it then. So this moves `deferred` only.
+ */
+export function noteDeferred(doc: MemoryDoc, at: number): MemoryDoc {
+  const health = doc.health ?? emptyHealth();
+  return bump({ ...doc, health: { ...health, deferred: health.deferred + 1, dropped: { ...health.dropped }, lastRunAt: at } });
+}
+
 export type MemoryHealthView = MemoryHealth & {
   /** Facts under the ask line right now, whether or not they can still be asked. */
   fading: number;

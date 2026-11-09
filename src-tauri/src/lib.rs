@@ -57,6 +57,8 @@ mod hub_keychain;
 mod terminal_mirror;
 // WP-51: memory the person reviews.
 mod memory_review;
+// WP-103: the cheap memory tier asks a model the person added, on its own key.
+mod memory_cheap;
 // WP-83: learn from past chats. Readers, and the write after an accept.
 mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
@@ -1005,6 +1007,8 @@ pub fn run() {
             session_store::session_list_by_project,
             session_store::session_rebase_project,
             session_store::session_list_linked,
+            // WP-108: counts and names only, for the usage history page.
+            session_store::session_usage_rows,
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,
