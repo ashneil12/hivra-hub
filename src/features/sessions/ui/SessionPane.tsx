@@ -16,6 +16,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { Composer } from "./Composer";
+import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -963,6 +964,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           {splitButtons}
         </div>
       ) : null}
+      {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
+      <NewChatWorktreeBanner session={session} />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
