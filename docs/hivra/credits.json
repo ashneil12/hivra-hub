@@ -214,7 +214,7 @@
       "name": "T3 Code",
       "url": "https://github.com/pingdotgg/t3code",
       "licence": "MIT",
-      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench"
+      "gave": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, and the split between a built-in provider and an ACP registry agent (idea only)"
     },
     {
       "name": "Aether",
