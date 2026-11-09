@@ -51,7 +51,8 @@ describe("the guard is installed", () => {
     } finally {
       setGuardHomeForTest(null);
     }
-    expect(threw).toBeInstanceOf(Error);
-    expect((threw as Error).name).toBe(GUARD_ERROR_NAME);
+    const detail = threw instanceof Error ? threw.message : String(threw);
+    expect(threw, detail).toBeInstanceOf(Error);
+    expect((threw as Error).name, detail).toBe(GUARD_ERROR_NAME);
   });
 });

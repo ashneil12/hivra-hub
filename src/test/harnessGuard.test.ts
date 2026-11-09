@@ -2,6 +2,8 @@
 // on the process's real home folder: every path rule is given a stand-in home, and every network target is
 // classified, not dialled.
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -183,6 +185,12 @@ describe("guarded data folders", () => {
     expect(win("C:\\Users\\example\\AppData\\Local\\MonoCode Hub\\x")).toBe(true);
     expect(win("C:\\Users\\example\\Documents\\x")).toBe(false);
     expect(win("D:\\Users\\example\\AppData\\Roaming\\com.ash.monocode-hub\\x")).toBe(false);
+    expect(win("C:\\Users\\example\\.claude\\x")).toBe(true);
+    expect(win("C:\\Users\\example\\.CLAUDE\\projects\\x.jsonl")).toBe(true);
+    expect(win("C:\\Users\\example\\.hermes\\cache\\x")).toBe(true);
+    expect(win("C:\\Users\\example\\.codex\\config.toml")).toBe(true);
+    expect(win("C:\\Users\\example\\.claudeish\\x")).toBe(false);
+    expect(win("C:/Users/example/.claude/x")).toBe(true);
     expect(guarded("/Users/Example/.CLAUDE/x", "darwin")).toBe(true);
     expect(guarded("/Users/Example/LIBRARY/Application Support/MonoCode Hub/x", "darwin")).toBe(true);
   });
@@ -216,6 +224,57 @@ describe("guarded data folders", () => {
     } finally {
       setGuardHomeForTest(null);
     }
+  });
+
+  it("blocks an agent folder under a stand-in home using this platform's path rules", () => {
+    // refuseWrite passes no platform, so the home must be resolved the same way as the file.
+    // On Windows a posix resolve of the stand-in misses `.claude` and the real write throws ENOENT.
+    const standIn = join(tmpdir(), "wp105-guard-home");
+    const file = join(standIn, ".claude", "should-not-exist-wp105");
+    setGuardHomeForTest(standIn);
+    try {
+      expect(isGuardedWritePath(file)).toBe(true);
+      let thrown: unknown;
+      try {
+        refuseWrite("writeFileSync", file);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(TestHarnessGuardError);
+      expect((thrown as Error).name).toBe(GUARD_ERROR_NAME);
+    } finally {
+      setGuardHomeForTest(null);
+    }
+  });
+
+  it("resolves a stand-in home with the running platform, not posix rules", () => {
+    // The Windows failure: refuseWrite omits platform, and a posix resolve of `C:\...\.claude`
+    // does not match a win32 resolve of the same path. On any other platform, pretend to be
+    // Windows so the regression fails here too, not only on a Windows runner. A stand-in home
+    // is used, so the real one is never read.
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform");
+    const original = process.platform;
+    const spoof = original !== "win32";
+    if (spoof && descriptor?.configurable !== true) {
+      throw new Error("process.platform is not configurable, so this Windows regression cannot be simulated");
+    }
+    setGuardHomeForTest("C:\\Users\\example");
+    try {
+      if (spoof) Object.defineProperty(process, "platform", { configurable: true, enumerable: true, value: "win32" });
+      expect(isGuardedWritePath("C:\\Users\\example\\.claude\\x")).toBe(true);
+      expect(isGuardedWritePath("C:\\Users\\example\\Documents\\x")).toBe(false);
+      let thrown: unknown;
+      try {
+        refuseWrite("writeFileSync", "C:\\Users\\example\\.claude\\x");
+      } catch (error) {
+        thrown = error;
+      }
+      expect((thrown as Error).name).toBe(GUARD_ERROR_NAME);
+    } finally {
+      if (spoof && descriptor) Object.defineProperty(process, "platform", descriptor);
+      setGuardHomeForTest(null);
+    }
+    expect(process.platform).toBe(original);
   });
 });
 

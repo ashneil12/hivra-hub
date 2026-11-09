@@ -248,10 +248,13 @@ export interface PathRules {
 
 /** True when writing to this path would land in the app's or an agent's real data folder. */
 export function isGuardedWritePath(file: unknown, rules: PathRules = {}): boolean {
-  const home = flavourOf(rules.platform).resolve(rules.home ?? guardHome());
   const platform = rules.platform ?? process.platform;
   const env = rules.env ?? process.env;
   const flavour = flavourOf(platform);
+  // Home and the file have to be resolved with the same rules. refuseWrite does not pass a platform,
+  // so on Windows a posix resolve would keep the backslashes and the agent folder under a stand-in
+  // home would not match. The real write would then throw a plain Error (ENOENT) instead of the guard.
+  const home = flavour.resolve(rules.home ?? guardHome());
   const resolved = normalisePath(file, home, flavour);
   if (!resolved) return false;
   // macOS and Windows compare case-insensitively; Linux keeps case.
