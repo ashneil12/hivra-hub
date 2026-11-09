@@ -6,12 +6,22 @@ import { NativePopupHost } from "../../../shared/ui/NativePopupHost";
 type Props = {
   error: string | null;
   busy?: boolean;
+  worktree?: {
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+  };
   onFork: () => void;
   onCancel: () => void;
 };
 
 /** Confirm before a chat is copied from one message. */
-export function ThreadForkDialog({ error, busy = false, onFork, onCancel }: Props) {
+export function ThreadForkDialog({
+  error,
+  busy = false,
+  worktree,
+  onFork,
+  onCancel,
+}: Props) {
   const host = useContext(NativePopupHost);
   const confirmRef = useRef<HTMLButtonElement>(null);
 
@@ -24,11 +34,11 @@ export function ThreadForkDialog({ error, busy = false, onFork, onCancel }: Prop
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      if (!busy) onCancel();
+      onCancel();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [busy, onCancel]);
+  }, [onCancel]);
 
   return createPortal(
     <div
@@ -38,7 +48,7 @@ export function ThreadForkDialog({ error, busy = false, onFork, onCancel }: Prop
       <div
         className="dialog-scrim absolute inset-0 z-0 bg-black/30"
         onMouseDown={() => {
-          if (!busy) onCancel();
+          onCancel();
         }}
       />
       <div
@@ -60,6 +70,18 @@ export function ThreadForkDialog({ error, busy = false, onFork, onCancel }: Prop
             A new chat keeps the messages up to here. This chat stays as it is.
           </p>
         </div>
+        {worktree ? (
+          <label className="flex items-center gap-2 text-[12px] text-content/80">
+            <input
+              type="checkbox"
+              data-thread-fork-worktree
+              checked={worktree.checked}
+              disabled={busy}
+              onChange={(event) => worktree.onChange(event.currentTarget.checked)}
+            />
+            Start the new chat in its own worktree.
+          </label>
+        ) : null}
         {error ? (
           <p role="alert" className="whitespace-pre-wrap text-[11px] leading-4 text-red-400/90">
             {error}
@@ -69,7 +91,6 @@ export function ThreadForkDialog({ error, busy = false, onFork, onCancel }: Prop
           <button
             type="button"
             data-thread-fork-cancel
-            disabled={busy}
             onClick={onCancel}
             className="rounded-md px-3 py-1.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content disabled:opacity-40"
           >

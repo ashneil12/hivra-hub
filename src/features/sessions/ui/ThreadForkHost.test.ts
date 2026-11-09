@@ -2,7 +2,9 @@
 import { act, createElement, type RefObject } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import type { Worktree } from "../../source-control/model/worktrees";
 import { newSession, type Block, type Session } from "../model/session";
+import type { ForkWorktreePort } from "../model/threadFork";
 import { askThreadFork, clearThreadForkAsk } from "../model/threadForkAsk";
 import { ForkFromHereButton } from "./ForkFromHereButton";
 import { ThreadForkHost } from "./ThreadForkHost";
@@ -28,7 +30,37 @@ function chat(): Session {
   };
 }
 
+const DIRTY =
+  "error: Your local changes to the following files would be overwritten by checkout:\n\tfile.txt\nPlease commit your changes or stash them before you switch branches.";
+const TAKEN = "This branch already has a working copy. Select it from the picker.";
+
+function worktree(path = "/work/proj-wt"): Worktree {
+  return {
+    path,
+    branch: "mc/fork",
+    head: "abc",
+    isMain: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+    dirty: false,
+    unpushed: 0,
+    sessionIds: [],
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
+  localStorage.clear();
   clearThreadForkAsk();
   host = document.createElement("div");
   document.body.appendChild(host);
@@ -164,4 +196,234 @@ it("names the message action Fork from here", async () => {
     button?.click();
   });
   expect(asked).toEqual(["u1"]);
+});
+
+async function renderHost(
+  source: Session,
+  opened: Session[],
+  options: { port?: ForkWorktreePort; setting?: () => unknown } = {},
+) {
+  const ref = { current: [source] } as RefObject<Session[]>;
+  await act(async () => {
+    root.render(
+      createElement(ThreadForkHost, {
+        sessionsRef: ref,
+        onOpen: (session) => opened.push(session),
+        port: options.port,
+        setting: options.setting,
+      }),
+    );
+  });
+  return ref;
+}
+
+function worktreeBox(): HTMLInputElement {
+  const box = document.querySelector<HTMLInputElement>("[data-thread-fork-worktree]");
+  if (!box) throw new Error("missing worktree checkbox");
+  return box;
+}
+
+it("starts from the worktree setting and still lets the person choose", async () => {
+  const source = chat();
+  const calls: string[] = [];
+  const port: ForkWorktreePort = {
+    createWorktree: async (cwd) => {
+      calls.push(cwd);
+      return worktree("C:\\work\\my notes\\wt");
+    },
+  };
+  const opened: Session[] = [];
+  let setting = "ask";
+  await renderHost(source, opened, { port, setting: () => setting });
+  act(() => askThreadFork(source.id, "u1"));
+  expect(worktreeBox().checked).toBe(true);
+  expect(worktreeBox().labels?.[0]?.textContent).toContain(
+    "Start the new chat in its own worktree.",
+  );
+  setting = "off";
+  await act(async () => {
+    root.render(
+      createElement(ThreadForkHost, {
+        sessionsRef: { current: [source] } as RefObject<Session[]>,
+        onOpen: (session) => opened.push(session),
+        port,
+        setting: () => setting,
+      }),
+    );
+  });
+  expect(worktreeBox().checked).toBe(true);
+  await act(async () => {
+    worktreeBox().click();
+  });
+  expect(worktreeBox().checked).toBe(false);
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(calls).toEqual([]);
+  expect(opened).toHaveLength(1);
+  expect(opened[0].worktreeCwd).toBeUndefined();
+  expect(document.body.textContent).not.toMatch(/[—–]/);
+});
+
+it("can turn the worktree on when the setting is off, and keeps a path with spaces", async () => {
+  const source = { ...chat(), cwd: "C:\\work\\my notes" };
+  const calls: unknown[][] = [];
+  const port: ForkWorktreePort = {
+    createWorktree: async (...args) => {
+      calls.push(args);
+      return worktree("C:\\work\\my notes\\wt");
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "off" });
+  act(() => askThreadFork(source.id, "a1"));
+  expect(worktreeBox().checked).toBe(false);
+  await act(async () => {
+    worktreeBox().click();
+  });
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(calls[0]?.[0]).toBe("C:\\work\\my notes");
+  expect(calls[0]?.[2]).toBe("HEAD");
+  expect(calls[0]?.[3]).toBe(false);
+  expect(opened).toHaveLength(1);
+  expect(opened[0].worktreeCwd).toBe("C:\\work\\my notes\\wt");
+  expect(opened[0].blocks.map((entry) => entry.text)).toEqual(["First", "Answer"]);
+  expect(source.blocks.map((entry) => entry.text)).toEqual(["First", "Answer", "Later"]);
+});
+
+it("shows a worktree refusal and does not open a chat", async () => {
+  const source = chat();
+  const before = structuredClone(source);
+  const messages = [DIRTY, TAKEN, "fatal: not a git repository (or any of the parent directories): .git"];
+  let attempt = 0;
+  const port: ForkWorktreePort = {
+    createWorktree: async () => {
+      throw new Error(messages[attempt]);
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  for (const message of messages) {
+    act(() => askThreadFork(source.id, "u1"));
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+    });
+    expect(document.querySelector("[role=alert]")?.textContent).toBe(message);
+    expect(opened).toHaveLength(0);
+    expect(document.querySelector("[data-thread-fork-dialog]")).not.toBeNull();
+    attempt += 1;
+    await act(async () => {
+      document.querySelector<HTMLButtonElement>("[data-thread-fork-cancel]")?.click();
+    });
+  }
+  expect(source).toEqual(before);
+});
+
+it("drops a late worktree when the dialog was cancelled or the message was removed", async () => {
+  const source = chat();
+  const pending = deferred<Worktree>();
+  let calls = 0;
+  const port: ForkWorktreePort = {
+    createWorktree: () => {
+      calls += 1;
+      return pending.promise;
+    },
+  };
+  const opened: Session[] = [];
+  const ref = await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "u1"));
+  await act(async () => {
+    const button = document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]");
+    button?.click();
+    button?.click();
+  });
+  expect(calls).toBe(1);
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-cancel]")?.click();
+  });
+  await act(async () => {
+    pending.resolve(worktree());
+  });
+  expect(opened).toHaveLength(0);
+  expect(document.querySelector("[data-thread-fork-dialog]")).toBeNull();
+
+  const again = deferred<Worktree>();
+  const port2: ForkWorktreePort = { createWorktree: () => again.promise };
+  const opened2: Session[] = [];
+  const ref2 = await renderHost(source, opened2, { port: port2, setting: () => "always" });
+  act(() => askThreadFork(source.id, "u1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  ref2.current = [{ ...source, blocks: source.blocks.filter((entry) => entry.id !== "u1") }];
+  await act(async () => {
+    again.resolve(worktree("/work/left"));
+  });
+  expect(opened2).toHaveLength(0);
+  expect(document.querySelector("[role=alert]")?.textContent).toBe(
+    "That message is no longer in this chat.",
+  );
+  expect(ref.current[0]).toBe(source);
+});
+
+it("keeps an edit made while the worktree is created, and not a later message", async () => {
+  const source = chat();
+  const pending = deferred<Worktree>();
+  const port: ForkWorktreePort = { createWorktree: () => pending.promise };
+  const opened: Session[] = [];
+  const ref = await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  ref.current = [
+    {
+      ...source,
+      blocks: [
+        block("u1", "user", "First, edited"),
+        block("a1", "assistant", "Answer, edited"),
+        block("u2", "user", "Later"),
+        block("u3", "user", "Added while waiting"),
+      ],
+    },
+  ];
+  await act(async () => {
+    pending.resolve(worktree("/work/proj-wt"));
+  });
+  expect(opened).toHaveLength(1);
+  expect(opened[0].blocks.map((entry) => entry.text)).toEqual([
+    "First, edited",
+    "Answer, edited",
+  ]);
+  expect(opened[0].worktreeCwd).toBe("/work/proj-wt");
+  expect(source.blocks[0].text).toBe("First");
+});
+
+it("treats a timeout as something to try again, not a finished failure", async () => {
+  const source = chat();
+  let calls = 0;
+  const port: ForkWorktreePort = {
+    createWorktree: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("The worktree create timed out");
+      return worktree();
+    },
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "u1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(document.querySelector("[role=alert]")?.textContent).toBe(
+    "The worktree create timed out",
+  );
+  expect(opened).toHaveLength(0);
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(opened).toHaveLength(1);
+  expect(opened[0].blocks.map((entry) => entry.text)).toEqual(["First"]);
 });

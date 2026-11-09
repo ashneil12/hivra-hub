@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
+import { temporaryWorktreeBranchName, type Worktree } from "../../source-control/model/worktrees";
 import { newSession, type Attachment, type Block, type Session } from "./session";
 import {
   forkAttemptGate,
+  forkChat,
   forkSessionAtMessage,
   forkStillValid,
+  forkWorktreeDefault,
+  forkWorktreeError,
   insertFork,
   lastForkableBlockId,
   type ForkIds,
+  type ForkWorktreePort,
 } from "./threadFork";
 
 function ids(values: string[]): ForkIds {
@@ -315,6 +320,164 @@ describe("lastForkableBlockId", () => {
     expect(forkStillValid(chat(blocks), "a1")).toBe(true);
     expect(forkStillValid(chat(blocks), "t1")).toBe(false);
     expect(forkStillValid(undefined, "a1")).toBe(false);
+  });
+});
+
+const DIRTY =
+  "error: Your local changes to the following files would be overwritten by checkout:\n\tfile.txt\nPlease commit your changes or stash them before you switch branches.";
+const TAKEN = "This branch already has a working copy. Select it from the picker.";
+const NOT_GIT =
+  "fatal: not a git repository (or any of the parent directories): .git";
+
+function tree(path: string, branch: string | null = "mc/fork"): Worktree {
+  return {
+    path,
+    branch,
+    head: "abc",
+    isMain: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+    dirty: false,
+    unpushed: 0,
+    sessionIds: [],
+  };
+}
+
+describe("forkWorktreeDefault", () => {
+  it("starts checked for ask and always, and unchecked for anything else", () => {
+    expect(forkWorktreeDefault("ask")).toBe(true);
+    expect(forkWorktreeDefault("always")).toBe(true);
+    expect(forkWorktreeDefault("off")).toBe(false);
+    expect(forkWorktreeDefault("sometimes")).toBe(false);
+    expect(forkWorktreeDefault(null)).toBe(false);
+    expect(forkWorktreeDefault(1)).toBe(false);
+  });
+});
+
+describe("forkChat", () => {
+  it("does not create a worktree when the box is off or the message cannot be forked", async () => {
+    const source = chat([
+      block({ id: "u1", role: "user", text: "Hi" }),
+      block({ id: "a1", role: "assistant", text: "Later" }),
+    ]);
+    const calls: unknown[] = [];
+    const port: ForkWorktreePort = {
+      createWorktree: async (...args) => {
+        calls.push(args);
+        return tree("/work/proj-wt");
+      },
+    };
+    const fork = await forkChat(source, "u1", { useNewWorktree: false }, port, ids(["fork-1", "b1"]));
+    expect(fork!.blocks.map((entry) => entry.text)).toEqual(["Hi"]);
+    expect(fork!.worktreeCwd).toBe(source.worktreeCwd);
+    expect(calls).toEqual([]);
+    expect(await forkChat(source, "missing", { useNewWorktree: true }, port)).toBeNull();
+    expect(calls).toEqual([]);
+    expect(source.blocks).toHaveLength(2);
+  });
+
+  it("passes the project path through and keeps the new worktree", async () => {
+    const source = chat(
+      [block({ id: "u1", role: "user", text: "Hi" })],
+      {
+        cwd: "C:\\work\\my notes",
+        branch: "old",
+        worktreeCwd: "C:\\work\\old",
+        workspaceMode: "current",
+        worktreeBase: "HEAD",
+        worktreeRemoved: true,
+      },
+    );
+    const before = structuredClone(source);
+    let seen: unknown[] = [];
+    const port: ForkWorktreePort = {
+      createWorktree: async (...args) => {
+        seen = args;
+        return tree("C:\\work\\my notes\\wt", "mc/fork");
+      },
+    };
+    const fork = await forkChat(
+      source,
+      "u1",
+      { useNewWorktree: true },
+      port,
+      ids(["fork-1", "b1"]),
+    );
+    expect(seen).toEqual([
+      "C:\\work\\my notes",
+      temporaryWorktreeBranchName("fork-1"),
+      "HEAD",
+      false,
+    ]);
+    expect(fork!.id).toBe("fork-1");
+    expect(fork!.worktreeCwd).toBe("C:\\work\\my notes\\wt");
+    expect(fork!.branch).toBe("mc/fork");
+    expect(fork!.workspaceMode).toBeUndefined();
+    expect(fork!.worktreeBase).toBeUndefined();
+    expect(fork!.worktreeRemoved).toBeUndefined();
+    expect(source).toEqual(before);
+  });
+
+  it("keeps a refusal and does not open a partial chat", async () => {
+    const source = chat([block({ id: "u1", role: "user", text: "Hi" })]);
+    const before = structuredClone(source);
+    for (const message of [DIRTY, TAKEN, NOT_GIT]) {
+      const port: ForkWorktreePort = {
+        createWorktree: async () => {
+          throw new Error(message);
+        },
+      };
+      await expect(
+        forkChat(source, "u1", { useNewWorktree: true }, port, ids(["fork-1", "b1"])),
+      ).rejects.toThrow(message);
+    }
+    expect(source).toEqual(before);
+    expect(forkWorktreeError(new Error(DIRTY))).toBe(DIRTY);
+    expect(forkWorktreeError(TAKEN)).toBe(TAKEN);
+    expect(forkWorktreeError(null)).toBe("The new worktree could not be created.");
+  });
+
+  it("reads the chat again after the worktree exists", async () => {
+    const source = chat([
+      block({ id: "u1", role: "user", text: "Hi" }),
+      block({ id: "a1", role: "assistant", text: "Later" }),
+    ]);
+    let live = source;
+    const port: ForkWorktreePort = {
+      createWorktree: async () => {
+        live = chat([
+          block({ id: "u1", role: "user", text: "Hi, edited" }),
+          block({ id: "a1", role: "assistant", text: "Later" }),
+          block({ id: "u2", role: "user", text: "After the fork point" }),
+        ]);
+        return tree("/work/proj-wt");
+      },
+    };
+    const fork = await forkChat(
+      source,
+      "u1",
+      { useNewWorktree: true, readSource: () => live },
+      port,
+      ids(["fork-1", "b1"]),
+    );
+    expect(fork!.blocks.map((entry) => entry.text)).toEqual(["Hi, edited"]);
+    expect(fork!.worktreeCwd).toBe("/work/proj-wt");
+
+    const removed = chat([block({ id: "u1", role: "user", text: "Hi" })]);
+    const gone = await forkChat(
+      removed,
+      "u1",
+      {
+        useNewWorktree: true,
+        readSource: () => chat([]),
+      },
+      {
+        createWorktree: async () => tree("/work/left-behind"),
+      },
+      ids(["fork-2", "b1"]),
+    );
+    expect(gone).toBeNull();
   });
 });
 

@@ -1,5 +1,9 @@
 // WP-123: a new chat with a copy of the history up to one message. The original
 // is never written. Ids are new, so the two chats do not share a mutable row.
+import {
+  temporaryWorktreeBranchName,
+  type Worktree,
+} from "../../source-control/model/worktrees";
 import type {
   Attachment,
   Block,
@@ -278,4 +282,76 @@ export function forkAttemptGate(): ForkAttemptGate {
       ticket += 1;
     },
   };
+}
+
+/** Checked for "ask" and "always". Anything else, including a bad value, is off. */
+export function forkWorktreeDefault(setting: unknown): boolean {
+  return setting === "always" || setting === "ask";
+}
+
+export type ForkWorktreePort = {
+  createWorktree: (
+    cwd: string,
+    branch: string,
+    base: string,
+    existing: boolean,
+  ) => Promise<Worktree>;
+};
+
+export type ForkChatOptions = {
+  useNewWorktree: boolean;
+  /** Read the chat again after the worktree exists, so a late edit is kept. */
+  readSource?: () => Session | undefined;
+};
+
+const WORKTREE_FAILED = "The new worktree could not be created.";
+
+/** The refusal text, or a plain line when the failure said nothing. */
+export function forkWorktreeError(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  return WORKTREE_FAILED;
+}
+
+function withForkWorktree(fork: Session, tree: Worktree): Session {
+  if (typeof tree.path !== "string" || tree.path.length === 0) {
+    throw new Error(WORKTREE_FAILED);
+  }
+  const next: Session = {
+    ...fork,
+    worktreeCwd: tree.path,
+    branch: typeof tree.branch === "string" && tree.branch ? tree.branch : undefined,
+  };
+  delete next.workspaceMode;
+  delete next.worktreeBase;
+  delete next.worktreeRemoved;
+  return next;
+}
+
+/**
+ * Copy the chat. When a new worktree is requested, creation goes through the
+ * port and a refusal is left to the caller. This never removes a worktree.
+ */
+export async function forkChat(
+  source: Session,
+  blockId: string,
+  options: ForkChatOptions,
+  port: ForkWorktreePort,
+  ids: ForkIds = defaultIds(),
+): Promise<Session | null> {
+  if (!forkStillValid(source, blockId)) return null;
+  if (!options.useNewWorktree) return forkSessionAtMessage(source, blockId, ids);
+  const sessionId = takeId(ids);
+  if (!sessionId) return null;
+  const tree = await port.createWorktree(
+    source.cwd,
+    temporaryWorktreeBranchName(sessionId),
+    "HEAD",
+    false,
+  );
+  const live = options.readSource ? options.readSource() : source;
+  if (!forkStillValid(live, blockId)) return null;
+  const fork = forkSessionAtMessage(live!, blockId, ids, sessionId);
+  if (!fork) return null;
+  return withForkWorktree(fork, tree);
 }
