@@ -245,6 +245,40 @@ describe("shell commands", () => {
       expect(safeCommand(command), command).toBeNull();
   });
 
+  // WP-101 fix round 3, finding 4: GNU find takes a unique prefix of a predicate, so -del is -delete and -okd is
+  // -okdir. Anything starting with "-" that is not a known read-only predicate waits. A number after a test (-mtime
+  // -7) is an operand, and -executable, -d and -print are not -exec, -delete and -fprint.
+  it("holds a find predicate it does not know is read-only, including a short prefix (fix round 3, finding 4)", () => {
+    for (const command of [
+      "find . -del",
+      "find . -okd echo hi",
+      "find . -exe echo",
+      "find . -execd echo",
+      "find . -delet",
+      "find . -okdi echo",
+      "find . -fpri out.txt",
+      "find . -fprint out.txt",
+      "find . -fl out.txt",
+      "find . -L",
+      "find . -follow",
+      "find . -xtype f",
+      "find . -files0-from list",
+      "find . '-DELETE'",
+    ])
+      expect(safeCommand(command), command).not.toBeNull();
+    for (const command of [
+      "find . -name '*.ts'",
+      "find src -type f -newer README.md",
+      "find . -maxdepth 2 -name '*.md' -print0",
+      "find . -d -name '*.ts'",
+      "find . -depth -print",
+      "find . -executable",
+      "find . -mtime -7 -type f",
+      "find . -size -10k -print",
+    ])
+      expect(safeCommand(command), command).toBeNull();
+  });
+
   // WP-101 fix round 3, finding 2: grep has no ignore list once it recurses, and a search that turns ignores off reads
   // what a project keeps out of git. Both wait even inside the chat's folder. --no-heading is not --no-ignore.
   it("holds recursive grep and a search that turns ignores off (fix round 3, finding 2)", () => {

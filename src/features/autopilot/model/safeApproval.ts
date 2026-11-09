@@ -131,6 +131,37 @@ function usesOption(args: readonly string[], options: readonly string[]): boolea
 const readsUnless = (...unsafe: string[]) => (args: readonly string[]) =>
   usesOption(args, unsafe) ? "that option writes a file or runs another program" : null;
 
+/**
+ * Read-only `find` predicates and options, matched exactly and case-sensitively. GNU find treats a unique prefix of a
+ * predicate as that predicate, so a denylist of `-delete` misses `-del`. Anything starting with `-` that is not in this
+ * set waits. `-d` is not `-delete`, `-executable` is not `-exec`, and `-print` is not `-fprint`. Following a symlink
+ * (`-L`, `-follow`), `-xtype` and `-files0-from` are not here.
+ */
+const FIND_READS = new Set([
+  "-a", "-and", "-o", "-or", "-not",
+  "-d", "-depth", "--depth", "-maxdepth", "-mindepth", "-xdev", "-mount", "-noleaf", "-P", "-E", "-s", "-X", "-f", "--",
+  "-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-wholename", "-iwholename", "-lname", "-ilname",
+  "-type", "-perm", "-links", "-inum", "-samefile", "-user", "-group", "-uid", "-gid", "-nouser", "-nogroup",
+  "-size", "-empty", "-atime", "-mtime", "-ctime", "-amin", "-mmin", "-cmin", "-Btime", "-Bmin",
+  "-newer", "-anewer", "-cnewer", "-mnewer", "-Bnewer", "-fstype",
+  "-readable", "-writable", "-executable", "-true", "-false", "-prune",
+  "-print", "-print0", "-printx", "-printf", "-ls", "-quit",
+  "-daystart", "-ignore_readdir_race", "-noignore_readdir_race", "-regextype", "-warn", "-nowarn",
+]);
+
+/** GNU find's `-newerXY` tests, such as `-newermt`. Two letters, each one of a, B, c, m or t. A read, not a run. */
+const FIND_NEWER_XY = /^-newer[aBcmt][aBcmt]$/;
+
+function findRead(args: readonly string[]): SafeVerdict {
+  for (const arg of args) {
+    if (!arg.startsWith("-") || /^-[\d]/.test(arg)) continue;
+    const name = arg.split("=", 1)[0];
+    if (FIND_READS.has(name) || FIND_NEWER_XY.test(name)) continue;
+    return "that option writes a file or runs another program";
+  }
+  return null;
+}
+
 const GIT_READS: ReadonlySet<string> = new Set(["status", "diff", "log", "show", "branch"]);
 /** `git branch` only lists: these options, and names only as what --list, --contains and the like look for. */
 const BRANCH_LIST_FLAGS = /^(-a|--all|-r|--remotes|-v|-vv|--verbose|-l|--list|--show-current|--merged|--no-merged|--contains|--no-contains|--points-at|--sort(=.*)?|--format(=.*)?|--column|--no-column|--color(=.*)?|--no-color|--abbrev(=.*)?|--no-abbrev|-i|--ignore-case|--omit-empty)$/;
@@ -223,7 +254,7 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   pwd: () => null,
   // WP-101, from Row-Bot's safe-command table: listing and system information that only read, with the options
   // that turn each into a write or a run held.
-  find: readsUnless("-exec", "-execdir", "-ok", "-okdir", "-delete", "-fdelete", "-fprint", "-fprint0", "-fprintf", "-fls"),
+  find: findRead,
   fd: readsUnless("-x", "--exec", "--exec-batch"),
   ag: readsUnless("--pager"),
   // tree writes to a file with -o; --output is held too though tree has no such option, since a stricter answer
