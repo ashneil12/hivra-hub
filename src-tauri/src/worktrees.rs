@@ -669,46 +669,95 @@ pub async fn git_worktree_rename_branch(
 }
 
 fn removal_target(root: &Path, path: &Path) -> Result<Worktree, String> {
-    let tree = list(root)?
+    let trees = list(root)?;
+    if let Some(tree) = trees
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), path))
-        .ok_or("This path is not a registered worktree of this repository")?;
-    if tree.is_main {
-        return Err("The main working copy cannot be deleted".into());
+    {
+        if tree.is_main {
+            return Err("The main working copy cannot be deleted".into());
+        }
+        if tree.locked {
+            return Err("This worktree is locked. Unlock it in Git before deleting it.".into());
+        }
+        if tree.branch.is_none() {
+            // There is no branch retaining detached commits after removal.
+            return Err("Create a branch for this detached worktree before deleting it.".into());
+        }
+        return Ok(tree);
     }
-    if tree.locked {
-        return Err("This worktree is locked. Unlock it in Git before deleting it.".into());
+    // WP-118: a sparse slot git does not list. A path git does list stays on the git path above.
+    if let Some(tree) = crate::sparse_checkout::slot_for_removal(root, path) {
+        return Ok(tree);
     }
-    if tree.branch.is_none() {
-        // There is no branch retaining detached commits after removal.
-        return Err("Create a branch for this detached worktree before deleting it.".into());
-    }
-    Ok(tree)
+    Err("This path is not a registered worktree of this repository".into())
 }
 
 #[tauri::command(async)]
 pub fn git_worktree_check_remove(
+    app: AppHandle,
     cwd: String,
     path: String,
     force: bool,
     terminals: State<'_, crate::pty::PtyHost>,
 ) -> Result<(), String> {
     let path = expand_home(&path);
-    check_removal(
+    // WP-118: ask the pinned tool when this copy has one. No pin means the status is unknown.
+    check_removal_with_tool(
         &expand_home(&cwd),
         &path,
         force,
         terminals.has_working_dir(&path),
+        &crate::sparse_checkout::env_from_app(&app),
     )
 }
 
-fn check_removal(root: &Path, path: &Path, force: bool, has_terminals: bool) -> Result<(), String> {
+#[cfg(test)]
+pub(crate) fn check_removal(
+    root: &Path,
+    path: &Path,
+    force: bool,
+    has_terminals: bool,
+) -> Result<(), String> {
+    check_removal_inner(root, path, force, has_terminals, None)
+}
+
+pub(crate) fn check_removal_with_tool(
+    root: &Path,
+    path: &Path,
+    force: bool,
+    has_terminals: bool,
+    env: &crate::sparse_checkout::SparseEnv,
+) -> Result<(), String> {
+    check_removal_inner(root, path, force, has_terminals, Some(env))
+}
+
+fn check_removal_inner(
+    root: &Path,
+    path: &Path,
+    force: bool,
+    has_terminals: bool,
+    env: Option<&crate::sparse_checkout::SparseEnv>,
+) -> Result<(), String> {
     let tree = removal_target(root, path)?;
     if has_terminals {
         return Err("Close the terminals using this worktree first.".into());
     }
     // Sessions and their agents still exist during preflight. The actual
     // removal below checks them again after the session deletion lifecycle.
+    if tree.sparse_notice.is_some() {
+        // WP-118: do not ask git. Unknown is not clean, and it is not a reason to delete.
+        if force {
+            return Ok(());
+        }
+        return match env
+            .and_then(|env| crate::sparse_checkout::slot_dirty(env, Path::new(&tree.path)))
+        {
+            Some(true) => Err("This worktree has uncommitted or untracked changes.".into()),
+            Some(false) => Ok(()),
+            None => Err(crate::sparse_checkout::STATUS_UNKNOWN.to_string()),
+        };
+    }
     if !force
         && !git(
             Path::new(&tree.path),
@@ -723,6 +772,13 @@ fn check_removal(root: &Path, path: &Path, force: bool, has_terminals: bool) -> 
 
 pub(crate) fn remove(root: &Path, path: &Path, force: bool) -> Result<(), String> {
     let tree = removal_target(root, path)?;
+    if tree.sparse_notice.is_some() {
+        // WP-118: without the tap, do not delete. Never `git worktree remove` a slot git does not list.
+        if !force {
+            return Err(crate::sparse_checkout::STATUS_UNKNOWN.to_string());
+        }
+        return crate::sparse_checkout::delete_slot(root, Path::new(&tree.path));
+    }
     let mut args = vec!["worktree", "remove"];
     if force {
         args.push("--force");

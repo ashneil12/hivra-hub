@@ -31,6 +31,9 @@ pub const CANT_SAVE: &str = "The sparse checkout setting can't be saved.";
 pub const PIN_UNSET: &str = "The pin for gion isn't set, so a sparse checkout was not created.";
 pub const SPARSE_NOTICE: &str = "This checkout is sparse. Git does not see it as a worktree, so actions on it stay on the pinned tool.";
 pub const NOT_CREATED: &str = "The sparse checkout was not created.";
+pub const STATUS_UNKNOWN: &str = "This checkout's status isn't known, so it was not removed.";
+pub const OUTSIDE_SLOT: &str = "Refusing to remove a checkout outside its folder.";
+pub const NOT_REMOVED: &str = "The checkout could not be removed.";
 
 const MARKER_NAME: &str = ".gion-workspace.json";
 /// Names the test double reads. A real gion does not. Forwarded only when set, never logged.
@@ -547,6 +550,71 @@ pub fn unlisted_slots(main: &Path) -> Vec<crate::worktrees::Worktree> {
     }
     slots.sort_by(|left, right| left.path.cmp(&right.path));
     slots
+}
+
+/// A sparse slot git does not list, or nothing when this path is not one.
+pub fn slot_for_removal(main: &Path, path: &Path) -> Option<crate::worktrees::Worktree> {
+    slot_tree(main, path)
+}
+
+/// `Some(true)` dirty, `Some(false)` clean. `None` is not clean: no tool, a
+/// failed tool, or an answer that is not exactly clean or dirty.
+pub fn slot_dirty(env: &SparseEnv, dest: &Path) -> Option<bool> {
+    let launch = env.launch.as_ref()?;
+    if launch.program.as_os_str().is_empty() {
+        return None;
+    }
+    let ran = run_tool(
+        env,
+        launch,
+        dest,
+        &[
+            "status".to_string(),
+            "--dest".to_string(),
+            crate::fs::path_to_js(dest),
+        ],
+    );
+    if !ran.ok {
+        return None;
+    }
+    match ran.stdout.trim() {
+        "dirty" => Some(true),
+        "clean" => Some(false),
+        _ => None,
+    }
+}
+
+/// Delete one sparse slot. The path is checked again immediately before the delete.
+pub fn delete_slot(main: &Path, path: &Path) -> Result<(), String> {
+    if slot_tree(main, path).is_none() {
+        return Err("This path is not a registered worktree of this repository".to_string());
+    }
+    let parent = crate::worktrees::default_root(main);
+    confirm_slot(&parent, main, path)?;
+    let path_canon = crate::fs::canonical(path).map_err(|error| error.to_string())?;
+    confirm_slot(&parent, main, &path_canon)?;
+    remove_contained(&path_canon);
+    if path_canon.exists() {
+        return Err(NOT_REMOVED.to_string());
+    }
+    Ok(())
+}
+
+fn confirm_slot(parent: &Path, main: &Path, path: &Path) -> Result<(), String> {
+    if is_link(path) || !marked_child(parent, path) {
+        return Err(OUTSIDE_SLOT.to_string());
+    }
+    let main_canon = crate::fs::canonical(main)
+        .map_err(|_| "The main working copy cannot be deleted".to_string())?;
+    let path_canon = crate::fs::canonical(path).map_err(|error| error.to_string())?;
+    if same_dir(&path_canon, &main_canon) {
+        return Err("The main working copy cannot be deleted".to_string());
+    }
+    let parent_canon = crate::fs::canonical(parent).map_err(|_| OUTSIDE_SLOT.to_string())?;
+    match path_canon.parent() {
+        Some(got) if same_dir(got, &parent_canon) => Ok(()),
+        _ => Err(OUTSIDE_SLOT.to_string()),
+    }
 }
 
 /// Delete a failed create only when the record is inside the worktree folder.
@@ -1460,5 +1528,187 @@ mod tests {
         assert!(listed
             .iter()
             .any(|tree| crate::worktrees::same_path(Path::new(&tree.path), &dest)));
+    }
+
+    fn open_slot(scratch: &Scratch, branch: &str) -> (PathBuf, PathBuf, SparseEnv) {
+        let repo = git_repo(scratch);
+        let env = with_tool(&scratch.env());
+        set_enabled(&env, &repo, true, false).unwrap();
+        let opened = open_if_enabled(&env, &repo, branch, "HEAD", false)
+            .unwrap()
+            .unwrap();
+        (repo, PathBuf::from(opened.path), env)
+    }
+
+    #[test]
+    fn an_unforced_check_does_not_remove_a_slot_or_ask_git() {
+        let scratch = Scratch::new();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        let (repo, dest, _env) = open_slot(&scratch, "held");
+        let err = crate::worktrees::check_removal(&repo, &dest, false, false).unwrap_err();
+        assert_eq!(err, STATUS_UNKNOWN);
+        assert!(dest.join(MARKER_NAME).is_file());
+        assert_eq!(
+            crate::worktrees::check_removal(&repo, &dest, true, true).unwrap_err(),
+            "Close the terminals using this worktree first."
+        );
+        assert!(dest.is_dir());
+        crate::worktrees::check_removal(&repo, &dest, true, false).unwrap();
+        assert!(dest.is_dir());
+        assert_eq!(
+            crate::worktrees::remove(&repo, &dest, false).unwrap_err(),
+            STATUS_UNKNOWN
+        );
+        assert!(dest.is_dir());
+        only_main(&repo);
+    }
+
+    #[test]
+    fn a_dirty_slot_stays_until_the_tap_and_only_that_folder_goes() {
+        let scratch = Scratch::new();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, false, false);
+        let (repo, dest, env) = open_slot(&scratch, "keep-项");
+        let sibling = crate::worktrees::default_root(&repo).join("other folder");
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("stay.txt"), b"stay").unwrap();
+        std::fs::write(dest.join(".gion-dirty"), b"1").unwrap();
+        assert_eq!(
+            crate::worktrees::check_removal_with_tool(&repo, &dest, false, false, &env)
+                .unwrap_err(),
+            "This worktree has uncommitted or untracked changes."
+        );
+        assert!(dest.join(".gion-dirty").is_file());
+        std::fs::remove_file(dest.join(".gion-dirty")).unwrap();
+        crate::worktrees::check_removal_with_tool(&repo, &dest, false, false, &env).unwrap();
+        assert!(dest.is_dir());
+        let key = serde_json::to_string(&project_key(&repo).unwrap()).unwrap();
+        let marker = std::fs::read_to_string(dest.join(MARKER_NAME)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&marker).unwrap();
+        let crlf = format!(
+            "{{\"repo\":{key},\"branch\":{},\"commit\":{}}}\r\n",
+            serde_json::to_string(value["branch"].as_str().unwrap()).unwrap(),
+            serde_json::to_string(value["commit"].as_str().unwrap()).unwrap(),
+        );
+        std::fs::write(dest.join(MARKER_NAME), crlf).unwrap();
+        let via = dest.join("..").join(dest.file_name().unwrap());
+        crate::worktrees::remove(&repo, &via, true).unwrap();
+        assert!(!dest.exists());
+        assert_eq!(std::fs::read(sibling.join("stay.txt")).unwrap(), b"stay");
+        assert_eq!(
+            std::fs::read(repo.join("keep.txt")).unwrap(),
+            b"keep-this\n"
+        );
+        assert_eq!(std::fs::read(repo.join("bulky.bin")).unwrap().len(), 64);
+        assert_eq!(
+            crate::worktrees::remove(&repo, &via, true).unwrap_err(),
+            "This path is not a registered worktree of this repository"
+        );
+        only_main(&repo);
+    }
+
+    #[test]
+    fn a_slot_outside_its_folder_a_link_and_the_main_checkout_stay() {
+        let scratch = Scratch::new();
+        let repo = git_repo(&scratch);
+        let key = project_key(&repo).unwrap();
+        let outside = scratch.root.join("elsewhere");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("stay.txt"), b"stay").unwrap();
+        std::fs::write(
+            outside.join(MARKER_NAME),
+            format!("{{\"repo\":{key:?},\"branch\":\"out\",\"commit\":\"abc\"}}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::worktrees::remove(&repo, &outside, true).unwrap_err(),
+            "This path is not a registered worktree of this repository"
+        );
+        assert_eq!(std::fs::read(outside.join("stay.txt")).unwrap(), b"stay");
+        let parent = crate::worktrees::default_root(&repo);
+        std::fs::create_dir_all(&parent).unwrap();
+        let empty = parent.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        std::fs::write(empty.join("stay.txt"), b"stay").unwrap();
+        std::fs::write(
+            empty.join(MARKER_NAME),
+            format!("{{\"repo\":{key:?},\"branch\":\"\",\"commit\":\"abc\"}}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::worktrees::remove(&repo, &empty, true).unwrap_err(),
+            "This path is not a registered worktree of this repository"
+        );
+        assert_eq!(std::fs::read(empty.join("stay.txt")).unwrap(), b"stay");
+        let linked_target = scratch.root.join("outside");
+        std::fs::create_dir_all(&linked_target).unwrap();
+        std::fs::write(linked_target.join("keep.txt"), b"keep").unwrap();
+        let linked = parent.join("linked");
+        link_dir(&linked_target, &linked);
+        assert_eq!(
+            crate::worktrees::remove(&repo, &linked, true).unwrap_err(),
+            "This path is not a registered worktree of this repository"
+        );
+        assert_eq!(
+            std::fs::read(linked_target.join("keep.txt")).unwrap(),
+            b"keep"
+        );
+        assert!(is_link(&linked));
+        assert_eq!(
+            crate::worktrees::remove(&repo, &repo, true).unwrap_err(),
+            "The main working copy cannot be deleted"
+        );
+        assert_eq!(
+            std::fs::read(repo.join("keep.txt")).unwrap(),
+            b"keep-this\n"
+        );
+        assert_eq!(std::fs::read(repo.join("bulky.bin")).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn a_git_worktree_with_a_marker_is_still_removed_by_git() {
+        let scratch = Scratch::new();
+        let log = scratch.root.join("tool.log");
+        let _vars = ToolVars::set(&log, None, None, true, false);
+        let (repo, dest, _env) = open_slot(&scratch, "linked-remove");
+        assert!(dest.join("bulky.bin").is_file());
+        assert!(dest.join(MARKER_NAME).is_file());
+        crate::worktrees::remove(&repo, &dest, true).unwrap();
+        assert!(!dest.exists());
+        only_main(&repo);
+        assert_eq!(std::fs::read(repo.join("bulky.bin")).unwrap().len(), 64);
+    }
+
+    #[test]
+    fn an_unknown_tool_status_is_not_clean() {
+        let scratch = Scratch::new();
+        let repo = scratch.repo("dest");
+        let env = scratch.env();
+        assert!(slot_dirty(&env, &repo).is_none());
+        let mut blank = env.clone();
+        blank.launch = Some(Launch {
+            program: PathBuf::new(),
+            args: Vec::new(),
+        });
+        assert!(slot_dirty(&blank, &repo).is_none());
+        let mut failed = env.clone();
+        failed.launch = Some(Launch {
+            program: PathBuf::from("node"),
+            args: vec![
+                std::ffi::OsString::from("-e"),
+                std::ffi::OsString::from("process.exit(1)"),
+            ],
+        });
+        assert!(slot_dirty(&failed, &repo).is_none());
+        let mut odd = env.clone();
+        odd.launch = Some(Launch {
+            program: PathBuf::from("node"),
+            args: vec![
+                std::ffi::OsString::from("-e"),
+                std::ffi::OsString::from("process.stdout.write('maybe\\n')"),
+            ],
+        });
+        assert!(slot_dirty(&odd, &repo).is_none());
     }
 }
