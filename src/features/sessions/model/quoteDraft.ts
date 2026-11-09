@@ -49,6 +49,14 @@ export function isMarkdownBlockquotePosition(
   return /^ {0,3}>/.test(text.slice(lineStart, index));
 }
 
+/** A whole message, marked so a later quote block says who it came from. Blank text quotes nothing. */
+export function quotedMessage(speaker: "you" | "assistant", text: string): string {
+  const body = text.replace(/\r\n?/g, "\n").trim();
+  if (!body) return "";
+  const label = speaker === "you" ? "You said:" : "The assistant said:";
+  return `${label}\n${body}`;
+}
+
 export function appendSelectionQuote(draft: string, text: string): string {
   const selected = text.replace(/\r\n?/g, "\n").trim();
   if (!selected) return draft;

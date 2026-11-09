@@ -5,8 +5,31 @@ import {
   composerSeedForAddToChat,
   consumeQuoteRequest,
   isMarkdownBlockquotePosition,
+  quotedMessage,
   type QuoteRequest,
 } from "./quoteDraft";
+
+describe("quotedMessage", () => {
+  it("marks a user message and an assistant message", () => {
+    expect(quotedMessage("you", "hello")).toBe("You said:\nhello");
+    expect(quotedMessage("assistant", "the door is shut")).toBe(
+      "The assistant said:\nthe door is shut",
+    );
+  });
+
+  it("drops a blank message and normalises newlines", () => {
+    expect(quotedMessage("you", "  \n ")).toBe("");
+    expect(quotedMessage("assistant", "")).toBe("");
+    expect(quotedMessage("you", "one\r\ntwo\rthree")).toBe("You said:\none\ntwo\nthree");
+  });
+
+  it("becomes a quote block in the draft, including an existing draft", () => {
+    expect(appendSelectionQuote("draft", quotedMessage("you", "hello"))).toBe(
+      "draft\n\n> You said:\n> hello\n\n",
+    );
+    expect(appendSelectionQuote("", quotedMessage("assistant", "  "))).toBe("");
+  });
+});
 
 describe("appendSelectionQuote", () => {
   it("formats a multiline selection and leaves room for a reply", () => {

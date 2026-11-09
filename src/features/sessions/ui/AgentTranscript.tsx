@@ -298,6 +298,10 @@ type Props = {
   backgroundTasks?: string[];
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onAddToChat?: (text: string) => void;
+  /** WP-124: quote a whole message into the composer. */
+  onQuoteMessage?: (speaker: "you" | "assistant", text: string) => void;
+  /** WP-124: load a sent prompt back into the composer for an earlier-prompt edit. */
+  onEditEarlierPrompt?: (block: Block) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
   onRemoveDraft?: (block: Block) => boolean | void;
@@ -371,6 +375,8 @@ function AgentTranscriptComponent({
   backgroundTasks,
   onApproval,
   onAddToChat,
+  onQuoteMessage,
+  onEditEarlierPrompt,
   onSaveNote,
   onSendDraft,
   onRemoveDraft,
@@ -1615,6 +1621,8 @@ function AgentTranscriptComponent({
                 planModel={model}
                 planModelSettings={modelSettings}
                 cwd={cwd}
+                onQuoteMessage={onQuoteMessage}
+                onEditEarlierPrompt={onEditEarlierPrompt}
                 onEditLastTurn={
                   onEditLastTurn &&
                   settled &&
@@ -2546,6 +2554,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModel,
   planModelSettings,
   onEditLastTurn,
+  onQuoteMessage,
+  onEditEarlierPrompt,
   editing = false,
   askedBefore,
 }: {
@@ -2582,6 +2592,10 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModel?: string;
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
+  /** WP-124 */
+  onQuoteMessage?: (speaker: "you" | "assistant", text: string) => void;
+  /** WP-124 */
+  onEditEarlierPrompt?: (block: Block) => void;
   editing?: boolean;
 }) {
   if (block.role === "user") {
@@ -2610,6 +2624,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
         stickyIndex={stickyIndex}
         cwd={cwd}
         onEdit={onEditLastTurn}
+        onQuote={onQuoteMessage}
+        onEditEarlier={onEditEarlierPrompt}
         editing={editing}
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
@@ -2748,6 +2764,17 @@ const TranscriptBlock = memo(function TranscriptBlock({
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
+      {/* WP-124: quote this reply into the draft. Visible without hovering. */}
+      {!block.streaming && shown && onQuoteMessage ? (
+        <button
+          type="button"
+          aria-label="Quote reply"
+          className="mt-1 font-sans text-xs text-content/50 hover:text-content"
+          onClick={() => onQuoteMessage("assistant", shown)}
+        >
+          Quote reply
+        </button>
+      ) : null}
     </div>
   );
 });
@@ -2813,6 +2840,8 @@ function UserMessageBlock({
   visible,
   stickyIndex,
   onEdit,
+  onQuote,
+  onEditEarlier,
   editing = false,
   cwd,
   onSaveNote,
@@ -2829,6 +2858,10 @@ function UserMessageBlock({
   visible: boolean;
   stickyIndex: number;
   onEdit?: () => void;
+  /** WP-124 */
+  onQuote?: (speaker: "you" | "assistant", text: string) => void;
+  /** WP-124 */
+  onEditEarlier?: (block: Block) => void;
   editing?: boolean;
   cwd?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
@@ -3195,8 +3228,35 @@ function UserMessageBlock({
                 label="Copy message"
               />
             ) : null}
+            {text && onQuote ? (
+              <button
+                type="button"
+                aria-label="Quote message"
+                title="Quote message"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onQuote("you", text);
+                }}
+                className="rounded-md px-1 py-0.5 font-sans text-xs text-content/50 hover:bg-content/8 hover:text-content"
+              >
+                Quote
+              </button>
+            ) : null}
             {onEdit ? (
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
+            ) : text && onEditEarlier && !block.draft ? (
+              <button
+                type="button"
+                aria-label="Edit prompt"
+                title="Edit prompt"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onEditEarlier(block);
+                }}
+                className="rounded-md px-1 py-0.5 font-sans text-xs text-content/50 hover:bg-content/8 hover:text-content"
+              >
+                Edit prompt
+              </button>
             ) : null}
             {text && onSaveNote ? (
               <SaveNoteButton text={text} onSave={onSaveNote} />

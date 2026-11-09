@@ -104,6 +104,7 @@ import { MOD } from "../../../platform/tauri/platform";
 import {
   acknowledgeQuoteRequest,
   ADD_TO_CHAT_EVENT,
+  quotedMessage,
   type AddToChatRequest,
   type QuoteRequest,
 } from "../model/quoteDraft";
@@ -1126,6 +1127,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     backgroundTasks={session.backgroundTasks}
                     onApproval={session.worktreeRemoved ? undefined : approve}
                     onAddToChat={addSelectionToChat}
+                    onQuoteMessage={(speaker, text) => {
+                      const quoted = quotedMessage(speaker, text);
+                      if (quoted) addSelectionToChat(quoted);
+                    }}
                     onSaveNote={notesEnabled ? saveNote : undefined}
                     onSendDraft={
                       draftBlock
