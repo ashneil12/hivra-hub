@@ -13,7 +13,7 @@ function view(extra: Partial<MemoryHealthView> = {}): MemoryHealthView {
     turns: 0,
     stored: 0,
     deferred: 0,
-    dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0 },
+    dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
     fading: 0,
     asksWaiting: 0,
     ...extra,
@@ -37,7 +37,7 @@ it("counts what the curator did, and when it last looked", () => {
       turns: 12,
       stored: 4,
       deferred: 2,
-      dropped: { late: 1, secret: 3, ungrounded: 2, invalid: 0 },
+      dropped: { late: 1, secret: 3, ungrounded: 2, invalid: 0, orders: 1 },
       lastRunAt: NOW - 2 * 3_600_000,
     }),
   );
@@ -47,6 +47,7 @@ it("counts what the curator did, and when it last looked", () => {
   expect(text).toContain("3 facts were not kept: with a secret in them.");
   expect(text).toContain("2 facts were not kept: not backed by the chat.");
   expect(text).toContain("1 fact was not kept: from a chat that had already moved on.");
+  expect(text).toContain("1 fact was not kept: it looks like instructions the person never gave.");
   // A reason with no facts in it is not listed at all.
   expect(text).not.toContain("the curator could not read");
 });

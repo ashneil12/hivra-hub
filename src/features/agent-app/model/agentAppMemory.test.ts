@@ -66,8 +66,22 @@ function fixture(agent = true) {
     write: (monoId: string, path: AgentFilePath, text: string, expected: string) =>
       write(monoId, path, text, expected),
   };
-  return { files, write, versions, botFiles, run };
+  return { files, write, versions, botFiles, run, source };
 }
+
+it("refuses to write memory from a private chat, and still lets that chat read", async () => {
+  const { files, source, run } = fixture();
+  await run("memory.add", { fact: "CI runs on Travis" });
+  source.private = true;
+  await expect(run("memory.add", { fact: "Uses pnpm" })).rejects.toThrow(/private/);
+  await expect(run("memory.replace", { find: "Travis", fact: "Uses npm" })).rejects.toThrow(/private/);
+  await expect(run("memory.remove", { find: "Travis" })).rejects.toThrow(/private/);
+  expect(files.get("MEMORY.md")).toContain("Travis");
+  expect(files.get("MEMORY.md")).not.toContain("pnpm");
+  expect(files.get("MEMORY.md")).not.toContain("npm");
+  const found = await run("memory.search", { query: "Travis" });
+  expect(JSON.stringify(found)).toContain("Travis");
+});
 
 it("adds, supersedes and removes dated entries in MEMORY.md", async () => {
   const { files, run } = fixture();
