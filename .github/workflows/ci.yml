@@ -158,7 +158,8 @@ jobs:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
-    # macOS stays one job: it was already quick, and macOS runners are the scarce ones.
+    # macOS stays one runner. The web half and the Rust half run at the same time in that job, because a second
+    # macOS runner would sit in the queue. Linux and Windows stay split.
     name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
     timeout-minutes: 30
     strategy:
@@ -197,17 +198,20 @@ jobs:
 
       - run: npm ci
       - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
-        if: matrix.part != 'rust'
+        if: matrix.part == 'web'
       - run: npx tsc --noEmit
-        if: matrix.part != 'rust'
+        if: matrix.part == 'web'
       - run: cargo fmt --check
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
       - run: cargo check
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
       - run: cargo test
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
+      - name: Web and Rust checks together
+        if: matrix.part == 'all'
+        run: node scripts/ci-check-parallel.mjs
 
   ship:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
