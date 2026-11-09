@@ -196,7 +196,7 @@
       "name": "portless",
       "url": "https://github.com/vercel-labs/portless",
       "licence": "Apache-2.0",
-      "gave": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90)"
+      "gave": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90). The 0.17 parallel loopback dial and Windows route-lock retry are included (WP-139)"
     },
     {
       "name": "emulate",
@@ -482,7 +482,7 @@
       "licence": "Apache-2.0",
       "copyright": "Copyright 2025 Vercel Inc.",
       "where": "src-tauri/src/proxy/",
-      "how": "WP-90: routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included."
+      "how": "WP-90: routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their tests. TLS, the /etc/hosts sync and the sudo path are not included. WP-139: portless 0.17.0 parallel loopback dial (utils.ts createLoopbackConnection) and Windows route-lock EPERM retry (routes.ts acquireLock)."
     },
     {
       "name": "emulate's base URLs and file store",
