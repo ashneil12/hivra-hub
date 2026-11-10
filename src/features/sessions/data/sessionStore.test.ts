@@ -29,6 +29,21 @@ it("persists sidebar visibility without making the session ephemeral", () => {
   expect(persistFingerprint(hidden)).not.toBe(persistFingerprint(session));
 });
 
+it("persists a private chat and its boundary, and drops a boundary that is not an id", () => {
+  const session = newSession("codex", "/tmp");
+  session.blocks = [{ id: "u", role: "user", text: "Review" }];
+  const priv = { ...session, private: true, privateBoundaryId: "u" };
+  expect(sanitizeSessionForPersist(priv).private).toBe(true);
+  expect(sanitizeSessionForPersist(priv).privateBoundaryId).toBe("u");
+  expect(persistFingerprint(priv)).not.toBe(persistFingerprint(session));
+  const old = sanitizeSessionForPersist(session);
+  expect(old.private).toBeUndefined();
+  expect(old.privateBoundaryId).toBeUndefined();
+  expect(sanitizeSessionForPersist({ ...session, privateBoundaryId: "../no" }).privateBoundaryId).toBe(
+    "private-boundary-unreadable",
+  );
+});
+
 it("fingerprints queued message edits, ordering, errors and pause state", () => {
   const session = newSession("codex", "/tmp");
   const first = { id: "first", text: "One", attachments: [] };

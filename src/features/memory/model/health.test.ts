@@ -43,7 +43,7 @@ describe("noteDeferred", () => {
       turns: 0,
       stored: 0,
       deferred: 1,
-      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0 },
+      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
       lastRunAt: NOW,
     });
     // Once the same turn goes through, it is counted as a looked-at turn then, and the deferred count stays.
@@ -63,11 +63,13 @@ describe("noteOutcome", () => {
       turns: 5,
       stored: 1,
       deferred: 1,
-      dropped: { late: 0, secret: 1, ungrounded: 1, invalid: 0 },
+      dropped: { late: 0, secret: 1, ungrounded: 1, invalid: 0, orders: 0 },
       lastRunAt: NOW + 4,
     });
     // Every count is its own entry, so a turn with no fact still says memory was looked at.
     expect(next.generation).not.toBe(0);
+    const orders = noteOutcome(doc([]), { status: "dropped", reason: "orders", ignored: 0 }, NOW);
+    expect(orders.health?.dropped.orders).toBe(1);
   });
 
   it("never counts a count it cannot read, and keeps the rest of the record", () => {
@@ -79,7 +81,7 @@ describe("noteOutcome", () => {
       turns: 0,
       stored: 4,
       deferred: 0,
-      dropped: { late: 2, secret: 0, ungrounded: 0, invalid: 0 },
+      dropped: { late: 2, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
     });
   });
 });
@@ -90,7 +92,7 @@ describe("healthOf", () => {
       turns: 0,
       stored: 0,
       deferred: 0,
-      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0 },
+      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
       fading: 0,
       asksWaiting: 0,
       lastRunAt: undefined,
@@ -104,7 +106,7 @@ describe("healthOf", () => {
     const mine = fact({ id: memoryId(["c"]), state: "edited", fade: 0.01 });
     // Two facts are under the line; one has been asked its three times, and the person's own text does not fade at
     // all, so one question waits.
-    const shown = { ...doc([fading, fresh, asked, mine]), health: { turns: 2, stored: 1, deferred: 0, dropped: { late: 0, secret: 1, ungrounded: 0, invalid: 0 }, lastRunAt: NOW - 1000 } };
+    const shown = { ...doc([fading, fresh, asked, mine]), health: { turns: 2, stored: 1, deferred: 0, dropped: { late: 0, secret: 1, ungrounded: 0, invalid: 0, orders: 0 }, lastRunAt: NOW - 1000 } };
     expect(healthOf(shown, NOW)).toMatchObject({ fading: 2, asksWaiting: 1, turns: 2, stored: 1, lastRunAt: NOW - 1000 });
   });
 
