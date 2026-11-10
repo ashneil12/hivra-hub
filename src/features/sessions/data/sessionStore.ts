@@ -1444,13 +1444,14 @@ function sanitizeGeneratedImage(
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  const path = typeof record.path === "string" ? record.path.trim() : "";
+  // An empty path is kept: it says the picture's file is not on this Mac (a chat imported from another one).
+  const path = typeof record.path === "string" ? record.path.trim() : null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const mimeType =
     typeof record.mimeType === "string" ? record.mimeType.trim() : "";
   const size = record.size;
   if (
-    !path ||
+    path === null ||
     !name ||
     !mimeType.startsWith("image/") ||
     typeof size !== "number" ||

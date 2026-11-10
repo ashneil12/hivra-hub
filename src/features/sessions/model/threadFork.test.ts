@@ -988,6 +988,49 @@ describe("a fork's worktree and the chat's uncommitted changes", () => {
   });
 });
 
+describe("a generated image whose file is not on this Mac", () => {
+  // A chat imported from another Mac keeps a picture's name and caption with an empty path.
+  const conversation = () =>
+    chat([
+      block({ id: "u1", role: "user", text: "Draw a cat" }),
+      {
+        id: "i1",
+        role: "image",
+        text: "",
+        image: { path: "", name: "cat.png", mimeType: "image/png", size: 10, alt: "a cat" },
+      } as Block,
+      block({ id: "a1", role: "assistant", text: "Here" }),
+    ]);
+
+  it("forks as it is: nothing is copied and the block keeps what it says", async () => {
+    const copied: string[] = [];
+    const given: ForkWorktreePort & ForkImagePort = {
+      createWorktree: async () => tree("/work/proj-fork"),
+      copyImage: async (path) => {
+        copied.push(path);
+        return null;
+      },
+      removeImages: async () => {},
+    };
+    const fork = await forkChat(
+      conversation(),
+      "a1",
+      { useNewWorktree: false },
+      given,
+      ids(["fork-1", "b1", "b2", "b3"]),
+    );
+    expect(copied).toEqual([]);
+    expect(fork!.blocks.map((entry) => entry.role)).toEqual(["user", "image", "assistant"]);
+    expect(fork!.blocks[1].image).toEqual({ path: "", name: "cat.png", mimeType: "image/png", size: 10, alt: "a cat" });
+  });
+
+  it("is not refused by the plain copy either", () => {
+    const fork = forkSessionAtMessage(conversation(), "a1", ids(["fork-1", "b1", "b2", "b3"]), undefined, new Map());
+    expect(fork).not.toBeNull();
+    expect(fork!.blocks[1].image!.path).toBe("");
+  });
+});
+
 describe("a generated image whose original is gone", () => {
   const ONE = "/data/generated-images/one.png";
   const TWO = "/data/generated-images/two.png";
