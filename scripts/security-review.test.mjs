@@ -153,3 +153,28 @@ test("the vendored files keep their source header and the MIT licence beside the
   assert.ok(existsSync(join(dir, "report-schema.json")));
   assert.ok(existsSync(join(dir, "reference", "HUNTING.md")));
 });
+
+// Item 2: a different builder reviews. The author and the reviewer are recorded for the change.
+const { checkBuilders } = await import("./security-review/review.mjs");
+
+test("the same builder that wrote a change cannot review it", () => {
+  const same = checkBuilders({ author: "claude", reviewer: "claude" });
+  assert.equal(same.ok, false);
+  assert.match(same.reason, /same builder/);
+});
+
+test("a different builder may review the change", () => {
+  assert.deepEqual(checkBuilders({ author: "claude", reviewer: "codex" }), { ok: true, reason: "" });
+});
+
+test("a missing author record is refused", () => {
+  const missing = checkBuilders({ author: "", reviewer: "codex" });
+  assert.equal(missing.ok, false);
+  assert.match(missing.reason, /author builder is not recorded/);
+});
+
+test("an author that is not a known builder is refused", () => {
+  const unknown = checkBuilders({ author: "someone-else", reviewer: "codex" });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.reason, /not a known builder/);
+});
