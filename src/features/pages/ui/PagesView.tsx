@@ -1,4 +1,4 @@
-import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
@@ -236,10 +236,7 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
   // The bridge lives as long as the frame: a re-render (the record read again) must not drop the page's watches.
   const named = useRef(title ?? spec.title);
   named.current = title ?? spec.title;
-  // A layout effect, so the bridge listens in the same task that puts the frame in the page. A passive effect runs after
-  // paint, and a fast document (WebKit, a rebuilt frame) could hello and make its first call before anyone listened: the
-  // ping below brings the hello back, but that call was gone and the page waited on it for good.
-  useLayoutEffect(() => {
+  useEffect(() => {
     const frame = ref.current;
     const host = new PageBridgeHost({
       pageId, title: named.current, live: !!live, asks: spec.permissions,
@@ -272,8 +269,8 @@ export function BespokeFrame({ pageId, spec, live, title }: { pageId: string; sp
     };
     frame?.addEventListener("load", onLoad);
     window.addEventListener("message", onMessage);
-    // In case the document spoke before this ran after all (a frame React kept while the bridge was rebuilt), ask it to
-    // hello once now; no timer, so a frame still loading isn't counted as lost, and its own load asks again.
+    // The document's first hello (and even its load) can come before this effect listens. Ask once now; no timer, so
+    // a frame still loading isn't counted as lost, and its own load asks again.
     ref.current?.contentWindow?.postMessage({ type: "hub:ping" }, "*");
     return () => {
       frame?.removeEventListener("load", onLoad);
