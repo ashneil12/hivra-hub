@@ -18,10 +18,6 @@ export type RegistrySendPlan =
   | { action: "queue"; sentence: string }
   | { action: "prompt"; agent: RegistryAgentRef };
 
-/**
- * `fallbacks` exist so a test can pass functions that throw. This function
- * must not call them: a registry id is not a CLI id.
- */
 /** A new More agents chat. `harness` stays one of the eleven. The agent id does not. */
 export function registrySessionFields(
   agent: { id: string; name: string },
@@ -36,6 +32,10 @@ export function registrySessionFields(
   return { harness: placeholder, registryAgentId: agent.id, title: agent.name };
 }
 
+/**
+ * `fallbacks` exist so a test can pass functions that throw. This function
+ * must not call them: a registry id is not a CLI id.
+ */
 export function registrySendPlan(input: {
   registryAgentId?: string;
   enabled: boolean;
