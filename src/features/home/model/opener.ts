@@ -110,7 +110,7 @@ export function targetFor(line: { kind: string; projectId: string; target: strin
   if (line.kind === "decision") return { kind: "inbox", projectId: line.projectId, decisionKey: line.target };
   if (line.kind === "doc") return { kind: "doc", id: line.target };
   if (line.kind === "chat") return { kind: "chat", id: line.target, projectId: line.projectId };
-  if (line.kind === "coding") return { kind: "coding", projectId: line.projectId };
+  if (line.kind === "coding" || line.kind === "project") return { kind: "coding", projectId: line.projectId };
   if (line.kind === "builders") return { kind: "settings", section: "worktrees", anchor: WORKTREE_CLEANUP };
   return { kind: "task", projectId: line.projectId, id: line.target };
 }

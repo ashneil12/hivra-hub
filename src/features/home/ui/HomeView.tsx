@@ -1,6 +1,6 @@
 // Home, wired to the app's tasks, decisions, docs and panels. A late load is dropped. A failed load keeps the last one.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { fileIntoProject } from "../../chief/model/answer";
@@ -12,12 +12,14 @@ import { readsEveryProject } from "../../chief/model/scope";
 import { listMonos } from "../../monos/model/mono";
 import { builderHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
 import { loadHabits } from "../../monos/model/monoHabits";
-import { useHubDataVersion, hubData } from "../../hub/model/hubData";
-import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
+import { useHubDataVersion, hubData, registryProjects } from "../../hub/model/hubData";
+import { showAppItem } from "../../hub/model/hubNav";
+import { importFromAshOsAgain, importOutcome, lastAshOsImport, subscribeAshOsImport } from "../../hub/model/localHub/ashOsImport";
+import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, recentLines } from "../model/lines";
+import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, projectLines, recentLines } from "../model/lines";
 import { openFromHome, targetFor } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { HomeScreen } from "./HomeScreen";
@@ -59,6 +61,8 @@ export function HomeView() {
   const programmeNoticeAt = useRef(-1);
   const programmeFails = useRef(0);
   const reloadProgramme = useRef<() => void>(() => undefined);
+  const [bringing, setBringing] = useState<{ busy: boolean; outcome?: string }>({ busy: false });
+  const ashOs = useSyncExternalStore(subscribeAshOsImport, lastAshOsImport, lastAshOsImport);
   useHubDataVersion();
   // WP-161: the queue, the saved pauses and the machine's last reading, so a hold on new builders shows and clears here.
   useWorkerPoolVersion();
@@ -274,11 +278,30 @@ export function HomeView() {
     if (!next) return;
     setReply(next);
   }
+  async function bringOver() {
+    setBringing({ busy: true });
+    try {
+      const decision = await importFromAshOsAgain(appHubTransport().hub);
+      setBringing({ busy: false, outcome: importOutcome(decision) });
+    } catch {
+      setBringing({ busy: false, outcome: "Couldn't bring them over just now. Try again." });
+    }
+  }
   const hold = builderHold();
+  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...needsYouLines(snap?.decisions ?? [], tasks, name)];
+  const moving = movingLines(tasks, name);
+  // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
+  const noProjects = snap && registryProjects().length === 0
+    ? { inAshOs: ashOs?.decided === "later", outcome: bringing.outcome, busy: bringing.busy }
+    : undefined;
   return (
     <HomeScreen
-      needsYou={[...(hold ? [builderHoldLine(hold)] : []), ...needsYouLines(snap?.decisions ?? [], tasks, name)]}
-      moving={movingLines(tasks, name)}
+      needsYou={needsYou}
+      projects={projectLines(projects, needsYou, moving, tasks)}
+      noProjects={noProjects}
+      onBringOver={() => void bringOver()}
+      onNewProject={() => showAppItem("new-project")}
+      moving={moving}
       recent={recentLines(snap?.docs ?? [], snap?.chats ?? [])}
       arrangement={snap ? arrangement : { order: [], hidden: [], savedAt: 0 }}
       catalog={snap?.catalog ?? []}

@@ -38,7 +38,7 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders" | "project";
 
 export type HomeLine = {
   id: string;
@@ -307,4 +307,40 @@ export function recentLines(docs: readonly HomeDoc[], chats: readonly HomeChat[]
   }
   lines.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
   return lines.slice(0, HOME_CARD_LIMIT);
+}
+
+/**
+ * One line per project, in the strip's order: its name, then what is happening there in a few words. "needs you" when
+ * a Needs you line names it, else the first task moving in it, else just the name. No counts.
+ */
+export function projectLines(
+  projects: readonly HomeProject[],
+  needsYou: readonly HomeLine[],
+  moving: readonly HomeLine[],
+  tasks: readonly HomeTask[],
+): HomeLine[] {
+  const lines: HomeLine[] = [];
+  const seen = new Set<string>();
+  for (const project of projects) {
+    if (seen.has(project.id)) continue;
+    seen.add(project.id);
+    const name = cleanLine(project.name) || project.id;
+    let what = "";
+    if (needsYou.some((line) => line.projectId === project.id)) {
+      what = "needs you";
+    } else {
+      const line = moving.find((item) => item.projectId === project.id);
+      const task = line ? tasks.find((item) => `task:${item.id}` === line.id) : undefined;
+      if (task) what = cleanLine(task.title);
+    }
+    lines.push({
+      id: `project:${project.id}`,
+      kind: "project",
+      text: what ? `${name} · ${what}` : name,
+      projectId: project.id,
+      target: project.id,
+      at: 0,
+    });
+  }
+  return lines;
 }

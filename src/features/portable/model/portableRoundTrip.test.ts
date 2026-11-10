@@ -214,7 +214,8 @@ it("the preview shows each conflict, and the restore keeps what is already here"
   expect(b.templates.templateOf("hivra").id).toBe("org-ops");
   expect(disk.files.get("ada/SOUL.md")).toBe("# my own soul");
   expect(disk.files.get("ada/MEMORY.md")).toBe("- from the file");
-  expect(b.mono.findMono("ada")!.projects).toEqual(["/Users/ash/Projects/hivra"]);
+  // A file never adds to a seated Mono's project list by default: a folder there is where it may start sessions.
+  expect(b.mono.findMono("ada")!.projects).toEqual([]);
   expect(b.mono.monoEngine(b.mono.findMono("ada")!)).toEqual({ harness: "claude", model: "opus" });
   expect(b.mono.findMono("someone-else")!.name).toBe("Hivra lead");
   expect(b.chats.getChat("hivra:leadership")!.conversations).toHaveLength(1);
@@ -222,8 +223,10 @@ it("the preview shows each conflict, and the restore keeps what is already here"
 
   // Ticked on purpose: the file's soul and the file's settings.
   const again = b.plan.planImport(pending);
-  const all = { ...b.plan.defaultChoices(again), settings: "all" as const, replaceSouls: new Set(["ada"]) };
+  // Ticked on purpose too: its projects, as this Mac's own project folders.
+  const all = { ...b.plan.defaultChoices(again), settings: "all" as const, replaceSouls: new Set(["ada"]), monoProjects: new Set(["ada"]) };
   await b.plan.applyImport(pending, again, all, { agentFiles: { read: disk.read, write: disk.write } });
+  expect(b.mono.findMono("ada")!.projects).toEqual(["/Users/ash/Projects/hivra"]);
   expect(disk.files.get("ada/SOUL.md")).toBe(SOUL);
   expect(localStorage.getItem("monocode.themeScheme")).toBe("midnight");
 });
@@ -319,9 +322,195 @@ it("the ticks decide: no memory leaves the Monos' memory out, no workspace leave
   expect(rustImport).toHaveBeenCalledWith({
     path: "/tmp/export",
     memory: { projects: ["hivra"], keepBoth: false, history: true },
-    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false },
+    workspace: { sessions: ["s1"], sessionCopies: [], notes: [], noteCopies: [], automations: [], reminders: false, delegations: false, knownFolders: [], knownMonos: expect.any(Array), folderMap: expect.any(Array) },
   });
   expect(c.souls.waitingSouls().find((s) => s.monoId === "ada")!.memory).toBe("- private");
+});
+
+it("sends Rust the folders the window lists as projects, and says what it cleared in plain words", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: true }));
+  localStorage.clear();
+  const b = await app();
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m", memory: [],
+    workspace: { sessions: [{ id: "s1", title: "t", cwd: "/x", harness: "codex", model: "m", blocks: 2, updatedAt: 1, archived: false, monoTranscript: false, status: "new" as const }], notes: [], automations: [], reminders: 0, delegations: [] },
+  };
+  const pending = { name: "x", path: "/tmp/export", doc: b.doc.setupDocFromFiles(files), inspection, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const report = { sessionsAdded: 3, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 2, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 0, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [], foldersCleared: 2, automationFoldersCleared: 1 };
+  const rustImport = vi.fn(async () => report);
+  const out = await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), { rustImport, knownFolders: () => ["/Users/me/code/app"] });
+  expect(rustImport.mock.calls[0][0]).toMatchObject({ workspace: { knownFolders: ["/Users/me/code/app"] } });
+  expect(out.lines).toContain("2 chats came in without a folder, because their folder isn't inside a project on this Mac. Each asks you to choose a project before it runs.");
+  expect(out.lines).toContain("1 automation lost a folder that isn't inside a project on this Mac. Choose a project for it before turning it on.");
+  expect(out.lines.join(" ")).not.toMatch(/[\u2013\u2014]/);
+});
+
+// ---- project folders: unticked by default, registered before the chats are judged ----------------------------------------
+
+/** An export of the two PROJECTS, imported into a copy with no projects; the calls the restore makes, in order. */
+async function restoreProjects(
+  tick: (choices: ReturnType<typeof import("./importPlan").defaultChoices>) => void,
+  deps: Record<string, unknown> = {},
+  folderChecks?: Record<string, string>,
+) {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: true }));
+  localStorage.clear();
+  const b = await app([]);
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m", memory: [],
+    workspace: { sessions: [{ id: "s1", title: "t", cwd: PROJECTS[0].folder, harness: "codex", model: "m", blocks: 2, updatedAt: 1, archived: false, monoTranscript: false, status: "new" as const }], notes: [], automations: [], reminders: 0, delegations: [] },
+  };
+  const here = Object.fromEntries(PROJECTS.map((p) => [p.folder, true]));
+  const pending = { name: "x", path: "/tmp/export", doc: b.doc.setupDocFromFiles(files), inspection, fromV1: false, folders: here, skillsHere: {}, ...(folderChecks ? { folderChecks } : {}) };
+  const plan = b.plan.planImport(pending);
+  const choices = b.plan.defaultChoices(plan);
+  tick(choices);
+  const calls: string[] = [];
+  const rustRequests: Array<{ workspace?: { knownFolders: string[] } }> = [];
+  const report = { sessionsAdded: 1, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 0, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 0, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [] };
+  const summary = await b.plan.applyImport(pending, plan, choices, {
+    registerProject: async (project: { id: string }, adopt: boolean) => { calls.push(`register:${project.id}:${adopt}`); return true; },
+    checkFolders: async () => ({}),
+    rustImport: async (request: { workspace?: { knownFolders: string[] } }) => { calls.push("rust"); rustRequests.push(request); return report; },
+    ...deps,
+  });
+  return { b, plan, choices, calls, rustRequests, summary };
+}
+
+it("starts every project folder unticked: the preview never ticks one for you", async () => {
+  const { plan, choices } = await restoreProjects(() => undefined);
+  expect(plan.projects.filter((x) => x.state === "new" && x.folderHere).length).toBe(PROJECTS.length);
+  expect(choices.projectFolders.size).toBe(0);
+  // The projects themselves are still ticked: they come in, without a code folder.
+  expect(choices.projects.size).toBe(PROJECTS.length);
+});
+
+it("an unticked project folder is not registered, and its chats go to Rust with no folder vouching for them", async () => {
+  const { calls, rustRequests } = await restoreProjects(() => undefined);
+  expect(calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(rustRequests[0].workspace?.knownFolders).toEqual([]);
+});
+
+it("a ticked project folder is registered first, so its chats keep their folders", async () => {
+  const { calls, rustRequests } = await restoreProjects((choices) => choices.projectFolders.add("hivra"));
+  expect(calls).toEqual(["register:hivra:true", "register:vg-game:false", "rust"]);
+  expect(rustRequests[0].workspace?.knownFolders).toEqual([PROJECTS[0].folder]);
+});
+
+it("a folder Rust refuses is never registered, even ticked, and the restore says so", async () => {
+  const refused = { [PROJECTS[0].folder]: "it is your home folder, or a folder that holds it, so it can't be a project's folder" };
+  // Refused already in the preview (the plan's fact) ...
+  const inPreview = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {}, refused);
+  expect(inPreview.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(inPreview.rustRequests[0].workspace?.knownFolders).toEqual([]);
+  // ... and asked again at the moment of registering, so a stale preview or a tick can't get past Rust.
+  const asked: string[][] = [];
+  const atRegistration = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {
+    checkFolders: async (paths: string[]) => { asked.push(paths); return refused; },
+  });
+  expect(asked).toEqual([[PROJECTS[0].folder]]);
+  expect(atRegistration.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(atRegistration.summary.problems.join(" ")).toContain("home folder");
+  // When Rust can't be asked, nothing is adopted.
+  const failed = await restoreProjects((choices) => choices.projectFolders.add("hivra"), {
+    checkFolders: async () => { throw new Error("no"); },
+  });
+  expect(failed.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+});
+
+it("a missing checker adopts nothing: it refuses everything, it never allows it", async () => {
+  const noChecker = await restoreProjects((choices) => choices.projectFolders.add("hivra"), { checkFolders: undefined });
+  expect(noChecker.calls).toEqual(["register:hivra:false", "register:vg-game:false", "rust"]);
+  expect(noChecker.rustRequests[0].workspace?.knownFolders).toEqual([]);
+  expect(noChecker.summary.problems.join(" ")).toContain("couldn't be checked");
+});
+
+it("a Mono takes no folder from a file just because it exists here: only this Mac's own project folders", async () => {
+  const a = await app();
+  await seed(a);
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: false });
+  // A crafted file: ada's projects name places that exist but are no project's.
+  const crafted = { ...doc, monos: doc.monos.map((m) => (m.id === "ada" ? { ...m, projectIds: [], projects: ["/System/Volumes/Data", "/Users/ash/.claude"] } : m)) };
+  localStorage.clear();
+  const b = await app();
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
+  const pending = { name: "x", path: null, doc: crafted, inspection: null, fromV1: false, folders: { "/System/Volumes/Data": true, "/Users/ash/.claude": true }, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const ada = plan.monos.find((m) => m.mono.id === "ada")!;
+  expect(ada.folders).toEqual([]);
+  expect(ada.missingFolders).toEqual(["/System/Volumes/Data", "/Users/ash/.claude"]);
+  const disk = folders();
+  // Even ticked, a folder that isn't one of this Mac's projects is not added.
+  await b.plan.applyImport(pending, plan, { ...b.plan.defaultChoices(plan), monoProjects: new Set(["ada"]) }, { agentFiles: { read: disk.read, write: disk.write } });
+  expect(b.mono.findMono("ada")!.projects).toEqual([]);
+});
+
+it("a Mono's team folder is made before Rust brings the chats in", async () => {
+  const a = await app();
+  await seed(a);
+  const doc = a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: true });
+  const files = a.doc.setupDocToFiles(doc);
+  localStorage.clear();
+  const b = await app();
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
+  const inspection = {
+    format: "v2" as const, v1: null, manifest: null, files, memoryTarget: "/m", memory: [],
+    workspace: { sessions: [{ id: "s1", title: "t", cwd: "/x", harness: "codex", model: "m", blocks: 2, updatedAt: 1, archived: false, monoTranscript: false, status: "new" as const }], notes: [], automations: [], reminders: 0, delegations: [] },
+  };
+  const parsed = b.doc.setupDocFromFiles(files);
+  parsed.settings = { ...parsed.settings, "monocode:mono-teams": JSON.stringify({ ada: { folder: "/other-mac/mono-teams/ada", createdAt: 5 } }) };
+  const pending = { name: "x", path: "/tmp/export", doc: parsed, inspection, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const calls: string[] = [];
+  const report = { sessionsAdded: 0, sessionsCopied: 0, notesAdded: 0, notesCopied: 0, automationsAdded: 0, remindersAdded: 0, delegationsAdded: 0, memoryFilesAdded: 0, memoryFilesBeside: 0, memoryHistory: [], kept: 0, renamed: {}, notes: [] };
+  await b.plan.applyImport(pending, plan, b.plan.defaultChoices(plan), {
+    makeTeamFolder: async () => { calls.push("team"); return "/data/mono-teams/ada"; },
+    rustImport: async () => { calls.push("rust"); return report; },
+  });
+  expect(calls).toEqual(["team", "rust"]);
+});
+
+it("sends Rust the seated Monos, and pairs each exported project's folder with this Mac's own by project id", async () => {
+  const { rustRequests, b } = await restoreProjects(() => undefined, { knownMonos: () => ["ada"] });
+  expect(rustRequests[0].workspace).toMatchObject({ knownMonos: expect.arrayContaining(["ada"]) });
+  // Another user or home: the file's folder maps to this Mac's folder for the same project id; a project that isn't
+  // here (or has no folder here) maps nothing.
+  const exported = [{ ...PROJECTS[0], template: "product-saas" as const }, { ...PROJECTS[1], template: "product-saas" as const }];
+  const hereProjects = [{ ...PROJECTS[0], folder: "/Users/new/Projects/hivra" }, { ...PROJECTS[1], folder: null }];
+  expect(b.plan.folderMapFor(exported, { projects: hereProjects })).toEqual([
+    { projectId: "hivra", from: PROJECTS[0].folder, to: "/Users/new/Projects/hivra" },
+    // No folder here yet: the pair still goes, so a relink can map the chat once the project gets one.
+    { projectId: "vg-game", from: PROJECTS[1].folder, to: "" },
+  ]);
+});
+
+it("the Mono tick adds exactly the folders the preview listed, and a team folder waits for a Mono that is seated or ticked", async () => {
+  const a = await app();
+  await seed(a);
+  const files = a.doc.setupDocToFiles(a.doc.buildSetupDoc({ monoFiles: { "ada": { "SOUL.md": SOUL } }, workspace: false }));
+  localStorage.clear();
+  const b = await app();
+  b.mono.addMono({ id: "ada", name: "Ada", mascot: "robot", color: "x", projects: [] });
+  const parsed = b.doc.setupDocFromFiles(files);
+  parsed.settings = { ...parsed.settings, "monocode:mono-teams": JSON.stringify({ ada: { folder: "/o/ada", createdAt: 1 }, stranger: { folder: "/o/stranger", createdAt: 1 } }) };
+  const pending = { name: "x", path: null, doc: parsed, inspection: null, fromV1: false, folders: {}, skillsHere: {} };
+  const plan = b.plan.planImport(pending);
+  const shown = plan.monos.find((m) => m.mono.id === "ada")!.folders;
+  const made: string[] = [];
+  const disk = folders();
+  await b.plan.applyImport(pending, plan, { ...b.plan.defaultChoices(plan), monoProjects: new Set(["ada"]) }, {
+    agentFiles: { read: disk.read, write: disk.write },
+    makeTeamFolder: async () => { made.push("made"); return "/data/mono-teams/x"; },
+  });
+  // What the tick shows is what it adds.
+  expect(b.mono.findMono("ada")!.projects).toEqual(shown);
+  // The team folder is made for the seated Mono only; "stranger" is neither seated nor ticked.
+  expect(made).toHaveLength(1);
 });
 
 it("the souls a restore wrote (Rust's included) are handed over to be recorded as the app's own saves", async () => {

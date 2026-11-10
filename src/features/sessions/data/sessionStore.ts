@@ -587,6 +587,12 @@ export async function listSessionsByProject(
   return rows.map(normalizeSummary);
 }
 
+/** Chats that have no folder (an import cleared it, docs/PORTABLE.md): the sidebar's "Needs a folder" group. */
+export async function listFolderlessSessions(): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_folderless");
+  return rows.map(normalizeSummary);
+}
+
 export function rebaseProjectSessions(
   fromCwd: string,
   toCwd: string,
