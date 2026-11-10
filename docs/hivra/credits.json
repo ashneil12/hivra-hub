@@ -241,6 +241,12 @@
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
     },
     {
+      "name": "mcode-stack",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "gave": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
+    },
+    {
       "name": "Memorilla",
       "url": "https://github.com/snap-stanford/memorilla",
       "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
@@ -589,6 +595,14 @@
       "copyright": "Copyright 2026 Row-Bot Contributors",
       "where": "src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot",
       "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot."
+    },
+    {
+      "name": "MiniMax Code's subagent-split-check, independent-review and taste-to-checks",
+      "url": "https://github.com/MiniMax-AI/mcode-stack",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 MiniMax Code",
+      "where": "src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit",
+      "how": "Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. The skill text is otherwise unchanged."
     }
   ]
 }

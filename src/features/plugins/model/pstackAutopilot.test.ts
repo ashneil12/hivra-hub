@@ -2,8 +2,17 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { PLAIN_ENGLISH_RULE, __resetPlainEnglishForTests, savePlainEnglishEndings } from "../../firstmate/model/plainEnglish";
+import mcodeGenerated from "./mcodeIndex.generated.json";
 import generated from "./pstackIndex.generated.json";
-import { PSTACK_AUTOPILOT, indexLines, pstackIndexText, pstackInstallRoot, sessionInstruction } from "./pstackAutopilot";
+import {
+  PSTACK_AUTOPILOT,
+  indexLines,
+  mcodeIndexText,
+  mcodeInstallRoot,
+  pstackIndexText,
+  pstackInstallRoot,
+  sessionInstruction,
+} from "./pstackAutopilot";
 
 // @ts-expect-error a plain .mjs script with no types.
 const { skillEntries } = (await import("../../../../scripts/pstack-index.mjs")) as {
@@ -106,5 +115,58 @@ describe("the session instruction", () => {
     expect(sessionInstruction({ pstackRoot: "/tmp/../pstack", plainEnglish: false })).toBe("");
     savePlainEnglishEndings(false);
     expect(sessionInstruction({ pstackRoot: root, plainEnglish: false })).not.toContain(PLAIN_ENGLISH_RULE);
+  });
+});
+
+describe("the MiniMax skills in the index (WP-117)", () => {
+  const pstack = "/tmp/Ash Neil/app-data/plugins/installed/pstack";
+  const mcode = "/tmp/Ash Neil/app-data/plugins/installed/hivra-mcode";
+
+  it("finds hivra-mcode's installed folder from its Claude shim, beside pstack's, and refuses a traversal", () => {
+    const dirs = [
+      "/tmp/Ash Neil/app-data/plugins/claude/hivra-creator",
+      "/tmp/Ash Neil/app-data/plugins/claude/hivra-mcode/",
+      "/tmp/Ash Neil/app-data/plugins/claude/pstack",
+    ];
+    expect(mcodeInstallRoot(dirs)).toBe(mcode);
+    expect(pstackInstallRoot(dirs)).toBe(pstack);
+    expect(mcodeInstallRoot(["C:\\Users\\阿什\\app data\\plugins\\claude\\hivra-mcode"])).toBe(
+      "C:/Users/阿什/app data/plugins/installed/hivra-mcode",
+    );
+    expect(
+      mcodeInstallRoot(["/tmp/Ash Neil/app-data/plugins/claude/pstack", "/tmp/plugins/claude/not-hivra-mcode"]),
+    ).toBeUndefined();
+    expect(mcodeInstallRoot(["/tmp/plugins/claude/../claude/hivra-mcode"])).toBeUndefined();
+    expect(mcodeInstallRoot(["", 12, "/claude/hivra-mcode"])).toBeUndefined();
+    expect(mcodeInstallRoot([])).toBeUndefined();
+  });
+
+  it("writes the folder once, then one line per skill, with the relative path", () => {
+    const text = mcodeIndexText(mcode)!;
+    const rows = text.split("\n");
+    expect(rows[0]).toBe(mcode);
+    expect(rows).toHaveLength(mcodeGenerated.length + 1);
+    expect(text.split(mcode).length - 1).toBe(1);
+    for (const entry of mcodeGenerated) expect(text).toContain(`${entry.name} | `);
+    expect(text).toContain("skills/independent-review/SKILL.md");
+    expect(mcodeIndexText("/tmp/../plugins/installed/hivra-mcode")).toBeUndefined();
+  });
+
+  it("gives a session pstack's skills and then the MiniMax ones, under the one sentence that says to read a fit", () => {
+    const text = sessionInstruction({ pstackRoot: pstack, mcodeRoot: mcode, plainEnglish: false });
+    expect(text.split(PSTACK_AUTOPILOT).length - 1).toBe(1);
+    expect(text).toBe(`${PSTACK_AUTOPILOT}\n${pstackIndexText(pstack)}\n${mcodeIndexText(mcode)}`);
+  });
+
+  it("keeps the MiniMax skills when pstack is off, and drops them when their plugin is off", () => {
+    expect(sessionInstruction({ mcodeRoot: mcode, plainEnglish: false })).toBe(`${PSTACK_AUTOPILOT}\n${mcodeIndexText(mcode)}`);
+    expect(sessionInstruction({ mcodeRoot: mcode, plainEnglish: true })).toBe(
+      `${PSTACK_AUTOPILOT}\n${mcodeIndexText(mcode)}\n\n${PLAIN_ENGLISH_RULE}`,
+    );
+    const pstackOnly = sessionInstruction({ pstackRoot: pstack, plainEnglish: false });
+    expect(pstackOnly).toBe(`${PSTACK_AUTOPILOT}\n${pstackIndexText(pstack)}`);
+    for (const entry of mcodeGenerated) expect(pstackOnly).not.toContain(`${entry.name} | `);
+    expect(sessionInstruction({ mcodeRoot: "/tmp/../hivra-mcode", plainEnglish: false })).toBe("");
+    expect(sessionInstruction({ plainEnglish: false })).toBe("");
   });
 });
