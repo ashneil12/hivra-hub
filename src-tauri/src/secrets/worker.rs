@@ -268,8 +268,11 @@ pub fn delivers_line_stdout(executable: &str) -> bool {
 
 /// Put the armed values into one worker's own environment. Called by `harness_spawn` before the child forks.
 ///
-/// The handles are consumed, so a second spawn of the same session gets nothing without a fresh approval. A value that
-/// changed (or vanished) since the approval refuses the spawn rather than starting with a stale one.
+/// Read and check first, consume last: the approval is only spent once every value is read, current and ready to go in,
+/// and nothing is put in the child until then. A keychain that won't answer yet ("not now") leaves the approval where it
+/// was, so the same spawn can be tried again. A refusal that can never change (the tool can't keep a key out of its
+/// output, the value was deleted, the value changed since the person approved it) drops the approval, so a stale one
+/// cannot be used by a later spawn.
 pub fn apply_to_child(
     session_id: &str,
     vault: &dyn Vault,
@@ -280,33 +283,52 @@ pub fn apply_to_child(
     let secrets = armed()
         .lock()
         .ok()
-        .and_then(|mut map| map.remove(session_id))
+        .and_then(|map| map.get(session_id).cloned())
         .unwrap_or_default();
     if secrets.is_empty() {
         return Ok(());
     }
+    let drop_approval = || {
+        if let Ok(mut map) = armed().lock() {
+            map.remove(session_id);
+        }
+    };
     if secrets
         .iter()
         .any(|secret| !delivers_line_stdout(&secret.executable))
     {
+        drop_approval();
         return Err(REFUSED_OUTPUT.into());
     }
-    let mut values = Vec::new();
+    let mut values: Vec<Zeroizing<String>> = Vec::new();
     let mut needles = Vec::new();
     for secret in &secrets {
         let service = service(&secret.scope, &secret.name)?;
-        let value = vault
-            .read(&service, ACCOUNT)?
-            .ok_or_else(|| "That secret was deleted. Ask for it again.".to_string())?;
+        // A refused read is "not now": the approval stays.
+        let Some(value) = vault.read(&service, ACCOUNT)? else {
+            drop_approval();
+            return Err("That secret was deleted. Ask for it again.".into());
+        };
+        let value = Zeroizing::new(value);
         let current = get_secret(conn, &secret.scope, &secret.name)?
             .is_some_and(|row| row.version == secret.version);
         if !current {
+            drop_approval();
             return Err("That secret changed. Ask for it again.".into());
         }
-        cmd.env(&secret.env, &value);
         needles.extend(scrub::needles(&value));
         values.push(value);
+    }
+    // Everything is read and current. The log rows come first, because they can fail; the child's variables, the
+    // scrub values and the spent approval follow, and none of them can.
+    for secret in &secrets {
         touch_used(conn, &secret.scope, &secret.name, now)?;
+    }
+    if let Some(first) = secrets.first() {
+        record_worker(conn, &first.mono, &first.executable, &secrets, now)?;
+    }
+    for (secret, value) in secrets.iter().zip(&values) {
+        cmd.env(&secret.env, value.as_str());
     }
     needles.sort_by_key(|needle| std::cmp::Reverse(needle.len()));
     needles.dedup();
@@ -314,14 +336,12 @@ pub fn apply_to_child(
         map.insert(
             session_id.to_string(),
             SessionValues {
-                values: Zeroizing::new(values),
+                values: Zeroizing::new(values.iter().map(|value| value.to_string()).collect()),
                 needles,
             },
         );
     }
-    if let Some(first) = secrets.first() {
-        record_worker(conn, &first.mono, &first.executable, &secrets, now)?;
-    }
+    drop_approval();
     Ok(())
 }
 

@@ -735,3 +735,221 @@ fn a_worker_asking_for_itself_is_refused_with_the_first_mate_reason() {
         crate::decisions::check_may_ask(&conn, "chat-1").unwrap_err()
     );
 }
+
+// ---- a worker's approval survives a keychain that will not answer yet (fix round 1, item G) ----------------------------
+
+/// A store whose first reads are refused, like a system prompt nobody has clicked yet, and then answer.
+struct Flaky {
+    inner: Memory,
+    refuse_reads: std::sync::atomic::AtomicUsize,
+}
+
+impl Vault for Flaky {
+    fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+        use std::sync::atomic::Ordering;
+        if self
+            .refuse_reads
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok()
+        {
+            return Err("Not now. Your keychain didn't give the key. Try again.".into());
+        }
+        self.inner.read(service, account)
+    }
+
+    fn write(&self, service: &str, account: &str, value: &str) -> Result<(), String> {
+        self.inner.write(service, account, value)
+    }
+
+    fn remove(&self, service: &str, account: &str) -> Result<bool, String> {
+        self.inner.remove(service, account)
+    }
+}
+
+fn armed_for(bench: &Bench, vault: &dyn Vault, session: &str) {
+    let mut conn = bench.store.lock_conn().unwrap();
+    put_grant(
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "mono",
+        "Tally",
+        "claude",
+        "always",
+        bench.now,
+    )
+    .unwrap();
+    let worker::WorkerOutcome::Ready { secrets } =
+        worker::prepare(vault, &mut conn, worker_request(), bench.now).unwrap()
+    else {
+        panic!("the grant is there");
+    };
+    worker::arm(session, secrets);
+}
+
+fn env_of(cmd: &Command) -> Vec<(String, String)> {
+    cmd.get_envs()
+        .filter_map(|(key, value)| {
+            Some((
+                key.to_string_lossy().into_owned(),
+                value?.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect()
+}
+
+#[test]
+fn a_keychain_that_will_not_answer_yet_does_not_burn_the_approval() {
+    let bench = Bench::new();
+    let flaky = Flaky {
+        inner: Memory::new(),
+        refuse_reads: std::sync::atomic::AtomicUsize::new(0),
+    };
+    {
+        let conn = bench.store.lock_conn().unwrap();
+        save_value(&flaky, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
+    }
+    armed_for(&bench, &flaky, "worker-retry-1");
+    // The keychain says "not now" the first time.
+    flaky
+        .refuse_reads
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let conn = bench.store.lock_conn().unwrap();
+    let mut first = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    let why =
+        worker::apply_to_child("worker-retry-1", &flaky, &mut first, &conn, bench.now).unwrap_err();
+    assert!(why.contains("Try again"), "{why}");
+    assert_eq!(env_of(&first), vec![], "nothing was put in the child");
+    // The approval is still there: the same spawn, tried again, gets the key.
+    let mut second = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("worker-retry-1", &flaky, &mut second, &conn, bench.now).unwrap();
+    assert_eq!(
+        env_of(&second),
+        vec![("STRIPE_API_KEY".to_string(), VALUE.to_string())]
+    );
+    // And now it is spent: a third spawn of the same session gets nothing without a fresh approval.
+    let mut third = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("worker-retry-1", &flaky, &mut third, &conn, bench.now).unwrap();
+    assert_eq!(env_of(&third), vec![]);
+    worker::forget("worker-retry-1");
+}
+
+#[test]
+fn a_second_secret_that_cannot_be_read_leaves_the_first_out_of_the_child_too() {
+    let bench = Bench::new();
+    let flaky = Flaky {
+        inner: Memory::new(),
+        refuse_reads: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let conn = bench.store.lock_conn().unwrap();
+    save_value(&flaky, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
+    save_value(
+        &flaky,
+        &conn,
+        SCOPE_GLOBAL,
+        "resend-key",
+        None,
+        "re_live_abcdef012345",
+        bench.now,
+    )
+    .unwrap();
+    let armed = |name: &str, env: &str| worker::ArmedSecret {
+        scope: SCOPE_GLOBAL.into(),
+        name: name.into(),
+        env: env.into(),
+        version: 1,
+        mono: "Tally".into(),
+        executable: "claude".into(),
+    };
+    worker::arm(
+        "worker-retry-2",
+        vec![
+            armed(NAME, "STRIPE_API_KEY"),
+            armed("resend-key", "RESEND_API_KEY"),
+        ],
+    );
+    // The first read works, the second is refused.
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    struct SecondFails<'a>(&'a Flaky, std::sync::atomic::AtomicUsize);
+    impl Vault for SecondFails<'_> {
+        fn read(&self, service: &str, account: &str) -> Result<Option<String>, String> {
+            if self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                return Err("Not now. Your keychain didn't give the key. Try again.".into());
+            }
+            self.0.read(service, account)
+        }
+        fn write(&self, s: &str, a: &str, v: &str) -> Result<(), String> {
+            self.0.write(s, a, v)
+        }
+        fn remove(&self, s: &str, a: &str) -> Result<bool, String> {
+            self.0.remove(s, a)
+        }
+    }
+    let wrapped = SecondFails(&flaky, std::sync::atomic::AtomicUsize::new(0));
+    assert!(
+        worker::apply_to_child("worker-retry-2", &wrapped, &mut cmd, &conn, bench.now).is_err()
+    );
+    assert_eq!(
+        env_of(&cmd),
+        vec![],
+        "a half-applied environment is never left behind"
+    );
+    // Retried, both go in.
+    let mut again = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child("worker-retry-2", &wrapped, &mut again, &conn, bench.now).unwrap();
+    assert_eq!(env_of(&again).len(), 2);
+    worker::forget("worker-retry-2");
+}
+
+#[test]
+fn a_secret_that_changed_since_the_approval_is_refused_and_the_approval_is_dropped() {
+    let bench = Bench::new();
+    {
+        let conn = bench.store.lock_conn().unwrap();
+        save_value(
+            &bench.vault,
+            &conn,
+            SCOPE_GLOBAL,
+            NAME,
+            None,
+            VALUE,
+            bench.now,
+        )
+        .unwrap();
+    }
+    armed_for(&bench, &bench.vault, "worker-rotated");
+    let conn = bench.store.lock_conn().unwrap();
+    rotate(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        "sk_live_a_new_value_0000",
+        bench.now + 1,
+    )
+    .unwrap();
+    let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    let why = worker::apply_to_child(
+        "worker-rotated",
+        &bench.vault,
+        &mut cmd,
+        &conn,
+        bench.now + 2,
+    )
+    .unwrap_err();
+    assert_eq!(why, "That secret changed. Ask for it again.");
+    assert_eq!(env_of(&cmd), vec![]);
+    // A permanent refusal is not kept: the stale approval cannot be used by a later spawn.
+    let mut later = Command::new(if cfg!(windows) { "cmd" } else { "true" });
+    worker::apply_to_child(
+        "worker-rotated",
+        &bench.vault,
+        &mut later,
+        &conn,
+        bench.now + 3,
+    )
+    .unwrap();
+    assert_eq!(env_of(&later), vec![]);
+}
