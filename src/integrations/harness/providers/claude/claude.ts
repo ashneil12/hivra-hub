@@ -12,6 +12,7 @@ import {
 } from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
 import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
+import { reviewReportedTurn } from "../../../../features/usage/model/spendGate";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import type {
   CutWork,
@@ -454,6 +455,8 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
 
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
+  // WP-176: the ceiling is judged against this turn's model, not the one the process started with.
+  live.target = { model: input.model, modelSettings: input.modelSettings ?? {} };
   live.turns = live.turns
     .catch(() => undefined)
     .then(async () => {
@@ -899,10 +902,13 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
     sessionId,
     buildControlRequest(nextControlId(live), { subtype: "interrupt" }),
   ).catch(() => undefined);
-  finishActiveTurn(live, [
-    { type: "message.completed" },
-    { type: "reasoning.completed" },
-  ]);
+  // A turn that already settled must not arm the next one.
+  if (live.activeTurn || live.turnDone) {
+    finishActiveTurn(live, [
+      { type: "message.completed" },
+      { type: "reasoning.completed" },
+    ]);
+  }
 }
 
 export async function stopClaudeSession(sessionId: string): Promise<void> {
@@ -1788,6 +1794,8 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
     live.lastTotalCostUsd = total;
   }
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
+  // WP-176: the per-task ceiling sees this turn's own cost. A project limit does not stop the run.
+  const ceilingStop = noteBilledCeiling(live, metrics);
   if (!live.manualCompaction) noteDroppedEffort(live);
 
   // Claude Code reports a refused API request as a "success" with is_error:
@@ -1827,8 +1835,29 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
   live.turnResultSeen = true;
   holdForOwedPrompt(live);
   maybeFinishTurn(live);
+  // Stop only this run, and only after the turn promise can settle. Mute comes second.
+  if (ceilingStop) void cancelClaudeTurn(live.threadId);
   showBackgroundRows(live);
   syncBackgroundWait(live);
+}
+
+/** Ask once near a billed ceiling. A hard cap stops this run and no other. */
+function noteBilledCeiling(live: Live, metrics: { costUsd?: number } | undefined): boolean {
+  const verdict = reviewReportedTurn({
+    sessionId: live.threadId,
+    cwd: live.cwd,
+    model: live.target?.model,
+    harness: "claude",
+    metrics: metrics ?? null,
+    unattended: live.threadId.startsWith("app-"),
+  });
+  if (verdict.ask && verdict.reason.trim()) {
+    live.onEvent({ type: "status", text: verdict.reason.trim() });
+  }
+  if (!verdict.stopRun) return false;
+  const reason = verdict.reason.trim();
+  if (reason) live.onEvent({ type: "session.error", message: reason });
+  return true;
 }
 
 async function handleControlRequest(

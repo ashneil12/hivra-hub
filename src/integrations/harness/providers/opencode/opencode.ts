@@ -3,6 +3,7 @@ import {
   modelContextWindow,
   nativeModelId,
 } from "../../../../features/sessions/model/models";
+import { reviewReportedTurn } from "../../../../features/usage/model/spendGate";
 import type {
   RuntimeMode,
   TurnMetrics,
@@ -93,6 +94,12 @@ type PendingQuestion = {
 
 type Live = {
   client: OpenCodeClient;
+  /** MonoCode session id, not OpenCode's. */
+  threadId: string;
+  /** The model this turn was sent with. The ceiling applies only when it is billed. */
+  model?: string;
+  /** The finished turn's cost is judged once, not on every message. */
+  ceilingNoted: boolean;
   openCodeSessionId: string;
   cwd: string;
   runtimeMode: RuntimeMode;
@@ -334,10 +341,13 @@ export async function cancelOpenCodeTurn(sessionId: string): Promise<void> {
     pending.resolve({ kind: "skipped" });
   live.questions.clear();
   await live.client.abortSession(live.openCodeSessionId);
-  finishActiveTurn(live, [
-    { type: "message.completed" },
-    { type: "reasoning.completed" },
-  ]);
+  // A turn that already settled must not arm the next one.
+  if (live.activeTurn || live.turnDone) {
+    finishActiveTurn(live, [
+      { type: "message.completed" },
+      { type: "reasoning.completed" },
+    ]);
+  }
 }
 
 export async function stopOpenCodeSession(sessionId: string): Promise<void> {
@@ -482,6 +492,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 
     const live: Live = {
       client,
+      threadId: input.sessionId,
+      model: input.model,
+      ceilingNoted: false,
       openCodeSessionId: openCodeSession.id,
       cwd: input.cwd,
       runtimeMode: input.runtimeMode,
@@ -633,10 +646,13 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     live.turnFailed = reject;
   });
   live.activeTurn = true;
+  live.model = input.model;
   live.turnMetricsByMessageId.clear();
   const v2 = live.client.generation === "v2";
   live.awaitedInbox = v2 ? { kind: "turn" } : null;
   settlePendingTurn(live);
+  // After any finish that was waiting, this turn's cost has not been judged yet.
+  live.ceilingNoted = false;
 
   try {
     const inboxID = await live.client.promptAsync({
@@ -1457,6 +1473,8 @@ function showNextQuestion(live: Live): void {
 }
 
 function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
+  // WP-176: one look at the whole turn. A project limit never reaches this.
+  noteOpenCodeCeiling(live);
   live.turnEndPending = false;
   live.activeTurn = false;
   for (const event of extraEvents) live.onEvent(event);
@@ -1474,6 +1492,35 @@ function finishActiveTurn(live: Live, extraEvents: HarnessEvent[] = []): void {
 function settlePendingTurn(live: Live): void {
   if (!live.turnEndPending || !live.turnDone) return;
   finishActiveTurn(live);
+}
+
+/** Ask once near a billed ceiling. A hard cap stops this run and no other. */
+function noteOpenCodeCeiling(live: Live): void {
+  if (live.ceilingNoted) return;
+  live.ceilingNoted = true;
+  let cost: number | undefined;
+  for (const row of live.turnMetricsByMessageId.values()) {
+    if (typeof row.costUsd !== "number") continue;
+    cost = (cost ?? 0) + row.costUsd;
+  }
+  const verdict = reviewReportedTurn({
+    sessionId: live.threadId,
+    cwd: live.cwd,
+    model: live.model,
+    harness: "opencode",
+    metrics: cost == null ? null : { costUsd: cost },
+    unattended: live.threadId.startsWith("app-"),
+  });
+  if (verdict.ask && verdict.reason.trim()) {
+    live.onEvent({ type: "status", text: verdict.reason.trim() });
+  }
+  if (!verdict.stopRun || live.cancelled) return;
+  const reason = verdict.reason.trim();
+  if (reason) live.onEvent({ type: "session.error", message: reason });
+  const sessionId = live.threadId;
+  queueMicrotask(() => {
+    void cancelOpenCodeTurn(sessionId);
+  });
 }
 
 function parsePart(value: unknown): OpenCodePart | null {
