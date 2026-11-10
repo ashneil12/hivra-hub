@@ -144,3 +144,84 @@ export function scaleLine(scale: BuilderScale): string {
       : `New builders pause when free disk is below ${clean.pauseFreeDiskGb} GB.`;
   return `${load} ${memory} ${disk} Running builders keep going.`;
 }
+
+/** A reading older than this is missing, not a reason to pause. */
+export const HEALTH_STALE_MS = 15_000;
+
+/**
+ * One health sample. A missing field skips that check. `readAt` with `now` drops a sample older than
+ * {@link HEALTH_STALE_MS}. A sample with no `readAt` is trusted (a fixture, or a reading just taken).
+ */
+export type BuilderHealth = {
+  /** 1-minute load average. */
+  load1?: number | null;
+  /** Cores online. The default load pause needs this. */
+  cores?: number | null;
+  /** Free memory, in GB. */
+  freeMemoryGb?: number | null;
+  /** Free disk, in GB. */
+  freeDiskGb?: number | null;
+  /** When the sample was taken, in epoch ms. */
+  readAt?: number;
+  /** Clock for the staleness check. Defaults to the time of the call. */
+  now?: number;
+};
+
+export type LaunchDecision = { ok: true; reason: "" } | { ok: false; reason: string };
+
+const ALLOWED: LaunchDecision = { ok: true, reason: "" };
+
+function finiteMetric(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function shown(n: number): string {
+  return String(round3(n));
+}
+
+/**
+ * Whether a new builder may start. The ceiling is not read here: raising max builders cannot
+ * ignore a pause. A missing or stale sample allows the launch. A pause never names a builder to stop.
+ */
+export function builderLaunchAllowed(health: BuilderHealth | null | undefined, limits: BuilderScale): LaunchDecision {
+  if (!health || typeof health !== "object" || Array.isArray(health)) return ALLOWED;
+  if (health.readAt !== undefined) {
+    const readAt = finiteMetric(health.readAt);
+    const now = finiteMetric(health.now) ?? Date.now();
+    if (readAt === undefined || now - readAt > HEALTH_STALE_MS) return ALLOWED;
+  }
+  const scale = sanitizeBuilderScale(limits);
+  const load1 = finiteMetric(health.load1);
+  if (scale.load.kind !== "off" && load1 !== undefined) {
+    const cores = finiteMetric(health.cores);
+    const threshold =
+      scale.load.kind === "above"
+        ? scale.load.value
+        : cores !== undefined && cores > 0
+          ? round3(LOAD_PER_CORE * cores)
+          : undefined;
+    if (threshold !== undefined && load1 > threshold) {
+      return {
+        ok: false,
+        reason: `The load average is ${shown(load1)}, which exceeds ${shown(threshold)}. Running builders keep going.`,
+      };
+    }
+  }
+  const memoryCut = scale.pauseFreeMemoryGb;
+  const freeMemory = finiteMetric(health.freeMemoryGb);
+  if (memoryCut != null && freeMemory !== undefined && freeMemory < memoryCut) {
+    return {
+      ok: false,
+      reason: `Free memory is ${shown(freeMemory)} GB, which is below ${shown(memoryCut)} GB. Running builders keep going.`,
+    };
+  }
+  const diskCut = scale.pauseFreeDiskGb;
+  const freeDisk = finiteMetric(health.freeDiskGb);
+  if (diskCut != null && freeDisk !== undefined && freeDisk < diskCut) {
+    return {
+      ok: false,
+      reason: `Free disk is ${shown(freeDisk)} GB, which is below ${shown(diskCut)} GB. Running builders keep going.`,
+    };
+  }
+  return ALLOWED;
+}

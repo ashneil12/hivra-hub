@@ -26,9 +26,11 @@ import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/w
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import {
   DEFAULT_BUILDER_SCALE,
+  builderLaunchAllowed,
   builderScaleIsDefault,
   builderScaleToStored,
   sanitizeBuilderScale,
+  type BuilderHealth,
   type BuilderScale,
 } from "./builderScale";
 
@@ -669,7 +671,7 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit" | "files";
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -803,12 +805,44 @@ export type AdmitContext = {
   queue?: readonly QueuedWorker[];
 };
 
+/** The latest health sample. A launch with none yet is allowed. Reset drops it. */
+let healthNow: BuilderHealth | undefined;
+
+/**
+ * The sample the launch gate reads. A sample that is older than the one already held is ignored,
+ * so a late read cannot put a stale pause back. `null` clears it.
+ */
+export function setBuilderHealth(next: BuilderHealth | null | undefined): void {
+  if (next == null) {
+    if (healthNow === undefined) return;
+    healthNow = undefined;
+    changed();
+    return;
+  }
+  const prevAt = healthNow?.readAt;
+  const nextAt = next.readAt;
+  if (
+    typeof prevAt === "number" &&
+    Number.isFinite(prevAt) &&
+    typeof nextAt === "number" &&
+    Number.isFinite(nextAt) &&
+    nextAt < prevAt
+  ) {
+    return;
+  }
+  healthNow = next;
+  changed();
+}
+
 function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: ProviderRoom): Admission {
   if (load.running >= limits.workers)
     return { start: false, reason: "workers", line: waitLine("workers", job.projectName, limits) };
   if (job.heavy && load.heavy >= limits.heavy)
     return { start: false, reason: "heavy", line: waitLine("heavy", job.projectName, limits) };
   if (!room.room) return { start: false, reason: "limit", line: waitLine("limit", job.projectName, limits, room) };
+  // WP-161: health is after the counts and the provider. Raising the ceiling does not skip it.
+  const gate = builderLaunchAllowed(healthNow, builderScale());
+  if (!gate.ok) return { start: false, reason: "health", line: gate.reason };
   return { start: true };
 }
 
@@ -931,6 +965,7 @@ export function resetWorkerPool(): void {
   settingsEpoch = Promise.resolve();
   wroteSettings();
   settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
+  healthNow = undefined;
   loading = undefined;
   changed();
 }
