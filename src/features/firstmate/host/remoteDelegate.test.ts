@@ -22,6 +22,7 @@ type Loaded = {
     input: Record<string, unknown>,
     host: AgentAppHost,
   ) => Promise<unknown>;
+  markAppDelegate: (input: Record<string, unknown>) => Record<string, unknown>;
   newSession: (harness: "claude", cwd: string, model: string) => Session;
   rememberRemoteProject: (environmentId: string, project: { id: string; cwd: string; name: string }) => void;
   remotePath: (environmentId: string, hostPath: string) => string;
@@ -36,12 +37,14 @@ async function load(): Promise<Loaded> {
   ]);
   const sessions = await import("../../sessions/model/session");
   const parts = await import("../testing/briefParts");
+  const tasks = await import("../../agent-app/model/agentAppTasks");
   const projects = await import("../../connections/model/remoteProjects");
   const core = await import("@tauri-apps/api/core");
   localStorage.clear();
   localStorage.setItem("monocode:hub-team-pack", "ash");
   return {
     handle: parts.handleWithBriefParts,
+    markAppDelegate: tasks.markAppDelegate,
     newSession: sessions.newSession,
     rememberRemoteProject: projects.rememberRemoteProject,
     remotePath: projects.remotePath,
@@ -173,7 +176,9 @@ describe("tasks.delegate on a remote project", () => {
       "r-plan",
     ).links;
     app.invoke.mockClear();
-    await expect(app.handle(source, "r-wait", "tasks.delegate", { brief: "Show it.", fanout: board }, host)).rejects.toThrow(/can't be held on a remote project/);
+    await expect(
+      app.handle(source, "r-wait", "tasks.delegate", app.markAppDelegate({ brief: "Show it.", fanout: board }), host),
+    ).rejects.toThrow(/can't be held on a remote project/);
     expect(app.invoke.mock.calls.some((call) => call[1]?.method === "firstmate.brief")).toBe(false);
     expect(started).toHaveLength(0);
   });

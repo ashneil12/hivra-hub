@@ -158,12 +158,6 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "reading",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
-      // WP-171: the task's link to its fan-out, and the person's request as it stood when the task was asked for. The app
-      // writes both (delegate_tasks, and a task that waits keeps them in the queue); delegate_task has no such fields.
-      "fanout",
-      "originalRequest",
-      // The length before the quote-budget cut, so a task that waits can still say what was left out.
-      "originalRequestChars",
     ],
   ],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
@@ -179,6 +173,25 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.message", ["taskId", "text", "whenBusy"]],
   ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
 ];
+
+/**
+ * Fields only the app puts on a tasks.delegate replay: the queue, a fresh-eyes start, a retry.
+ * An agent's call cannot carry the mark, so it cannot set these. delegate_tasks writes them itself
+ * and calls delegate() directly, which does not go through the field list.
+ */
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars"] as const;
+
+/** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
+export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
+
+export function markAppDelegate(input: Record<string, unknown>): Record<string, unknown> {
+  Object.defineProperty(input, appDelegateMark, { value: true });
+  return input;
+}
+
+export function isAppDelegate(input: object): boolean {
+  return Reflect.get(input, appDelegateMark) === true;
+}
 
 /** What a delegation's row records beyond a plain monitored launch. */
 export type DelegationMeta = {

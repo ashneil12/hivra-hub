@@ -76,7 +76,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -13605,7 +13605,8 @@ function Workspace({
           requestId: job.requestId,
           action: "tasks.delegate",
           // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
-          input: withLegacyBriefParts(job.input, job.title),
+          // WP-171: the link and the quoted request are the app's, not an agent's. Mark after the spread, which drops it.
+          input: markAppDelegate(withLegacyBriefParts(job.input, job.title)),
         });
       },
       failed: (job, error) => {
@@ -13688,7 +13689,8 @@ function Workspace({
           sessionId: owner,
           requestId,
           action: "tasks.delegate",
-          input,
+          // WP-171: a held brief starts as the app's own call, so a fan-out task can keep its link.
+          input: markAppDelegate({ ...input }),
         });
       },
     });
@@ -13821,7 +13823,8 @@ function Workspace({
         sessionId: ownerSession,
         requestId,
         action: "tasks.delegate",
-        input,
+        // WP-171: a retry is the app asking again, so it may carry the link and the request.
+        input: markAppDelegate({ ...input }),
       }),
     );
     // WP-15: Stop uses tasks.cancel as the row's owner, so a busy child stops and a queued worker never starts.

@@ -104,6 +104,38 @@ describe("a task's link to its fan-out (WP-171)", () => {
     ])
       expect(() => parseFanoutLink(bad)).toThrow(/fan-out/);
   });
+
+  it("checks owners, file names and in again when a stored link is read", () => {
+    const parsed = parseFanout(
+      fanout(
+        task("a", {
+          owns: ["src/api"],
+          files: ["src/api/route.ts"],
+          provides: [{ kind: "endpoint", name: "/api/score", in: "src/api/route.ts" }],
+        }),
+      ),
+    );
+    const [link] = planFanout(parsed, "mono-exo", "req1").links;
+    const tamper = (edit: (contract: FanoutLink["contract"]) => void) => {
+      const copy = JSON.parse(JSON.stringify(link)) as FanoutLink;
+      edit(copy.contract);
+      return copy;
+    };
+    // A name that is not a path is kept. A path written with ./ is the same path.
+    const read = parseFanoutLink(tamper((contract) => {
+      contract.provides[0].in = "./src/api/route.ts";
+      contract.files.a = ["./src/api/route.ts"];
+    }));
+    expect(read.contract.provides[0]).toMatchObject({ name: "/api/score", in: "src/api/route.ts" });
+    expect(read.contract.files.a).toEqual(["src/api/route.ts"]);
+    expect(read.contract.owners).toEqual({ "src/api": "a" });
+    for (const bad of ["../secret", "src/../../etc", "/etc/passwd", "~/.ssh/id", "C:/windows", "src\\secret", "src/\n/x"]) {
+      expect(() => parseFanoutLink(tamper((contract) => { contract.owners = { [bad]: "a" }; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.files = { a: [bad] }; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.provides[0].in = bad; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.provides[0].name = bad; contract.provides[0].kind = "file"; }))).toThrow(/inside the project/);
+    }
+  });
 });
 
 describe("what a waiting task waits for (WP-171)", () => {
