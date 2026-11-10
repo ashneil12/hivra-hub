@@ -2020,7 +2020,8 @@ fn layout() -> Layout {
     let home = target.home.clone().unwrap();
     target.memory_root = home.join("agent-memory");
     target.monos_root = target.memory_root.join("monos");
-    let project = home.join("Projects/app");
+    // Built part by part so its text uses this platform's separator, as the app's own (checked) folders do.
+    let project = home.join("Projects").join("app");
     fs::create_dir_all(project.join("src/deep")).unwrap();
     // A repository's own marker: only a repository can be adopted as a project's folder.
     fs::create_dir_all(project.join(".git")).unwrap();
@@ -2121,8 +2122,12 @@ fn import_folders_with(
     (stored, serde_json::to_value(&report).unwrap())
 }
 
+/// `base` and a `/`-separated tail, written with this platform's separator (`..` is kept as written).
 fn path(base: &Path, tail: &str) -> String {
-    base.join(tail).to_string_lossy().into_owned()
+    tail.split('/')
+        .fold(base.to_path_buf(), |dir, part| dir.join(part))
+        .to_string_lossy()
+        .into_owned()
 }
 
 #[test]
@@ -2239,7 +2244,8 @@ fn a_worktree_stays_only_when_git_lists_it_for_a_known_project() {
         .home
         .clone()
         .unwrap()
-        .join("Worktrees/feature");
+        .join("Worktrees")
+        .join("feature");
     git(
         p,
         &[
@@ -2317,7 +2323,7 @@ fn folders_the_window_lists_count_but_the_home_folder_and_the_root_never_vouch_f
 fn a_monos_own_folders_here_are_kept() {
     let layout = layout();
     let lead = layout.target.monos_root.join("hivra-lead");
-    let team = layout.target.data_dir.join("mono-teams/hivra-lead");
+    let team = layout.target.data_dir.join("mono-teams").join("hivra-lead");
     fs::create_dir_all(&lead).unwrap();
     fs::create_dir_all(&team).unwrap();
     let chats = [
@@ -4553,7 +4559,7 @@ fn a_chat_is_not_kept_where_the_import_wrote_instructions_and_is_never_offered_b
 #[test]
 fn a_chat_from_another_mac_finds_its_monos_folders_here_by_id() {
     let layout = layout();
-    let team = layout.target.data_dir.join("mono-teams/lead");
+    let team = layout.target.data_dir.join("mono-teams").join("lead");
     let home = layout.target.monos_root.join("lead");
     fs::create_dir_all(&team).unwrap();
     fs::create_dir_all(&home).unwrap();
@@ -4595,7 +4601,7 @@ fn a_worktree_listed_by_a_parent_repository_is_not_vouched_for() {
     fs::write(parent.join("a.txt"), "a").unwrap();
     git(&parent, &["add", "."]);
     git(&parent, &["commit", "-q", "-m", "first"]);
-    let linked = home.join("Worktrees/linked");
+    let linked = home.join("Worktrees").join("linked");
     git(
         &parent,
         &[
@@ -4636,7 +4642,7 @@ fn a_worktree_belongs_to_the_chats_own_project() {
     git(p, &["add", "."]);
     git(p, &["commit", "-q", "-m", "first"]);
     let home = layout.target.home.clone().unwrap();
-    let tree = home.join("Worktrees/app-feature");
+    let tree = home.join("Worktrees").join("app-feature");
     git(
         p,
         &[
@@ -4649,7 +4655,7 @@ fn a_worktree_belongs_to_the_chats_own_project() {
         ],
     );
     // A second known project: the worktree is the first one's, not this one's.
-    let other = home.join("Projects/other");
+    let other = home.join("Projects").join("other");
     fs::create_dir_all(other.join(".git")).unwrap();
     let store = open_store(&layout.target);
     let conn = store.lock_conn().unwrap();

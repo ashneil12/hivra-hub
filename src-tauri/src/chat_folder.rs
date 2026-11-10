@@ -61,9 +61,12 @@ mod tests {
     #[test]
     fn a_real_full_path_and_the_home_shorthand_are_kept() {
         let dir = std::env::temp_dir();
-        assert_eq!(require(&dir.to_string_lossy()), Ok(dir));
+        assert_eq!(require(&dir.to_string_lossy()), Ok(dir.clone()));
         assert!(require("~").is_ok());
-        assert!(require("/no/such/folder/for/a/chat")
+        // A full path on this platform (a bare `/no/such` has no drive on Windows, so it isn't one there).
+        let missing = dir.join("no-such-folder-for-a-chat-7f3c1d");
+        assert!(!missing.exists());
+        assert!(require(&missing.to_string_lossy())
             .unwrap_err()
             .contains("does not exist"));
     }

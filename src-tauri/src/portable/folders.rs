@@ -299,7 +299,9 @@ impl FolderRules {
     /// `/Users`, a home folder or anything shallower than one), and not this Mac's own home folder.
     fn plausible_from(&self, from: &str) -> bool {
         let path = Path::new(from.trim());
-        path.is_absolute()
+        // Rooted, not `is_absolute`: the folder is the other computer's, so on Windows a Mac's `/Users/...` (no drive)
+        // is still a full path there. It only ever matches the start of a file's folder; what it maps to is checked here.
+        path.has_root()
             && path
                 .components()
                 .filter(|part| matches!(part, Component::Normal(_)))
