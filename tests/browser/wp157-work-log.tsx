@@ -15,6 +15,7 @@ const seed: WorkLogLine[] = [
   line("2026-11-10", "outcome", "Done: Shipped the panel."),
   line("2026-11-10", "outcome", "Done: Other project.", "other"),
   line("2026-11-03", "outcome", "Done: Too old for the week."),
+  line("2026-11-10", "feedback", "Keep the work log line short."),
 ];
 
 createRoot(document.getElementById("log")!).render(<WorkLogPanel lines={seed} today="2026-11-10" />);

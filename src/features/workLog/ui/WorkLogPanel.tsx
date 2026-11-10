@@ -8,6 +8,16 @@ import {
   todayAnswer,
   type WorkLogLine,
 } from "../model/workLog";
+import {
+  enableWeeklyRetro,
+  loadWeeklyRetro,
+  markAsked,
+  saveWeeklyRetro,
+  stageRetro,
+  weeklyRetroDue,
+  type RetroResult,
+  type WeeklyRetro,
+} from "../model/retro";
 
 type Span = "today" | "week";
 
@@ -34,8 +44,14 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
   const [project, setProject] = useState("");
   const [span, setSpan] = useState<Span>("week");
   const [live, setLive] = useState<WorkLogLine[]>([]);
+  const [loaded, setLoaded] = useState(seeded);
   const [problem, setProblem] = useState<string | null>(null);
+  const [routine, setRoutine] = useState<WeeklyRetro>(() => loadWeeklyRetro());
+  const [report, setReport] = useState<RetroResult | null>(null);
+  const [retroProblem, setRetroProblem] = useState<string | null>(null);
   const generation = useRef(0);
+  const retroGeneration = useRef(0);
+  const askedWeekly = useRef(false);
 
   useEffect(() => {
     if (seeded) return;
@@ -49,6 +65,7 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
       .then((rows) => {
         if (cancelled || mine !== generation.current) return;
         setLive(readLines(rows));
+        setLoaded(true);
         setProblem(null);
       })
       .catch(() => {
@@ -60,6 +77,63 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
       cancelled = true;
     };
   }, [seeded, project, span, today]);
+
+  async function weekLines(mine: number): Promise<WorkLogLine[] | null> {
+    if (seeded) return lines;
+    const query: { from: string; to: string; project?: string } = { from: shiftDay(today, -6), to: today };
+    const named = project.trim();
+    if (named) query.project = named;
+    try {
+      const rows = readLines(await invoke("work_log_read", query));
+      if (mine !== retroGeneration.current) return null;
+      return rows;
+    } catch {
+      // A timeout is not an empty week. Do not report that nothing shipped.
+      if (mine !== retroGeneration.current) return null;
+      setRetroProblem("The work log could not be read. Try again.");
+      return null;
+    }
+  }
+
+  function showRetro(rows: WorkLogLine[]) {
+    const named = project.trim();
+    const scoped = named ? rows.filter((line) => line.project === named) : rows;
+    setRetroProblem(null);
+    setReport(stageRetro(scoped, today));
+  }
+
+  async function runRetro() {
+    const mine = ++retroGeneration.current;
+    const rows = await weekLines(mine);
+    if (rows === null || mine !== retroGeneration.current) return;
+    showRetro(rows);
+  }
+
+  function toggleWeekly() {
+    const next = routine.enabled
+      ? { ...routine, enabled: false }
+      : enableWeeklyRetro(new Date().toISOString());
+    setRoutine(next);
+    saveWeeklyRetro(next);
+  }
+
+  useEffect(() => {
+    if (askedWeekly.current || !weeklyRetroDue(routine, Date.now())) return;
+    if (!seeded && !loaded) return;
+    let cancelled = false;
+    const mine = ++retroGeneration.current;
+    void weekLines(mine).then((rows) => {
+      if (cancelled || rows === null || mine !== retroGeneration.current) return;
+      askedWeekly.current = true;
+      showRetro(rows);
+      const marked = markAsked(routine, new Date().toISOString());
+      setRoutine(marked);
+      saveWeeklyRetro(marked);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [routine, seeded, loaded, lines, today, project]);
 
   const source = (seeded ? lines : live).filter((line) => inSpan(line, span, today));
   const grouped = groupLines(source, project);
@@ -83,8 +157,36 @@ export function WorkLogPanel({ lines, today: todayProp }: Props) {
         <div className="flex gap-1">
           <SpanButton current={span} value="today" onPick={setSpan} label="Today" />
           <SpanButton current={span} value="week" onPick={setSpan} label="This week" />
+          <button type="button" className="rounded-md px-2 py-1 text-[13px] text-content" onClick={() => void runRetro()}>
+            Run a retro
+          </button>
+          <button
+            type="button"
+            aria-pressed={routine.enabled}
+            className="rounded-md px-2 py-1 text-[13px] text-content"
+            onClick={toggleWeekly}
+          >
+            Weekly retro
+          </button>
         </div>
       </div>
+      {retroProblem ? <p className="px-3 text-[13px] text-content/60">{retroProblem}</p> : null}
+      {report ? (
+        <div data-retro className="flex flex-col gap-2 px-3 text-[13px] text-content">
+          <p className="whitespace-pre-wrap">{report.report}</p>
+          {report.ask ? <p className="whitespace-pre-wrap text-content/80">{report.ask}</p> : null}
+          {report.pending.length === 0 ? (
+            <p>No edits proposed.</p>
+          ) : (
+            <ul aria-label="Pending edits">
+              {report.pending.map((edit) => (
+                <li key={edit.id}>{edit.text}</li>
+              ))}
+            </ul>
+          )}
+          <p>Nothing was changed.</p>
+        </div>
+      ) : null}
       <p className="px-3 text-[13px] text-content" data-today-answer>
         {answer}
       </p>

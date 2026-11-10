@@ -26,6 +26,13 @@ test("groups the week by day and kind, and answers today from the log", async ({
   await log.getByRole("button", { name: "Today" }).click();
   await expect(log.locator("[data-day]")).toHaveCount(1);
   await expect(log.getByText("Done: Wrote the log.")).toHaveCount(0);
+
+  await log.getByRole("button", { name: "Run a retro" }).click();
+  const retro = log.locator("[data-retro]");
+  await expect(retro).toContainText("Shipped: 2.");
+  await expect(retro).toContainText("Keep the work log line short.");
+  await expect(retro).toContainText("Nothing was changed.");
+  await expect(log.getByRole("button", { name: "Weekly retro" })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("says when nothing is written, and a miss is not an empty log", async ({ page }) => {
