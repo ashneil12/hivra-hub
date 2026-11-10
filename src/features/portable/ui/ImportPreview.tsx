@@ -76,6 +76,7 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
   const [open, setOpen] = useState<Set<string>>(new Set());
   const set = (change: (c: Choices) => Choices) => setChoices((c) => change(c));
   const manifest = pending.inspection?.manifest;
+  const leftOut = pending.inspection?.leftOut ?? [];
   const when = manifest?.createdAt ? new Date(manifest.createdAt).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : null;
 
   if (done) {
@@ -353,6 +354,14 @@ export function ImportPreview({ pending, onBack, onRestore, inline }: {
               ) : null}
             </>
           ) : <p className="px-2 text-[12px] text-content/60">Left out: no chats, notes or automations are added.</p>}
+        </Section>
+      ) : null}
+
+      {leftOut.length ? (
+        <Section title={`${count(leftOut.length, "file was", "files were")} too big and will be left out`} testId="left-out">
+          <ul className="flex flex-col gap-0.5 px-2 text-[12px] text-content/60">
+            {leftOut.map((f) => <li key={f.path}><span className="text-content">{f.path}</span> {f.reason}</li>)}
+          </ul>
         </Section>
       ) : null}
 
