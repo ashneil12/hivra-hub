@@ -417,6 +417,8 @@ export type ApprovalCall = {
   paths?: string[];
   server?: string;
   args?: string[];
+  /** A Grep's glob, as given. Present (even empty or not text) means the search names files by a glob. */
+  glob?: string;
 };
 
 export type Block = {

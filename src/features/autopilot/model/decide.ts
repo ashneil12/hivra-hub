@@ -3,8 +3,8 @@
 // - `app autopilot.decide`, an agent asking before it asks Ash (decideCall);
 // - a chat's question for Ash is read and answered by Today's waiting list (hub/model/waitingChats.ts takePick); a
 //   question with no pick is handed back to the agent with handBackText;
-// - a tool approval a supervised chat is waiting on (approvalVerdict): allowed only when it is a read, a listed test or
-//   build command, or an edit inside the chat's own folder (safeApproval.ts), and off the red list.
+// - a tool approval a supervised chat is waiting on (approvalVerdict): allowed only when it is a read, or an edit inside
+//   the chat's own folder (safeApproval.ts), and off the red list.
 // The app hook (useAutopilot.ts) applies the verdicts and writes each one to the Autopilot log.
 
 import { pathKey } from "../../../shared/lib/paths";
@@ -84,6 +84,7 @@ export function approvalText(block: ApprovalBlock): string {
     call?.tool,
     call?.command,
     call?.server,
+    call?.glob,
     ...(call?.paths ?? []),
     ...(call?.args ?? []),
   );
@@ -113,7 +114,7 @@ export type ApprovalVerdict =
 
 /**
  * A tool approval while autopilot covers the chat, in a chat working in `folder` (its worktree when it has one):
- * allowed only when it is a read, a listed test or build command, or an edit inside that folder, and nothing it says
+ * allowed only when it is a read, or an edit inside that folder, and nothing it says
  * touches the red list. Everything else, and anything too long to read whole, waits for Ash as when autopilot is off.
  * `trusted` is the exact set of MCP servers Hivra wired from installed plugins for this chat (mcpTrust.ts); without
  * it, every MCP call waits.
@@ -143,6 +144,9 @@ export function approvalVerdict(
     // reading splits at a space and has no rule for a shell startup file in. The same path check as a shell word runs.
     if (credentialInPaths(readPaths(block.approval?.call), folder)) return { kind: "held", red: "credentials", what, why: "it touches the red list" };
     // WP-101 review H1: a search (Grep, Glob, LS) names where it walks from in its paths, read as a walk.
+    // Round 2: a glob names files the ignore rules hide, so a search with one waits whatever it searches.
+    if (block.approval?.call?.glob !== undefined)
+      return { kind: "held", red: null, what, why: "its glob can match files git and the ignore rules hide, so it waits for Ash" };
     if (searchStartsOutside(block.approval?.call, folder))
       return { kind: "held", red: null, what, why: "it searches outside the chat's folder, or in a login store" };
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may

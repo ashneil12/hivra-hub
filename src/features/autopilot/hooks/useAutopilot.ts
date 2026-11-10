@@ -3,8 +3,8 @@
 // acts:
 // - while a switch covers a chat that waits on Ash (Today's "Waiting on you", hub/model/waitingChats.ts), its pick is
 //   taken through that list's own `takePick(id, { by: "autopilot" })`, which refuses its red lines; a question with no
-//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, a listed test or build
-//   command, or an edit inside the chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
+//   pick is handed back to the agent in words. A tool approval is allowed only when it is a read, or an edit inside the
+//   chat's own folder (model/safeApproval.ts); every other one waits for Ash as usual.
 //   Anything that touches Ash's red list (theirs or ours, model/redList.ts) waits for him. Each call goes in the
 //   Autopilot log. A delegated worker's question is left to its Lead (H3's tasks.answer);
 // - agents' chats stopped at a usage limit are armed to resume at the reset (on by default; per-project override),

@@ -85,6 +85,15 @@ describe("timers.*", () => {
     expect(set.note).toContain("in /code/hivra,");
   });
 
+  // PR #201 round 2 (low): a check the safe table allows still waits when its words name a login store or a folder walk
+  // that leaves the chat's own (the same credential check autopilot's approvals make).
+  it("a check holds a read that names a login store or a glob over hidden files (round 2)", async () => {
+    const { source, host, api } = fixture("mono");
+    await expect(handleAgentApp(source, "r1", "timers.check", { command: "cat ~/.netrc", note: "x" }, host)).rejects.toThrow(/doesn't run by itself/);
+    await expect(handleAgentApp(source, "r2", "timers.check", { command: "rg -g '.env*' TOKEN", note: "x" }, host)).rejects.toThrow(/doesn't run by itself/);
+    expect(api.checkSet).not.toHaveBeenCalled();
+  });
+
   it("a check runs in the folder the chat works in: its working copy when it has one, else its project", async () => {
     const { source, host, api } = fixture("mono");
     await handleAgentApp(source, "r1", "timers.check", { command: "git status", note: "project" }, host);

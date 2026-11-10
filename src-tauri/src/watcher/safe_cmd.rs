@@ -90,13 +90,6 @@ fn branch_flags() -> &'static Regex {
     })
 }
 
-fn npm_scripts() -> &'static Regex {
-    static SCRIPTS: OnceLock<Regex> = OnceLock::new();
-    SCRIPTS.get_or_init(|| {
-        Regex::new(r"^(test|check|lint|build)(:[A-Za-z0-9_.-]+)?$").expect("npm scripts")
-    })
-}
-
 fn git_read(args: &[String]) -> Option<&'static str> {
     let Some(sub) = args.first() else {
         return Some("only git status, diff, log, show and branch run by themselves");
@@ -135,31 +128,14 @@ fn git_read(args: &[String]) -> Option<&'static str> {
     None
 }
 
-fn npm_script(args: &[String]) -> Option<&'static str> {
-    let first = args.first().map(String::as_str).unwrap_or("");
-    let second = args.get(1).map(String::as_str);
-    let after: Vec<&str> = if first == "test" {
-        args.iter().skip(1).map(String::as_str).collect()
-    } else {
-        args.iter().skip(2).map(String::as_str).collect()
-    };
-    let named = first == "test"
-        || (first == "run" && second.is_some_and(|name| npm_scripts().is_match(name)));
-    if !named {
-        return Some("only npm test and npm run check, lint or build run by themselves");
-    }
-    if !after.is_empty() && after[0] != "--" {
-        return Some("npm options don't run by themselves");
-    }
-    None
-}
-
+// Round 2 (C1, in step with safeApproval.ts): tests and builds run code the chat may have just written, so only
+// cargo fmt --check runs by itself.
 fn cargo_read(args: &[String]) -> Option<&'static str> {
     let Some(sub) = args.first() else {
-        return Some("only cargo test, check, clippy and fmt --check run by themselves");
+        return Some("only cargo fmt --check runs by itself; cargo test, check, clippy and build run code, so they wait for Ash");
     };
-    if !matches!(sub.as_str(), "test" | "check" | "clippy" | "fmt") {
-        return Some("only cargo test, check, clippy and fmt --check run by themselves");
+    if sub.as_str() != "fmt" {
+        return Some("only cargo fmt --check runs by itself; cargo test, check, clippy and build run code, so they wait for Ash");
     }
     let rest = &args[1..];
     if sub == "fmt" && !rest.iter().any(|arg| arg == "--check") {
@@ -185,32 +161,87 @@ fn cargo_read(args: &[String]) -> Option<&'static str> {
     None
 }
 
-fn node_test(args: &[String]) -> Option<&'static str> {
-    if !args.iter().any(|arg| arg == "--test") {
-        return Some("only node --test runs by itself");
-    }
-    if has(
-        args,
-        &[
-            "-e",
-            "--eval",
-            "-p",
-            "--print",
-            "-r",
-            "--require",
-            "--import",
-            "--loader",
-            "--experimental-loader",
-            "-i",
-            "--interactive",
-            "--env-file",
-            "--inspect",
-            "--inspect-brk",
-        ],
-    ) {
-        return Some("that node option doesn't run by itself");
+/// Round 2 (WP-101 low): the words a read names that could reach a login store, a folder outside the chat's own, or
+/// files a search's ignore rules hide. A relative path below the folder passes; an absolute or home path, a climb
+/// (`..`), a hidden name (`.env`, `.ssh`, `.git`), a credential-shaped name and a glob in a search are held. The full
+/// check is credentialPaths.ts (run when a check is set from the app); this is the same rule for the words a timer holds.
+fn names_login_or_outside(head: &str, args: &[String]) -> Option<&'static str> {
+    const HELD: &str = "it names a login store, a folder outside the chat's own, or files the ignore rules hide, so it waits for Ash";
+    let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
+    let mut pattern_seen = false;
+    for arg in args {
+        let word = if arg.starts_with('-') {
+            match arg.split_once('=') {
+                Some((_, value)) => value,
+                None => continue,
+            }
+        } else {
+            arg.as_str()
+        };
+        if search && word.contains(['*', '?', '[']) {
+            return Some(HELD);
+        }
+        // A search's first bare word is its pattern, as grep reads it; a word with a dot, a slash, a tilde or a
+        // backslash is a path, so it is read as one.
+        if search && head != "find" && !pattern_seen && !word.contains(['.', '/', '~', '\\']) {
+            pattern_seen = true;
+            continue;
+        }
+        let climbs_or_hides = word
+            .split(['/', '\\', ':'])
+            .any(|part| part == ".." || (part.len() > 1 && part.starts_with('.')));
+        let rooted = word.starts_with(['~', '/', '\\']) || is_drive_path(word);
+        if rooted || climbs_or_hides || credential_name(word) {
+            return Some(HELD);
+        }
     }
     None
+}
+
+fn is_drive_path(word: &str) -> bool {
+    let bytes = word.as_bytes();
+    bytes.len() >= 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes[2] == b'/' || bytes[2] == b'\\')
+}
+
+/// A file name that is a login store whatever folder holds it: the key and token stems, key and certificate
+/// extensions, and the SSH and cloud key names. Mirrors the common cases of credentialName (credentialPaths.ts).
+fn credential_name(word: &str) -> bool {
+    let name = word
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => (stem, ext),
+        _ => (name.as_str(), ""),
+    };
+    [
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "service-account",
+        "terraform.tfstate",
+        "kubeconfig",
+    ]
+    .iter()
+    .any(|prefix| name.starts_with(prefix))
+        || [
+            "credential",
+            "credentials",
+            "secret",
+            "secrets",
+            "token",
+            "tokens",
+            "password",
+            "passwords",
+            "passwd",
+        ]
+        .contains(&stem)
+        || ["key", "pem", "p12", "pfx", "jks", "keystore", "tfvars"].contains(&ext)
 }
 
 fn rg_read(args: &[String]) -> Option<&'static str> {
@@ -221,7 +252,8 @@ fn rg_read(args: &[String]) -> Option<&'static str> {
     }
 }
 
-/// None when autopilot would run this by itself. The reason otherwise. Same answers as `safeCommand`.
+/// None when autopilot would run this by itself. The reason otherwise. Same answers as `safeCommand`, plus the words a
+/// read names in a login store (round 2).
 /// An unreadable command is a reason, never an allow: `?` on the word list would invert that.
 pub fn verdict(command: &str) -> Option<String> {
     if command.chars().any(|c| SHELL_META.contains(&c)) {
@@ -236,18 +268,15 @@ pub fn verdict(command: &str) -> Option<String> {
     let args = &words[1..];
     let why = match words[0].as_str() {
         "git" => git_read(args),
-        "npm" => npm_script(args),
         "cargo" => cargo_read(args),
-        "node" => node_test(args),
         "rg" => rg_read(args),
         "grep" | "ls" | "cat" | "head" | "tail" | "wc" | "pwd" => None,
         other => {
-            return Some(format!(
-                "{other} isn't a read, test or build autopilot runs by itself"
-            ))
+            return Some(format!("{other} isn't a read autopilot runs by itself"));
         }
     };
-    why.map(str::to_string)
+    why.or_else(|| names_login_or_outside(&words[0], args))
+        .map(str::to_string)
 }
 
 /// The words to exec, with no shell, when `verdict` allows the command.
@@ -259,7 +288,7 @@ pub fn argv(command: &str) -> Result<Vec<String>, String> {
         .ok_or_else(|| "it can't be read plainly (a wildcard or an open quote)".to_string())?;
     let program = words.first().map(String::as_str).unwrap_or("");
     if program.is_empty() || program.contains('/') || program.contains('\\') {
-        return Err("it isn't a read, test or build autopilot runs by itself".into());
+        return Err("it isn't a read autopilot runs by itself".into());
     }
     Ok(words)
 }
@@ -301,20 +330,12 @@ mod tests {
             "head -50 src/app.ts",
             "wc -l src/app.ts",
             "pwd",
-            "npm test",
-            "npm test -- src/features/autopilot",
-            "npm run check",
-            "npm run lint",
-            "npm run build",
-            "npm run check:web",
-            "cargo test",
-            "cargo test -p monocode --lib autopilot",
-            "cargo check --workspace",
-            "cargo clippy --all-targets -- -D warnings",
             "cargo fmt --check",
             "cargo fmt --all --check",
-            "node --test scripts/hub-dev.test.mjs",
-            "node --test 'scripts/**/*.test.mjs'",
+            "rg -n token src",
+            "cat src/token_store.ts",
+            "cat ./src/app.ts",
+            "git show HEAD:src/app.ts",
         ] {
             assert!(
                 verdict(command).is_none(),
@@ -344,6 +365,36 @@ mod tests {
             "gh pr merge 12 --admin",
             "rm -rf build",
             "npx vitest run",
+            // Round 2 (C1): a test or build runs code the chat may have just written, so it waits.
+            "npm test",
+            "npm test -- src/features/autopilot",
+            "npm run check",
+            "npm run lint",
+            "npm run build",
+            "npm run check:web",
+            "cargo test",
+            "cargo test -p monocode --lib autopilot",
+            "cargo check --workspace",
+            "cargo clippy --all-targets -- -D warnings",
+            "node --test scripts/hub-dev.test.mjs",
+            "node --test 'scripts/**/*.test.mjs'",
+            // Round 2 (low): a login store or a folder outside the chat's own, named by a word a read may still allow.
+            "cat ~/.netrc",
+            "cat ~/.ssh/config",
+            "cat /Users/me/.aws/credentials",
+            "cat /etc/hosts",
+            "cat .env",
+            "cat ./config/.env.local",
+            "cat ../secret.txt",
+            "cat secrets/token.txt",
+            "cat keys/server.pem",
+            "cat id_rsa.pub",
+            "cat .git/config",
+            "rg -g '.env*' TOKEN",
+            "rg -g .env TOKEN src",
+            "grep -rn TODO ~/Projects",
+            "git show HEAD:.env",
+            "ls ~",
             "/usr/bin/git status",
             "CI=1 npm test",
             "git push origin main",

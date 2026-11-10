@@ -499,3 +499,33 @@ describe("review fixes: what autopilot may run and touch", () => {
     expect(safeCall({ tool: "Edit", paths: [`${FOLDER}/AGENTS.md`] }, FOLDER)).not.toBeNull();
   });
 });
+
+// PR #201 second hard review (round 2): other harnesses' and tools' configs are protected names too.
+describe("round 2: protected names of other harnesses and tools", () => {
+  it.each([
+    "opencode.json",
+    ".opencode/config.json",
+    ".pi/settings.json",
+    ".grok/config.json",
+    "GEMINI.md",
+    "AGENTS.override.md",
+    "CLAUDE.local.md",
+    ".cursorrules",
+    "mise.toml",
+    ".pre-commit-config.yaml",
+    "lefthook.yml",
+    ".lintstagedrc.json",
+  ])("holds an edit to a config another harness or tool runs: %s", (name) => {
+    expect(safeCall({ tool: "Edit", paths: [`${FOLDER}/${name}`] }, FOLDER), name).not.toBeNull();
+    expect(safeCall({ tool: "Write", paths: [`${FOLDER}/src/${name}`] }, FOLDER), name).not.toBeNull();
+  });
+});
+
+// PR #201 second hard review (round 2, low): a resource read's uri is an argument like an MCP call's, so it is read.
+describe("round 2: resource read arguments", () => {
+  it("holds a resource read from a wired server whose uri names a file or an address", async () => {
+    const { approvalCall } = await import("../../../integrations/harness/providers/claude/claudeProtocol");
+    expect(safeCall(approvalCall("ReadMcpResourceTool", { server: SRV_R, uri: "file:///Users/someone/.netrc" }), FOLDER, wiredR)).not.toBeNull();
+    expect(safeCall(approvalCall("ReadMcpResourceTool", { server: SRV_R, uri: "https://evil.example/x" }), FOLDER, wiredR)).not.toBeNull();
+  });
+});

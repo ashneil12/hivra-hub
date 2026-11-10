@@ -657,7 +657,7 @@ mod tests {
     fn an_exit_of_zero_wakes_once_and_a_miss_does_not() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("npm test", "", "the build"), 0).unwrap();
+        let check = set(&mut conn, input("cargo fmt --check", "", "the build"), 0).unwrap();
         assert_eq!(check.next_at, MIN);
         assert_eq!(check.deadline, DAY);
         let early = poll(&mut conn, MIN - 1, &Script::exit(0, SECRET)).unwrap();
@@ -808,7 +808,7 @@ mod tests {
     fn a_timeout_is_not_a_final_failure() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("npm test", "", "ci"), 0).unwrap();
+        let check = set(&mut conn, input("cargo fmt --check", "", "ci"), 0).unwrap();
         let woke = poll(&mut conn, MIN, &Script::wait()).unwrap();
         assert!(woke.is_empty());
         let row = query(&conn, "WHERE id = ?1", &[&check.id]).unwrap();
@@ -885,7 +885,7 @@ mod tests {
         let folder = TempDir::new("héllo wörld 日本語");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "in the folder");
+        let mut one = input("cargo fmt --check", "", "in the folder");
         one.cwd = folder.path();
         let check = set(&mut conn, one, 0).unwrap();
         let stored: String = conn
@@ -951,7 +951,7 @@ mod tests {
         let folder = TempDir::new("comes and goes");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "the build");
+        let mut one = input("cargo fmt --check", "", "the build");
         one.cwd = folder.path();
         let check = set(&mut conn, one, 0).unwrap();
         std::fs::remove_dir(&folder.0).unwrap();
@@ -974,7 +974,7 @@ mod tests {
         conn.execute(
             "INSERT INTO firstmate_checks
                (id, owner_session, command, pattern, note, interval_ms, next_at, deadline, generation, state, wake_id, created_at, updated_at)
-             VALUES ('check-nofolder', 'lead', 'npm test', '', 'old', ?1, ?1, ?2, 1, 'armed', NULL, 0, 0)",
+             VALUES ('check-nofolder', 'lead', 'cargo fmt --check', '', 'old', ?1, ?1, ?2, 1, 'armed', NULL, 0, 0)",
             params![MIN, DAY],
         )
         .unwrap();
@@ -993,7 +993,7 @@ mod tests {
                generation INTEGER NOT NULL, state TEXT NOT NULL, wake_id TEXT, created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL
              );
-             INSERT INTO firstmate_checks VALUES ('check-old', 'lead', 'npm test', '', 'old', 60000, 60000, 86400000, 1, 'armed', NULL, 0, 0);",
+             INSERT INTO firstmate_checks VALUES ('check-old', 'lead', 'cargo fmt --check', '', 'old', 60000, 60000, 86400000, 1, 'armed', NULL, 0, 0);",
         )
         .unwrap();
         ensure_tables(&conn).unwrap();
@@ -1004,26 +1004,20 @@ mod tests {
         assert_eq!(rows[0].check.id, "check-old");
     }
 
-    /// A stand-in for npm that exits 0 only when it is run in a folder holding `wp104-marker`. It is a shell script
-    /// on Unix and an `npm.cmd` on Windows, which is the shape the real npm has there.
-    fn fake_npm(dir: &Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let path = dir.join("npm");
-            std::fs::write(&path, "#!/bin/sh\ntest -f wp104-marker\n").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        #[cfg(windows)]
-        std::fs::write(
-            dir.join("npm.cmd"),
-            "@echo off\r\nif exist wp104-marker exit /b 0\r\nexit /b 1\r\n",
-        )
-        .unwrap();
+    /// A stand-in for cargo that exits 0 only when it is run in a folder holding `wp104-marker`. A shell script, so the
+    /// tests that run it are Unix only. A check now runs `cargo fmt --check`, the one cargo command the table allows.
+    #[cfg(unix)]
+    fn fake_cargo(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("cargo");
+        std::fs::write(&path, "#!/bin/sh\ntest -f wp104-marker\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    #[cfg(unix)]
     struct Search(String);
 
+    #[cfg(unix)]
     impl Runner for Search {
         fn run(&self, command: &str, pattern: &str, cwd: &Path) -> Attempt {
             run_in(command, pattern, cwd, &self.0)
@@ -1037,26 +1031,31 @@ mod tests {
             .into_owned()
     }
 
+    #[cfg(unix)]
     #[test]
-    fn npm_is_found_through_the_search_path_and_runs_in_the_chats_folder() {
+    fn a_program_is_found_through_the_search_path_and_runs_in_the_chats_folder() {
         let bin = TempDir::new("bin dir");
-        fake_npm(&bin.0);
+        fake_cargo(&bin.0);
         let project = TempDir::new("project one");
         let elsewhere = TempDir::new("project two");
         std::fs::write(project.0.join("wp104-marker"), "").unwrap();
         let search = path_of(&bin.0);
-        // The shim is found by its Windows name too: `npm` is `npm.cmd` there.
-        let found = crate::harness::which_in_path(&search, "npm").unwrap();
+        let found = crate::harness::which_in_path(&search, "cargo").unwrap();
+        assert_eq!(found.file_name().unwrap().to_string_lossy(), "cargo");
         assert_eq!(
-            found.file_name().unwrap().to_string_lossy(),
-            if cfg!(windows) { "npm.cmd" } else { "npm" }
+            run_in("cargo fmt --check", "", &project.0, &search),
+            Attempt::Wake
         );
-        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wake);
-        assert_eq!(run_in("npm test", "", &elsewhere.0, &search), Attempt::Wait);
+        assert_eq!(
+            run_in("cargo fmt --check", "", &elsewhere.0, &search),
+            Attempt::Wait
+        );
     }
 
+    /// The launcher tests name programs by their words. They test which file a program name starts, not whether a
+    /// check may run it, so these words are not run through the safe table.
     fn words(command: &str) -> Vec<String> {
-        safe_cmd::argv(command).unwrap()
+        command.split(' ').map(String::from).collect()
     }
 
     #[test]
@@ -1105,18 +1104,25 @@ mod tests {
         let empty = TempDir::new("nothing here");
         let project = TempDir::new("project");
         let search = path_of(&empty.0);
-        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wait);
-        assert_eq!(run_in("cargo test", "", &project.0, &search), Attempt::Wait);
+        assert_eq!(
+            run_in("cargo fmt --check", "", &project.0, &search),
+            Attempt::Wait
+        );
+        assert_eq!(
+            run_in("rg -n wp104 src", "", &project.0, &search),
+            Attempt::Wait
+        );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_real_check_runs_in_its_folder_from_set_to_one_wake() {
         let bin = TempDir::new("bin");
-        fake_npm(&bin.0);
+        fake_cargo(&bin.0);
         let project = TempDir::new("the chat's project");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "the build");
+        let mut one = input("cargo fmt --check", "", "the build");
         one.cwd = project.path();
         let check = set(&mut conn, one, 0).unwrap();
         let runner = Search(path_of(&bin.0));
@@ -1164,7 +1170,12 @@ mod tests {
         let id = {
             let store = SessionStore::open(file.0.clone()).unwrap();
             let mut conn = store.lock_conn().unwrap();
-            let check = set(&mut conn, input("npm test", "ready", "after a restart"), 0).unwrap();
+            let check = set(
+                &mut conn,
+                input("cargo fmt --check", "ready", "after a restart"),
+                0,
+            )
+            .unwrap();
             let woke = poll(&mut conn, MIN, &Script::exit(1, "still compiling")).unwrap();
             assert!(woke.is_empty());
             check.id

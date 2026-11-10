@@ -1243,6 +1243,9 @@ export function previewFromTool(
   );
 }
 
+/** The MCP resource tools (round 2): their arguments are read the way an MCP tool's are. */
+const RESOURCE_TOOLS: ReadonlySet<string> = new Set(["ListMcpResourcesTool", "ReadMcpResourceTool"]);
+
 /**
  * What a permission request would run, for policy checks (autopilot): the tool's name, a shell command in full (never
  * cut), and the files an edit or write touches.
@@ -1256,14 +1259,19 @@ export function approvalCall(
   const keys = toolName === "Glob" ? ["file_path", "notebook_path", "path", "pattern"] : ["file_path", "notebook_path", "path"];
   const paths = keys.map((key) => input[key]).filter((value): value is string => typeof value === "string");
   const server = typeof input.server === "string" ? input.server : undefined;
-  // An MCP call's arguments are read by autopilot for paths, addresses and red-list words (review M1).
-  const args = toolName.startsWith("mcp__") ? textLeaves(input) : undefined;
+  // A Grep's glob matches files by name, hidden ones too (ripgrep's --glob overrides its ignore rules). It is kept
+  // whenever it is given, even when it isn't text, so the search is held rather than read as a plain search (round 2).
+  const glob = toolName === "Grep" && input.glob !== undefined ? (typeof input.glob === "string" ? input.glob : "") : undefined;
+  // An MCP call's arguments are read by autopilot for paths, addresses and red-list words (review M1). A resource read's
+  // uri is one of those arguments too (round 2), so the resource tools are read the same way.
+  const args = toolName.startsWith("mcp__") || RESOURCE_TOOLS.has(toolName) ? textLeaves(input) : undefined;
   return {
     tool: toolName,
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
     ...(server !== undefined ? { server } : {}),
     ...(args !== undefined ? { args } : {}),
+    ...(glob !== undefined ? { glob } : {}),
   };
 }
 

@@ -603,3 +603,38 @@ describe("review fixes on approvals", () => {
     expect(verdict.what).not.toMatch(/[​‮]/);
   });
 });
+
+// PR #201 second hard review (round 2): a Grep's glob is judged; credential stores held; the resource uri and glob are read.
+describe("round 2: review fixes on approvals", () => {
+  const FOLDER_R2 = "/Users/someone/Worktrees/hub-x";
+  const call = (name: string, input: Record<string, unknown>) => ({ text: "", tool: { title: name }, approval: { requestId: 13, call: approvalCall(name, input) } });
+
+  // HIGH: the glob of a Grep names files the ignore rules hide, so a glob waits however it reads.
+  it("collects a Grep's glob and holds the search whenever it has one (round 2, high)", () => {
+    expect(approvalCall("Grep", { pattern: ".", glob: ".env*", output_mode: "content" }).glob).toBe(".env*");
+    expect(approvalVerdict(call("Grep", { pattern: ".", glob: ".env*", output_mode: "content" }), FOLDER_R2)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(call("Grep", { pattern: ".", glob: "*.ts" }), FOLDER_R2)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(call("Grep", { pattern: "x", path: `${FOLDER_R2}/src` }), FOLDER_R2)).toMatchObject({ kind: "allow" });
+  });
+
+  // MEDIUM: credential stores the list missed, and the /.vol and /proc cwd and root routes that reach any file.
+  it.each([
+    "/Users/someone/.config/fish/config.fish",
+    "/Users/someone/.config/github-copilot/apps.json",
+    "/Users/someone/.config/configstore/update-notifier.json",
+    "/Users/someone/.config/ngrok/ngrok.yml",
+    "/Users/someone/.config/op/config",
+    "/Users/someone/.yarnrc",
+    "/.vol/16777229/2183/Users/someone/notes.txt",
+    "/proc/4242/cwd/notes.txt",
+    "/proc/self/root/Users/someone/notes.txt",
+  ])("holds a read of a credential store or a route around the folder: %s (round 2, medium)", (path) => {
+    expect(approvalVerdict(call("Read", { file_path: path }), FOLDER_R2), path).toMatchObject({ kind: "held" });
+  });
+
+  it("holds a shell read of the same stores (round 2, medium)", () => {
+    const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 14, call: { tool: "Bash", command } } });
+    expect(approvalVerdict(shell("cat ~/.config/op/config"), FOLDER_R2)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(shell("cat ~/.yarnrc"), FOLDER_R2)).toMatchObject({ kind: "held" });
+  });
+});

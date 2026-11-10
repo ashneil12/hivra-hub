@@ -18,7 +18,7 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { walkHeld } from "./credentialPaths";
+import { credentialInWords, walkHeld } from "./credentialPaths";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
@@ -43,8 +43,15 @@ const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
  * managers run commands, not just the project's files. Names are compared folded (case, width and invisible
  * characters), since the Mac disk is case-insensitive and a name can be written in another form (review H4).
  */
-const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules"]);
-const GUARDED_FILES: ReadonlySet<string> = new Set([".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules", "claude.md", "agents.md"]);
+// Round 2: the config of the other agent harnesses (OpenCode, pi, Grok, Gemini, Cursor rules, Codex overrides) and of the
+// tools that run on every commit or in every shell (mise, pre-commit, lefthook, lint-staged) are guarded too. A hijacked
+// worker writing an MCP command into opencode.json would run it in the next OpenCode chat with no tap.
+const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules", ".opencode", ".pi", ".grok"]);
+const GUARDED_FILES: ReadonlySet<string> = new Set([
+  ".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules", "claude.md", "agents.md",
+  "claude.local.md", "agents.override.md", "gemini.md", "opencode.json", ".cursorrules", "mise.toml",
+  ".pre-commit-config.yaml", "lefthook.yml", ".lintstagedrc.json",
+]);
 
 /** A name as a file system that ignores case and form compares it: NFKC, no invisible characters, lower case. */
 export function foldName(name: string): string {
@@ -118,7 +125,10 @@ function argsReason(args: unknown): SafeVerdict {
  * the folder the shell works in, so it is never held here.
  */
 export function searchStartsOutside(call: ApprovalCall | undefined, folder: string | undefined): boolean {
-  if (!call || typeof call.tool !== "string" || !SEARCH_TOOLS.has(call.tool) || call.paths === undefined) return false;
+  if (!call || typeof call.tool !== "string" || !SEARCH_TOOLS.has(call.tool)) return false;
+  // A glob names files by pattern, hidden ones too, and ripgrep's glob overrides its ignore rules: any glob waits (round 2).
+  if (call.glob !== undefined) return true;
+  if (call.paths === undefined) return false;
   if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
   return walkHeld(["rg", ...call.paths], folder);
 }
@@ -325,7 +335,7 @@ function safeCommandInner(command: string, folder: string | undefined): SafeVerd
   const words = shellWords(command.trim());
   if (!words?.length) return UNREADABLE_COMMAND;
   // Own keys only: "valueOf" or "constructor" must not find Object's methods where the table should be (WP-101, row 21).
-  if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read, test or build autopilot runs by itself`;
+  if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read autopilot runs by itself`;
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
@@ -386,7 +396,17 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     // Even a read names what it reads by its arguments: a path, a URL or a host in one of them waits (review M1).
     return argsReason(call.args);
   }
-  return `${call.tool} isn't a read, a test or build, or an edit in the chat's folder`;
+  return `${call.tool} isn't a read or an edit in the chat's folder`;
+}
+
+/**
+ * Whether a shell command's words name a login store, or a search over hidden files (a glob in a search), read the way
+ * an approval's words are (round 2: agent timers run the same check). Null when they don't; never an allow by itself.
+ */
+export function commandNamesLogin(command: string): SafeVerdict {
+  const words = bashWords({ tool: "Bash", command });
+  if (!words) return UNREADABLE_COMMAND;
+  return credentialInWords(words) ? "it names a login store or searches files the ignore rules hide, so it waits for Ash" : null;
 }
 
 // ---- where an edit really lands ----------------------------------------------------------------------------------

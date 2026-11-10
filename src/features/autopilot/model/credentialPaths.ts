@@ -42,6 +42,14 @@ const PLACES: readonly (readonly string[])[] = [
   [".config", "gcloud"],
   [".config", "hivra"],
   [".config", "hermes"],
+  // Round 2: more logins in ~/.config (fish's config, Copilot's apps.json, configstore tokens, ngrok's authtoken, 1Password's
+  // CLI config) and the /.vol inode route, by which macOS reaches any file on a disk without its path.
+  [".config", "fish", "config.fish"],
+  [".config", "github-copilot"],
+  [".config", "configstore"],
+  [".config", "ngrok"],
+  [".config", "op"],
+  [".vol"],
   ["library", "keychains"],
   ["library", "application support"],
   ["library", "cookies"],
@@ -73,6 +81,7 @@ const NAMES = new Set([
   "authorized_keys",
   // Yarn's registry tokens, and fish's history (it records commands typed with secrets in them) (review H2).
   ".yarnrc.yml",
+  ".yarnrc",
   "fish_history",
 ]);
 
@@ -213,9 +222,12 @@ function placeAmong(parts: readonly string[]): boolean {
   });
 }
 
-/** A process's environment and command line (`/proc/<pid>/environ`): what `ps e` and `ps -o command` are held for. */
+/**
+ * A process's environment, command line, working folder and root (`/proc/<pid>/environ`, `cwd`, `root`). What `ps e` and
+ * `ps -o command` are held for, and the routes (round 2) by which a process's files are read without their path.
+ */
 const processSecrets = (parts: readonly string[]) =>
-  parts.some((part, i) => part === "proc" && (parts[i + 2] === "environ" || parts[i + 2] === "cmdline"));
+  parts.some((part, i) => part === "proc" && ["environ", "cmdline", "cwd", "root"].includes(parts[i + 2] ?? ""));
 
 /** Whether these (folded) parts name a credential place or a credential file. */
 function credentialSegments(parts: readonly string[]): boolean {
