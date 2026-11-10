@@ -416,13 +416,21 @@ export async function spawnMoreAgentChild(
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);
-  const pid = await invoke<number>("harness_spawn", {
-    sessionId,
-    command: "",
-    args: [],
-    cwd,
-    moreAgent: agentId,
-  });
+  let pid: unknown;
+  try {
+    pid = await invoke<number>("harness_spawn", {
+      sessionId,
+      command: "",
+      args: [],
+      cwd,
+      moreAgent: agentId,
+    });
+  } catch (error) {
+    // A start that was refused holds no output: nothing a process printed after this is shown.
+    ownedChildren.delete(sessionId);
+    lineBuffer.delete(sessionId);
+    throw error;
+  }
   notePid(sessionId, pid);
 }
 
