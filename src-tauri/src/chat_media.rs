@@ -41,7 +41,7 @@ pub(crate) struct ChatFolders {
 }
 
 /// The folders for chat `session_id`: its folder and worktree, the projects of its Mono, and the worktrees of those
-/// projects (and of the workers it delegated to) that git records. The app reads `candidates` under the database
+/// projects (and of the workers its Mono's own chats delegated to) that git records. The app reads `candidates` under the database
 /// lock and calls `vet` after letting go of it; this is both in one, for the tests.
 #[cfg(test)]
 pub(crate) fn folders(conn: &Connection, roster: Option<&Value>, session_id: &str) -> ChatFolders {
@@ -77,9 +77,10 @@ pub(crate) fn candidates(
     projects.extend(owner.projects);
     projects.extend(hub_projects(conn, &owner.monos));
 
-    // Workers: only those delegated by one of the Mono's own chats, and only their worktree.
-    let mut owners = owner.chats;
-    owners.push(session_id.to_string());
+    // Workers: only those delegated by one of the Mono's own chats (the roster's, this chat included when the roster
+    // gives it), and only their worktree. A chat outside the roster owns no delegation that counts: an imported chat
+    // names its own id as owner in the rows it wrote, and that must not lend a worker's worktree.
+    let owners = owner.chats;
     let workers = delegated_children(conn, &owners)
         .into_iter()
         .filter_map(|child| match session_folders(conn, &child) {
@@ -686,7 +687,7 @@ mod tests {
     }
 
     #[test]
-    fn a_chat_with_no_mono_has_only_its_own_delegations() {
+    fn a_chat_with_no_mono_gets_no_worker_from_an_empty_owner() {
         let dir = tmp("no-mono");
         let store = store();
         let conn = store.lock_conn().unwrap();
@@ -698,8 +699,9 @@ mod tests {
         delegation(&conn, "d1", "", Some(""), "worker");
 
         assert!(!folders_of(&conn, None, "chat").contains(&text(&tree)));
+        // Round 6: even a row that names the chat itself as owner lends nothing, since the chat is not on any roster.
         delegation(&conn, "d2", "chat", None, "worker");
-        assert!(folders_of(&conn, None, "chat").contains(&text(&tree)));
+        assert!(!folders_of(&conn, None, "chat").contains(&text(&tree)));
     }
 
     #[test]
@@ -767,6 +769,24 @@ mod tests {
         assert_eq!(found[0], format!("/trees/t{}", WORKTREES_PER_PROJECT + 4));
         assert!(!found.contains(&"/trees/t0".to_string()));
         assert!(found.contains(&"/trees/t5".to_string()));
+    }
+
+    #[test]
+    fn a_chat_outside_the_roster_lends_no_worktree_for_its_own_delegations() {
+        // Round 6 (LOW-1): the owner of a delegation counts only when the roster gives it to a Mono. A chat that is not
+        // on the roster (an imported chat, say) names its own id as owner in a row it wrote, and its worker's worktree
+        // is no folder of its own.
+        let dir = tmp("self-owner");
+        let store = store();
+        let conn = store.lock_conn().unwrap();
+        let project = repo(&dir.0, "p");
+        let tree = worktree(&project, &dir.0.join("trees/p-a"), "p-a");
+        session(&conn, "imported", &text(&dir.0), None, 0);
+        session(&conn, "worker", &text(&project), Some(&text(&tree)), 0);
+        delegation(&conn, "d1", "imported", None, "worker");
+
+        assert!(!folders_of(&conn, None, "imported").contains(&text(&tree)));
+        assert!(!folders_of(&conn, Some(&json!({"monos": []})), "imported").contains(&text(&tree)));
     }
 
     #[test]
