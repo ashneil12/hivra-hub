@@ -10,7 +10,7 @@
       "name": "firstmate",
       "url": "https://github.com/kunchenguid/firstmate",
       "licence": "MIT",
-      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch"
+      "gave": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
     },
     {
       "name": "pstack",
