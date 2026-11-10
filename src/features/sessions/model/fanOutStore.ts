@@ -1,10 +1,14 @@
-// WP-135: the compare records this machine keeps. They are saved in the webview's own storage so a compare, a pick
-// and a half-finished discard are still there after a restart. A value read back is untrusted, and a record that
-// claims to merge winners is dropped. A failed read or write is not final: the record stays in memory and the next
-// write saves it, and two windows follow each other by revision.
+// WP-135: the compare records this machine keeps. They are saved in the app's own store (the hub documents in its
+// database, src-tauri/src/local_hub.rs), so a compare, a pick and a half-finished discard are still there after a
+// restart, and they travel with the database in a ship's backup. A value read back is untrusted, and a record that
+// claims to merge winners is dropped. A write lands only on the revision just read, so a second window follows the
+// first. A save that did not happen says so (false); nothing is held in memory as if it had been kept.
+import { memoryDisk, type LocalHubDisk } from "../../hub/model/localHub/localHub";
+import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
 import { HARNESSES, type HarnessId } from "./session";
 import {
   FAN_OUT_MAX,
+  capComparePrompt,
   type CompareRecord,
   type FanOutChild,
   type FanOutCleanup,
@@ -14,49 +18,111 @@ import {
 
 const PROVIDERS = new Set<string>(HARNESSES);
 
-export const COMPARE_STORAGE_KEY = "monocode:fan-out-compares";
+/** The hub document the compares live in (lowercase, as local_hub.rs requires). */
+export const COMPARE_DOC_KEY = "fan-out-compares";
 
 /** Oldest compares go first. Fifty is far more than anyone decides on. */
 export const COMPARE_KEEP = 50;
 
+/** How many times a write is made again on top of another window's before it gives up. */
+const TRIES = 5;
+
+let disk: LocalHubDisk | null = null;
 let records: CompareRecord[] = [];
-let loaded = false;
-let listening = false;
-/** The text last read from or written to storage, so an unchanged document is not read again. */
-let lastRaw: string | null = null;
+/** The revision of the document `records` was last read from or written as. */
+let knownRev = -1;
+let started = false;
+let stopWatching: (() => void) | null = null;
 const listeners = new Set<() => void>();
 
 function emit() {
   for (const listener of listeners) listener();
 }
 
-/** The saved text, null when nothing is saved, undefined when storage cannot be read at all. */
-function readRaw(): string | null | undefined {
+/** The app's database inside Tauri, memory in a plain browser (the preview pages, where `invoke` isn't there). */
+function theDisk(): LocalHubDisk {
+  if (!disk) {
+    const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    disk = inTauri ? tauriLocalHubDisk : memoryDisk();
+  }
+  return disk;
+}
+
+/** Tests: keep the compares in this disk, and forget what was held. Pass null to go back to the app's own store. */
+export function useCompareDisk(next: LocalHubDisk | null) {
+  stopWatching?.();
+  stopWatching = null;
+  disk = next;
+  records = [];
+  knownRev = -1;
+  started = false;
+  emit();
+}
+
+function sameList(a: readonly CompareRecord[], b: readonly CompareRecord[]): boolean {
+  return a.length === b.length && a.every((record, index) => record === b[index] || JSON.stringify(record) === JSON.stringify(b[index]));
+}
+
+/** Take a document in as the list. Returns true when the list changed. */
+function adopt(list: CompareRecord[], rev: number): boolean {
+  // A read that finished after a newer write is older than what is held.
+  if (rev < knownRev) return false;
+  knownRev = rev;
+  if (sameList(records, list)) return false;
+  records = list;
+  return true;
+}
+
+/** The document as kept, or null when the store did not answer. Nothing here changes what is held. */
+async function readDocument(): Promise<{ list: CompareRecord[]; rev: number } | null> {
   try {
-    return localStorage.getItem(COMPARE_STORAGE_KEY);
+    const doc = await theDisk().readDoc(COMPARE_DOC_KEY);
+    return { list: comparesFromUnknown(doc.value), rev: doc.rev };
   } catch {
-    return undefined;
+    return null;
   }
 }
 
-function writeRaw(raw: string): boolean {
-  try {
-    localStorage.setItem(COMPARE_STORAGE_KEY, raw);
-    return true;
-  } catch {
-    return false;
-  }
+async function refresh(): Promise<void> {
+  const doc = await readDocument();
+  if (doc && adopt(doc.list, doc.rev)) emit();
 }
 
-/** Per id the higher revision wins; at the same revision what storage holds wins. */
-function merge(memory: readonly CompareRecord[], stored: readonly CompareRecord[]): CompareRecord[] {
-  const byId = new Map<string, CompareRecord>();
-  for (const record of memory) byId.set(record.id, record);
-  for (const record of stored) {
-    const held = byId.get(record.id);
-    if (!held || record.revision >= held.revision) byId.set(record.id, record);
-  }
-  return [...byId.values()];
+function ensureStarted() {
+  if (started) return;
+  started = true;
+  const current = theDisk();
+  void refresh();
+  stopWatching = current.watch?.((key, rev) => {
+    if (key === COMPARE_DOC_KEY && rev > knownRev) void refresh();
+  }) ?? null;
+}
+
+/** What is held now. It fills in after the store answers, and again whenever a window writes. */
+export function listCompares(): readonly CompareRecord[] {
+  ensureStarted();
+  return records;
+}
+
+/** Read the store now and return what it holds (what was held, when it does not answer). */
+export async function loadCompares(): Promise<readonly CompareRecord[]> {
+  ensureStarted();
+  await refresh();
+  return records;
+}
+
+/** One compare, read again from the store. When the store does not answer, what is held. */
+export async function getCompare(id: string): Promise<CompareRecord | null> {
+  ensureStarted();
+  const doc = await readDocument();
+  if (doc && adopt(doc.list, doc.rev)) emit();
+  return records.find((record) => record.id === id) ?? null;
+}
+
+export function subscribeCompares(listener: () => void): () => void {
+  ensureStarted();
+  listeners.add(listener);
+  return () => listeners.delete(listener);
 }
 
 function keepNewest(list: readonly CompareRecord[]): CompareRecord[] {
@@ -67,118 +133,62 @@ function keepNewest(list: readonly CompareRecord[]): CompareRecord[] {
   return list.filter((record) => keep.has(record.id));
 }
 
-function parseStored(raw: string | null): CompareRecord[] | null {
-  if (raw === null) return [];
-  try {
-    return comparesFromUnknown(JSON.parse(raw));
-  } catch {
-    return null;
+/** A write that threw may still have landed (a timeout, say). It did when the store now holds this very record. */
+async function alreadySaved(record: CompareRecord): Promise<boolean> {
+  const doc = await readDocument();
+  if (!doc) return false;
+  const held = doc.list.find((item) => item.id === record.id);
+  if (held && JSON.stringify(held) === JSON.stringify(record)) {
+    if (adopt(doc.list, doc.rev)) emit();
+    return true;
   }
+  return false;
 }
 
-/** Take in what another window or an earlier run saved. Returns true when the list changed. */
-function refresh(): boolean {
-  const raw = readRaw();
-  if (raw === undefined) {
-    loaded = true;
-    return false;
-  }
-  if (loaded && raw === lastRaw) return false;
-  lastRaw = raw;
-  loaded = true;
-  const stored = parseStored(raw);
-  // A document that cannot be read is replaced by the next write, not trusted.
-  if (stored === null) return false;
-  const next = merge(records, stored);
-  const same =
-    next.length === records.length &&
-    next.every((record, index) => record === records[index] || JSON.stringify(record) === JSON.stringify(records[index]));
-  if (same) return false;
-  records = next;
-  return true;
-}
-
-function listen() {
-  if (listening || typeof window === "undefined") return;
-  listening = true;
-  window.addEventListener("storage", (event) => {
-    if (event.key !== null && event.key !== COMPARE_STORAGE_KEY) return;
-    if (refresh()) emit();
-  });
-}
-
-function ensureLoaded() {
-  if (loaded) return;
-  refresh();
-  listen();
-}
-
-export function listCompares(): readonly CompareRecord[] {
-  ensureLoaded();
-  return records;
-}
-
-/** One compare, after taking in anything another window saved. */
-export function getCompare(id: string): CompareRecord | null {
-  ensureLoaded();
-  if (refresh()) emit();
-  return records.find((record) => record.id === id) ?? null;
-}
-
-export function subscribeCompares(listener: () => void): () => void {
-  ensureLoaded();
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-/** First write of an id, or the next revision only. Anything else is ignored. */
-export function putCompare(record: CompareRecord): boolean {
-  ensureLoaded();
-  const changed = refresh();
-  const index = records.findIndex((item) => item.id === record.id);
-  let next: CompareRecord[];
-  if (index < 0) {
-    next = [...records, record];
-  } else {
-    if (record.revision !== records[index].revision + 1) {
-      if (changed) emit();
-      return false;
+/**
+ * First write of an id, or the next revision only. Anything else is refused (false). So is a record this build would
+ * not read back, and a store that did not answer: nothing is held in memory instead. The saved prompt is cut at
+ * COMPARE_PROMPT_MAX.
+ */
+export async function putCompare(input: CompareRecord): Promise<boolean> {
+  ensureStarted();
+  const record = compareFromUnknown(input);
+  if (!record) return false;
+  for (let attempt = 0; attempt < TRIES; attempt += 1) {
+    const doc = await readDocument();
+    if (!doc) return false;
+    if (adopt(doc.list, doc.rev)) emit();
+    const index = doc.list.findIndex((item) => item.id === record.id);
+    let next: CompareRecord[];
+    if (index < 0) {
+      next = [...doc.list, record];
+    } else {
+      if (record.revision !== doc.list[index].revision + 1) return false;
+      next = doc.list.slice();
+      next[index] = record;
     }
-    next = records.slice();
-    next[index] = record;
-  }
-  records = keepNewest(next);
-  const raw = JSON.stringify(records);
-  if (writeRaw(raw)) {
-    const confirmed = readRaw();
-    if (confirmed !== undefined && confirmed !== raw) {
-      // Another window wrote in between. Its document is read and merged; this write is asked to try again.
-      lastRaw = null;
-      refresh();
-      emit();
-      return false;
+    next = keepNewest(next);
+    let rev: number | null;
+    try {
+      rev = await theDisk().write(COMPARE_DOC_KEY, next, doc.rev);
+    } catch {
+      return alreadySaved(record);
     }
-    lastRaw = confirmed === undefined ? null : raw;
+    // null: another window wrote since the read. Read again and apply on top.
+    if (rev == null) continue;
+    if (adopt(next, rev)) emit();
+    return true;
   }
-  emit();
-  return true;
+  return false;
 }
 
-export function resetCompares() {
-  records = [];
-  loaded = false;
-  lastRaw = null;
-  try {
-    localStorage.removeItem(COMPARE_STORAGE_KEY);
-  } catch {
-    // Nothing was saved that could be removed.
-  }
-  emit();
+function headFrom(value: unknown): string | undefined {
+  return typeof value === "string" && /^[0-9a-fA-F]{7,64}$/.test(value) ? value : undefined;
 }
 
 function worktreeFrom(value: unknown): FanOutWorktree | null {
   if (!value || typeof value !== "object") return null;
-  const row = value as { kind?: unknown; path?: unknown; branch?: unknown; reason?: unknown };
+  const row = value as { kind?: unknown; path?: unknown; branch?: unknown; reason?: unknown; head?: unknown };
   if (row.kind === "pending" && row.reason === "git-unknown") {
     return { kind: "pending", reason: "git-unknown" };
   }
@@ -190,7 +200,8 @@ function worktreeFrom(value: unknown): FanOutWorktree | null {
   if (!row.path.trim() || !row.branch.trim()) return null;
   if (/[\0\r\n]/.test(row.path) || /[\0\r\n]/.test(row.branch)) return null;
   if (row.path.replace(/\\/g, "/").split("/").some((part) => part === "..")) return null;
-  return { kind: "assigned", path: row.path, branch: row.branch.trim() };
+  const head = headFrom(row.head);
+  return { kind: "assigned", path: row.path, branch: row.branch.trim(), ...(head ? { head } : {}) };
 }
 
 function childFrom(value: unknown): FanOutChild | null {
@@ -235,10 +246,14 @@ export function compareFromUnknown(value: unknown): CompareRecord | null {
     typeof row.sourceId === "string" && /^[A-Za-z0-9_-]+$/.test(row.sourceId) ? row.sourceId : undefined;
   const cleanup = cleanupFrom(row.cleanup, discardedIds);
   const notStarted = notStartedFrom(row.notStarted);
+  const leftBehind =
+    typeof row.leftBehind === "number" && Number.isInteger(row.leftBehind) && row.leftBehind > 0
+      ? Math.min(row.leftBehind, FAN_OUT_MAX)
+      : undefined;
   return {
     id: row.id,
     revision: row.revision,
-    prompt: row.prompt,
+    prompt: capComparePrompt(row.prompt),
     createdAt: row.createdAt,
     children,
     discardedIds,
@@ -246,6 +261,7 @@ export function compareFromUnknown(value: unknown): CompareRecord | null {
     ...(winnerId ? { winnerId } : {}),
     ...(cleanup ? { cleanup } : {}),
     ...(notStarted.length > 0 ? { notStarted } : {}),
+    ...(leftBehind ? { leftBehind } : {}),
     autoMerge: false,
   };
 }

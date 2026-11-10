@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { assignFanOutWorktrees, planFanOut, replaceFanOutChildren } from "./fanOut";
+import { memoryDisk } from "../../hub/model/localHub/localHub";
+import { assignFanOutWorktrees, planFanOut, replaceFanOutChildren, type CompareRecord } from "./fanOut";
 import {
   discardFanOutLoser,
   fanOutCleanupPlan,
@@ -7,19 +8,23 @@ import {
   pickFanOutInStore,
   pickFanOutWinner,
   releaseFanOutWorktrees,
+  type CompareStore,
+  type FanOutCleanupPort,
 } from "./fanOutDecide";
+import { ownWorktreeVerdict } from "./fanOutJanitor";
 import { fanOutCompareRows } from "./fanOutView";
-import { compareFromUnknown, listCompares, putCompare, resetCompares } from "./fanOutStore";
+import { compareFromUnknown, getCompare, putCompare, useCompareDisk } from "./fanOutStore";
 
 const ROOT = "/work/proj";
 const POOL = "/work/trees";
+const MADE_AT = "abc1234";
 
 function ids(...values: string[]) {
   const left = [...values];
   return { next: () => left.shift() ?? "extra" };
 }
 
-function record() {
+function record(): CompareRecord {
   const planned = planFanOut({
     prompt: "Fix the flaky test",
     targets: [
@@ -35,8 +40,8 @@ function record() {
     allowedRoots: [POOL],
     git: true,
     offers: [
-      { path: `${POOL}/a`, branch: "mc/fan-a" },
-      { path: `${POOL}/b`, branch: "mc/fan-b" },
+      { path: `${POOL}/a`, branch: "mc/fan-a", head: MADE_AT },
+      { path: `${POOL}/b`, branch: "mc/fan-b", head: MADE_AT },
     ],
   });
   const written = replaceFanOutChildren(planned.record, planned.record.revision, children);
@@ -44,28 +49,65 @@ function record() {
   return { ...written.record, sourceId: "source-1" };
 }
 
-function port(over: Partial<{
-  inspect: (path: string) => Promise<"remove" | "keep">;
-  remove: (path: string) => Promise<void>;
-  stop: (childId: string) => Promise<void>;
-  allowedRoots: readonly string[] | (() => Promise<readonly string[]>);
-}> = {}) {
+/**
+ * A git that behaves the way the app's does for the two things a discard asks: it lists a worktree with its head and
+ * whether it has local changes, and it refuses to remove one that does (no force). The verdict is the real
+ * `ownWorktreeVerdict`, so nothing here says "remove" on its own.
+ */
+function fakeRepo(trees: Record<string, { head?: string; dirty?: boolean | null }> = {}) {
+  const held = new Map<string, { head: string; dirty: boolean | null }>(
+    Object.entries(trees).map(([path, tree]) => [path, { head: tree.head ?? MADE_AT, dirty: tree.dirty === undefined ? false : tree.dirty }]),
+  );
   return {
-    allowedRoots: [POOL],
-    stop: vi.fn(async () => undefined),
-    inspect: vi.fn(async () => "remove" as const),
-    remove: vi.fn(async () => undefined),
-    ...over,
+    held,
+    port(over: Partial<FanOutCleanupPort> = {}) {
+      return {
+        allowedRoots: [POOL],
+        stop: vi.fn(async (_childId: string) => undefined),
+        inspect: vi.fn(async (path: string, madeAt: string | null) => {
+          const tree = held.get(path);
+          return ownWorktreeVerdict(
+            tree ? { head: tree.head, dirty: tree.dirty, locked: false, missing: false, isMain: false } : undefined,
+            madeAt,
+          );
+        }),
+        remove: vi.fn(async (path: string) => {
+          const tree = held.get(path);
+          if (!tree) throw new Error("not a worktree");
+          if (tree.dirty !== false) throw new Error("contains modified or untracked files");
+          held.delete(path);
+        }),
+        ...over,
+      } satisfies FanOutCleanupPort;
+    },
   };
 }
 
-describe("pick and discard", () => {
-  beforeEach(() => resetCompares());
+const bothTrees = () => fakeRepo({ [`${POOL}/a`]: {}, [`${POOL}/b`]: {} });
 
-  it("picks one child and does not merge or remove either worktree", () => {
+/** A store with no checks of its own, for records the real store would refuse (a path that climbs out). */
+function looseStore(initial: CompareRecord) {
+  let held = initial;
+  const store: CompareStore = {
+    get: async () => held,
+    put: async (next) => {
+      if (next.revision !== held.revision + 1) return false;
+      held = next;
+      return true;
+    },
+  };
+  return { store, current: () => held };
+}
+
+beforeEach(() => {
+  useCompareDisk(memoryDisk());
+});
+
+describe("pick and discard", () => {
+  it("picks one child and does not merge or remove either worktree", async () => {
     const current = record();
-    expect(putCompare(current)).toBe(true);
-    const picked = pickFanOutInStore(current.id, "child-a");
+    expect(await putCompare(current)).toBe(true);
+    const picked = await pickFanOutInStore(current.id, "child-a");
     expect(picked.ok).toBe(true);
     if (!picked.ok) return;
     expect(picked.record.winnerId).toBe("child-a");
@@ -78,23 +120,26 @@ describe("pick and discard", () => {
     expect(fanOutWinnerStays(picked.record.children[0].worktree)).not.toMatch(/[—–]/);
     const again = pickFanOutWinner(picked.record, picked.record.revision, "child-a");
     expect(again.ok && again.changed).toBe(false);
-    const stored = listCompares().find((item) => item.id === current.id);
+    const stored = await getCompare(current.id);
     expect(pickFanOutWinner(stored!, current.revision, "child-b").ok).toBe(false);
   });
 
-  it("discards a loser through the janitor and leaves the winner's worktree", async () => {
+  it("discards a loser that holds nothing and leaves the winner's worktree", async () => {
     const current = record();
     const picked = pickFanOutWinner(current, current.revision, "child-a");
     if (!picked.ok) throw new Error("pick");
-    putCompare(picked.record);
-    const cleanup = port();
+    await putCompare(picked.record);
+    const repo = bothTrees();
+    const cleanup = repo.port();
     const discarded = await discardFanOutLoser(current.id, "child-b", cleanup);
     expect(discarded.ok).toBe(true);
     if (!discarded.ok) return;
     expect(cleanup.inspect).toHaveBeenCalledTimes(1);
+    expect(cleanup.inspect).toHaveBeenCalledWith(`${POOL}/b`, MADE_AT);
     expect(cleanup.remove).toHaveBeenCalledTimes(1);
     expect(cleanup.remove).toHaveBeenCalledWith(`${POOL}/b`);
-    expect(cleanup.remove).not.toHaveBeenCalledWith(`${POOL}/a`);
+    expect(repo.held.has(`${POOL}/b`)).toBe(false);
+    expect(repo.held.has(`${POOL}/a`)).toBe(true);
     expect(discarded.record.discardedIds).toEqual(["child-b"]);
     expect(discarded.record.cleanup?.["child-b"]).toBe("removed");
     expect(discarded.record.winnerId).toBe("child-a");
@@ -103,19 +148,22 @@ describe("pick and discard", () => {
     expect(cleanup.remove).toHaveBeenCalledTimes(1);
   });
 
-  it("stops a running loser before the janitor looks at its worktree", async () => {
-    putCompare(record());
+  it("stops a running loser before its worktree is looked at", async () => {
+    await putCompare(record());
     const calls: string[] = [];
-    const cleanup = port({
+    const repo = bothTrees();
+    const base = repo.port();
+    const cleanup = repo.port({
       stop: vi.fn(async (childId: string) => {
         calls.push(`stop:${childId}`);
       }),
-      inspect: vi.fn(async (path: string) => {
+      inspect: vi.fn(async (path: string, madeAt: string | null) => {
         calls.push(`inspect:${path}`);
-        return "remove" as const;
+        return base.inspect(path, madeAt);
       }),
       remove: vi.fn(async (path: string) => {
         calls.push(`remove:${path}`);
+        return base.remove(path);
       }),
     });
     const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
@@ -125,15 +173,16 @@ describe("pick and discard", () => {
   });
 
   it("leaves the worktree alone, and the discard pending, when the loser cannot be stopped", async () => {
-    putCompare(record());
-    const cleanup = port({
+    await putCompare(record());
+    const repo = bothTrees();
+    const cleanup = repo.port({
       stop: vi.fn(async () => Promise.reject(new Error("still running"))),
     });
     const first = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(first).toMatchObject({ ok: false, code: "cleanup-later" });
     expect(cleanup.inspect).not.toHaveBeenCalled();
     expect(cleanup.remove).not.toHaveBeenCalled();
-    const pending = listCompares().find((item) => item.id === "compare-1");
+    const pending = await getCompare("compare-1");
     expect(pending?.discardedIds).toEqual(["child-b"]);
     expect(pending?.cleanup?.["child-b"] ?? "pending").toBe("pending");
     cleanup.stop.mockResolvedValueOnce(undefined);
@@ -151,17 +200,33 @@ describe("pick and discard", () => {
         ? { ...child, worktree: { kind: "stay", reason: "no-free-worktree" } }
         : child,
     );
-    putCompare(current);
-    const cleanup = port();
+    await putCompare(current);
+    const cleanup = bothTrees().port();
     const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(discarded.ok).toBe(true);
     expect(cleanup.stop).toHaveBeenCalledWith("child-b");
     expect(cleanup.remove).not.toHaveBeenCalled();
   });
 
-  it("does not delete when the janitor keeps the worktree", async () => {
-    putCompare(record());
-    const cleanup = port({ inspect: vi.fn(async () => "keep" as const) });
+  it("keeps a worktree with changes in it, and says so, instead of removing it", async () => {
+    await putCompare(record());
+    const repo = fakeRepo({ [`${POOL}/a`]: {}, [`${POOL}/b`]: { dirty: true } });
+    const cleanup = repo.port();
+    const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(discarded.ok).toBe(true);
+    if (!discarded.ok) return;
+    expect(cleanup.remove).not.toHaveBeenCalled();
+    expect(repo.held.has(`${POOL}/b`)).toBe(true);
+    expect(discarded.record.cleanup?.["child-b"]).toBe("kept");
+    const [, row] = fanOutCompareRows(discarded.record, []);
+    expect(row.cleanupLine).toMatch(/changes or commits of its own/);
+    expect(row.cleanupLine).toMatch(/Settings/);
+  });
+
+  it("keeps a worktree whose branch moved since it was made", async () => {
+    await putCompare(record());
+    const repo = fakeRepo({ [`${POOL}/a`]: {}, [`${POOL}/b`]: { head: "fffffff" } });
+    const cleanup = repo.port();
     const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(discarded.ok).toBe(true);
     if (!discarded.ok) return;
@@ -169,50 +234,90 @@ describe("pick and discard", () => {
     expect(discarded.record.cleanup?.["child-b"]).toBe("kept");
   });
 
-  it("leaves the discard pending when the janitor has not answered", async () => {
-    putCompare(record());
-    const cleanup = port({
-      inspect: vi.fn(async () => Promise.reject(new Error("timed out"))),
-    });
+  it("never removes a worktree whose starting commit was not recorded", async () => {
+    const current = record();
+    current.children = current.children.map((child) =>
+      child.worktree.kind === "assigned"
+        ? { ...child, worktree: { kind: "assigned", path: child.worktree.path, branch: child.worktree.branch } }
+        : child,
+    );
+    await putCompare(current);
+    const cleanup = bothTrees().port();
+    const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(discarded.ok).toBe(true);
+    expect(cleanup.remove).not.toHaveBeenCalled();
+    if (discarded.ok) expect(discarded.record.cleanup?.["child-b"]).toBe("kept");
+  });
+
+  it("leaves the discard pending, and Discard pressable again, when the removal fails", async () => {
+    await putCompare(record());
+    const repo = bothTrees();
+    const failing = repo.port();
+    failing.remove.mockRejectedValueOnce(new Error("Close the terminals and agent processes using this worktree first."));
+    const first = await discardFanOutLoser("compare-1", "child-b", failing);
+    expect(first).toMatchObject({ ok: false, code: "cleanup-later" });
+    const pending = await getCompare("compare-1");
+    expect(pending?.cleanup?.["child-b"] ?? "pending").toBe("pending");
+    expect(fanOutCompareRows(pending!, [])[1]).toMatchObject({ discarded: true, canDiscard: true });
+    expect(repo.held.has(`${POOL}/b`)).toBe(true);
+    const retried = await discardFanOutLoser("compare-1", "child-b", failing);
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+    expect(retried.record.cleanup?.["child-b"]).toBe("removed");
+    expect(repo.held.has(`${POOL}/b`)).toBe(false);
+  });
+
+  it("leaves the discard pending when git has not said whether the worktree has changes", async () => {
+    await putCompare(record());
+    const repo = fakeRepo({ [`${POOL}/a`]: {}, [`${POOL}/b`]: { dirty: null } });
+    const cleanup = repo.port();
     const first = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(first).toMatchObject({ ok: false, code: "cleanup-later" });
     expect(cleanup.remove).not.toHaveBeenCalled();
-    const pending = listCompares().find((item) => item.id === "compare-1");
-    expect(pending?.discardedIds).toEqual(["child-b"]);
+    const pending = await getCompare("compare-1");
     expect(pending?.cleanup?.["child-b"] ?? "pending").toBe("pending");
-    cleanup.inspect.mockResolvedValueOnce("remove");
+    repo.held.set(`${POOL}/b`, { head: MADE_AT, dirty: false });
     const retried = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(retried.ok).toBe(true);
     if (!retried.ok) return;
     expect(retried.record.cleanup?.["child-b"]).toBe("removed");
   });
 
+  it("settles a worktree that is already gone as removed", async () => {
+    await putCompare(record());
+    const repo = fakeRepo({ [`${POOL}/a`]: {} });
+    const cleanup = repo.port();
+    const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
+    expect(discarded.ok).toBe(true);
+    if (!discarded.ok) return;
+    expect(cleanup.remove).not.toHaveBeenCalled();
+    expect(discarded.record.cleanup?.["child-b"]).toBe("removed");
+  });
+
   it("does not delete a path outside the trusted root, or one that climbs out", async () => {
     const current = record();
     current.children = current.children.map((child) =>
       child.id === "child-b"
-        ? { ...child, worktree: { kind: "assigned", path: `${ROOT}/../secret`, branch: "mc/bad" } }
+        ? { ...child, worktree: { kind: "assigned", path: `${ROOT}/../secret`, branch: "mc/bad", head: MADE_AT } }
         : child,
     );
-    putCompare(current);
-    const escaped = port();
-    const blocked = await discardFanOutLoser("compare-1", "child-b", escaped);
+    const loose = looseStore(current);
+    const escaped = bothTrees().port();
+    const blocked = await discardFanOutLoser("compare-1", "child-b", escaped, loose.store);
     expect(blocked.ok).toBe(true);
     if (!blocked.ok) return;
     expect(escaped.inspect).not.toHaveBeenCalled();
     expect(escaped.remove).not.toHaveBeenCalled();
     expect(blocked.record.cleanup?.["child-b"]).toBe("blocked");
 
-    resetCompares();
     const outside = record();
     outside.children = outside.children.map((child) =>
       child.id === "child-b"
-        ? { ...child, worktree: { kind: "assigned", path: "/other/tree", branch: "mc/bad" } }
+        ? { ...child, worktree: { kind: "assigned", path: "/other/tree", branch: "mc/bad", head: MADE_AT } }
         : child,
     );
-    putCompare(outside);
-    const missed = port();
-    const result = await discardFanOutLoser("compare-1", "child-b", missed);
+    const missed = bothTrees().port();
+    const result = await discardFanOutLoser("compare-1", "child-b", missed, looseStore(outside).store);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(missed.remove).not.toHaveBeenCalled();
@@ -220,11 +325,13 @@ describe("pick and discard", () => {
     expect(fanOutCleanupPlan(outside, "child-b", [POOL]).kind).toBe("outside");
   });
 
-  it("keeps a discard another window wrote while the janitor was checking", async () => {
-    putCompare(record());
-    const cleanup = port({
-      inspect: vi.fn(async (path: string) => {
-        const current = listCompares().find((item) => item.id === "compare-1");
+  it("keeps a discard another window wrote while git was being asked", async () => {
+    await putCompare(record());
+    const repo = bothTrees();
+    const base = repo.port();
+    const cleanup = repo.port({
+      inspect: vi.fn(async (path: string, madeAt: string | null) => {
+        const current = await getCompare("compare-1");
         if (!current) throw new Error("missing");
         const other = {
           ...current,
@@ -232,9 +339,9 @@ describe("pick and discard", () => {
           discardedIds: [...current.discardedIds, "child-a"],
           cleanup: { ...current.cleanup, "child-a": "pending" as const },
         };
-        expect(putCompare(other)).toBe(true);
+        expect(await putCompare(other)).toBe(true);
         expect(path).toBe(`${POOL}/b`);
-        return "remove" as const;
+        return base.inspect(path, madeAt);
       }),
     });
     const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
@@ -250,24 +357,26 @@ describe("pick and discard", () => {
     const spaced = record();
     spaced.children = spaced.children.map((child) =>
       child.id === "child-b"
-        ? { ...child, worktree: { kind: "assigned", path: `${POOL}/my tree`, branch: "mc/fan-b" } }
+        ? { ...child, worktree: { kind: "assigned", path: `${POOL}/my tree`, branch: "mc/fan-b", head: MADE_AT } }
         : child,
     );
-    putCompare(spaced);
-    const cleanup = port();
+    await putCompare(spaced);
+    const spacedRepo = fakeRepo({ [`${POOL}/my tree`]: {} });
+    const cleanup = spacedRepo.port();
     const discarded = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(discarded.ok).toBe(true);
     expect(cleanup.remove).toHaveBeenCalledWith(`${POOL}/my tree`);
 
-    resetCompares();
+    useCompareDisk(memoryDisk());
     const windows = record();
     windows.children = windows.children.map((child) =>
       child.id === "child-b"
-        ? { ...child, worktree: { kind: "assigned", path: "C:/work/trees/b", branch: "mc/fan-b" } }
+        ? { ...child, worktree: { kind: "assigned", path: "C:/work/trees/b", branch: "mc/fan-b", head: MADE_AT } }
         : child,
     );
-    putCompare(windows);
-    const win = port({ allowedRoots: ["C:/work/trees"] });
+    await putCompare(windows);
+    const winRepo = fakeRepo({ "C:/work/trees/b": {} });
+    const win = winRepo.port({ allowedRoots: ["C:/work/trees"] });
     const result = await discardFanOutLoser("compare-1", "child-b", win);
     expect(result.ok).toBe(true);
     expect(win.remove).toHaveBeenCalledWith("C:/work/trees/b");
@@ -275,8 +384,8 @@ describe("pick and discard", () => {
   });
 
   it("does not treat an empty root list as a reason to delete", async () => {
-    putCompare(record());
-    const cleanup = port({ allowedRoots: async () => [] });
+    await putCompare(record());
+    const cleanup = bothTrees().port({ allowedRoots: async () => [] });
     const result = await discardFanOutLoser("compare-1", "child-b", cleanup);
     expect(result).toMatchObject({ ok: false, code: "cleanup-later" });
     expect(cleanup.inspect).not.toHaveBeenCalled();
@@ -334,30 +443,55 @@ describe("pick and discard", () => {
 });
 
 describe("releaseFanOutWorktrees", () => {
-  it("removes a worktree inside the trusted root that the janitor says can go", async () => {
-    const cleanup = port();
-    await releaseFanOutWorktrees([`${POOL}/a`], cleanup);
-    expect(cleanup.inspect).toHaveBeenCalledWith(`${POOL}/a`);
+  const made = (path: string, head: string | null = MADE_AT) => ({ path, head });
+
+  it("gives back a worktree that is clean and where it was made, which the clean-up's idle-a-day rule would keep", async () => {
+    const repo = bothTrees();
+    const cleanup = repo.port();
+    const given = await releaseFanOutWorktrees([made(`${POOL}/a`)], cleanup);
+    expect(given).toBe(1);
+    expect(cleanup.inspect).toHaveBeenCalledWith(`${POOL}/a`, MADE_AT);
     expect(cleanup.remove).toHaveBeenCalledWith(`${POOL}/a`);
+    expect(repo.held.has(`${POOL}/a`)).toBe(false);
   });
 
-  it("leaves a worktree the janitor keeps, one outside the root, one that climbs out, and the root itself", async () => {
-    const cleanup = port({ inspect: vi.fn(async () => "keep" as const) });
-    await releaseFanOutWorktrees([`${POOL}/a`], cleanup);
+  it("leaves a worktree with changes, one that moved, one with no starting commit, one outside the root, one that climbs out, and the root itself", async () => {
+    const repo = fakeRepo({
+      [`${POOL}/dirty`]: { dirty: true },
+      [`${POOL}/moved`]: { head: "fffffff" },
+      [`${POOL}/unknown`]: {},
+    });
+    const cleanup = repo.port();
+    const given = await releaseFanOutWorktrees(
+      [made(`${POOL}/dirty`), made(`${POOL}/moved`), made(`${POOL}/unknown`, null)],
+      cleanup,
+    );
+    expect(given).toBe(0);
     expect(cleanup.remove).not.toHaveBeenCalled();
-    const open = port();
-    await releaseFanOutWorktrees(["/other/tree", `${POOL}/../secret`, POOL], open);
+    const open = bothTrees().port();
+    expect(
+      await releaseFanOutWorktrees([made("/other/tree"), made(`${POOL}/../secret`), made(POOL)], open),
+    ).toBe(0);
     expect(open.inspect).not.toHaveBeenCalled();
     expect(open.remove).not.toHaveBeenCalled();
   });
 
-  it("goes on to the next worktree when one will not go", async () => {
-    const cleanup = port({
+  it("goes on to the next worktree when one will not go, and counts only those given back", async () => {
+    const repo = bothTrees();
+    const cleanup = repo.port({
       remove: vi.fn(async (path: string) => {
         if (path.endsWith("/a")) throw new Error("busy");
+        repo.held.delete(path);
       }),
     });
-    await releaseFanOutWorktrees([`${POOL}/a`, `${POOL}/b`], cleanup);
+    const given = await releaseFanOutWorktrees([made(`${POOL}/a`), made(`${POOL}/b`)], cleanup);
     expect(cleanup.remove).toHaveBeenCalledTimes(2);
+    expect(given).toBe(1);
+  });
+
+  it("gives back nothing when git cannot say where worktrees live", async () => {
+    const cleanup = bothTrees().port({ allowedRoots: async () => Promise.reject(new Error("no git")) });
+    expect(await releaseFanOutWorktrees([made(`${POOL}/a`)], cleanup)).toBe(0);
+    expect(cleanup.remove).not.toHaveBeenCalled();
   });
 });

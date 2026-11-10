@@ -13,7 +13,8 @@ export const FAN_OUT_PAID_LINE = `Each chat can use a paid turn. You can compare
 export type FanOutTargetRef = { provider: HarnessId; model: string };
 
 export type FanOutWorktree =
-  | { kind: "assigned"; path: string; branch: string }
+  /** `head` is the commit the worktree was made at. Without it the worktree is never taken back by the compare. */
+  | { kind: "assigned"; path: string; branch: string; head?: string }
   | { kind: "pending"; reason: "git-unknown" }
   | { kind: "stay"; reason: "not-a-repo" | "no-free-worktree" };
 
@@ -27,10 +28,18 @@ export type FanOutChild = {
 /** How far a discarded child's worktree clean-up got. Pending is not a final answer. */
 export type FanOutCleanup = "pending" | "removed" | "kept" | "none" | "blocked";
 
+/** The saved copy of a prompt is cut here. The chats got the whole prompt when they started. */
+export const COMPARE_PROMPT_MAX = 2000;
+
+export function capComparePrompt(prompt: string): string {
+  return prompt.length > COMPARE_PROMPT_MAX ? prompt.slice(0, COMPARE_PROMPT_MAX) : prompt;
+}
+
 export type CompareRecord = {
   id: string;
   /** Bumped on every accepted write. A write must name the revision it read. */
   revision: number;
+  /** At most COMPARE_PROMPT_MAX characters. */
   prompt: string;
   createdAt: number;
   /** The chat the compare was started from, when it is a real session id. */
@@ -39,6 +48,8 @@ export type CompareRecord = {
   children: FanOutChild[];
   /** Models asked for that did not start because no worktree could be made for them. */
   notStarted?: FanOutTargetRef[];
+  /** Worktrees made for this compare that could not be given back and are still on disk. */
+  leftBehind?: number;
   winnerId?: string;
   discardedIds: string[];
   /** Clean-up state for discarded children only. Missing means still pending. */
@@ -167,12 +178,33 @@ function hasDotDot(path: string): boolean {
   return path.replace(/\\/g, "/").split("/").some((part) => part === "..");
 }
 
+/**
+ * A path a chat may start in: inside a trusted root and never the root itself, not the project folder, and not a
+ * folder that holds the project folder.
+ */
+export function trustedWorktreePath(
+  path: string,
+  projectRoot: string,
+  allowedRoots: readonly string[],
+): boolean {
+  if (!path.trim() || /[\0\r\n]/.test(path) || hasDotDot(path)) return false;
+  if (projectRoot && isEqualOrInside(projectRoot, path)) return false;
+  return allowedRoots.some(
+    (root) =>
+      typeof root === "string" &&
+      root.trim().length > 0 &&
+      !hasDotDot(root) &&
+      isEqualOrInside(path, root) &&
+      pathKey(path) !== pathKey(root),
+  );
+}
+
 function usableOffer(
-  offer: { path?: unknown; branch?: unknown } | null | undefined,
+  offer: { path?: unknown; branch?: unknown; head?: unknown } | null | undefined,
   projectRoot: string,
   allowedRoots: readonly string[],
   used: Set<string>,
-): { path: string; branch: string } | null {
+): { path: string; branch: string; head?: string } | null {
   if (!offer || typeof offer.path !== "string" || typeof offer.branch !== "string") return null;
   const path = offer.path;
   const branch = offer.branch.trim();
@@ -181,12 +213,9 @@ function usableOffer(
   if (hasDotDot(path) || hasDotDot(branch)) return null;
   const key = pathKey(path);
   if (!key || used.has(key)) return null;
-  if (projectRoot && pathKey(path) === pathKey(projectRoot)) return null;
-  const inside = allowedRoots.some(
-    (root) => typeof root === "string" && root.length > 0 && isEqualOrInside(path, root),
-  );
-  if (!inside) return null;
-  return { path, branch };
+  if (!trustedWorktreePath(path, projectRoot, allowedRoots)) return null;
+  const head = typeof offer.head === "string" && /^[0-9a-fA-F]{7,64}$/.test(offer.head) ? offer.head : undefined;
+  return { path, branch, ...(head ? { head } : {}) };
 }
 
 /**
@@ -201,7 +230,7 @@ export function assignFanOutWorktrees(
     projectRoot: string;
     allowedRoots: readonly string[];
     git: boolean | "unknown";
-    offers: readonly { path: string; branch: string }[];
+    offers: readonly { path: string; branch: string; head?: string }[];
     claimed?: readonly string[];
   },
 ): FanOutChild[] {
@@ -233,7 +262,15 @@ export function assignFanOutWorktrees(
     if (!slot) {
       return { ...child, worktree: { kind: "stay" as const, reason: "no-free-worktree" as const } };
     }
-    return { ...child, worktree: { kind: "assigned" as const, path: slot.path, branch: slot.branch } };
+    return {
+      ...child,
+      worktree: {
+        kind: "assigned" as const,
+        path: slot.path,
+        branch: slot.branch,
+        ...(slot.head ? { head: slot.head } : {}),
+      },
+    };
   });
 }
 

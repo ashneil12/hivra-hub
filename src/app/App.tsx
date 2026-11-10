@@ -737,8 +737,12 @@ import {
   pickFanOutInStore,
   releaseFanOutWorktrees,
 } from "../features/sessions/model/fanOutDecide";
-import { fanOutJanitorPort } from "../features/sessions/model/fanOutJanitor";
-import { fanOutRefusalLine, launchFanOut } from "../features/sessions/model/fanOutLaunch";
+import {
+  defaultWorktreeRoots,
+  fanOutJanitorPort,
+  startFanOutSetup,
+} from "../features/sessions/model/fanOutJanitor";
+import { startFanOut } from "../features/sessions/model/fanOutLaunch";
 import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
 import { fanOutCompareRows, fanOutNotStartedLines } from "../features/sessions/model/fanOutView";
 import {
@@ -16569,7 +16573,8 @@ function Workspace({
   );
 
   // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model, each in its own
-  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two says why.
+  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two, or cannot be
+  // saved, says why and gives back the worktrees it made.
   const fanOutBusy = useRef(new Set<string>());
   const onCompareModels = useCallback(
     async (
@@ -16582,36 +16587,44 @@ function Workspace({
       if (!source || source.worktreeRemoved) return false;
       fanOutBusy.current.add(sessionId);
       try {
-        const result = await launchFanOut(
+        const takeBack = fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild);
+        const result = await startFanOut(
           {
             prompt,
             targets,
             cwd: source.cwd,
             runtimeMode: source.runtimeMode,
             sourceId: sessionId,
+            now: Date.now(),
           },
           {
             git: gitRepositoryOnThisComputer,
             branchName: temporaryWorktreeBranchName,
+            // The project's setup waits until two worktrees exist and the compare is saved: a setup that had already
+            // started would leave a worktree that could not be given back.
             createWorktree: async (cwd, branch) => {
-              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false);
-              return { path: tree.path, branch: tree.branch ?? branch };
+              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false, {
+                runSetup: false,
+              });
+              return { path: tree.path, branch: tree.branch ?? branch, head: tree.head };
             },
-            release: (paths) =>
-              releaseFanOutWorktrees(
-                paths,
-                fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
-              ),
+            allowedRoots: defaultWorktreeRoots,
+            release: (worktrees) => releaseFanOutWorktrees(worktrees, takeBack),
+            save: putCompare,
           },
         );
-        if (!result.ok) return fanOutRefusalLine(result.code);
-        if (!putCompare(result.record)) return false;
+        if (!result.ok) return result.message;
         const known = new Set(sessionsRef.current.map((session) => session.id));
         const added = result.sessions.filter((session) => !known.has(session.id));
         if (added.length === 0) return false;
         sessionsRef.current = [...sessionsRef.current, ...added];
         setSessions(sessionsRef.current);
-        for (const session of added) onSubmit(session.id, result.record.prompt);
+        // The project's setup starts now that the compare is saved; the chats start with the whole prompt, while the
+        // saved record keeps a capped copy.
+        for (const child of result.record.children) {
+          if (child.worktree.kind === "assigned") void startFanOutSetup(source.cwd, child.worktree.path);
+        }
+        for (const session of added) onSubmit(session.id, prompt);
         return true;
       } finally {
         fanOutBusy.current.delete(sessionId);
@@ -16628,9 +16641,7 @@ function Workspace({
     return {
       rows: fanOutCompareRows(record, sessionsRef.current),
       notStarted: fanOutNotStartedLines(record),
-      onPick: (childId: string) => {
-        pickFanOutInStore(record.id, childId);
-      },
+      onPick: (childId: string) => pickFanOutInStore(record.id, childId),
       onDiscard: (childId: string) => {
         const source = sessionsRef.current.find((item) => item.id === sessionId);
         if (!source) return;

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FAN_OUT_MAX,
   assignFanOutWorktrees,
+  trustedWorktreePath,
   planFanOut,
   replaceFanOutChildren,
   worktreeNote,
@@ -286,6 +287,44 @@ describe("assignFanOutWorktrees", () => {
       { kind: "assigned", path: `${POOL}/second`, branch: "mc/two" },
       { kind: "stay", reason: "no-free-worktree" },
     ]);
+  });
+
+  it("skips the allowed folder itself and a folder that holds the project folder", () => {
+    const record = plan({ targets: targets(3), ids: ids("c", "a", "b", "d") });
+    const children = assignFanOutWorktrees(record.children, {
+      projectRoot: `${POOL}/deep/project`,
+      allowedRoots: [POOL],
+      git: true,
+      offers: [
+        offer(POOL, "mc/folder"),
+        offer(`${POOL}/deep`, "mc/holder"),
+        offer(`${POOL}/deep/project`, "mc/project"),
+        offer(`${POOL}/fine`, "mc/fine"),
+      ],
+    });
+    expect(children.map((child) => child.worktree)).toEqual([
+      { kind: "assigned", path: `${POOL}/fine`, branch: "mc/fine" },
+      { kind: "stay", reason: "no-free-worktree" },
+      { kind: "stay", reason: "no-free-worktree" },
+    ]);
+    expect(trustedWorktreePath(`${POOL}/fine`, ROOT, [POOL])).toBe(true);
+    expect(trustedWorktreePath(POOL, ROOT, [POOL])).toBe(false);
+    expect(trustedWorktreePath(`${POOL}/fine`, `${POOL}/fine/inside`, [POOL])).toBe(false);
+    expect(trustedWorktreePath(`${POOL}/fine`, ROOT, [])).toBe(false);
+  });
+
+  it("keeps the commit a worktree was made at, and drops one that is not a commit id", () => {
+    const record = plan();
+    const children = assignFanOutWorktrees(record.children, {
+      ...base,
+      git: true,
+      offers: [
+        { path: `${POOL}/one`, branch: "mc/one", head: "0123abc" },
+        { path: `${POOL}/two`, branch: "mc/two", head: "not a commit" },
+      ],
+    });
+    expect(children[0].worktree).toEqual({ kind: "assigned", path: `${POOL}/one`, branch: "mc/one", head: "0123abc" });
+    expect(children[1].worktree).toEqual({ kind: "assigned", path: `${POOL}/two`, branch: "mc/two" });
   });
 
   it("accepts a Windows worktree under an allowed root and ignores a late offer for a child that already has one", () => {

@@ -100,21 +100,35 @@ export function fanOutChildSpend(blocks: readonly FanOutExcerptBlock[] | undefin
   return `Spent ${formatUsd(spent)}${note}`;
 }
 
-/** One line for each model that was asked for and did not start. */
+/**
+ * One line for each model that was asked for and did not start, and one for worktrees made for the compare that
+ * could not be given back, so a worktree left on disk is never a surprise.
+ */
 export function fanOutNotStartedLines(record: CompareRecord): string[] {
-  return (record.notStarted ?? []).map(
+  const lines = (record.notStarted ?? []).map(
     (target) =>
       `${HARNESS_TITLE[target.provider]}: ${target.model} did not start. No own worktree could be made for it.`,
   );
+  const left = record.leftBehind ?? 0;
+  if (left > 0) {
+    lines.push(
+      left === 1
+        ? "One worktree made for this compare could not be removed and was left in place. Remove it in Settings, under Worktrees."
+        : `${left} worktrees made for this compare could not be removed and were left in place. Remove them in Settings, under Worktrees.`,
+    );
+  }
+  return lines;
 }
 
 function cleanupLine(state: FanOutCleanup | undefined, discarded: boolean): string | null {
   if (!discarded) return null;
   if (state === "removed") return "Its worktree was removed.";
-  if (state === "kept") return "Clean-up kept this worktree.";
+  if (state === "kept") {
+    return "Its worktree has changes or commits of its own, so it was kept. Remove it in Settings, under Worktrees, when you are done with it.";
+  }
   if (state === "none") return "This chat had no worktree to remove.";
   if (state === "blocked") return "That worktree was not removed. Its path is outside the worktree folder.";
-  return "Clean-up has not finished.";
+  return "Clean-up has not finished. Press Discard to try again.";
 }
 
 function rowLabel(child: FanOutChild, session: FanOutCompareSession | undefined): string {
