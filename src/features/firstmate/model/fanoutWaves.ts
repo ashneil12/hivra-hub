@@ -175,7 +175,8 @@ function readContract(value: unknown, known: (name: unknown) => string): Contrac
 }
 
 /** The part of a delegation row the hold reads. */
-export type RowView = Pick<Delegation, "state"> & Partial<Pick<Delegation, "error" | "status" | "gateVerdict">>;
+export type RowView = Pick<Delegation, "state"> &
+  Partial<Pick<Delegation, "error" | "status" | "gateVerdict" | "version" | "updatedAt">>;
 
 /** What the check of a finished provider found on disk (fanoutChecks.ts). */
 export type Verification = { ok: boolean; problems: string[] };
@@ -186,8 +187,8 @@ export type DependencyLookup = {
   row(session: string): RowView | undefined;
   /** A task that has not started: it waits in the worker queue. */
   queued(session: string): boolean;
-  /** The check of what a finished provider made, once it ran. */
-  verified(session: string): Verification | undefined;
+  /** The check of what a finished provider made, once it ran for this version of its row. */
+  verified(session: string, row: RowView): Verification | undefined;
 };
 
 /** Why a task waits for what it needs: still on its way, or held for the first mate to decide. */
@@ -208,13 +209,11 @@ function oneLine(value: string, max = 160): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup): Outcome {
-  const session = link.tasks[name].session;
-  const row = lookup.row(session);
-  if (!row) {
-    if (lookup.queued(session)) return { state: "waiting", detail: `${name} has not started yet` };
-    return { state: "failed", say: `can't find ${name}, so nothing is known about it (it may have been stopped)` };
-  }
+/**
+ * What a provider's row says on its own, before anything on disk is looked at: still on its way, failed, or finished
+ * and passed. Undefined means the row is done and its declared checks passed, so only what it made is left to check.
+ */
+function rowOutcome(link: FanoutLink, name: string, row: RowView): Outcome | undefined {
   if (row.state === "running" || row.state === "question") return { state: "waiting", detail: `${name} is still working` };
   if (row.state === "cancelled") return { state: "failed", say: `${name} was stopped` };
   if (row.state === "failed") return { state: "failed", say: `${name} failed: ${oneLine(row.error || "it did not finish")}` };
@@ -231,8 +230,25 @@ function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup): Ou
       say: `${name} finished, but its declared ${declared.length === 1 ? "check" : "checks"} (${declared.join(", ")}) did not run or have not passed, and a check that did not run is not a pass`,
     };
   }
+  return undefined;
+}
+
+/** Whether a provider's row is done and passed, so what it made on disk is the next thing to check (fanoutChecks.ts). */
+export function awaitsVerification(link: FanoutLink, name: string, row: RowView | undefined): boolean {
+  return row !== undefined && rowOutcome(link, name, row) === undefined;
+}
+
+function outcomeOf(link: FanoutLink, name: string, lookup: DependencyLookup): Outcome {
+  const session = link.tasks[name].session;
+  const row = lookup.row(session);
+  if (!row) {
+    if (lookup.queued(session)) return { state: "waiting", detail: `${name} has not started yet` };
+    return { state: "failed", say: `can't find ${name}, so nothing is known about it (it may have been stopped)` };
+  }
+  const early = rowOutcome(link, name, row);
+  if (early) return early;
   // A provider in `after` always provides something (a requirement names a provide), so there is always something to look for.
-  const verified = lookup.verified(session);
+  const verified = lookup.verified(session, row);
   if (!verified) return { state: "waiting", detail: `checking what ${name} provided` };
   if (!verified.ok) return { state: "failed", say: `${name} is done but ${listed(verified.problems.map((problem) => oneLine(problem, 120)))}` };
   return { state: "delivered" };
