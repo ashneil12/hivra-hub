@@ -1973,7 +1973,7 @@ fn note_import(dest: &Path) -> ImportRequest {
     }
 }
 
-/// Every file under `dir` (empty when there is no such folder), by name relative to it.
+/// Every file under `dir` (empty when there is no such folder), by name relative to it, with `/` on every platform.
 fn files_under(dir: &Path) -> Vec<String> {
     fn walk(base: &Path, dir: &Path, out: &mut Vec<String>) {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -1988,7 +1988,7 @@ fn files_under(dir: &Path) -> Vec<String> {
                     path.strip_prefix(base)
                         .unwrap()
                         .to_string_lossy()
-                        .into_owned(),
+                        .replace('\\', "/"),
                 );
             }
         }
@@ -2267,4 +2267,237 @@ fn a_listed_picture_that_hashes_as_listed_is_copied_and_never_replaces_one_alrea
     fs::write(&picture, "mine").unwrap();
     assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
     assert_eq!(fs::read_to_string(&picture).unwrap(), "mine");
+}
+
+/// A chat file as another machine, or someone writing one by hand, could make it: every place a block can name a
+/// file on disk, with paths that mean something on the machine that wrote them.
+fn crafted_chat() -> Value {
+    json!({
+        "title": "Crafted",
+        "cwd": "/tmp",
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"},
+        "blocks": [
+            {"id": "u1", "role": "user", "text": "look", "attachments": [
+                {"id": "a1", "name": "id_rsa", "mimeType": "application/octet-stream", "kind": "file", "size": 1679,
+                 "path": "/Users/someone/.ssh/id_rsa"},
+                {"id": "a2", "name": "shot.png", "mimeType": "image/png", "kind": "image", "size": 10,
+                 "path": "/Users/someone/Desktop/shot.png", "copyFromPath": true}
+            ]},
+            {"id": "i1", "role": "image", "text": "",
+             "image": {"path": "/Users/someone/.ssh/leak.png", "name": "generated-image", "mimeType": "image/png",
+                       "size": 10, "alt": "a cat"}},
+            {"id": "t1", "role": "tool", "text": "", "tool": {"title": "Read", "preview": {"kind": "read", "path": "/Users/someone/notes.md"}}},
+            {"id": "a3", "role": "assistant", "text": "done", "btwThreads": [
+                {"id": "th", "sourceEndBlockId": "a3", "createdAt": 1, "updatedAt": 2, "status": "ready", "messages": [
+                    {"id": "m1", "role": "assistant", "text": "x", "createdAt": 1, "blocks": [
+                        {"id": "bi", "role": "image", "text": "",
+                         "image": {"path": "/etc/hosts.png", "name": "side", "mimeType": "image/png", "size": 1}},
+                        {"id": "bu", "role": "user", "text": "", "attachments": [
+                            {"id": "z", "name": "passwd", "mimeType": "text/plain", "kind": "file", "size": 1, "path": "/etc/passwd"}
+                        ]}
+                    ]}
+                ]}
+            ]}
+        ]
+    })
+}
+
+const FOREIGN_PATHS: [&str; 6] = [
+    "/Users/someone/.ssh/id_rsa",
+    "/Users/someone/Desktop/shot.png",
+    "/Users/someone/.ssh/leak.png",
+    "/etc/hosts.png",
+    "/etc/passwd",
+    "copyFromPath",
+];
+
+#[test]
+fn an_imported_chat_keeps_no_file_path_from_the_file() {
+    let source_dir = TestDir::new("paths-source");
+    let target_dir = TestDir::new("paths-target");
+    let out = TestDir::new("paths-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    let conn = store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "plain",
+        "Plain",
+        "claude",
+        json!([block("p", "user", "hi")]),
+        1_000,
+    );
+    drop(conn);
+    drop(store);
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+    // The export is crafted: its chat file names files the importing Mac has, whatever machine wrote it.
+    put_in_export(
+        &dest,
+        "workspace/sessions/crafted.json",
+        crafted_chat().to_string().as_bytes(),
+    );
+
+    let target = env_for(&target_dir.0);
+    let target_store = open_store(&target);
+    let conn = target_store.lock_conn().unwrap();
+    let report = import_held(
+        &target,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["crafted".into(), "plain".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_added, 2);
+
+    let stored = session_store::get_session(&conn, "crafted")
+        .unwrap()
+        .unwrap();
+    let text = stored.blocks.to_string();
+    for foreign in FOREIGN_PATHS {
+        assert!(
+            !text.contains(foreign),
+            "{foreign} survived the import: {text}"
+        );
+    }
+    let blocks = stored.blocks.as_array().unwrap();
+    // Every block is still there, in order.
+    let ids: Vec<&str> = blocks.iter().map(|b| b["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["u1", "i1", "t1", "a3"]);
+    // An image block keeps what it says about the picture and says its file is not here: an empty path.
+    assert_eq!(
+        blocks[1]["image"],
+        json!({"path": "", "name": "generated-image", "mimeType": "image/png", "size": 10, "alt": "a cat"})
+    );
+    // An attachment keeps its name and kind, and no path.
+    assert_eq!(
+        blocks[0]["attachments"],
+        json!([
+            {"id": "a1", "name": "id_rsa", "mimeType": "application/octet-stream", "kind": "file", "size": 1679},
+            {"id": "a2", "name": "shot.png", "mimeType": "image/png", "kind": "image", "size": 10}
+        ])
+    );
+    // A side thread's blocks are held to the same rule.
+    let side = &blocks[3]["btwThreads"][0]["messages"][0]["blocks"];
+    assert_eq!(side[0]["image"]["path"], "");
+    assert_eq!(side[0]["image"]["name"], "side");
+    assert_eq!(side[1]["attachments"][0].get("path"), None);
+    assert_eq!(side[1]["attachments"][0]["name"], "passwd");
+    // Nothing else about the chat is touched: a tool row's own path is not a file this import reads.
+    assert_eq!(
+        blocks[2]["tool"]["preview"]["path"],
+        "/Users/someone/notes.md"
+    );
+    assert_eq!(blocks[3]["text"], "done");
+    // The chat that named no file comes back as it was, and the import says what it left out.
+    let plain = session_store::get_session(&conn, "plain").unwrap().unwrap();
+    assert_eq!(plain.blocks, json!([block("p", "user", "hi")]));
+    assert!(
+        report.notes.iter().any(|n| n.contains("5 file paths")),
+        "{:?}",
+        report.notes
+    );
+
+    // Looking at the same file again finds the chat already here: paths are not what makes two chats differ.
+    let again = inspect(&target, &dest.to_string_lossy()).unwrap();
+    let status = |id: &str| {
+        again
+            .workspace
+            .as_ref()
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|session| session.id == id)
+            .unwrap()
+            .status
+    };
+    assert_eq!(status("crafted"), Status::Same);
+    assert_eq!(status("plain"), Status::Same);
+    // The Mac that made the export, with its paths in place, sees the same.
+    let from_source = inspect(&source, &dest.to_string_lossy()).unwrap();
+    assert_eq!(
+        from_source
+            .workspace
+            .unwrap()
+            .sessions
+            .iter()
+            .find(|s| s.id == "plain")
+            .unwrap()
+            .status,
+        Status::Same
+    );
+}
+
+#[test]
+fn an_imported_mono_transcript_index_holds_no_file_path_either() {
+    let target_dir = TestDir::new("paths-mono");
+    let target = env_for(&target_dir.0);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let mut file = crafted_chat();
+    file["monoTranscript"] = json!(true);
+    insert_session(&target, &conn, "mono-chat", "Mono", &file).unwrap();
+    crate::mono_transcript::migrate_transcript(&conn, "mono-chat").unwrap();
+
+    let indexed: Vec<String> = conn
+        .prepare("SELECT block_json FROM mono_blocks WHERE session_id = 'mono-chat' ORDER BY seq")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(indexed.len(), 4, "the transcript was indexed");
+    for row in &indexed {
+        for foreign in FOREIGN_PATHS {
+            assert!(!row.contains(foreign), "{foreign} in the index: {row}");
+        }
+    }
+    let paths = crate::mono_transcript::generated_image_paths(&conn, "mono-chat").unwrap();
+    assert!(paths.iter().all(String::is_empty), "{paths:?}");
+}
+
+#[test]
+fn odd_shapes_in_an_imported_chat_are_dropped_not_kept_and_do_not_fail_the_import() {
+    let target_dir = TestDir::new("paths-odd");
+    let target = env_for(&target_dir.0);
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let file = json!({
+        "title": "Odd",
+        "cwd": "/tmp",
+        "engine": {"harness": "claude", "model": "m", "runtimeMode": "auto"},
+        "blocks": [
+            {"id": "n", "role": "image", "text": "", "image": {"path": 7, "name": "n", "mimeType": "image/png", "size": 1}},
+            {"id": "r", "role": "image", "text": "", "image": {"path": "../../.ssh/id_rsa", "name": "r", "mimeType": "image/png", "size": 1}},
+            {"id": "a", "role": "user", "text": "", "attachments": null},
+            {"id": "b", "role": "user", "text": "", "attachments": ["not an object", {"id": "c", "name": "c", "path": 5}]},
+            {"id": "e", "role": "image", "text": "", "image": null},
+            {"id": "w", "role": "assistant", "text": "", "btwThreads": [{"id": "t", "pendingBlocks": [
+                {"id": "p", "role": "user", "text": "", "attachments": [{"id": "d", "name": "d", "path": "/etc/shadow"}]}
+            ]}]}
+        ]
+    });
+    insert_session(&target, &conn, "odd", "Odd", &file).unwrap();
+    let stored = session_store::get_session(&conn, "odd").unwrap().unwrap();
+    let text = stored.blocks.to_string();
+    for foreign in ["../../.ssh/id_rsa", "/etc/shadow"] {
+        assert!(!text.contains(foreign), "{foreign}: {text}");
+    }
+    let blocks = stored.blocks.as_array().unwrap();
+    assert_eq!(blocks[0]["image"]["path"], "");
+    assert_eq!(blocks[1]["image"]["path"], "");
+    assert_eq!(blocks[3]["attachments"][1].get("path"), None);
+    assert_eq!(
+        blocks[5]["btwThreads"][0]["pendingBlocks"][0]["attachments"][0].get("path"),
+        None
+    );
 }

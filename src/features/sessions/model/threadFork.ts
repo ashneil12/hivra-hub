@@ -184,7 +184,8 @@ function copyBlocks(
     delete block.providerTurnId;
     delete block.forkPoint;
     if (block.approval && !block.approval.decided) delete block.approval;
-    if (images && block.role === "image" && typeof block.image?.path === "string") {
+    // An empty path means the picture's file is not on this Mac (an imported chat): there is nothing to copy.
+    if (images && block.role === "image" && typeof block.image?.path === "string" && block.image.path) {
       const file = images.get(block.image.path);
       if (file === undefined) return null;
       if (file === null) {
