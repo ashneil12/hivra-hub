@@ -383,18 +383,23 @@ it.each([
   },
 );
 
-it("passes the current session context reading to the Mono composer", () => {
+it("passes the current session context reading to the Mono composer, and draws no second row", () => {
   const pane = props();
   pane.session.harness = "claude";
   pane.session.context = { used: 275765, window: 1048576 };
   act(() => root.render(createElement(SessionPane, pane)));
   const last = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
-  expect(last[0]).toMatchObject({ showContext: false, context: { used: 275765, window: 1048576 }, contextEmpty: false });
-  const meter = container.querySelector("[data-open-thread-context]");
-  expect(meter?.textContent).toContain("Context");
-  expect(container.querySelector(".agent-transcript")?.contains(meter ?? null)).toBe(false);
+  expect(last[0]).toMatchObject({ showContext: true, context: { used: 275765, window: 1048576 }, contextEmpty: false });
+  // The composer holds the one meter, and it sits outside the scrolling transcript.
+  const dock = container.querySelector("[data-session-composer]");
+  expect(dock).toBeTruthy();
+  expect(container.querySelector(".agent-transcript")?.contains(dock ?? null)).toBe(false);
+  expect(container.querySelector("[data-open-thread-context]")).toBeNull();
   pane.session = { ...pane.session, context: { used: 120000, window: 1048576 } };
   act(() => root.render(createElement(SessionPane, pane)));
   const updated = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
-  expect(updated[0]).toMatchObject({ context: { used: 120000, window: 1048576 } });
+  expect(updated[0]).toMatchObject({
+    showContext: true,
+    context: { used: 120000, window: 1048576 },
+  });
 });

@@ -2,15 +2,18 @@ import { expect, test } from "@playwright/test";
 
 const pageUrl = "/tests/browser/wp127-usage.html";
 
-test("keeps the context meter in view while the thread scrolls", async ({ page }) => {
+test("keeps the open chat's one context ring in view while the thread scrolls", async ({ page }) => {
   await page.goto(pageUrl);
-  const scroller = page.locator("[data-thread-scroll]");
-  const meter = page.locator("[data-open-thread-context]");
+  const pane = page.locator("[data-session-drop]");
+  const scroller = pane.locator(".agent-transcript");
+  const meter = pane.getByRole("img", { name: /26% context used/ });
 
+  await expect(scroller).toBeVisible();
+  // One ring, not a second "Context" row above the composer.
+  await expect(pane.getByRole("img", { name: /context used/ })).toHaveCount(1);
   await expect(meter).toBeVisible();
-  await expect(meter).toContainText("Context");
-  await expect(meter.getByRole("img")).toHaveAttribute("aria-label", /26% context used/);
-  await expect(scroller.locator("[data-open-thread-context]")).toHaveCount(0);
+  expect(await meter.evaluate((element) => element.closest(".agent-transcript") === null)).toBe(true);
+  await expect(pane.getByText("Context", { exact: true })).toHaveCount(0);
 
   const before = await meter.boundingBox();
   await scroller.evaluate((element) => {
@@ -19,7 +22,6 @@ test("keeps the context meter in view while the thread scrolls", async ({ page }
   await expect(meter).toBeVisible();
   const after = await meter.boundingBox();
   expect(before && after && Math.abs(before.y - after.y) < 1).toBe(true);
-  await expect(scroller.locator("[data-open-thread-context]")).toHaveCount(0);
 });
 
 test("filters usage by provider and model, and labels a dollar figure", async ({ page }) => {

@@ -88,8 +88,6 @@ import {
 import { MonoComposer } from "../../monos/ui/MonoComposer";
 import type { LaunchedSessionView } from "../../monos/model/monoSpawnedSessions";
 import { UsageChips } from "../../../app/shell/UsageFooter";
-import { OpenThreadContext } from "../../usage/ui/OpenThreadContext";
-import { contextCeilingFor } from "../model/contextCeiling";
 import type { RateLimitProvider } from "../../providers/model/rateLimits";
 import { MonoUsageLimitNotice } from "../../monos/ui/MonoUsageLimitNotice";
 import { QuestionForm } from "./QuestionForm";
@@ -731,7 +729,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
       executionCwd={workCwd}
       sessionId={session.id}
       compactSupported={canCompactHarnessContext(session.harness)}
-      hideContextMeter
       recents={recents}
       hideProjectPicker={
         !!session.inboxAsk ||
@@ -1272,23 +1269,6 @@ const LocalSessionPane = memo(function LocalSessionPane({
               </>
             )}
           </div>
-          {/* WP-127: outside the transcript scroller, so scrolling does not hide it. */}
-          <OpenThreadContext
-            usage={session.context}
-            empty={session.blocks.length === 0}
-            onCompact={
-              canCompactHarnessContext(session.harness) && !session.worktreeRemoved
-                ? () => {
-                    onCompactContext(session.id);
-                  }
-                : undefined
-            }
-            compactDisabled={!!session.busy}
-            ceiling={contextCeilingFor({
-              harness: session.harness,
-              model: session.model,
-            })}
-          />
           {dockComposer ? (
             <div
               ref={composerDockMotion.dockedRef}
@@ -1358,7 +1338,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     key={session.id}
                     sessionId={session.id}
                     name={agent.name}
-                    showContext={false}
+                    showContext
                     context={session.context}
                     contextEmpty={session.blocks.length === 0}
                     enabled={visible}
