@@ -16,6 +16,8 @@ use crate::session_store::{now_millis, SessionStore};
 
 /// How long a checkpoint is kept after its last write (FANOUT_CHECKPOINT_RETENTION_MS in the model).
 pub const RETENTION_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+/// How long a window holds a plan without renewing it. A window that dies mid-send loses the lease after this.
+pub const LEASE_MS: i64 = 90_000;
 const ID_MAX: usize = 100;
 const OWNER_MAX: usize = 200;
 /// A plan of eight tasks, each with a brief of up to 60 000 characters, and its contract, fits well inside this.
@@ -30,8 +32,119 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             updated_at INTEGER NOT NULL,
             body TEXT NOT NULL,
             PRIMARY KEY (owner, id)
+         );
+         CREATE TABLE IF NOT EXISTS fanout_leases (
+            owner TEXT NOT NULL,
+            id TEXT NOT NULL,
+            holder TEXT NOT NULL,
+            until INTEGER NOT NULL,
+            PRIMARY KEY (owner, id)
          );",
     )
+}
+
+/// Takes the plan's lease for `holder` (one window) when it is free, its holder is `holder`, or it has run out.
+/// One statement, so two windows on the same file cannot both win. `Ok(false)` when another window holds it.
+pub fn acquire_lease(
+    conn: &Connection,
+    owner: &str,
+    id: &str,
+    holder: &str,
+    now: i64,
+    ttl: i64,
+) -> Result<bool, String> {
+    if !valid_owner(owner) || !valid_id(id) || holder.is_empty() {
+        return Err("A fan-out lease needs an owner, a plan id and a holder".into());
+    }
+    let changed = conn
+        .execute(
+            "INSERT INTO fanout_leases (owner, id, holder, until) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(owner, id) DO UPDATE SET
+                holder = excluded.holder,
+                until = excluded.until
+             WHERE fanout_leases.holder = excluded.holder OR fanout_leases.until < ?5",
+            params![owner, id, holder, now + ttl, now],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(changed == 1)
+}
+
+/// Extends a lease the holder still has. `Ok(false)` when it was taken over or released meanwhile.
+pub fn renew_lease(
+    conn: &Connection,
+    owner: &str,
+    id: &str,
+    holder: &str,
+    now: i64,
+    ttl: i64,
+) -> Result<bool, String> {
+    let changed = conn
+        .execute(
+            "UPDATE fanout_leases SET until = ?1 WHERE owner = ?2 AND id = ?3 AND holder = ?4",
+            params![now + ttl, owner, id, holder],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(changed == 1)
+}
+
+/// Gives the lease up, if this holder still has it.
+pub fn release_lease(
+    conn: &Connection,
+    owner: &str,
+    id: &str,
+    holder: &str,
+) -> Result<bool, String> {
+    let changed = conn
+        .execute(
+            "DELETE FROM fanout_leases WHERE owner = ?1 AND id = ?2 AND holder = ?3",
+            params![owner, id, holder],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(changed == 1)
+}
+
+#[tauri::command(async)]
+pub fn fanout_lease_acquire(
+    store: State<'_, SessionStore>,
+    owner: String,
+    id: String,
+    holder: String,
+) -> Result<bool, String> {
+    acquire_lease(
+        &*store.lock_conn()?,
+        &owner,
+        &id,
+        &holder,
+        now_millis(),
+        LEASE_MS,
+    )
+}
+
+#[tauri::command(async)]
+pub fn fanout_lease_renew(
+    store: State<'_, SessionStore>,
+    owner: String,
+    id: String,
+    holder: String,
+) -> Result<bool, String> {
+    renew_lease(
+        &*store.lock_conn()?,
+        &owner,
+        &id,
+        &holder,
+        now_millis(),
+        LEASE_MS,
+    )
+}
+
+#[tauri::command(async)]
+pub fn fanout_lease_release(
+    store: State<'_, SessionStore>,
+    owner: String,
+    id: String,
+    holder: String,
+) -> Result<bool, String> {
+    release_lease(&*store.lock_conn()?, &owner, &id, &holder)
 }
 
 fn valid_id(value: &str) -> bool {
@@ -162,6 +275,92 @@ pub fn fanout_checkpoint_remove(
     id: String,
 ) -> Result<bool, String> {
     remove(&*store.lock_conn()?, &owner, &id)
+}
+
+#[cfg(test)]
+mod lease_tests {
+    use super::*;
+
+    const T0: i64 = 1_000_000_000;
+
+    /// Two connections to one SQLite file, as two windows of the app hold them.
+    fn two_windows(name: &str) -> (Connection, Connection, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!(
+            "fanout-lease-{name}-{}-{}.sqlite",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let first = Connection::open(&path).unwrap();
+        ensure_tables(&first).unwrap();
+        let second = Connection::open(&path).unwrap();
+        second
+            .busy_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        (first, second, path)
+    }
+
+    #[test]
+    fn two_windows_on_one_file_cannot_both_hold_the_same_plan() {
+        let (a, b, path) = two_windows("exclusive");
+        assert!(acquire_lease(&a, "chat-1", "plan-1", "window-a", T0, LEASE_MS).unwrap());
+        // The second window is refused while the first holds it.
+        assert!(!acquire_lease(&b, "chat-1", "plan-1", "window-b", T0 + 1, LEASE_MS).unwrap());
+        // A different plan is free.
+        assert!(acquire_lease(&b, "chat-1", "plan-2", "window-b", T0 + 1, LEASE_MS).unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_holder_renews_and_a_stranger_cannot_renew_or_release() {
+        let (a, b, path) = two_windows("renew");
+        assert!(acquire_lease(&a, "chat-1", "plan-1", "window-a", T0, LEASE_MS).unwrap());
+        assert!(renew_lease(&a, "chat-1", "plan-1", "window-a", T0 + 1000, LEASE_MS).unwrap());
+        assert!(!renew_lease(&b, "chat-1", "plan-1", "window-b", T0 + 1000, LEASE_MS).unwrap());
+        assert!(!release_lease(&b, "chat-1", "plan-1", "window-b").unwrap());
+        // Still held by window-a after the stranger's attempts.
+        assert!(!acquire_lease(&b, "chat-1", "plan-1", "window-b", T0 + 1001, LEASE_MS).unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_released_lease_is_free_and_an_expired_one_is_taken_over() {
+        let (a, b, path) = two_windows("takeover");
+        assert!(acquire_lease(&a, "chat-1", "plan-1", "window-a", T0, LEASE_MS).unwrap());
+        // Window a is gone; once its lease has run out, window b takes it over.
+        assert!(acquire_lease(
+            &b,
+            "chat-1",
+            "plan-1",
+            "window-b",
+            T0 + LEASE_MS + 1,
+            LEASE_MS
+        )
+        .unwrap());
+        // A holder that comes back after its lease was taken cannot renew it.
+        assert!(!renew_lease(
+            &a,
+            "chat-1",
+            "plan-1",
+            "window-a",
+            T0 + LEASE_MS + 2,
+            LEASE_MS
+        )
+        .unwrap());
+        assert!(release_lease(&b, "chat-1", "plan-1", "window-b").unwrap());
+        assert!(acquire_lease(
+            &a,
+            "chat-1",
+            "plan-1",
+            "window-a",
+            T0 + LEASE_MS + 3,
+            LEASE_MS
+        )
+        .unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]

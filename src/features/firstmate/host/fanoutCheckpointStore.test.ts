@@ -6,7 +6,7 @@ const invoke = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 
 import { createCheckpoint } from "../model/fanoutCheckpoint";
-import { tauriFanoutCheckpoints } from "./fanoutCheckpointStore";
+import { tauriFanoutCheckpoints, windowHolder } from "./fanoutCheckpointStore";
 
 const cp = createCheckpoint({
   id: "plan-1",
@@ -46,5 +46,22 @@ describe("tauriFanoutCheckpoints", () => {
     invoke.mockResolvedValueOnce(true);
     await expect(tauriFanoutCheckpoints.remove("chat-1", "plan-1")).resolves.toBe(true);
     expect(invoke).toHaveBeenCalledWith("fanout_checkpoint_remove", { owner: "chat-1", id: "plan-1" });
+  });
+
+  it("takes, renews and releases a plan's lease for this window", async () => {
+    invoke.mockResolvedValueOnce(true);
+    await expect(tauriFanoutCheckpoints.acquire("chat-1", "plan-1", "window-x")).resolves.toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("fanout_lease_acquire", { owner: "chat-1", id: "plan-1", holder: "window-x" });
+    invoke.mockResolvedValueOnce(false);
+    await expect(tauriFanoutCheckpoints.renew("chat-1", "plan-1", "window-x")).resolves.toBe(false);
+    expect(invoke).toHaveBeenLastCalledWith("fanout_lease_renew", { owner: "chat-1", id: "plan-1", holder: "window-x" });
+    invoke.mockResolvedValueOnce(true);
+    await expect(tauriFanoutCheckpoints.release("chat-1", "plan-1", "window-x")).resolves.toBe(true);
+    expect(invoke).toHaveBeenLastCalledWith("fanout_lease_release", { owner: "chat-1", id: "plan-1", holder: "window-x" });
+  });
+
+  it("gives each window its own holder id, the same for the window's life", () => {
+    expect(windowHolder()).toMatch(/^[A-Za-z0-9-]{8,}$/);
+    expect(windowHolder()).toBe(windowHolder());
   });
 });

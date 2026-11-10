@@ -97,7 +97,7 @@ import {
   type ResumePlan,
   type RowLookup,
 } from "../../firstmate/model/fanoutCheckpoint";
-import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
+import { windowHolder, type FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { originalRequestOf } from "../../firstmate/model/originalRequest";
 import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
@@ -1297,27 +1297,66 @@ async function delegate(
 /** WP-172: the plans this app is sending right now, by owner and plan id. A resume of one of them waits its turn. */
 const SENDING_PLANS = new Set<string>();
 
-async function sendingPlan<T>(owner: string, planId: string, run: () => Promise<T>): Promise<T> {
+/** The one plain line a second send or resume of a plan gets, from this window or another. */
+const PLAN_BUSY = "This plan is already being sent, from this window or another. Wait for its answer, then check task_status.";
+
+/** How often a window that is sending a plan renews its lease (the lease itself lasts LEASE_MS in the database). */
+const LEASE_RENEW_MS = 30_000;
+
+/**
+ * WP-172: runs one send or resume of a plan. The plan's lease in the database is taken first, so only one window of
+ * the app sends or resumes a given plan at a time; a second window is refused in plain words. The lease is renewed
+ * while the send runs and given up at the end, and a lease whose window died runs out and can be taken over.
+ */
+async function sendingPlan<T>(
+  owner: string,
+  planId: string,
+  store: FanoutCheckpointStore | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
   const key = `${owner}\n${planId}`;
   if (SENDING_PLANS.has(key))
-    throw new Error("This plan is still sending its tasks. Wait for its answer, then check task_status.");
+    throw new Error(PLAN_BUSY);
   SENDING_PLANS.add(key);
+  const holder = windowHolder();
+  let renew: ReturnType<typeof setInterval> | undefined;
+  let held = false;
   try {
+    if (store) {
+      held = await store.acquire(owner, planId, holder);
+      if (!held) throw new Error(PLAN_BUSY);
+      renew = setInterval(() => void store.renew(owner, planId, holder).catch(() => false), LEASE_RENEW_MS);
+    }
     return await run();
   } finally {
+    if (renew !== undefined) clearInterval(renew);
     SENDING_PLANS.delete(key);
+    if (held && store) await store.release(owner, planId, holder).catch(() => false);
   }
 }
 
-/** A checkpoint writer for one plan: each change is saved as the next revision, and a failed save never fails the plan. */
+/** Said once to the owner when a plan's progress could not be saved: it then cannot be resumed after a crash. */
+const CHECKPOINT_NOTE =
+  "Could not save this plan's progress, so it cannot be resumed if the app stops. Tell Ash in one line.";
+
+/**
+ * A checkpoint writer for one plan: each change is saved as the next revision. A failed save never fails the plan, but
+ * it is remembered, so the owner is told once that the plan cannot be resumed.
+ */
 function planWriter(store: FanoutCheckpointStore | undefined, owner: string, first: FanoutCheckpoint | undefined) {
   let current = first;
+  let failed = false;
   return {
     get: () => current,
+    /** WP-172: the checkpoint note for the result, when a write failed. */
+    note: (): { checkpointNote: string } | Record<string, never> => (failed ? { checkpointNote: CHECKPOINT_NOTE } : {}),
     async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<void> {
       if (!store || !current) return;
       current = change(current);
-      await store.save(owner, current).catch(() => false);
+      await store.save(owner, current).catch(() => {
+        failed = true;
+        return false;
+      });
     },
     /** Once nothing is left to send, the plan is no longer offered for a resume. */
     async finish(): Promise<void> {
@@ -1345,9 +1384,13 @@ async function fanout(
 ) {
   if (input.resume !== undefined) {
     const planId = text(input.resume, "resume", 100);
-    return sendingPlan(source.id, planId, () => resumeFanout(source, planId, input, host, helpers));
+    return sendingPlan(source.id, planId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+      resumeFanout(source, planId, input, host, helpers),
+    );
   }
-  return sendingPlan(source.id, requestId, () => sendFanout(source, requestId, input, host, helpers));
+  return sendingPlan(source.id, requestId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+    sendFanout(source, requestId, input, host, helpers),
+  );
 }
 
 /**
@@ -1420,6 +1463,7 @@ async function resumeFanout(
   return {
     plan: found.id,
     tasks: found.tasks.map((task) => ({ name: task.name, status: outcome.get(task.name) ?? "kept" })),
+    ...writer.note(),
     note: forUser`${describeResume(plan)} Tell Ash in one line what carried on and what waits for his yes (in plain words: never a task id, a task name or a folder path), then end your turn.`,
   };
 }
@@ -1539,6 +1583,7 @@ async function sendFanout(
     waves: planned.waves,
     tasks: ordered,
     ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
+    ...writer.note(),
     note: forUser`${ordered.length - waiting - reviewed - problems} started now${reviewed ? `; ${reviewed} wait${reviewed === 1 ? "s" : ""} for ${reviewed === 1 ? "its" : "their"} fresh-eyes review` : ""}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
   };
 }

@@ -3084,10 +3084,31 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
   const board = { name: "board", brief: "Show the score in src/ui/Board.tsx.", goal: "the board shows the number" };
 
   /** An in-memory checkpoint store with the same compare-and-swap rule as the app's table. */
-  function memCheckpoints() {
+  function memCheckpoints(clock = { now: 0 }) {
     const saved = new Map<string, FanoutCheckpoint>();
+    const leases = new Map<string, { holder: string; until: number }>();
+    const LEASE = 90_000;
     return {
       saved,
+      leases,
+      acquire: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        const held = leases.get(key);
+        if (held && held.holder !== holder && held.until >= clock.now) return false;
+        leases.set(key, { holder, until: clock.now + LEASE });
+        return true;
+      }),
+      renew: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        if (leases.get(key)?.holder !== holder) return false;
+        leases.set(key, { holder, until: clock.now + LEASE });
+        return true;
+      }),
+      release: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        if (leases.get(key)?.holder !== holder) return false;
+        return leases.delete(key);
+      }),
       save: vi.fn(async (owner: string, cp: FanoutCheckpoint) => {
         const key = `${owner}|${cp.id}`;
         if ((saved.get(key)?.revision ?? 0) >= cp.revision) return false;
@@ -3148,9 +3169,22 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
 
   it("does not stop the fan-out when the checkpoint cannot be written", async () => {
     const f = fixture([]);
-    f.api.fanoutCheckpoints = { save: vi.fn(async () => { throw new Error("disk full"); }), list: vi.fn(async () => []), remove: vi.fn(async () => false) };
-    const out = (await handleRaw(f.source, "r2", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host)) as { tasks: { status: string }[] };
+    const lease = memCheckpoints();
+    f.api.fanoutCheckpoints = {
+      ...lease,
+      save: vi.fn(async () => { throw new Error("disk full"); }),
+      list: vi.fn(async () => []),
+      remove: vi.fn(async () => false),
+    };
+    const out = (await handleRaw(f.source, "r2", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host)) as {
+      tasks: { status: string }[];
+      checkpointNote?: string;
+    };
     expect(out.tasks.map((task) => task.status)).toEqual(["running"]);
+    // Told once, in one line, that the plan cannot be resumed; not once per write.
+    expect(out.checkpointNote).toMatch(/could not save/i);
+    expect(out.checkpointNote).not.toMatch(/[\u2013\u2014]/);
+    expect(JSON.stringify(out).match(/could not save/gi)?.length).toBe(1);
   });
 
   it("resumes a crashed plan: the task that started is kept, the one that never did is sent, nothing is sent twice", async () => {
@@ -3255,6 +3289,47 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     expect(status.tasks.find((task) => task.taskId === sibling.id)?.status).toBe("running");
   });
 
+  it("two windows on one plan: only the one holding its lease sends, the other is refused in plain words", async () => {
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r8", seededPlan("mono-exo", "r8", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r8-api" } }));
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r8-api", requestId: "app-mono-exo-r8-api", state: "running" })];
+    const first = fixture(rows);
+    const second = fixture(rows);
+    first.api.fanoutCheckpoints = store;
+    second.api.fanoutCheckpoints = store;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = first.host.start;
+    first.host.start = vi.fn(async (...args: unknown[]) => {
+      await gate;
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    const window1 = handleRaw(first.source, "resume-w1", "tasks.fanout", { resume: "r8" }, first.host);
+    await vi.waitFor(() => expect(store.leases.size).toBe(1));
+    await expect(handleRaw(second.source, "resume-w2", "tasks.fanout", { resume: "r8" }, second.host)).rejects.toThrow(
+      /already being sent/,
+    );
+    expect(second.started).toEqual([]);
+    release();
+    await window1;
+    expect(first.started.map((call) => call[1])).toEqual(["app-mono-exo-r8-docs"]);
+    expect(second.started).toEqual([]);
+    // The lease is given back at the end, so the plan can be looked at again.
+    expect(store.leases.size).toBe(0);
+  });
+
+  it("takes over a plan whose window's lease has run out", async () => {
+    const clock = { now: 1_000_000 };
+    const store = memCheckpoints(clock);
+    store.saved.set("mono-exo|r9", seededPlan("mono-exo", "r9", {}));
+    store.leases.set("mono-exo|r9", { holder: "window-that-died", until: clock.now - 1 });
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = store;
+    await handleRaw(f.source, "resume-9", "tasks.fanout", { resume: "r9" }, f.host);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r9-api", "app-mono-exo-r9-docs"]);
+  });
+
   it("refuses a resume while the same plan is still being sent by this app", async () => {
     const f = fixture([]);
     const store = memCheckpoints();
@@ -3274,7 +3349,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     const sending = handleRaw(f.source, "r6", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host);
     await vi.waitFor(() => expect(store.saved.size).toBe(1));
     await expect(handleRaw(f.source, "resume-6", "tasks.fanout", { resume: "r6" }, f.host)).rejects.toThrow(
-      /still sending/,
+      /already being sent/,
     );
     release();
     await sending;
