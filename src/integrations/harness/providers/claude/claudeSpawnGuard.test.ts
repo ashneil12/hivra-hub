@@ -27,6 +27,7 @@ vi.mock("../../../../features/sessions/model/models", async (orig) => ({
   setHarnessModels: () => undefined,
 }));
 
+const { CREDENTIAL_DENY_RULES } = await import("../../core/credentialGuard");
 const { claudeGuardArgs, setClaudeGuardArgs } = await import("./claudeExtraArgs");
 const { runClaudeTextPrompt, textCallToolArgs } = await import("./claudeText");
 const { discoverClaudeModels } = await import("./claudeCatalog");
@@ -127,6 +128,14 @@ describe("the guard on every Claude process", () => {
       await expect(ask()).rejects.toThrow();
       for (const tool of ["Edit", "Write", "MultiEdit", "NotebookEdit", "Bash"]) {
         expect(lastList(spawned[0].args), tool).toContain(tool);
+      }
+    });
+
+    it("keeps the saved-login rules in that last list when there is no fence to share it with", async () => {
+      setClaudeGuardArgs(undefined);
+      await expect(ask()).rejects.toThrow();
+      for (const rule of CREDENTIAL_DENY_RULES) {
+        expect(lastList(spawned[0].args), rule).toContain(rule);
       }
     });
 

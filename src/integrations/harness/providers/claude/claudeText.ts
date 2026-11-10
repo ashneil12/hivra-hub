@@ -7,6 +7,7 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import { CREDENTIAL_DENY_RULES } from "../../core/credentialGuard";
 import { isAgentToolName } from "../../core/preview";
 import {
   assistantTextBlocks,
@@ -118,10 +119,14 @@ function pickTextModel(requested?: string): string {
   return versioned[0]?.id ?? TEXT_MODEL;
 }
 
-/** `args` with `tools` added to its last `--disallowedTools` list (or a new one), so one deny list never replaces another. */
+/**
+ * `args` with `tools` added to its last `--disallowedTools` list, so one deny list never replaces another. With no list
+ * to add to (the hub has registered no fence) the new one also names the saved-login rules the spawn already carries,
+ * so it holds on its own whether the CLI joins repeated lists or keeps the last.
+ */
 function withDeniedTools(args: readonly string[], tools: readonly string[]): string[] {
   const at = args.lastIndexOf("--disallowedTools");
-  if (at < 0 || at + 1 >= args.length) return [...args, "--disallowedTools", tools.join(",")];
+  if (at < 0 || at + 1 >= args.length) return [...args, "--disallowedTools", [...CREDENTIAL_DENY_RULES, ...tools].join(",")];
   const next = [...args];
   next[at + 1] = [args[at + 1], ...tools].filter(Boolean).join(",");
   return next;
