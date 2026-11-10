@@ -34,9 +34,11 @@ function readScan(scan: PendingRequest["scan"]): PluginInboxCard["findings"] {
 
 function scanLineFor(scan: PendingRequest["scan"], findings: readonly unknown[]): string {
   if (!scan || typeof scan !== "object" || !Array.isArray(scan.findings)) return "";
-  if (findings.length === 0) return "The install check found nothing to flag.";
+  // WP-101 fix round 1, item F(6): the check reads for known tricks only; the card must not promise more than that.
+  const limit = "It is a quick read for known tricks, not a guarantee.";
+  if (findings.length === 0) return `The install check found nothing to flag. ${limit}`;
   const things = findings.length === 1 ? "1 thing" : `${findings.length} things`;
-  return `The install check found ${things} to know about. None of them stops the install.`;
+  return `The install check found ${things} to know about. None of them stops the install. ${limit}`;
 }
 
 export function pluginInboxCards(pending: readonly PendingRequest[]): PluginInboxCard[] {

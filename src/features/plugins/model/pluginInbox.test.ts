@@ -76,7 +76,9 @@ describe("the install check's section", () => {
       { path: "skills/count/scripts/run.py", message: "A script is copied with the plugin; Hivra never runs it." },
       { path: "", message: "Its instructions talk about keys or credentials." },
     ]);
-    expect(card.scanLine).toBe("The install check found 2 things to know about. None of them stops the install.");
+    expect(card.scanLine).toBe(
+      "The install check found 2 things to know about. None of them stops the install. It is a quick read for known tricks, not a guarantee.",
+    );
   });
 
   it("says so plainly when the check found nothing to flag", () => {
@@ -90,7 +92,7 @@ describe("the install check's section", () => {
       }),
     ]);
     expect(card.findings).toEqual([]);
-    expect(card.scanLine).toBe("The install check found nothing to flag.");
+    expect(card.scanLine).toBe("The install check found nothing to flag. It is a quick read for known tricks, not a guarantee.");
   });
 
   it("treats a request saved by an earlier build, with no scan at all, as nothing to show", () => {
