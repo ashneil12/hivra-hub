@@ -229,9 +229,11 @@ let inflight: Promise<void> | null = null;
 
 export function refreshClaudeCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverClaudeModels()
-    .then((models) => {
-      if (models.length > 0) setHarnessModels("claude", models);
+  inflight = discoverClaudeCatalog()
+    .then(({ models, listed }) => {
+      // A list the CLI would not give (the version-filtered built-in one) fills
+      // the picker but is not recorded as live.
+      if (models.length > 0) setHarnessModels("claude", models, { live: listed });
     })
     .catch((error: unknown) => {
       console.debug("[monocode] claude catalog", error);
@@ -245,14 +247,21 @@ export function refreshClaudeCatalog(): Promise<void> {
 export async function discoverClaudeModels(
   workingDirectory?: string,
 ): Promise<AgentModel[]> {
+  return (await discoverClaudeCatalog(workingDirectory)).models;
+}
+
+/** `listed` is true only when the models came from the CLI's own `list_models`. */
+async function discoverClaudeCatalog(
+  workingDirectory?: string,
+): Promise<{ models: AgentModel[]; listed: boolean }> {
   const listed = await discoverViaListModels(workingDirectory).catch(
     (error: unknown) => {
       console.debug("[monocode] claude list_models catalog failed", error);
       return [];
     },
   );
-  if (listed.length > 0) return listed;
-  return discoverViaVersion(workingDirectory);
+  if (listed.length > 0) return { models: listed, listed: true };
+  return { models: await discoverViaVersion(workingDirectory), listed: false };
 }
 
 async function discoverViaListModels(

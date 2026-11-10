@@ -1,13 +1,19 @@
 /**
  * First local calendar day a model id showed up in a live catalog.
  *
- * The built-in fallback list is not recorded, so it has no "new" badge until
- * a live catalog actually returns that id. The day is stored in this
- * browser only. A later refresh never moves the day forward. Two windows
- * re-read and keep the earlier day before writing.
+ * The first live catalog this browser sees for a harness is a baseline: every
+ * model in it was already there, so none is new. A model a later live catalog
+ * adds is new for seven days from that day. A fallback list is never recorded
+ * here (the caller says which kind it holds), so it has no "new" badge until
+ * a live catalog actually returns that id. The day is stored in this browser
+ * only. A later refresh never moves the day forward, and never turns a
+ * baseline model into a new one. Each write reads the latest store first.
  */
 
 export const FIRST_SEEN_KEY = "monocode:model-first-seen";
+
+/** Stored in place of a day for a model that was in the harness's first live catalog. */
+export const BASELINE_DAY = "baseline";
 
 /** Today and the six local days before it. The next day is no longer new. */
 export const NEW_MODEL_DAYS = 7;
@@ -31,7 +37,7 @@ export function isModelNew(
 ): boolean {
   if (!usableKey(harness) || !usableKey(id)) return false;
   const first = readStore()[harness]?.[id];
-  if (!first) return false;
+  if (!first || first === BASELINE_DAY) return false;
   const age = daysBetween(first, today);
   return age != null && age >= 0 && age < NEW_MODEL_DAYS;
 }
@@ -45,22 +51,23 @@ export function recordLiveCatalog(
   const clean = [...new Set(ids.filter(usableKey))];
   if (clean.length === 0) return;
   try {
-    const first = readStore();
-    const updated = apply(first, harness, clean, today);
-    if (updated === first) return;
-    const latest = readStore();
-    writeStore(mergeStores(updated, latest));
+    const current = readStore();
+    const updated = apply(current, harness, clean, today);
+    if (updated === current) return;
+    writeStore(updated);
   } catch {
     return;
   }
 }
 
 function apply(store: Store, harness: string, ids: readonly string[], today: string): Store {
+  // A harness with nothing recorded yet is getting its first live catalog.
+  const baseline = store[harness] === undefined;
   const slot: DayMap = { ...(store[harness] ?? {}) };
   let changed = false;
   for (const id of ids) {
     const prev = slot[id];
-    const next = preferEarlier(prev, today);
+    const next = preferEarlier(prev, baseline ? BASELINE_DAY : today);
     if (next && next !== prev) {
       slot[id] = next;
       changed = true;
@@ -70,32 +77,20 @@ function apply(store: Store, harness: string, ids: readonly string[], today: str
   return { ...store, [harness]: slot };
 }
 
-function mergeStores(left: Store, right: Store): Store {
-  const merged: Store = {};
-  for (const harness of new Set([...Object.keys(left), ...Object.keys(right)])) {
-    if (!usableKey(harness)) continue;
-    const slot: DayMap = {};
-    const ids = new Set([
-      ...Object.keys(left[harness] ?? {}),
-      ...Object.keys(right[harness] ?? {}),
-    ]);
-    for (const id of ids) {
-      if (!usableKey(id)) continue;
-      const day = preferEarlier(left[harness]?.[id], right[harness]?.[id]);
-      if (day) slot[id] = day;
-    }
-    if (Object.keys(slot).length > 0) merged[harness] = slot;
-  }
-  return merged;
-}
-
 function preferEarlier(left: string | undefined, right: string | undefined): string | undefined {
-  const leftOk = left != null && dayNumber(left) != null;
-  const rightOk = right != null && dayNumber(right) != null;
-  if (leftOk && rightOk) return left! <= right! ? left : right;
+  const leftOk = left != null && isStoredDay(left);
+  const rightOk = right != null && isStoredDay(right);
+  if (leftOk && rightOk) {
+    if (left === BASELINE_DAY || right === BASELINE_DAY) return BASELINE_DAY;
+    return left! <= right! ? left : right;
+  }
   if (leftOk) return left;
   if (rightOk) return right;
   return undefined;
+}
+
+function isStoredDay(value: string): boolean {
+  return value === BASELINE_DAY || dayNumber(value) != null;
 }
 
 function daysBetween(from: string, to: string): number | null {
@@ -161,7 +156,7 @@ function parseStore(raw: string): Store {
     }
     const slot: DayMap = {};
     for (const [id, day] of Object.entries(models)) {
-      if (!usableKey(id) || typeof day !== "string" || dayNumber(day) == null) continue;
+      if (!usableKey(id) || typeof day !== "string" || !isStoredDay(day)) continue;
       slot[id] = day;
     }
     if (Object.keys(slot).length > 0) store[harness] = slot;

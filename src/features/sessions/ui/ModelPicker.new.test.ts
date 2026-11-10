@@ -102,7 +102,8 @@ function openPicker() {
 }
 
 describe("new model badge", () => {
-  it("shows new beside a model first seen in the last seven days", () => {
+  it("shows new beside a model a later live catalog added in the last seven days", () => {
+    setHarnessModels("claude", [model("claude:opus-5-5", "Claude Opus 5.5")]);
     setHarnessModels("claude", [
       model("claude:fable-5-2", "Claude Fable 5.2"),
       model("claude:opus-5-5", "Claude Opus 5.5"),
@@ -111,7 +112,7 @@ describe("new model badge", () => {
     const badges = [...container.querySelectorAll("[data-model-new]")].map(
       (node) => node.textContent,
     );
-    expect(badges).toEqual(["new", "new"]);
+    expect(badges).toEqual(["new"]);
     const options = [...container.querySelectorAll('[role="option"]')];
     expect(options.map((option) => option.querySelector("span")?.textContent)).toEqual([
       "Claude Fable 5.2",
@@ -120,6 +121,8 @@ describe("new model badge", () => {
     expect(options[0]?.getAttribute("aria-label")).toBe(
       "Claude Fable 5.2, Claude Code",
     );
+    expect(options[0]?.parentElement?.querySelector("[data-model-new]")).not.toBeNull();
+    expect(options[1]?.parentElement?.querySelector("[data-model-new]")).toBeNull();
     const notes = [...container.querySelectorAll("[data-model-note]")];
     expect(notes.map((node) => node.textContent)).toEqual([
       "Effort levels may behave differently from Fable 5.1.",
@@ -128,10 +131,22 @@ describe("new model badge", () => {
     expect(options[1]?.querySelector("[data-model-note]")).toBeNull();
   });
 
+  it("badges nothing from the first live catalog, only the note shows", () => {
+    setHarnessModels("claude", [
+      model("claude:fable-5-2", "Claude Fable 5.2"),
+      model("claude:opus-5-5", "Claude Opus 5.5"),
+    ]);
+    openPicker();
+    expect(container.querySelector("[data-model-new]")).toBeNull();
+    expect(container.querySelectorAll("[data-model-note]")).toHaveLength(1);
+  });
+
   it("hides the badge once the first-seen day is past seven days", () => {
     recordLiveCatalog("claude", ["claude:opus-5-5"], "2020-01-01");
+    recordLiveCatalog("claude", ["claude:opus-5-5", "claude:sonnet-5"], "2020-01-02");
     setHarnessModels("claude", [
       model("claude:opus-5-5", "Claude Opus 5.5"),
+      model("claude:sonnet-5", "Claude Sonnet 5"),
       model("claude:fable-5-2", "Claude Fable 5.2"),
     ]);
     openPicker();
@@ -142,13 +157,31 @@ describe("new model badge", () => {
       '[role="option"][aria-label="Claude Fable 5.2, Claude Code"]',
     );
     expect(labeled?.parentElement?.querySelector("[data-model-new]")).not.toBeNull();
-    const older = container.querySelector(
-      '[role="option"][aria-label="Claude Opus 5.5, Claude Code"]',
-    );
-    expect(older?.parentElement?.querySelector("[data-model-new]")).toBeNull();
+    for (const label of ["Claude Opus 5.5", "Claude Sonnet 5"]) {
+      const older = container.querySelector(
+        `[role="option"][aria-label="${label}, Claude Code"]`,
+      );
+      expect(older?.parentElement?.querySelector("[data-model-new]")).toBeNull();
+    }
   });
 
   it("does not badge the built-in list before a live catalog arrives", () => {
+    openPicker();
+    expect(container.querySelector("[data-model-new]")).toBeNull();
+  });
+
+  it("does not badge a built-in list that was put in place as a fallback", () => {
+    setHarnessModels("claude", [model("claude:opus-5-5", "Claude Opus 5.5")], {
+      live: false,
+    });
+    setHarnessModels(
+      "claude",
+      [
+        model("claude:fable-5-2", "Claude Fable 5.2"),
+        model("claude:opus-5-5", "Claude Opus 5.5"),
+      ],
+      { live: false },
+    );
     openPicker();
     expect(container.querySelector("[data-model-new]")).toBeNull();
   });
