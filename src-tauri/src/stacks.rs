@@ -6363,9 +6363,12 @@ mod tests {
                 let bin = temp.root.join("bin");
                 std::fs::create_dir_all(&bin).unwrap();
                 let node = bin.join("node");
+                // Asked for its version it answers; started as the stand-in it stays up a moment, as the real one
+                // does. One that exits at once has gone by the time its start time is read, which macOS cannot do
+                // for a process that has ended (Linux still can), so the start was refused on a quick runner.
                 std::fs::write(
                     &node,
-                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; fi\nexit 0\n",
+                    "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo v24.0.0; exit 0; fi\nsleep 2\nexit 0\n",
                 )
                 .unwrap();
                 std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
