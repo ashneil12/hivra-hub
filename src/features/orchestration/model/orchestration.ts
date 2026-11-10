@@ -364,7 +364,24 @@ export function workerTurnPrompt(
 
 /** Where a worker writes its handoff, relative to its own checkout. */
 export const HANDOFF_DIR = ".hivra/handoff";
-export const handoffRelativePath = (taskId: string) => `${HANDOFF_DIR}/${taskId}.md`;
+/**
+ * A handoff is named after its task id, so the id must be one plain path segment: no separator, drive letter, `..` or
+ * control character. The same rule as `goal_graph::handoff::safe_segment`, which reads the file back. A task read
+ * from disk with any other id gets no handoff path rather than one that leads out of the checkout.
+ */
+const plainSegment = (id: string) =>
+  id.length > 0 &&
+  id.length <= 128 &&
+  id !== "." &&
+  id !== ".." &&
+  ![...id].some((char) => "\\/:".includes(char) || /\p{Cc}/u.test(char));
+export const handoffRelativePath = (taskId: string) => {
+  if (!plainSegment(taskId))
+    throw new Error(
+      `A handoff file is named after its task id, and ${JSON.stringify(taskId)} is not a task id.`,
+    );
+  return `${HANDOFF_DIR}/${taskId}.md`;
+};
 
 /** Task text a person should see: the assignment envelope stays in the send. */
 export function visibleUserPrompt(text: string): string {
@@ -3024,6 +3041,30 @@ Run the whole check again and report what you observed.`,
       }, 0);
     }
   }
+  /**
+   * WP-91: whether a reported write, already resolved, is this task's own handoff: `.hivra/handoff/<taskId>.md` in
+   * the checkout it works in, and no other path. The checkout root is resolved and the handoff is joined to it as
+   * written, so a `.hivra` or `handoff` link that leads elsewhere resolves to some other path and fails the
+   * comparison, and so does another task's handoff, a file beside it or the same name in the lead's checkout.
+   * Anything that cannot be resolved is not allowed.
+   */
+  private async isOwnHandoff(
+    run: OrchestrationRun,
+    task: OrchestrationTask,
+    resolved: string,
+  ): Promise<boolean> {
+    try {
+      const root = await this.store.resolvePath(
+        task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run),
+      );
+      return (
+        orchestrationPathKey(resolved) ===
+        orchestrationPathKey(`${root}/${handoffRelativePath(task.id)}`)
+      );
+    } catch {
+      return false;
+    }
+  }
   observe(id: string, event: HarnessEvent) {
     if (event.type !== "tool.started" && event.type !== "tool.updated") return;
     const run = this.forSession(id);
@@ -3079,6 +3120,9 @@ Run the whole check again and report what you observed.`,
           )
         )
           continue;
+        // WP-91: the handoff the worker was told to write is the one file outside its scope it may write.
+        if (await this.isOwnHandoff(run, task, normalized)) continue;
+        if (!stillRunning()) return;
         await this.blockTask(
           run.leadId,
           task.id,
