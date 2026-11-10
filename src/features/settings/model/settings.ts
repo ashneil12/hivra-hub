@@ -420,6 +420,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "notify alert toast permission reminder background",
   },
   {
+    id: "quiet-hours",
+    section: "general",
+    label: "Quiet hours",
+    keywords: "quiet hours overnight mute programme notices",
+  },
+  {
     id: "notes",
     section: "general",
     label: "Notes",

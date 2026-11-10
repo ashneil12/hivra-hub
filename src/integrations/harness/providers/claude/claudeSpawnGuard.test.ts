@@ -194,7 +194,14 @@ describe("the guard on every Claude process", () => {
           else if (src[end] === ")" && --depth === 0) break;
         }
         const call = src.slice(at, end + 1);
-        calls.push(`${file}: ${/claudeExtraArgs\(|claudeGuardArgs\(|textCallToolArgs\(/.test(call) ? "guarded" : "UNGUARDED"}`);
+        // The guard may be in the call itself, or in an argument list the call spreads that is built in the same file
+        // (`const launchArgs = [...]`): the Explore flag (WP-143) needs the list before the process starts.
+        const spread = [...call.matchAll(/\.\.\.(\w+)\b/g)].flatMap(([, name]) => {
+          const start = src.indexOf(`const ${name} = [`);
+          return start < 0 ? [] : [src.slice(start, src.indexOf("\n  ];", start))];
+        });
+        const guarded = [call, ...spread].some((text) => /claudeExtraArgs\(|claudeGuardArgs\(|textCallToolArgs\(/.test(text));
+        calls.push(`${file}: ${guarded ? "guarded" : "UNGUARDED"}`);
       }
     }
     expect(calls.sort()).toEqual([

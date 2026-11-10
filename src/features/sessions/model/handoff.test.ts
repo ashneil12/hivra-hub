@@ -17,6 +17,7 @@ import {
   sessionThroughTurn,
   shouldAskOutgoingAgent,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "./handoff";
@@ -416,5 +417,36 @@ describe("wrapHandoffPrompt", () => {
     expect(buildOutgoingHandoffPrompt("add dark mode")).not.toContain(
       "Goal (the user request)",
     );
+  });
+});
+
+describe("wrapForkPrompt", () => {
+  const brief = "## Goal\nship on Friday\n\n## Session so far\nUser: Launch plan";
+
+  it("says the chat was forked, not handed off or switched, and carries the recap and the message", () => {
+    const prompt = wrapForkPrompt(brief, "And the budget?");
+    expect(prompt).toContain("forked");
+    expect(prompt).toContain("And the budget?");
+    expect(prompt).toContain("Session so far");
+    expect(prompt).toContain("Do not say you have no prior context");
+    expect(prompt).not.toMatch(/handed off|handoff|switch/i);
+    expect(prompt).not.toMatch(/##\s*Goal/i);
+  });
+
+  it("names a message typed since the fork without talking about a switch", () => {
+    const prompt = wrapForkPrompt(brief, "Retry", ["Send the invoice"]);
+    expect(prompt).toContain("Send the invoice");
+    expect(prompt).toContain("Since this chat was forked, before this message");
+    expect(prompt).not.toMatch(/After the switch/i);
+  });
+
+  it("does not name an agent, since a fork stays on the same one", () => {
+    expect(wrapForkPrompt(brief, "Next")).not.toMatch(/Claude|Codex|Cursor|Pi\b/);
+  });
+
+  it("still carries the message when the recap is empty", () => {
+    const prompt = wrapForkPrompt("   ", "Next");
+    expect(prompt).toContain("Next");
+    expect(prompt).not.toContain("<chat_before_fork>");
   });
 });

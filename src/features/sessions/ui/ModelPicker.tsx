@@ -46,6 +46,8 @@ import {
 import { AddModelForm, addModelEscRef, OtherModelsSection, useCustomModels } from "./CustomModels";
 import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
+import { isModelNew } from "../model/modelFirstSeen";
+import { modelNote } from "../model/modelNotes";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -1825,10 +1827,14 @@ function ModelFlyout({
                   // Provider first (OpenCode Go vs OpenCode), else harness.
                   const provenance =
                     item.provider?.name ?? HARNESS_TITLE[item.harness];
+                  const note = modelNote(item);
+                  const fresh = isModelNew(item.harness, item.id);
                   return (
                     <div
                       key={item.id}
-                      className={`group flex h-8 items-center rounded-lg px-1 ${
+                      className={`group flex rounded-lg px-1 ${
+                        note ? "items-start py-1" : "h-8 items-center"
+                      } ${
                         disabled
                           ? "text-content/30"
                           : highlighted
@@ -1851,12 +1857,32 @@ function ModelFlyout({
                         }
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => onPick(item)}
-                        className="flex min-w-0 flex-1 items-center gap-2 px-1.5 text-left text-[13px] disabled:cursor-not-allowed"
+                        className={`flex min-w-0 flex-1 gap-2 px-1.5 text-left text-[13px] disabled:cursor-not-allowed ${
+                          note ? "flex-col items-stretch py-1" : "items-center"
+                        }`}
                       >
                         <span className="min-w-0 flex-1 truncate">
                           {item.name}
                         </span>
+                        {note ? (
+                          <span
+                            data-model-note=""
+                            className="text-[11px] font-normal leading-snug text-content/55"
+                          >
+                            {note}
+                          </span>
+                        ) : null}
                       </button>
+                      {fresh ? (
+                        <span
+                          data-model-new=""
+                          className={`shrink-0 rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium text-content/60 ${
+                            note ? "mt-1.5" : ""
+                          }`}
+                        >
+                          new
+                        </span>
+                      ) : null}
                       {tab === "favorites" ? (
                         <span className="max-w-24 shrink-0 truncate text-[10px] text-content/40">
                           {provenance}

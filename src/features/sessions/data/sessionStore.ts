@@ -1140,6 +1140,8 @@ function sanitizeBlock(
       // A card that doesn't parse is dropped. The words stay.
     }
   }
+  // WP-123: the last message copied into a fork; its next send carries the recap until a turn is taken.
+  if (block.forkPoint === true) next.forkPoint = true;
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   const turnModel = sanitizeTurnModel(block.turnModel);
