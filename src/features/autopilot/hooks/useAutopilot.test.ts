@@ -138,7 +138,7 @@ const approval = (title: string, call: NonNullable<Block["approval"]>["call"] | 
 describe("what the hook remembers", () => {
   it("forgets decided approvals, closed chats' calls and past resets, and keeps what can still come back", () => {
     const now = Date.now();
-    const open = session("open", "/home/user/projects/hivra", { blocks: [approval("npm test")] });
+    const open = session("open", "/home/user/projects/hivra", { blocks: [approval("git status")] });
     const memory: AutopilotMemory = {
       handled: new Map([
         // an approval of a chat that closed, and a question of a chat that closed and isn't waiting any more
@@ -169,7 +169,7 @@ describe("useAutopilot", () => {
     await mount([
       session("pick", "/home/user/projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }, { id: "b", label: "Beta" }])),
       session("money", "/home/user/projects/hivra", question("money", "Charged twice: what now?", [{ id: "r", label: "Refund it (Recommended)" }])),
-      session("tests", "/home/user/projects/hivra", { blocks: [approval("npm run check")] }),
+      session("tests", "/home/user/projects/hivra", { blocks: [approval("git status")] }),
       session("force", "/home/user/projects/hivra", { blocks: [approval("git push --force origin main")] }),
       session("exo", "/home/user/projects/vg-game", question("exo", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }])),
       session("line", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Done the first half.\nNeeds Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag" }] }),
@@ -205,9 +205,9 @@ describe("useAutopilot", () => {
       session("long", hivra, { blocks: [approval(`Write ${hivra}/notes.md`, { tool: "Write", paths: [`${hivra}/notes.md`] }, `${filler} DROP TABLE users`)] }),
       session("home", hivra, { blocks: [approval("Edit ~/.zshrc", { tool: "Edit", paths: ["/home/user/.zshrc"] })] }),
       session("tool", hivra, { blocks: [approval("Slack: post", { tool: "mcp__slack__post" })] }),
-      session("bare", hivra, { blocks: [approval("npm test", null)] }),
+      session("bare", hivra, { blocks: [approval("git status", null)] }),
       // What it allows by itself.
-      session("check", hivra, { blocks: [approval("npm run check")] }),
+      session("check", hivra, { blocks: [approval("git status")] }),
       session("read", hivra, { blocks: [approval("Read /etc/hosts", { tool: "Read", paths: ["/etc/hosts"] })] }),
       session("edit", hivra, { blocks: [approval(`Edit ${hivra}/src/a.ts`, { tool: "Edit", paths: [`${hivra}/src/a.ts`] })] }),
       session("tree", hivra, { worktreeCwd: "/home/user/worktrees/hivra-x", blocks: [approval("Edit a.ts", { tool: "Edit", paths: ["/home/user/worktrees/hivra-x/a.ts"] })] }),
@@ -318,13 +318,13 @@ describe("useAutopilot", () => {
   it("forgets an approval once it is decided, so the same request id asking again is decided again", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
-    await mount([session("tests", "/home/user/projects/hivra", { blocks: [approval("npm test")] })]);
+    await mount([session("tests", "/home/user/projects/hivra", { blocks: [approval("git status")] })]);
     expect(approvals).toHaveLength(1);
     // The app applies the decision; later (a new Claude process numbers its approvals from the start again) the same
     // request id asks for the same command.
     await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: s.blocks.map((b) => ({ ...b, approval: { ...b.approval!, decided: "allow" as const } })) }))));
     await settle();
-    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: [...s.blocks, approval("npm test")] }))));
+    await act(async () => setAll((all) => all.map((s) => ({ ...s, blocks: [...s.blocks, approval("git status")] }))));
     await settle();
     expect(approvals).toHaveLength(2);
   });
@@ -336,7 +336,7 @@ describe("useAutopilot", () => {
     await mount([
       session("worker", "/home/user/projects/hivra", {
         ...question("worker", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }]),
-        blocks: [approval("npm test")],
+        blocks: [approval("git status")],
       }),
     ]);
     expect(answers).toEqual([]);

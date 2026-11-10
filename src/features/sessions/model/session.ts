@@ -407,12 +407,16 @@ export type TurnMetrics = {
 
 /**
  * What a tool approval would run, from the provider's own permission request: the tool's name as the provider calls
- * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes.
+ * it (Bash, Read, Edit, mcp__x__y), a shell tool's command in full, and the files an edit writes. A search's `paths`
+ * are where it starts; `server` names the server a resource tool goes to; `args` are the text values an MCP call
+ * carries, which autopilot reads for paths, addresses and red-list words (review M1).
  */
 export type ApprovalCall = {
   tool: string;
   command?: string;
   paths?: string[];
+  server?: string;
+  args?: string[];
 };
 
 export type Block = {

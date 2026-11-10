@@ -13,7 +13,7 @@ import type { TrustedServers } from "./mcpTrust";
 import { callText, redListCategory, redListInWords, redVerdict, type RedCategory } from "./redList";
 import { questionVeto, reviewVeto } from "./reviewerRules";
 import { credentialInPaths } from "./credentialPaths";
-import { bashWords, readPaths, safeCall } from "./safeApproval";
+import { bashWords, readPaths, safeCall, searchStartsOutside } from "./safeApproval";
 import { forUser } from "../../hub/model/userName";
 
 export type CallVerdict =
@@ -75,11 +75,36 @@ type ApprovalBlock = Pick<Block, "text" | "tool" | "approval">;
 export function approvalText(block: ApprovalBlock): string {
   const preview = block.tool?.preview ? JSON.stringify(block.tool.preview) : "";
   const call = block.approval?.call;
-  return callText(block.text, block.tool?.title, block.tool?.kind, block.tool?.detail, preview, call?.tool, call?.command, ...(call?.paths ?? []));
+  return callText(
+    block.text,
+    block.tool?.title,
+    block.tool?.kind,
+    block.tool?.detail,
+    preview,
+    call?.tool,
+    call?.command,
+    call?.server,
+    ...(call?.paths ?? []),
+    ...(call?.args ?? []),
+  );
 }
 
-export function approvalWhat(block: Pick<Block, "text" | "tool">): string {
-  return (block.tool?.title?.trim() || block.text.trim() || "A tool call").replace(/\s+/g, " ").slice(0, 300);
+/**
+ * The words an approval shows: its title, then what it really runs (the command, or the files it names), with the
+ * invisible and direction-control characters taken out so a name can't hide what it says (review M5). A generated
+ * title alone hid the command, so the command is shown beside it.
+ */
+export function approvalWhat(block: Pick<Block, "text" | "tool" | "approval">): string {
+  const title = block.tool?.title?.trim() || block.text.trim() || "A tool call";
+  const call = block.approval?.call;
+  const real = call?.command ?? (call?.paths?.length ? call.paths.join(", ") : undefined);
+  const shown = real && real !== title ? `${title}: ${real}` : title;
+  return shown
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
 }
 
 export type ApprovalVerdict =
@@ -117,6 +142,9 @@ export function approvalVerdict(
     // WP-101 fix round 4, finding 4: a read tool (Read, NotebookRead) names its file in `paths`, which the red list's text
     // reading splits at a space and has no rule for a shell startup file in. The same path check as a shell word runs.
     if (credentialInPaths(readPaths(block.approval?.call), folder)) return { kind: "held", red: "credentials", what, why: "it touches the red list" };
+    // WP-101 review H1: a search (Grep, Glob, LS) names where it walks from in its paths, read as a walk.
+    if (searchStartsOutside(block.approval?.call, folder))
+      return { kind: "held", red: null, what, why: "it searches outside the chat's folder, or in a login store" };
     // WP-101: a send, a delete, a payment, a publish or an account change always waits, whatever else says it may
     // (reviewerRules.ts). This can only hold, never allow.
     const reviewed = reviewVeto({

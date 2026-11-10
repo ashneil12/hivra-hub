@@ -1,12 +1,16 @@
 // What autopilot may allow by itself when a supervised chat waits on a tool approval (Ash, 20 Oct): only
-// - a read-only tool (Read, Grep, Glob, LS, WebSearch, WebFetch and the like);
-// - a read-only MCP tool from a server the person installed through a Hivra plugin (mcpEffect.ts): every other
-//   server's tools wait, because a hostile server can name a write tool like a read;
-// - an edit or write whose files are all inside that chat's own folder (its worktree when it has one);
-// - a shell command on a short list of reads, tests and builds (git status/diff/log/show/branch, ls, cat, rg, grep,
-//   find, fd, tree, stat, du, df, file, which, ps, npm test / run check|lint|build, cargo test|check|clippy|fmt
-//   --check, node --test), with no chaining, substitution, redirection or wildcard, and none of the options that make
-//   those tools write a file or run something else.
+// - a read-only tool (Read, Grep, Glob, LS and the like), whose paths are checked as paths: a search must start inside
+//   the chat's folder, and a file in a login store waits;
+// - a read-only MCP tool or resource from a server the person installed through a Hivra plugin (mcpEffect.ts), with
+//   arguments that name no path, URL or host: every other server's tools wait, because a hostile server can name a
+//   write tool like a read;
+// - an edit or write whose files are all inside that chat's own folder (its worktree when it has one), and no
+//   protected name (.claude, .mcp.json, CLAUDE.md, AGENTS.md) whatever its case or form;
+// - a shell command on a short list of reads (git status/diff/log/show/branch, ls, cat, rg, grep, find, fd, tree,
+//   stat, du, df, file, which, ps, wc, head, tail, cargo fmt --check), with no chaining, substitution, redirection or
+//   wildcard, and none of the options that make those tools write a file, follow a link or run something else.
+// Tests and builds (npm test, npm run check, cargo test, node --test) are not on that list: each runs code the chat
+// may have just written, so they wait for Ash (review C1).
 // Anything else waits for Ash exactly as when autopilot is off; the red list (redList.ts) is checked on top. It judges
 // the provider's own request (`Block.approval.call`), never the transcript's label: a call that doesn't say exactly
 // what it runs waits. An edit is checked twice: by its words (safeCall), then where it really lands (editStaysInside),
@@ -22,28 +26,30 @@ import { shellWords } from "./shellWords";
 /** Why a call isn't one autopilot may allow by itself, or null when it may. */
 export type SafeVerdict = string | null;
 
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
-  "Read",
-  "Grep",
-  "Glob",
-  "LS",
-  "NotebookRead",
-  "WebSearch",
-  "WebFetch",
-  "BashOutput",
-  "TodoRead",
-  "ListMcpResourcesTool",
-  "ReadMcpResourceTool",
-]);
+/**
+ * Read-only tools that name a file or folder (or nothing). WebFetch is not here: it sends its URL, so it always waits
+ * (review H3). The MCP resource tools are not here either: they go to a named server, so they are judged as MCP calls.
+ */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(["Read", "Grep", "Glob", "LS", "NotebookRead", "WebSearch", "BashOutput", "TodoRead"]);
+/** Search tools, whose paths are where a walk starts (review H1). */
+const SEARCH_TOOLS: ReadonlySet<string> = new Set(["Grep", "Glob", "LS"]);
+/** MCP resource tools: the server is their `server` input, and only a server Hivra wired is trusted (review M3). */
+const MCP_RESOURCE_TOOLS: ReadonlySet<string> = new Set(["ListMcpResourcesTool", "ReadMcpResourceTool"]);
 const EDIT_TOOLS: ReadonlySet<string> = new Set(["Edit", "MultiEdit", "Write", "NotebookEdit"]);
 const SHELL_TOOLS: ReadonlySet<string> = new Set(["Bash"]);
 
 /**
  * Inside the chat's folder, these still wait: they change how git, the agent harnesses, hooks, editors or package
- * managers run commands, not just the project's files.
+ * managers run commands, not just the project's files. Names are compared folded (case, width and invisible
+ * characters), since the Mac disk is case-insensitive and a name can be written in another form (review H4).
  */
 const GUARDED_DIRS: ReadonlySet<string> = new Set([".git", ".claude", ".codex", ".cursor", ".husky", ".vscode", ".monocode", ".cargo", "node_modules"]);
-const GUARDED_FILES: ReadonlySet<string> = new Set([".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules"]);
+const GUARDED_FILES: ReadonlySet<string> = new Set([".mcp.json", ".envrc", ".npmrc", ".yarnrc", ".yarnrc.yml", ".gitmodules", "claude.md", "agents.md"]);
+
+/** A name as a file system that ignores case and form compares it: NFKC, no invisible characters, lower case. */
+export function foldName(name: string): string {
+  return name.normalize("NFKC").replace(/\p{Cf}/gu, "").toLowerCase();
+}
 
 /** A folder shallower than this (/, /Users, /Users/someone) is too broad to count as a chat's own. */
 const MIN_FOLDER_DEPTH = 3;
@@ -74,7 +80,7 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
   if (!parts || parts.length <= root.length || root.some((part, i) => parts[i] !== part))
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
-  if (inner.some((part) => GUARDED_DIRS.has(part)) || GUARDED_FILES.has(inner[inner.length - 1]))
+  if (inner.some((part) => GUARDED_DIRS.has(foldName(part))) || GUARDED_FILES.has(foldName(inner[inner.length - 1])))
     return `it edits ${path}, which changes how tools run`;
   return null;
 }
@@ -87,6 +93,34 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
 export function readPaths(call: ApprovalCall | undefined): unknown {
   if (!call || typeof call.tool !== "string" || !READ_ONLY_TOOLS.has(call.tool)) return undefined;
   return call.paths;
+}
+
+/** A string that names a place: a path, a home folder, an address, or a host ("evil.example", "x.y/z", "https://"). */
+const NAMES_PLACE = /[\\/~]|\w\.\w|:\/\//;
+
+/**
+ * Why an MCP call's arguments can't be read as harmless, or null. An argument that names a path, a URL or a host sends
+ * the read somewhere the words of the request don't show (review M1). Not a list of strings: held.
+ */
+function argsReason(args: unknown): SafeVerdict {
+  if (args === undefined) return null;
+  if (!Array.isArray(args)) return "its arguments can't be read plainly, so it waits for Ash";
+  for (const value of args) {
+    if (typeof value !== "string") return "its arguments can't be read plainly, so it waits for Ash";
+    if (NAMES_PLACE.test(value)) return "its arguments name a file, folder or address, so it waits for Ash";
+  }
+  return null;
+}
+
+/**
+ * Whether a search (Grep, Glob, LS) starts outside the chat's folder, or in a credential place, so it waits (review H1).
+ * Its `paths` are the places it walks from: the `path` it is given, and a Glob's pattern. A search with no path is in
+ * the folder the shell works in, so it is never held here.
+ */
+export function searchStartsOutside(call: ApprovalCall | undefined, folder: string | undefined): boolean {
+  if (!call || typeof call.tool !== "string" || !SEARCH_TOOLS.has(call.tool) || call.paths === undefined) return false;
+  if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
+  return walkHeld(["rg", ...call.paths], folder);
 }
 
 // ---- shell -------------------------------------------------------------------------------------------------------
@@ -191,35 +225,15 @@ function gitRead(args: readonly string[]): SafeVerdict {
   return null;
 }
 
-const NPM_SCRIPTS = /^(test|check|lint|build)(:[\w.-]+)?$/;
-
-function npmScript(args: readonly string[]): SafeVerdict {
-  // npm test | npm run <test|check|lint|build>[:part], then only "--" and the script's own arguments: an npm option
-  // (--prefix, --script-shell, -w) could run another folder's script or another shell.
-  const [first, second, ...rest] = args;
-  const after = first === "test" ? [second, ...rest].filter((a) => a !== undefined) : rest;
-  const named = first === "test" || (first === "run" && !!second && NPM_SCRIPTS.test(second));
-  if (!named) return "only npm test and npm run check, lint or build run by themselves";
-  if (after.length && after[0] !== "--") return "npm options don't run by themselves";
-  return null;
-}
-
-const CARGO_READS: ReadonlySet<string> = new Set(["test", "check", "clippy", "fmt"]);
-
+// Tests and builds are not here (review C1): npm test, npm run check|lint|build, cargo test|check|clippy and node --test
+// each run code from the package or the crate, which an allowed edit in the same chat may have just changed. Only
+// cargo fmt --check remains: it reads the code and runs none of it.
 function cargoRead(args: readonly string[]): SafeVerdict {
   const [sub, ...rest] = args;
-  if (!sub || !CARGO_READS.has(sub)) return "only cargo test, check, clippy and fmt --check run by themselves";
-  if (sub === "fmt" && !rest.includes("--check")) return "cargo fmt rewrites files unless it is --check";
-  // --config can name a wrapper to run; the rest write outside the checkout or change files.
-  if (has(rest, "--config", "--manifest-path", "--target-dir", "--artifact-dir", "--out-dir", "--fix", "--allow-dirty", "--allow-staged", "--emit") || rest.some((arg) => arg.startsWith("-Z")))
+  if (sub !== "fmt") return "only cargo fmt --check runs by itself; cargo test, check, clippy and build run code, so they wait for Ash";
+  if (!rest.includes("--check")) return "cargo fmt rewrites files unless it is --check";
+  if (has(rest, "--config", "--manifest-path", "--target-dir", "--artifact-dir", "--out-dir", "--emit") || rest.some((arg) => arg.startsWith("-Z")))
     return "that cargo option doesn't run by itself";
-  return null;
-}
-
-function nodeTest(args: readonly string[]): SafeVerdict {
-  if (!args.includes("--test")) return "only node --test runs by itself";
-  if (has(args, "-e", "--eval", "-p", "--print", "-r", "--require", "--import", "--loader", "--experimental-loader", "-i", "--interactive", "--env-file", "--inspect", "--inspect-brk"))
-    return "that node option doesn't run by itself";
   return null;
 }
 
@@ -258,19 +272,25 @@ function abbreviatesLongOption(given: string, option: string): boolean {
   return left.every((part, i) => right[i].startsWith(part) || part.startsWith(right[i]));
 }
 
+/**
+ * Short options that follow links, written as the program reads them. usesOption lower-cases a name, so an upper-case
+ * letter (-L) is matched against the raw argument here (review M4).
+ */
+const followsLinks = (args: readonly string[]) => args.some((arg) => /^-[^-]*L/.test(arg) || arg === "--follow" || arg.startsWith("--follow="));
+
 function rgRead(args: readonly string[]): SafeVerdict {
-  // --pre runs a program on every file; --hostname-bin runs one too. A short form of either does as well.
+  // --pre runs a program on every file; --hostname-bin runs one too. A short form of either does as well. -L and
+  // --follow read through links, which can lead out of the folder into a login store (review M4).
   const options = ["--pre", "--pre-glob", "--hostname-bin"];
   if (usesOption(args, options) || args.some((arg) => options.some((option) => abbreviatesLongOption(arg, option))))
     return "rg --pre runs a program";
+  if (followsLinks(args)) return "that option follows links out of the folder";
   return null;
 }
 
 const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict>> = {
   git: gitRead,
-  npm: npmScript,
   cargo: cargoRead,
-  node: nodeTest,
   rg: rgRead,
   grep: () => null,
   ls: () => null,
@@ -282,13 +302,17 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   // WP-101, from Row-Bot's safe-command table: listing and system information that only read, with the options
   // that turn each into a write or a run held.
   find: findRead,
-  fd: readsUnless("-x", "--exec", "--exec-batch"),
-  ag: readsUnless("--pager"),
-  // tree writes to a file with -o; --output is held too though tree has no such option, since a stricter answer
-  // costs Ash one tap and a looser one cannot be taken back.
-  tree: readsUnless("-o", "--output"),
+  // fd: --base-directory and --search-path move the walk to another folder, and -L/--follow read through links (M4).
+  fd: (args) => readsUnless("-x", "--exec", "--exec-batch", "--base-directory", "--search-path")(args) ?? (followsLinks(args) ? "that option follows links out of the folder" : null),
+  ag: readsUnless("--pager", "-f", "--follow"),
+  // tree writes to a file with -o, and with -R and -H it writes an HTML file into every folder; -l follows links.
+  // --output is held too though tree has no such option, since a stricter answer costs Ash one tap and a looser one
+  // cannot be taken back.
+  tree: (args) =>
+    readsUnless("-o", "--output")(args) ?? (args.some((arg) => /^-[^-]*[RHl]/.test(arg)) ? "that option writes files or follows links" : null),
   stat: () => null,
-  du: () => null,
+  // du -L reads through links (review M4).
+  du: (args) => (followsLinks(args) ? "that option follows links out of the folder" : null),
   df: () => null,
   file: readsUnless("-c", "--compile"),
   which: () => null,
@@ -334,6 +358,11 @@ export function safeCall(call: ApprovalCall | undefined, folder: string | undefi
 function safeCallInner(call: ApprovalCall | undefined, folder: string | undefined, trusted?: TrustedServers | null): SafeVerdict {
   if (!call) return "it doesn't say exactly what it runs";
   if (typeof call.tool !== "string" || !call.tool) return "it doesn't say exactly what it runs";
+  // A resource read or list goes to one named server, so only a server Hivra wired is trusted (review M3).
+  if (MCP_RESOURCE_TOOLS.has(call.tool)) {
+    if (!serverTrusted(trusted, call.server)) return `${call.tool} reads from a server Hivra didn't install, so it waits for Ash`;
+    return argsReason(call.args);
+  }
   if (READ_ONLY_TOOLS.has(call.tool)) return null;
   if (EDIT_TOOLS.has(call.tool)) {
     if (!call.paths?.length) return "it doesn't say which file it edits";
@@ -353,7 +382,9 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     // project's .mcp.json spells differently but Claude Code reads the same is that config's server, not Hivra's.
     if (!serverTrusted(trusted, mcp.server)) return `${call.tool} comes from a server Hivra didn't install, so it waits for Ash`;
     const effect = toolEffect(mcp.tool);
-    return effect === "read_only" ? null : `it is an MCP ${effect === "change" ? "change" : effect === "high_impact" ? "high-impact action" : "call autopilot can't place"}, so it waits for Ash`;
+    if (effect !== "read_only") return `it is an MCP ${effect === "change" ? "change" : effect === "high_impact" ? "high-impact action" : "call autopilot can't place"}, so it waits for Ash`;
+    // Even a read names what it reads by its arguments: a path, a URL or a host in one of them waits (review M1).
+    return argsReason(call.args);
   }
   return `${call.tool} isn't a read, a test or build, or an edit in the chat's folder`;
 }

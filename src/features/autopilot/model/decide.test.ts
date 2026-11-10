@@ -127,7 +127,7 @@ describe("a tool approval under autopilot", () => {
   const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command } } });
 
   it("allows a listed check, a read, and an edit in the chat's folder", () => {
-    expect(approvalVerdict(bash("npm run check"), FOLDER)).toEqual({ kind: "allow", what: "npm run check" });
+    expect(approvalVerdict(bash("git status"), FOLDER)).toEqual({ kind: "allow", what: "git status" });
     expect(approvalVerdict({ text: "", tool: { title: "Read README.md" }, approval: { requestId: 2, call: { tool: "Read", paths: ["/etc/hosts"] } } }, FOLDER)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict({ text: "", tool: { title: "Edit a.ts" }, approval: { requestId: 3, call: { tool: "Edit", paths: [`${FOLDER}/src/a.ts`] } } }, FOLDER)).toMatchObject({ kind: "allow" });
   });
@@ -246,7 +246,7 @@ describe("a tool approval under autopilot", () => {
     ])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
     // A glob on a command that does not search for files is still that command: node and git were already allowed.
-    expect(approvalVerdict(bash("node --test 'scripts/**/*.test.mjs'"), FOLDER)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(bash("git log --oneline -- 'src/*.ts'"), FOLDER)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict(bash("git branch --list 'hub/*'"), FOLDER)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict(bash("rg -n 'foo' src"), FOLDER)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict(bash("grep -n TODO README.md"), FOLDER)).toMatchObject({ kind: "allow" });
@@ -535,5 +535,71 @@ describe("which project a chat belongs to", () => {
     expect(chatProject({ cwd: "/Users/someone/Projects/hivra/dashboard" }, projects)).toBe("hivra");
     expect(chatProject({ cwd: "/Users/someone/Projects/hivra-old" }, projects)).toBeNull();
     expect(chatProject({ cwd: "/tmp/x", worktreeCwd: "/Users/someone/Projects/hivra" }, projects)).toBe("hivra");
+  });
+});
+
+// WP-101 review fixes that run through approvalVerdict: H1 (search paths), H2 (credential places), grep's file words,
+// M5 (the real command in what is shown).
+import { approvalCall } from "../../../integrations/harness/providers/claude/claudeProtocol";
+describe("review fixes on approvals", () => {
+  const FOLDER_R = "/Users/someone/Worktrees/hub-x";
+  const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 9, call: { tool: "Bash", command } } });
+  const tool = (name: string, input: Record<string, unknown>) => ({ text: "", tool: { title: name }, approval: { requestId: 10, call: approvalCall(name, input) } });
+
+  // H1: a search names its folder in `path`, and a Glob names its place in `pattern`; both are checked like a path.
+  it("reads a search's path and a glob's pattern (review H1)", () => {
+    expect(approvalCall("Grep", { pattern: "token", path: "/etc" }).paths).toContain("/etc");
+    expect(approvalCall("Glob", { pattern: "/Users/someone/**/*.ts" }).paths).toContain("/Users/someone/**/*.ts");
+  });
+
+  it("holds a search that starts outside the chat's folder, or in a credential place (review H1)", () => {
+    expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/etc" }), FOLDER_R)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/Users/someone" }), FOLDER_R)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(tool("Glob", { pattern: "**/*.ts", path: `${FOLDER_R}/src` }), FOLDER_R)).toMatchObject({ kind: "allow" });
+    expect(approvalVerdict(tool("Grep", { pattern: "x", path: `${FOLDER_R}/.ssh` }), FOLDER_R)).toMatchObject({ kind: "held" });
+    // The pattern of a Grep is what it searches for, not a path: a word such as "token" is not held for that.
+    expect(approvalVerdict(tool("Grep", { pattern: "token" }), FOLDER_R)).toMatchObject({ kind: "allow" });
+  });
+
+  // H2: the logins that Codex, OpenCode, Gemini, sops, rclone, stripe, doctl, wrangler, glab and fish keep.
+  it.each([
+    "cat ~/.codex/auth.json",
+    "cat ~/.co''dex/auth.json",
+    "cat ~/.codex/\"auth.json\"",
+    "cat ~/.local/share/opencode/auth.json",
+    "cat ~/.gemini/oauth_creds.json",
+    "cat ~/.config/sops/age/keys.txt",
+    "cat ~/.config/rclone/rclone.conf",
+    "cat ~/.config/stripe/config.toml",
+    "cat ~/.config/doctl/config.yaml",
+    "cat ~/.config/glab-cli/config.yml",
+    "cat ~/.wrangler/config/default.toml",
+    "cat ~/.config/hub/token",
+    "cat ~/.local/share/fish/fish_history",
+    "cat ~/.yarnrc.yml",
+    "cat ../../.codex/auth.json",
+  ])("holds a read of a login store (review H2): %s", (command) => {
+    expect(approvalVerdict(shell(command), FOLDER_R), command).toMatchObject({ kind: "held" });
+  });
+
+  it("holds a read of a login store by its Read path (review H2)", () => {
+    expect(approvalVerdict(tool("Read", { file_path: "/Users/someone/.codex/auth.json" }), FOLDER_R)).toMatchObject({ kind: "held" });
+  });
+
+  // grep's first bare word is the pattern; a file named after it is still a file.
+  it("holds grep when a file after the pattern is a login store (review lows)", () => {
+    expect(approvalVerdict(shell("grep '' secrets"), FOLDER_R)).toMatchObject({ kind: "held" });
+    expect(approvalVerdict(shell("grep token src/app.ts"), FOLDER_R)).toMatchObject({ kind: "allow" });
+  });
+
+  // M5: the approval shows what it runs, with the invisible and direction characters taken out.
+  it("shows the real command, not only the generated title (review M5)", () => {
+    const verdict = approvalVerdict({ text: "", tool: { title: "Tidy up" }, approval: { requestId: 11, call: { tool: "Bash", command: "git status" } } }, FOLDER_R);
+    expect(verdict.what).toContain("git status");
+  });
+
+  it("strips zero-width and direction characters from what is shown (review M5)", () => {
+    const verdict = approvalVerdict({ text: "", tool: { title: "Read‮exe.txt​" }, approval: { requestId: 12, call: { tool: "Read", paths: [`${FOLDER_R}/a.txt`] } } }, FOLDER_R);
+    expect(verdict.what).not.toMatch(/[​‮]/);
   });
 });

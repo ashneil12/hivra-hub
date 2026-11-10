@@ -187,6 +187,8 @@ const REPOSITORY = inName(REPOSITORY_WORDS);
 const ROUTINE = inName(ROUTINE_WORDS);
 const ROUTINE_FIRST = new RegExp(`^(?:${[...ROUTINE_FIRST_WORDS].sort().join("|")})(_|$)`);
 const READ = new RegExp(`^(?:${[...READ_WORDS].sort().join("|")})(_|$)`);
+/** Names that read like a lookup but mark, join or open something (review M2). */
+const NOT_READS = /(^|_)(list_items?|check_(in|by)|get_to|view_on)(_|$)/;
 /** A read that says it runs a read ("Execute a SELECT query") is still a read. */
 const RUNS_A_READ = /(^|_)(run|exec|execute)s?_(an?_|the_)?(select|search|read_only|readonly)(?!_into)(_|$)/g;
 const SAYS_HIGH_IMPACT = inDescription(DESTRUCTIVE_WORDS);
@@ -314,6 +316,8 @@ export function toolEffect(toolName: string, description = "", hints: McpHints =
   const objects = tokens?.length ? readObjects(name) : null;
   if (hints.destructiveHint === true || namesASecret(tokens) || (DESTRUCTIVE.test(name) && objects === null) || sensitiveChange(name, description))
     return "high_impact";
+  // These read like lookups but change something or join one (check in, view on, get to): held whatever they say (M2).
+  if (NOT_READS.test(name)) return "unknown";
   if (BROWSER_READS.has(name)) return "read_only";
   if (BROWSER_SESSION_TOOLS.has(name)) return "change";
   if (changes(name)) {

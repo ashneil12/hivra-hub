@@ -318,3 +318,11 @@ describe("Hivra's own cases", () => {
     expect(toolEffect("  ", "")).not.toBe("read_only");
   });
 });
+
+// WP-101 review M2: these names are changes or joins, not reads, whatever their description says.
+import { toolEffect as effectOf } from "./mcpEffect";
+describe("names that are not reads (review M2)", () => {
+  it.each(["list_item", "check_in", "check_by", "get_to", "view_on"])("does not read %s as a read", (name) => {
+    expect(effectOf(name), name).not.toBe("read_only");
+  });
+});

@@ -1252,14 +1252,38 @@ export function approvalCall(
   input: Record<string, unknown>,
 ): ApprovalCall {
   const command = typeof input.command === "string" ? input.command : undefined;
-  const paths = ["file_path", "notebook_path"]
-    .map((key) => input[key])
-    .filter((value): value is string => typeof value === "string");
+  // A search names where it starts in `path` (Grep, Glob, LS), and a Glob also names it in `pattern` (review H1).
+  const keys = toolName === "Glob" ? ["file_path", "notebook_path", "path", "pattern"] : ["file_path", "notebook_path", "path"];
+  const paths = keys.map((key) => input[key]).filter((value): value is string => typeof value === "string");
+  const server = typeof input.server === "string" ? input.server : undefined;
+  // An MCP call's arguments are read by autopilot for paths, addresses and red-list words (review M1).
+  const args = toolName.startsWith("mcp__") ? textLeaves(input) : undefined;
   return {
     tool: toolName,
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
+    ...(server !== undefined ? { server } : {}),
+    ...(args !== undefined ? { args } : {}),
   };
+}
+
+/**
+ * Every text value and key in a request's arguments, however deep. Past the depth or the count it stops, and says so
+ * with a "/" so the check holds rather than reads a cut-off argument as harmless.
+ */
+function textLeaves(value: unknown, depth = 0, out: string[] = []): string[] {
+  if (out.length >= 200 || depth > 6) {
+    out.push("/");
+    return out;
+  }
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) for (const item of value) textLeaves(item, depth + 1, out);
+  else if (value && typeof value === "object")
+    for (const [key, item] of Object.entries(value)) {
+      out.push(key);
+      textLeaves(item, depth + 1, out);
+    }
+  return out;
 }
 
 export function summarizeToolRequest(

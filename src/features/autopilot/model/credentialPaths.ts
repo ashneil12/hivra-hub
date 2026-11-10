@@ -10,6 +10,19 @@ const PLACES: readonly (readonly string[])[] = [
   [".aws"],
   [".kube"],
   [".ssh"],
+  // Agent CLIs keep their own logins: Codex (auth.json), Gemini (oauth_creds.json), OpenCode's auth store (review H2).
+  [".codex"],
+  [".gemini"],
+  [".local", "share", "opencode"],
+  // Tool logins: wrangler (Cloudflare), rclone, sops age keys, stripe, doctl, glab and the Hivra config folder (review H2).
+  [".wrangler"],
+  [".config", "wrangler"],
+  [".config", "rclone"],
+  [".config", "sops"],
+  [".config", "stripe"],
+  [".config", "doctl"],
+  [".config", "glab-cli"],
+  [".config", "hub"],
   [".gnupg"],
   [".docker"],
   [".azure"],
@@ -58,6 +71,9 @@ const NAMES = new Set([
   ".psql_history",
   ".python_history",
   "authorized_keys",
+  // Yarn's registry tokens, and fish's history (it records commands typed with secrets in them) (review H2).
+  ".yarnrc.yml",
+  "fish_history",
 ]);
 
 /** A name that starts this way is a login store, whatever follows (`id_rsa.pub`, `terraform.tfstate.backup`). */
@@ -338,9 +354,15 @@ function homeShellFile(word: string, folder?: string): boolean {
 export function credentialInWords(words: readonly string[], folder?: string): string | null {
   const head = words[0]?.replace(/^-+/, "") ?? "";
   const searches = head === "grep" || head === "rg" || head === "ag" || head === "fd" || head === "find";
-  for (const word of words) {
+  // Only the first bare word after the command is the pattern; a later bare word is a file (`grep '' secrets` names
+  // the file secrets, review lows).
+  let patternSeen = false;
+  for (const [index, word] of words.entries()) {
     if (searches && pieces(word).some((piece) => GLOB.test(piece))) return word;
-    if (searches && head !== "find" && patternLike(word)) continue;
+    if (searches && head !== "find" && index > 0 && !patternSeen && patternLike(word)) {
+      patternSeen = true;
+      continue;
+    }
     for (const piece of pieces(word)) {
       if (piece && (homeShellFile(piece, folder) || credentialPath(piece))) return piece;
     }

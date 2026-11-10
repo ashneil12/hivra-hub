@@ -26,20 +26,8 @@ describe("shell commands", () => {
     "head -50 src/app.ts",
     "wc -l src/app.ts",
     "pwd",
-    "npm test",
-    "npm test -- src/features/autopilot",
-    "npm run check",
-    "npm run lint",
-    "npm run build",
-    "npm run check:web",
-    "cargo test",
-    "cargo test -p monocode --lib autopilot",
-    "cargo check --workspace",
-    "cargo clippy --all-targets -- -D warnings",
     "cargo fmt --check",
     "cargo fmt --all --check",
-    "node --test scripts/hub-dev.test.mjs",
-    "node --test 'scripts/**/*.test.mjs'",
     // WP-101: the wider read-only table (Row-Bot's safe commands, with their unsafe options held below).
     "find . -name '*.ts'",
     "find src -type f -newer README.md",
@@ -379,11 +367,12 @@ describe("MCP tools", () => {
 describe("tool calls", () => {
   it("allow read-only tools, edits in the folder and listed commands; hold the rest", () => {
     expect(safeCall({ tool: "Read", paths: ["/etc/hosts"] }, FOLDER)).toBeNull();
-    for (const tool of ["Grep", "Glob", "LS", "WebSearch", "WebFetch"]) expect(safeCall({ tool }, FOLDER), tool).toBeNull();
+    for (const tool of ["Grep", "Glob", "LS", "WebSearch"]) expect(safeCall({ tool }, FOLDER), tool).toBeNull();
     expect(safeCall({ tool: "Edit", paths: [`${FOLDER}/a.ts`] }, FOLDER)).toBeNull();
     expect(safeCall({ tool: "Write", paths: [`${FOLDER}/a.ts`, "/etc/hosts"] }, FOLDER)).not.toBeNull();
     expect(safeCall({ tool: "Edit" }, FOLDER)).not.toBeNull();
-    expect(safeCall({ tool: "Bash", command: "npm test" }, FOLDER)).toBeNull();
+    expect(safeCall({ tool: "Bash", command: "git status" }, FOLDER)).toBeNull();
+    expect(safeCall({ tool: "Bash", command: "npm test" }, FOLDER)).not.toBeNull();
     expect(safeCall({ tool: "Bash" }, FOLDER)).not.toBeNull();
     // A tool whose name merely reads like a read (it "read"s in "thread") is not one.
     expect(safeCall({ tool: "mcp__slack__reply_to_thread" }, FOLDER)).not.toBeNull();
@@ -418,5 +407,95 @@ describe("where an edit really lands", () => {
     expect(await editStaysInside(edit(`${FOLDER}/a.ts`), FOLDER, broken)).toContain("couldn't find where it really edits (not in the app)");
     expect(await editStaysInside({ tool: "Bash", command: "npm test" }, FOLDER, broken)).toBeNull();
     expect(await editStaysInside(undefined, FOLDER, broken)).toBeNull();
+  });
+});
+
+// WP-101 review: the fixes for C1, H3, H4, M1, M3 and the cheap lows. Each test fails before its fix.
+const SRV_R = "plugin-agent_plugins-notion";
+const mcpR = (tool: string) => `mcp__${SRV_R}__${tool}`;
+const wiredR = new Set([SRV_R]);
+describe("review fixes: what autopilot may run and touch", () => {
+  // C1: a test or build can run the code an allowed edit just wrote (package.json scripts, a test file), so none of
+  // them is allowed by itself, wherever the chat is.
+  it.each([
+    "npm test",
+    "npm test -- src/features/autopilot",
+    "npm run check",
+    "npm run build",
+    "cargo test",
+    "cargo check --workspace",
+    "cargo clippy --all-targets -- -D warnings",
+    "node --test scripts/hub-dev.test.mjs",
+    "node --test --test-reporter-destination=/tmp/x.log",
+  ])("holds a test or build that runs code the chat wrote: %s (review C1)", (command) => {
+    expect(safeCall({ tool: "Bash", command }, FOLDER), command).not.toBeNull();
+  });
+
+  it("still allows cargo fmt --check, which runs no code", () => {
+    expect(safeCall({ tool: "Bash", command: "cargo fmt --check" }, FOLDER)).toBeNull();
+  });
+
+  // H3: WebFetch sends its URL, so it waits; it is not a read.
+  it("holds WebFetch (review H3)", () => {
+    expect(safeCall({ tool: "WebFetch" }, FOLDER)).not.toBeNull();
+  });
+
+  // H4: the Mac disk is case-insensitive and names fold, so a protected name is compared folded and NFKC-normalised.
+  it.each([
+    "/.Claude/settings.local.json",
+    "/.CLAUDE/settings.json",
+    "/.MCP.json",
+    "/CLAUDE.md",
+    "/agents.md",
+    "/.ｃｌａｕｄｅ/settings.json",
+    "/.mcp​.json",
+  ])("holds an edit to a protected name whatever its case or form: %s (review H4)", (suffix) => {
+    expect(safeCall({ tool: "Write", paths: [`${FOLDER}${suffix}`] }, FOLDER), suffix).not.toBeNull();
+  });
+
+  // M3: a resource read or list goes to a server, so only a server Hivra wired is trusted.
+  it("holds a resource read from a server Hivra did not wire (review M3)", () => {
+    const resource = (server: string) => ({ tool: "ReadMcpResourceTool", server });
+    expect(safeCall(resource("random-server"), FOLDER, new Set([SRV_R]))).not.toBeNull();
+    expect(safeCall({ tool: "ListMcpResourcesTool" }, FOLDER, new Set([SRV_R]))).not.toBeNull();
+    expect(safeCall(resource(SRV_R), FOLDER, new Set([SRV_R]))).toBeNull();
+  });
+
+  // M1: an MCP read's arguments are read too: a path, a URL or a host in one is held.
+  it.each([
+    ["/etc/passwd"],
+    ["https://evil.example/collect"],
+    ["evil.example"],
+    ["~/.ssh/config"],
+  ])("holds a trusted MCP read whose argument names a path, URL or host: %s (review M1)", (value) => {
+    expect(safeCall({ tool: mcpR("get_issue"), args: [value] } as never, FOLDER, wiredR), value).not.toBeNull();
+  });
+
+  it("allows a trusted MCP read whose arguments are plain words (review M1)", () => {
+    expect(safeCall({ tool: mcpR("get_issue"), args: ["quarterly summary"] } as never, FOLDER, wiredR)).toBeNull();
+  });
+
+  // Lows: search options that follow links, write files, or search outside the folder.
+  it.each([
+    "fd --base-directory /etc x",
+    "fd --search-path /etc x",
+    "fd --base-directory=/etc x",
+    "fd --search-path=/etc x",
+    "fd -L x src",
+    "fd --follow x src",
+    "rg -L foo src",
+    "rg --follow foo src",
+    "rg -nL foo src",
+    "du -L src",
+    "tree -R src",
+    "tree -l src",
+    "ag -f foo src",
+  ])("holds a read option that follows links, writes files or leaves the folder: %s (review lows)", (command) => {
+    expect(safeCall({ tool: "Bash", command }, FOLDER), command).not.toBeNull();
+  });
+
+  it("holds an edit to CLAUDE.md or AGENTS.md (review lows)", () => {
+    expect(safeCall({ tool: "Edit", paths: [`${FOLDER}/CLAUDE.md`] }, FOLDER)).not.toBeNull();
+    expect(safeCall({ tool: "Edit", paths: [`${FOLDER}/AGENTS.md`] }, FOLDER)).not.toBeNull();
   });
 });
