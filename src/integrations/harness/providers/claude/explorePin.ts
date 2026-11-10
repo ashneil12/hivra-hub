@@ -16,6 +16,8 @@
  * `subagentModelEnv` is unchanged. Other CLIs get their sub-agent model from the environment and are not touched.
  */
 
+import { compareSemver, parseClaudeVersion } from "./claudeProtocol";
+
 /** Shown once a launch passed the flag. A keyed status line, so a restart replaces it instead of repeating it. */
 export const EXPLORE_PIN_SENTENCE =
   "Explore uses Haiku so the lead model is not spent on search.";
@@ -44,7 +46,12 @@ export function exploreAgentsArgs(): string[] {
  * or project level), the environment selects Bedrock, Vertex, Foundry or another API base URL, or that can't be told.
  * A throw means the same as true.
  */
-export type ExploreLookup = (input: { cwd: string; providerAccountId?: string }) => Promise<boolean>;
+export type ExploreLookup = (input: {
+  cwd: string;
+  providerAccountId?: string;
+  /** The folders the session adds with `--add-dir`. A relative one is relative to `cwd`. */
+  addDirs: string[];
+}) => Promise<boolean>;
 
 let injected: ExploreLookup | undefined;
 
@@ -63,6 +70,7 @@ async function appLookup(): Promise<ExploreLookup | undefined> {
       invoke<boolean>("claude_explore_agent_defined", {
         cwd: input.cwd,
         providerAccountId: input.providerAccountId ?? null,
+        addDirs: input.addDirs,
       });
   } catch {
     return undefined;
@@ -79,6 +87,55 @@ function lookable(cwd: string): boolean {
 }
 
 export type CheapExploreLaunch = { args: string[]; sentence?: string };
+
+/**
+ * The folders a launch adds with `--add-dir`: one or several after the flag (it takes a list, up to the next option),
+ * or `--add-dir=<folder>`. The app adds none of its own today; a plugin or the hub's extra arguments may.
+ */
+export function addDirsOf(args: readonly string[]): string[] {
+  const dirs: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--add-dir") {
+      while (index + 1 < args.length && !args[index + 1].startsWith("-")) {
+        index += 1;
+        if (args[index]) dirs.push(args[index]);
+      }
+    } else if (arg.startsWith("--add-dir=") && arg.length > "--add-dir=".length) {
+      dirs.push(arg.slice("--add-dir=".length));
+    }
+  }
+  return dirs;
+}
+
+/** Claude Code 2.0.0 added `--agents` (its changelog: "Add subagents dynamically with `--agents` flag"). */
+export const AGENTS_FLAG_MIN_VERSION = "2.0.0";
+
+/** How a launch reads the CLI's version: `key` names the binary (its path), `version` returns `--version` output. */
+export type ClaudeCliVersion = { key: string; version: () => Promise<string> };
+
+const agentsFlagByCli = new Map<string, boolean>();
+
+/** Tests: forget what was learned about each CLI. */
+export function resetAgentsFlagCache(): void {
+  agentsFlagByCli.clear();
+}
+
+/**
+ * Whether this CLI knows `--agents`. An older one exits on an unknown option, which would fail every crew and Mono
+ * launch, so a version that can't be read or understood means no. Asked once per binary; an answer that was not
+ * obtained is not remembered, so the next launch asks again.
+ */
+async function cliHasAgentsFlag(cli: ClaudeCliVersion | undefined): Promise<boolean> {
+  if (!cli) return false;
+  const known = agentsFlagByCli.get(cli.key);
+  if (known !== undefined) return known;
+  const version = parseClaudeVersion(await within(cli.version(), EXPLORE_LOOKUP_MS));
+  if (!version) return false;
+  const has = compareSemver(version, AGENTS_FLAG_MIN_VERSION) >= 0;
+  agentsFlagByCli.set(cli.key, has);
+  return has;
+}
 
 /** How long a launch waits to learn whether an Explore is defined. A slow answer is a missed pin, not a stuck chat. */
 export const EXPLORE_LOOKUP_MS = 3000;
@@ -101,13 +158,18 @@ function within<T>(promise: Promise<T>, ms: number): Promise<T> {
 
 /**
  * The extra arguments for one new Claude process, and the line to show. Empty unless this is a crew or Mono session
- * on Anthropic, in a folder that can be checked, with no Explore of the person's own. Never throws.
+ * on Anthropic, in a folder that can be checked, with no Explore of the person's own, on a CLI that knows the flag.
+ * The line is for the caller to show once the process has started. Never throws.
  */
 export async function cheapExploreLaunch(input: {
   crew: boolean;
   anthropic: boolean;
   cwd: string;
   providerAccountId?: string;
+  /** What the launch passes as `--add-dir` (`addDirsOf`). */
+  addDirs?: string[];
+  /** How to read the CLI's version. Without it the flag is not passed. */
+  cli?: ClaudeCliVersion;
   lookup?: ExploreLookup;
 }): Promise<CheapExploreLaunch> {
   const none: CheapExploreLaunch = { args: [] };
@@ -116,10 +178,11 @@ export async function cheapExploreLaunch(input: {
     const lookup = input.lookup ?? injected ?? (await appLookup());
     if (!lookup) return none;
     const defined = await within(
-      lookup({ cwd: input.cwd, providerAccountId: input.providerAccountId }),
+      lookup({ cwd: input.cwd, providerAccountId: input.providerAccountId, addDirs: input.addDirs ?? [] }),
       EXPLORE_LOOKUP_MS,
     );
     if (defined) return none;
+    if (!(await cliHasAgentsFlag(input.cli))) return none;
     return { args: exploreAgentsArgs(), sentence: EXPLORE_PIN_SENTENCE };
   } catch {
     return none;
