@@ -2778,6 +2778,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         onOpenFile={onOpenFile}
         localMedia={localMedia}
         mediaSessionId={mediaSessionId}
+        visualReplies
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}

@@ -1,4 +1,4 @@
-# WP-XX: Idle reclaim and hibernation, a quiet chat gives back its process
+# WP-174: Idle reclaim and hibernation, a quiet chat gives back its process
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
@@ -19,6 +19,35 @@ Paseo (Apache-2.0, getpaseo/paseo, `docs/agent-lifecycle.md`) has the lifecycle 
 Hivra has no equivalent. The word "hibernate" does not appear in the app or the Rust side, and the Paseo study found that nothing in the harness or session store reclaims an idle process, so a Mac or a remote box with many chats or Monos holds one CLI process per chat for as long as the app runs. Ash runs many chats at once, so this matters once a few are idle. WP-11 already supplies the clocks and the classifier, and T3 Code's restart-safe resume plus WP-11 cover recovery after a crash. This package covers the quiet, healthy case.
 
 Open question for the brief: the Paseo study states that an idle chat keeps its provider process; the Orchestrator.inc study did not trace it. Build step 1 settles it by measurement. If no idle chat holds a process, this package is not needed.
+
+## Build step 1: measurement (done, stopped here)
+
+Result: an idle chat does hold its agent CLI process, but only for about three minutes after its turn settles. The app
+already reclaims it. Reclaim is not built, because the proposed collector, closed state and load path would duplicate
+what exists. Evidence is from reading the code and its tests; no live dev-copy run was made (see PR.md, "could not check").
+
+- Claude runs as a persistent child: `--output-format stream-json --input-format stream-json`
+  (`src/integrations/harness/providers/claude/claudeProtocol.ts`, `buildClaudeSpawnArgs`). It waits on stdin between turns.
+- Every settled turn arms a park timer: `scheduleIdlePark` in `src/integrations/harness/core/registry.ts`, from the
+  `finally` of `sendHarnessTurn`. `HARNESS_IDLE_PARK_MS` is 3 minutes. Its timer calls `stopHarnessSession`, which
+  calls the adapter's `stopSession`. For Claude that is `stopClaudeSession` (`claude.ts`), which calls `killChild`, then
+  Rust `harness_kill`.
+- Rust kills the whole process group (`signal_tree` in `src-tauri/src/harness.rs`: `kill(-pid)`, then SIGTERM and SIGKILL
+  escalation). MCP servers and subagents in that group go with the CLI.
+- The resume state is kept (`stopSession` is documented as "kill the child but keep resume state"), so the next message
+  starts the CLI again with `--resume` (`claudeResume.test.ts`).
+- A warm-limit (`IDLE_AGENT_LIMIT_DEFAULT` = 3, `settings.ts`) parks the longest-idle extra warm CLIs sooner, sparing the
+  chat on screen. The 3-minute timer ignores that on-screen check, so the chat on screen is parked too after three minutes.
+- Which CLIs resume by id: the adapters that implement `bindSession` and keep resume state. Only Claude was traced here.
+
+Defect found, now fixed (afbf95e60): the 3-minute park did not check for background shells. A turn is let go after
+`SHELL_HOLD_MS` (60 s) when only backgrounded shells remain (`holdForShells` and `finishActiveTurn` in `claude.ts`), and
+the park then stopped the tree about three minutes later, killing a dev server or watcher the agent had started. The fix:
+an adapter can report `hasBackgroundWork`. Claude reports backgrounded shells and monitors, workflow runs, a follow-up
+turn on its way and subagents that have not completed (`claudeHasBackgroundWork`). While work runs, the park rechecks
+every 30 seconds and keeps the chat. Once the work ends, the chat gets a full idle time before it is parked. The warm
+limit skips busy chats too. A provider that throws counts as busy. Tests: `registry.test.ts` ("idle park with background
+work") and `claudeFakeCli.test.ts` (a real background shell and a real subagent through the Claude adapter).
 
 ## What to take (ideas only, written from the designs)
 

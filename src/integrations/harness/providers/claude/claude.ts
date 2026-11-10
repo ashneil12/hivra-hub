@@ -911,6 +911,23 @@ export async function cancelClaudeTurn(sessionId: string): Promise<void> {
   }
 }
 
+/**
+ * Whether Claude still runs work for this chat that the app must not stop: a subagent or workflow run that has not
+ * reported back (agentTasks, cleared when the task completes), a backgrounded shell or monitor, or a follow-up turn on
+ * its way. The idle park asks this before it
+ * stops the process, so a dev server the agent started keeps running. A chat with no live process has none.
+ */
+export function claudeHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return (
+    live.backgroundTasks.size > 0 ||
+    live.workflows.size > 0 ||
+    live.awaitingResume !== null ||
+    live.agentTasks.size > 0
+  );
+}
+
 export async function stopClaudeSession(sessionId: string): Promise<void> {
   cancelledThreads.delete(sessionId);
   const live = liveByThread.get(sessionId);

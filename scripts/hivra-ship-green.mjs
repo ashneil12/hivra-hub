@@ -6,18 +6,23 @@
 // Not a GitHub Actions workflow, and it does not change workflow permissions.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, realpathSync } from "node:fs";
+import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// The never-merge packages and park labels live in one file the app's lead tick reads too.
+const NEVER_MERGE_LIST = JSON.parse(
+  readFileSync(new URL("../src/features/leadTick/model/neverMerge.json", import.meta.url), "utf8"),
+);
+
 /** Packages marked never-merge. A title, branch or label that names one is refused. */
-export const NEVER_MERGE_PACKAGES = ["WP-92", "WP-150", "WP-158"];
+export const NEVER_MERGE_PACKAGES = [...NEVER_MERGE_LIST.packages];
 
 const SHA40 = /^[0-9a-f]{40}$/;
 const REPO_NAME = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const ISO_TIME =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$/;
 const SAFE_FIELD = /^[A-Za-z0-9_.:@+\-]+$/;
-const PARK_LABELS = new Set(["security-park", "never-merge", "never-merge-here"]);
+const PARK_LABELS = new Set(NEVER_MERGE_LIST.labels);
 const PR_JSON = "number,title,state,isDraft,headRefOid,headRefName,labels";
 const RUN_JSON = "databaseId,headSha,status,conclusion,createdAt,updatedAt,workflowName";
 const TIMING_KEYS = [

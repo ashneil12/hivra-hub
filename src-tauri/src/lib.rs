@@ -47,6 +47,8 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
@@ -552,6 +554,10 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            // WP-131: desktop dictation.
+            dictation::dictation_support,
+            dictation::dictation_start,
+            dictation::dictation_stop,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
@@ -1081,6 +1087,8 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_frames::visual_frame_put,
+            page_frames::visual_frame_drop,
             page_http::page_http_fetch,
             page_http::page_source_token_set,
             page_http::page_source_token_exists,

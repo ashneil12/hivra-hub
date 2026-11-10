@@ -4,7 +4,7 @@
 // per Ash message, never on its own nudge's turn, never while it works.
 import { agentMemoryRoot, memoryTools } from "../../hub/model/agentMemoryPath";
 import { forUser } from "../../hub/model/userName";
-import { delegateToolFailed, delegateToolName } from "../../sessions/model/monocodeToolCall";
+import { delegateToolFailed, handsOutWork } from "../../sessions/model/monocodeToolCall";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 import { isOpenDelegation as isOpen, type Delegation } from "./delegations";
 
@@ -68,7 +68,7 @@ export function workerStartNudge(
   if (!reply) return undefined;
   const listed = !!asksIn(ask.block.text) && listsAsks(reply) && PROMISES_WORK.test(reply);
   if (!listed && !STARTS_NOW.test(reply)) return undefined;
-  if (turn.some((b) => delegateToolName(b) === "delegate_task" && !delegateToolFailed(b))) return undefined;
+  if (turn.some((b) => handsOutWork(b) && !delegateToolFailed(b))) return undefined;
   const since = ask.block.startedAt ?? ask.block.sentAt;
   if (since !== undefined && rows.some((row) => row.ownerSession === chat.id && row.createdAt >= since)) return undefined;
   return {
