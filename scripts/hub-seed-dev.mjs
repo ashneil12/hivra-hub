@@ -147,6 +147,12 @@ export function scrub(db) {
     // Mono chats and make mc/pr-<n> worktrees in his real project checkouts.
     wipe("prWatchWakes", "pr_watch_wakes");
     wipe("prWatches", "pr_watches");
+    // WP-135: a compare's records name Ash's real worktrees, and Discard in a dev copy would take one of them back.
+    // Only that document goes; the other hub documents (projects, Pages, home) are what the seed is for.
+    if (has(db, "hub_local_docs")) {
+      cleared.fanOutCompares = count(db, "SELECT count(*) FROM hub_local_docs WHERE key = 'fan-out-compares'");
+      db.exec("DELETE FROM hub_local_docs WHERE key = 'fan-out-compares'");
+    }
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");
