@@ -47,7 +47,7 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
-// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+// WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
@@ -553,8 +553,14 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        // WP-131b: a page that starts loading again (reload, navigation) loses its dictation session.
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                dictation::window_lost(webview.app_handle(), webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            // WP-131: desktop dictation.
+            // WP-131b: desktop dictation (the helper in Contents/Helpers holds the microphone).
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
@@ -1306,6 +1312,7 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            dictation::window_lost(handle, &label);
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);
