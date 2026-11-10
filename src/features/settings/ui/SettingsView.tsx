@@ -22,6 +22,7 @@ import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+import { ReviewGuideToggle } from "../../inbox/ui/ReviewGuideToggle";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-84: the project's default phase path.
@@ -404,7 +405,6 @@ import {
   loadLiveAgentsEnabled,
   loadModelControls,
   loadNotesEnabled,
-  loadReviewGuideEnabled,
   loadMonosEnabled,
   loadMonoMenuBarIcon,
   loadKeybindingOverrides,
@@ -428,7 +428,6 @@ import {
   saveLiveAgentsEnabled,
   saveModelControls,
   saveNotesEnabled,
-  saveReviewGuideEnabled,
   saveMonosEnabled,
   subscribeMonosEnabled,
   saveKeybindingOverride,
@@ -967,9 +966,6 @@ function GeneralPage({
   const [notificationPermission, setNotificationPermission] =
     useState<NotificationPermission>(cachedNotificationPermission);
   const [notesEnabled, setNotesEnabled] = useState(loadNotesEnabled);
-  const [reviewGuideEnabled, setReviewGuideEnabled] = useState(
-    loadReviewGuideEnabled,
-  );
   const [liveAgentsEnabled, setLiveAgentsEnabled] = useState(
     loadLiveAgentsEnabled,
   );
@@ -1012,10 +1008,6 @@ function GeneralPage({
   const onNotesEnabled = (next: boolean) => {
     saveNotesEnabled(next);
     setNotesEnabled(next);
-  };
-  const onReviewGuideEnabled = (next: boolean) => {
-    saveReviewGuideEnabled(next);
-    setReviewGuideEnabled(next);
   };
 
   const onQuickComposerEnabled = (next: boolean) => {
@@ -1154,11 +1146,7 @@ function GeneralPage({
           label="Review guide"
           description="A short reading tour on a GitHub pull request in the inbox. Off leaves the inbox as it is."
         >
-          <Toggle
-            label="Review guide"
-            on={reviewGuideEnabled}
-            onChange={onReviewGuideEnabled}
-          />
+          <ReviewGuideToggle />
         </Row>
         {IS_MAC && (
           <Row

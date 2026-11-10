@@ -33,6 +33,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { InboxFiltersMenu, INBOX_FILTER_MENU_WIDTH } from "./InboxFiltersMenu";
@@ -197,6 +198,17 @@ import {
   type InboxReplyTarget,
 } from "./InboxComments";
 import { InboxPrDiff } from "./InboxPrDiff";
+import { ReviewGuidePanel } from "./ReviewGuidePanel";
+import {
+  commentsFromThread,
+  headFromThread,
+} from "../model/reviewGuide";
+import { reviewGuideAsk } from "../model/reviewGuideAsk";
+import {
+  loadReviewGuideEnabled,
+  reviewGuideShown,
+  subscribeReviewGuideEnabled,
+} from "../../settings/model/settings";
 import { PrAttribution } from "../../attribution/ui/PrAttribution";
 import { usePrAttribution } from "../../attribution/ui/usePrAttribution";
 import {
@@ -2132,6 +2144,12 @@ export function InboxDetail({
   // so its explicit refresh stays live.
   const panelMaxAge = panel ? GITHUB_WORK_ITEM_FRESH_MS : undefined;
   const [diffFocusPath, setDiffFocusPath] = useState<string | undefined>();
+  // WP-132b: the guide stays hidden until this setting is on.
+  const reviewGuideOn = useSyncExternalStore(
+    subscribeReviewGuideEnabled,
+    loadReviewGuideEnabled,
+    () => false,
+  );
   // The panel summary lists changed files, so it shares the Code tab's fetch.
   const diffWanted = tab === "code" || (panel && tab === "summary");
   const fullFile = inboxShowsFullFileDiff(item) && diffMode === "full";
@@ -3001,12 +3019,27 @@ export function InboxDetail({
               ) : diffError ? (
                 <p className="text-[13px] text-content/50">{diffError}</p>
               ) : prDiff ? (
-                <InboxPrDiff
-                  key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
-                  diff={prDiff}
-                  fullFile={fullFile}
-                  focusPath={diffFocusPath}
-                />
+                <>
+                  {/* WP-132b: review guide, off unless the setting is on. */}
+                  {reviewGuideShown(reviewGuideOn, item.provider) &&
+                  (!threadLoading || headFromThread(thread)) ? (
+                    <ReviewGuidePanel
+                      repo={item.repo}
+                      number={item.number}
+                      head={headFromThread(thread)}
+                      diff={prDiff}
+                      comments={commentsFromThread(thread)}
+                      ask={reviewGuideAsk(item.projectPath || cwd)}
+                      onJump={setDiffFocusPath}
+                    />
+                  ) : null}
+                  <InboxPrDiff
+                    key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
+                    diff={prDiff}
+                    fullFile={fullFile}
+                    focusPath={diffFocusPath}
+                  />
+                </>
               ) : (
                 <p className="text-[13px] text-content/45">No file changes</p>
               )
