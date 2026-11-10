@@ -32,6 +32,10 @@ Paseo (Apache-2.0, getpaseo/paseo, `docs/agent-lifecycle.md`) has the shape wort
 - `src/app/App.tsx`, `src-tauri/src/lib.rs` and `src/features/settings/ui/SettingsView.tsx` stay hook-only.
 - Don't copy Paseo code or docs text. Credit it in SOURCES and credits.json.
 
+## Licence
+
+Paseo (getpaseo/paseo) is Apache-2.0. Ideas only: Hivra writes its own code from the design and copies no text or code.
+
 ## Owned paths
 
 - `src/features/sessions/model/` (closed state, load path, idle clock inputs)

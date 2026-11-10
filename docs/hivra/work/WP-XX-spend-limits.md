@@ -46,6 +46,15 @@ Paperclip (MIT) describes budgets as tracking reported spend, alerting at thresh
 
 Idea only. Paperclip is MIT (its LICENSE file: "Copyright (c) 2025 Paperclip AI"). No code or text is copied. The design uses Hivra's usage rows and WP-161's gate. Credit it in SOURCES.md and credits.json when this lands.
 
+## Owned paths
+
+- `scripts/fake-claude.mjs`
+- `src-tauri/src/model_router.rs`
+- `src/features/monos/model/builderScale.ts`
+- `src/features/usage/model/history.ts`
+- `src/integrations/harness/providers/claude/claude.ts`
+- `src/integrations/harness/providers/opencode/opencode.ts`
+
 ## Done when
 
 - [ ] Tests first: a priced turn adds to the total and an unpriced one is counted apart, never as $0; `spendAllowed` covers ok, warn, over, unmeasured and unset; the warning wakes once per period; a period boundary lifts the pause; a restart does not reset the total.

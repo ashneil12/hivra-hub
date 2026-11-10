@@ -38,6 +38,10 @@ Agentlas 2.0 claims an OS-sandboxed terminal for each downloaded agent, with no 
 - Don't treat a prompt instruction as the boundary.
 - Don't copy another product's policy file. Write the lists from this design.
 
+## Owned paths
+
+- None yet. This package is design first: it names paths once the design is agreed. `src/app/App.tsx`, `src-tauri/src/lib.rs` and `src/features/settings/ui/SettingsView.tsx` stay hook only.
+
 ## Done when
 
 - [ ] Design doc with the platform matrix, measured startup cost and what each boundary cannot stop. A Claude agent that did not write it reviews it.

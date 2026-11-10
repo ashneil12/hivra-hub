@@ -32,6 +32,14 @@ What exists today: `src-tauri/src/provider_session_transfer.rs` copies a Claude 
 5. Credentials: the host uses its own Claude or Codex login. No login, key, token or subscription file is copied in a move, a manifest or an export. The export and dev-copy secret rules in `src-tauri/src/portable.rs` stay as they are. Portable export is not the move mechanism.
 6. Out of scope: relay, phone or web access to a moved chat (WP-133 and WP-149), the cloud service (WP-61), delegations and watchers (WP-60), a second session list, and any new chat mode.
 
+## Owned paths
+
+- `src-tauri/src/portable.rs`
+- `src-tauri/src/provider_session_transfer.rs`
+- `src-tauri/src/remote.rs`
+- `src/features/connections/`
+- `src/features/sessions/model/handoff.ts`
+
 ## Done when
 
 - [ ] A chat moved from the Mac to a stubbed host, then back, keeps its id, model, effort and transcript, with the transcript identical on each side at the moment of the move.

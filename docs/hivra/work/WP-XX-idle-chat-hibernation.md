@@ -44,6 +44,13 @@ Open question for the brief: this study did not trace whether an idle Hivra chat
 - No Orchestrator.inc code or prompt text. Port the rules.
 - `App.tsx`, `src-tauri/src/lib.rs` and `SettingsView.tsx` stay hook-only.
 
+## Owned paths
+
+- `src-tauri/src/lib.rs` (hook only, as PLAN says)
+- `src/features/monos/model/workerStall.ts`
+- `src/features/sessions/model/approvalWait.ts`
+- `src/features/sessions/model/session.ts`
+
 ## Done when
 
 - [ ] Tests for each row of the boundary table.

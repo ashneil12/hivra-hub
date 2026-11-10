@@ -52,6 +52,14 @@ Happy is MIT, `Copyright (c) 2026 Happy Coder Contributors`. This package ports 
 - Model, effort and worker choice (WP-89, WP-120).
 - Any new permission UI, mode or setting.
 
+## Owned paths
+
+- `src/features/sessions/model/session.ts`
+- `src/integrations/harness/core/permissionMatrix.ts`
+- `src/integrations/harness/providers/antigravity/antigravityProtocol.ts`
+- `src/integrations/harness/providers/claude/claudeLaunch.ts`
+- `src/integrations/harness/providers/claude/claudeProtocol.ts`
+
 ## Done when
 
 - [ ] One matrix module exists, and every adapter's mapping reads from it.
