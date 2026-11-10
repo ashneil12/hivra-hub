@@ -28,6 +28,8 @@ import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSession
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-164: quiet hours for routine programme notices.
+import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -1094,6 +1096,14 @@ function GeneralPage({
             on={notificationsEnabled}
             onChange={onNotificationsEnabled}
           />
+        </Row>
+        {/* WP-164: routine programme notices wait. Approvals still come through. */}
+        <Row
+          id="quiet-hours"
+          label="Quiet hours"
+          description="Routine programme notices wait. Approvals and questions still come through unless you muted them."
+        >
+          <QuietHoursSetting />
         </Row>
       </Group>
 
