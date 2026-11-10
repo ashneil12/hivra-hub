@@ -189,3 +189,13 @@ it("follows another window until this one is mid edit", async () => {
   expect(field("Model")!.value).toBe("mine");
   expect(loadTextGeneration()!.provider).toBe("ollama");
 });
+
+it("shows the stored address for a named provider only when it is a proxy, not the default", async () => {
+  saveTextGeneration({ provider: "openrouter", model: "x-ai/grok-4", baseUrl: defaultBaseUrl("openrouter") });
+  await render();
+  expect(container.querySelector("[data-saved-address]")).toBeNull();
+
+  saveTextGeneration({ provider: "openrouter", model: "x-ai/grok-4", baseUrl: "https://proxy.example.com/v1" });
+  await act(async () => root.render(createElement(TextGenerationSetting)));
+  expect(container.querySelector("[data-saved-address]")?.textContent).toBe("https://proxy.example.com/v1");
+});

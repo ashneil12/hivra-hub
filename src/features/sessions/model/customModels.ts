@@ -40,6 +40,17 @@ export function providerName(id: CustomProvider): string {
 export function defaultBaseUrl(id: CustomProvider): string {
   return CUSTOM_PROVIDERS.find((p) => p.id === id)?.baseUrl ?? "";
 }
+/**
+ * The address to show beside a stored key, or undefined when the key goes only to the provider's own default address.
+ * A custom model always shows its address. A named provider shows one only when it is a stored proxy, not the default.
+ */
+export function addressShownFor(provider: string, baseUrl: string | undefined): string | undefined {
+  const url = (baseUrl ?? "").trim().replace(/\/+$/, "");
+  if (!url) return undefined;
+  if (provider === "custom") return url;
+  const fallback = defaultBaseUrl(provider as CustomProvider).replace(/\/+$/, "");
+  return url === fallback ? undefined : url;
+}
 /** Ollama runs on this Mac and needs no key. */
 export function needsKey(id: CustomProvider): boolean {
   return id !== "ollama";

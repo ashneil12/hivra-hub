@@ -46,13 +46,14 @@ describe("the memory tier choice", () => {
     expect(cheap).toMatch(/<option[^>]*value="deepseek-def456"[^>]*selected=""/);
   });
 
-  it("shows the address each saved key was saved with, beside its model", () => {
+  it("shows the address beside a model only when it goes somewhere other than the provider's default", () => {
     const cheap = html({ tier: "cheap", model: "xai-abc123" }, [
-      { id: "xai-abc123", name: "Grok fast", baseUrl: "https://api.x.ai/v1" },
-      { id: "deepseek-def456", name: "DeepSeek chat", baseUrl: "https://api.deepseek.com/v1" },
+      { id: "xai-abc123", name: "Grok fast", provider: "xai", baseUrl: "https://api.x.ai/v1" },
+      { id: "deepseek-def456", name: "DeepSeek chat", provider: "deepseek", baseUrl: "https://proxy.example.com/v1" },
     ]);
-    expect(cheap).toContain("Grok fast · https://api.x.ai/v1");
-    expect(cheap).toContain("DeepSeek chat · https://api.deepseek.com/v1");
+    expect(cheap).toContain("DeepSeek chat · https://proxy.example.com/v1");
+    expect(cheap).not.toContain("https://api.x.ai/v1");
+    expect(cheap).toContain(">Grok fast<");
   });
 
   it("says what to do when the cheap tier is picked and no model has been added", () => {

@@ -13,6 +13,7 @@ import {
   subscribeCustomModels,
   testCustomModel,
   validateCustomModel,
+  addressShownFor,
   defaultBaseUrl,
   defaultModelId,
   isClaudeKeyError,
@@ -35,6 +36,10 @@ import { notConnectedYet } from "../../providers/model/providerSignIn";
 export function useCustomModels(): CustomModel[] {
   useSyncExternalStore(subscribeCustomModels, customModelsVersion, customModelsVersion);
   return listCustomModels();
+}
+
+function shownAddress(m: CustomModel): string | undefined {
+  return addressShownFor(m.provider, m.baseUrl);
 }
 
 /** "Other models": Ash's own models under the subscription list, each tagged "billed separately", then Add model. */
@@ -93,8 +98,10 @@ export function OtherModelsSection({
           className="flex h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-[13px] text-content hover:bg-content/5"
         >
           <span className="min-w-0 flex-1 truncate">{m.name}</span>
-          {/* The address the key was saved with: the key is only ever sent there (Short text, memory, routed sessions). */}
-          <span className="max-w-[45%] shrink truncate text-[10px] text-content/40 group-hover:invisible" data-saved-address={m.id} title={m.baseUrl}>{m.baseUrl}</span>
+          {/* Shown only when the key goes somewhere other than the provider's default: a custom address or a proxy. */}
+          {shownAddress(m) ? (
+            <span className="max-w-[45%] shrink truncate text-[10px] text-content/40 group-hover:invisible" data-saved-address={m.id} title={shownAddress(m)}>{shownAddress(m)}</span>
+          ) : null}
           <span className="shrink-0 text-[10px] text-content/40 group-hover:invisible" data-billed-separately>billed separately</span>
         </button>
         <button

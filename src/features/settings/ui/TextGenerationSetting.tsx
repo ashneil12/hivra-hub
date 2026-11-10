@@ -2,6 +2,7 @@
 import { useState, useSyncExternalStore } from "react";
 import {
   CUSTOM_PROVIDERS,
+  addressShownFor,
   defaultBaseUrl,
   defaultModelId,
   type CustomProvider,
@@ -107,6 +108,13 @@ export function TextGenerationSetting() {
           />
         </label>
       )}
+      {shown.provider !== "agent" && shown.provider !== "custom" && addressShownFor(shown.provider, shown.baseUrl) ? (
+        // A named provider on a stored proxy address: the key is sent there, so say where. The default needs no line.
+        <div className="flex flex-col gap-1 text-[12px]">
+          <span>Sent to</span>
+          <span data-saved-address>{addressShownFor(shown.provider, shown.baseUrl)}</span>
+        </div>
+      ) : null}
       {shown.provider === "custom" ? (
         <label className="flex flex-col gap-1 text-[12px]">
           Address

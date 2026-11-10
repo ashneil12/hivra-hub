@@ -2,11 +2,17 @@
 // wrapper below wires localStorage and the model list, and a browser test drives this one directly.
 
 import { useState, useSyncExternalStore } from "react";
-import { customModelsVersion, listCustomModels, subscribeCustomModels } from "../../sessions/model/customModels";
+import { addressShownFor, customModelsVersion, listCustomModels, subscribeCustomModels } from "../../sessions/model/customModels";
 import { testCheapModel } from "../model/cheapAsk";
 import { saveMemoryTier, tierLabel, useMemoryTier, type MemoryTier, type TierChoice } from "../model/tier";
 
-export type TierModel = { id: string; name: string; /** The address the saved key was saved with, shown beside the name. */ baseUrl?: string };
+export type TierModel = {
+  id: string;
+  name: string;
+  provider?: string;
+  /** The address the saved key was saved with. Shown beside the name only when it is not the provider's default. */
+  baseUrl?: string;
+};
 
 const OPTIONS: { tier: MemoryTier; summary: string }[] = [
   {
@@ -24,6 +30,11 @@ const OPTIONS: { tier: MemoryTier; summary: string }[] = [
 ];
 
 const ROW = "flex cursor-pointer items-start gap-2 rounded-md border border-content/10 px-3 py-2 text-sm";
+
+function modelLabel(model: TierModel): string {
+  const shown = model.provider ? addressShownFor(model.provider, model.baseUrl) : model.baseUrl?.trim() || undefined;
+  return shown ? `${model.name} · ${shown}` : model.name;
+}
 
 export function MemoryTierChoice({
   value,
@@ -85,7 +96,7 @@ export function MemoryTierChoice({
                 {value.model && picked ? null : <option value="">Pick a model</option>}
                 {models.map((model) => (
                   <option key={model.id} value={model.id}>
-                    {model.baseUrl ? `${model.name} · ${model.baseUrl}` : model.name}
+                    {modelLabel(model)}
                   </option>
                 ))}
               </select>
@@ -128,7 +139,7 @@ export function MemoryTierSetting() {
   return (
     <MemoryTierChoice
       value={choice}
-      models={models.map((model) => ({ id: model.id, name: model.name, baseUrl: model.baseUrl }))}
+      models={models.map((model) => ({ id: model.id, name: model.name, provider: model.provider, baseUrl: model.baseUrl }))}
       onChange={saveMemoryTier}
     />
   );
