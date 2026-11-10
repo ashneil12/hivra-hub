@@ -52,7 +52,7 @@
       "name": "OpenBot",
       "url": "https://github.com/CopilotKit/openbot",
       "licence": "MIT",
-      "gave": "approval gates, an audit trail, typed handoffs and quiet digests"
+      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests"
     },
     {
       "name": "Rerun",
@@ -251,6 +251,12 @@
       "url": "https://code.claude.com/docs/en/sub-agents",
       "licence": "public docs",
       "gave": "a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143)"
+    },
+    {
+      "name": "models.dev",
+      "url": "https://github.com/anomalyco/models.dev",
+      "licence": "MIT",
+      "gave": "a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104)"
     },
     {
       "name": "Elephant-Goldfish",
@@ -615,6 +621,14 @@
       "copyright": "Copyright (c) 2026 MiniMax Code",
       "where": "src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit",
       "how": "Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. The skill text is otherwise unchanged."
+    },
+    {
+      "name": "models.dev's model catalogue",
+      "url": "https://github.com/anomalyco/models.dev",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2025 models.dev",
+      "where": "src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev",
+      "how": "The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline."
     }
   ]
 }
