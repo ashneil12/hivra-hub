@@ -2050,7 +2050,8 @@ fn an_unlisted_link_in_a_picture_folder_never_copies_what_it_points_at() {
 }
 
 /// A LISTED picture that is a link to a file with the very bytes the manifest hashes: the hash alone can't catch
-/// it, the link itself must be refused.
+/// it, the link itself must be refused. An export that lists one is not opened at all; one swapped in after the
+/// export was checked is left out of the copy.
 #[cfg(unix)]
 #[test]
 fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
@@ -2063,21 +2064,30 @@ fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
     let dest = note_export(&source, &out.0);
     let picture = dest.join("workspace/note-assets/note-1/1-shot.png");
     fs::write(outside.0.join("same-bytes.png"), PICTURE).unwrap();
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
     fs::remove_file(&picture).unwrap();
     std::os::unix::fs::symlink(outside.0.join("same-bytes.png"), &picture).unwrap();
 
-    let store = open_store(&target);
-    let conn = store.lock_conn().unwrap();
-    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    // Swapped after the check: the copy leaves it out and says why.
+    let left_out = copy_note_assets(&target, &opened, "note-1", "note-1");
+    assert_eq!(left_out, vec!["it is a link"]);
     assert_eq!(
         files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
         Vec::<String>::new(),
         "a link was followed and its target copied in"
     );
-    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+
+    // Listed as a link from the start: the export isn't opened.
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let why = import_held(&target, &conn, &note_import(&dest)).unwrap_err();
+    assert!(
+        why.contains("workspace/note-assets/note-1/1-shot.png") && why.contains("link"),
+        "{why}"
+    );
     assert_eq!(
-        report.notes,
-        vec!["1 picture of note note-1 was not copied (it is a link).".to_string()]
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        Vec::<String>::new()
     );
 }
 

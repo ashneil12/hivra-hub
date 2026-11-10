@@ -38,11 +38,18 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
   refuses (leaving nothing behind) on any hit. A memory folder whose git history has a secret in any commit goes without
   its history (the manifest notes say so). Settings whose name or value looks like a secret stay home.
 - A file without secrets goes byte for byte as it was.
+- Note pictures go the same way they come in: plain files up to the size a note takes (20 MB), never through a link. A
+  `note-assets` folder, or a note's folder in it, that is a link is not followed (the manifest notes say so), and a note
+  doesn't take a picture that is a link either (`notes_save_image`).
 
 ## Import
 
 1. **Read** (`portable_inspect`): a folder, `.tar.gz` (unpacked to a scratch folder: links, devices and paths that climb
    out are refused) or v1 `.json`. Every listed file must match its SHA-256; a newer format is refused in plain words.
+   Listed files, and `manifest.json` itself, are read through one reader (`plain_file.rs`): a link, a pipe or a device
+   is refused unread (a listed link to `/dev/urandom` can't fill the memory, a pipe can't hang the open), and no more
+   bytes are read than the manifest says the file holds. A file the manifest doesn't list is never read, the fixed
+   `workspace/*.json` names included, and each later read of a listed file hashes the bytes it uses.
 2. **Preview** (`importPlan.ts`): for every item, New / Already here / Differs, and clashes by id and by name (a project
    or Mono or model called the same). New things are ticked; things already here are left alone; Differs keeps Ash's.
 3. **Restore** only adds:
@@ -61,7 +68,8 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
    - A note's pictures (`workspace/note-assets/<id>/`) come in only as files the manifest lists, as the very bytes that
      hash as listed, never through a link (the picture, its folder, `note-assets` or `workspace`), and never over a file
      already here. Anything else in that folder is left out and counted in the report (`noteAssetsSkipped`, with a line
-     in its notes). A folder export can hold links; an archive can't (unpacking refuses them).
+     in its notes). A folder export can hold links; an archive can't (unpacking refuses them). A picture's name is
+     exactly one plain file name: one with a folder in it is left out.
    - A provider session id is kept only where it can resume: the daily app, a Claude chat, its transcript on this Mac.
 
 **Engine-agnostic.** Every Mono and every chat names its engine. A Mono with an engine starts new conversations on it

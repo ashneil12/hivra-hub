@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::fs::expand_home;
+use crate::plain_file::{self, Refusal};
 use crate::session_store::{now_millis, validate_id, SessionStore};
 
 const TITLE_MAX: usize = 200;
@@ -287,18 +288,19 @@ fn save_note_image_into(
     source_path: &str,
 ) -> Result<NoteImageAsset, String> {
     let source = expand_home(source_path);
-    let meta = std::fs::metadata(&source).map_err(|e| format!("{}: {e}", source.display()))?;
-    if !meta.is_file() {
-        return Err("Not a file".into());
-    }
-    if meta.len() > IMAGE_MAX_BYTES {
-        return Err(format!(
+    let (display_name, safe_name) = note_image_names(&source)?;
+    // A picture that is a link isn't followed (it could lead to a private key, and the next export would carry the
+    // copy out), a pipe or device isn't one, and no more than the cap is ever read.
+    let bytes = plain_file::read(&source, IMAGE_MAX_BYTES).map_err(|why| match why {
+        Refusal::Link => "That image is a link. Pick the image file itself.".to_string(),
+        Refusal::NotAFile => "Not a file".to_string(),
+        Refusal::Unreadable => format!("{}: couldn't be read", source.display()),
+        Refusal::TooBig => format!(
             "Image is too large (maximum {} MB).",
             IMAGE_MAX_BYTES / 1024 / 1024
-        ));
-    }
+        ),
+    })?;
 
-    let (display_name, safe_name) = note_image_names(&source)?;
     let dir = note_assets_dir_in(data_dir, note_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
@@ -307,7 +309,19 @@ fn save_note_image_into(
         .as_nanos();
     let stored_name = format!("{stamp}-{safe_name}");
     let destination = dir.join(&stored_name);
-    std::fs::copy(&source, &destination).map_err(|e| format!("{}: {e}", destination.display()))?;
+    // A new file: never over one that is there, and never through a link at that name.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)
+        .and_then(|mut file| {
+            use std::io::Write;
+            file.write_all(&bytes)
+        });
+    if let Err(error) = written {
+        let _ = std::fs::remove_file(&destination);
+        return Err(format!("{}: {error}", destination.display()));
+    }
 
     Ok(NoteImageAsset {
         name: display_name,

@@ -19,9 +19,9 @@
 //! the file's version comes in beside it only when asked. Automations come back paused, delegations as history only,
 //! and a dev copy never keeps a provider session id or writes into the real memory folder.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
@@ -34,6 +34,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Manager, State};
 
+use crate::plain_file::{self, Refusal};
 use crate::session_store::{self, now_millis, SessionStore, SessionUpsert};
 
 pub const FORMAT: &str = "monocode-hub-export";
@@ -44,6 +45,8 @@ const MANIFEST: &str = "manifest.json";
 /// Unpacked size and entry caps for an archive: a damaged or hostile file can't fill the disk.
 const MAX_UNPACKED: u64 = 8 * 1024 * 1024 * 1024;
 const MAX_ENTRIES: usize = 500_000;
+/// The most a manifest.json may hold: a manifest of 500,000 files is about 100 MB.
+const MAX_MANIFEST: u64 = 128 * 1024 * 1024;
 /// The folders the webview writes and reads back; everything else is this module's.
 const WEBVIEW_PREFIXES: [&str; 2] = ["setup/", "workspace/hub/"];
 
@@ -385,10 +388,11 @@ fn plain_name(name: &str) -> bool {
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    hex_of(&Sha256::digest(bytes))
+}
+
+fn hex_of(digest: &[u8]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Owner-only files: an export holds Ash's chats and memory.
@@ -649,12 +653,28 @@ impl Writer {
         self.raw(relative, &path, text.as_bytes())
     }
 
-    /// A binary file (an image, a git bundle) copied as it is.
-    fn binary(&mut self, relative: &str, source: &Path) -> Result<(), String> {
+    /// A binary file (a git bundle) copied as it is: a plain file that is not a link, of no more than `cap` bytes.
+    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<(), String> {
+        let bytes = plain_file::read(source, cap).map_err(|why| {
+            format!(
+                "{} {}.",
+                source.display(),
+                match why {
+                    Refusal::Link => "is a link",
+                    Refusal::NotAFile => "isn't a plain file",
+                    Refusal::Unreadable => "couldn't be read",
+                    Refusal::TooBig => "is too large",
+                }
+            )
+        })?;
+        self.bytes(relative, &bytes)
+    }
+
+    /// A binary file whose bytes are already in hand (an image), written as they are.
+    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<(), String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
-        let bytes = fs::read(source).map_err(|e| format!("{}: {e}", source.display()))?;
-        self.raw(relative, &path, &bytes)
+        self.raw(relative, &path, bytes)
     }
 
     fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -735,7 +755,7 @@ pub fn export(env: &Env, request: &ExportRequest) -> Result<ExportReport, String
         if let Some(conn) = env.read_db()? {
             export_workspace(env, &conn, &mut writer, &mut counts).map_err(|e| e.to_string())?;
         }
-        export_note_assets(env, &mut writer, &counts)?;
+        export_note_assets(env, &mut writer, &counts, &mut notes)?;
         counts.remove("noteIds");
     }
 
@@ -928,7 +948,11 @@ fn export_memory(
         if choice.history && dir.join(".git").exists() {
             match history_bundle(&dir) {
                 Ok(bundle) => {
-                    writer.binary(&format!("memory/{name}.git.bundle"), &bundle.1)?;
+                    writer.binary(
+                        &format!("memory/{name}.git.bundle"),
+                        &bundle.1,
+                        MAX_UNPACKED,
+                    )?;
                 }
                 Err(why) => notes.push(format!("The history of {name} was left out: {why}")),
             }
@@ -1226,33 +1250,71 @@ fn export_workspace(
 
 const NOTE_ASSET_DIR: &str = "note-assets";
 
-/// Each exported note's pictures, as they are.
+/// Each exported note's pictures, as they are: plain files of a size a note takes, in a folder that is not a link
+/// (one that is would carry out whatever it points at). What is left out is said in `notes`.
 fn export_note_assets(
     env: &Env,
     writer: &mut Writer,
     counts: &Map<String, Value>,
+    notes: &mut Vec<String>,
 ) -> Result<(), String> {
     let Some(ids) = counts.get("noteIds").and_then(Value::as_array) else {
         return Ok(());
     };
+    let all = env.data_dir.join(NOTE_ASSET_DIR);
+    match folder_state(&all) {
+        Folder::Absent => return Ok(()),
+        Folder::Real => {}
+        Folder::Refused => {
+            notes.push(format!(
+                "{NOTE_ASSET_DIR} is a link, so no note pictures were exported."
+            ));
+            return Ok(());
+        }
+    }
     for id in ids
         .iter()
         .filter_map(Value::as_str)
         .filter(|id| session_file_id(id))
     {
-        let dir = env.data_dir.join(NOTE_ASSET_DIR).join(id);
+        let dir = all.join(id);
+        match folder_state(&dir) {
+            Folder::Absent => continue,
+            Folder::Real => {}
+            Folder::Refused => {
+                notes.push(format!(
+                    "The pictures of note {id} were not exported: {NOTE_ASSET_DIR}/{id} is a link."
+                ));
+                continue;
+            }
+        }
         let Ok(entries) = fs::read_dir(&dir) else {
             continue;
         };
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if entry.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && safe_relative(&name).is_some()
-            {
-                writer.binary(
-                    &format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}"),
-                    &entry.path(),
-                )?;
+        let mut names: Vec<String> = entries
+            .flatten()
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .is_ok_and(|t| t.is_file() || t.is_symlink())
+            })
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| safe_relative(name).is_some())
+            .collect();
+        names.sort();
+        for name in names {
+            let relative = format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}");
+            match plain_file::read(&dir.join(&name), crate::notes::IMAGE_MAX_BYTES) {
+                Ok(bytes) => writer.bytes(&relative, &bytes)?,
+                Err(why) => notes.push(format!(
+                    "{NOTE_ASSET_DIR}/{id}/{name} was not exported: {}.",
+                    match why {
+                        Refusal::Link => "it is a link",
+                        Refusal::NotAFile => "it isn't a plain file",
+                        Refusal::Unreadable => "it couldn't be read",
+                        Refusal::TooBig => "it is too large for a note picture",
+                    }
+                )),
             }
         }
     }
@@ -1261,12 +1323,73 @@ fn export_note_assets(
 
 // ---- reading an export ---------------------------------------------------------------------------------------------
 
+/// One file the manifest lists: where it is in the export, the bytes it says it holds, and its SHA-256.
+struct Listed {
+    path: String,
+    declared: Option<u64>,
+    sha256: String,
+}
+
+/// Why a file the manifest lists couldn't be used as listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Unusable {
+    Link,
+    NotAFile,
+    Unreadable,
+    /// Longer than the manifest says, or it doesn't hash as listed.
+    Changed,
+}
+
+impl From<Refusal> for Unusable {
+    fn from(why: Refusal) -> Self {
+        match why {
+            Refusal::Link => Unusable::Link,
+            Refusal::NotAFile => Unusable::NotAFile,
+            Refusal::Unreadable => Unusable::Unreadable,
+            Refusal::TooBig => Unusable::Changed,
+        }
+    }
+}
+
+/// No more than the manifest says a file holds, and never more than an archive may unpack to: a file swapped for
+/// something huge can't fill the memory.
+fn listed_cap(listed: &Listed) -> u64 {
+    listed.declared.unwrap_or(MAX_UNPACKED).min(MAX_UNPACKED)
+}
+
+/// Whether the file at `path` is a plain file, not a link, that hashes as `listed` says. Streamed: it is never held in
+/// memory whole, and no more than the listed size is read.
+fn check_listed(path: &Path, listed: &Listed) -> Result<(), Unusable> {
+    let mut hash = Sha256::new();
+    plain_file::stream(path, listed_cap(listed), |piece| hash.update(piece))?;
+    if hex_of(&hash.finalize()) == listed.sha256 {
+        Ok(())
+    } else {
+        Err(Unusable::Changed)
+    }
+}
+
+/// The bytes of the plain file at `path`, if they hash as `listed` says. The hash is of the very bytes returned: the
+/// caller uses what was checked, never a second read of the file.
+fn read_as_listed(path: &Path, listed: &Listed) -> Result<Vec<u8>, Unusable> {
+    let bytes = plain_file::read(path, listed_cap(listed))?;
+    if sha256_hex(&bytes) == listed.sha256 {
+        Ok(bytes)
+    } else {
+        Err(Unusable::Changed)
+    }
+}
+
 /// An export opened for reading. An archive is unpacked into a scratch folder that goes when this does.
 enum Opened {
     V1(String),
     V2 {
         root: PathBuf,
         manifest: Value,
+        /// Every file the manifest lists, in its order. `open_export` found each one there and hashing as listed.
+        files: Vec<Listed>,
+        /// Where each listed path is in `files`.
+        index: HashMap<String, usize>,
         _scratch: Option<Scratch>,
     },
 }
@@ -1279,9 +1402,19 @@ impl Opened {
         }
     }
 
+    /// The text of a file the manifest lists, as the bytes that hash as listed: nothing the manifest doesn't list is
+    /// read, whatever its name, and a listed file that is a link, or changed since `open_export` checked it, isn't
+    /// either.
     fn read(&self, relative: &str) -> Option<String> {
-        let root = self.root()?;
-        fs::read_to_string(root.join(safe_relative(relative)?)).ok()
+        let Opened::V2 {
+            root, files, index, ..
+        } = self
+        else {
+            return None;
+        };
+        let listed = &files[*index.get(relative)?];
+        let path = root.join(safe_relative(relative)?);
+        String::from_utf8(read_as_listed(&path, listed).ok()?).ok()
     }
 
     fn json(&self, relative: &str) -> Option<Value> {
@@ -1289,40 +1422,17 @@ impl Opened {
     }
 
     fn listed(&self) -> Vec<String> {
-        match self {
-            Opened::V2 { manifest, .. } => manifest["files"]
-                .as_array()
-                .map(|files| {
-                    files
-                        .iter()
-                        .filter_map(|f| f["path"].as_str().map(str::to_string))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Opened::V1(_) => Vec::new(),
-        }
+        self.listed_files()
+            .iter()
+            .map(|listed| listed.path.clone())
+            .collect()
     }
 
-    /// Each file the manifest lists, as (path, the bytes it says it holds, its sha256). `open_export` has already
-    /// found every one of them there and hashing as listed.
-    fn listed_files(&self) -> Vec<(String, Option<u64>, String)> {
+    /// Each file the manifest lists.
+    fn listed_files(&self) -> &[Listed] {
         match self {
-            Opened::V2 { manifest, .. } => manifest["files"]
-                .as_array()
-                .map(|files| {
-                    files
-                        .iter()
-                        .filter_map(|f| {
-                            Some((
-                                f["path"].as_str()?.to_string(),
-                                f["bytes"].as_u64(),
-                                f["sha256"].as_str()?.to_string(),
-                            ))
-                        })
-                        .collect()
-                })
-                .unwrap_or_default(),
-            Opened::V1(_) => Vec::new(),
+            Opened::V2 { files, .. } => files,
+            Opened::V1(_) => &[],
         }
     }
 }
@@ -1433,8 +1543,9 @@ fn open_export(path: &str) -> Result<Opened, String> {
     } else {
         return Err(format!("{} isn't there.", path.display()));
     };
-    let manifest: Value = serde_json::from_str(
-        &fs::read_to_string(root.join(MANIFEST))
+    // The manifest is read like every file it lists: a plain file that is not a link, of a size a manifest can be.
+    let manifest: Value = serde_json::from_slice(
+        &plain_file::read(&root.join(MANIFEST), MAX_MANIFEST)
             .map_err(|_| "The export has no readable manifest.json.".to_string())?,
     )
     .map_err(|_| "The export's manifest.json is damaged.".to_string())?;
@@ -1450,22 +1561,36 @@ fn open_export(path: &str) -> Result<Opened, String> {
     if version < 2 {
         return Err("That export's format is unknown.".into());
     }
-    // Every listed file must be there, unchanged.
+    // Every listed file must be there, a plain file (not a link, a pipe or a device), unchanged.
+    let mut files = Vec::new();
+    let mut index = HashMap::new();
     for file in manifest["files"].as_array().into_iter().flatten() {
         let relative = file["path"].as_str().unwrap_or("");
         let safe = safe_relative(relative)
             .ok_or_else(|| format!("The export lists a bad path: {relative}"))?;
-        let bytes =
-            fs::read(root.join(&safe)).map_err(|_| format!("The export is missing {relative}."))?;
-        if file["sha256"].as_str() != Some(sha256_hex(&bytes).as_str()) {
-            return Err(format!(
-                "The export is damaged or was changed after it was made: {relative}."
-            ));
-        }
+        let listed = Listed {
+            path: relative.to_string(),
+            declared: file["bytes"].as_u64(),
+            sha256: file["sha256"].as_str().unwrap_or("").to_string(),
+        };
+        check_listed(&root.join(&safe), &listed).map_err(|why| match why {
+            Unusable::Link => {
+                format!("The export lists {relative}, which is a link. Links aren't followed.")
+            }
+            Unusable::NotAFile => format!("The export lists {relative}, which isn't a plain file."),
+            Unusable::Unreadable => format!("The export is missing {relative}."),
+            Unusable::Changed => {
+                format!("The export is damaged or was changed after it was made: {relative}.")
+            }
+        })?;
+        index.entry(listed.path.clone()).or_insert(files.len());
+        files.push(listed);
     }
     Ok(Opened::V2 {
         root,
         manifest,
+        files,
+        index,
         _scratch: scratch,
     })
 }
@@ -2324,6 +2449,7 @@ const LEFT_OUT_FOLDER_LINK: &str = "its folder is a link";
 const LEFT_OUT_LINK: &str = "it is a link";
 const LEFT_OUT_NOT_A_FILE: &str = "it isn't a plain file";
 const LEFT_OUT_UNLISTED: &str = "the export doesn't list it";
+const LEFT_OUT_NAME: &str = "its name isn't one plain file name";
 const LEFT_OUT_UNREADABLE: &str = "it couldn't be read";
 const LEFT_OUT_CHANGED: &str = "it changed after the export was checked";
 const LEFT_OUT_UNWRITABLE: &str = "it couldn't be written here";
@@ -2346,50 +2472,22 @@ fn folder_state(path: &Path) -> Folder {
     }
 }
 
-/// A file opened for reading, never through a link at its last name (O_NOFOLLOW where the platform has it).
-fn open_without_following(path: &Path) -> std::io::Result<fs::File> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        // O_NONBLOCK: a pipe swapped in for the file opens at once and is refused as "not a plain file", where
-        // a plain open would wait for a writer that never comes.
-        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
-    }
-    options.open(path)
+/// The bytes of one picture the manifest lists: a plain file that is not a link, read ONCE (see `read_as_listed`),
+/// and only if they hash as the manifest says. The caller writes these same bytes, so a file swapped between the
+/// export's check and now can't bring anything in that the manifest didn't hash.
+fn read_listed_picture(path: &Path, listed: &Listed) -> Result<Vec<u8>, &'static str> {
+    read_as_listed(path, listed).map_err(|why| match why {
+        Unusable::Link => LEFT_OUT_LINK,
+        Unusable::NotAFile => LEFT_OUT_NOT_A_FILE,
+        Unusable::Unreadable => LEFT_OUT_UNREADABLE,
+        Unusable::Changed => LEFT_OUT_CHANGED,
+    })
 }
 
-/// The bytes of one picture the manifest lists: a plain file that is not a link, read ONCE, and only if they hash as
-/// the manifest says. The caller writes these same bytes, so a file swapped between the export's check and now
-/// can't bring anything in that the manifest didn't hash.
-fn read_listed_picture(
-    path: &Path,
-    declared: Option<u64>,
-    sha256: &str,
-) -> Result<Vec<u8>, &'static str> {
-    let meta = fs::symlink_metadata(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
-    if meta.file_type().is_symlink() {
-        return Err(LEFT_OUT_LINK);
-    }
-    if !meta.file_type().is_file() {
-        return Err(LEFT_OUT_NOT_A_FILE);
-    }
-    let file = open_without_following(path).map_err(|_| LEFT_OUT_UNREADABLE)?;
-    // The handle, not the name: what was opened is a plain file.
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err(LEFT_OUT_NOT_A_FILE);
-    }
-    // No more than the manifest says the file holds, so one swapped for something huge can't fill memory.
-    let cap = declared.unwrap_or(MAX_UNPACKED).min(MAX_UNPACKED);
-    let mut bytes = Vec::new();
-    file.take(cap + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| LEFT_OUT_UNREADABLE)?;
-    if bytes.len() as u64 > cap || sha256_hex(&bytes) != sha256 {
-        return Err(LEFT_OUT_CHANGED);
-    }
-    Ok(bytes)
+/// A name that is exactly one plain path component: a picture sits directly in its note's folder.
+fn one_plain_name(name: &str) -> bool {
+    safe_relative(name)
+        .is_some_and(|path| path.as_os_str() == name && path.components().count() == 1)
 }
 
 /// The folder this Mac keeps a note's pictures in, made when the first one is about to be written. Never a link:
@@ -2446,17 +2544,24 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
         return left_out;
     }
     let prefix = format!("workspace/{NOTE_ASSET_DIR}/{from}/");
-    let mut listed: BTreeMap<String, (Option<u64>, String)> = BTreeMap::new();
-    for (path, declared, sha256) in opened.listed_files() {
-        let Some(name) = path.strip_prefix(&prefix) else {
+    let mut listed: BTreeMap<String, &Listed> = BTreeMap::new();
+    // What the export lists under this note that is not one of its pictures, by the folder it names.
+    let mut elsewhere: BTreeSet<String> = BTreeSet::new();
+    let mut not_pictures = 0;
+    for file in opened.listed_files() {
+        let Some(name) = file.path.strip_prefix(&prefix) else {
             continue;
         };
-        // The export keeps every picture directly in its note's folder; a name with a path in it isn't one of ours.
-        let single = safe_relative(name).filter(|p| p.as_os_str() == name);
-        if single.is_some() {
-            listed.insert(name.to_string(), (declared, sha256));
+        // The export keeps every picture directly in its note's folder: a name with a path in it isn't one of ours,
+        // and is neither read (the folder it names could be a link) nor written.
+        if one_plain_name(name) {
+            listed.insert(name.to_string(), file);
+        } else {
+            not_pictures += 1;
+            elsewhere.insert(name.split('/').next().unwrap_or(name).to_string());
         }
     }
+    left_out.resize(not_pictures, LEFT_OUT_NAME);
 
     let workspace = root.join("workspace");
     let all = workspace.join(NOTE_ASSET_DIR);
@@ -2468,15 +2573,16 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
             Folder::Absent => return left_out,
             Folder::Refused => {
                 // Not looked into: what it lists is what is left out (at least the link itself).
-                left_out.resize(listed.len().max(1), LEFT_OUT_FOLDER_LINK);
+                left_out.clear();
+                left_out.resize((listed.len() + not_pictures).max(1), LEFT_OUT_FOLDER_LINK);
                 return left_out;
             }
         }
     }
 
     let mut folder: Option<Option<PathBuf>> = None;
-    for (name, (declared, sha256)) in &listed {
-        let bytes = match read_listed_picture(&source.join(name), *declared, sha256) {
+    for (name, file) in &listed {
+        let bytes = match read_listed_picture(&source.join(name), file) {
             Ok(bytes) => bytes,
             Err(why) => {
                 left_out.push(why);
@@ -2502,7 +2608,7 @@ fn copy_note_assets(env: &Env, opened: &Opened, from: &str, to: &str) -> Vec<&'s
             if name.is_some_and(|n| n.starts_with('.')) {
                 continue;
             }
-            if !name.is_some_and(|n| listed.contains_key(n)) {
+            if !name.is_some_and(|n| listed.contains_key(n) || elsewhere.contains(n)) {
                 left_out.push(LEFT_OUT_UNLISTED);
             }
         }
@@ -2655,7 +2761,7 @@ fn import_memory(
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
             let Some(text) = opened.read(path) else {
                 report.notes.push(format!(
-                    "{path} isn't plain text (UTF-8), so it was skipped; nothing here changed for it."
+                    "{path} couldn't be read as unchanged plain text (UTF-8), so it was skipped; nothing here changed for it."
                 ));
                 continue;
             };
