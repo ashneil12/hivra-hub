@@ -5,12 +5,20 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  emitHarnessAvailability,
   setHarnessAvailability,
   type HarnessAvailability,
 } from "../../../integrations/harness/core/availabilityState";
 import { resetCodingTeamHomes, saveChosenClis } from "../../hub/model/codingTeamHome";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
+import { applyLeadSwitch } from "../model/leadCli";
 import { LeadCliNotice } from "./LeadCliNotice";
+
+// The real gate, wrapped so a test can see the strip call it and can make it refuse.
+vi.mock("../model/leadCli", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../model/leadCli")>();
+  return { ...real, applyLeadSwitch: vi.fn(real.applyLeadSwitch) };
+});
 
 let root: Root;
 let container: HTMLElement;
@@ -30,6 +38,7 @@ const offered = () =>
   [...container.querySelectorAll("[data-lead-cli]")].map((button) => button.getAttribute("data-lead-cli"));
 
 beforeEach(() => {
+  vi.mocked(applyLeadSwitch).mockClear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   container = document.createElement("div");
   document.body.append(container);
@@ -89,5 +98,44 @@ describe("the lead strip", () => {
     expect(codex).not.toBeNull();
     act(() => codex?.click());
     expect(onSwitch).toHaveBeenCalledWith("codex");
+  });
+
+  it("sends a pick through the switch gate and switches to what the gate returns", () => {
+    installedHere(["claude", "codex"]);
+    saveChosenClis(["claude", "codex"]);
+    const onSwitch = show("opencode");
+    act(() => container.querySelector<HTMLButtonElement>("[data-lead-cli=codex]")?.click());
+    expect(applyLeadSwitch).toHaveBeenCalledTimes(1);
+    expect(applyLeadSwitch).toHaveBeenCalledWith("opencode", "codex");
+    expect(onSwitch).toHaveBeenCalledTimes(1);
+    expect(onSwitch).toHaveBeenCalledWith("codex");
+  });
+
+  it("does not switch when the gate refuses the pick", () => {
+    installedHere(["claude", "codex"]);
+    saveChosenClis(["claude", "codex"]);
+    const onSwitch = show("opencode");
+    vi.mocked(applyLeadSwitch).mockReturnValueOnce(null);
+    act(() => container.querySelector<HTMLButtonElement>("[data-lead-cli=codex]")?.click());
+    expect(applyLeadSwitch).toHaveBeenCalledTimes(1);
+    expect(onSwitch).not.toHaveBeenCalled();
+  });
+
+  it("does not switch to a CLI that left this machine after the strip drew", async () => {
+    installedHere(["claude", "codex"]);
+    saveChosenClis(["claude", "codex"]);
+    const onSwitch = show("opencode");
+    const codex = container.querySelector<HTMLButtonElement>("[data-lead-cli=codex]");
+    expect(codex).not.toBeNull();
+    // The probe reports Codex gone, and the click lands before React redraws the strip. The probe
+    // runs outside React, so this emit is deliberately not inside act().
+    installedHere(["claude"]);
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", false);
+    emitHarnessAvailability();
+    vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+    codex?.click();
+    expect(onSwitch).not.toHaveBeenCalled();
+    await act(async () => {});
+    expect(offered()).toEqual(["claude"]);
   });
 });
