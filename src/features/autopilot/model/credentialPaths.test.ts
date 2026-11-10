@@ -104,6 +104,13 @@ describe("a credential place, by any segment of a path", () => {
     "~/.claude.json",
     "/etc/passwd",
     "/etc/shadow",
+    // WP-101 fix round 4, finding 3: master.passwd is the password file on a Mac.
+    "/etc/master.passwd",
+    "/private/etc/master.passwd",
+    "/etc/./master.passwd",
+    "//etc//master.passwd",
+    "/ETC/MASTER.PASSWD",
+    "/System/Volumes/Data/private/etc/master.passwd",
     "~/.zsh_history",
   ])("holds %s", (path) => {
     expect(credentialPath(path), path).toBe(true);
@@ -167,6 +174,19 @@ describe("words a command runs with", () => {
     expect(credentialInWords(["cat", "src/.zshrc"])).toBeNull();
     expect(credentialInWords(["cat", "~/notes.txt"])).toBeNull();
     expect(credentialInWords(["cat", "/Users/ash/Worktrees/hub-x/README.md"])).toBeNull();
+  });
+
+  it("holds the password file of a Mac under any command that names it", () => {
+    for (const words of [
+      ["cat", "/etc/master.passwd"],
+      ["head", "-n", "3", "/private/etc/master.passwd"],
+      ["grep", "root", "/etc/master.passwd"],
+      ["git", "diff", "--no-index", "/etc/master.passwd", "/dev/null"],
+      ["ls", "-l", "/etc/master.passwd"],
+    ])
+      expect(credentialInWords(words), words.join(" ")).not.toBeNull();
+    expect(credentialInWords(["cat", "/etc/hosts"])).toBeNull();
+    expect(credentialInWords(["cat", "master.passwd"])).toBeNull();
   });
 
   it("does not mistake a search for a word for a file that holds one", () => {
@@ -476,6 +496,8 @@ describe("a credential place under another spelling (fix round 4, finding 1)", (
 
   it("holds text that names such a path too", () => {
     expect(credentialInText("cat /etc/./shadow")).toBe(true);
+    // The red list lowercases a call's text before it reads it.
+    expect(credentialInText("cat /etc//master.passwd")).toBe(true);
     expect(credentialInText("open ~/library/./keychains/login")).toBe(true);
     expect(credentialInText("read /etc/./hosts")).toBe(false);
   });

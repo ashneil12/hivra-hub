@@ -23,6 +23,8 @@ const PLACES: readonly (readonly string[])[] = [
   ["etc", "shadow"],
   ["etc", "gshadow"],
   ["etc", "passwd"],
+  // The password file on a Mac (and the BSDs); `etc/passwd` there lists no hashes.
+  ["etc", "master.passwd"],
   [".config", "gh"],
   [".config", "gcloud"],
   [".config", "hivra"],
