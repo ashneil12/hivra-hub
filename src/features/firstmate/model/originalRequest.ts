@@ -10,7 +10,8 @@
 // character line between a request and a follow-up, and the rule that a short follow-up is quoted with the message it
 // follows up. Changed for Hivra:
 // - The request is read from the first mate's chat: the person's own messages, never what the app wrote on their
-//   behalf (reports, wakes, notes, checks, hidden turns and drafts).
+//   behalf (reports, wakes, notes, checks, hidden turns and drafts). The current turn has to be the person's. A room
+//   post, a wake, or any other turn the person did not just write quotes nothing, not an older message.
 // - Every line of the quote starts with ">", so nothing in it can read as one of the brief's own headings, its finish
 //   line or one of its tags, and the app's views can hide it with the rest of the template.
 // - A follow-up is never cut off by a long earlier message: the earlier one gives way.
@@ -40,16 +41,33 @@ export type RequestBlock = {
 /** The app starts the turns it writes itself with "[MonoCode " (a report, a wake, a question), so none is read as the person's. */
 const APP_TURN = /^\[MonoCode /;
 
+function blockText(block: RequestBlock): string {
+  return typeof block.text === "string" ? block.text.trim() : "";
+}
+
+/** A message the person wrote themselves. */
+function isPersonMessage(block: RequestBlock): boolean {
+  if (block.role !== "user" || block.internal || block.draft) return false;
+  if (block.monoSessionCompletion || block.monoCheck || block.monoNote || block.monoHabit) return false;
+  const text = blockText(block);
+  return text.length > 0 && !APP_TURN.test(text);
+}
+
+/** The latest user turn that was sent. A draft still being typed is not one. */
+function currentTurn(blocks: readonly RequestBlock[]): RequestBlock | undefined {
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block.role !== "user" || block.draft) continue;
+    if (!blockText(block) && !block.monoNote && !block.monoCheck && !block.monoSessionCompletion && !block.monoHabit) continue;
+    return block;
+  }
+  return undefined;
+}
+
 /** What the person said, oldest first: their own messages only. */
 function personMessages(blocks: readonly RequestBlock[]): string[] {
   const said: string[] = [];
-  for (const block of blocks) {
-    if (block.role !== "user" || block.internal || block.draft) continue;
-    if (block.monoSessionCompletion || block.monoCheck || block.monoNote || block.monoHabit) continue;
-    const text = typeof block.text === "string" ? block.text.trim() : "";
-    if (!text || APP_TURN.test(text)) continue;
-    said.push(text);
-  }
+  for (const block of blocks) if (isPersonMessage(block)) said.push(blockText(block));
   return said;
 }
 
@@ -93,7 +111,11 @@ export function pickOriginalRequest(input: { current: string; earlier: readonly 
 export function readOriginalRequest(
   blocks: readonly RequestBlock[] | undefined,
 ): { text: string; chars: number } | undefined {
-  const said = personMessages(blocks ?? []);
+  const list = blocks ?? [];
+  // The turn this brief is answering. A room post or a wake is not the person's request, even when they wrote one earlier.
+  const current = currentTurn(list);
+  if (!current || !isPersonMessage(current)) return undefined;
+  const said = personMessages(list);
   if (!said.length) return undefined;
   const full = selectRequest({ current: said[said.length - 1], earlier: said.slice(0, -1) });
   if (!full) return undefined;

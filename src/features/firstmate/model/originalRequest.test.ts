@@ -36,7 +36,7 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
       expect(originalRequestOf([user("   ")])).toBeUndefined();
     });
 
-    it("skips what the app wrote on the person's behalf: reports, wakes, notes, checks, hidden turns, drafts", () => {
+    it("quotes nothing when the latest turn is the app's, and never quotes what the app wrote", () => {
       const blocks = [
         user(LONG),
         assistant("Started two workers."),
@@ -49,12 +49,28 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
         user("a habit post", { monoHabit: { id: "h" } }),
         user("half typed", { draft: true }),
       ];
-      expect(originalRequestOf(blocks)).toBe(LONG.trim());
+      expect(originalRequestOf(blocks)).toBeUndefined();
+      const text = originalRequestOf([...blocks, user("the weekly one")])!;
+      expect(text).toContain(LONG.trim());
+      expect(text).toContain("the weekly one");
+      expect(text).not.toContain("api is done");
+      expect(text).not.toContain("a note from a room");
     });
 
-    it("is not fooled by a short app turn after a long request: it keeps the request whole", () => {
-      const blocks = [user(LONG), user("[MonoCode report] done")];
-      expect(originalRequestOf(blocks)).toBe(LONG.trim());
+    it("does not treat a later app turn as the request or as a follow-up", () => {
+      expect(originalRequestOf([user(LONG), user("[MonoCode report] done")])).toBeUndefined();
+    });
+
+    it("quotes nothing when the current turn is a room post or a wake, not an older message", () => {
+      const room = user("ship the board", { monoNote: { kind: "room", from: "design" } });
+      const wake = user("[MonoCode wake] look at the board again.");
+      expect(originalRequestOf([user(LONG), assistant("Done."), room])).toBeUndefined();
+      expect(originalRequestOf([user(LONG), wake])).toBeUndefined();
+      expect(originalRequestOf([user("a note from a room", { monoNote: { from: "x" } })])).toBeUndefined();
+      // The person's own latest message still quotes, and a short follow-up still joins the one before it.
+      expect(originalRequestOf([user(LONG), room, user("the weekly one")])).toBe(
+        `${LONG.trim()}\n\n${FOLLOW_UP_MARKER}\nthe weekly one`,
+      );
     });
   });
 

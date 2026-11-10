@@ -3003,10 +3003,10 @@ describe("a brief quotes the person's own request (WP-171)", () => {
   it("joins a short follow-up to the request it follows up, and skips what the app wrote for the person", async () => {
     const { source, host, started } = withBlocks([
       said(ASK),
-      { id: "a1", role: "assistant", text: "Which weeks?" },
-      said("the last two weeks"),
       said("[MonoCode report] api is done.", {}),
       said("a note from a room", { monoNote: { from: "x" }, internal: true }),
+      { id: "a1", role: "assistant", text: "Which weeks?" },
+      said("the last two weeks"),
     ]);
     await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
     const text = quoted((started[0][0] as { prompt: string }).prompt);
