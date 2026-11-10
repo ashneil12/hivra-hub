@@ -86,3 +86,27 @@ test("a visual reply cannot reach the parent page or the network", async ({ page
     breakoutSrc.indexOf("parent.document.title"),
   );
 });
+
+test("a visual reply takes the page background, text and fonts", async ({ page }) => {
+  await page.goto("/tests/browser/wp130-visual-replies.html");
+  await page.evaluate(() => {
+    const root = document.documentElement;
+    root.classList.add("theme-light");
+    root.style.setProperty("--color-background-base", "#123456");
+    root.style.setProperty("--color-content", "#abcdef");
+    root.style.setProperty("--font-sans", "Theme Sans");
+    root.style.setProperty("--font-mono", "Theme Mono");
+  });
+  const frame = page.locator("[data-themed-reply] iframe");
+  await expect(frame).toHaveAttribute("srcdoc", /--hivra-background:rgb\(18,\s*52,\s*86\)/);
+  await expect(frame).toHaveAttribute("srcdoc", /--hivra-text:rgb\(171,\s*205,\s*239\)/);
+  await expect(frame).toHaveAttribute("srcdoc", /--hivra-font:Theme Sans/);
+  await expect(frame).toHaveAttribute("srcdoc", /--hivra-mono:Theme Mono/);
+  await expect(frame).toHaveAttribute("srcdoc", /color-scheme:light/);
+  const srcdoc = (await frame.getAttribute("srcdoc")) ?? "";
+  const tokens = srcdoc.indexOf("--hivra-background:");
+  const own = srcdoc.indexOf(">chart</p>");
+  expect(tokens).toBeGreaterThan(-1);
+  expect(own).toBeGreaterThan(tokens);
+  await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+});

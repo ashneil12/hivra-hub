@@ -41,6 +41,8 @@ Each reply is a shell frame with the guest frame inside it. The shell policy set
 
 A reply over 512 KiB of UTF-8 is not framed. A null byte in the reply is removed so it cannot cut the page short. Theme values are checked before they are written into CSS. A value with a breakout character, or a `url(`, is replaced with a plain fallback.
 
+The frame starts from the current theme: background, text, the plain font and the mono font. Those are written as `--hivra-background`, `--hivra-text`, `--hivra-font` and `--hivra-mono`, and as the default background, color and font on the page. They are not forced. A reply that sets its own background, color or font comes later in the document, so that rule wins. The tokens stay available for a reply that wants to follow the theme.
+
 The host ignores messages from the frame except a height number from that frame, and it caps the height. The frame cannot ask the app to open a link, run a tool or read the page.
 
 Two replies do not share an origin. The shell only forwards a message from its own guest, and it only forwards a theme message back in.

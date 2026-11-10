@@ -5,6 +5,7 @@ import {
   VISUAL_SANDBOX,
   visualDocument,
 } from "../../src/features/sessions/model/visualReply";
+import { VisualReplyFrame } from "../../src/features/sessions/ui/VisualReplyFrame";
 import "../../src/styles/index.css";
 
 // WP-130 proof fixture. Each reply tries one way out. None of that should work.
@@ -111,6 +112,9 @@ function Page() {
       <Frame source={META} label="meta" />
       <Frame source={FORM} label="form" />
       <Frame source={BREAKOUT} label="breakout" />
+      <div data-themed-reply>
+        <VisualReplyFrame source={'<p id="themed">chart</p>'} />
+      </div>
     </main>
   );
 }

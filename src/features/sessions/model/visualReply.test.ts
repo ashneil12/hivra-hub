@@ -167,4 +167,17 @@ describe("visual reply sandbox", () => {
     expect(doc).not.toContain("allow-same-origin");
     expect(doc).not.toContain("navigate-to");
   });
+
+  it("leaves a reply's own colors in charge and keeps the tokens underneath", () => {
+    const doc = visualDocument(
+      "<style>html{background:red;color:blue;font-family:serif}</style>",
+      FALLBACK_THEME,
+      false,
+    )!;
+    const tokens = doc.indexOf("--hivra-background:");
+    const own = doc.indexOf("html{background:red;color:blue;font-family:serif}");
+    expect(tokens).toBeGreaterThan(-1);
+    expect(own).toBeGreaterThan(tokens);
+    expect(doc).not.toContain("!important");
+  });
 });
