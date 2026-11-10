@@ -26,6 +26,12 @@ pub struct Worktree {
     /// WP-82: said once, when this checkout was a plain git worktree because the pool was off or not installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_notice: Option<String>,
+    /// WP-138: one line when files named in .worktreeinclude are in this worktree. No file contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_note: Option<String>,
+    /// WP-138: one line when a listed file could not be copied. No file contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_warning: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -244,12 +250,17 @@ pub(crate) fn create(
             ],
         )?;
     }
-    list(root)?
+    let mut tree = list(root)?
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), &path))
         .ok_or_else(|| {
-            "Worktree created, but could not be found. Refresh the working copies.".into()
-        })
+            "Worktree created, but could not be found. Refresh the working copies.".to_string()
+        })?;
+    // WP-138: named files from .worktreeinclude. A copy failure does not undo the worktree.
+    let include = crate::worktree_include::apply(root, Path::new(&tree.path));
+    tree.include_note = include.note;
+    tree.include_warning = include.warning;
+    Ok(tree)
 }
 
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
@@ -300,7 +311,12 @@ fn take_pool_slot(
                     let _ = crate::worktree_pool::give_back(&env, root, &path);
                     return Err(error);
                 }
-                Ok(Pooled::Ready(Box::new(with_setup(app, tree, run_setup))))
+                let mut tree = with_setup(app, tree, run_setup);
+                // WP-138: a fresh slot gets the named files. A reused slot keeps its own copies.
+                let include = crate::worktree_include::apply(root, Path::new(&tree.path));
+                tree.include_note = include.note;
+                tree.include_warning = include.warning;
+                Ok(Pooled::Ready(Box::new(tree)))
             } else {
                 Ok(Pooled::Ready(Box::new(tree)))
             }
