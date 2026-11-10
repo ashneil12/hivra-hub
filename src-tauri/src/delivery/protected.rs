@@ -204,6 +204,65 @@ fn extra_hit(path: &RepoPath, extra: &Extra) -> bool {
     path.lower.iter().any(|segment| segment == &extra.parts[0])
 }
 
+/// What `gh` said the pull request changes. `Unread` is a failure to read, including a
+/// timeout: the floor treats that as protected, and a later try can read the list again.
+pub enum ChangedFiles {
+    Listed(Vec<String>),
+    Unread,
+}
+
+/// The pull request's changed paths, renames included (the old name and the new one).
+/// Goes through `Github::run`, which is the existing `gh` reader and its allow-listed
+/// child environment. A list that cannot be read, or that is not a list of paths, is
+/// [`ChangedFiles::Unread`].
+pub fn changed_files(gh: &dyn super::github::Github, repo: &str, number: u64) -> ChangedFiles {
+    if number == 0 || crate::pr_watch::github::split_repo(repo).is_none() {
+        return ChangedFiles::Unread;
+    }
+    let repo = repo.trim();
+    let args = [
+        "api".to_string(),
+        "--paginate".to_string(),
+        format!("repos/{repo}/pulls/{number}/files"),
+        "--jq".to_string(),
+        ".[] | .filename, (.previous_filename // empty)".to_string(),
+    ];
+    match gh.run(None, &args) {
+        Ok(body) => match parse_changed_files(&body) {
+            Ok(paths) => ChangedFiles::Listed(paths),
+            Err(()) => ChangedFiles::Unread,
+        },
+        Err(_) => ChangedFiles::Unread,
+    }
+}
+
+/// One path per line, as `gh api --jq` prints them. `null` and blanks are skipped.
+/// JSON, a NUL, or a control character means the body is not a path list.
+pub(crate) fn parse_changed_files(body: &str) -> Result<Vec<String>, ()> {
+    let trimmed = body.trim();
+    if (trimmed.starts_with('{') || trimmed.starts_with('[')) && trimmed.contains(['"', ':']) {
+        return Err(());
+    }
+    if body.contains('\0') {
+        return Err(());
+    }
+    let mut paths = Vec::new();
+    for line in body.split(['\n', '\r']) {
+        let line = line.trim();
+        if line.is_empty() || line == "null" {
+            continue;
+        }
+        if line.chars().any(char::is_control) {
+            return Err(());
+        }
+        if paths.iter().any(|seen: &String| seen == line) {
+            continue;
+        }
+        paths.push(line.to_string());
+    }
+    Ok(paths)
+}
+
 /// Paths from `paths` that the floor holds. Built-ins always count. `extras` only add.
 /// Each path is returned once, in input order, with `\` turned into `/` and `.` segments
 /// dropped. A `..` segment is not folded out: the path is untrusted, so it counts as a hit.
@@ -370,5 +429,96 @@ mod tests {
         );
         assert!(hits(&[""], &[]).is_empty());
         assert!(hits(&["./"], &[]).is_empty());
+    }
+
+    #[test]
+    fn a_changed_file_list_keeps_both_names_of_a_rename_and_rejects_a_body_that_is_not_paths() {
+        assert_eq!(
+            parse_changed_files(".github/workflows/old.yml\nsrc/new name.yml\n").unwrap(),
+            vec![
+                ".github/workflows/old.yml".to_string(),
+                "src/new name.yml".to_string()
+            ]
+        );
+        assert_eq!(
+            parse_changed_files("src/a.rs\r\nsrc/a.rs\r\nnull\r\n\r\n").unwrap(),
+            vec!["src/a.rs".to_string()]
+        );
+        assert_eq!(
+            parse_changed_files("migrations\\001.sql\n").unwrap(),
+            vec!["migrations\\001.sql".to_string()]
+        );
+        assert!(parse_changed_files("").unwrap().is_empty());
+        assert!(parse_changed_files("{\"filename\":\"a\"}\n").is_err());
+        assert!(parse_changed_files("[{\"filename\":\"a\"}]\n").is_err());
+        assert!(parse_changed_files("src/a.rs\0hidden/.env\n").is_err());
+        // A one-line name that merely starts with a brace is still a path.
+        assert_eq!(
+            parse_changed_files("{notes}\n").unwrap(),
+            vec!["{notes}".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_unreadable_changed_file_list_is_not_an_empty_diff() {
+        use super::super::github::fake::FakeGithub;
+        use super::ChangedFiles;
+
+        let gh = FakeGithub::new(vec![]);
+        *gh.files.lock().unwrap() = Some(Ok(".github/workflows/old.yml\nsrc/renamed.yml\n".into()));
+        match changed_files(&gh, "acme/web", 7) {
+            ChangedFiles::Listed(paths) => assert_eq!(
+                paths,
+                vec![
+                    ".github/workflows/old.yml".to_string(),
+                    "src/renamed.yml".to_string()
+                ]
+            ),
+            ChangedFiles::Unread => panic!("the list was readable"),
+        }
+        let call = gh.ran("api", "--paginate");
+        assert_eq!(call.len(), 1);
+        assert_eq!(call[0][2], "repos/acme/web/pulls/7/files");
+        assert!(call[0].contains(&"--jq".to_string()));
+        assert!(
+            call[0]
+                .iter()
+                .all(|arg| !arg.contains("ghp_") && !arg.contains("token")),
+            "the file list request must not carry a token: {call:?}"
+        );
+
+        // A timeout or any other failure is unread, and the error text is dropped.
+        *gh.files.lock().unwrap() = Some(Err("gh didn't answer within 2 minutes".into()));
+        assert!(matches!(
+            changed_files(&gh, "acme/web", 7),
+            ChangedFiles::Unread
+        ));
+        *gh.files.lock().unwrap() = Some(Ok("{\"message\":\"bad\"}\n".into()));
+        assert!(matches!(
+            changed_files(&gh, "acme/web", 7),
+            ChangedFiles::Unread
+        ));
+
+        // An empty success is an empty diff, not a failure.
+        *gh.files.lock().unwrap() = Some(Ok(String::new()));
+        assert!(matches!(
+            changed_files(&gh, "acme/web", 7),
+            ChangedFiles::Listed(paths) if paths.is_empty()
+        ));
+
+        let runs_before = gh.runs.lock().unwrap().len();
+        assert!(matches!(
+            changed_files(&gh, "../not a repo", 7),
+            ChangedFiles::Unread
+        ));
+        assert!(matches!(
+            changed_files(&gh, "acme/web", 0),
+            ChangedFiles::Unread
+        ));
+        assert_eq!(
+            gh.runs.lock().unwrap().len(),
+            runs_before,
+            "a bad repo or number never calls gh"
+        );
     }
 }
