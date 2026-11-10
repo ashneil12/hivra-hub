@@ -25,6 +25,8 @@ What exists today: `src-tauri/src/provider_session_transfer.rs` copies a Claude 
 
 ## Build
 
+**What is carried, stated plainly.** A move carries the chat's saved messages, its model, effort, title and queued messages. It does not carry the CLI's own transcript file. The target starts a fresh CLI session from the saved messages, and the notice says so ("continues in a fresh session there, started from the saved messages"). The recap is the fallback when the target cannot resume. This keeps the move to files Hivra already saves, and it is what the tests prove.
+
 1. A move is a custody handover, not a copy. The source freezes the chat, the transcript and Hivra's own record of the chat are copied, the target records the chat as its own, and only then does the source let go. A lease from WP-60 names the owner at each step, so a reconnect race cannot leave the chat running twice.
 2. Freeze rules: refuse while a turn is running or an approval is pending. Never inject into a blocked chat. Offer "finish this turn, then move" instead. A chat with queued messages keeps them with the move.
 3. Model and effort travel with the chat. If the target CLI cannot resume that transcript, refuse with the reason and offer the WP-121 recap into a new chat. No silent switch.

@@ -2,7 +2,8 @@
 // recap button only appears when the target cannot resume, and it starts the existing recap into a new chat.
 
 import type { MoveRefusal } from "../model/teleport";
-import { teleportMarker, teleportRefusalCopy } from "./teleportCopy";
+import { teleportRefusalCopy } from "./teleportCopy";
+import { copyForMoved } from "../model/teleportState";
 
 export type TeleportNoticeProps =
   | { kind: "on-host"; host: string; time: string }
@@ -12,7 +13,7 @@ export function TeleportNotice(props: TeleportNoticeProps) {
   if (props.kind === "on-host") {
     return (
       <p role="status" className="teleport-marker" style={{ margin: "8px 0", fontSize: 13 }}>
-        {teleportMarker(props.host, props.time)}
+        {copyForMoved(props.host, props.time)}
       </p>
     );
   }
@@ -27,5 +28,28 @@ export function TeleportNotice(props: TeleportNoticeProps) {
         </button>
       )}
     </section>
+  );
+}
+
+/** The band at the top of a moved chat (WP-177): where it went, when, and what happens to the chat there. */
+export function TeleportHeaderBand(props: { host: string; time: string }) {
+  return (
+    <div
+      data-testid="teleport-header-band"
+      role="status"
+      className="teleport-header-band"
+      style={{ padding: "8px 12px", borderBottom: "1px solid currentColor", fontSize: 13 }}
+    >
+      {copyForMoved(props.host, props.time)}
+    </div>
+  );
+}
+
+/** What the composer shows when the person tries to send into a moved chat. */
+export function TeleportSendRefusal(props: { reason: string }) {
+  return (
+    <p data-testid="teleport-send-refusal" role="alert" style={{ margin: "6px 0", fontSize: 13 }}>
+      {props.reason}
+    </p>
   );
 }

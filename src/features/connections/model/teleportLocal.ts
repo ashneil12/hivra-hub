@@ -5,7 +5,7 @@
 import { hasPendingApproval, type Session } from "../../sessions/model/session";
 import { buildDeterministicHandoff } from "../../sessions/model/handoff";
 import type { MoveRefusal } from "./teleport";
-import { movedBlocks, teleportStateOf } from "./teleportState";
+import { teleportStateOf } from "./teleportState";
 import { lockChat, unlockChat } from "./teleportLock";
 import {
   sha256Hex,

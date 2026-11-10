@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
-import { TeleportNotice } from "../../src/features/connections/ui/TeleportNotice";
+import { TeleportHeaderBand, TeleportNotice, TeleportSendRefusal } from "../../src/features/connections/ui/TeleportNotice";
 import "../../src/styles/index.css";
 
 // WP-177: the three notices a chat move can show. The recap button records that the existing recap was asked for.
@@ -10,6 +10,10 @@ function Fixture() {
     <main style={{ maxWidth: 560 }}>
       <div id="on-host">
         <TeleportNotice kind="on-host" host="Studio box" time="10 Nov 2026, 09:00" />
+      </div>
+      <div id="header">
+        <TeleportHeaderBand host="Studio box" time="10 Nov 2026, 09:00" />
+        <TeleportSendRefusal reason="This chat moved to Studio box. Nothing was sent. Move it back to continue here." />
       </div>
       <div id="turn-running">
         <TeleportNotice
