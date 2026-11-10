@@ -6028,7 +6028,12 @@ fn chat_media_scope(
     session_id: &str,
 ) -> Result<MediaScope, String> {
     let roster = crate::mono::roster_value(app);
-    let found = crate::chat_media::folders(&*store.lock_conn()?, roster.as_ref(), session_id);
+    // The database is read and let go before any folder is looked at on disk (`chat_media::Candidates`).
+    let candidates = {
+        let conn = store.lock_conn()?;
+        crate::chat_media::candidates(&conn, roster.as_ref(), session_id)
+    };
+    let found = candidates.vet();
     let app_data = app.path().app_data_dir().ok();
     let mut trusted = vec![std::env::temp_dir().join(ATTACHMENT_DIR)];
     if let Some(data) = &app_data {
@@ -6041,6 +6046,10 @@ fn chat_media_scope(
             ));
         }
     }
+    // The app's own places skip the broadness rules, so each must really be the app's: a folder (not a link to
+    // somewhere else) that this user owns. On Linux the temp folder is shared, and another account could make
+    // `/tmp/monocode-attachments` a link to this user's home before the app first writes there.
+    trusted.retain(|folder| own_real_folder(folder));
     let home = crate::dirs_home().map(PathBuf::from);
     Ok(MediaScope::build(
         &found.folders,
@@ -6049,6 +6058,26 @@ fn chat_media_scope(
         app_data.as_deref(),
         &REAL_DISK,
     ))
+}
+
+/// `folder` is a folder itself, not a link, and (on unix) this user's own.
+fn own_real_folder(folder: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(folder) else {
+        return false;
+    };
+    if !meta.is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        meta.uid() == unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 /// The canonical file `path` names, if it is a file of the wanted `kind` that
@@ -7634,6 +7663,23 @@ mod tests {
                 .unwrap(),
             PNG_BYTES
         );
+    }
+
+    #[test]
+    fn an_app_folder_that_is_a_link_is_not_one_of_its_own_places() {
+        let temp = std::env::temp_dir().join(format!("hivra-own-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("real")).unwrap();
+        assert!(own_real_folder(&temp.join("real")));
+        assert!(!own_real_folder(&temp.join("missing")));
+        std::fs::write(temp.join("file"), "x").unwrap();
+        assert!(!own_real_folder(&temp.join("file")));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.join("real"), temp.join("link")).unwrap();
+            assert!(!own_real_folder(&temp.join("link")));
+        }
+        let _ = std::fs::remove_dir_all(&temp);
     }
 
     #[test]

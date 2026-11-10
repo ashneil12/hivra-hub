@@ -40,47 +40,97 @@ pub(crate) struct ChatFolders {
 }
 
 /// The folders for chat `session_id`: its folder and worktree, the projects of its Mono, and the worktrees of those
-/// projects (and of the workers it delegated to) that git records.
+/// projects (and of the workers it delegated to) that git records. The app reads `candidates` under the database
+/// lock and calls `vet` after letting go of it; this is both in one, for the tests.
+#[cfg(test)]
 pub(crate) fn folders(conn: &Connection, roster: Option<&Value>, session_id: &str) -> ChatFolders {
-    let mut found = ChatFolders::default();
-    // Project folders, whose worktrees count too, and worktrees already vetted against their project.
-    let mut projects: Vec<String> = Vec::new();
-    let mut worktrees: Vec<String> = Vec::new();
+    candidates(conn, roster, session_id).vet()
+}
 
-    if let Some((cwd, worktree)) = session_folders(conn, session_id) {
-        worktrees.extend(worktree.filter(|worktree| is_worktree_of(&cwd, worktree)));
-        projects.push(cwd);
-    }
+/// What the records name for one chat, read from the database only. The disk and git checks come after, in `vet`,
+/// so a caller can let go of the database first: a worktree on a slow or missing volume must not hold up every other
+/// database user while it is looked at.
+#[derive(Debug, Default)]
+pub(crate) struct Candidates {
+    /// The chat's own folder and worktree.
+    own: Option<(String, Option<String>)>,
+    monos: Vec<String>,
+    /// Project folders, whose worktrees count once git records them.
+    projects: Vec<String>,
+    /// Workers delegated by the Mono's own chats (or this chat): folder and worktree.
+    workers: Vec<(String, String)>,
+    /// Each project's worktrees as the chat rows name them, not yet checked.
+    project_worktrees: Vec<(String, Vec<String>)>,
+}
+
+/// Reads the candidates for chat `session_id` (database only; see `Candidates`).
+pub(crate) fn candidates(
+    conn: &Connection,
+    roster: Option<&Value>,
+    session_id: &str,
+) -> Candidates {
+    let own = session_folders(conn, session_id);
     let owner = roster_owner(roster, session_id);
+    let mut projects: Vec<String> = Vec::new();
+    projects.extend(own.as_ref().map(|(cwd, _)| cwd.clone()));
     projects.extend(owner.projects);
     projects.extend(hub_projects(conn, &owner.monos));
-    found.monos = owner.monos;
 
     // Workers: only those delegated by one of the Mono's own chats, and only their worktree.
     let mut owners = owner.chats;
     owners.push(session_id.to_string());
-    for child in delegated_children(conn, &owners) {
-        if let Some((cwd, Some(worktree))) = session_folders(conn, &child) {
+    let workers = delegated_children(conn, &owners)
+        .into_iter()
+        .filter_map(|child| match session_folders(conn, &child) {
+            Some((cwd, Some(worktree))) => Some((cwd, worktree)),
+            _ => None,
+        })
+        .collect();
+    let project_worktrees = projects
+        .iter()
+        .map(|project| (project.clone(), worktrees_of(conn, project)))
+        .collect();
+    Candidates {
+        own,
+        monos: owner.monos,
+        projects,
+        workers,
+        project_worktrees,
+    }
+}
+
+impl Candidates {
+    /// Keeps only the worktrees git records for their project (this asks the disk), then the projects.
+    pub(crate) fn vet(self) -> ChatFolders {
+        let mut worktrees: Vec<String> = Vec::new();
+        if let Some((cwd, Some(worktree))) = &self.own {
+            if is_worktree_of(cwd, worktree) {
+                worktrees.push(worktree.clone());
+            }
+        }
+        for (cwd, worktree) in self.workers {
             if is_worktree_of(&cwd, &worktree) {
                 worktrees.push(worktree);
             }
         }
-    }
-    for project in &projects {
-        for worktree in worktrees_of(conn, project) {
-            if is_worktree_of(project, &worktree) {
-                worktrees.push(worktree);
+        for (project, listed) in &self.project_worktrees {
+            for worktree in listed {
+                if is_worktree_of(project, worktree) {
+                    worktrees.push(worktree.clone());
+                }
             }
         }
+        let mut found = ChatFolders {
+            folders: worktrees,
+            monos: self.monos,
+        };
+        found.folders.extend(self.projects);
+        let mut seen = std::collections::HashSet::new();
+        found
+            .folders
+            .retain(|folder| !folder.trim().is_empty() && seen.insert(folder.clone()));
+        found
     }
-    found.folders = worktrees;
-    found.folders.extend(projects);
-
-    let mut seen = std::collections::HashSet::new();
-    found
-        .folders
-        .retain(|folder| !folder.trim().is_empty() && seen.insert(folder.clone()));
-    found
 }
 
 /// A chat's folder and, while it still exists, its worktree.
