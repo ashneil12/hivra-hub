@@ -37,6 +37,10 @@ pub struct FailureInput<'a> {
     pub present: &'a [Presence],
     pub ledger: &'a [Attempt],
     pub budget: Option<&'a serde_json::Value>,
+    /// WP-176. The move's target is a model its provider bills per token. Off unless the caller knows it.
+    pub target_billed: bool,
+    /// WP-176. The person has OK'd a move onto a billed model for this task. Only `true` counts.
+    pub person_ok: bool,
 }
 
 fn spent(ledger: &[Attempt]) -> u64 {
@@ -80,7 +84,38 @@ fn attempt(input: &FailureInput<'_>, outcome: &str, to: Option<String>) -> Attem
     }
 }
 
+/// WP-176 item 10. A reroute onto a billed model waits for the person's OK. Without it the task stays with the first
+/// mate, and the attempt is recorded as that, not as a move.
+pub fn refuse_unapproved_billed(
+    decision: Decision,
+    target_billed: bool,
+    person_ok: bool,
+) -> Decision {
+    if decision.action != "reroute" || !target_billed || person_ok {
+        return decision;
+    }
+    Decision {
+        action: "first-mate".into(),
+        to: None,
+        until: None,
+        reason: "a billed model needs your OK before this task moves".into(),
+        attempt: Attempt {
+            outcome: "first-mate".into(),
+            to: None,
+            ..decision.attempt
+        },
+    }
+}
+
 pub fn decide(input: &FailureInput<'_>) -> Decision {
+    refuse_unapproved_billed(
+        decide_unguarded(input),
+        input.target_billed,
+        input.person_ok,
+    )
+}
+
+fn decide_unguarded(input: &FailureInput<'_>) -> Decision {
     let kind = super::failure::failure_kind(input.error_class, input.text);
     let budget = budget_or_default(input.budget);
     let used = spent(input.ledger);
