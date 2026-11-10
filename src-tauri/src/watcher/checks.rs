@@ -468,6 +468,16 @@ fn poll(conn: &mut Connection, now: i64, runner: &impl Runner) -> Result<Vec<Wak
     Ok(woke)
 }
 
+/// The command a check starts: the program found on `search` by the harness resolver, its arguments, in `cwd`. `None`
+/// when the program isn't there. `windows` says what kind of machine is asking, because a bare `npm` is `npm.cmd` on
+/// Windows and `cargo` is `cargo.exe`: the app passes its own, a test passes `true` to see the Windows answer anywhere.
+fn command_for(words: &[String], cwd: &Path, search: &str, windows: bool) -> Option<Command> {
+    let program = crate::harness::which_in_path_as(search, words.first()?, windows)?;
+    let mut cmd = Command::new(program);
+    cmd.args(&words[1..]).current_dir(cwd);
+    Some(cmd)
+}
+
 /// The PR watch runner: no shell, the same child setup `gh` uses, a 60s deadline, in `cwd`. The program is found on
 /// `search` the way the app finds every CLI (`npm` is `npm.cmd` on Windows); one that isn't there waits. Output is
 /// dropped after the decision.
@@ -476,11 +486,9 @@ fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
         Ok(words) => words,
         Err(_) => return Attempt::Stop,
     };
-    let Some(program) = crate::harness::which_in_path(search, &words[0]) else {
+    let Some(mut cmd) = command_for(&words, cwd, search, cfg!(windows)) else {
         return Attempt::Wait;
     };
-    let mut cmd = Command::new(program);
-    cmd.args(&words[1..]).current_dir(cwd);
     crate::background_work::configure_child(&mut cmd);
     crate::harness::apply_gui_env(&mut cmd);
     let finished = match crate::pr_watch::bounded::run(cmd, RUN_TIMEOUT) {
@@ -1045,6 +1053,51 @@ mod tests {
         );
         assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wake);
         assert_eq!(run_in("npm test", "", &elsewhere.0, &search), Attempt::Wait);
+    }
+
+    fn words(command: &str) -> Vec<String> {
+        safe_cmd::argv(command).unwrap()
+    }
+
+    #[test]
+    fn on_a_windows_machine_npm_and_cargo_start_as_their_launchers() {
+        let bin = TempDir::new("windows bin");
+        let project = TempDir::new("the chat's project");
+        // What a Windows install of npm leaves: a shell shim named plain `npm` beside the launcher `npm.cmd`. A bare
+        // `Command::new("npm")` finds neither there; the shim is not a program Windows can start. Cargo is an .exe.
+        // None of these has an execute bit, because Windows has none: the name is what makes a file a program.
+        for name in ["npm", "npm.cmd", "npm.ps1", "cargo.exe", "node.exe"] {
+            std::fs::write(bin.0.join(name), "x").unwrap();
+        }
+        let search = path_of(&bin.0);
+
+        let npm = command_for(&words("npm test"), &project.0, &search, true).unwrap();
+        assert_eq!(npm.get_program(), bin.0.join("npm.cmd").as_os_str());
+        assert_eq!(npm.get_args().collect::<Vec<_>>(), ["test"]);
+        assert_eq!(npm.get_current_dir(), Some(project.0.as_path()));
+
+        let cargo =
+            command_for(&words("cargo test --workspace"), &project.0, &search, true).unwrap();
+        assert_eq!(cargo.get_program(), bin.0.join("cargo.exe").as_os_str());
+        assert_eq!(
+            cargo.get_args().collect::<Vec<_>>(),
+            ["test", "--workspace"]
+        );
+        assert_eq!(cargo.get_current_dir(), Some(project.0.as_path()));
+
+        // The same folder seen by a machine that isn't Windows has no `npm` it can run (no execute bit) and no
+        // `cargo`: the launchers are not found by the bare name there.
+        assert!(command_for(&words("npm test"), &project.0, &search, false).is_none());
+        assert!(command_for(&words("cargo test"), &project.0, &search, false).is_none());
+    }
+
+    #[test]
+    fn on_a_windows_machine_a_shell_shim_alone_is_not_a_program_and_the_check_waits() {
+        let bin = TempDir::new("shim only");
+        let project = TempDir::new("project");
+        std::fs::write(bin.0.join("npm"), "#!/bin/sh\n").unwrap();
+        let search = path_of(&bin.0);
+        assert!(command_for(&words("npm test"), &project.0, &search, true).is_none());
     }
 
     #[test]
