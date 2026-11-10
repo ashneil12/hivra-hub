@@ -209,7 +209,7 @@ while (!lock) {
     await sleep(100);
   }
 }
-fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started }) + "\n");
+fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started, at: Date.now() }) + "\n");
 // Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
 globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
@@ -229,7 +229,9 @@ const first = ship();
 const onTrial = first?.state?.phase === "trial" && first.state.to.sha === fake.sha;
 if (onTrial) fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
 if (onTrial && fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
+let quitting = false;
 setInterval(() => {
+  if (quitting) return;
   const now = ship();
   if (!now?.state) return;
   const { dir, state } = now;
@@ -239,7 +241,14 @@ setInterval(() => {
     fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
   else if (staged && fake.behavior !== "refuse") {
     fs.writeFileSync(path.join(dir, "accepted.json"), JSON.stringify({ pid: process.pid, bridge: "down" }));
-    process.exit(0);
+    if (!fake.quitDelayMs) process.exit(0);
+    // A real app takes a moment to quit and keeps the data folder until it is gone: this one for as long as the test says.
+    quitting = true;
+    const quitStartedAt = Date.now();
+    setTimeout(() => {
+      fs.appendFileSync(path.join(process.env.HOME, "lock-releases.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, quitStartedAt, releasedAt: Date.now() }) + "\n");
+      process.exit(0);
+    }, fake.quitDelayMs);
   }
   if (["commit", "old"].includes(fake.behavior) && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
     fs.writeFileSync(path.join(dir, "committed.json"), JSON.stringify({ sha: fake.sha, pid: process.pid }));
@@ -299,7 +308,7 @@ esac
 exit 0
 `;
 
-function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version }) {
+function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version, quitDelayMs = 0 }) {
   fs.mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   fs.mkdirSync(path.join(app, "Contents/Resources"), { recursive: true });
   fs.writeFileSync(
@@ -356,12 +365,12 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
       }),
     );
   }
-  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
+  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch, quitDelayMs }));
   return app;
 }
 
 /** A temporary HOME with an installed old app and its data, a clean checkout, and a new bundle built from its HEAD. */
-function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
+function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0, newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
@@ -385,7 +394,7 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
   fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
   const paths = homePaths(home);
-  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root, quitDelayMs: oldQuitDelayMs });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
@@ -778,6 +787,34 @@ test("a copy still finding the data folder held when the app's wait is over refu
   } finally {
     releaseLock(holder);
   }
+});
+
+// An old app can be slow to quit and keep the data folder past the new build's whole wait. The runner is who waits for
+// that, not the new build: it opens the build only once it holds the folder itself, so the build finds it free. A runner
+// that opened the build while the old app still held the folder would get exit 75 from the build, as the real app would.
+test("an old app that keeps the data folder past the app's wait is waited out by the runner, not by the new build", async () => {
+  const quitDelayMs = REAL_LOCK_WAIT_MS + 2_000;
+  const w = world({ oldQuitDelayMs: quitDelayMs });
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const { code, answer } = ship(w);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  const state = await until("the commit", settled(dir, "committed"), 90_000);
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  const [released] = fs
+    .readFileSync(path.join(w.home, "lock-releases.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.equal(released.sha, SHA_A);
+  assert.ok(released.releasedAt - released.quitStartedAt > REAL_LOCK_WAIT_MS, "the old app kept the folder longer than the app's wait");
+  const [, fresh] = lockWaits(w);
+  assert.equal(fresh.sha, w.sha);
+  assert.ok(fresh.at >= released.releasedAt, "the new build took the folder only after the old app let go");
+  assert.equal(fresh.tries, 1, "and found it free on its first try");
+  assert.equal(state.launch.mode, "direct");
 });
 
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
