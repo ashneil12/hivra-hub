@@ -9,8 +9,9 @@ import {
   forkWorktreeDefault,
   forkWorktreeError,
   type ForkAttemptGate,
-  type ForkWorktreePort,
+  type ForkPort,
 } from "../model/threadFork";
+import { forkImagePort } from "../model/threadForkImages";
 import {
   clearThreadForkAsk,
   subscribeThreadForkAsk,
@@ -21,8 +22,8 @@ import { ThreadForkDialog } from "./ThreadForkDialog";
 type Props = {
   sessionsRef: RefObject<Session[]>;
   onOpen: (session: Session) => void;
-  /** Worktree creation. Tests pass a stub. The real call is the app's own. */
-  port?: ForkWorktreePort;
+  /** Worktree creation and image copies. Tests pass a stub. The real calls are the app's own. */
+  port?: ForkPort;
   /** Read once when the dialog opens. Defaults to the new-chat worktree setting. */
   setting?: () => unknown;
 };
@@ -51,7 +52,7 @@ export function ThreadForkHost({
   const finished = useRef<number | null>(null);
   const gate = useRef<ForkAttemptGate | null>(null);
   if (!gate.current) gate.current = forkAttemptGate();
-  const worktreePort = port ?? { createWorktree };
+  const worktreePort: ForkPort = port ?? { createWorktree, ...forkImagePort };
 
   useEffect(() => {
     setError(null);

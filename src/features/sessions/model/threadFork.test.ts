@@ -18,6 +18,7 @@ import {
   lastForkableBlockId,
   pendingForkBrief,
   type ForkIds,
+  type ForkImagePort,
   type ForkWorktreePort,
 } from "./threadFork";
 
@@ -748,3 +749,156 @@ describe("the worktree a fork starts in", () => {
   });
 });
 
+describe("forking a chat with generated images", () => {
+  const ONE = "/data/generated-images/one.png";
+  const TWO = "/data/generated-images/two.png";
+
+  function picture(id: string, path: string): Block {
+    return {
+      id,
+      role: "image",
+      text: "",
+      image: { path, name: "cat.png", mimeType: "image/png", size: 10, alt: "a cat" },
+    };
+  }
+
+  function conversation(): Session {
+    return chat([
+      block({ id: "u1", role: "user", text: "Draw a cat" }),
+      picture("i1", ONE),
+      block({ id: "a1", role: "assistant", text: "Here it is" }),
+      picture("i2", TWO),
+    ]);
+  }
+
+  function imagePort(over: Partial<ForkImagePort> = {}) {
+    const calls: string[][] = [];
+    const removed: string[][] = [];
+    const port: ForkWorktreePort & ForkImagePort = {
+      createWorktree: async () => tree("/work/proj-fork"),
+      copyImage: async (path, name) => {
+        calls.push([path, name]);
+        return { path: path.replace(".png", "-copy.png"), mimeType: "image/png", size: 11 };
+      },
+      removeImages: async (paths) => {
+        removed.push(paths);
+      },
+      ...over,
+    };
+    return { port, calls, removed };
+  }
+
+  it("gives the fork its own file and leaves the original alone", async () => {
+    const source = conversation();
+    const before = structuredClone(source);
+    const { port, calls, removed } = imagePort();
+    const fork = await forkChat(
+      source,
+      "a1",
+      { useNewWorktree: false },
+      port,
+      ids(["fork-1", "b1", "b2", "b3"]),
+    );
+    expect(calls).toEqual([[ONE, "cat.png"]]);
+    expect(fork!.blocks[1].image).toEqual({
+      path: "/data/generated-images/one-copy.png",
+      name: "cat.png",
+      mimeType: "image/png",
+      size: 11,
+      alt: "a cat",
+    });
+    expect(fork!.blocks).toHaveLength(3);
+    expect(removed).toEqual([]);
+    expect(source).toEqual(before);
+  });
+
+  it("copies a file used by two messages once", async () => {
+    const source = chat([
+      block({ id: "u1", role: "user", text: "Draw" }),
+      picture("i1", ONE),
+      picture("i2", ONE),
+      block({ id: "a1", role: "assistant", text: "Both" }),
+    ]);
+    const { port, calls } = imagePort();
+    const fork = await forkChat(
+      source,
+      "a1",
+      { useNewWorktree: false },
+      port,
+      ids(["fork-1", "b1", "b2", "b3", "b4"]),
+    );
+    expect(calls).toEqual([[ONE, "cat.png"]]);
+    expect(fork!.blocks[1].image!.path).toBe("/data/generated-images/one-copy.png");
+    expect(fork!.blocks[2].image!.path).toBe("/data/generated-images/one-copy.png");
+  });
+
+  it("refuses the fork, removes the copies already made, and creates no worktree when one cannot be copied", async () => {
+    const source = chat([
+      block({ id: "u1", role: "user", text: "Draw two" }),
+      picture("i1", ONE),
+      picture("i2", TWO),
+      block({ id: "a1", role: "assistant", text: "Both" }),
+    ]);
+    let made = 0;
+    let worktrees = 0;
+    const { port, removed } = imagePort({
+      copyImage: async (path) => {
+        made += 1;
+        if (made === 2) throw new Error("File is too large to attach inline.");
+        return { path: path.replace(".png", "-copy.png"), mimeType: "image/png", size: 11 };
+      },
+    });
+    port.createWorktree = async () => {
+      worktrees += 1;
+      return tree("/work/proj-fork");
+    };
+    await expect(
+      forkChat(source, "a1", { useNewWorktree: true }, port, ids(["fork-1", "b1", "b2", "b3", "b4"])),
+    ).rejects.toThrow("An image in this chat could not be copied: File is too large to attach inline.");
+    expect(worktrees).toBe(0);
+    expect(removed).toEqual([["/data/generated-images/one-copy.png"]]);
+  });
+
+  it("does not copy images that come after the fork point", async () => {
+    const { port, calls } = imagePort();
+    await forkChat(
+      conversation(),
+      "u1",
+      { useNewWorktree: false },
+      port,
+      ids(["fork-1", "b1"]),
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it("removes its copies when the message is gone by the time the worktree exists", async () => {
+    const source = conversation();
+    const { port, removed } = imagePort();
+    const fork = await forkChat(
+      source,
+      "a1",
+      { useNewWorktree: true, readSource: () => chat([]) },
+      port,
+      ids(["fork-1", "b1", "b2", "b3"]),
+    );
+    expect(fork).toBeNull();
+    expect(removed).toEqual([["/data/generated-images/one-copy.png"]]);
+  });
+
+  it("refuses rather than share a path when no way to copy is given", async () => {
+    const source = conversation();
+    await expect(
+      forkChat(
+        source,
+        "a1",
+        { useNewWorktree: false },
+        { createWorktree: async () => tree("/work/proj-fork") },
+        ids(["fork-1", "b1", "b2", "b3"]),
+      ),
+    ).rejects.toThrow("An image in this chat could not be copied");
+  });
+
+  it("returns nothing from the plain copy when an image has no copy of its own", () => {
+    expect(forkSessionAtMessage(conversation(), "a1", ids(["fork-1", "b1", "b2", "b3"]))).toBeNull();
+  });
+});

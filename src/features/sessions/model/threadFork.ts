@@ -25,6 +25,22 @@ export type ForkIds = {
   next: () => string;
 };
 
+/** What the app's own image commands return for a copied file. */
+export type ForkImageAsset = {
+  path: string;
+  mimeType: string;
+  size: number;
+};
+
+/**
+ * A generated image's file belongs to the chat that made it and goes with that chat when it is deleted. A fork
+ * therefore gets a file of its own instead of sharing the path.
+ */
+export type ForkImagePort = {
+  copyImage: (path: string, name: string) => Promise<ForkImageAsset>;
+  removeImages: (paths: string[]) => Promise<void>;
+};
+
 const FORKABLE = new Set<Block["role"]>(["user", "assistant"]);
 
 function defaultIds(): ForkIds {
@@ -93,7 +109,7 @@ function copyMessage(message: BtwMessage, ids: ForkIds): BtwMessage | null {
     if (message.blocks.length === 0) {
       copy.blocks = [];
     } else {
-      const copied = copyBlocks(message.blocks, message.blocks.length - 1, ids);
+      const copied = copyBlocks(message.blocks, message.blocks.length - 1, ids, null);
       if (!copied) return null;
       copy.blocks = copied.blocks;
     }
@@ -134,10 +150,15 @@ function copyThreads(
   return copies;
 }
 
+/**
+ * `images` is set for the chat's own messages: each generated image in them must have a copy of its file, or
+ * nothing is returned. A side thread's messages pass null and keep what they point at.
+ */
 function copyBlocks(
   blocks: readonly Block[],
   end: number,
   ids: ForkIds,
+  images: ReadonlyMap<string, ForkImageAsset> | null,
 ): { blocks: Block[]; blockIds: Map<string, string> } | null {
   if (end < 0 || end >= blocks.length) return null;
   let cloned: Block[];
@@ -159,6 +180,16 @@ function copyBlocks(
     delete block.providerTurnId;
     delete block.forkPoint;
     if (block.approval && !block.approval.decided) delete block.approval;
+    if (images && block.role === "image" && typeof block.image?.path === "string") {
+      const file = images.get(block.image.path);
+      if (!file) return null;
+      block.image = {
+        ...block.image,
+        path: file.path,
+        mimeType: file.mimeType,
+        size: file.size,
+      };
+    }
     if (block.attachments) {
       const files: Attachment[] = [];
       for (const file of block.attachments) {
@@ -199,14 +230,16 @@ function forkBoundary(
 
 /**
  * A new chat whose blocks are a copy of `source` through `blockId`, inclusive.
- * Returns null when that message is not a user or assistant message. Does not
- * mutate `source`.
+ * Returns null when that message is not a user or assistant message, or when a
+ * generated image in the copy has no file of its own in `images` (by the
+ * original's path; `forkChat` makes those copies). Does not mutate `source`.
  */
 export function forkSessionAtMessage(
   source: Session,
   blockId: string,
   ids: ForkIds = defaultIds(),
   sessionId?: string,
+  images: ReadonlyMap<string, ForkImageAsset> = new Map(),
 ): Session | null {
   if (
     !source ||
@@ -225,7 +258,7 @@ export function forkSessionAtMessage(
   if (index < 0) return null;
   const id = sessionId ?? takeId(ids);
   if (!persistableId(id)) return null;
-  const copied = copyBlocks(source.blocks, index, ids);
+  const copied = copyBlocks(source.blocks, index, ids, images);
   if (!copied) return null;
   const { blocks, blockIds } = copied;
   // The new provider conversation has never seen these messages: its first send carries a recap through this one.
@@ -399,6 +432,8 @@ export type ForkChatOptions = {
   readSource?: () => Session | undefined;
 };
 
+export type ForkPort = ForkWorktreePort & Partial<ForkImagePort>;
+
 const WORKTREE_FAILED = "The new worktree could not be created.";
 
 /** The refusal text, or a plain line when the failure said nothing. */
@@ -431,30 +466,104 @@ function worktreeOrigin(source: Session): string {
   return source.worktreeCwd && !source.worktreeRemoved ? source.worktreeCwd : source.cwd;
 }
 
+function imagesThrough(session: Session, blockId: string): { path: string; name: string }[] {
+  const end = session.blocks.findIndex(
+    (block) => block && block.id === blockId && FORKABLE.has(block.role),
+  );
+  if (end < 0) return [];
+  const found = new Map<string, string>();
+  for (const block of session.blocks.slice(0, end + 1)) {
+    const image = block?.role === "image" ? block.image : undefined;
+    if (typeof image?.path === "string" && image.path && !found.has(image.path)) {
+      found.set(image.path, typeof image.name === "string" ? image.name : "image.png");
+    }
+  }
+  return [...found].map(([path, name]) => ({ path, name }));
+}
+
+function imageFailure(reason: unknown): Error {
+  const text = reason instanceof Error ? reason.message : typeof reason === "string" ? reason : "";
+  return new Error(`An image in this chat could not be copied: ${text || "try again."}`);
+}
+
+/** The image files made for one fork, kept until the fork is built so a failure can remove them again. */
+function imageCopies(port: Partial<ForkImagePort>) {
+  const copies = new Map<string, ForkImageAsset>();
+  return {
+    copies,
+    /** Copy each generated image up to the message that has no copy yet. A failure stops the fork. */
+    async copyThrough(session: Session, blockId: string): Promise<void> {
+      for (const { path, name } of imagesThrough(session, blockId)) {
+        if (copies.has(path)) continue;
+        if (!port.copyImage) throw imageFailure("this window cannot copy images.");
+        try {
+          copies.set(path, await port.copyImage(path, name));
+        } catch (error) {
+          throw imageFailure(error);
+        }
+      }
+    },
+    /** Remove the copies that the finished chat does not use. Best effort: the fork's own result stands. */
+    async discard(used: ReadonlySet<string>): Promise<void> {
+      const unused = [...copies.values()]
+        .map((file) => file.path)
+        .filter((path) => !used.has(path));
+      if (unused.length === 0 || !port.removeImages) return;
+      try {
+        await port.removeImages(unused);
+      } catch {
+        // A file left behind is cleaned with the app's other generated images.
+      }
+    },
+  };
+}
+
+function imagePaths(session: Session | null): Set<string> {
+  const paths = new Set<string>();
+  for (const block of session?.blocks ?? []) {
+    if (block.role === "image" && typeof block.image?.path === "string") paths.add(block.image.path);
+  }
+  return paths;
+}
+
 /**
  * Copy the chat. When a new worktree is requested, creation goes through the
  * port and a refusal is left to the caller. This never removes a worktree.
+ * Generated images are copied first, so an image that cannot be copied stops
+ * the fork before a worktree exists, and a refused fork leaves no files behind.
  */
 export async function forkChat(
   source: Session,
   blockId: string,
   options: ForkChatOptions,
-  port: ForkWorktreePort,
+  port: ForkPort,
   ids: ForkIds = defaultIds(),
 ): Promise<Session | null> {
   if (!forkStillValid(source, blockId)) return null;
-  if (!options.useNewWorktree) return forkSessionAtMessage(source, blockId, ids);
-  const sessionId = takeId(ids);
-  if (!sessionId) return null;
-  const tree = await port.createWorktree(
-    worktreeOrigin(source),
-    temporaryWorktreeBranchName(sessionId),
-    "HEAD",
-    false,
-  );
-  const live = options.readSource ? options.readSource() : source;
-  if (!forkStillValid(live, blockId)) return null;
-  const fork = forkSessionAtMessage(live!, blockId, ids, sessionId);
-  if (!fork) return null;
-  return withForkWorktree(fork, tree);
+  const images = imageCopies(port);
+  let result: Session | null = null;
+  try {
+    await images.copyThrough(source, blockId);
+    if (!options.useNewWorktree) {
+      result = forkSessionAtMessage(source, blockId, ids, undefined, images.copies);
+      return result;
+    }
+    const sessionId = takeId(ids);
+    if (!sessionId) return null;
+    const tree = await port.createWorktree(
+      worktreeOrigin(source),
+      temporaryWorktreeBranchName(sessionId),
+      "HEAD",
+      false,
+    );
+    const live = options.readSource ? options.readSource() : source;
+    if (!forkStillValid(live, blockId)) return null;
+    await images.copyThrough(live!, blockId);
+    const fork = forkSessionAtMessage(live!, blockId, ids, sessionId, images.copies);
+    if (!fork) return null;
+    result = withForkWorktree(fork, tree);
+    return result;
+  } finally {
+    await images.discard(imagePaths(result));
+  }
 }

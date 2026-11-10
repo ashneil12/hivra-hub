@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { memoryReadableBlocks } from "../../memory/model/privateChat";
 import { newSession, type Block, type Session } from "../model/session";
-import { pendingForkBrief, type ForkWorktreePort } from "../model/threadFork";
+import { pendingForkBrief, type ForkPort, type ForkWorktreePort } from "../model/threadFork";
 import { askThreadFork, clearThreadForkAsk } from "../model/threadForkAsk";
 import { ForkFromHereButton } from "./ForkFromHereButton";
 import { ThreadForkHost } from "./ThreadForkHost";
@@ -202,7 +202,7 @@ it("names the message action Fork from here", async () => {
 async function renderHost(
   source: Session,
   opened: Session[],
-  options: { port?: ForkWorktreePort; setting?: () => unknown } = {},
+  options: { port?: ForkPort; setting?: () => unknown } = {},
 ) {
   const ref = { current: [source] } as RefObject<Session[]>;
   await act(async () => {
@@ -480,3 +480,73 @@ it("starts the new worktree from the chat's own worktree", async () => {
   expect(opened[0].worktreeCwd).toBe("/work/proj-wt-b");
 });
 
+function pictureChat(): Session {
+  return {
+    ...chat(),
+    blocks: [
+      block("u1", "user", "Draw a cat"),
+      {
+        id: "i1",
+        role: "image",
+        text: "",
+        image: {
+          path: "/data/generated-images/one.png",
+          name: "cat.png",
+          mimeType: "image/png",
+          size: 10,
+        },
+      },
+      block("a1", "assistant", "Here it is"),
+    ],
+  };
+}
+
+it("gives the fork its own copy of a generated image", async () => {
+  const source = pictureChat();
+  const copied: string[] = [];
+  const port: ForkPort = {
+    createWorktree: async () => worktree(),
+    copyImage: async (path) => {
+      copied.push(path);
+      return { path: "/data/generated-images/copy.png", mimeType: "image/png", size: 10 };
+    },
+    removeImages: async () => {},
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "off" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(copied).toEqual(["/data/generated-images/one.png"]);
+  expect(opened).toHaveLength(1);
+  expect(opened[0].blocks[1].image?.path).toBe("/data/generated-images/copy.png");
+  expect(source.blocks[1].image?.path).toBe("/data/generated-images/one.png");
+});
+
+it("shows why an image could not be copied, opens no chat and makes no worktree", async () => {
+  const source = pictureChat();
+  let worktrees = 0;
+  const port: ForkPort = {
+    createWorktree: async () => {
+      worktrees += 1;
+      return worktree();
+    },
+    copyImage: async () => {
+      throw new Error("No such file");
+    },
+    removeImages: async () => {},
+  };
+  const opened: Session[] = [];
+  await renderHost(source, opened, { port, setting: () => "always" });
+  act(() => askThreadFork(source.id, "a1"));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>("[data-thread-fork-confirm]")?.click();
+  });
+  expect(document.querySelector("[role=alert]")?.textContent).toBe(
+    "An image in this chat could not be copied: No such file",
+  );
+  expect(document.querySelector("[role=alert]")?.textContent).not.toMatch(/[—–]/);
+  expect(opened).toHaveLength(0);
+  expect(worktrees).toBe(0);
+});
