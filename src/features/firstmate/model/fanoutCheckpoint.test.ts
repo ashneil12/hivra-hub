@@ -62,6 +62,21 @@ describe("createCheckpoint", () => {
     expect(cp.originalRequest).toBe("Build the score board and its API.");
     expect(JSON.stringify(cp.tasks)).not.toContain("Build the score board");
   });
+
+  it("keeps the request's real length when it was cut to the quote, so a resumed brief's cut note stays honest", () => {
+    const cut = createCheckpoint({
+      id: PLAN,
+      owner: OWNER,
+      originalRequest: "x".repeat(16_000),
+      originalRequestChars: 20_500,
+      waves: [["api"]],
+      tasks: [{ name: "api", wave: 1, input: { intent: "API", brief: "b", goal: "g" } }],
+      now: T0,
+    });
+    expect(parseCheckpoint(JSON.parse(JSON.stringify(cut)))?.originalRequestChars).toBe(20_500);
+    expect(parseCheckpoint({ ...JSON.parse(JSON.stringify(cut)), originalRequestChars: -1 })).toBeNull();
+    expect(parseCheckpoint({ ...JSON.parse(JSON.stringify(fresh())), originalRequestChars: "20500" })).toBeNull();
+  });
 });
 
 describe("noting progress", () => {

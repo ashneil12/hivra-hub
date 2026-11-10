@@ -21,6 +21,7 @@ import {
   PROVIDE_KINDS,
   dependenciesOf,
   describeCycleWarning,
+  projectPath,
   renderContractBlock,
   renderContractForTask,
   requiresCycle,
@@ -73,9 +74,20 @@ export type FanoutLink = {
 /** How long after a plan was sent a provider that cannot be found is read as late to appear, not as gone. */
 export const NEW_PLAN_GRACE_MS = 60_000;
 
-/** A task's own request id inside a fan-out: the call's, then the task's name, within the 100 characters a request id may have. */
+/**
+ * A task's own request id inside a fan-out, within the 100 characters a request id may have.
+ * `requestId-name` collides with a plain delegate_task, and `req1-a` + `b` collides with `req1` + `a-b`.
+ * The length of the request id is written in front, so one string has only one split.
+ */
 export function taskRequestId(requestId: string, name: string): string {
-  return `${requestId.slice(0, 100 - name.length - 1)}-${name}`;
+  const task = name.slice(0, 96);
+  let kept = requestId;
+  for (let guard = 0; guard < 5; guard++) {
+    const id = `f${String(kept.length)}_${kept}-${task}`;
+    if (id.length <= 100) return id;
+    kept = kept.slice(0, Math.max(0, kept.length - (id.length - 100)));
+  }
+  return `f${String(kept.length)}_${kept}-${task}`.slice(0, 100);
 }
 
 export type PlannedFanout = {
@@ -170,16 +182,24 @@ function readContract(value: unknown, known: (name: unknown) => string): Contrac
   const owners = isRecord(value.owners) ? value.owners : undefined;
   const files = isRecord(value.files) ? value.files : undefined;
   if (!owners || !files) throw new Error("contract owners");
+  // A stored link is untrusted: owners, file names and `in` go through the same path rule as a new plan. A provide
+  // name is a path only when it names a file. An endpoint like /api/score is a name, not a path.
+  const owned: Record<string, string> = {};
+  for (const [path, owner] of Object.entries(owners)) {
+    const clean = projectPath(path);
+    if (Object.prototype.hasOwnProperty.call(owned, clean)) throw new Error("a path twice");
+    owned[clean] = known(owner);
+  }
   return {
-    owners: Object.fromEntries(Object.entries(owners).map(([path, owner]) => [text(path, 400), known(owner)])),
+    owners: owned,
     provides: list(value.provides, 64).map((entry) => {
       const kind = entry.kind;
       if (typeof kind !== "string" || !(PROVIDE_KINDS as readonly string[]).includes(kind)) throw new Error("provide kind");
       return {
         task: known(entry.task),
         kind: kind as (typeof PROVIDE_KINDS)[number],
-        name: text(entry.name, 400),
-        ...(entry.in === undefined ? {} : { in: text(entry.in, 400) }),
+        name: kind === "file" ? projectPath(entry.name) : text(entry.name, 400),
+        ...(entry.in === undefined ? {} : { in: projectPath(entry.in) }),
         ...(entry.shape === undefined ? {} : { shape: text(entry.shape, 400) }),
       };
     }),
@@ -188,7 +208,12 @@ function readContract(value: unknown, known: (name: unknown) => string): Contrac
     files: Object.fromEntries(
       Object.entries(files).map(([task, paths]) => {
         if (!Array.isArray(paths) || paths.length > 30) throw new Error("contract files");
-        return [known(task), paths.map((path) => text(path, 400))];
+        const clean: string[] = [];
+        for (const path of paths) {
+          const next = projectPath(path);
+          if (!clean.includes(next)) clean.push(next);
+        }
+        return [known(task), clean];
       }),
     ),
   };

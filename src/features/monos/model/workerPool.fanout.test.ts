@@ -166,3 +166,129 @@ describe("the pump settles what a dependent waits on before it starts anything (
   });
 });
 
+describe("the fan-out cap is a queue wait, not a drop (WP-171)", () => {
+  const CAP = "Not started: you already have 8 tasks running, the most one first mate runs at once (8).";
+  const owned = (child: string, owner = "lead") =>
+    ({
+      childSession: child,
+      project: "tally",
+      state: "running" as const,
+      follow: null,
+      title: child,
+      ownerSession: owner,
+    }) as AdmitContext["rows"][number];
+
+  beforeEach(() => {
+    setWorkerLimits("tally", { workers: 30, heavy: 30 });
+  });
+
+  it("starts only as many as the cap leaves free, and the one past it stays queued for a fan-out reason", () => {
+    const rows = [owned("w1"), owned("w2"), owned("w3")];
+    const queue = ["q1", "q2", "q3", "q4", "q5", "q6"].map((id) => needs(id));
+    const ctx = context({}, { rows, queue });
+    expect(nextWorkers(ctx).map((q) => q.id)).toEqual(["q1", "q2", "q3", "q4", "q5"]);
+    expect(queuedLine(queue[5], ctx)).toMatch(/the most one first mate runs at once/);
+    expect(admitWorker({ ...admitInput("extra"), ownerSession: "lead" }, ctx)).toMatchObject({
+      start: false,
+      reason: "fanout",
+    });
+    // An ordinary worker is not held by the fan-out cap. The project's own limit is what holds it.
+    const plain = job("plain", { ownerSession: "lead" });
+    expect(nextWorkers(context({}, { rows: Array.from({ length: 8 }, (_, i) => owned(`w${i}`)), queue: [plain] })).map((q) => q.id)).toEqual(["plain"]);
+  });
+
+  it("a start refused for the fan-out cap stays queued, and the next look starts it", async () => {
+    await enqueueWorker(job("over", { ownerSession: "lead", title: "Ship the board" }));
+    let refuse = true;
+    const started: string[] = [];
+    const dropped: string[] = [];
+    const run = () =>
+      pumpWorkers({
+        openRows: () => [],
+        room,
+        start: async (queued) => {
+          if (refuse) throw new Error(CAP);
+          started.push(queued.id);
+        },
+        failed: (queued) => void dropped.push(queued.id),
+      });
+    await run();
+    expect(dropped).toEqual([]);
+    expect(queuedWorkers().map((q) => q.id)).toEqual(["over"]);
+    refuse = false;
+    await run();
+    expect(started).toEqual(["over"]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("tells the owner, by name, when a waiting task is dropped for any other reason", async () => {
+    await enqueueWorker(job("bad", { ownerSession: "lead", title: "Ship the board" }));
+    const told: string[] = [];
+    await pumpWorkers({
+      openRows: () => [],
+      room,
+      start: async () => {
+        throw new Error("No such project");
+      },
+      dropped: (_job, line) => void told.push(line),
+    });
+    expect(queuedWorkers()).toEqual([]);
+    expect(told).toEqual([expect.stringContaining("Ship the board")]);
+  });
+});
+
+describe("a held task is told to its owner once (WP-171)", () => {
+  it("tells once when a task becomes held, names it, and tells again only after that hold ends", async () => {
+    await enqueueWorker(needs("board"));
+    const told: { id: string; line: string }[] = [];
+    let wait: DependencyWait | undefined = HELD;
+    const pump = () =>
+      pumpWorkers({
+        openRows: () => [],
+        room,
+        dependency: () => wait,
+        start: async () => {
+          if (wait?.reason === "held") throw new Error("a held task must not start");
+        },
+        held: (_job, note) => void told.push(note),
+      });
+    await pump();
+    expect(told).toEqual([
+      { id: "held-board-1", line: expect.stringContaining("Job board") },
+    ]);
+    expect(told[0]?.line).toContain("Held:");
+    expect(told[0]?.line).toContain("waiting for another task");
+    await pump();
+    expect(told).toHaveLength(1);
+    expect(queuedWorkers().map((queued) => queued.id)).toEqual(["board"]);
+    // The hold ends and the task starts. Held again later, the owner hears it once more, under a new id.
+    wait = undefined;
+    await pump();
+    expect(queuedWorkers()).toEqual([]);
+    await enqueueWorker(needs("board"));
+    wait = HELD;
+    await pump();
+    expect(told).toHaveLength(2);
+    expect(told[1]?.id).toBe("held-board-2");
+  });
+
+  it("stays quiet for a task that is only waiting on a provider, a plain worker, or a chat that is gone", async () => {
+    await enqueueWorker(needs("docs"));
+    await enqueueWorker(job("plain"));
+    await enqueueWorker(needs("gone"));
+    const told: string[] = [];
+    await pumpWorkers({
+      openRows: () => [],
+      room,
+      dependency: ({ fanout }) => ((fanout as { for: string }).for === "plain" ? HELD : WAIT),
+      ownerGone: (queued) => queued.id === "gone",
+      start: async (queued) => {
+        if (queued.id !== "plain") throw new Error("only the plain worker can start");
+      },
+      held: (_job, note) => void told.push(note.line),
+    });
+    expect(told).toEqual([]);
+    expect(queuedWorkers().map((queued) => queued.id)).toEqual(["docs"]);
+  });
+});
+

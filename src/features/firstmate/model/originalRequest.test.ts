@@ -6,6 +6,7 @@ import {
   originalRequestOf,
   pickOriginalRequest,
   quoteOriginalRequest,
+  readOriginalRequest,
   type RequestBlock,
 } from "./originalRequest";
 
@@ -35,7 +36,7 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
       expect(originalRequestOf([user("   ")])).toBeUndefined();
     });
 
-    it("skips what the app wrote on the person's behalf: reports, wakes, notes, checks, hidden turns, drafts", () => {
+    it("quotes nothing when the latest turn is the app's, and never quotes what the app wrote", () => {
       const blocks = [
         user(LONG),
         assistant("Started two workers."),
@@ -48,12 +49,28 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
         user("a habit post", { monoHabit: { id: "h" } }),
         user("half typed", { draft: true }),
       ];
-      expect(originalRequestOf(blocks)).toBe(LONG.trim());
+      expect(originalRequestOf(blocks)).toBeUndefined();
+      const text = originalRequestOf([...blocks, user("the weekly one")])!;
+      expect(text).toContain(LONG.trim());
+      expect(text).toContain("the weekly one");
+      expect(text).not.toContain("api is done");
+      expect(text).not.toContain("a note from a room");
     });
 
-    it("is not fooled by a short app turn after a long request: it keeps the request whole", () => {
-      const blocks = [user(LONG), user("[MonoCode report] done")];
-      expect(originalRequestOf(blocks)).toBe(LONG.trim());
+    it("does not treat a later app turn as the request or as a follow-up", () => {
+      expect(originalRequestOf([user(LONG), user("[MonoCode report] done")])).toBeUndefined();
+    });
+
+    it("quotes nothing when the current turn is a room post or a wake, not an older message", () => {
+      const room = user("ship the board", { monoNote: { kind: "room", from: "design" } });
+      const wake = user("[MonoCode wake] look at the board again.");
+      expect(originalRequestOf([user(LONG), assistant("Done."), room])).toBeUndefined();
+      expect(originalRequestOf([user(LONG), wake])).toBeUndefined();
+      expect(originalRequestOf([user("a note from a room", { monoNote: { from: "x" } })])).toBeUndefined();
+      // The person's own latest message still quotes, and a short follow-up still joins the one before it.
+      expect(originalRequestOf([user(LONG), room, user("the weekly one")])).toBe(
+        `${LONG.trim()}\n\n${FOLLOW_UP_MARKER}\nthe weekly one`,
+      );
     });
   });
 
@@ -107,6 +124,17 @@ describe("the person's own request, as a worker's brief quotes it (WP-171)", () 
       const quoted = quoteOriginalRequest("short ask");
       expect(quoted).toContain("> short ask");
       expect(quoted).not.toContain("Cut here");
+    });
+
+    it("cuts a huge request to the quote budget when it is first read, and the quote still says how long it was", () => {
+      const huge = "z".repeat(200_000);
+      const picked = pickOriginalRequest({ current: huge, earlier: [] });
+      expect(picked?.length).toBe(ORIGINAL_REQUEST_CHAR_BUDGET);
+      const read = readOriginalRequest([user(huge)]);
+      expect(read).toEqual({ text: "z".repeat(ORIGINAL_REQUEST_CHAR_BUDGET), chars: 200_000 });
+      const quoted = quoteOriginalRequest(read!.text, read!.chars);
+      expect(quoted).toContain("(Cut here: the request is 200,000 characters and only the first 16,000 are quoted.)");
+      expect(quoted).not.toContain("z".repeat(ORIGINAL_REQUEST_CHAR_BUDGET + 1));
     });
   });
 });

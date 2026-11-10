@@ -139,8 +139,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** A path inside the project, written the same way everywhere: no `./`, no trailing slash. */
-function projectPath(value: unknown): string {
+/** A path inside the project, written the same way everywhere: no `./`, no trailing slash. Exported so a stored link is checked again with the same rule. */
+export function projectPath(value: unknown): string {
   const raw = typeof value === "string" ? value.trim() : "";
   const bad = () => fail(`A path must be relative and inside the project: "${typeof value === "string" ? value : String(value)}" is not.`);
   if (!raw || raw.length > 400 || raw.includes("\\") || /[\0\r\n]/.test(raw)) return bad();

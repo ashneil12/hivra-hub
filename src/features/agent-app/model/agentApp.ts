@@ -114,7 +114,9 @@ import {
 } from "../../monos/model/followedBriefs";
 import {
   handleTasks,
+  isAppDelegate,
   TASK_FIELDS,
+  APP_DELEGATE_FIELDS,
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
@@ -502,7 +504,11 @@ function shipCaller(source: Session, host: AgentAppHost): void {
 function fields(action: string, input: Record<string, unknown>) {
   const allowed = FIELDS.get(action);
   if (!allowed) throw new Error(`Unknown app action: ${action}`);
-  const unknown = Object.keys(input).filter((key) => !allowed.includes(key));
+  // WP-171: fanout, originalRequest and originalRequestChars are the app's own replay fields. An agent's call has no mark.
+  const replay = action === "tasks.delegate" && isAppDelegate(input);
+  const unknown = Object.keys(input).filter(
+    (key) => !allowed.includes(key) && !(replay && (APP_DELEGATE_FIELDS as readonly string[]).includes(key)),
+  );
   if (unknown.length)
     throw new Error(`Unknown ${action} fields: ${unknown.join(", ")}`);
 }

@@ -45,6 +45,8 @@ export type FanoutCheckpoint = {
   owner: string;
   /** The person's request, once per plan (not repeated on every task). */
   originalRequest?: string;
+  /** The request's real length when it was cut to the quote budget, so a resumed brief's cut note stays honest. */
+  originalRequestChars?: number;
   waves: string[][];
   tasks: CheckpointTask[];
   wavesDone: number;
@@ -61,6 +63,7 @@ export function createCheckpoint(input: {
   id: string;
   owner: string;
   originalRequest?: string;
+  originalRequestChars?: number;
   waves: string[][];
   tasks: CheckpointTaskInput[];
   now: number;
@@ -70,6 +73,7 @@ export function createCheckpoint(input: {
     id: input.id,
     owner: input.owner,
     ...(input.originalRequest === undefined ? {} : { originalRequest: input.originalRequest }),
+    ...(input.originalRequestChars === undefined ? {} : { originalRequestChars: input.originalRequestChars }),
     waves: input.waves.map((wave) => [...wave]),
     tasks: input.tasks.map((task) => ({
       name: task.name,
@@ -237,6 +241,9 @@ export function parseCheckpoint(value: unknown): FanoutCheckpoint | null {
   if (typeof value.owner !== "string" || value.owner.length === 0 || value.owner.length > 200) return null;
   const originalRequest = optionalString(value.originalRequest);
   if (originalRequest === null) return null;
+  if (value.originalRequestChars !== undefined && !(Number.isInteger(value.originalRequestChars) && (value.originalRequestChars as number) >= 0))
+    return null;
+  const originalRequestChars = value.originalRequestChars as number | undefined;
   if (!Array.isArray(value.waves) || !value.waves.every((wave) => Array.isArray(wave) && wave.every((n) => typeof n === "string")))
     return null;
   if (!Array.isArray(value.tasks) || value.tasks.length === 0 || value.tasks.length > FANOUT_MAX_TASKS) return null;
@@ -274,6 +281,7 @@ export function parseCheckpoint(value: unknown): FanoutCheckpoint | null {
     id: value.id,
     owner: value.owner,
     ...(originalRequest === undefined ? {} : { originalRequest }),
+    ...(originalRequestChars === undefined ? {} : { originalRequestChars }),
     waves: (value.waves as string[][]).map((wave) => [...wave]),
     tasks,
     wavesDone: value.wavesDone as number,

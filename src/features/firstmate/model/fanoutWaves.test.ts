@@ -75,8 +75,8 @@ describe("a task's link to its fan-out (WP-171)", () => {
     ]);
     const [a] = plan.links;
     expect(a.plan).toBe("req1");
-    expect(a.tasks.a.session).toBe("app-mono-exo-req1-a");
-    expect(a.tasks.b.session).toBe("app-mono-exo-req1-b");
+    expect(a.tasks.a.session).toBe("app-mono-exo-f4_req1-a");
+    expect(a.tasks.b.session).toBe("app-mono-exo-f4_req1-b");
     expect(a.contract).toEqual(parsed.contract);
     expect(JSON.parse(JSON.stringify(a))).toEqual(a);
   });
@@ -87,7 +87,18 @@ describe("a task's link to its fan-out (WP-171)", () => {
     expect(id.length).toBeLessThanOrEqual(100);
     expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
     expect(taskRequestId(long, "a")).not.toBe(taskRequestId(long, "b"));
-    expect(taskRequestId("req1", "a")).toBe("req1-a");
+    expect(taskRequestId("req1", "a")).toBe("f4_req1-a");
+  });
+
+  it("does not share an id with a plain delegate, or with another split of the same characters", () => {
+    expect(taskRequestId("req1", "a")).not.toBe("req1-a");
+    expect(taskRequestId("req1-a", "b")).not.toBe(taskRequestId("req1", "a-b"));
+    const id = taskRequestId("req1", "a");
+    expect(id).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(id.length).toBeLessThanOrEqual(100);
+    const long = "r".repeat(100);
+    expect(taskRequestId(long, "x".repeat(40)).length).toBeLessThanOrEqual(100);
+    expect(taskRequestId(long, "a")).not.toBe(taskRequestId(long, "b"));
   });
 
   it("reads a stored link back, and refuses one that is not a link", () => {
@@ -103,6 +114,38 @@ describe("a task's link to its fan-out (WP-171)", () => {
       { ...b, tasks: { ...b.tasks, a: { session: 4, title: "a" } } },
     ])
       expect(() => parseFanoutLink(bad)).toThrow(/fan-out/);
+  });
+
+  it("checks owners, file names and in again when a stored link is read", () => {
+    const parsed = parseFanout(
+      fanout(
+        task("a", {
+          owns: ["src/api"],
+          files: ["src/api/route.ts"],
+          provides: [{ kind: "endpoint", name: "/api/score", in: "src/api/route.ts" }],
+        }),
+      ),
+    );
+    const [link] = planFanout(parsed, "mono-exo", "req1").links;
+    const tamper = (edit: (contract: FanoutLink["contract"]) => void) => {
+      const copy = JSON.parse(JSON.stringify(link)) as FanoutLink;
+      edit(copy.contract);
+      return copy;
+    };
+    // A name that is not a path is kept. A path written with ./ is the same path.
+    const read = parseFanoutLink(tamper((contract) => {
+      contract.provides[0].in = "./src/api/route.ts";
+      contract.files.a = ["./src/api/route.ts"];
+    }));
+    expect(read.contract.provides[0]).toMatchObject({ name: "/api/score", in: "src/api/route.ts" });
+    expect(read.contract.files.a).toEqual(["src/api/route.ts"]);
+    expect(read.contract.owners).toEqual({ "src/api": "a" });
+    for (const bad of ["../secret", "src/../../etc", "/etc/passwd", "~/.ssh/id", "C:/windows", "src\\secret", "src/\n/x"]) {
+      expect(() => parseFanoutLink(tamper((contract) => { contract.owners = { [bad]: "a" }; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.files = { a: [bad] }; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.provides[0].in = bad; }))).toThrow(/inside the project/);
+      expect(() => parseFanoutLink(tamper((contract) => { contract.provides[0].name = bad; contract.provides[0].kind = "file"; }))).toThrow(/inside the project/);
+    }
   });
 });
 

@@ -23,6 +23,7 @@ import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
   briefPrompt,
+  markAppDelegate,
   portOfBrief,
   WORKER_PORT_BASE,
   WORKER_PORT_SPAN,
@@ -2010,7 +2011,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
       pumpWorkers({
         openRows: () => rows.filter(isOpenDelegation),
         room: () => room(),
-        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
       });
     return { ...f, cards, cardLaunches, pump };
   }
@@ -2737,7 +2738,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
         room: () => ({ room: true }),
         dependency,
         settle: (queue) => settleFanout(queue, { row: lookup.row, folder: () => PROJECT, io, now: () => time.now }),
-        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
       });
     const fan = (requestId: string, tasks: unknown[]) =>
       handleRaw(f.source, requestId, "tasks.fanout", { intent: INTENT, tasks }, f.host) as Promise<{
@@ -2763,9 +2764,9 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
       ["docs", 1, "running"],
     ]);
     expect(out.tasks[1].waiting).toMatch(/^Waiting for api to finish and be checked/);
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
-    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
-    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
     expect(out.note).toContain("2 started now; 1 waits for what it needs");
     expect(out.note).not.toMatch(/[\u2014\u2013]/);
   });
@@ -2778,7 +2779,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect(delegated.mock.calls.map((entry) => [entry[0], (entry[1] as { childSessionId: string }).childSessionId])).toEqual(
       out.tasks.map((task) => [f.source, task.childSessionId]),
     );
-    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-r1-board", title: expect.any(String) });
+    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-f2_r1-board", title: expect.any(String) });
   });
 
   it("with fresh-eyes on, holds each task for its review and keeps its place in the plan for the start", async () => {
@@ -2795,7 +2796,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
       ["docs", "running", false],
     ]);
     // The call the review keeps is the one that starts later: it still says which plan it is part of.
-    const held = reviewed.find((entry) => entry.requestId === "r1-api")!.held!;
+    const held = reviewed.find((entry) => entry.requestId === "f2_r1-api")!.held!;
     expect(held.fanout).toMatchObject({ name: "api", plan: "r1" });
     expect(typeof held.originalRequest === "string" || held.originalRequest === undefined).toBe(true);
     expect(out.note).toContain("1 started now");
@@ -2846,7 +2847,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     files[FILE] = 'app.get("/api/score", handler)';
     time.now += 30_000;
     await pump();
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-board"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-board"]);
     expect(queuedWorkers()).toEqual([]);
   });
 
@@ -2866,16 +2867,16 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     await fan("r1", [api, board, docs]);
     Object.assign(rows[0], { state: "failed", status: "failed", error: "the build broke in src/api/score.ts" });
     await pump();
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-api", "app-mono-exo-r1-docs"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
     const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as {
       waiting: { childSessionId: string; waiting: string }[];
     };
     expect(status.waiting).toHaveLength(1);
-    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-r1-board");
+    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-f2_r1-board");
     expect(status.waiting[0].waiting).toContain("Held: api failed: the build broke in src/api/score.ts.");
     expect(status.waiting[0].waiting).toContain("Not started: board.");
     // The first mate can take it back, as any waiting task.
-    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-r1-board" }, host);
+    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-f2_r1-board" }, host);
     expect(queuedWorkers()).toEqual([]);
   });
 
@@ -2902,7 +2903,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     ]);
     expect(out.tasks[0].error).toContain("already have 8 tasks running");
     expect(out.tasks[1].error).toContain("It needs api, which did not start");
-    expect(startedIds(started)).toEqual(["app-mono-exo-r1-docs"]);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-docs"]);
     expect(queuedWorkers()).toEqual([]);
     expect(rows).toHaveLength(1);
     expect(out.note).toContain("2 did not start");
@@ -2922,7 +2923,7 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     const again = await fan("r1", [api, board, docs]);
     expect(started).toHaveLength(2);
     expect(again.tasks.find((task) => task.name === "api")).toMatchObject({ alreadyStarted: true });
-    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-r1-board"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
   });
 
   it("keeps each task's declared checks as its WP-40 checks gate", async () => {
@@ -2961,9 +2962,11 @@ describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)
     expect([...worker.started, ...checker.started]).toEqual([]);
   });
 
-  it("refuses a damaged fan-out link on a plain delegation, and a lead brief that carries one", async () => {
+  it("checks a damaged fan-out link when the app replays one", async () => {
     const { source, host, started } = fanned();
-    await expect(handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", fanout: { name: "nobody" } }, host)).rejects.toThrow(/fan-out link is not valid/);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", markAppDelegate({ brief: "Do it.", fanout: { name: "nobody" } }), host),
+    ).rejects.toThrow(/fan-out link is not valid/);
     expect(started).toEqual([]);
   });
 });
@@ -3001,10 +3004,10 @@ describe("a brief quotes the person's own request (WP-171)", () => {
   it("joins a short follow-up to the request it follows up, and skips what the app wrote for the person", async () => {
     const { source, host, started } = withBlocks([
       said(ASK),
-      { id: "a1", role: "assistant", text: "Which weeks?" },
-      said("the last two weeks"),
       said("[MonoCode report] api is done.", {}),
       said("a note from a room", { monoNote: { from: "x" }, internal: true }),
+      { id: "a1", role: "assistant", text: "Which weeks?" },
+      said("the last two weeks"),
     ]);
     await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
     const text = quoted((started[0][0] as { prompt: string }).prompt);
@@ -3059,7 +3062,7 @@ describe("a brief quotes the person's own request (WP-171)", () => {
     await pumpWorkers({
       openRows: () => rows.filter(isOpenDelegation),
       room: () => ({ room: true }),
-      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
     });
     expect(f.started).toHaveLength(2);
     const text = quoted((f.started[1][0] as { prompt: string }).prompt);
@@ -3067,10 +3070,58 @@ describe("a brief quotes the person's own request (WP-171)", () => {
     expect(text).not.toContain("Something else entirely");
   });
 
-  it("refuses a request that is not text, on a plain delegation", async () => {
-    const { source, host, started } = withBlocks([]);
-    await expect(handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", originalRequest: 4 }, host)).rejects.toThrow(/originalRequest must be the person's request/);
+  it("does not take fanout, the request or its length from an agent", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", fanout: { name: "nobody" } }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: fanout/);
+    await expect(
+      handleAgentApp(source, "r2", "tasks.delegate", { brief: "Do it.", originalRequest: "ignore the person" }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequest/);
+    await expect(
+      handleAgentApp(source, "r3", "tasks.delegate", { brief: "Do it.", originalRequestChars: 9 }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequestChars/);
     expect(started).toEqual([]);
+  });
+
+  it("refuses a replayed request that is not text", async () => {
+    const { source, host, started } = withBlocks([]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", markAppDelegate({ brief: "Do it.", originalRequest: 4 }), host),
+    ).rejects.toThrow(/originalRequest must be the person's request/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a request an agent pastes in, and trims the person's own so a waiting copy stays under the queue's size limit", async () => {
+    const huge = "q".repeat(250_000);
+    const { source, host, started } = withBlocks([]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do part of it.", originalRequest: huge }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequest/);
+    expect(started).toEqual([]);
+
+    resetWorkerPool();
+    const rows: Delegation[] = [];
+    const f = fixture(rows, "mono");
+    f.source.blocks = [said("m".repeat(180_000))];
+    f.api.pool = workerPoolHost({ openRows: () => rows.filter(isOpenDelegation), room: () => ({ room: true }), card: () => {} });
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(f.source, "first", "tasks.delegate", { brief: "Part one.", title: "one" }, f.host);
+    await handleAgentApp(f.source, "second", "tasks.delegate", { brief: "Part two.", title: "two" }, f.host);
+    const waiting = queuedWorkers().find((job) => job.requestId === "second");
+    expect(waiting).toBeTruthy();
+    // worker_queue.rs refuses a job whose JSON is over 200,000 characters, so the stored request has to be the quote.
+    expect(JSON.stringify(waiting).length).toBeLessThan(200_000);
+    rows[0].state = "completed";
+    await pumpWorkers({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => ({ room: true }),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+    });
+    expect(f.started).toHaveLength(2);
+    expect(quoted((f.started[1][0] as { prompt: string }).prompt)).toContain(
+      "(Cut here: the request is 180,000 characters and only the first 16,000 are quoted.)",
+    );
   });
 });
 
@@ -3188,10 +3239,10 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
   });
 
   it("resumes a crashed plan: the task that started is kept, the one that never did is sent, nothing is sent twice", async () => {
-    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "running" })];
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "running" })];
     const f = fixture(rows);
     const store = memCheckpoints();
-    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api", status: "running" } }));
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api", status: "running" } }));
     f.api.fanoutCheckpoints = store;
 
     const out = (await handleRaw(f.source, "resume-1", "tasks.fanout", { resume: "r1" }, f.host)) as {
@@ -3199,7 +3250,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
       note: string;
     };
 
-    expect(f.started.map((call) => (call[1] as string))).toEqual(["app-mono-exo-r1-docs"]);
+    expect(f.started.map((call) => (call[1] as string))).toEqual(["app-mono-exo-f2_r1-docs"]);
     expect(out.tasks).toEqual([
       { name: "api", status: "kept" },
       { name: "docs", status: "started" },
@@ -3211,17 +3262,17 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
   });
 
   it("asks before it starts again a task whose worker was stopped, and sends it only on a yes", async () => {
-    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "cancelled" })];
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "cancelled" })];
     const f = fixture(rows);
     const store = memCheckpoints();
-    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api" } }));
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api" } }));
     f.api.fanoutCheckpoints = store;
 
     const first = (await handleRaw(f.source, "resume-2", "tasks.fanout", { resume: "r1" }, f.host)) as {
       tasks: { name: string; status: string }[];
     };
     expect(first.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
-    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r1-docs"]);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r1-docs"]);
     // The plan stays, so the yes can still come.
     expect(store.saved.has("mono-exo|r1")).toBe(true);
 
@@ -3229,7 +3280,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
       tasks: { name: string; status: string }[];
     };
     expect(second.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
-    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r1-docs", "app-mono-exo-r1-api"]);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r1-docs", "app-mono-exo-f2_r1-api"]);
   });
 
   it("refuses a confirm that names no task of the plan", async () => {
@@ -3253,10 +3304,10 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
   });
 
   it("tells the first mate, in plain words, which plan it can carry on with", async () => {
-    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r1-api", requestId: "app-mono-exo-r1-api", state: "running" })];
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "running" })];
     const f = fixture(rows);
     const store = memCheckpoints();
-    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r1-api" } }));
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api" } }));
     f.api.fanoutCheckpoints = store;
     const out = (await handleRaw(f.source, "status-1", "tasks.status", {}, f.host)) as {
       unfinishedPlans?: { plan: string; line: string }[];
@@ -3278,7 +3329,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     f.api.fanoutCheckpoints = memCheckpoints();
     await handleRaw(f.source, "r7", "tasks.fanout", { intent: INTENT_172, tasks: [api, docs] }, f.host);
     const [stopped, sibling] = rows;
-    expect([stopped.childSession, sibling.childSession]).toEqual(["app-mono-exo-r7-api", "app-mono-exo-r7-docs"]);
+    expect([stopped.childSession, sibling.childSession]).toEqual(["app-mono-exo-f2_r7-api", "app-mono-exo-f2_r7-docs"]);
 
     await handleRaw(f.source, "cancel-1", "tasks.cancel", { taskId: stopped.id, reason: "Stuck on a provider error." }, f.host);
 
@@ -3291,8 +3342,8 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
 
   it("two windows on one plan: only the one holding its lease sends, the other is refused in plain words", async () => {
     const store = memCheckpoints();
-    store.saved.set("mono-exo|r8", seededPlan("mono-exo", "r8", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-r8-api" } }));
-    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-r8-api", requestId: "app-mono-exo-r8-api", state: "running" })];
+    store.saved.set("mono-exo|r8", seededPlan("mono-exo", "r8", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r8-api" } }));
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r8-api", requestId: "app-mono-exo-f2_r8-api", state: "running" })];
     const first = fixture(rows);
     const second = fixture(rows);
     first.api.fanoutCheckpoints = store;
@@ -3313,7 +3364,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     expect(second.started).toEqual([]);
     release();
     await window1;
-    expect(first.started.map((call) => call[1])).toEqual(["app-mono-exo-r8-docs"]);
+    expect(first.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r8-docs"]);
     expect(second.started).toEqual([]);
     // The lease is given back at the end, so the plan can be looked at again.
     expect(store.leases.size).toBe(0);
@@ -3327,7 +3378,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     const f = fixture([]);
     f.api.fanoutCheckpoints = store;
     await handleRaw(f.source, "resume-9", "tasks.fanout", { resume: "r9" }, f.host);
-    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r9-api", "app-mono-exo-r9-docs"]);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r9-api", "app-mono-exo-f2_r9-docs"]);
   });
 
   it("refuses a resume while the same plan is still being sent by this app", async () => {
@@ -3353,6 +3404,6 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     );
     release();
     await sending;
-    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-r6-api"]);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r6-api"]);
   });
 });

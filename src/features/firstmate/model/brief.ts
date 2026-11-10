@@ -207,6 +207,8 @@ export function renderBrief(
     contract?: string;
     /** WP-171: the person's own request (originalRequest.ts originalRequestOf), quoted after the intent. Absent, no section. */
     originalRequest?: string;
+    /** How long that request was before the quote budget cut it. Absent: the text's own length. */
+    originalRequestChars?: number;
   },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
@@ -214,7 +216,9 @@ export function renderBrief(
   return [
     isolationSection(isolation),
     `## Intent\n${parts.intent.trim()}`,
-    ...(extras?.originalRequest?.trim() ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim())}`] : []),
+    ...(extras?.originalRequest?.trim()
+      ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim(), extras.originalRequestChars)}`]
+      : []),
     `## Spec\n${parts.spec.trim()}`,
     ...(extras?.contract ? [`## Fan-out contract\n${extras.contract}`] : []),
     statusProtocol(isolation),

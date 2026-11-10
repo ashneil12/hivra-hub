@@ -98,7 +98,7 @@ import {
   type RowLookup,
 } from "../../firstmate/model/fanoutCheckpoint";
 import { windowHolder, type FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
-import { originalRequestOf } from "../../firstmate/model/originalRequest";
+import { boundRequest, readOriginalRequest } from "../../firstmate/model/originalRequest";
 import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
@@ -173,10 +173,6 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "reading",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
-      // WP-171: the task's link to its fan-out, and the person's request as it stood when the task was asked for. The app
-      // writes both (delegate_tasks, and a task that waits keeps them in the queue); delegate_task has no such fields.
-      "fanout",
-      "originalRequest",
     ],
   ],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
@@ -192,6 +188,25 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.message", ["taskId", "text", "whenBusy"]],
   ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
 ];
+
+/**
+ * Fields only the app puts on a tasks.delegate replay: the queue, a fresh-eyes start, a retry.
+ * An agent's call cannot carry the mark, so it cannot set these. delegate_tasks writes them itself
+ * and calls delegate() directly, which does not go through the field list.
+ */
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars"] as const;
+
+/** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
+export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
+
+export function markAppDelegate(input: Record<string, unknown>): Record<string, unknown> {
+  Object.defineProperty(input, appDelegateMark, { value: true });
+  return input;
+}
+
+export function isAppDelegate(input: object): boolean {
+  return Reflect.get(input, appDelegateMark) === true;
+}
 
 /** What a delegation's row records beyond a plain monitored launch. */
 export type DelegationMeta = {
@@ -375,8 +390,6 @@ export type TaskHelpers = {
 export const WORKER_RUNTIME_MODE = "full-access";
 
 const BRIEF_MAX = 60_000;
-/** The most of the person's request a waiting task keeps in the queue (the brief quotes the first 16,000). */
-const ORIGINAL_REQUEST_MAX = 200_000;
 const ASKS_MAX = 50;
 const IDS_MAX = 20;
 const WAIT_MAX_SECONDS = 25;
@@ -806,12 +819,20 @@ async function delegate(
   const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
   if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
   const contract = link ? fanoutSection(link) : undefined;
-  // WP-171: every brief quotes the person's own request, bounded; the intent stays the first mate's fill of it. A task
-  // that waited keeps the request it was asked under, not whatever the person said since.
-  if (input.originalRequest !== undefined && (typeof input.originalRequest !== "string" || input.originalRequest.length > ORIGINAL_REQUEST_MAX))
+  // WP-171: every brief quotes the person's own request, cut to the quote budget at this read. A longer one is
+  // trimmed, not refused, and the cut note keeps the real length. A task that waited keeps the request it was asked
+  // under, not whatever the person said since.
+  if (input.originalRequest !== undefined && typeof input.originalRequest !== "string")
     throw new Error("originalRequest must be the person's request, as text");
-  const originalRequest = (input.originalRequest as string | undefined)?.trim() || originalRequestOf(source.blocks);
-  const extras = { contract, originalRequest };
+  const supplied = typeof input.originalRequest === "string" ? input.originalRequest : "";
+  const knownChars =
+    typeof input.originalRequestChars === "number" && Number.isFinite(input.originalRequestChars)
+      ? input.originalRequestChars
+      : undefined;
+  const taken = supplied ? boundRequest(supplied, knownChars) : readOriginalRequest(source.blocks);
+  const originalRequest = taken?.text || undefined;
+  const originalRequestChars = taken && taken.chars > taken.text.length ? taken.chars : undefined;
+  const extras = { contract, originalRequest, originalRequestChars };
   const intent = text(input.intent, "intent", BRIEF_MAX);
   const brief = text(input.brief, "brief", BRIEF_MAX);
   const title =
@@ -1189,7 +1210,7 @@ async function delegate(
     };
     // WP-161: look at the machine first, so a pause the person set applies to the very first launch too.
     await tasks.pool.refreshHealth?.();
-    const admission = tasks.pool.admit({ ...job, ...(link ? { fanout: link } : {}) });
+    const admission = tasks.pool.admit({ ...job, ownerSession: source.id, ...(link ? { fanout: link } : {}) });
     if (!admission.start) {
       tasks.pool.enqueue(
         {
@@ -1198,7 +1219,13 @@ async function delegate(
           requestId,
           title,
           queuedAt: (tasks.now ?? Date.now)(),
-          input: originalRequest ? { ...input, originalRequest } : input,
+          input: originalRequest
+            ? {
+                ...input,
+                originalRequest,
+                ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+              }
+            : input,
         },
         launch,
       );
@@ -1442,7 +1469,15 @@ async function resumeFanout(
       const out = (await delegate(
         source,
         taskRequestId(found.id, task.name),
-        { ...task.input, ...(found.originalRequest ? { originalRequest: found.originalRequest } : {}) },
+        {
+          ...task.input,
+          ...(found.originalRequest
+            ? {
+                originalRequest: found.originalRequest,
+                ...(found.originalRequestChars !== undefined ? { originalRequestChars: found.originalRequestChars } : {}),
+              }
+            : {}),
+        },
         host,
         helpers,
       )) as Record<string, unknown>;
@@ -1484,8 +1519,11 @@ async function sendFanout(
     throw new Error(
       "This build starts every task at once, so a task can't wait for one it needs. Send the tasks that need nothing now with delegate_task, and the rest after they report.",
     );
-  // One request for the whole plan, read once: the tasks that wait keep it, whatever the person says meanwhile.
-  const originalRequest = originalRequestOf(source.blocks);
+  // One request for the whole plan, read once and cut to the quote budget: the tasks that wait keep it, whatever
+  // the person says meanwhile. The real length travels with it so the cut note stays honest.
+  const takenRequest = readOriginalRequest(source.blocks);
+  const originalRequest = takenRequest?.text || undefined;
+  const originalRequestChars = takenRequest && takenRequest.chars > takenRequest.text.length ? takenRequest.chars : undefined;
   const linkOf = new Map(planned.links.map((link) => [link.name, link]));
   const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
   /** The delegate input of one task, as a resume replays it (the person's request is kept once, on the plan). */
@@ -1513,6 +1551,7 @@ async function sendFanout(
           id: requestId,
           owner: source.id,
           ...(originalRequest ? { originalRequest } : {}),
+          ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
           waves: planned.waves,
           tasks: planned.waves.flat().map((name) => ({ name, wave: linkOf.get(name)!.wave, input: delegateInput(name) })),
           now: (tasks.now ?? Date.now)(),
@@ -1540,7 +1579,12 @@ async function sendFanout(
         const out = (await delegate(
           source,
           taskRequestId(requestId, name),
-          { ...delegateInput(name), ...(originalRequest ? { originalRequest } : {}) },
+          {
+            ...delegateInput(name),
+            ...(originalRequest
+              ? { originalRequest, ...(originalRequestChars !== undefined ? { originalRequestChars } : {}) }
+              : {}),
+          },
           host,
           helpers,
         )) as Record<string, unknown>;
