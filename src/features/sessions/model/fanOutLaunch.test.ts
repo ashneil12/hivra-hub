@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { launchFanOut } from "./fanOutLaunch";
+import { fanOutRefusalLine, launchFanOut } from "./fanOutLaunch";
 import { FAN_OUT_PAID_LINE, toggleFanOutTarget } from "./fanOut";
+import { sessionWorkCwd } from "./session";
 import { compareFromUnknown, putCompare, resetCompares } from "./fanOutStore";
 
 const cwd = "/work/proj";
@@ -15,6 +16,7 @@ function targets(count = 2) {
 function port(over: Partial<{
   git: (cwd: string) => Promise<boolean>;
   createWorktree: (cwd: string, branch: string) => Promise<{ path: string; branch: string | null }>;
+  release: (paths: readonly string[]) => Promise<void>;
 }> = {}) {
   return {
     git: vi.fn(async () => true),
@@ -71,37 +73,129 @@ describe("launchFanOut", () => {
     expect(putCompare(result.record)).toBe(false);
   });
 
-  it("does not create worktrees when git has not answered, and still returns the chats", async () => {
+  it("starts nothing when git has not answered, and creates no worktree", async () => {
     const create = vi.fn();
     const result = await launchFanOut(
       { prompt: "hello there", targets: targets(2), cwd },
       port({ git: vi.fn(async () => Promise.reject(new Error("timed out"))), createWorktree: create }),
     );
     expect(create).not.toHaveBeenCalled();
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.record.children.every((child) => child.worktree.kind === "pending")).toBe(true);
-    expect(result.sessions).toHaveLength(2);
-    expect(result.sessions.every((session) => session.worktreeCwd == null)).toBe(true);
+    expect(result).toEqual({ ok: false, code: "git-unknown" });
   });
 
-  it("keeps the other chats when one worktree create throws", async () => {
+  it("starts nothing in a folder that is not a git repository", async () => {
+    const create = vi.fn();
+    const result = await launchFanOut(
+      { prompt: "hello there", targets: targets(2), cwd },
+      port({ git: vi.fn(async () => false), createWorktree: create }),
+    );
+    expect(create).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, code: "not-a-repo" });
+  });
+
+  it("starts no chat in the project folder when every createWorktree rejects", async () => {
+    const create = vi.fn(async () => {
+      throw new Error("worktree busy");
+    });
+    const result = await launchFanOut(
+      { prompt: "hello there", targets: targets(3), cwd },
+      port({ createWorktree: create }),
+    );
+    expect(create).toHaveBeenCalledTimes(3);
+    expect(result).toEqual({ ok: false, code: "too-few-worktrees" });
+    expect("sessions" in result).toBe(false);
+  });
+
+  it("starts only the chats that got their own worktree, and names the models that did not", async () => {
+    const create = vi.fn(async (_cwd: string, branch: string) => {
+      if (create.mock.calls.length === 2 || create.mock.calls.length === 4) {
+        throw new Error("worktree busy");
+      }
+      return { path: `/work/trees/${branch}`, branch };
+    });
+    const result = await launchFanOut(
+      { prompt: "hello there", targets: targets(4), cwd, now: 9 },
+      port({ createWorktree: create }),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(create).toHaveBeenCalledTimes(4);
+    expect(result.sessions).toHaveLength(2);
+    expect(result.record.children).toHaveLength(2);
+    expect(result.record.children.map((child) => child.model)).toEqual(["model-1", "model-3"]);
+    expect(result.record.children.every((child) => child.worktree.kind === "assigned")).toBe(true);
+    expect(result.record.notStarted).toEqual([
+      { provider: "codex", model: "model-2" },
+      { provider: "codex", model: "model-4" },
+    ]);
+    for (const session of result.sessions) {
+      expect(session.worktreeCwd).toBeTruthy();
+      expect(sessionWorkCwd(session)).not.toBe(cwd);
+      expect(session.workspaceMode).toBe("worktree");
+    }
+    const kept = compareFromUnknown(JSON.parse(JSON.stringify(result.record)));
+    expect(kept?.notStarted).toEqual(result.record.notStarted);
+    expect(kept?.children).toHaveLength(2);
+  });
+
+  it("refuses a compare that only one worktree could be made for, and releases that worktree", async () => {
     let calls = 0;
+    const release = vi.fn(async () => undefined);
     const result = await launchFanOut(
       { prompt: "hello there", targets: targets(2), cwd },
       port({
+        release,
         createWorktree: vi.fn(async (_cwd: string, branch: string) => {
           calls += 1;
-          if (calls === 1) throw new Error("busy");
+          if (calls === 2) throw new Error("busy");
           return { path: `/work/trees/${branch}`, branch };
         }),
       }),
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.record.children[0].worktree).toEqual({ kind: "stay", reason: "no-free-worktree" });
-    expect(result.record.children[1].worktree.kind).toBe("assigned");
-    expect(result.sessions[1].worktreeCwd).toBeTruthy();
+    expect(result).toEqual({ ok: false, code: "too-few-worktrees" });
+    expect(release).toHaveBeenCalledTimes(1);
+    const [paths] = release.mock.calls[0] as unknown as [string[]];
+    expect(paths).toHaveLength(1);
+    expect(paths[0].startsWith("/work/trees/")).toBe(true);
+  });
+
+  it("answers the same refusal when releasing the worktree it made fails", async () => {
+    let calls = 0;
+    const result = await launchFanOut(
+      { prompt: "hello there", targets: targets(2), cwd },
+      port({
+        release: vi.fn(async () => {
+          throw new Error("janitor away");
+        }),
+        createWorktree: vi.fn(async (_cwd: string, branch: string) => {
+          calls += 1;
+          if (calls === 2) throw new Error("busy");
+          return { path: `/work/trees/${branch}`, branch };
+        }),
+      }),
+    );
+    expect(result).toEqual({ ok: false, code: "too-few-worktrees" });
+  });
+
+  it("does not start a chat in the project folder or on a path that escapes it, and never releases such a path", async () => {
+    const release = vi.fn(async () => undefined);
+    const escaped = await launchFanOut(
+      { prompt: "hello there", targets: targets(2), cwd },
+      port({
+        release,
+        createWorktree: vi.fn(async () => ({ path: `${cwd}/../secret`, branch: "mc/bad" })),
+      }),
+    );
+    expect(escaped).toEqual({ ok: false, code: "too-few-worktrees" });
+    const root = await launchFanOut(
+      { prompt: "hello there", targets: targets(2), cwd },
+      port({
+        release,
+        createWorktree: vi.fn(async () => ({ path: cwd, branch: "mc/bad" })),
+      }),
+    );
+    expect(root).toEqual({ ok: false, code: "too-few-worktrees" });
+    expect(release).not.toHaveBeenCalled();
   });
 
   it("refuses a fifth model before creating anything", async () => {
@@ -113,17 +207,18 @@ describe("launchFanOut", () => {
     expect(result).toMatchObject({ ok: false, code: "over-cap" });
     expect(create).not.toHaveBeenCalled();
   });
+});
 
-  it("does not give a child the project folder or a path that escapes it", async () => {
-    const result = await launchFanOut(
-      { prompt: "hello there", targets: targets(2), cwd },
-      port({
-        createWorktree: vi.fn(async () => ({ path: `${cwd}/../secret`, branch: "mc/bad" })),
-      }),
-    );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.sessions.every((session) => session.worktreeCwd == null)).toBe(true);
+describe("fanOutRefusalLine", () => {
+  it("says in plain words why nothing started, with no dash characters", () => {
+    for (const code of ["not-a-repo", "git-unknown", "too-few-worktrees", "empty-prompt", "other"]) {
+      const line = fanOutRefusalLine(code);
+      expect(line.length).toBeGreaterThan(10);
+      expect(line).not.toMatch(/[\u2014\u2013]/);
+      expect(line).not.toContain("/");
+    }
+    expect(fanOutRefusalLine("not-a-repo")).toMatch(/git repository/);
+    expect(fanOutRefusalLine("too-few-worktrees")).toMatch(/own worktree/);
   });
 });
 
