@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -272,6 +272,12 @@ pub struct SessionUpsert {
     /// None clears it: a met or cleared goal never comes back.
     #[serde(default)]
     pub goal: Option<Value>,
+    /// WP-111: memory does not read or write this chat. Omitted on old saves, which stay readable.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
+    /// WP-111: after privacy is switched off, this message and everything before it stay unread.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_boundary_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,6 +319,9 @@ pub struct SessionSummary {
     pub linked_work_item: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub automation_id: Option<String>,
+    /// WP-111: memory leaves this chat alone. Absent on a chat saved before the flag existed.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -358,6 +367,12 @@ pub struct SessionRecord {
     /// Archived chats keep their waiting queue paused after a restart: nothing is delivered to them.
     #[serde(default)]
     pub archived: bool,
+    /// WP-111: memory does not read or write this chat.
+    #[serde(default, rename = "private")]
+    pub private_chat: bool,
+    /// WP-111: messages at or before this id stay unread after privacy is switched off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub private_boundary_id: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -377,15 +392,34 @@ fn goal_json(goal: Option<&Value>) -> Option<String> {
         .filter(|json| json.len() <= GOAL_JSON_MAX)
 }
 
-#[tauri::command(async)]
-pub fn session_upsert(
-    store: State<'_, SessionStore>,
-    session: SessionUpsert,
-) -> Result<SessionSummary, String> {
-    validate_id(&session.id, "session")?;
-    if session.cwd.trim().is_empty() {
-        return Err("cwd is required".into());
+/// A message id worth storing as a privacy boundary. Anything else stores nothing.
+fn stored_boundary(value: Option<&str>) -> Option<String> {
+    let value = value?.trim();
+    if value.is_empty()
+        || value.len() > 80
+        || !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return None;
     }
+    Some(value.to_string())
+}
+
+/// A bad boundary from disk stays unread. An empty one means the chat was never private.
+pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
+    let raw = value?;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
+}
+
+/// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
+/// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
+/// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
+fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
+    validate_id(&session.id, "session")?;
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
             validate_id(provider_session_id, "provider session")?;
@@ -407,7 +441,15 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+#[tauri::command(async)]
+pub fn session_upsert(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<SessionSummary, String> {
+    check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
     Ok(summary)
@@ -441,6 +483,16 @@ pub fn session_list_by_project(
     list_by_project(&conn, &cwd).map_err(|e| e.to_string())
 }
 
+/// The chats that have no folder (an import cleared it, docs/PORTABLE.md), newest first: the sidebar's "Needs a folder"
+/// group, so none of them is findable only through search.
+#[tauri::command(async)]
+pub fn session_list_folderless(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_folderless(&conn).map_err(|e| e.to_string())
+}
+
 #[tauri::command(async)]
 pub fn session_rebase_project(
     store: State<'_, SessionStore>,
@@ -468,6 +520,169 @@ pub fn session_list_linked(store: State<'_, SessionStore>) -> Result<Vec<Session
     list_linked(&conn).map_err(|e| e.to_string())
 }
 
+/// WP-108: every saved turn's metrics for the usage page, as a narrow projection.
+///
+/// Only the fields the history counts are read out of each transcript: the chat's engine, model and folder, and each
+/// user turn's start time plus token and price counts. The prompt and reply text never leave this function. Rows with
+/// nothing to count are dropped here so the webview does not carry a long list of empty turns, and a transcript that
+/// cannot be read is skipped rather than failing the whole page.
+#[derive(Debug, Clone, Serialize)]
+pub struct UsageSessionRow {
+    pub id: String,
+    pub cwd: String,
+    pub harness: String,
+    pub model: String,
+    pub blocks: Value,
+}
+
+#[tauri::command(async)]
+pub fn session_usage_rows(
+    store: State<'_, SessionStore>,
+    since: i64,
+) -> Result<Vec<UsageSessionRow>, String> {
+    let read_conn = store
+        .read_conn
+        .lock()
+        .map_err(|_| "Session read store is locked")?;
+    if let Some(conn) = read_conn.as_ref() {
+        usage_rows(conn, since)
+    } else {
+        let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+        usage_rows(&conn, since)
+    }
+}
+
+/// The projection `session_usage_rows` runs. Split out so the test can run it on any connection.
+fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, cwd, harness, model, blocks_json
+             FROM sessions
+             WHERE has_user_message = 1
+               AND updated_at >= ?1
+               AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
+             ORDER BY updated_at DESC, id ASC",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(params![since], |row| {
+            let blocks_json: String = row.get(4)?;
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                blocks_json,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        let Ok((id, cwd, harness, model, blocks_json)) = row else {
+            continue;
+        };
+        let Ok(mut blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+            continue;
+        };
+        // A first mate's transcript lives in mono_blocks and its blocks_json is `[]`.
+        if crate::mono_transcript::is_indexed(conn, &id).unwrap_or(false) {
+            if let Ok(user_blocks) = crate::mono_transcript::user_blocks(conn, &id) {
+                blocks = Value::Array(user_blocks);
+            }
+        }
+        let turns = usage_turns(&blocks);
+        if turns.is_empty() {
+            continue;
+        }
+        out.push(UsageSessionRow {
+            id,
+            cwd,
+            harness,
+            model,
+            blocks: Value::Array(turns),
+        });
+    }
+    Ok(out)
+}
+
+/// A finite, non-negative number. A string, a negative, or anything else is dropped, never copied through.
+fn usage_number(value: &Value) -> Option<Value> {
+    let number = value.as_f64()?;
+    if number.is_finite() && number >= 0.0 {
+        Some(value.clone())
+    } else {
+        None
+    }
+}
+
+/// One user turn with a count to tally, reduced to the fields the page reads: no text, no tool output, no filename.
+///
+/// A time or a count that is not a number is left out, and the model record keeps only the engine and the model name.
+/// Anything else on the block (a prompt, a reply, a note) stays in the database.
+fn usage_turns(blocks: &Value) -> Vec<Value> {
+    let Some(blocks) = blocks.as_array() else {
+        return Vec::new();
+    };
+    let mut turns = Vec::new();
+    for block in blocks {
+        if block.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(metrics) = block.get("turnMetrics").and_then(Value::as_object) else {
+            continue;
+        };
+        let mut kept = serde_json::Map::new();
+        for (key, value) in metrics {
+            if USAGE_METRIC_KEYS.contains(&key.as_str()) {
+                if let Some(number) = usage_number(value) {
+                    kept.insert(key.clone(), number);
+                }
+            }
+        }
+        if kept.is_empty() {
+            continue;
+        }
+        let mut turn = serde_json::Map::new();
+        if let Some(id) = block.get("id").and_then(Value::as_str) {
+            if !id.is_empty() {
+                turn.insert("id".into(), Value::String(id.to_string()));
+            }
+        }
+        turn.insert("role".into(), Value::String("user".into()));
+        for stamp in ["startedAt", "sentAt"] {
+            if let Some(value) = block.get(stamp).and_then(usage_number) {
+                turn.insert(stamp.into(), value);
+            }
+        }
+        if let Some(model) = block.get("turnModel").and_then(Value::as_object) {
+            let mut kept_model = serde_json::Map::new();
+            for key in ["harness", "name"] {
+                if let Some(value) = model.get(key).and_then(Value::as_str) {
+                    let trimmed = value.trim();
+                    if !trimmed.is_empty() {
+                        kept_model.insert(key.into(), Value::String(trimmed.to_string()));
+                    }
+                }
+            }
+            if !kept_model.is_empty() {
+                turn.insert("turnModel".into(), Value::Object(kept_model));
+            }
+        }
+        turn.insert("turnMetrics".into(), Value::Object(kept));
+        turns.push(Value::Object(turn));
+    }
+    turns
+}
+
+const USAGE_METRIC_KEYS: [&str; 5] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadTokens",
+    "cacheWriteTokens",
+    "costUsd",
+];
+
 #[tauri::command(async)]
 pub fn session_get(
     store: State<'_, SessionStore>,
@@ -480,6 +695,35 @@ pub fn session_get(
         crate::tool_detail::omit_large_details(&mut record.blocks);
     }
     Ok(record)
+}
+
+/// WP-111: ids of chats memory must not read.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PrivateChatKey {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+}
+
+#[tauri::command(async)]
+pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<PrivateChatKey>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_private_keys(&conn).map_err(|error| error.to_string())
+}
+
+fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
+    let mut statement = conn.prepare(
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 OR (private_boundary_id IS NOT NULL AND private_boundary_id != '') ORDER BY id ASC",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let provider: Option<String> = row.get(1)?;
+        Ok(PrivateChatKey {
+            id: row.get(0)?,
+            provider_session_id: provider.filter(|value| !value.is_empty()),
+        })
+    })?;
+    rows.collect()
 }
 
 /// Output the transcript omitted on load, fetched when its row is expanded.
@@ -759,10 +1003,20 @@ pub(crate) fn purge_chat(
     conn: &Connection,
     session_id: &str,
 ) -> Result<(), String> {
+    purge_chat_with(conn, session_id, |paths| {
+        crate::fs::delete_generated_images_sync(app, paths)
+    })
+}
+
+fn purge_chat_with(
+    conn: &Connection,
+    session_id: &str,
+    remove_images: impl FnOnce(&[String]) -> Result<crate::fs::GeneratedImageDeletion, String>,
+) -> Result<(), String> {
     let image_paths = collect_chat_image_paths(conn, session_id)?;
     delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
+        if let Err(error) = remove_images(&image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
@@ -789,6 +1043,56 @@ pub fn session_set_pinned(
     validate_id(&session_id, "session")?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     set_pinned(&conn, &session_id, pinned).map_err(|e| e.to_string())
+}
+
+/// WP-111: only this write changes the private flag. A later transcript save must not clear it.
+#[tauri::command(async)]
+pub fn session_set_private(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    private_chat: bool,
+    private_boundary_id: Option<String>,
+) -> Result<(), String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    set_private(
+        &conn,
+        &session_id,
+        private_chat,
+        private_boundary_id.as_deref(),
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn set_private(
+    conn: &Connection,
+    session_id: &str,
+    private_chat: bool,
+    private_boundary_id: Option<&str>,
+) -> rusqlite::Result<()> {
+    let boundary = if private_chat {
+        stored_boundary(private_boundary_id)
+    } else {
+        match private_boundary_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            None => None,
+            Some(value) => stored_boundary(Some(value))
+                .or_else(|| Some("private-boundary-unreadable".to_string())),
+        }
+    };
+    conn.execute(
+        "UPDATE sessions
+         SET private_chat = ?2,
+             private_boundary_id = CASE
+               WHEN ?2 != 0 AND ?3 IS NULL THEN private_boundary_id
+               ELSE ?3
+             END
+         WHERE id = ?1",
+        params![session_id, i64::from(private_chat), boundary],
+    )?;
+    Ok(())
 }
 
 #[tauri::command(async)]
@@ -936,7 +1240,7 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
 }
 
 /// Add `column` to `table` when it is absent.
-fn ensure_table_column(
+pub(crate) fn ensure_table_column(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -977,6 +1281,33 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
         &format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"),
         [],
     )?;
+    Ok(())
+}
+
+/// The table of what an import's file named for a cleared folder, with every column. A table made by an earlier build
+/// (before `blocked`, `project_id` or `rest` existed, or on the fly before it was a migration) gets the missing ones.
+fn ensure_imported_chat_folders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    for (column, definition) in [
+        ("blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("project_id", "TEXT"),
+        ("rest", "TEXT"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('imported_chat_folders') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE imported_chat_folders ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -1099,6 +1430,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("queued_messages_json", "TEXT NOT NULL DEFAULT '[]'"),
         ("queue_status", "TEXT"),
         ("sidebar_hidden", "INTEGER NOT NULL DEFAULT 0"),
+        // WP-111: old rows stay readable. The boundary is only set when privacy is switched off.
+        ("private_chat", "INTEGER NOT NULL DEFAULT 0"),
+        ("private_boundary_id", "TEXT"),
         // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
         ("goal_json", "TEXT"),
     ] {
@@ -1264,6 +1598,33 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 20 {
+        // WP-111: the sidebar menu reads the private flag without opening the transcript.
+        ensure_session_column(conn, "private_chat", "INTEGER NOT NULL DEFAULT 0")?;
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS sessions_cwd_cover_idx;
+             CREATE INDEX sessions_cwd_cover_idx
+               ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
+                            model, runtime_mode, title, provider_session_id,
+                            created_at, branch, archived, pinned,
+                            linked_work_item_json, worktree_cwd, worktree_removed,
+                            is_draft, automation_id, sidebar_hidden, private_chat);",
+        )?;
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (20, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    if current < 21 {
+        // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table. (Its columns are
+        // kept whole by `ensure_imported_chat_folders` below, whichever build made the table first.)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    ensure_imported_chat_folders(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1313,7 +1674,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
                         model, runtime_mode, title, provider_session_id,
                         created_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed,
-                        is_draft, automation_id, sidebar_hidden);",
+                        is_draft, automation_id, sidebar_hidden, private_chat);",
     )?;
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
@@ -1323,6 +1684,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-159: the programme board. An older build never reads this table.
+    crate::programme::ensure_tables(conn)?;
     // WP-74: the task and doc search index, after both tables exist.
     crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
@@ -1344,6 +1707,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-157: the work log. In place, so an older build still opens this file.
+    crate::work_log::ensure_tables(conn)?;
     // WP-86: commit attribution. In place, so an older build still opens this file.
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
@@ -1578,8 +1943,9 @@ pub(crate) fn upsert_session(
            provider_session_id, blocks_json, created_at, updated_at, branch,
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
-           automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25)
+           automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json,
+           private_chat, private_boundary_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -1630,12 +1996,15 @@ pub(crate) fn upsert_session(
             session.queue_status,
             i64::from(session.sidebar_hidden),
             goal_json(session.goal.as_ref()),
+            i64::from(session.private_chat),
+            stored_boundary(session.private_boundary_id.as_deref()),
         ],
     )?;
 
     remember_worker_from_blocks(conn, &session.id, &session.blocks)?;
     Ok(SessionSummary {
         sidebar_hidden: session.sidebar_hidden,
+        private_chat: session.private_chat,
         id: session.id.clone(),
         orchestration_lead_id: worker_parent(conn, &session.id)?,
         orchestration: orchestration_summary(conn, &session.id)?,
@@ -2000,21 +2369,35 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
 }
 
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, cwd, "AND has_user_message = 1")
+}
+
+/// Every chat that has no folder, with or without a message of its own: an imported chat that was only a draft or a
+/// brief still has to be findable in "Needs a folder".
+fn list_folderless(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, "", "")
+}
+
+fn list_chats_in(
+    conn: &Connection,
+    cwd: &str,
+    message_filter: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
+           {message_filter}
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
@@ -2022,6 +2405,7 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
         let linked_work_item = optional_json(row.get(12)?);
         Ok(SessionSummary {
             sidebar_hidden: row.get::<_, i64>(18)? != 0,
+            private_chat: row.get::<_, i64>(19)? != 0,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2059,7 +2443,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
                 (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id), worktree_cwd,
-                worktree_removed, is_draft, automation_id, sidebar_hidden
+                worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE has_user_message = 1
            AND linked_work_item_json IS NOT NULL
@@ -2073,6 +2457,7 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
         let pinned: i64 = row.get(11)?;
         Ok(SessionSummary {
             sidebar_hidden: row.get::<_, i64>(18)? != 0,
+            private_chat: row.get::<_, i64>(19)? != 0,
             id: row.get(0)?,
             orchestration_lead_id: None,
             orchestration: optional_json(row.get(13)?),
@@ -2179,6 +2564,11 @@ fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> 
     )?;
     tx.execute(
         "DELETE FROM orchestration_sidebar WHERE lead_id = ?1",
+        [session_id],
+    )?;
+    // What an import's file named for this chat's folder goes with the chat.
+    tx.execute(
+        "DELETE FROM imported_chat_folders WHERE session_id = ?1",
         [session_id],
     )?;
     if let Some(parent) = parent.filter(|id| id != session_id) {
@@ -2317,7 +2707,7 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                goal_json, archived
+                goal_json, archived, private_chat, private_boundary_id
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
@@ -2370,6 +2760,8 @@ fn get_session_record(
                 automation_id: nonempty(row.get(18)?),
                 goal: optional_json(row.get(22)?),
                 archived: row.get::<_, i64>(23)? != 0,
+                private_chat: row.get::<_, i64>(24)? != 0,
+                private_boundary_id: boundary_for_read(row.get(25)?),
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -2522,6 +2914,153 @@ mod tests {
     }
 
     #[test]
+    fn usage_rows_keep_only_counts_and_drop_prompt_text() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = sample("s1", "/tmp/project", "Secret plan");
+        session.blocks = json!([
+            {
+                "id": "b1",
+                "role": "user",
+                "text": "my bank password is hunter2",
+                "startedAt": 1_700_000_000_000_i64,
+                "turnModel": { "harness": "claude", "name": "sonnet-5", "note": "note that must not travel" },
+                "turnMetrics": { "inputTokens": 12, "outputTokens": 3, "costUsd": 0.02, "hidden": "no" },
+                "toolUses": [{ "output": "ls output that must not travel" }]
+            },
+            { "id": "b2", "role": "assistant", "text": "the reply that must not travel" },
+            { "id": "b3", "role": "user", "text": "no metrics here" },
+            {
+                "id": "b4",
+                "role": "user",
+                "startedAt": "time that must not travel",
+                "turnMetrics": { "inputTokens": "count that must not travel", "outputTokens": 4, "costUsd": -3 }
+            }
+        ]);
+        // The row's updated_at is the real time, which the window filter reads.
+        upsert_session(&conn, &session).unwrap();
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        let kept = serde_json::to_string(&rows[0].blocks).unwrap();
+        assert!(!kept.contains("hunter2"));
+        assert!(!kept.contains("must not travel"));
+        assert!(!kept.contains("/tmp/project"));
+        assert!(!kept.contains("hidden"));
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["id"], "b1");
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 12);
+        assert_eq!(blocks[0]["turnModel"]["name"], "sonnet-5");
+        assert!(blocks[0]["turnModel"].get("note").is_none());
+        // A time or a count that is not a usable number is left out. The negative price is too.
+        assert!(blocks[1].get("startedAt").is_none());
+        assert!(blocks[1]["turnMetrics"].get("inputTokens").is_none());
+        assert!(blocks[1]["turnMetrics"].get("costUsd").is_none());
+        assert_eq!(blocks[1]["turnMetrics"]["outputTokens"], 4);
+        // A user block with no metrics is dropped entirely, and the reply role never appears.
+        assert!(blocks.iter().all(|block| block["role"] == "user"));
+    }
+
+    #[test]
+    fn usage_rows_include_a_first_mate_whose_transcript_is_in_mono_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut mono = sample("mono", "/tmp/a", "Mono");
+        mono.blocks = json!([
+            {
+                "id": "m1",
+                "role": "user",
+                "text": "mono prompt that must not travel",
+                "turnMetrics": { "inputTokens": 7, "outputTokens": 2, "costUsd": 0.01 }
+            },
+            { "id": "m2", "role": "assistant", "text": "reply" }
+        ]);
+        upsert_session(&conn, &mono).unwrap();
+        crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'mono'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "mono");
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 7);
+        assert!(!serde_json::to_string(&rows[0].blocks)
+            .unwrap()
+            .contains("must not travel"));
+    }
+
+    #[test]
+    fn usage_rows_skip_a_trashed_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut gone = sample("gone", "/tmp/secret", "Gone");
+        gone.blocks = json!([{
+            "id": "b1",
+            "role": "user",
+            "text": "trashed prompt",
+            "startedAt": 1_i64,
+            "turnMetrics": { "inputTokens": 9 }
+        }]);
+        upsert_session(&conn, &gone).unwrap();
+        conn.execute(
+            "INSERT INTO trash_items (
+               kind, item_id, title, deleted_at, trashed_with_kind, trashed_with_id, version
+             ) VALUES ('chat', 'gone', 'Gone', 1, 'chat', 'gone', 1)",
+            [],
+        )
+        .unwrap();
+        let mut kept = sample("kept", "/tmp/ok", "Kept");
+        kept.blocks = json!([{
+            "id": "b1",
+            "role": "user",
+            "startedAt": 1_i64,
+            "turnMetrics": { "inputTokens": 2 }
+        }]);
+        upsert_session(&conn, &kept).unwrap();
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "kept");
+        let kept_json = serde_json::to_string(&rows).unwrap();
+        assert!(!kept_json.contains("trashed prompt"));
+    }
+
+    #[test]
+    fn usage_rows_respect_the_since_cutoff_and_skip_unreadable_transcripts() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut recent = sample("recent", "/tmp/a", "Recent");
+        recent.blocks = json!([{ "id": "b1", "role": "user", "startedAt": 1_i64,
+                                 "turnMetrics": { "inputTokens": 5 } }]);
+        upsert_session(&conn, &recent).unwrap();
+        let now = now_millis();
+        // A transcript that is not valid JSON is skipped, not fatal. Its updated_at is inside the window, so the
+        // cutoff is not what leaves it out.
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json,
+                                   created_at, updated_at, has_user_message)
+             VALUES ('broken', '/tmp/b', 'claude', 'm', 'supervised', 'Broken', 'not json', ?1, ?1, 1)",
+            [now],
+        )
+        .unwrap();
+
+        let rows = usage_rows(&conn, now - 60_000).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "recent");
+        // Older than the cutoff: left out.
+        assert!(usage_rows(&conn, now + 60_000).unwrap().is_empty());
+    }
+
+    #[test]
     fn startup_does_not_read_saved_transcripts() {
         let data_dir = std::env::temp_dir().join(format!(
             "monocode-startup-transcripts-{}-{}",
@@ -2580,6 +3119,46 @@ mod tests {
         let _ = std::fs::remove_dir_all(data_dir);
     }
 
+    #[test]
+    fn a_purge_with_one_outside_image_path_still_removes_the_chats_own_images() {
+        let data =
+            std::env::temp_dir().join(format!("hivra purge outside {}", uuid::Uuid::new_v4()));
+        let images = data.join("generated-images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("chat-images", "/tmp/project", "Pictures");
+        // The refused path is the chat's first image, so a delete that stops at it removes nothing.
+        chat.blocks = json!([
+            { "id": "i0", "role": "image", "image": { "path": outsider.to_string_lossy() } },
+            { "id": "i1", "role": "image", "image": { "path": first.to_string_lossy() } },
+            { "id": "i2", "role": "image", "image": { "path": second.to_string_lossy() } },
+        ]);
+        upsert_session(&conn, &chat).unwrap();
+
+        let mut report = None;
+        purge_chat_with(&conn, "chat-images", |paths| {
+            let done = crate::fs::delete_generated_images_in(&images, paths)?;
+            report = Some(done.skipped);
+            Ok(done)
+        })
+        .unwrap();
+
+        assert_eq!(report, Some(1));
+        assert!(get_session(&conn, "chat-images").unwrap().is_none());
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
     fn sample(id: &str, cwd: &str, title: &str) -> SessionUpsert {
         SessionUpsert {
             sidebar_hidden: false,
@@ -2603,6 +3182,8 @@ mod tests {
             linked_work_item: None,
             automation_id: None,
             goal: None,
+            private_chat: false,
+            private_boundary_id: None,
         }
     }
 
@@ -2784,7 +3365,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20, 21);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -2795,7 +3376,7 @@ mod tests {
                  SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                         created_at, updated_at, branch, archived, pinned,
                         linked_work_item_json, worktree_cwd, worktree_removed, is_draft,
-                        automation_id, sidebar_hidden,
+                        automation_id, sidebar_hidden, private_chat,
                         (SELECT summary FROM orchestration_sidebar WHERE lead_id = sessions.id)
                  FROM sessions
                  WHERE cwd = ?1
@@ -3148,6 +3729,109 @@ mod tests {
                 .unwrap()
                 .sidebar_hidden
         );
+    }
+
+    #[test]
+    fn private_chat_round_trips_and_a_bad_boundary_stays_locked() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut row = sample("secret", "/tmp/a", "Secret");
+        row.private_chat = true;
+        row.private_boundary_id = Some("  turn-1  ".into());
+        row.provider_session_id = Some("provider-secret".into());
+        row.linked_work_item = Some(json!({"kind": "pr", "repo": "a/b", "number": 1}));
+        assert!(upsert_session(&conn, &row).unwrap().private_chat);
+        assert!(list_by_project(&conn, &row.cwd).unwrap()[0].private_chat);
+        assert!(list_linked(&conn).unwrap()[0].private_chat);
+        let stored = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(stored.private_chat);
+        assert_eq!(stored.private_boundary_id.as_deref(), Some("turn-1"));
+        let keys = list_private_keys(&conn).unwrap();
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].id, "secret");
+        assert_eq!(
+            keys[0].provider_session_id.as_deref(),
+            Some("provider-secret")
+        );
+
+        // A later save of the chat, built before the switch, must not clear the flag.
+        let mut stale = row.clone();
+        stale.private_chat = false;
+        stale.private_boundary_id = None;
+        stale.title = "Secret, saved again".into();
+        upsert_session(&conn, &stale).unwrap();
+        let kept = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(kept.private_chat);
+        assert_eq!(kept.private_boundary_id.as_deref(), Some("turn-1"));
+        assert_eq!(kept.title, "Secret, saved again");
+
+        // Switching off records the boundary. Switching on again does not move it.
+        set_private(&conn, &row.id, false, Some("turn-2")).unwrap();
+        let opened = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(!opened.private_chat);
+        assert_eq!(opened.private_boundary_id.as_deref(), Some("turn-2"));
+        set_private(&conn, &row.id, true, None).unwrap();
+        let again = get_session(&conn, &row.id).unwrap().unwrap();
+        assert!(again.private_chat);
+        assert_eq!(again.private_boundary_id.as_deref(), Some("turn-2"));
+        set_private(&conn, &row.id, false, Some("../no")).unwrap();
+        assert_eq!(
+            get_session(&conn, &row.id)
+                .unwrap()
+                .unwrap()
+                .private_boundary_id
+                .as_deref(),
+            Some("private-boundary-unreadable")
+        );
+
+        // An old row, and a flag that was never set, stay readable.
+        upsert_session(&conn, &sample("old", "/tmp/a", "Old")).unwrap();
+        let old = get_session(&conn, "old").unwrap().unwrap();
+        assert!(!old.private_chat);
+        assert_eq!(old.private_boundary_id, None);
+        assert!(!list_by_project(&conn, "/tmp/a")
+            .unwrap()
+            .iter()
+            .any(|item| item.id == "old" && item.private_chat));
+
+        // A chat switched back off still has a private part, so it stays on the list.
+        set_private(&conn, &row.id, false, Some("turn-3")).unwrap();
+        assert_eq!(list_private_keys(&conn).unwrap().len(), 1);
+
+        // A boundary that is not a message id must not unlock the chat.
+        conn.execute(
+            "UPDATE sessions SET private_chat = 0, private_boundary_id = '../no' WHERE id = 'secret'",
+            [],
+        )
+        .unwrap();
+        let locked = get_session(&conn, "secret").unwrap().unwrap();
+        assert!(!locked.private_chat);
+        assert_eq!(
+            locked.private_boundary_id.as_deref(),
+            Some("private-boundary-unreadable")
+        );
+    }
+
+    #[test]
+    fn private_chat_migration_keeps_existing_sessions_readable() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &sample("existing", "/tmp/a", "Existing")).unwrap();
+        conn.execute_batch(
+            "DROP INDEX sessions_cwd_cover_idx;
+             ALTER TABLE sessions DROP COLUMN private_chat;
+             ALTER TABLE sessions DROP COLUMN private_boundary_id;
+             DELETE FROM schema_migrations WHERE version = 20;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        let listed = list_by_project(&conn, "/tmp/a").unwrap();
+        assert!(!listed[0].private_chat);
+        let stored = get_session(&conn, "existing").unwrap().unwrap();
+        assert!(!stored.private_chat);
+        assert_eq!(stored.private_boundary_id, None);
+        assert!(list_private_keys(&conn).unwrap().is_empty());
     }
 
     #[test]
@@ -3527,6 +4211,94 @@ mod tests {
         let restored = get_session(&conn, "s1").unwrap().unwrap();
         assert!(!restored.worktree_removed);
         assert_eq!(restored.branch.as_deref(), Some("main"));
+    }
+
+    /// A chat that came in with no folder (docs/PORTABLE.md) keeps saving while it waits for one; the checks that
+    /// protect the row itself stay.
+    #[test]
+    fn a_chat_with_no_folder_yet_can_still_be_saved() {
+        assert_eq!(check_upsert(&sample("s1", "", "Imported")), Ok(()));
+        assert!(check_upsert(&sample("../s1", "", "Imported")).is_err());
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        let saved = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(saved.cwd, "");
+        // Never the branch of whatever checkout the app itself runs in.
+        assert_eq!(saved.branch, None);
+    }
+
+    /// Migration 21: what an import's file named for a cleared folder is kept in a real table, and goes with its chat.
+    #[test]
+    fn the_imported_folder_notes_are_a_migration_and_go_with_their_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "session_id",
+                "cwd",
+                "worktree_cwd",
+                "blocked",
+                "project_id",
+                "rest"
+            ]
+        );
+        // An older database (version 20, no table) gets it.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        conn.execute(
+            "INSERT INTO imported_chat_folders (session_id, cwd) VALUES ('s1', '/Users/old/app')",
+            [],
+        )
+        .unwrap();
+        delete_session(&conn, "s1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.
+    #[test]
+    fn chats_with_no_folder_are_listed_together() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let said = json!([{ "id": "u", "role": "user", "text": "hello" }]);
+        for (id, cwd) in [("a", ""), ("b", ""), ("c", "/tmp/a")] {
+            let mut session = sample(id, cwd, id);
+            session.blocks = said.clone();
+            upsert_session(&conn, &session).unwrap();
+        }
+        // An imported chat that never had a message of its own is listed too: it has to be findable.
+        let mut quiet = sample("d", "", "d");
+        quiet.blocks = json!([]);
+        upsert_session(&conn, &quiet).unwrap();
+        let ids: Vec<_> = list_folderless(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["a", "b", "d"] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        // A chat with a folder still lists only by project, and only once it has a message.
+        assert_eq!(list_by_project(&conn, "").unwrap().len(), 2);
     }
 
     #[test]

@@ -38,6 +38,8 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "work-log"
+  | "usage"
   | "connected"
   | "dashboards"
   | "portable"
@@ -116,6 +118,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     keywords: "activity log audit history who did what",
   },
   {
+    id: "work-log",
+    group: "app",
+    label: "Work log",
+    description: "What got done, grouped by day. One project, or every project.",
+    keywords: "work log today outcomes decisions",
+  },
+  {
+    id: "usage",
+    group: "app",
+    label: "Usage",
+    description:
+      "Tokens and cost for the last 30 days, by day, project, engine and model. A cost is shown only when the engine reported one.",
+    keywords: "usage cost tokens spend price history",
+  },
+  {
     id: "connected",
     group: "app",
     label: "Connected apps",
@@ -157,8 +174,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     id: "memory",
     group: "app",
     label: "Memory",
-    description: "What a first mate remembers, with its source, for you to confirm, edit or delete.",
-    keywords: "memory fact skill recall review",
+    description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
+    keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",
@@ -189,7 +206,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "How transcripts read, what the composer does with a follow-up, how files save, and how diffs open.",
     keywords:
-      "transcript composer prompt message diff review layout format save editor",
+      "transcript composer prompt message diff review layout format save editor settle snooze inbox",
   },
   {
     id: "providers",
@@ -347,11 +364,25 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "git branch working copy create delete manage",
   },
   {
+    id: "new-chat-worktree",
+    section: "worktrees",
+    label: "New chats and worktrees",
+    keywords:
+      "new chat worktree branch default ask every chat git project checkout",
+  },
+  {
     id: "project-actions",
     section: "worktrees",
     label: "Project actions",
     keywords:
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
+  },
+  {
+    id: "worktree-autoclear",
+    section: "worktrees",
+    label: "Clear build output of finished worktrees",
+    keywords:
+      "disk space automatic auto finished merged closed pull request accepted target node_modules test-results playwright-report build output delete free",
   },
   {
     id: "worktree-cleanup",
@@ -395,6 +426,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "general",
     label: "Notifications",
     keywords: "notify alert toast permission reminder background",
+  },
+  {
+    id: "quiet-hours",
+    section: "general",
+    label: "Quiet hours",
+    keywords: "quiet hours overnight mute programme notices",
   },
   {
     id: "notes",
@@ -568,6 +605,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "appearance",
     label: "Chat background",
     keywords: "wallpaper image picture opacity backdrop",
+  },
+  {
+    id: "chat-list-inbox",
+    section: "chat",
+    label: "Settle and snooze",
+    keywords:
+      "finished chats hide until time needs you top list sort shelf wake",
   },
   {
     id: "transcript-layout",
@@ -916,6 +960,57 @@ export function saveFollowUpBehavior(value: FollowUpBehavior) {
   } catch {
     // private mode / quota
   }
+}
+
+const NEW_CHAT_WORKTREE_KEY = "monocode.newChatWorktree";
+
+/** Whether a new chat starts in its own worktree: off, ask, or always. */
+export type NewChatWorktree = "off" | "ask" | "always";
+
+export const NEW_CHAT_WORKTREE_DEFAULT: NewChatWorktree = "off";
+
+export const NEW_CHAT_WORKTREE_CHANGE_EVENT = "monocode:new-chat-worktree-change";
+
+export function isNewChatWorktree(value: unknown): value is NewChatWorktree {
+  return value === "off" || value === "ask" || value === "always";
+}
+
+export function loadNewChatWorktree(): NewChatWorktree {
+  try {
+    const raw = localStorage.getItem(NEW_CHAT_WORKTREE_KEY);
+    return isNewChatWorktree(raw) ? raw : NEW_CHAT_WORKTREE_DEFAULT;
+  } catch {
+    return NEW_CHAT_WORKTREE_DEFAULT;
+  }
+}
+
+export function saveNewChatWorktree(value: NewChatWorktree) {
+  if (!isNewChatWorktree(value)) return;
+  try {
+    localStorage.setItem(NEW_CHAT_WORKTREE_KEY, value);
+  } catch {
+    // private mode / quota
+  }
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<NewChatWorktree>(NEW_CHAT_WORKTREE_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+/** Follow the setting in this window and in any other window that changes it. */
+export function subscribeNewChatWorktree(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  const onStorage = (event: StorageEvent) => {
+    if (event.key === null || event.key === NEW_CHAT_WORKTREE_KEY) onStoreChange();
+  };
+  window.addEventListener(NEW_CHAT_WORKTREE_CHANGE_EVENT, onStoreChange);
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(NEW_CHAT_WORKTREE_CHANGE_EVENT, onStoreChange);
+    window.removeEventListener("storage", onStorage);
+  };
 }
 
 export type FileTabMode = "pane" | "workspace";

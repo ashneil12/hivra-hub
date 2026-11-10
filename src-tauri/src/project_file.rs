@@ -3,7 +3,7 @@
 //! The format is general on purpose: any repository can carry one, and its actions become one-click buttons for Ash
 //! and `actions.*` calls for a Lead (src/features/agent-app/model/agentApp.ts).
 //!
-//! Trust (docs/T3-HARVEST.md, "Project file"): the file is read only from the project's MAIN checkout, never from a
+//! Trust (the project file design notes): the file is read only from the project's MAIN checkout, never from a
 //! worktree, so a branch from elsewhere can't add commands. Nothing in it runs until Ash imports it once, in Settings >
 //! Worktrees. The import stores the exact text he reviewed, and every run uses that stored copy: a later edit, or
 //! another branch checked out in the main checkout, changes nothing until he imports again.
@@ -72,6 +72,10 @@ pub struct ProjectFile {
     /// Services, ports and env names for one stack per worktree (WP-87). Absent means this project is left alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<crate::stack_decl::StackDecl>,
+    /// WP-90: `"real"` lets a stack reach a real outside account. It can then only be started by
+    /// the person, never by a crew turn. Absent (or `"emulated"`) keeps every service fake.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaches: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -398,6 +402,16 @@ pub fn validate(file: &ProjectFile) -> Result<(), String> {
     if let Some(stack) = &file.stack {
         crate::stack_decl::validate(stack)?;
     }
+    if let Some(reaches) = &file.reaches {
+        if reaches != "emulated" && reaches != "real" {
+            return Err(format!(
+                "reaches {reaches:?} must be \"emulated\" or \"real\""
+            ));
+        }
+    }
+    if file.reaches.as_deref() == Some("real") && file.stack.is_none() {
+        return Err("reaches is only meaningful with a stack".into());
+    }
     Ok(())
 }
 
@@ -490,6 +504,9 @@ pub fn hash(bytes: &[u8]) -> String {
 
 /// The main checkout of the repository that `cwd` belongs to (a worktree resolves to its main checkout).
 pub fn main_checkout(cwd: &Path) -> Result<PathBuf, String> {
+    if crate::chat_folder::is_blank(cwd) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let trees = crate::worktrees::list(cwd)?;
     let main = trees.first().ok_or("No working copies found")?;
     let main = PathBuf::from(&main.path);
@@ -859,6 +876,27 @@ pub(crate) mod tests {
         let minimal = parse(r#"{"version":1}"#).unwrap();
         assert!(minimal.actions.is_empty());
         assert_eq!(minimal.build_output(), default_build_output());
+    }
+
+    #[test]
+    fn reaches_is_emulated_by_default_and_real_only_with_a_stack() {
+        let stack = r#""stack":{"services":[{"name":"web","ports":[{"env":"PORT"}]}]}"#;
+        let ordinary = parse(&format!(r#"{{"version":1,{stack}}}"#)).unwrap();
+        assert!(ordinary.reaches.is_none());
+        let emulated = parse(&format!(r#"{{"version":1,"reaches":"emulated",{stack}}}"#)).unwrap();
+        assert_eq!(emulated.reaches.as_deref(), Some("emulated"));
+        let real = parse(&format!(r#"{{"version":1,"reaches":"real",{stack}}}"#)).unwrap();
+        assert_eq!(real.reaches.as_deref(), Some("real"));
+        for (text, needle) in [
+            (r#"{"version":1,"reaches":"internet"}"#, "emulated"),
+            (
+                r#"{"version":1,"reaches":"real"}"#,
+                "only meaningful with a stack",
+            ),
+        ] {
+            let error = parse(text).unwrap_err();
+            assert!(error.contains(needle), "{text} -> {error}");
+        }
     }
 
     #[test]

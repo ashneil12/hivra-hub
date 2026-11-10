@@ -114,6 +114,30 @@ describe("project actions for agents", () => {
     expect(result).not.toHaveProperty("note");
   });
 
+  it("reads the stack's name and fake services, and nothing else", async () => {
+    const { source, host } = fixture();
+    const status = {
+      declared: true,
+      url: "http://shop-wp-90.localhost:7400",
+      mode: "Tests use fake GitHub",
+      stacks: [
+        {
+          id: "s01234567",
+          names: [{ hostname: "github-wp-90.localhost", url: "http://github-wp-90.localhost:7400" }],
+          emulated: ["github"],
+          running: true,
+        },
+      ],
+    };
+    host.stacks = vi.fn(async () => status);
+    const result = await handleAgentApp(source, "s1", "stacks.list", {}, host);
+    expect(host.stacks).toHaveBeenCalledWith("/tmp/project");
+    expect(result).toEqual(status);
+    await expect(
+      handleAgentApp(source, "s2", "stacks.list", { start: true }, host),
+    ).rejects.toThrow("Unknown stacks.list fields: start");
+  });
+
   it("says when Ash hasn't imported the project file", () => {
     const listing = actionsListing({ status: status("new"), actions: [], runs: [] });
     expect(listing.actions).toEqual([]);

@@ -135,6 +135,8 @@ export type HandoffMeta = {
   status: HandoffStatus;
   /** Inject this brief into prompts to `to` until that harness accepts a turn. */
   pending?: boolean;
+  /** WP-121: a timeline marker for a model or provider change. Not a recap. */
+  switchTo?: { harness: HarnessId; model: string; label: string };
 };
 
 /** One persisted question/answer in a completed turn's side conversation. */
@@ -249,6 +251,10 @@ export type AgentRunMeta = {
 export type AttachmentKind = "image" | "audio" | "file";
 
 export type GeneratedImageMeta = {
+  /**
+   * Where the picture's file is, inside the app's generated-images folder. Empty when its file is not on this Mac: a
+   * chat imported from another Mac keeps the picture's name and caption but never its path.
+   */
   path: string;
   name: string;
   mimeType: string;
@@ -392,6 +398,11 @@ export type TurnMetrics = {
   cacheWriteTokens?: number;
   /** Provider-normalized share of input served from cache, as a percentage. */
   cacheHitPercent?: number;
+  /**
+   * Price in US dollars the CLI reported for this turn, when it reports one (Claude's `total_cost_usd`, OpenCode's
+   * `cost`). Absent means the engine did not say: nothing ever estimates it from a price table.
+   */
+  costUsd?: number;
 };
 
 /**
@@ -431,6 +442,12 @@ export type Block = {
   appRequestId?: string;
   /** Provider-reported token metrics for this user turn, when available. */
   turnMetrics?: TurnMetrics;
+  /**
+   * WP-123: the last message copied into a forked chat. Until a turn is taken, the chat's next send carries a recap of
+   * the chat through this message, because the new provider conversation has never seen it. Saved with the block, so
+   * it survives a restart; cleared once that turn is taken.
+   */
+  forkPoint?: true;
   tool?: {
     callId?: string;
     title?: string;
@@ -453,9 +470,13 @@ export type Block = {
   };
   approval?: {
     requestId: number;
+    /** Epoch ms the app was asked. A settled chat comes back for a request newer than its settle (chatListInbox.ts). */
+    at?: number;
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;
+    /** WP-122: the child that asked, so the answer is sent to its port. */
+    child?: { name: string; sessionPort: string; detail?: string };
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;
@@ -587,6 +608,13 @@ export type Session = {
   /** Saved and accessible by id, but omitted from the normal session sidebar. */
   sidebarHidden?: boolean;
   /**
+   * WP-111: memory does not read this chat or take a memory from it. Missing on a chat saved
+   * before the flag existed, and those stay readable.
+   */
+  private?: boolean;
+  /** WP-111: after a private chat is switched off, this message and everything before it stay unread. */
+  privateBoundaryId?: string;
+  /**
    * Hivra WP-10: a first mate's chat (the coding team's, a Mono's; set by WP-20 and WP-21). It reads and never edits
    * the project: CLIs that can start read-only do, and every turn's checkout is checked (features/firstmate/).
    */
@@ -612,6 +640,13 @@ export type Session = {
   busy?: boolean;
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
+  /**
+   * The app holds this chat busy for a background compact (WP-115). It is not
+   * a turn: Quit, the in-flight list and a restore ignore it, so a quit or a
+   * crash during the compact never reads as a cut turn. In-memory only (never
+   * written to the database), and cleared by whatever starts or ends a turn.
+   */
+  idleCompacting?: boolean;
   /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.
@@ -660,6 +695,23 @@ export type Session = {
    * Handoff runs on the next send, not on picker change.
    */
   pendingSwitch?: PendingHarnessSwitch;
+  /**
+   * WP-121: the next send continues this same thread from a portable transcript.
+   * Absent when the switch is a recap, or when the provider session itself continues.
+   */
+  portableResume?: {
+    from: HarnessId;
+    fromModel: string;
+    fromSettings: Record<string, string>;
+    fromProviderSessionId?: string;
+    fromProviderAccountId?: string;
+    transcript: string;
+    /** Messages the person picked for the hand-over; absent means the whole thread, read at send. */
+    messageIds?: string[];
+    markerId: string;
+  };
+  /** WP-121: the line shown until the next send. The marker in the transcript stays. */
+  midThread?: { kind: "resume" | "recap"; line: string };
   /** Last known branch in the session's working copy. */
   branch?: string;
   /** Selected working copy; cwd remains the project identity. */
@@ -668,10 +720,21 @@ export type Session = {
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
   worktreeBase?: string;
+  /**
+   * The person chose this folder for this new chat, so the new chat worktree
+   * setting leaves it alone. Saved with the open tabs, so a reload keeps it.
+   */
+  worktreeDeclined?: boolean;
   /** Internal guard while the first turn creates its selected worktree. */
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
   worktreeRemoved?: boolean;
+  /**
+   * WP-138: one line when files named in .worktreeinclude were copied, and one when
+   * a copy failed. In memory only. Never file contents.
+   */
+  includeNote?: string;
+  includeWarning?: string;
   /** One-shot composer text when opening a session from Inbox. */
   composerSeed?: string;
   /** Inbox issue/PR chip shown above the composer. In-memory, one-shot. */

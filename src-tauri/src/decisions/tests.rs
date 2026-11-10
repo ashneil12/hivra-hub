@@ -240,3 +240,171 @@ fn an_answer_given_in_the_askers_chat_is_not_repeated_to_it() {
         .collect();
     assert_eq!(to, ["w1"]);
 }
+
+#[test]
+fn only_the_person_answers_an_irreversible_step() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "irreversible/lead/task-1";
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Deploy cannot be undone: it migrates the shared database.".into(),
+            options: vec!["Approve".into(), "Send back".into()],
+            recommended: Some("Send back".into()),
+            ..ask_input("lead", key, &[])
+        },
+        2,
+    )
+    .unwrap();
+    // A chat answering for the first mate cannot settle it, and neither can autopilot.
+    for machine in [Some("chat:lead"), Some("autopilot")] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Approve",
+            machine.map(str::to_string),
+            3,
+        )
+        .unwrap_err();
+        assert!(refusal.contains("Only the person answers"), "{refusal}");
+    }
+    // It is still open: a machine's answer did not settle it quietly.
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    // The person's own answer goes through, and the waiting worker hears it.
+    let out = answer(
+        &mut conn,
+        "hivra",
+        key,
+        "Send back: use the staging database first",
+        Some("user".into()),
+        4,
+    )
+    .unwrap();
+    assert!(out.applied);
+    assert_eq!(
+        out.decision.unwrap().answer.as_deref(),
+        Some("Send back: use the staging database first")
+    );
+    // The lead that parked it hears the person's words.
+    assert!(out.released.iter().any(|m| m.child_session == "lead"));
+    // An ordinary decision is still answered by a chat on the first mate's behalf, as before.
+    ask(&mut conn, ask_input("fm", "retention", &[]), 5).unwrap();
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "retention",
+            "Keep 30 days",
+            Some("chat:fm".into()),
+            6
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+#[test]
+fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    for key in [
+        "fresh-eyes/r1/00112233aabbccdd",
+        "fresh-eyes-start/r1/00112233aabbccdd",
+    ] {
+        ask(
+            &mut conn,
+            AskInput {
+                question: "Fresh-eyes review: waiting on you".into(),
+                options: vec!["Approve".into(), "Edit plan".into(), "Skip once".into()],
+                recommended: None,
+                ..ask_input("lead", key, &[])
+            },
+            2,
+        )
+        .unwrap();
+        // The chat that asked cannot take the question out of the person's Inbox, nor can anything else but the person.
+        for machine in [
+            Some("chat:lead"),
+            Some("autopilot"),
+            Some("chat:someone-else"),
+        ] {
+            let refusal = answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                machine.map(str::to_string),
+                3,
+            )
+            .unwrap_err();
+            assert!(
+                refusal.contains("Only the person answers a fresh-eyes review"),
+                "{refusal}"
+            );
+        }
+        assert_eq!(
+            get(&conn, "hivra", key).unwrap().unwrap().state,
+            OPEN,
+            "{key}"
+        );
+    }
+    // The person, in either of the app's own answer paths, goes through.
+    for (key, by) in [
+        ("fresh-eyes/r1/00112233aabbccdd", Some("user")),
+        ("fresh-eyes-start/r1/00112233aabbccdd", None),
+    ] {
+        assert!(
+            answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                by.map(str::to_string),
+                4
+            )
+            .unwrap()
+            .applied,
+            "{key}"
+        );
+    }
+    // The app closes its own question when a brief is taken back, and tells the chat that asked nothing: it did it.
+    let key = "fresh-eyes/r2/ffeeddccbbaa0011";
+    ask(&mut conn, ask_input("lead", key, &[]), 5).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        key,
+        "Cancelled by the chat that asked.",
+        Some(APP_CLOSER.into()),
+        6,
+    )
+    .unwrap();
+    assert!(out.applied);
+    assert!(out.released.is_empty(), "{:?}", out.released);
+    assert_eq!(
+        get(&conn, "hivra", key)
+            .unwrap()
+            .unwrap()
+            .answered_by
+            .as_deref(),
+        Some(APP_CLOSER)
+    );
+    // The app's word is not a way round for any other key: an irreversible step is still the person's alone.
+    let hard = "irreversible/lead/task-9";
+    ask(&mut conn, ask_input("lead", hard, &[]), 7).unwrap();
+    let refusal = answer(
+        &mut conn,
+        "hivra",
+        hard,
+        "Approve",
+        Some(APP_CLOSER.into()),
+        8,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("Only the person answers an irreversible step"),
+        "{refusal}"
+    );
+}

@@ -61,7 +61,10 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::model_router::model_key_delete,
             crate::model_router::model_context_window,
             // WP-22: a room's auto responder asks the quick model through this.
-            crate::model_router::model_quick_pick
+            crate::model_router::model_quick_pick,
+            // WP-103: the cheap memory tier, and its "Test this model" check.
+            crate::memory_cheap::memory_cheap_ask,
+            crate::memory_cheap::memory_cheap_test
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {

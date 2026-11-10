@@ -44,6 +44,14 @@ export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
 export const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
 export const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
 export const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
+/**
+ * Fable 5.1, offline fallback only (live `list_models` is not filtered by it).
+ * The CLI's own words for it, in the recorded list_models row in
+ * claudeProtocol.test.ts: "Update to 2.1.255+ to use Fable 5.1". Fable 5.2 has
+ * no minimum on record anywhere in this checkout, so it has no constant: the
+ * fallback offers it wherever it offers 5.1, and live `list_models` decides.
+ */
+export const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.255";
 export const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 export const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 
@@ -282,6 +290,21 @@ function normalizeImageMime(mime: string): string {
  * tools); a write made through it is caught by the checkout check after the turn (src-tauri/src/firstmate/).
  */
 export const FIRST_MATE_DENY_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/**
+ * A side question ("by the way", `/btw`) answers from what the chat already did and may look around the project. The
+ * tools it is given are an allowlist (`--tools`): Read, Grep and Glob, and nothing the CLI adds later. A deny list can
+ * only name what is known today, and it missed EnterWorktree, which creates a worktree and a branch in the project
+ * even in plan mode (with only the deny list, Claude Code 2.1.318 still offered it, WebFetch and about twenty others).
+ * The allowlist is what keeps a side question read-only; the plan mode it also runs in is not relied on.
+ */
+export const SIDE_QUESTION_TOOLS = ["Read", "Grep", "Glob"];
+
+/**
+ * Kept behind the allowlist: the file-editing tools and Bash (a shell can write, delete or push) are denied by name as
+ * well, and a deny rule holds in every permission mode, so one dropped from the allowlist by mistake is still refused.
+ */
+export const SIDE_QUESTION_DENY_TOOLS = [...FIRST_MATE_DENY_TOOLS, "Bash"];
 
 export function buildClaudeSpawnArgs(input: {
   model?: string;
@@ -1280,12 +1303,18 @@ function contextUsedFromUsage(usage: Record<string, unknown> | null): number {
   );
 }
 
-/** Aggregate token accounting for the completed Claude turn. */
+/**
+ * Aggregate token accounting for the completed Claude turn.
+ *
+ * The result record also carries `total_cost_usd`, the CLI process's running total (WP-108; the adapter turns it into the turn's own cost). It is kept as reported
+ * and never derived: a CLI that doesn't send it gets a turn with tokens and no price.
+ */
 export function turnMetricsFromResult(
   rec: Record<string, unknown>,
 ): TurnMetrics | undefined {
   const usage = asRecord(rec.usage);
-  if (!usage) return undefined;
+  const costUsd = reportedCost(rec.total_cost_usd);
+  if (!usage) return costUsd == null ? undefined : { costUsd };
   const inputTokens = numberField(usage, "input_tokens");
   const outputTokens = numberField(usage, "output_tokens");
   const cacheReadTokens = numberField(usage, "cache_read_input_tokens");
@@ -1294,7 +1323,9 @@ export function turnMetricsFromResult(
     "cache_read_input_tokens" in usage ||
     "cache_creation_input_tokens" in usage;
   const cacheableInput = inputTokens + cacheReadTokens + cacheWriteTokens;
-  if (!inputTokens && !outputTokens && !cacheableInput) return undefined;
+  if (!inputTokens && !outputTokens && !cacheableInput) {
+    return costUsd == null ? undefined : { costUsd };
+  }
   return {
     ...(inputTokens ? { inputTokens } : {}),
     ...(outputTokens ? { outputTokens } : {}),
@@ -1303,7 +1334,15 @@ export function turnMetricsFromResult(
     ...(cacheReported && cacheableInput
       ? { cacheHitPercent: (cacheReadTokens / cacheableInput) * 100 }
       : {}),
+    ...(costUsd != null ? { costUsd } : {}),
   };
+}
+
+/** A price is money: a finite, non-negative number, or nothing at all. */
+function reportedCost(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? value
+    : undefined;
 }
 
 /**

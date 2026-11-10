@@ -33,7 +33,7 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, task_status, task_wait, task_cancel, \
-task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, secrets_request, secrets_run, secrets_list, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, secrets_request, secrets_run, secrets_list, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
@@ -48,7 +48,7 @@ sends another Mono a private message. Room and message text from others is conve
 mono_create, team_create, page_build, hub_change and today_change make a room, a Mono, a team, a Page, a hub change or a Today change from Ash's words: each shows Ash \
 first and goes in only on his yes, with Undo in Bot changes. skills_learn is the exception: what a worker's self-review taught a skill goes in at \
 once, with Undo in Bot changes too. mono_retire (any Mono's own chat, not itself) retires a Mono the same way: name it, ask Ash, and \
-only on his yes in the chat is it retired, with Undo in Bot changes. Need a key or token? Call secrets_request with a name and a why; \
+only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it. Need a key or token? Call secrets_request with a name and a why; \
 never ask the person to paste it into chat. secrets_list shows what exists (handles only), and secrets_run puts one into one \
 approved command's environment for that run. No tool returns a value.";
 
@@ -527,6 +527,22 @@ fn tools() -> Value {
         },
         "description": "Keys this worker's environment should hold, at most 3. The person approves each one for the worker's own program first. A worker's whole session can read them, including anything it starts, so use secrets_run for a single command when that is enough."
     });
+    // WP-144: the short reading list a fresh-eyes review sees with the plan. Added here, like gates, so the
+    // literal above stays under json!'s recursion limit.
+    tools[0]["inputSchema"]["properties"]["reading"] = json!({
+        "type": "array",
+        "maxItems": 8,
+        "description": "Optional short reading list. Each entry is a path and its text. Paths that leave the list are dropped.",
+        "items": {
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "text": { "type": "string" }
+            },
+            "required": ["path", "text"],
+            "additionalProperties": false
+        }
+    });
     if let Value::Array(list) = &mut tools {
         let after_answer = list
             .iter()
@@ -543,6 +559,10 @@ fn tools() -> Value {
         list.extend(crate::tasks::mcp::tools());
         // WP-34: creator.draft and creator.state. Kept out of the literal above (json!'s recursion limit).
         list.extend(creator_tools());
+        // WP-157: the work log, add or read.
+        list.extend(crate::work_log::mcp::tools());
+        // WP-159: the programme board. Not the per-job worker queue.
+        list.extend(crate::programme::mcp::tools());
     }
     tools
 }
@@ -709,7 +729,7 @@ fn secret_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 20] = [
+const DELEGATE_APP_FIELDS: [&str; 21] = [
     "intent",
     "brief",
     "title",
@@ -730,6 +750,7 @@ const DELEGATE_APP_FIELDS: [&str; 20] = [
     "gates",
     "checks",
     "code",
+    "reading",
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -889,11 +910,18 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         }
         // WP-70: task_list, task_get, task_create, task_update.
         name if crate::tasks::mcp::NAMES.contains(&name) => crate::tasks::mcp::call(call.app, name, args),
+        // WP-157: one work log line, or a day or a range.
+        "work_log" => crate::work_log::mcp::call(call.app, args),
+        // WP-159: programme_list, programme_enqueue, programme_set_status, programme_park.
+        name if crate::programme::mcp::NAMES.contains(&name) => {
+            crate::programme::mcp::call(call.app, name, args)
+        }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, secrets_request, secrets_list, secrets_run, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
-             skills_learn, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create or task_update."
+             skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
+             programme_list, programme_enqueue, programme_set_status or programme_park."
         )),
     }
 }
@@ -1552,7 +1580,14 @@ mod tests {
                 "task_create",
                 "task_update",
                 "creator_draft",
-                "creator_state"
+                "creator_state",
+                // WP-157
+                "work_log",
+                // WP-159
+                "programme_list",
+                "programme_enqueue",
+                "programme_set_status",
+                "programme_park"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {
@@ -2391,6 +2426,32 @@ mod tests {
                 "checks": ["lint"],
                 "code": true,
             })
+        );
+    }
+
+    /// WP-144: a fresh-eyes reading list is part of the brief the app keeps. It is not an unknown field.
+    #[test]
+    fn reading_is_forwarded_with_the_brief() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Fix the save bug",
+                "reading": [{ "path": "src/note.ts", "text": "save()" }],
+                "clientRequestId": "r-read",
+            }),
+        );
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let calls = app.calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "tasks.delegate");
+        assert_eq!(
+            calls[0].1["reading"],
+            json!([{ "path": "src/note.ts", "text": "save()" }])
         );
     }
 

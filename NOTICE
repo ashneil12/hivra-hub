@@ -81,7 +81,7 @@ Third-party components Hivra adds:
   License: Apache-2.0
   The upstream files do not carry a separate copyright line (Apache-2.0)
   Used in: plugins/desktop-control/skills/agent-desktop/SKILL.md
-  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0, with Hivra's gate and consent rules added (WP-44)
+  Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.2.0, with Hivra's gate and consent rules added (WP-44)
 
 - Orbit's checked backups
   Source: https://github.com/coollabsio/orbit
@@ -215,6 +215,119 @@ Third-party components Hivra adds:
   The upstream files do not carry a separate copyright line (Apache-2.0)
   Used in: src-tauri/src/outside
   Redirect, PKCE, token-hash, refresh-rotation, code-reuse revoke, Origin/Host and body-limit checks translated from apps/server/src/oauth.rs, apps/server/src/mcp.rs and crates/platform/src/http/security.rs onto rusqlite and a loopback HTTP server (WP-79). oxide-auth was not vendored.
+
+- portless's route registry, labels and proxy
+  Source: https://github.com/vercel-labs/portless
+  License: Apache-2.0
+  Copyright 2025 Vercel Inc.
+  Used in: src-tauri/src/proxy/
+  routes.ts, auto.ts, compose.ts and proxy.ts translated line by line to Rust, with their
+  tests. TLS, the /etc/hosts sync, the sudo path and the CLI's app launcher are not included
+  (WP-90). WP-139 translates the 0.17.0 parallel loopback dial and the Windows route-lock
+  EPERM retry. TLS, hosts-file sync and sudo stay out.
+
+- emulate's base URLs and file store
+  Source: https://github.com/vercel-labs/emulate
+  License: Apache-2.0
+  Copyright 2025 Chris Tate
+  Used in: src-tauri/src/local_services/
+  base-url.ts and persistence.ts translated to Rust with their tests. The 14 emulators themselves run as emulate's pinned Node package and are not copied (WP-90).
+
+- T3 Code's hidden-character pattern
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/sessions/model/hiddenText.ts, src-tauri/src/pr_watch/wake.rs
+  sanitizeLinkedPrompt from packages/shared/src/promptLinks.ts translated to TypeScript and to Rust,
+  with its tests, at commit 6577c6b (WP-94). The character classes are the original's; the URL parts
+  of that file are not copied. A zero-width joiner stays only between two emoji, as in the original.
+
+- T3 Code's project monogram
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/features/hub/model/projectMonogram.ts
+  projectMonogram and projectColor from apps/web/src/projectIdentity.ts translated to TypeScript, with
+  their cases in projectMonogram.test.ts, at commit 6577c6b (WP-94). The letters and the colour hash are
+  the original's; the tile's colours come from Hivra's theme. One rule differs: a one-letter name stays
+  one letter, where the original draws it twice.
+
+- oh-my-hermes's dag-ulw planner
+  Source: https://github.com/rlaope/oh-my-hermes
+  License: MIT
+  Copyright (c) 2026 oh-my-hermes contributors
+  Used in: src-tauri/src/goal_graph/
+  dag_core.py translated line by line to Rust in topology.rs (WP-91), with test_dag_core.py's cases ported. The record rules in dag_run.py — the hard rejects over a graph, the repair caps and the re-plan cycle, the handoff refusal, the goal verdict and the lint findings — are translated into record.rs, and the plan-time check into plan.rs. Read and not copied: tools/dag_tool.py, dag_scope_guard.py, dag_define_gate.py (hooks for a single-workspace model Hivra does not have) and the TUI, which informed the view's folding and wording only. One rule differs: dag-ulw treats two nodes as ordered only when one names the other directly, where Hivra refuses only a pair that can really run at the same time.
+
+- OpenMausBot's turn watchdog sleep rule
+  Source: https://github.com/milind-soni/OpenMausBot
+  License: Apache-2.0
+  Copyright 2026 Milind Soni and OpenMausBot contributors
+  Used in: src/features/firstmate/watcher/classifier.ts, src/features/monos/model/workerStall.ts, src/features/monos/hooks/useStallWatch.ts
+  server/turn-watchdog.ts's sleep guard translated to TypeScript (WP-102): a sweep or look that arrives more than three check intervals late is read as the computer having slept, and each running turn's last-event time moves forward by the gap instead of the turn being stopped. Hivra keeps one interval of the gap as the tick's own, so a stall is still caught up to one tick late. The rule lives in classifier.ts beside SILENCE_MS, so the headless watcher and the half-minute look share it (e39d9b0d7, da0309f6c).
+
+- Row-Bot's memory policy
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/model/recallPolicy.ts, src/features/memory/model/LICENSE.row-bot
+  memory_policy.py translated to TypeScript with its test cases ported (WP-99). The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; and Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. Hivra adds a small penalty for a memory that has faded, and scores the memories of every Mono a turn reads in one decision. Licence text in src/features/memory/model/LICENSE.row-bot.
+
+- Row-Bot's correction rule
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/model/ruleCurator.ts, src/features/memory/model/LICENSE.row-bot
+  learning/corrections.py translated line for line to TypeScript, with its test cases ported (WP-103). The store, episode and signal parts are left out because Hivra judges one turn at a time; the context cut, the retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it. Licence text in src/features/memory/model/LICENSE.row-bot.
+
+- Mnemos's lived-day clock
+  Source: https://github.com/Riley-Coyote/mnemos-mcp
+  License: Apache-2.0
+  Copyright 2026 Riley Ralmuto
+  Used in: src/features/memory/model/fade.ts, src/features/memory/model/LICENSE.mnemos
+  LivedClock translated line by line from mnemos/consolidation/lived.py to TypeScript (WP-100), with its tests. The fade curve, the two clocks and the ask are Hivra's own. Licence text in src/features/memory/model/LICENSE.mnemos.
+
+- T3 Code's PR watch, Claude result and worktree cleanup rules
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src-tauri/src/pr_watch/eval.rs, src/integrations/harness/providers/claude/claudeFailure.ts, src/features/sessions/model/workflowRun.ts, src-tauri/src/worktree_janitor.rs
+  evaluatePullRequestWatch ported to Rust (eval.rs), terminalStatusFromResult, providerFailureFromResult and claudeWorkflowProgress translated to TypeScript, and storageCleanup.ts's cases ported to the worktree janitor, at commit 2532e640.
+
+- T3 Code's recorded Claude transcripts
+  Source: https://github.com/pingdotgg/t3code
+  License: MIT
+  Copyright (c) 2026 T3 Tools Inc.
+  Used in: src/integrations/harness/providers/claude/fixtures/t3code/
+  18 recorded Claude transcripts (orchestration-v2/testkit/fixtures at 2532e640) replayed through the live adapter by claudeFixtureReplay.test.ts and the fake Claude; T3's LICENSE sits beside them.
+
+- Row-Bot's injection scan
+  Source: https://github.com/siddsachar/row-bot
+  License: Apache-2.0
+  Copyright 2026 Row-Bot Contributors
+  Used in: src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot
+  external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot.
+
+- MiniMax Code's subagent-split-check, independent-review and taste-to-checks
+  Source: https://github.com/MiniMax-AI/mcode-stack
+  License: MIT
+  Copyright (c) 2026 MiniMax Code
+  Used in: src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit
+  Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. Pointers to checklists and skills this plugin does not ship (checklists/*.md, handoff-doc, harness-experiment, evidence-first-review, tool-budget-audit) are dropped or reworded as plain prose. The skill text is otherwise unchanged.
+
+- models.dev's model catalogue
+  Source: https://github.com/anomalyco/models.dev
+  License: MIT
+  Copyright (c) 2025 models.dev
+  Used in: src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev
+  The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline. Licence text in src/features/sessions/model/LICENSE.models-dev.
+
+- Pierre Diffs
+  Source: https://github.com/pierrecomputer/pierre/tree/main/packages/diffs
+  License: Apache-2.0
+  Copyright 2025 Pierre Computer Company
+  Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
+  Pinned npm package for the optional split diff view (WP-116).
 
 MonoCode
 ========

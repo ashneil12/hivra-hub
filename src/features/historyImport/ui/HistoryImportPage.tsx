@@ -47,6 +47,8 @@ export type HistoryPorts = {
   /** A null model is the signed-in CLI. A model is used only when the person picked one. */
   ask: (model: ModelChoice | null, prompt: string) => Promise<AskResult>;
   models: () => Promise<ModelChoice[]>;
+  /** WP-111: private chats, when the screen can see them. A throw reads nothing this time. */
+  excludedChats?: () => Promise<ReadonlySet<string>>;
 };
 
 type Listed = { source: SourceId; root: string; report: ListReport };
@@ -176,6 +178,18 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
     setNote("");
     setProgress("Starting.");
     try {
+      let excludedKeys = new Set<string>();
+      if (ports.excludedChats) {
+        try {
+          excludedKeys = new Set(await ports.excludedChats());
+        } catch {
+          if (gen !== runGen.current) return;
+          setProgress("");
+          setNote("Couldn't check which chats are private. Nothing was read. You can run it again.");
+          return;
+        }
+      }
+      if (gen !== runGen.current) return;
       const units = [];
       for (const item of listed.current) {
         if (!on[item.source]) continue;
@@ -197,6 +211,7 @@ export function HistoryImportPage({ ports }: { ports: HistoryPorts }) {
       if (gen !== runGen.current) return;
       const result = await runImport({
         units,
+        excludedKeys,
         state: loaded.state,
         revision: loaded.revision,
         ask: (prompt) => ports.ask(chosen, prompt),

@@ -151,7 +151,7 @@ fn pinned_npm() -> (String, String) {
             registry,
         } => {
             assert_eq!(package, "e2e");
-            assert_eq!(version, "0.22.0");
+            assert_eq!(version, "0.23.0");
             assert!(registry.is_none());
             (package.clone(), version.clone())
         }
@@ -268,6 +268,12 @@ fn the_bundled_entry_installs_from_the_index_and_a_worker_session_gets_the_serve
     assert_eq!(
         mcp["mcpServers"]["e2e"]["args"],
         json!(["./dist/cli/bin.js", "mcp"])
+    );
+    // Upstream's server sends anonymous usage events by default. Both documented switches are set, so the
+    // environment wins over any saved preference (e2e reads E2E_TELEMETRY_DISABLED and DO_NOT_TRACK first).
+    assert_eq!(
+        mcp["mcpServers"]["e2e"]["env"],
+        json!({ "E2E_TELEMETRY_DISABLED": "1", "DO_NOT_TRACK": "1" })
     );
     let entry = registry::read(&host).unwrap().plugins["e2e-verify"].clone();
     assert!(!entry.enabled.any(), "install does not switch it on");
@@ -402,6 +408,20 @@ fn the_e2e_server_runs_in_the_workers_project() {
     assert!(script.starts_with('/') || script.chars().nth(1) == Some(':'));
     assert_eq!(launched.last().map(String::as_str), Some("mcp"));
     assert_eq!(command.get_program().to_string_lossy(), "node");
+    let env: std::collections::BTreeMap<String, String> = command
+        .get_envs()
+        .filter_map(|(key, value)| {
+            Some((
+                key.to_string_lossy().into_owned(),
+                value?.to_string_lossy().into_owned(),
+            ))
+        })
+        .collect();
+    assert_eq!(
+        env.get("E2E_TELEMETRY_DISABLED").map(String::as_str),
+        Some("1")
+    );
+    assert_eq!(env.get("DO_NOT_TRACK").map(String::as_str), Some("1"));
     let mcp = std::fs::read_to_string(host.installed("e2e-verify").join("mcp.json")).unwrap();
     assert!(
         mcp.contains("./dist/cli/bin.js"),
@@ -958,7 +978,7 @@ fn a_web_or_mobile_project_is_offered_and_a_desktop_shell_is_not() {
             registry,
         } => {
             assert_eq!(package, "e2e");
-            assert_eq!(version, "0.22.0");
+            assert_eq!(version, "0.23.0");
             assert!(registry.is_none());
         }
         other => panic!("{other:?}"),

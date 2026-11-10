@@ -116,6 +116,8 @@ export function askChief(
     return { kind: "lines", lines: asLines(matched, input.projects) };
   }
   const trimmed = text.trim();
+  // With no project there is nowhere to file it: asking which one would be a question with no answer.
+  if (trimmed && !input.projects.length) return { kind: "question", text: "There are no projects yet. Add one first, then tell it what to do." };
   if (!trimmed) return { kind: "question", text: "Which project should this go in?" };
   const named = input.projects.filter((project) => mentions(trimmed, project.name) || mentions(trimmed, project.id));
   if (named.length !== 1) return { kind: "question", text: "Which project should this go in?" };

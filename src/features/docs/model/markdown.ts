@@ -25,6 +25,8 @@ export const MAX_BLOCK_DEPTH = 50;
 
 const CALLOUT_EMOJI = "💡";
 
+const LIST_TYPES = ["bulletListItem", "numberedListItem", "checkListItem", "toggleListItem"];
+
 export type PageLink = { title: string; href: string };
 
 /** Rewrites references while converting. Missing pages render as "Missing page". */
@@ -591,26 +593,45 @@ function parseList(
     const item = matchItem(lines[i]);
     if (!item || item.indent !== indent) break;
     i += 1;
-    const nested: string[] = [];
-    const extra: string[] = [];
+    // The item's own paragraph runs on lazily: lines set further in than the marker continue the item's text, until a
+    // nested list starts or the item ends.
+    const own = [item.text];
     while (i < lines.length) {
-      if (lines[i].trim() === "") break;
-      const next = matchItem(lines[i]);
-      if (next && next.indent <= indent) break;
-      if (!next && leadingSpaces(lines[i]) <= indent) break;
-      if (next && next.indent > indent) nested.push(lines[i]);
-      else extra.push(lines[i].trim());
+      const line = lines[i];
+      if (line.trim() === "" || leadingSpaces(line) <= indent) break;
+      if (matchItem(line)) break;
+      own.push(line.trim());
       i += 1;
     }
-    const text = extra.length ? `${item.text}\n${extra.join("\n")}` : item.text;
-    const children =
-      depth + 1 >= MAX_BLOCK_DEPTH
-        ? []
-        : nested.length
-          ? parseList(nested, 0, matchItem(nested[0])?.indent ?? indent + 2, reader, depth + 1).blocks
-          : [];
-    if (depth + 1 >= MAX_BLOCK_DEPTH && nested.length) {
-      for (const line of nested) paragraphFrom(reader, line.trim(), blocks, depth);
+    // WP-102 (Orbit ab86dac): a blank line does not end the item when what follows is set in under it. That is how a
+    // paragraph, quote or heading child, or a numbered child list past 1, is written and read back as a child.
+    const nested: string[] = [];
+    while (i < lines.length) {
+      const line = lines[i];
+      if (line.trim() === "") {
+        let next = i + 1;
+        while (next < lines.length && lines[next].trim() === "") next += 1;
+        if (next >= lines.length) {
+          i = next;
+          break;
+        }
+        const after = matchItem(lines[next]);
+        if (!(after ? after.indent > indent : leadingSpaces(lines[next]) > indent)) break;
+        nested.push("");
+        i += 1;
+        continue;
+      }
+      const next = matchItem(line);
+      if (next && next.indent <= indent) break;
+      if (!next && leadingSpaces(line) <= indent) break;
+      nested.push(line);
+      i += 1;
+    }
+    const text = own.join("\n");
+    const childLines = dedentBlocks(nested);
+    const children = depth + 1 >= MAX_BLOCK_DEPTH || childLines.length === 0 ? [] : parseBlocks(childLines, reader, depth + 1);
+    if (depth + 1 >= MAX_BLOCK_DEPTH && childLines.length) {
+      for (const line of childLines.split("\n")) paragraphFrom(reader, line.trim(), blocks, depth);
     }
     const content = piecesToContent(parseInline(text), reader.members).content;
     if (item.kind === "check") {
@@ -627,6 +648,17 @@ function parseList(
 
 function leadingSpaces(line: string): number {
   return /^ */.exec(line)?.[0].length ?? 0;
+}
+
+/** A list item's child lines, set in under the marker: the common indent is taken off, blank lines kept. */
+function dedentBlocks(lines: readonly string[]): string {
+  let least = Infinity;
+  for (const line of lines) if (line.trim() !== "") least = Math.min(least, leadingSpaces(line));
+  if (!Number.isFinite(least) || least <= 0) return lines.join("\n").trimEnd();
+  return lines
+    .map((line) => (line.trim() === "" ? "" : line.slice(least)))
+    .join("\n")
+    .trimEnd();
 }
 
 function sanitizeInline(content: Inline[]): Inline[] {
@@ -819,6 +851,11 @@ function quoteText(text: string): string {
     .join("\n");
 }
 
+function continuesItem(line: string): boolean {
+  const item = matchItem(line);
+  return item !== null && (item.kind !== "numbered" || item.number === 1);
+}
+
 function indentText(text: string, first: string, rest: string): string {
   return text
     .split("\n")
@@ -858,6 +895,7 @@ class Converter {
   blocks(blocks: readonly Block[]): string {
     let out = "";
     let previousList = false;
+    let previousNumbered = false;
     let number = 0;
     for (const block of blocks) {
       if (block.type === "numberedListItem") {
@@ -868,12 +906,17 @@ class Converter {
       const text = this.block(block, number);
       if (!text) {
         previousList = false;
+        previousNumbered = false;
         continue;
       }
-      const list = ["bulletListItem", "numberedListItem", "checkListItem", "toggleListItem"].includes(block.type);
-      if (out) out += list && previousList ? "\n" : "\n\n";
+      const list = LIST_TYPES.includes(block.type);
+      // WP-102 (Orbit ab86dac): a numbered list that does not start at 1 cannot interrupt the line above it, so a blank
+      // line is what keeps it a list rather than more of the paragraph before it.
+      const startsLate = block.type === "numberedListItem" && number !== 1 && !previousNumbered;
+      if (out) out += list && previousList && !startsLate ? "\n" : "\n\n";
       out += text;
       previousList = list;
+      previousNumbered = block.type === "numberedListItem";
     }
     return out;
   }
@@ -963,7 +1006,11 @@ class Converter {
         .join("\n");
     }
     const nested = this.blocks(block.children);
-    const body = !nested ? head : !head ? `\n${nested}` : `${head}\n${nested}`;
+    // WP-102 (Orbit ab86dac): only a bullet list, or a numbered list that starts at 1, can follow the item's own line as
+    // part of the same item. Anything else, a child paragraph, quote or heading, or a numbered list past 1, needs a blank
+    // line or Markdown reads it as more of the item's paragraph and it is lost on the way back in.
+    const follows = nested ? continuesItem(nested.split("\n")[0] ?? "") : false;
+    const body = !nested ? head : !head ? `\n${nested}` : follows ? `${head}\n${nested}` : `${head}\n\n${nested}`;
     return indentText(body, marker, " ".repeat(marker.length)).trimEnd();
   }
 

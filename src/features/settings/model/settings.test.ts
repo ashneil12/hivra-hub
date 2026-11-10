@@ -26,6 +26,10 @@ import {
   loadFormatOnSave,
   loadFileTabMode,
   loadFollowUpBehavior,
+  loadNewChatWorktree,
+  NEW_CHAT_WORKTREE_DEFAULT,
+  saveNewChatWorktree,
+  subscribeNewChatWorktree,
   loadGridArcadeEnabled,
   loadLiveAgentsEnabled,
   loadNotesEnabled,
@@ -67,6 +71,90 @@ const FILE_TAB_MODE_KEY = "monocode.fileTabMode";
 const FOLLOW_UP_BEHAVIOR_KEY = "monocode.followUpBehavior";
 const TAB_ANIMATIONS_KEY = "monocode.tabAnimationsEnabled";
 const COLLAPSED_PROJECT_RAIL_MODE_KEY = "monocode.collapsedProjectRailMode";
+const NEW_CHAT_WORKTREE_KEY = "monocode.newChatWorktree";
+
+describe("new chat worktree setting", () => {
+  beforeEach(mockLocalStorage);
+  afterEach(() => {
+    localStorage.removeItem(NEW_CHAT_WORKTREE_KEY);
+  });
+
+  it("starts off so new chats use the project folder", () => {
+    expect(NEW_CHAT_WORKTREE_DEFAULT).toBe("off");
+    expect(loadNewChatWorktree()).toBe("off");
+  });
+
+  it("remembers ask and always", () => {
+    for (const value of ["ask", "always"] as const) {
+      saveNewChatWorktree(value);
+      expect(localStorage.getItem(NEW_CHAT_WORKTREE_KEY)).toBe(value);
+      expect(loadNewChatWorktree()).toBe(value);
+    }
+    saveNewChatWorktree("off");
+    expect(loadNewChatWorktree()).toBe("off");
+  });
+
+  it("reads an older install with no value as off", () => {
+    expect(localStorage.getItem(NEW_CHAT_WORKTREE_KEY)).toBeNull();
+    expect(loadNewChatWorktree()).toBe("off");
+  });
+
+  it("reads an unknown stored value as off", () => {
+    for (const raw of ["sometimes", "ALWAYS", "true", "1", "", " ask"]) {
+      localStorage.setItem(NEW_CHAT_WORKTREE_KEY, raw);
+      expect(loadNewChatWorktree()).toBe("off");
+    }
+  });
+
+  it("falls back to off when storage cannot be read", () => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("blocked");
+      },
+    });
+    expect(loadNewChatWorktree()).toBe("off");
+    expect(() => saveNewChatWorktree("ask")).not.toThrow();
+    mockLocalStorage();
+  });
+
+  it("tells listeners in this window and other windows when it changes", () => {
+    const listeners: Record<string, ((event: Event) => void)[]> = {};
+    const fakeWindow = {
+      addEventListener: (type: string, listener: (event: Event) => void) => {
+        (listeners[type] ??= []).push(listener);
+      },
+      removeEventListener: (type: string, listener: (event: Event) => void) => {
+        listeners[type] = (listeners[type] ?? []).filter((each) => each !== listener);
+      },
+      dispatchEvent: (event: Event) => {
+        for (const listener of listeners[event.type] ?? []) listener(event);
+        return true;
+      },
+    };
+    Object.defineProperty(globalThis, "window", { value: fakeWindow, configurable: true });
+    try {
+      const seen: string[] = [];
+      const stop = subscribeNewChatWorktree(() => seen.push(loadNewChatWorktree()));
+      saveNewChatWorktree("always");
+      expect(seen).toEqual(["always"]);
+      localStorage.setItem(NEW_CHAT_WORKTREE_KEY, "ask");
+      fakeWindow.dispatchEvent(
+        Object.assign(new Event("storage"), { key: NEW_CHAT_WORKTREE_KEY }),
+      );
+      expect(seen).toEqual(["always", "ask"]);
+      fakeWindow.dispatchEvent(
+        Object.assign(new Event("storage"), { key: "monocode.other" }),
+      );
+      expect(seen).toEqual(["always", "ask"]);
+      stop();
+      saveNewChatWorktree("off");
+      expect(seen).toEqual(["always", "ask"]);
+    } finally {
+      delete (globalThis as { window?: unknown }).window;
+    }
+  });
+});
 
 describe("follow-up behavior setting", () => {
   beforeEach(mockLocalStorage);
@@ -626,6 +714,8 @@ describe("settings navigation", () => {
       "changes",
       "decisions",
       "activity",
+      "work-log",
+      "usage",
       "connected",
       "dashboards",
       "portable",
@@ -696,6 +786,19 @@ describe("settings search", () => {
     ]);
   });
 
+  it("finds settle and snooze from the chat list words", () => {
+    expect(searchSettings("snooze")[0]).toMatchObject({
+      section: "chat",
+      sectionLabel: "Chat",
+      settingId: "chat-list-inbox",
+      label: "Settle and snooze",
+    });
+    expect(searchSettings("finished chats")[0]).toMatchObject({
+      section: "chat",
+      settingId: "chat-list-inbox",
+    });
+  });
+
   it("finds a setting by a word that is not in its label", () => {
     expect(searchSettings("steer")[0]).toMatchObject({
       section: "chat",
@@ -708,6 +811,22 @@ describe("settings search", () => {
       section: "chat",
       settingId: "format-on-save",
       label: "Format on save",
+    });
+  });
+
+  it("finds the new chat worktree setting on the worktrees page", () => {
+    expect(searchSettings("every chat")[0]).toMatchObject({
+      section: "worktrees",
+      settingId: "new-chat-worktree",
+      label: "New chats and worktrees",
+    });
+  });
+
+  it("finds the switch for clearing finished worktrees' build output", () => {
+    expect(searchSettings("build output")[0]).toMatchObject({
+      section: "worktrees",
+      settingId: "worktree-autoclear",
+      label: "Clear build output of finished worktrees",
     });
   });
 

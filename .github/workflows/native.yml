@@ -1,8 +1,21 @@
 name: Monocode Native Preview
 
 on:
+  # Same paths as pull_request. A push to main that only touches the Tauri app, docs or credits
+  # does not start this workflow, so it does not take the two macOS runners.
   push:
     branches: [main, mc/migrate-monocode-to-gpui]
+    paths:
+      - 'crates/monocode-core/**'
+      - 'crates/monocode-gpui/**'
+      - 'crates/mobile-link/**'
+      - 'vendor/gpui-pre*/**'
+      - 'scripts/*native*'
+      - 'scripts/native-editor/**'
+      - 'scripts/native-settings/**'
+      - 'package.json'
+      - '.github/workflows/native.yml'
+      - '.github/workflows/native-release.yml'
   workflow_dispatch:
   pull_request:
     paths:
@@ -16,6 +29,11 @@ on:
       - 'package.json'
       - '.github/workflows/native.yml'
       - '.github/workflows/native-release.yml'
+  schedule:
+    # Hivra: nightly, on main, 03:17 UTC. The push and pull_request path lists above skip this workflow for a change
+    # that touches no native file, so this run covers the rest (a new Rust release, a moved dependency). A schedule
+    # takes no path filter and runs every job. The CI workflow's nightly RPM run is at a different time.
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
@@ -63,3 +81,21 @@ jobs:
       - run: cargo test --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev -- --test-threads=1
       - run: cargo build --manifest-path crates/monocode-gpui/Cargo.toml --locked -p monocode-gpui --profile native-dev
 
+  # WP-105: one required check that adds up this workflow's jobs, the same shape as ci.yml's.
+  # A skipped job (a path filter ran nothing) counts as fine; a failure or a cancel fails this job.
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [core, desktop]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Every required job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/ci-ok.mjs

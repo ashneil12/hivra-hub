@@ -37,9 +37,13 @@
       "category": "testing",
       "keywords": ["e2e", "testing", "verification", "mcp"],
       "contributes": { "skills": ["e2e", "when-to-verify"], "mcpServers": ["e2e"] },
-      "permissions": ["Runs e2e's MCP server on this computer", "Opens the app under test in a browser or simulator"],
+      "permissions": [
+        "Runs e2e's MCP server on this computer",
+        "Opens the app under test in a browser or simulator",
+        "Its usage telemetry is switched off in Hivra (E2E_TELEMETRY_DISABLED=1 and DO_NOT_TRACK=1)"
+      ],
       "versions": [
-        { "version": "0.22.0", "source": { "type": "npm", "package": "e2e" } }
+        { "version": "0.23.0", "source": { "type": "npm", "package": "e2e" } }
       ]
     },
     {
@@ -66,7 +70,7 @@
     {
       "name": "desktop-control",
       "title": "Desktop control",
-      "description": "Workers use desktop apps through the accessibility tree. Off by default, with consent per app. Built on agent-desktop 1.1.0.",
+      "description": "Workers use desktop apps through the accessibility tree. Off by default, with consent per app. Built on agent-desktop 1.2.0.",
       "author": "Vercel Labs",
       "license": "Apache-2.0",
       "homepage": "https://github.com/vercel-labs/agent-desktop",

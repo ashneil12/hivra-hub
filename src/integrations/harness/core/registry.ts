@@ -5,6 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
+import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { transferProviderSession } from "./child";
@@ -301,6 +302,8 @@ export function setTurnTextDecorator(fn: ((sessionId: string, text: string) => s
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
+    // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -379,6 +382,7 @@ export function compactHarnessContext(
   input: CompactContextInput & { harness: HarnessId },
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
@@ -401,6 +405,13 @@ export function canSteerHarness(id: HarnessId): boolean {
   return adapter.canSteer !== false;
 }
 
+/** True only when a live adapter says it cannot redirect a running turn. */
+export function harnessCannotSteer(id: HarnessId): boolean {
+  const adapter = adapters.get(id);
+  if (!adapter?.live) return false;
+  return adapter.canSteer === false;
+}
+
 export function canRewindHarnessLastTurn(id: HarnessId): boolean {
   const adapter = adapters.get(id);
   return adapter?.live === true && adapter.rewindLastTurn != null;
@@ -410,6 +421,7 @@ export function rewindHarnessLastTurn(
   input: RewindLastTurnInput & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
+    requireChatFolder(input.cwd);
     const adapter = requireHarness(input.harness);
     if (!adapter.rewindLastTurn) {
       throw new Error(
@@ -570,8 +582,9 @@ export async function refreshHarnessCatalogs(
       .filter((adapter) => wanted.has(adapter.id))
       .map(async (adapter) => {
         if (!adapter.refreshCatalog) return;
-        // `force` marks an explicit user action (opening the model dropdown);
-        // routine refreshes keep skipping adapters with a live catalog.
+        // `force` marks an explicit user action (Settings, or the provider
+        // update notice); routine refreshes, and opening the model picker,
+        // keep skipping adapters that already hold a catalog.
         if (!options?.force && hasLiveCatalog(adapter.id)) return;
         await adapter.refreshCatalog().catch((error: unknown) => {
           console.debug(`[monocode] ${adapter.id} catalog`, error);

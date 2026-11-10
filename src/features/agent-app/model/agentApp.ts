@@ -36,6 +36,8 @@ import {
   type HarnessId,
   type Session,
 } from "../../sessions/model/session";
+import { givesOrders, ORDER_REFUSAL } from "../../memory/model/orderScan";
+import { isPrivateChat } from "../../memory/model/privateChat";
 import {
   addSessionToFolder,
   createFolderWithSessions,
@@ -94,12 +96,16 @@ import {
   fitMemoryBudget,
   memoryDate,
   memoryEntry,
+  memoryUseKey,
   removeMemoryEntry,
   searchMemory,
   sinceDate,
   supersedeMemoryEntry,
   topicName,
+  type MemoryUse,
 } from "../../monos/model/monoMemory";
+import { parseDoc } from "../../memory/model/doc";
+import { fadeNow, livedClockOf } from "../../memory/model/fade";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
 import {
   sendMode,
@@ -113,6 +119,7 @@ import {
   type DelegationMeta,
 } from "./agentAppTasks";
 import { handleTaskStore, isTaskStoreAction, TASK_STORE_FIELDS } from "../../tasks/model/agentTasks";
+import { handleProgramme, isProgrammeAction, PROGRAMME_FIELDS } from "../../programme/model/programme";
 import { handlePrs, PR_FIELDS, type AgentAppPrsHost } from "./agentAppPrs";
 // WP-92: the vault's three actions (secrets.request, secrets.list, secrets.run).
 import {
@@ -122,6 +129,7 @@ import {
   type WorkerArmRequest,
 } from "./agentAppSecrets";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
+import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppWorkLog";
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
@@ -225,6 +233,8 @@ export type AgentAppHost = {
   ): Promise<Worktree>;
   /** The project's imported actions (.monocode/project.json) and recent runs. */
   projectActions?(cwd: string): Promise<ActionsListing>;
+  /** WP-90: the same stack rows the stack card shows, names and fake services included. */
+  stacks?(cwd: string): Promise<unknown>;
   /** Start one in a checkout of the project; returns at once. */
   runProjectAction?(checkoutCwd: string, actionId: string): Promise<ActionRun>;
   waitProjectAction?(runId: string, timeoutMs: number): Promise<ActionRun>;
@@ -338,6 +348,8 @@ export type AgentAppHost = {
   activityList?: (query: Record<string, unknown>) => Promise<unknown>;
   /** WP-88: reviewed memory for recall. Writes stay on memory.add. */
   memoryDoc?: () => Promise<unknown>;
+  /** WP-100: the facts a Mono read through memory.recall are used, so they are topped up. A miss is not final. */
+  markMemoryUsed?: (ids: readonly string[], at: number) => Promise<unknown>;
   /** WP-88: mate ids on this copy, for a wide recall. */
   mateIds?: () => readonly string[];
   /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
@@ -350,10 +362,20 @@ export type AgentAppHost = {
       input?: Record<string, unknown>;
     },
   ): Promise<unknown>;
+  /** WP-159: the programme board. The handler sets who is asking; the model cannot. */
+  programmeStore?(
+    command: "programme_list" | "programme_enqueue" | "programme_set_status" | "programme_park",
+    args: {
+      actor: { id: string; project: string; kind: "first-mate" };
+      input?: Record<string, unknown>;
+    },
+  ): Promise<unknown>;
   /** The PR watch (agentAppPrs.ts, src-tauri/src/pr_watch); a Mono's own chat or a coding-team chat only. */
   prs?: AgentAppPrsHost;
   /** Hivra WP-11: timers a first mate sets (agentAppTimers.ts); the app's own store when absent. */
   timers?: AgentAppTimersHost;
+  /** WP-157: the work log. The app's own store when absent. */
+  workLog?: WorkLogBackend;
   /**
    * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
    * needed, and arms the handles for the child session; no value crosses to this side.
@@ -409,6 +431,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["worktrees.create", ["branch", "base", "existing", "runSetup", "project"]],
   ["actions.list", ["project"]],
   ["actions.run", ["action", "worktreeCwd", "waitSeconds", "project"]],
+  ["stacks.list", ["project"]],
   ["folders.list", ["project"]],
   ["folders.move", ["sessionId", "folderId", "newFolderName", "project"]],
   ["notes.list", ["limit", "offset"]],
@@ -443,9 +466,13 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TASK_FIELDS,
   // WP-70: the shared task list. Not the delegation tools above.
   ...TASK_STORE_FIELDS,
+  // WP-159: the programme board. Not the per-job worker queue.
+  ...PROGRAMME_FIELDS,
   ...AUTOPILOT_FIELDS,
   ...PR_FIELDS,
   ...TIMER_FIELDS,
+  // WP-157: the work log. Add and read, not the delegation tools above.
+  ...WORK_LOG_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
@@ -970,6 +997,24 @@ async function editAgentFile<T>(
   }
 }
 
+/** The doc's fade for each line of this Mono's MEMORY.md, or nothing when it cannot be read or to be trusted. */
+async function memoryUseOf(host: AgentAppHost, monoId: string): Promise<Map<string, MemoryUse> | undefined> {
+  if (!host.memoryDoc) return undefined;
+  try {
+    const doc = parseDoc(await host.memoryDoc());
+    const clock = livedClockOf(doc);
+    const now = (host.now?.() ?? new Date()).getTime();
+    const use = new Map<string, MemoryUse>();
+    for (const item of doc.items) {
+      if (item.mateId !== monoId || item.action !== "add") continue;
+      use.set(memoryUseKey(item.text), { fade: fadeNow(item, clock, now), usedAt: item.lastUsedAt ?? item.updatedAt });
+    }
+    return use;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Keeps MEMORY.md within what loads. The archive is written first, so a line
  * is never out of one file without already being in the other. If the user
@@ -984,7 +1029,9 @@ async function keepMemoryInBudget(
   by: { bot: string; run: string },
 ): Promise<string[]> {
   const memory = await host.readAgentFile(monoId, "MEMORY.md");
-  const fitted = fitMemoryBudget(memory.text ?? "", keep, date);
+  // WP-100: the least used lines go first. A doc that cannot be read leaves the order as it was.
+  const use = await memoryUseOf(host, monoId);
+  const fitted = fitMemoryBudget(memory.text ?? "", keep, date, use);
   if (!fitted.moved.length) return [];
   const archived = await editAgentFile(host, monoId, "memory/archive.md", (archive) => ({
     text: archiveMemoryEntries(archive, fitted.moved, date),
@@ -1071,6 +1118,17 @@ async function handleMemory(
         : {}),
     };
   };
+  // WP-111: a private chat cannot write memory. Reading it is unchanged.
+  if (
+    isPrivateChat(source) &&
+    (action === "memory.add" || action === "memory.replace" || action === "memory.remove")
+  ) {
+    throw new Error("This chat is private, so memory was not changed.");
+  }
+  // The order scan the curator and imports run: MEMORY.md goes into every conversation.
+  if ((action === "memory.add" || action === "memory.replace") && givesOrders(String(input.fact ?? ""))) {
+    throw new Error(ORDER_REFUSAL);
+  }
   switch (action) {
     case "memory.search": {
       const query =
@@ -1122,7 +1180,7 @@ async function handleMemory(
     }
     case "memory.add": {
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
         return { text: next.text, result: next.added };
@@ -1141,7 +1199,7 @@ async function handleMemory(
     case "memory.replace": {
       const find = requiredString(input.find, "find", 2000);
       const fact = requiredString(input.fact, "fact");
-      const entry = memoryEntry(fact, date, until);
+      const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => ({
         text: supersedeMemoryEntry(text, find, entry, date),
         result: undefined,
@@ -1500,6 +1558,8 @@ export async function handleAgentApp(
   checkerLane(source, action, host);
   // WP-70: the shared task list. Not the delegation tools below.
   if (isTaskStoreAction(action)) return handleTaskStore(source, action, input, host);
+  // WP-159: the programme board. A worker is refused before the store is called.
+  if (isProgrammeAction(action)) return handleProgramme(source, action, input, host);
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
@@ -1511,6 +1571,8 @@ export async function handleAgentApp(
   if (action.startsWith("secrets.")) return handleSecrets(source, action, input, host);
   if (action.startsWith("prs.")) return handlePrs(source, action, input, host);
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
+  // WP-157: the work log.
+  if (action.startsWith("work_log.")) return handleWorkLog(source, action, input, host);
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action.startsWith("docs.")) {
     return handleDocs(source, requestId, action, input, host, (session, fields) => requireProject(session, fields, host));
@@ -1888,6 +1950,12 @@ export async function handleAgentApp(
             setupNote: `${tree.setup?.name ?? "Setup"} is running in the new worktree (run ${run.id}). actions.list shows when it ends; start work there after it finishes.`,
           }
         : tree;
+    }
+    case "stacks.list": {
+      const cwd = requireProject(source, input, host);
+      if (!host.stacks) throw new Error("Stacks aren't available in this app");
+      // Read only: the same status the stack card shows, names and fake services included.
+      return host.stacks(cwd);
     }
     case "actions.list": {
       const cwd = requireProject(source, input, host);

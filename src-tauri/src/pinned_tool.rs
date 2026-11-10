@@ -39,51 +39,53 @@ pub struct Pin {
     pub assets: &'static [Asset],
 }
 
-/// no-mistakes 1.106.1. The sha256 values are that release's `checksums.txt`. The darwin-arm64
-/// value was checked against the downloaded tarball. Asset names follow no-mistakes
+/// no-mistakes 1.111.0. The sha256 values are that release's `checksums.txt`. The darwin-arm64
+/// value was checked against the downloaded tarball. 1.110.0 is the first release whose
+/// `axi run` accepts `--pr-title` and `--pr-body-file`, which the delivery gate passes (1.106.1,
+/// the last release not marked pre-release, rejects them as unknown flags). Do not pin older. Asset names follow no-mistakes
 /// `releaseArchiveName`: `{app}-{tag}-{GOOS}-{GOARCH}`, `.tar.gz` except Windows `.zip`.
 /// The archive holds one file, `no-mistakes` (`no-mistakes.exe` on Windows).
 pub const NO_MISTAKES: Pin = Pin {
     name: "no-mistakes",
-    version: "1.106.1",
-    url_base: "https://github.com/kunchenguid/no-mistakes/releases/download/v1.106.1/",
+    version: "1.111.0",
+    url_base: "https://github.com/kunchenguid/no-mistakes/releases/download/v1.111.0/",
     binary: "no-mistakes",
     assets: &[
         Asset {
             os: "darwin",
             arch: "arm64",
-            file_name: "no-mistakes-v1.106.1-darwin-arm64.tar.gz",
-            sha256: "3105ae3ffd9f5f6dc27674302dcd126a89ba9c23d43ecb8be5e266ac52f1472c",
+            file_name: "no-mistakes-v1.111.0-darwin-arm64.tar.gz",
+            sha256: "3d9e6466d74dd487ac915baf5cfc22fec697c15e6cbce9f5bf711b7549ad7522",
         },
         Asset {
             os: "darwin",
             arch: "amd64",
-            file_name: "no-mistakes-v1.106.1-darwin-amd64.tar.gz",
-            sha256: "a1df9a1e456e265c989ddb17968317f3d21bf80b23b9828cbd426777f279bfb1",
+            file_name: "no-mistakes-v1.111.0-darwin-amd64.tar.gz",
+            sha256: "bf56b46722d2afbb973fe584241568cb8958c39b6e92e2daf064bc3158f4ef0a",
         },
         Asset {
             os: "linux",
             arch: "arm64",
-            file_name: "no-mistakes-v1.106.1-linux-arm64.tar.gz",
-            sha256: "8529f37d3b11a213abe9162851e84208e9c12e9d8ebf830e037f05e00558a656",
+            file_name: "no-mistakes-v1.111.0-linux-arm64.tar.gz",
+            sha256: "c6726b73e7016b63b76304fd3ce559cfdf657e5dbfe6d29884fc081abdc23517",
         },
         Asset {
             os: "linux",
             arch: "amd64",
-            file_name: "no-mistakes-v1.106.1-linux-amd64.tar.gz",
-            sha256: "fbf131356a278623a509b6b50ecb39c5375b1a82e7dcfc48e42d10e761416d1e",
+            file_name: "no-mistakes-v1.111.0-linux-amd64.tar.gz",
+            sha256: "61022147dece3ceb3936a6ef5538e6ac841b0be4a7080c039627238ae92da7ac",
         },
         Asset {
             os: "windows",
             arch: "arm64",
-            file_name: "no-mistakes-v1.106.1-windows-arm64.zip",
-            sha256: "69a95132ae0140e8d15878657e9bc3ba9c555d9aa49b37c640f5115fb67af5a8",
+            file_name: "no-mistakes-v1.111.0-windows-arm64.zip",
+            sha256: "48da2b2c6ef8dd14e7f09e3b40a6d2039c5b57bb5e7d7efb82a5a462fa922bc1",
         },
         Asset {
             os: "windows",
             arch: "amd64",
-            file_name: "no-mistakes-v1.106.1-windows-amd64.zip",
-            sha256: "78e17f98e9d9448368ce126f34101f01ca43f55d5797e3f55f5e11aadd175bef",
+            file_name: "no-mistakes-v1.111.0-windows-amd64.zip",
+            sha256: "2078649e00358de921234e622f8572a2deead413fbdae09499c56dbb65e1d51b",
         },
     ],
 };
@@ -644,49 +646,66 @@ mod tests {
         assert!(!dir.0.join("tools").exists());
     }
 
+    /// The delivery gate runs `axi run --pr-title ... --pr-body-file ...`. no-mistakes 1.106.1
+    /// rejects both as unknown flags (checked against the real binary), 1.110.0 added them.
+    /// A pin older than that makes every real delivery run fail on its first command.
+    #[test]
+    fn the_pin_is_new_enough_for_the_flags_the_gate_passes() {
+        let parts: Vec<u32> = NO_MISTAKES
+            .version
+            .split('.')
+            .map(|p| p.parse().expect("numeric version part"))
+            .collect();
+        assert!(
+            parts.as_slice() >= [1, 110, 0].as_slice(),
+            "no-mistakes {} predates --pr-title and --pr-body-file",
+            NO_MISTAKES.version
+        );
+    }
+
     #[test]
     fn every_platform_has_a_pinned_asset() {
         let want = [
             (
                 "darwin",
                 "arm64",
-                "no-mistakes-v1.106.1-darwin-arm64.tar.gz",
-                "3105ae3ffd9f5f6dc27674302dcd126a89ba9c23d43ecb8be5e266ac52f1472c",
+                "no-mistakes-v1.111.0-darwin-arm64.tar.gz",
+                "3d9e6466d74dd487ac915baf5cfc22fec697c15e6cbce9f5bf711b7549ad7522",
             ),
             (
                 "darwin",
                 "amd64",
-                "no-mistakes-v1.106.1-darwin-amd64.tar.gz",
-                "a1df9a1e456e265c989ddb17968317f3d21bf80b23b9828cbd426777f279bfb1",
+                "no-mistakes-v1.111.0-darwin-amd64.tar.gz",
+                "bf56b46722d2afbb973fe584241568cb8958c39b6e92e2daf064bc3158f4ef0a",
             ),
             (
                 "linux",
                 "arm64",
-                "no-mistakes-v1.106.1-linux-arm64.tar.gz",
-                "8529f37d3b11a213abe9162851e84208e9c12e9d8ebf830e037f05e00558a656",
+                "no-mistakes-v1.111.0-linux-arm64.tar.gz",
+                "c6726b73e7016b63b76304fd3ce559cfdf657e5dbfe6d29884fc081abdc23517",
             ),
             (
                 "linux",
                 "amd64",
-                "no-mistakes-v1.106.1-linux-amd64.tar.gz",
-                "fbf131356a278623a509b6b50ecb39c5375b1a82e7dcfc48e42d10e761416d1e",
+                "no-mistakes-v1.111.0-linux-amd64.tar.gz",
+                "61022147dece3ceb3936a6ef5538e6ac841b0be4a7080c039627238ae92da7ac",
             ),
             (
                 "windows",
                 "arm64",
-                "no-mistakes-v1.106.1-windows-arm64.zip",
-                "69a95132ae0140e8d15878657e9bc3ba9c555d9aa49b37c640f5115fb67af5a8",
+                "no-mistakes-v1.111.0-windows-arm64.zip",
+                "48da2b2c6ef8dd14e7f09e3b40a6d2039c5b57bb5e7d7efb82a5a462fa922bc1",
             ),
             (
                 "windows",
                 "amd64",
-                "no-mistakes-v1.106.1-windows-amd64.zip",
-                "78e17f98e9d9448368ce126f34101f01ca43f55d5797e3f55f5e11aadd175bef",
+                "no-mistakes-v1.111.0-windows-amd64.zip",
+                "2078649e00358de921234e622f8572a2deead413fbdae09499c56dbb65e1d51b",
             ),
         ];
-        assert_eq!(NO_MISTAKES.version, "1.106.1");
+        assert_eq!(NO_MISTAKES.version, "1.111.0");
         assert_eq!(NO_MISTAKES.binary, "no-mistakes");
-        assert!(NO_MISTAKES.url_base.ends_with("/v1.106.1/"));
+        assert!(NO_MISTAKES.url_base.ends_with("/v1.111.0/"));
         assert_eq!(NO_MISTAKES.assets.len(), want.len());
         for (os, arch, file, sha) in want {
             let asset = NO_MISTAKES
@@ -712,12 +731,12 @@ mod tests {
         let asset: &'static Asset = Box::leak(Box::new(Asset {
             os: "windows",
             arch: "amd64",
-            file_name: "no-mistakes-v1.110.0-windows-amd64.zip",
+            file_name: "no-mistakes-v1.111.0-windows-amd64.zip",
             sha256: sha,
         }));
         let pin = Pin {
             name: "no-mistakes",
-            version: "1.110.0",
+            version: "1.111.0",
             url_base: "https://example.invalid/",
             binary: "no-mistakes",
             assets: std::slice::from_ref(asset),

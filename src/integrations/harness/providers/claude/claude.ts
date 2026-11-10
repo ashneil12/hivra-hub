@@ -22,6 +22,7 @@ import type {
 } from "../../../../features/sessions/model/session";
 import { loadClaudeHooks } from "../../../../features/settings/model/settings";
 import {
+  execChild,
   killChild,
   resolveClaudeBinary,
   spawnChild,
@@ -90,10 +91,12 @@ import {
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
+import { forwardChildAnswer, type SessionPort } from "../../../../features/sessions/model/childApproval";
 import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
 import { workerCheckoutsArgs } from "./workerCheckouts";
+import { addDirsOf, cheapExploreLaunch } from "./explorePin";
 import { appIdentity, isDevCopy } from "../../../../app/model/appIdentity";
 import {
   GOAL_CHECK_CAP,
@@ -114,15 +117,23 @@ import {
   type ClaudeLiveRequest,
 } from "./claudeLaunch";
 import {
+  claimIdleCompaction,
+  confirmIdleCompactionClaim,
   forgetPromptCache,
+  idleCompactGivenUp,
+  IDLE_COMPACT_CLAIM_CONFIRM_MS,
+  noteIdleCompactFailure,
   promptCacheTtlFromUsage,
   recallPromptCache,
+  releaseIdleCompactionClaim,
   rememberPromptCache,
 } from "./claudePromptCache";
 import {
   contextCeilingFor,
   formatDuration,
+  IDLE_COMPACT_NOTICE,
   idleCompactionDue,
+  warmContextCeiling,
 } from "../../../../features/sessions/model/contextCeiling";
 import { formatTokens } from "../../../../features/sessions/model/contextUsage";
 import { RUNTIME_MODE_LABEL } from "../../../../features/sessions/model/session";
@@ -158,7 +169,7 @@ import type {
   SendTurnInput,
   SteerTurnInput,
 } from "../../core/types";
-import { claudeBridgeKind } from "./claudeDeepseekBridge";
+import { claudeBridgeKind, claudeRunsOnSubscriptionBridge } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
 
 /**
@@ -186,6 +197,8 @@ type InFlightTool = {
   input: Record<string, unknown>;
   partialJson: string;
   title: string;
+  /** An Agent call whose result has come back: its run is over. */
+  settled?: boolean;
 };
 
 type LiveAgentTask = {
@@ -223,6 +236,10 @@ type Live = {
   pendingControls: Map<string, (response: ClaudeControlResponse) => void>;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
+  /** WP-122: a child tool id, and the port its approval answer is written to. */
+  childTools: Map<string, { name: string; sessionPort: string }>;
+  childPorts: Map<string, SessionPort>;
+  childInputs: Map<string, Record<string, unknown>>;
   questions: Map<number, PendingQuestion>;
   visibleQuestionId: number | null;
   nextApprovalUiId: number;
@@ -258,6 +275,8 @@ type Live = {
   /** TaskCreate/TaskUpdate items, keyed by Claude's task id. */
   claudeTasks: Map<string, TaskListItem>;
   turnResultSeen: boolean;
+  /** The last `total_cost_usd` this process reported: the CLI's running total, so a turn's own cost is the step from it. */
+  lastTotalCostUsd?: number;
   /**
    * Prompts written into this MonoCode turn that Claude hasn't answered yet: the turn's own, a follow-up written after
    * Claude yielded, the `/goal` sent behind a brief. A background wake Claude runs first (its result says
@@ -453,22 +472,11 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
 }
 
 /**
- * A big chat idle past its prompt cache would have its whole context written
- * to the cache again, at full price, by this message and then kept that size.
- * Compacting first costs one read and leaves every later turn small. The
- * CLI's own resume prompt does the same above 100K tokens; this runs it by
- * policy, before the user's message, through the normal compaction path.
+ * Quiet `/compact` through the same path a person uses. Failure is a result
+ * for the caller, not a session error. A finished compact drops the claim a
+ * background look took, because remembering the record strips it.
  */
-async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
-  if (input.text.trim().startsWith("/")) return;
-  const state = recallPromptCache(input.sessionId);
-  if (!state || state.providerSessionId !== live.claudeSessionId) return;
-  const due = idleCompactionDue(state, Date.now());
-  if (!due) return;
-  live.onEvent({
-    type: "status",
-    text: `Idle ${formatDuration(due.idleMs)}, past the ${formatDuration(due.ttlMs)} prompt cache: compacting ${formatTokens(due.used)} tokens before sending, so the cache is not rebuilt at full size`,
-  });
+async function runQuietCompact(live: Live, input: HarnessSessionInput): Promise<void> {
   live.manualCompaction = true;
   live.quietCompaction = true;
   live.compactionConfirmed = false;
@@ -492,7 +500,33 @@ async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
       providerSessionId: live.claudeSessionId,
       lastTurnAt: Date.now(),
       contextUsed: 0,
+      compactFailures: 0,
     });
+  } finally {
+    live.manualCompaction = false;
+    live.quietCompaction = false;
+  }
+}
+
+/**
+ * A big chat idle past its prompt cache would have its whole context written
+ * to the cache again, at full price, by this message and then kept that size.
+ * Compacting first costs one read and leaves every later turn small. Only
+ * once the cache has already expired: inside the early window the idle
+ * watcher compacts, and a send must not.
+ */
+async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
+  if (input.text.trim().startsWith("/")) return;
+  const state = recallPromptCache(input.sessionId);
+  if (!state || state.providerSessionId !== live.claudeSessionId) return;
+  const due = idleCompactionDue(state, Date.now());
+  if (!due?.expired) return;
+  live.onEvent({
+    type: "status",
+    text: `Idle ${formatDuration(due.idleMs)}, past the ${formatDuration(due.ttlMs)} prompt cache: compacting ${formatTokens(due.used)} tokens before sending, so the cache is not rebuilt at full size`,
+  });
+  try {
+    await runQuietCompact(live, input);
   } catch (error) {
     if (live.cancelled) return;
     // A conversation that is gone is not a compaction failure: the dead
@@ -503,9 +537,6 @@ async function compactIfIdle(live: Live, input: SendTurnInput): Promise<void> {
       level: "warning",
       text: `Could not compact first (${error instanceof Error ? error.message : String(error)}); sending as is.`,
     });
-  } finally {
-    live.manualCompaction = false;
-    live.quietCompaction = false;
   }
 }
 
@@ -550,6 +581,111 @@ export async function compactClaudeContext(
       }
     });
   await live.turns;
+}
+
+/**
+ * The caller's busy hold for one background compact. `begin` is asked once,
+ * right before the compact runs, after every check that can turn the compact
+ * away (the window, the conversation, the claim). It returns false when the
+ * chat was taken in the meantime. `end` runs when the compact is over, however
+ * it ended.
+ */
+export type IdleCompactHold = { begin: () => boolean; end: () => void };
+
+/**
+ * Compact one idle Claude chat inside the two-minute window before its prompt
+ * cache expires. A cache that has already expired is left for the next send.
+ * Does not send the person's message. A mid-turn chat, a chat that has left
+ * the window, a chat whose last two background compacts failed, and a claim
+ * another window holds are left alone. Failure releases the claim so a later
+ * look can retry; it is not a session error.
+ * `proceed` is read again after the wait, because the chat may have gone.
+ */
+export async function compactDueIdleClaude(
+  input: HarnessSessionInput,
+  proceed: () => boolean = () => true,
+  hold?: IdleCompactHold,
+): Promise<boolean> {
+  if (!proceed()) return false;
+  const state = recallPromptCache(input.sessionId);
+  const due = state ? idleCompactionDue(state, Date.now()) : null;
+  // Only inside the lead window. An expired cache waits for the next send.
+  if (!state || !due || due.expired || idleCompactGivenUp(state)) return false;
+  const liveNow = liveByThread.get(input.sessionId);
+  if (liveNow?.activeTurn) return false;
+  const bound = liveNow?.claudeSessionId ?? resumeByThread.get(input.sessionId)?.sessionId;
+  if (!bound || bound !== state.providerSessionId) return false;
+
+  const claimId = crypto.randomUUID();
+  if (!claimIdleCompaction(input.sessionId, claimId, Date.now())) return false;
+  await new Promise((resolve) => setTimeout(resolve, IDLE_COMPACT_CLAIM_CONFIRM_MS));
+  if (!confirmIdleCompactionClaim(input.sessionId, claimId, Date.now())) return false;
+
+  const release = () => releaseIdleCompactionClaim(input.sessionId, claimId);
+  const stillDue = () => {
+    const fresh = recallPromptCache(input.sessionId);
+    if (!fresh || fresh.providerSessionId !== state.providerSessionId) return false;
+    const freshDue = idleCompactionDue(fresh, Date.now());
+    return freshDue !== null && !freshDue.expired;
+  };
+  if (!proceed() || liveByThread.get(input.sessionId)?.activeTurn || !stillDue()) {
+    release();
+    return false;
+  }
+
+  let live: Live;
+  try {
+    live = await ensureLive(input);
+  } catch (error) {
+    release();
+    if (error instanceof DeadConversationError) forgetDeadConversation(input, error);
+    return false;
+  }
+  if (cancelledThreads.delete(input.sessionId) || live.claudeSessionId !== state.providerSessionId) {
+    release();
+    return false;
+  }
+
+  let done = false;
+  live.onEvent = input.onEvent;
+  live.runtimeMode = input.runtimeMode;
+  live.turns = live.turns
+    .catch(() => undefined)
+    .then(async () => {
+      if (live.cancelled || live.activeTurn || !proceed() || !stillDue()) {
+        release();
+        return;
+      }
+      if (!confirmIdleCompactionClaim(input.sessionId, claimId, Date.now())) return;
+      // Every check that can turn this compact away has passed. Only now is
+      // the chat held busy, so one that fails them never flickers.
+      if (hold && !hold.begin()) {
+        release();
+        return;
+      }
+      live.cancelled = false;
+      live.muteUpdates = false;
+      try {
+        await runQuietCompact(live, input);
+        if (proceed()) live.onEvent({ type: "notice", text: IDLE_COMPACT_NOTICE });
+        done = true;
+      } catch (error) {
+        if (error instanceof DeadConversationError) {
+          forgetDeadConversation(input, error);
+          return;
+        }
+        // Cancelled or the compact did not land. Retry later. No error line:
+        // nobody was waiting on this to send.
+        release();
+        // A compact that did not land, as opposed to one the person stopped,
+        // counts. Two in a row and this chat is left alone until its next turn.
+        if (!live.cancelled) noteIdleCompactFailure(input.sessionId, state.providerSessionId);
+      } finally {
+        hold?.end();
+      }
+    });
+  await live.turns;
+  return done;
 }
 
 export async function steerClaudeTurn(input: SteerTurnInput): Promise<void> {
@@ -776,6 +912,8 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   if (live) {
     settleWorkflows(live, "stopped");
     live.muteUpdates = true;
+    // WP-122: the process is going away, so a courtesy deny is not a delivered child answer.
+    live.childPorts.clear();
     dropPendingGoalCheck(sessionId, live);
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
@@ -863,6 +1001,9 @@ export function restoreClaudeTaskLists(
 }
 
 async function ensureLive(input: HarnessSessionInput): Promise<Live> {
+  // WP-104: a custom route's context window comes from the bundled catalogue, read on first use. Wait for it before
+  // any launch is computed, so the key compared below and the settings started with agree.
+  await warmContextCeiling(input.model);
   const planning = input.intent === "plan";
   // WP-41: one wiring snapshot feeds the append text and the plugin dirs, before the launch key is compared.
   const plugins = await claudePluginLaunch(input.cwd, input.sessionId);
@@ -954,6 +1095,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     pendingControls: new Map(),
     onEvent: input.onEvent,
     approvals: new Map(),
+    childTools: new Map(),
+    childPorts: new Map(),
+    childInputs: new Map(),
     questions: new Map(),
     visibleQuestionId: null,
     nextApprovalUiId: 1,
@@ -1021,19 +1165,33 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
+  const launchArgs = [
+    // Only a chat in Full access starts able to skip permissions; Full
+    // access chosen later on any other process restarts it (claudeLaunchDelta).
+    ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
+    ...workerCheckoutsArgs(input.cwd),
+    // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
+    ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
+    // WP-41: the same text the launch key was compared against, not a second read.
+    ...claudeAppendArgs(append),
+  ];
+
+  // WP-143: a crew or Mono session on Anthropic starts with a cheap Explore agent as a flag, when this CLI knows the flag
+  // and the person has no Explore of their own (also not in a folder the session adds). Nothing is written to the
+  // folder, and a failure here only means the session starts without it.
+  const cheapExplore = await cheapExploreLaunch({
+    crew: input.crew === true,
+    anthropic: !claudeRunsOnSubscriptionBridge() && !launch.routedModel,
+    cwd: input.cwd,
+    providerAccountId: input.providerAccountId,
+    addDirs: addDirsOf(launchArgs),
+    cli: { key: path, version: () => execChild(path, ["--version"], input.cwd, "claude") },
+  });
+
   await spawnChild(
     input.sessionId,
     path,
-    [
-      // Only a chat in Full access starts able to skip permissions; Full
-      // access chosen later on any other process restarts it (claudeLaunchDelta).
-      ...buildClaudeSpawnArgs({ ...launch, settings: withWorkerNotificationsOff(withDevCopiesOff(launch.settings, input.cwd)), allowBypass: launchNext.allowBypass }),
-      ...workerCheckoutsArgs(input.cwd),
-      // WP-30: the same snapshot as the append text, not a second read of the plugin wiring (claudeExtraArgs.ts).
-      ...(await claudeExtraArgs(input.sessionId, undefined, plugins.additions)),
-      // WP-41: the same text the launch key was compared against, not a second read.
-      ...claudeAppendArgs(append),
-    ],
+    [...launchArgs, ...cheapExplore.args],
     input.cwd,
     { provider: "claude", id: input.providerAccountId ?? "default" },
     "claude",
@@ -1042,6 +1200,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     // Only a custom ("Other models") id has a route; Claude models never do, so they keep the normal login.
     customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} }),
   );
+  // Said only once the process is up: a launch that failed to start never claims the flag went in.
+  if (cheapExplore.sentence) {
+    input.onEvent({ type: "status", key: "explore-pin", text: cheapExplore.sentence });
+  }
 
   liveByThread.set(input.sessionId, live);
   resumeByThread.set(input.sessionId, {
@@ -1563,7 +1725,10 @@ function handleUser(live: Live, rec: Record<string, unknown>): void {
         text: result.text,
       });
     }
-    if (isAgentToolName(tool.name)) settleInlineAgentTask(live, tool.id);
+    if (isAgentToolName(tool.name)) {
+      tool.settled = true;
+      settleInlineAgentTask(live, tool.id);
+    }
   }
 }
 
@@ -1611,8 +1776,17 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
     lastTurnAt: Date.now(),
     cacheTtlMs: promptCacheTtlFromUsage(rec.usage),
     contextUsed: live.contextUsed,
+    // A real turn gives a chat that stopped compacting in the background another chance.
+    compactFailures: live.manualCompaction ? undefined : 0,
   });
   const metrics = turnMetricsFromResult(rec);
+  if (metrics?.costUsd != null) {
+    const total = metrics.costUsd;
+    // A total below the last one means the counter started over; take it as it stands.
+    const previous = live.lastTotalCostUsd ?? 0;
+    metrics.costUsd = total >= previous ? total - previous : total;
+    live.lastTotalCostUsd = total;
+  }
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
   if (!live.manualCompaction) noteDroppedEffort(live);
 
@@ -1769,6 +1943,12 @@ async function handleControlRequest(
   }
 
   const uiId = live.nextApprovalUiId++;
+  // WP-122: a child's ask is answered on the parent, and the answer goes to the child port only.
+  const child = childForAsk(live, control);
+  if (child) {
+    await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child);
+    return;
+  }
   const pending = waitApproval(live, uiId, control.requestId, input);
   live.onEvent({
     type: "approval.requested",
@@ -1824,6 +2004,115 @@ function waitApproval(
   }).finally(() => {
     live.approvals.delete(uiId);
   });
+}
+
+/** What a subagent's ask is called when no child frame has told us who it is. */
+const UNNAMED_CHILD = "a subagent";
+
+/** A delegated run Claude has started and not yet heard back from, or a task still running in the background. */
+function hasOpenDelegatedRun(live: Live): boolean {
+  if (live.agentTasks.size > 0) return true;
+  for (const tool of live.toolsById.values()) {
+    if (isAgentToolName(tool.name) && !tool.settled) return true;
+  }
+  return false;
+}
+
+/**
+ * The child an ask belongs to, or nothing when it is the parent's own.
+ *
+ * A call the child already made names its child. Claude announces the parent's own calls before it asks about
+ * them, so an ask for a call nobody announced (or one that names no call) while a delegated run is open is a
+ * subagent's whose frame has not landed yet. It is shown as "a subagent" rather than as the parent's, and is
+ * answered on its own request id like any other.
+ */
+function childForAsk(
+  live: Live,
+  control: ClaudeControlRequest,
+): { name: string; sessionPort: string } | undefined {
+  const id = control.toolUseId?.trim();
+  const known = id ? live.childTools.get(id) : undefined;
+  if (known) return known;
+  if ((id && live.toolsById.has(id)) || !hasOpenDelegatedRun(live)) return undefined;
+  const sessionPort = (live.claudeSessionId || live.threadId).replace(/\r/g, "").trim();
+  if (!sessionPort || /[\u0000-\u001f]/.test(sessionPort)) return undefined;
+  ensureChildPort(live, sessionPort);
+  return { name: UNNAMED_CHILD, sessionPort };
+}
+
+function rememberChildPort(live: Live, toolUseId: string, name: string, sessionPort: string): void {
+  const id = toolUseId.trim();
+  const port = sessionPort.replace(/\r/g, "").trim();
+  if (!id || !port || /[\u0000-\u001f]/.test(port)) return;
+  if (!live.childTools.has(id)) {
+    live.childTools.set(id, { name: name.trim() || "Subagent", sessionPort: port });
+  }
+  ensureChildPort(live, port);
+}
+
+function ensureChildPort(live: Live, port: string): void {
+  if (live.childPorts.has(port)) return;
+  live.childPorts.set(port, {
+    id: port,
+    // A failed write rejects, as it does for the parent's own answer, so the turn fails instead of
+    // showing an answer Claude never got.
+    write: (answer) => {
+      const input = live.childInputs.get(answer.requestId) ?? {};
+      return writeJson(
+        live.threadId,
+        buildControlResponse(answer.requestId, toClaudePermissionResult(answer.decision, input)),
+      );
+    },
+  });
+}
+
+async function answerChildClaudeApproval(
+  live: Live,
+  uiId: number,
+  requestId: string,
+  toolUseId: string | undefined,
+  toolName: string,
+  input: Record<string, unknown>,
+  child: { name: string; sessionPort: string },
+): Promise<void> {
+  live.childInputs.set(requestId, input);
+  const title = toolTitle(toolName, input);
+  let pending = waitApproval(live, uiId, requestId, input);
+  live.onEvent({
+    type: "approval.requested",
+    requestId: uiId,
+    title,
+    kind: toolKindFromName(toolName),
+    callId: toolUseId,
+    preview: previewFromTool(toolName, input),
+    call: approvalCall(toolName, input),
+    child: { name: child.name, sessionPort: child.sessionPort, detail: title },
+  });
+  try {
+    for (;;) {
+      const decision = await pending;
+      if (decision === "cancelled") {
+        live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+        return;
+      }
+      const sent = await forwardChildAnswer(
+        { requestId, sessionPort: child.sessionPort },
+        decision,
+        live.childPorts,
+      );
+      if (sent === "sent" || live.muteUpdates || live.cancelled) {
+        live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+        return;
+      }
+      live.onEvent({
+        type: "status",
+        text: "The subagent is not reachable, so the answer was not sent.",
+      });
+      pending = waitApproval(live, uiId, requestId, input);
+    }
+  } finally {
+    live.childInputs.delete(requestId);
+  }
 }
 
 function waitQuestion(
@@ -2201,6 +2490,8 @@ function noteSubagentTool(
     status: "in_progress",
   });
   if (!id) return;
+  const sessionPort = stringField(rec, "session_id");
+  if (sessionPort) rememberChildPort(live, id, parent.title || "Subagent", sessionPort);
   const preview = previewFromTool(name, input);
   live.onEvent({
     type: "agent.step",

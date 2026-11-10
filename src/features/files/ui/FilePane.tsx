@@ -17,7 +17,10 @@ import {
   isTerminalTab,
   type EditorPane,
   type FilePaneTab,
+  type LayoutNode,
+  type SplitDir,
 } from "../../workspace/model/layout";
+import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
 import { isImagePath, isVideoPath } from "../model/filePreview";
 import type { TerminalMetaPatch } from "../../terminal/model/terminalTab";
 import type { EditorNavigationTarget } from "../../search/model/search";
@@ -83,6 +86,10 @@ type Props = {
   editorNavigation?: EditorNavigationTarget | null;
   onPaneDragStart?: (event: ReactPointerEvent<HTMLElement>) => void;
   onTerminalMetaChange?: (fileId: string, patch: TerminalMetaPatch) => void;
+  /** The tab's split tree, so a full group can disable one direction. */
+  layout?: LayoutNode;
+  /** Same handler as the split shortcut. Absent hides the buttons. */
+  onSplit?: (dir: SplitDir) => void;
 };
 
 function FilePaneComponent({
@@ -108,7 +115,18 @@ function FilePaneComponent({
   editorNavigation,
   onPaneDragStart,
   onTerminalMetaChange,
+  layout,
+  onSplit,
 }: Props) {
+  const splitButtons =
+    onSplit && layout ? (
+      <PaneSplitButtons
+        layout={layout}
+        paneId={pane.id}
+        onFocus={onFocus}
+        onSplit={onSplit}
+      />
+    ) : null;
   const diffViewer = useSyncExternalStore(
     subscribeDiffViewer,
     loadDiffViewer,
@@ -116,7 +134,7 @@ function FilePaneComponent({
   );
   return (
     <div
-      className="flex h-full min-h-0 min-w-0 flex-1 flex-col"
+      className="group/pane relative flex h-full min-h-0 min-w-0 flex-1 flex-col"
       onMouseDown={() => onFocus(pane.id)}
     >
       {showTabs ? (
@@ -131,7 +149,11 @@ function FilePaneComponent({
           onPinFile={onPinFile}
           onReorder={(ids) => onReorderFiles(pane.id, ids)}
           onPaneDragStart={onPaneDragStart}
+          trailing={splitButtons}
         />
+      ) : splitButtons ? (
+        // A pane on its own has no header bar: the buttons show in its corner while it is hovered.
+        <PaneSplitCorner>{splitButtons}</PaneSplitCorner>
       ) : null}
       <div data-pane-body="" className="relative min-h-0 flex-1">
         {(deferBody ? [] : pane.files).map((file) => {
@@ -257,7 +279,9 @@ export const FilePane = memo(FilePaneComponent, (previous, next) => {
     previous.onBuildPlan !== next.onBuildPlan ||
     previous.editorNavigation !== next.editorNavigation ||
     Boolean(previous.onPaneDragStart) !== Boolean(next.onPaneDragStart) ||
-    previous.onTerminalMetaChange !== next.onTerminalMetaChange
+    previous.onTerminalMetaChange !== next.onTerminalMetaChange ||
+    previous.layout !== next.layout ||
+    previous.onSplit !== next.onSplit
   ) {
     return false;
   }

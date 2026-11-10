@@ -525,7 +525,13 @@ export function turnMetricsFromMessageInfo(
   info: Record<string, unknown> | null,
 ): TurnMetrics | undefined {
   const tokens = asRecord(info?.tokens);
-  if (!tokens) return undefined;
+  // WP-108: OpenCode also reports a cost per message (`cost`); it is kept as sent, never estimated.
+  const rawCost = info?.cost;
+  const costUsd =
+    typeof rawCost === "number" && Number.isFinite(rawCost) && rawCost >= 0
+      ? rawCost
+      : undefined;
+  if (!tokens) return costUsd == null ? undefined : { costUsd };
   const cache = asRecord(tokens.cache);
   const num = (rec: Record<string, unknown> | null, key: string): number => {
     const value = rec?.[key];
@@ -537,7 +543,9 @@ export function turnMetricsFromMessageInfo(
   const cacheWriteTokens = num(cache, "write");
   const cacheReported = cache !== null;
   const cacheableInput = inputTokens + cacheReadTokens + cacheWriteTokens;
-  if (!inputTokens && !outputTokens && !cacheableInput) return undefined;
+  if (!inputTokens && !outputTokens && !cacheableInput) {
+    return costUsd == null ? undefined : { costUsd };
+  }
   return {
     ...(inputTokens ? { inputTokens } : {}),
     ...(outputTokens ? { outputTokens } : {}),
@@ -546,6 +554,7 @@ export function turnMetricsFromMessageInfo(
     ...(cacheReported && cacheableInput
       ? { cacheHitPercent: (cacheReadTokens / cacheableInput) * 100 }
       : {}),
+    ...(costUsd != null ? { costUsd } : {}),
   };
 }
 

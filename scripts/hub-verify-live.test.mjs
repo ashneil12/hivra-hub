@@ -12,6 +12,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { dig, fillTemplate, pickRule, promptPayload, withLastStarted } from "./fake-claude.mjs";
 import {
   RUN_MONO_NAMES,
+  onlySkipped,
+  parseArgs,
+  parseOnly,
   insideScratch,
   teardownLeftovers,
   teardownList,
@@ -30,6 +33,7 @@ import {
   ROOM_BUSY,
   ROOM_DM,
   ROOM_ID,
+  ROOM_SEATS,
   GOAL_A_WORKER,
   GOAL_B_WORKER,
   HELPER,
@@ -235,58 +239,59 @@ test("coding with a Lead: Ash's messages, the workers' reports and the report re
   assert.deepEqual(WALK.slice(flowAt, flowAt + 5), ["still_running_noted", "lead_chats_while_workers_run", "reports_per_worker", "ash_first_over_report", "leadership_report_complete"]);
 });
 
-test("the room: each Mono's room turn, frank's busy work, its wake and the private message reach their own rule", () => {
+test("the room: each Mono's room turn, the busy one's work, its wake and the private message reach their own rule", () => {
   const { rules } = scenario({ runId: "r1" });
   const pick = (prompt, tags = [], fired = {}) => pickRule(rules, prompt, tags, fired)?.name ?? null;
   const context = "<monocode_context>\nReports start with [MonoCode report].\n</monocode_context>\n\n";
+  const [host, reviewer, planner, keeper] = ROOM_SEATS;
   // What roomTurns.ts turnPrompt writes: the opening, the task, how its words reach the room, the transcript.
   const turn = (name, task, transcript, viaTool = false) =>
     `[MonoCode room] You are ${name}, in the group chat "Leadership team" (room ${ROOM_ID}) for project "verify".\n\nRoom rules: ... ${task}\n\n${
       viaTool ? `Read anything newer with room_read (room "${ROOM_ID}"), then answer in the room with room_post (room "${ROOM_ID}"), once, and carry on with your work.` : "Your reply is posted to the room for you, under your name."
     }\n<room_conversation>\n${transcript}\n</room_conversation>`;
   const ash1 = `Ash: ${ROOM_ASH(1)}: plan round 1`;
-  const round = "Projects Manager: Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. frank, please pass or flag.";
-  const flag = "frank: PM, one flag: the label still says stand-in, and Ash asked for real words.";
-  const retake = "Projects Manager: Fair, frank. The label is fixed in commit def5678. frank, please re-check.";
+  const round = `${planner}: Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. ${reviewer}, please pass or flag.`;
+  const flag = `${reviewer}: ${planner}, one flag: the label still says stand-in, and Ash asked for real words.`;
+  const retake = `${planner}: Fair, ${reviewer}. The label is fixed in commit def5678. ${reviewer}, please re-check.`;
   const fired = {};
   const step = (prompt, tags = []) => {
     const name = pick(prompt, tags, fired);
     if (name) fired[name] = (fired[name] ?? 0) + 1;
     return name;
   };
-  // Chief of Staff's conversation carries every earlier phase's tag: the room's rules still come first.
-  const cosTags = ["tree-cos", "durable-cos", "flow-cos"];
+  // The plan's own Mono carries every earlier phase's tag: the room's rules still come first.
+  const kickerTags = ["tree-cos", "durable-cos", "flow-cos"];
   // roomTurns.ts writes "Ash just wrote" through forUser, which renames the user when the install has no Ash team pack
   // (the bench's throwaway HOME says "The user just wrote"). The rule matches the hosting sentence, so either name works.
   const hosting = (who) => `${who} just wrote. You host this room, so you answer first, now.`;
-  assert.equal(step(`${context}${turn("Chief of Staff", hosting("The user"), ash1)}`, cosTags), "room-cos-answer-1");
-  assert.equal(pick(`${context}${turn("Chief of Staff", hosting("Ash"), ash1)}`, cosTags), "room-cos-answer-1", "Ash's own install reads the same rule");
-  const cos1 = "Chief of Staff: Heard. PM, post round 1 for review.";
-  assert.equal(step(turn("Projects Manager", "Chief of Staff addressed you in the message marked >> below.", `${ash1}\n\n>> ${cos1}`)), "room-pm-round");
-  assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n>> ${round}`)), "room-frank-flag");
-  assert.equal(step(turn("Projects Manager", "frank addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n>> ${flag}`)), "room-pm-retake");
-  assert.equal(step(turn("frank", "Projects Manager addressed you in the message marked >> below.", `${ash1}\n\n${cos1}\n\n${round}\n\n${flag}\n\n>> ${retake}`)), "room-frank-pass");
+  assert.equal(step(`${context}${turn(host, hosting("The user"), ash1)}`, kickerTags), "room-host-answer-1");
+  assert.equal(pick(`${context}${turn(host, hosting("Ash"), ash1)}`, kickerTags), "room-host-answer-1", "Ash's own install reads the same rule");
+  const said1 = `${host}: Heard. ${planner}, post round 1 for review.`;
+  assert.equal(step(turn(planner, `${host} addressed you in the message marked >> below.`, `${ash1}\n\n>> ${said1}`)), "room-planner-round");
+  assert.equal(step(turn(reviewer, `${planner} addressed you in the message marked >> below.`, `${ash1}\n\n${said1}\n\n>> ${round}`)), "room-reviewer-flag");
+  assert.equal(step(turn(planner, `${reviewer} addressed you in the message marked >> below.`, `${ash1}\n\n${said1}\n\n${round}\n\n>> ${flag}`)), "room-planner-retake");
+  assert.equal(step(turn(reviewer, `${planner} addressed you in the message marked >> below.`, `${ash1}\n\n${said1}\n\n${round}\n\n${flag}\n\n>> ${retake}`)), "room-reviewer-pass");
   // No digest closes the round: nobody is named after "Pass from me.", so nobody else is asked.
-  assert.equal(rules.some((rule) => rule.name === "room-cos-digest"), false);
-  // A room turn no rule is for stays quiet instead of posting the fake's "no rule matched".
-  assert.equal(step(turn("Alfred", "Chief of Staff answered Ash. You may add ONE short message", ash1)), "room-quiet");
-  // Exchange 2: frank's own work, Chief of Staff's answer (with its private message to Alfred), frank's wake.
-  assert.equal(step(`${context}${ROOM_BUSY} run r1: work on the label copy.`), "room-frank-busy");
-  assert.equal(rules.find((rule) => rule.name === "room-frank-busy").steerable, true);
+  assert.equal(rules.some((rule) => rule.name === "room-digest"), false);
+  // A room turn no rule is for (a chime, on this room's mode) stays quiet instead of posting the fake's "no rule matched".
+  assert.equal(step(turn(keeper, `${host} answered Ash. You may add ONE short message`, ash1)), "room-quiet");
+  // Exchange 2: the busy Mono's own work, the host's answer (with its private message to the keeper), the busy one's wake.
+  assert.equal(step(`${context}${ROOM_BUSY} run r1: work on the label copy.`), "room-planner-busy");
+  assert.equal(rules.find((rule) => rule.name === "room-planner-busy").steerable, true);
   const ash2 = `Ash: ${ROOM_ASH(2)}: is the label in?`;
-  assert.equal(step(turn("Chief of Staff", hosting("The user"), `${ash1}\n\n${ash2}`), cosTags), "room-cos-answer-2");
-  const dm = rules.find((rule) => rule.name === "room-cos-answer-2").steps.find((s) => s.app === "monos.message").input;
-  assert.equal(dm.to, "alfred");
+  assert.equal(step(turn(host, hosting("The user"), `${ash1}\n\n${ash2}`), kickerTags), "room-host-answer-2");
+  const dm = rules.find((rule) => rule.name === "room-host-answer-2").steps.find((s) => s.app === "monos.message").input;
+  assert.equal(dm.to, keeper);
   assert.ok(dm.text.startsWith(ROOM_DM));
   assert.equal(
-    step(turn("frank", "Chief of Staff addressed you in the message marked >> below.", `${ash2}\n\n>> Chief of Staff: Heard. frank, is the label in?`)),
-    "room-frank-wake",
+    step(turn(planner, `${host} addressed you in the message marked >> below.`, `${ash2}\n\n>> ${host}: Heard. ${planner}, is the label in?`)),
+    "room-planner-wake",
   );
-  // r62: frank's room session takes the turn and its answer is the post, so no room_post step.
-  const wakeSteps = rules.find((rule) => rule.name === "room-frank-wake").steps;
+  // r62: the busy Mono's room session takes the turn and its answer is the post, so no room_post step.
+  const wakeSteps = rules.find((rule) => rule.name === "room-planner-wake").steps;
   assert.equal(wakeSteps.some((s) => s.app === "rooms.post"), false);
   assert.ok(wakeSteps.some((s) => s.say === "The label is in. Pass from me."));
-  assert.equal(step(`${context}[MonoCode message from Chief of Staff]\n<message from="Chief of Staff">\n${dm.text}\n</message>`), "room-alfred-dm");
+  assert.equal(step(`${context}[MonoCode message from ${host}]\n<message from="${host}">\n${dm.text}\n</message>`), "room-keeper-dm");
   // None of the earlier phases' prompts reach the room's rules.
   for (const prompt of [`${KICKOFF} run r1`, `${WORKER} run r1`, `${TREE_KICKOFF} run r1`, `${DURABLE_KICKOFF} run r1`, `${FLOW_KICKOFF} run r1`, "[MonoCode report] done"])
     assert.equal(pick(prompt, ["lead", "tree-lead", "durable-lead", "flow-cos"])?.startsWith("room") ?? false, false, prompt);
@@ -605,6 +610,34 @@ test("r59: leftovers are the listed chats not archived and the listed Monos stil
     { sessions: ["b", "c"], monos: ["m2"] },
   );
   assert.deepEqual(teardownLeftovers(list, { rows: list.sessions.map((id) => ({ id, archived: 1 })), windowMonos: [] }), { sessions: [], monos: [] });
+});
+
+test("--only picks the checks a person asked for, and refuses anything it cannot run", () => {
+  assert.deepEqual(parseOnly(undefined), null, "no flag: every check");
+  assert.deepEqual(parseOnly("question_routed"), ["question_routed"]);
+  assert.deepEqual(parseOnly(" cascade_stop , question_routed ,,cascade_stop "), ["cascade_stop", "question_routed"], "spaces, blanks and a repeat are tolerated");
+  for (const id of ["question_routed", "cascade_stop"]) assert.equal(WALK.includes(id), true);
+  assert.throws(() => parseOnly(""), /--only/);
+  assert.throws(() => parseOnly(" , ,"), /--only/, "a flag with nothing after it says so");
+  assert.throws(() => parseOnly("question_routd"), /question_routd/, "a mistyped id fails loudly instead of running nothing");
+  assert.throws(() => parseOnly("question_routed,room_agents_talk,nope"), /nope/);
+});
+
+test("--only reaches parseArgs, and leaving it out keeps today's run", () => {
+  assert.equal(parseArgs([]).only, null);
+  assert.deepEqual(parseArgs(["--only", "question_routed"]).only, ["question_routed"]);
+  assert.deepEqual(parseArgs(["--no-build", "--only", "cascade_stop,question_routed"]).only, ["cascade_stop", "question_routed"]);
+  assert.throws(() => parseArgs(["--only", "question_routd"]), /question_routd/);
+  assert.equal(parseArgs(["--only"]).only, null, "a flag with no value is no filter at all");
+  assert.equal(parseArgs([]).scale, 1);
+});
+
+test("--only records the checks nobody asked for as skipped, so the verdict only counts what ran", () => {
+  const one = ["question_routed"];
+  assert.deepEqual(onlySkipped({ id: "question_routed", status: "fail", detail: "x" }, one), null, "an asked-for check keeps its own record");
+  assert.equal(onlySkipped({ id: "cascade_stop", status: "pass", detail: "x" }, one)?.status, "skipped");
+  assert.equal(onlySkipped({ id: "cascade_stop", status: "pass", detail: "x" }, null), null, "no --only: nothing is skipped");
+  assert.equal(onlySkipped({ id: "run", status: "fail", detail: "boom" }, one), null, "a broken run keeps its own verdict, whatever was asked for");
 });
 
 test("live_activity_line: passes only on a timed step with the runner right after the timer", () => {

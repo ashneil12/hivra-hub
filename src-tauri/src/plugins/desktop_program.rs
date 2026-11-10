@@ -11,12 +11,12 @@ use super::fsutil;
 use super::registry::Host;
 use super::source::sha512_integrity;
 
-pub const TARBALL_URL: &str = "https://registry.npmjs.org/agent-desktop/-/agent-desktop-1.1.0.tgz";
+pub const TARBALL_URL: &str = "https://registry.npmjs.org/agent-desktop/-/agent-desktop-1.2.0.tgz";
 pub const TARBALL_INTEGRITY: &str =
-    "sha512-4aITRplPcbV6xBFNKeehMbxSN0/L+IOhnn6LBuPXezoyr08Xl73Y6rwZiR4sM4rM/eBO6iJMoKL+IvFQvHwLEw==";
+    "sha512-sp8hHs8JfnuZe8ZQwiKZrqSOlu26SSeZXkjDog4KsU31L09G3uZJa8pITGN2vORif9uuh0iOSJHD146CEyTqag==";
 
 const MAX_TARBALL: u64 = 128 * 1024 * 1024;
-const PIN_NOT_SET: &str = "The desktop program's pin isn't set (agent-desktop 1.1.0).";
+const PIN_NOT_SET: &str = "The desktop program's pin isn't set (agent-desktop 1.2.0).";
 const NOT_INSTALLED: &str = "Desktop control isn't installed.";
 const TRY_AGAIN: &str = "The desktop program couldn't be downloaded. Try again.";
 const LEAVES: &str = "The download holds a path that leaves its folder, so it was refused.";

@@ -364,7 +364,16 @@ fn the_worker_environment_holds_no_inherited_monocode_value() {
     const PROBE: &str = "MONOCODE_WP92_INHERIT_PROBE";
     let bench = Bench::new();
     let mut conn = bench.store.lock_conn().unwrap();
-    save_value(&bench.vault, &conn, SCOPE_GLOBAL, NAME, None, VALUE, bench.now).unwrap();
+    save_value(
+        &bench.vault,
+        &conn,
+        SCOPE_GLOBAL,
+        NAME,
+        None,
+        VALUE,
+        bench.now,
+    )
+    .unwrap();
     put_grant(
         &conn,
         SCOPE_GLOBAL,
@@ -386,8 +395,13 @@ fn the_worker_environment_holds_no_inherited_monocode_value() {
     // The app's process carries a MONOCODE_* variable; the worker must not inherit it.
     std::env::set_var(PROBE, "parent-only");
     let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "true" });
-    let applied =
-        worker::apply_to_child("worker-inherit", &bench.vault, &mut cmd, &bench.store, bench.now);
+    let applied = worker::apply_to_child(
+        "worker-inherit",
+        &bench.vault,
+        &mut cmd,
+        &bench.store,
+        bench.now,
+    );
     std::env::remove_var(PROBE);
     applied.unwrap();
     let removed: Vec<String> = cmd

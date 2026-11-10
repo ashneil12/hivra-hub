@@ -62,6 +62,32 @@ describe("TranscriptSelectionMenu", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
   });
 
+  // WP-94: a raw database sentence reaches people as what to do about it.
+  it("says what to do when the note could not be saved because the database was busy", async () => {
+    let rejectSave!: (reason: Error) => void;
+    const onAddToNotes = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectSave = reject;
+        }),
+    );
+    act(() =>
+      root.render(
+        createElement(TranscriptSelectionMenu, {
+          selection: { text: "Keep this", rect: new DOMRect(10, 20, 100, 20) },
+          onAddToNotes,
+          onDismiss: vi.fn(),
+        }),
+      ),
+    );
+    const button = document.querySelector<HTMLButtonElement>('[role="toolbar"] button')!;
+    await act(async () => button.click());
+    await act(async () => rejectSave(new Error("database is locked")));
+    const text = document.querySelector('[role="alert"]')?.textContent ?? "";
+    expect(text).toContain("Try again in a moment");
+    expect(text).not.toContain("database is locked");
+  });
+
   it("offers the selected text to both chat and notes", () => {
     const onAddToChat = vi.fn();
     const onAddToNotes = vi.fn();

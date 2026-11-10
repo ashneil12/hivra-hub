@@ -1,4 +1,4 @@
-// Auto-resume at a usage-limit reset (docs/T3-HARVEST.md "Autopilot that survives limits, crashes and sleep"; T3's
+// Auto-resume at a usage-limit reset (the autopilot design notes; T3's
 // UsageLimitRecoveryWorker). On by default for agents' chats (Monos, Leads and the work they delegate), with a
 // per-project override; Ash's own chats keep the opt-in "Resume at reset" toggle. Not tied to the autopilot switch.
 //

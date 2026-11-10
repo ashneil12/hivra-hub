@@ -23,6 +23,7 @@ import {
 } from "../../sessions/model/models";
 import { LAYER } from "../../../shared/lib/layers";
 import { OrchestrationActions } from "./OrchestrationActions";
+import { GoalGraph } from "./GoalGraph";
 import { HarnessIcon } from "../../sessions/ui/HarnessIcon";
 import { Popover } from "../../../shared/ui/Popover";
 import {
@@ -686,18 +687,6 @@ export function OrchestrationPreview({
                         {task.prompt}
                       </p>
                     )}
-                    {!!task.dependsOn.length && (
-                      <p>
-                        After ·{" "}
-                        {task.dependsOn
-                          .map(
-                            (id) =>
-                              proposal.tasks.find((entry) => entry.id === id)
-                                ?.title ?? id,
-                          )
-                          .join(", ")}
-                      </p>
-                    )}
                   </div>
                 )}
               </li>
@@ -721,6 +710,13 @@ export function OrchestrationPreview({
             ? "Show fewer tasks"
             : `Show ${proposal.tasks.length - 3} more ${proposal.tasks.length === 4 ? "task" : "tasks"}`}
         </button>
+      )}
+      {!!proposal.tasks.length && (
+        <GoalGraph
+          leadId={proposal.leadId}
+          proposalId={block.id}
+          proposal={proposal}
+        />
       )}
       {(error || proposal.error) && (
         <p role="alert" className="px-3 py-2 text-[12px] text-red-400">

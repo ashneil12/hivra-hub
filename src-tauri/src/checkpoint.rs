@@ -805,15 +805,17 @@ fn verified_worker_delta(
     root: &Path,
     manifest: &Manifest,
 ) -> Result<Vec<String>, String> {
-    if !manifest.diverged.is_empty() {
+    // WP-91: a worker's handoff is a note kept in its own checkout, never one of its changes (see `is_handoff`).
+    let diverged: Vec<&str> = manifest
+        .diverged
+        .iter()
+        .map(String::as_str)
+        .filter(|relative| !crate::goal_graph::handoff::is_handoff(relative))
+        .collect();
+    if !diverged.is_empty() {
         return Err(format!(
             "Cannot safely integrate files that changed outside the worker: {}",
-            manifest
-                .diverged
-                .iter()
-                .cloned()
-                .collect::<Vec<_>>()
-                .join(", ")
+            diverged.join(", ")
         ));
     }
 
@@ -821,6 +823,7 @@ fn verified_worker_delta(
         .files
         .into_iter()
         .map(|file| file.relative)
+        .filter(|relative| !crate::goal_graph::handoff::is_handoff(relative))
         .collect();
     if let Some(relative) = current_dirty
         .iter()
@@ -833,6 +836,9 @@ fn verified_worker_delta(
 
     let mut changed = Vec::new();
     for (relative, before) in &manifest.files {
+        if crate::goal_graph::handoff::is_handoff(relative) {
+            continue;
+        }
         if path_contains_symlink(root, relative) {
             return Err(format!(
                 "Cannot safely integrate {relative}: the worker path contains a symbolic link. The worker worktree was kept."
@@ -1410,7 +1416,10 @@ fn write_manifest(dir: &Path, manifest: &Manifest) -> Result<(), String> {
 
 fn project_root(cwd: &str) -> Result<PathBuf, String> {
     let trimmed = cwd.trim();
-    if trimmed.is_empty() || trimmed == "~" {
+    if trimmed.is_empty() {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
+    if trimmed == "~" {
         return Err("cwd is required".into());
     }
     let root = expand_home(trimmed);
@@ -2162,6 +2171,69 @@ mod tests {
             .apply("worker", &from, &to)
             .unwrap_err()
             .contains("not captured"));
+    }
+
+    // WP-91: a worker's handoff is the app's note about its work, read in the worker's checkout when the lead accepts
+    // the task. A shell-written one was never captured and a Write-tool one was; neither may stop the integration or
+    // reach the lead's checkout.
+    #[test]
+    fn a_workers_handoff_stays_in_its_checkout_and_never_blocks_integration() {
+        let source = tmp("handoff-source");
+        let target = tmp("handoff-target");
+        if !init_git_commit(&source.0, &[("a.txt", "head\n")]) {
+            return;
+        }
+        let source_path = source.0.to_string_lossy().into_owned();
+        let target_path = target.0.to_string_lossy().into_owned();
+        if !git(&source.0, &["clone", &source_path, &target_path]) {
+            return;
+        }
+        // Git on Windows may check the clone out with CRLF endings; both sides start from the same bytes.
+        std::fs::write(target.0.join("a.txt"), "head\n").unwrap();
+        let from = source.0.to_string_lossy().into_owned();
+        let to = target.0.to_string_lossy().into_owned();
+        let (_root, store) = store();
+        store.ensure("worker", &from).unwrap();
+
+        // A note and nothing else is nothing to keep: the worker's checkout can go.
+        let note = |name: &str, text: &str| {
+            let path = source.0.join(".hivra").join("handoff").join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        note("shell.md", "## Changed\nwritten by the shell\n");
+        assert!(store.cleanup_safe("worker", &from).unwrap());
+
+        store.prepare("worker", &from, &["a.txt".into()]).unwrap();
+        std::fs::write(source.0.join("a.txt"), "worker result\n").unwrap();
+        store.capture("worker", &from, &["a.txt".into()]).unwrap();
+        let tool_note = ".hivra/handoff/tool.md".to_string();
+        store
+            .prepare("worker", &from, std::slice::from_ref(&tool_note))
+            .unwrap();
+        note("tool.md", "## Changed\nwritten by the Write tool\n");
+        store
+            .capture("worker", &from, std::slice::from_ref(&tool_note))
+            .unwrap();
+        // The work is still something to keep.
+        assert!(!store.cleanup_safe("worker", &from).unwrap());
+
+        let applied = store.apply("worker", &from, &to).unwrap();
+        assert_eq!(applied.files, ["a.txt"]);
+        assert_eq!(
+            std::fs::read_to_string(target.0.join("a.txt")).unwrap(),
+            "worker result\n"
+        );
+        assert!(
+            !target.0.join(".hivra").exists(),
+            "the handoff reached the lead's checkout"
+        );
+        // The worker's own copy still has its notes, for the lead to read.
+        assert!(source.0.join(".hivra/handoff/shell.md").is_file());
+        assert!(source.0.join(".hivra/handoff/tool.md").is_file());
+        let retried = store.apply("worker", &from, &to).unwrap();
+        assert_eq!(retried.already_applied, 1);
+        assert!(!target.0.join(".hivra").exists());
     }
 
     #[test]

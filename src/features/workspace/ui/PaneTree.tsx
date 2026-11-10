@@ -33,7 +33,15 @@ import {
   type LayoutRect,
   type LayoutSash,
   type PaneEdge,
+  type SplitDir,
 } from "../model/layout";
+import {
+  evenSashBoundary,
+  nudgeSashBoundary,
+  snapSashBoundary,
+  NUDGE_STEP,
+  NUDGE_STEP_LARGE,
+} from "../model/sashSnap";
 import {
   sameProjectPath,
   type RecentProject,
@@ -72,6 +80,8 @@ type Shared = {
   recents: RecentProject[];
   hideProjectPicker?: boolean;
   onFocus: (paneId: string) => void;
+  /** Same handler as the split shortcut. Absent hides the header buttons. */
+  onSplit?: (dir: SplitDir) => void;
   onClose: (sessionId: string) => void;
   onSelectFile: (paneId: string, fileId: string) => void;
   onCloseFile: (paneId: string, fileId: string) => void;
@@ -219,6 +229,7 @@ function PaneTreeComponent({
   hideProjectPicker,
   workspaceSwitchingSessionId,
   onFocus,
+  onSplit,
   onClose,
   onSelectFile,
   onCloseFile,
@@ -770,6 +781,8 @@ function PaneTreeComponent({
                   editorNavigation={editorNavigation}
                   onPaneDragStart={onPaneDragStart}
                   onTerminalMetaChange={onTerminalMetaChange}
+                  layout={layout}
+                  onSplit={leaving ? undefined : onSplit}
                 />
               ) : session ? (
                 <SessionPane
@@ -843,6 +856,8 @@ function PaneTreeComponent({
                   onNewTerminal={onNewTerminal}
                   onPaneDragStart={onPaneDragStart}
                   transcriptPool={transcriptPool}
+                  layout={layout}
+                  onSplit={leaving ? undefined : onSplit}
                 />
               ) : null}
             </div>
@@ -1016,17 +1031,48 @@ function Sash({
     .slice(0, sash.index + 1)
     .reduce((sum, size) => sum + size, 0);
   const group = sash.group;
+  // The snap guide sits on the divider itself and is turned on and off by
+  // its `data-snapped` attribute, not by React state: a drag that re-rendered
+  // here would re-render the panes beside it on every frame. The hairline
+  // follows the preview ratio in the same way, so `aria-valuenow` stays
+  // current between the frames of a drag.
+  const lineRef = useRef<HTMLDivElement>(null);
+  const showGuide = (on: boolean) => {
+    const line = lineRef.current;
+    if (!line) return;
+    if (on) line.dataset.snapped = "";
+    else delete line.dataset.snapped;
+  };
+
+  // The divider moves with the drag before the parent has re-rendered, so
+  // the guide is drawn where the pointer is rather than a frame behind it.
+  const setLine = (ratio: number, snapped: boolean) => {
+    const line = lineRef.current;
+    if (!line) return;
+    const percent = Math.round(ratio * 100);
+    line.setAttribute("aria-valuenow", String(percent));
+    line.setAttribute("aria-valuetext", `${percent} percent`);
+    if (row) line.style.left = `${(group.x + ratio * group.w) * 100}%`;
+    else line.style.top = `${(group.y + ratio * group.h) * 100}%`;
+    showGuide(snapped);
+  };
 
   return (
     <div
+      ref={lineRef}
       role="separator"
       data-pane-sash=""
+      tabIndex={0}
       aria-orientation={row ? "vertical" : "horizontal"}
+      aria-label="Resize panes"
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(boundary * 100)}
+      aria-valuetext={`${Math.round(boundary * 100)} percent`}
       className={
-        row ? "absolute z-10 w-px bg-stroke" : "absolute z-10 h-px bg-stroke"
+        row
+          ? "pane-sash absolute z-10 w-px bg-stroke outline-none focus-visible:bg-accent data-[snapped]:bg-accent"
+          : "pane-sash absolute z-10 h-px bg-stroke outline-none focus-visible:bg-accent data-[snapped]:bg-accent"
       }
       style={
         row
@@ -1041,6 +1087,25 @@ function Sash({
               width: `${group.w * 100}%`,
             }
       }
+      onKeyDown={(event) => {
+        if (event.key === "Escape" || event.key === "Tab") return;
+        const step =
+          event.key === "ArrowLeft" || event.key === "ArrowUp"
+            ? -1
+            : event.key === "ArrowRight" || event.key === "ArrowDown"
+              ? 1
+              : 0;
+        if (!step) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const next = nudgeSashBoundary(
+          sash.sizes,
+          sash.index,
+          boundary,
+          step * (event.shiftKey ? NUDGE_STEP_LARGE : NUDGE_STEP),
+        );
+        if (next !== null) onCommit(next);
+      }}
     >
       <div
         className={
@@ -1048,6 +1113,13 @@ function Sash({
             ? "absolute inset-y-0 -left-1.5 -right-1.5 cursor-col-resize touch-none"
             : "absolute inset-x-0 -top-1.5 -bottom-1.5 cursor-row-resize touch-none"
         }
+        onDoubleClick={(e) => {
+          // A double-click evens out the two panes, as the native app does.
+          e.preventDefault();
+          e.stopPropagation();
+          const even = evenSashBoundary(sash.sizes, sash.index);
+          if (even !== null) onCommit(even);
+        }}
         onPointerDown={(e) => {
           e.preventDefault();
           e.stopPropagation();
@@ -1071,14 +1143,23 @@ function Sash({
             const pos = row ? ev.clientX : ev.clientY;
             if (span <= 0) return;
             moved = true;
-            nextBoundary = (pos - origin) / span;
+            const snapped = snapSashBoundary({
+              sizes: sash.sizes,
+              index: sash.index,
+              boundary: (pos - origin) / span,
+              spanPx: span,
+              altKey: ev.altKey,
+            });
+            if (!snapped) return;
+            nextBoundary = snapped.boundary;
+            setLine(nextBoundary, snapped.snapped);
             if (frame != null) return;
             frame = requestAnimationFrame(() => {
               frame = null;
               onPreview(nextBoundary);
             });
           };
-          const finish = (commit: boolean) => {
+          const finish = (commit: boolean, returnLine = false) => {
             if (frame != null) {
               cancelAnimationFrame(frame);
               frame = null;
@@ -1092,16 +1173,19 @@ function Sash({
             window.removeEventListener("keydown", keydown);
             restoreSelection();
             document.body.style.cursor = previousCursor;
+            showGuide(false);
+            // A cancelled or still drag goes back to the committed layout.
+            if (returnLine) setLine(boundary, false);
             if (!moved) return;
             if (commit) onCommit(nextBoundary);
             else onCancel();
           };
           const up = () => finish(true);
-          const cancel = () => finish(false);
+          const cancel = () => finish(false, true);
           const keydown = (event: KeyboardEvent) => {
             if (event.key !== "Escape") return;
             event.preventDefault();
-            finish(false);
+            finish(false, true);
           };
           handle.addEventListener("pointermove", move);
           handle.addEventListener("pointerup", up);

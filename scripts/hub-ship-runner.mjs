@@ -70,11 +70,27 @@ export function readJson(file) {
   }
 }
 
+// A rename beside a file can be held for a moment by another writer or a virus checker (EPERM or EBUSY). That is a
+// wait, not a failure; every other error is passed on at once.
+const STATE_LOCKED_CODES = new Set(["EPERM", "EBUSY"]);
+const STATE_RENAME_RETRY_MS = 2_000;
+const STATE_RENAME_STEP_MS = 25;
+const STATE_RENAME_RETRIES = 80;
+
 /** Written whole and renamed into place: a reader never sees half a file. */
-export function writeJson(file, value) {
+export function writeJson(file, value, { rename = fs.renameSync, now = Date.now, wait = sleepSync } = {}) {
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}`);
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
-  fs.renameSync(temporary, file);
+  const deadline = now() + STATE_RENAME_RETRY_MS;
+  for (let tries = 0; ; tries += 1) {
+    try {
+      rename(temporary, file);
+      return;
+    } catch (error) {
+      if (!STATE_LOCKED_CODES.has(error?.code) || tries >= STATE_RENAME_RETRIES || now() >= deadline) throw error;
+      wait(STATE_RENAME_STEP_MS);
+    }
+  }
 }
 
 export function sha256File(file) {

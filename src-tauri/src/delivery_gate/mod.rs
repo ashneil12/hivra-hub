@@ -503,22 +503,81 @@ pub fn wake_changes(changes: &[Change], through_gate: bool) -> Vec<Change> {
         .collect()
 }
 
+/// The token shapes a command's last lines must not carry. WP-102: OpenMausBot's shared/redact.ts (Apache-2.0) named
+/// the gaps this list had; the patterns here are written from each token's documented shape. `code=` is not a prefix but
+/// a query value, so it is handled apart from this list.
+static SECRET_SHAPES: OnceLock<regex::Regex> = OnceLock::new();
+
+fn secret_shapes() -> &'static regex::Regex {
+    SECRET_SHAPES.get_or_init(|| {
+        // One alternation, most specific first, so the marker lands in the same place either way.
+        regex::Regex::new(concat!(
+            r"(?:\bghp_|\bgithub_pat_|\bsk-|\bBearer\s",
+            r"|\bgl(?:pat|dt|rtr?)-[A-Za-z0-9_-]{20,}(?:\.[A-Za-z0-9_-]+)*",
+            r"|\bpypi-AgE[A-Za-z0-9_-]{40,}",
+            r"|\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}",
+            r"|\bxapp-[A-Za-z0-9-]{20,}",
+            r"|\bwhsec_[A-Za-z0-9_-]{20,}",
+            r"|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b)",
+        ))
+        .expect("the scrubber's shapes compile")
+    })
+}
+
 fn scrub(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let bytes = text.as_bytes();
     let mut index = 0;
+    // A private key's body goes; its header and footer stay, so a reader knows what it was.
+    let mut in_key_body = false;
     while index < bytes.len() {
         let rest = &text[index..];
-        let marker = ["ghp_", "github_pat_", "sk-", "Bearer "]
-            .into_iter()
-            .find(|marker| rest.starts_with(marker));
-        if let Some(marker) = marker {
-            out.push_str("[redacted]");
-            index += marker.len();
-            while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
-                index += 1;
+        let line_end = rest.find('\n').map_or(rest.len(), |at| at + 1);
+        let line = &rest[..line_end];
+        if in_key_body {
+            if rest.starts_with("-----END ") {
+                in_key_body = false;
+            } else {
+                // The body's shape goes, its line breaks stay, so the header and footer keep their places.
+                if line.ends_with("\r\n") {
+                    out.push_str("\r\n");
+                } else if line.ends_with('\n') {
+                    out.push('\n');
+                }
+                index += line_end;
+                continue;
             }
+        } else if rest.starts_with("-----BEGIN ") && line.contains("PRIVATE KEY-----") {
+            // The header goes whole, before the body flag would make the rest of its line look like body.
+            in_key_body = true;
+            out.push_str(line);
+            index += line_end;
             continue;
+        }
+        if let Some(found) = secret_shapes().find(rest) {
+            if found.start() == 0 {
+                out.push_str("[redacted]");
+                index += found.end();
+                while index < bytes.len() && !bytes[index].is_ascii_whitespace() {
+                    index += 1;
+                }
+                continue;
+            }
+        }
+        // `code=` in a query string is a sign-in code: it goes when it is long enough to be one, and prose stays.
+        if let Some(value) = rest.strip_prefix("code=") {
+            let end = value
+                .find(|c: char| c.is_ascii_whitespace() || c == '&' || c == '"' || c == '\'')
+                .unwrap_or(value.len());
+            let token = &value[..end];
+            if token.len() >= 8
+                && token.chars().any(|c| c.is_ascii_digit())
+                && token.chars().any(|c| c.is_ascii_alphabetic())
+            {
+                out.push_str("code=[redacted]");
+                index += "code=".len() + end;
+                continue;
+            }
         }
         let ch = rest.chars().next().unwrap_or('\0');
         out.push(ch);

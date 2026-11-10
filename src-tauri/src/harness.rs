@@ -939,6 +939,28 @@ pub fn harness_free_port() -> Result<u16, String> {
         .map_err(|e| format!("Failed to reserve a local port: {e}"))
 }
 
+/// What every agent launch is checked for before anything is reserved or stopped, in this order: a bench starts only
+/// the plan's wrapper (before the resolved-binary check, which can itself spawn a probe), the chat has a real folder to
+/// start in (never the home folder, `/` or the folder the app runs in, see `chat_folder.rs`), and the command is a
+/// resolved harness CLI. Returns the folder.
+fn launch_preflight(
+    command: &str,
+    cwd: &str,
+    binary_provider: Option<&str>,
+    binary_path: Option<&str>,
+) -> Result<PathBuf, String> {
+    crate::verify_live::provider_start_allowed(
+        crate::verify_live::plan(),
+        binary_provider,
+        command,
+    )?;
+    let workdir = crate::chat_folder::require(cwd)?;
+    if !is_resolved_harness_binary(command, binary_provider, binary_path) {
+        return Err("harness_spawn: not a resolved harness CLI".to_string());
+    }
+    Ok(workdir)
+}
+
 /// Off the main thread: fork/exec, and `apply_gui_env` can wait on the first
 /// login-shell read. Callers await this before writing to the child. Kill can
 /// still race the fork, so a cancelled spawn must not reinsert the child.
@@ -958,22 +980,12 @@ pub fn harness_spawn(
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
 ) -> Result<u32, String> {
-    // A bench starts only the plan's wrapper. Before the resolved-binary check, which can itself spawn a probe.
-    crate::verify_live::provider_start_allowed(
-        crate::verify_live::plan(),
-        binary_provider.as_deref(),
+    let workdir = launch_preflight(
         &command,
+        &cwd,
+        binary_provider.as_deref(),
+        binary_path.as_deref(),
     )?;
-    let workdir = expand_home(&cwd);
-    if !workdir.is_dir() {
-        return Err(format!(
-            "Working directory does not exist: {}",
-            workdir.display()
-        ));
-    }
-    if !is_resolved_harness_binary(&command, binary_provider.as_deref(), binary_path.as_deref()) {
-        return Err("harness_spawn: not a resolved harness CLI".to_string());
-    }
 
     // `--config` is a global option, so it precedes the `acp` subcommand.
     let devin_config = match devin_ask_edits {
@@ -3125,11 +3137,17 @@ fn which_via_login_shell(name: &str) -> Option<PathBuf> {
 }
 
 pub(crate) fn which_in_path(path: &str, name: &str) -> Option<PathBuf> {
+    which_in_path_as(path, name, cfg!(windows))
+}
+
+/// `which_in_path` as a machine of the given kind answers it. The app asks as the machine it runs on; a test passes
+/// `windows: true` to prove the Windows answers (a bare `npm` is `npm.cmd`, `cargo` is `cargo.exe`) on any machine.
+pub(crate) fn which_in_path_as(path: &str, name: &str, windows: bool) -> Option<PathBuf> {
     std::env::split_paths(std::ffi::OsStr::new(path)).find_map(|dir| {
         if dir.as_os_str().is_empty() {
             return None;
         }
-        existing_binary(dir.join(name))
+        existing_binary_as(dir.join(name), windows)
     })
 }
 
@@ -3148,16 +3166,19 @@ fn first_binary_matching(
 }
 
 fn existing_binary(path: PathBuf) -> Option<PathBuf> {
-    #[cfg(windows)]
-    if path.extension().is_none() {
+    existing_binary_as(path, cfg!(windows))
+}
+
+fn existing_binary_as(path: PathBuf, windows: bool) -> Option<PathBuf> {
+    if windows && path.extension().is_none() {
         for ext in ["exe", "cmd", "bat", "com"] {
             let candidate = path.with_extension(ext);
-            if is_executable_file(&candidate) {
+            if is_executable_file_as(&candidate, windows) {
                 return Some(candidate);
             }
         }
     }
-    is_executable_file(&path).then_some(path)
+    is_executable_file_as(&path, windows).then_some(path)
 }
 
 #[cfg(all(test, windows))]
@@ -3211,26 +3232,26 @@ fn path_has_component(path: &Path, needle: &str) -> bool {
     })
 }
 
-fn is_executable_file(path: &Path) -> bool {
+/// Unix runs a file that has an execute bit; Windows runs one named like a program. `windows` picks which rule.
+fn is_executable_file_as(path: &Path, windows: bool) -> bool {
     #[cfg(unix)]
-    {
+    if !windows {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
+        return std::fs::metadata(path)
             .map(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
+            .unwrap_or(false);
     }
     #[cfg(not(unix))]
-    {
-        path.is_file()
-            && path
-                .extension()
-                .and_then(|ext| ext.to_str())
-                .is_some_and(|ext| {
-                    ["exe", "cmd", "bat", "com"]
-                        .iter()
-                        .any(|allowed| ext.eq_ignore_ascii_case(allowed))
-                })
-    }
+    let _ = windows;
+    path.is_file()
+        && path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| {
+                ["exe", "cmd", "bat", "com"]
+                    .iter()
+                    .any(|allowed| ext.eq_ignore_ascii_case(allowed))
+            })
 }
 
 /// Resolve `name` the way a terminal would, then fall back to common install
@@ -5039,5 +5060,23 @@ mod dev_claude_tests {
         assert!(s.get("skillOverrides").is_none());
         assert_eq!(s["alwaysThinkingEnabled"], serde_json::json!(true));
         assert!(s.get("hooks").is_none());
+    }
+
+    /// A chat whose folder was cleared (an import's) must not start an agent anywhere: no folder, no launch.
+    #[test]
+    fn an_agent_for_a_chat_with_no_folder_is_refused_before_anything_starts() {
+        for blank in ["", "  ", "/"] {
+            assert_eq!(
+                super::launch_preflight("claude", blank, Some("claude"), None),
+                Err(crate::chat_folder::NEEDS_FOLDER.to_string()),
+                "{blank:?}"
+            );
+        }
+        // A real folder goes on to the next check (the command must be a resolved CLI).
+        let temp = std::env::temp_dir().to_string_lossy().into_owned();
+        assert_eq!(
+            super::launch_preflight("/not/a/cli", &temp, Some("claude"), None),
+            Err("harness_spawn: not a resolved harness CLI".to_string())
+        );
     }
 }

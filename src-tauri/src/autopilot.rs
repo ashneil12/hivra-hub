@@ -1,4 +1,4 @@
-//! Autopilot (docs/HUB-PLAN.md phase 3; docs/T3-HARVEST.md "Autopilot that survives limits, crashes and sleep").
+//! Autopilot (docs/HUB-PLAN.md phase 3; the autopilot design notes).
 //!
 //! Ash's switch for "go autopilot until Monday 9:00", for everything (scope `*`) or one project at a time, each with its
 //! own end time. While a switch is on, agents take their own recommendation on every call that would have gone to Ash

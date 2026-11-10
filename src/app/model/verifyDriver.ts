@@ -489,7 +489,9 @@ export async function perform(action: DriverAction, host: DriverHost, log: Drive
       if (action.pack !== "ash") return { ok: false, error: 'teamPack: only "ash" (the pre-load)' };
       const project = typeof action.project === "string" ? action.project.trim() : "";
       if (!project) return { ok: false, error: "teamPack: no project" };
-      const { monos, wrote } = await benchAshTeam({ project });
+      // A hub project's id is not its folder: the room takes the id, and the Monos work on the folder a kickoff names.
+      const folder = typeof action.folder === "string" ? action.folder.trim() : "";
+      const { monos, wrote } = await benchAshTeam(folder ? { project, folder } : { project });
       return { ok: teamPack() === "ash" && monos.length > 0, pack: teamPack(), wrote, monos };
     }
     case "userName": {

@@ -244,6 +244,9 @@ fn a_finished_crew_runs_axi_with_its_intent_and_nothing_is_pushed() {
     assert!(text.contains("\"run\""), "{text}");
     assert!(text.contains("\"--yes\""), "{text}");
     assert!(text.contains("\"--intent\""), "{text}");
+    assert!(text.contains("\"--pr-title\""), "{text}");
+    assert!(text.contains("\"--pr-body-file\""), "{text}");
+    assert!(!text.contains("appendix"), "{text}");
     assert!(text.contains("The name reads clearly."), "{text}");
     assert!(!text.contains("\"start\""), "{text}");
     let remote = git(&main, &["ls-remote", "origin", "refs/heads/work"]);
@@ -805,15 +808,38 @@ fn the_daemon_is_a_child_hivra_stops_and_its_environment_is_allow_listed() {
 
 #[cfg(unix)]
 fn wait_file(path: &Path) -> String {
-    for _ in 0..50 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
         if let Ok(text) = std::fs::read_to_string(path) {
             if !text.is_empty() {
                 return text;
             }
         }
+        if std::time::Instant::now() >= deadline {
+            panic!("nothing was written to {}", path.display());
+        }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    panic!("nothing was written to {}", path.display());
+}
+
+// The daemon writes its files from another process. A loaded machine can take longer than a couple of seconds to
+// get there, so the wait must be on the file appearing, with a deadline far past what a busy machine needs.
+#[cfg(unix)]
+#[test]
+fn a_daemons_file_is_waited_for_while_the_machine_is_busy() {
+    let dir = std::env::temp_dir().join(format!("wp-flake-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("argv");
+    let writer = {
+        let file = file.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            std::fs::write(&file, "daemon\n").unwrap();
+        })
+    };
+    assert_eq!(wait_file(&file).trim(), "daemon");
+    writer.join().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
@@ -855,6 +881,54 @@ fn a_secret_in_a_finding_is_not_stored() {
         .unwrap();
     assert!(!stored.contains("ghp_"), "{stored}");
     assert!(stored.contains("[redacted]"), "{stored}");
+}
+
+// WP-102 item 3: the tail scrubber knew four prefixes. A test run's last lines can carry any of these, and the tail is
+// stored on the row and shown in the chat.
+#[test]
+fn a_tail_masks_the_other_common_secret_shapes_and_leaves_prose_alone() {
+    // SendGrid is `SG.` then 22 characters, a dot, then 43.
+    let sendgrid = format!("SG.PLANTED{}.PLANTED{}", "a".repeat(15), "b".repeat(36));
+    let pypi = format!("pypi-AgEIcHlwaS5vcmcPLANTED{}", "x".repeat(40));
+    let cases = [
+        ("glpat-PLANTEDtoken0123456789ab".to_string(), "[redacted]"),
+        (pypi, "[redacted]"),
+        (sendgrid, "[redacted]"),
+        (
+            "xapp-1-A0PLANTED01-1234567890123-PLANTEDappsecret".to_string(),
+            "[redacted]",
+        ),
+        (
+            "whsec_PLANTEDwebhooksecret0123456789".to_string(),
+            "[redacted]",
+        ),
+        ("ASIAPLANTED2ABCDEFGH".to_string(), "[redacted]"),
+    ];
+    for (token, want) in cases {
+        let out = scrub(&format!("before {token} after"));
+        assert_eq!(out, format!("before {want} after"), "{token}");
+    }
+    let prose = "From GitLab to PyPI with SendGrid, the xapp- prefix, whsec_, and the ASIA region.";
+    assert_eq!(scrub(prose), prose);
+    // A short `code=` value, as an OAuth callback or a device sign-in prints it, goes; a code that spells a word in
+    // prose does not.
+    assert_eq!(
+        scrub("visit http://127.0.0.1:54321/?code=PLANTEDcode9&state=abc now"),
+        "visit http://127.0.0.1:54321/?code=[redacted]&state=abc now"
+    );
+    assert_eq!(
+        scrub("the error code=404 and this code=abcd are not secrets"),
+        "the error code=404 and this code=abcd are not secrets"
+    );
+    // A private key's body goes; its header and footer stay so a reader knows what it was.
+    let pem =
+        "-----BEGIN OPENSSH PRIVATE KEY-----\nPLANTEDkeybody\n-----END OPENSSH PRIVATE KEY-----";
+    let out = scrub(pem);
+    assert!(!out.contains("PLANTEDkeybody"), "{out}");
+    assert!(
+        out.contains("BEGIN OPENSSH PRIVATE KEY") && out.contains("END OPENSSH PRIVATE KEY"),
+        "{out}"
+    );
 }
 
 #[cfg(windows)]

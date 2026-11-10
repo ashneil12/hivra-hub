@@ -13,7 +13,9 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
-import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
+import { parksForApproval } from "../features/sessions/model/approvalCarry";
+import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
+import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
@@ -54,7 +56,7 @@ import {
 import { reviewAsk, reviewAskNote } from "../features/monos/model/workerReview";
 import { landingDue, landWorkerCopy, refreshAsk, refreshAskNote, refreshWorkerCopy, stoppedForAsh, stopQuestion, withLanding, withStopHeld } from "../features/monos/model/workerLanding";
 import { answeredQuestionWakes, ashAnsweredLeadNote, ashWordsNote, noteAshAnswer, openJobOf } from "../features/monos/model/ashAnswersWorker";
-import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runWorkerGate, signedOffFor } from "../features/monos/model/workerGate";
+import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerdict, runTaskGate, runWorkerGate, signedOffFor, workerGateWord } from "../features/monos/model/workerGate";
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
@@ -106,7 +108,10 @@ import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/m
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
+import { recordUse } from "../features/memory/model/memoryUse";
+import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
+import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
@@ -125,6 +130,10 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
+import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
+import { backendFrom, releaseHeld, resumeReviews, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindFreshEyesBackend, bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
@@ -152,6 +161,13 @@ import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
+import {
+  consumeForkPoint,
+  forkFocusedChat,
+  insertFork,
+  pendingForkBrief,
+} from "../features/sessions/model/threadFork";
+import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
   SessionStateContext,
@@ -201,6 +217,7 @@ import {
   type OrchestrationProposal,
 } from "../features/orchestration/model/orchestrationPlan";
 import { discoverOrchestrationSettings } from "../features/orchestration/model/orchestrationCatalog";
+import { watchDecisions } from "../features/orchestration/model/decisionWatch";
 import {
   attachOrchestrationWorkers,
   consolidateOrchestrationTabs,
@@ -366,19 +383,30 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
+  temporaryWorktreeBranchName,
   orchestrationWorktreeBranchName,
   removeOrchestrationBranch,
   removeOrchestrationWorktree,
   removeWorktree,
   renameWorktreeBranch,
   sessionInWorktree,
-  temporaryWorktreeBranchName,
   worktreeDeletedExternally,
   worktreeSessionIds,
   type Worktree,
 } from "../features/source-control/model/worktrees";
+import {
+  attachNewChatWorktree,
+  gitRepositoryOnThisComputer,
+  newChatWorktreeOpenFor,
+  openNewChatWorktree,
+  pendingNewChatOfferCheck,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
+} from "../features/source-control/model/newChatWorktree";
+import { rememberWorktreeInclude } from "../features/source-control/model/worktreeIncludeNote";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
@@ -536,6 +564,7 @@ import {
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
+  harnessCannotSteer,
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
@@ -577,26 +606,34 @@ import {
   isPreparingHandoff,
   pendingHandoff,
   pendingComposerSwitch,
-  planComposerSwitch,
   sessionChildHarnesses,
   sessionThroughTurn,
   shouldAskOutgoingAgent,
   type HandoffComposerCard,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
   wrapRecoveredPrompt,
 } from "../features/sessions/model/handoff";
+import {
+  applyMidThreadSwitch,
+  commitMidThreadSwitch,
+  buildPortableTranscript,
+  restoreUnsentPortableResume,
+  wrapPortableResume,
+} from "../features/sessions/model/midThreadSwitch";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
   applyBtwHarnessEvent,
   btwTurnHarness,
   buildBtwPrompt,
-  replaceBtwThread,
   sealBtwResponseBlocks,
   supportsBtwHarness,
+  withSideThread,
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
+import { CHAT_NEEDS_FOLDER, hasChatFolder, withRelinkedFolder } from "../integrations/harness/core/chatFolder";
 import { sessionEditPaths } from "../features/sessions/model/checkpointEdits";
 import { useSessionChangeTotals } from "../features/sessions/ui/SessionReview";
 import {
@@ -700,6 +737,20 @@ import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { crewLaunch } from "../features/crew/model/crewSession";
+// WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+import {
+  commitIdleCompactBusy,
+  watchIdleClaudeCompaction,
+} from "../integrations/harness/providers/claude/idleCompactWatch";
+// WP-115: plain sentence when this agent cannot redirect a running turn.
+import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
+  cantRedirectTurn,
+  cantTakeFollowUp,
+  followUpWhenBusy,
+} from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
@@ -718,7 +769,20 @@ import {
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
-import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
+import { approvalSessionIdsOf } from "../features/sessions/model/approvalSessionIds";
+import {
+  discardFanOutLoser,
+  pickFanOutInStore,
+  releaseFanOutWorktrees,
+} from "../features/sessions/model/fanOutDecide";
+import {
+  defaultWorktreeRoots,
+  fanOutJanitorPort,
+  startFanOutSetup,
+} from "../features/sessions/model/fanOutJanitor";
+import { startFanOut } from "../features/sessions/model/fanOutLaunch";
+import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
+import { fanOutCompareRows, fanOutNotStartedLines } from "../features/sessions/model/fanOutView";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -726,7 +790,6 @@ import {
   canReplaceSessionTitle,
   formatSessionTitle,
   sessionNeedsInput,
-  hasPendingApproval,
   newDefaultSession,
   newSession,
   retargetSessionToProject,
@@ -752,6 +815,12 @@ import {
   type UsageLimit,
   type WorkspaceMode,
 } from "../features/sessions/model/session";
+// WP-113: attention for the optional chat list inbox. Off passes no sessions.
+import { useChatListInbox } from "../features/settings/model/displayPrefs";
+import {
+  EMPTY_CHAT_LIST_SESSIONS,
+  useChatListAttention,
+} from "../features/sessions/model/chatListInboxStore";
 
 import {
   canDispatchQueuedHead,
@@ -775,7 +844,6 @@ import {
   fetchCodexRateLimits,
 } from "../features/providers/model/rateLimitsFetch";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
-import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
   deleteSession,
@@ -793,12 +861,14 @@ import {
   setSessionArchived,
   setSessionLinkedWorkItem,
   setSessionPinned,
+  setSessionPrivate,
   shouldPersistSession,
   upsertSession,
   flushSessionWrites,
   type SessionSummary,
 } from "../features/sessions/data/sessionStore";
 import { rememberLoadedSession } from "../features/sessions/data/sessionCache";
+import { privateChatKeys, replaceLivePrivateKeys, withPrivate } from "../features/memory/model/privateChat";
 import {
   TranscriptPool,
   TranscriptPoolOutlet,
@@ -820,6 +890,7 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useNotablePings } from "../features/notifications/hooks/useNotablePings";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
   adjacentItemId,
@@ -886,6 +957,7 @@ import { appPolicy } from "./model/appIdentity";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   verifyKickoffMono,
   verifyRun,
   watchVerifyMessages,
@@ -898,6 +970,7 @@ import {
 } from "../features/monos/model/delegationStore";
 import {
   holdForLimit,
+  nextHealthCheck,
   nextWake,
   planHeld,
   pumpWorkers,
@@ -1007,6 +1080,14 @@ import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
 import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
 import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
+// WP-93: the command palette reads what the app can do and runs each row.
+import type { PaletteContext } from "../features/search/model/commandRegistry";
+import { runPaletteRow } from "../features/search/model/paletteRun";
+import { runPaletteCommand } from "../features/search/model/paletteWiring";
+import {
+  focusBeforePalette,
+  paletteFocusOf,
+} from "../features/search/model/paletteFocus";
 import {
   finderFileOptions,
   requestDocFocus,
@@ -1079,6 +1160,7 @@ import {
   subscribeMonosEnabled,
   loadDiffViewer,
   loadFollowUpBehavior,
+  loadNewChatWorktree,
   loadIdleAgentLimit,
   loadKeybindingOverrides,
   loadSettingsSection,
@@ -1095,6 +1177,7 @@ import {
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
+  openReplaceInActiveEditor,
 } from "../features/files/editor/editorSearch";
 
 import {
@@ -1116,6 +1199,7 @@ import {
   claimAutoContinue,
   resumeBlocked,
   resumePrompt,
+  isTurnRunning,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -1296,66 +1380,18 @@ function userTurnCards(
   };
 }
 
-function withHarnessChoice(
-  session: Session,
-  harness: HarnessId,
-  model: string,
-  modelSettings: Record<string, string>,
-): Session {
-  return {
-    ...session,
-    harness,
-    model,
-    modelSettings,
-    title:
-      session.blocks.length === 0
-        ? HARNESS_LABEL[harness]
-        : formatSessionTitle(
-            harness,
-            sessionDisplayTitle(session.title, session.harness),
-          ),
-    ...(session.model === model
-      ? {}
-      : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness
-      ? {}
-      : { providerSessionId: undefined, providerAccountId: undefined }),
-  };
-}
-
 function withPlanBuildTarget(
   session: Session,
   target: PlanBuildTarget,
 ): Session {
   const resolved = resolveModel(target.harness, target.model);
   const modelSettings = mergeModelSettings(resolved, target.modelSettings);
-  const plan = planComposerSwitch(session, target.harness);
-  const next = withHarnessChoice(
-    session,
-    target.harness,
-    resolved.id,
+  // WP-121: the same switch the picker uses, including a resume or a labelled recap.
+  return applyMidThreadSwitch(session, {
+    harness: target.harness,
+    model: resolved.id,
     modelSettings,
-  );
-
-  if (plan.kind === "arm") {
-    return { ...next, pendingSwitch: plan.pending };
-  }
-  if (plan.kind === "revert") {
-    return {
-      ...next,
-      pendingSwitch: undefined,
-      ...(plan.restoreProviderSessionId
-        ? { providerSessionId: plan.restoreProviderSessionId }
-        : { providerSessionId: undefined }),
-      ...(plan.restoreProviderAccountId
-        ? { providerAccountId: plan.restoreProviderAccountId }
-        : { providerAccountId: undefined }),
-    };
-  }
-  if (plan.kind === "empty") {
-    return { ...next, pendingSwitch: undefined };
-  }
-  return next;
+  }).session;
 }
 
 function openSessionIds(tabs: WorkspaceTab[]): Set<string> {
@@ -1497,6 +1533,11 @@ function Workspace({
     useWorkspaceSessionState(
       () => windowTransfer?.sessions ?? resumed?.sessions ?? [seed.session],
     );
+  // WP-110: the first chat in a new window follows the worktree setting.
+  useEffect(() => {
+    if (!sessionsRef.current.some((session) => session.id === seed.session.id)) return;
+    attachNewChatWorktree(seed.session.id, seed.session.cwd, setSessions);
+  }, [seed.session.cwd, seed.session.id, sessionsRef, setSessions]);
   // The app's Try again, lent to harness self-repair (features/monos/model/harnessRepair.ts): the same path as the
   // failure card's button, so a retried turn sends Ash's held message, its unsent one, or carries on.
   const retryFailedTurnRef = useRef<(sessionId: string) => boolean>(() => false);
@@ -2155,11 +2196,15 @@ function Workspace({
     canForward: false,
   });
   const turnGen = useRef(new Map<string, number>());
+  // Chats the idle compact watcher holds busy, and the turn generation it took. WP-115.
+  const idleCompactOwners = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // WP-143: what marks a chat as a crew's (crewSession.ts): the rows the UI reads and the ones this window launched since.
+  const crewRows = () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])];
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
   // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
@@ -2598,7 +2643,9 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      // A chat held for a background compact is not working: it must not spin
+      // in the rail, publish a live turn, or read as finished when it ends.
+      if (isTurnRunning(session)) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -2714,32 +2761,26 @@ function Workspace({
   }, [activeTab, currentProjectDock, runningTerminals]);
 
   const approvalDelegationRows = useDelegationRows();
-  const nextApprovalSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const session of sessions) {
-      // A worker only waiting on its Lead's answer is not Ash's input (D5): no "Need approval" on it or its Lead.
-      if (
-        sessionNeedsInput(session) &&
-        !waitsOnlyOnItsLead(
-          {
-            id: session.id,
-            pendingQuestion: session.pendingQuestion,
-            approvalPending: hasPendingApproval(session.blocks),
-          },
-          approvalDelegationRows,
-        )
-      ) {
-        ids.add(session.id);
-        if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
-      }
-    }
-    return ids;
-  }, [sessions, approvalDelegationRows]);
-  const approvalSessionIdsRef = useRef(nextApprovalSessionIds);
-  if (!setsEqual(approvalSessionIdsRef.current, nextApprovalSessionIds)) {
-    approvalSessionIdsRef.current = nextApprovalSessionIds;
+  const nextApproval = useMemo(
+    () => approvalSessionIdsOf(sessions, approvalDelegationRows),
+    [sessions, approvalDelegationRows],
+  );
+  const approvalSessionIdsRef = useRef(nextApproval.ids);
+  if (!setsEqual(approvalSessionIdsRef.current, nextApproval.ids)) {
+    approvalSessionIdsRef.current = nextApproval.ids;
   }
   const approvalSessionIds = approvalSessionIdsRef.current;
+  const approvalElsewhereSessionIdsRef = useRef(nextApproval.elsewhere);
+  if (!setsEqual(approvalElsewhereSessionIdsRef.current, nextApproval.elsewhere)) {
+    approvalElsewhereSessionIdsRef.current = nextApproval.elsewhere;
+  }
+  const approvalElsewhereSessionIds = approvalElsewhereSessionIdsRef.current;
+
+  // WP-113: attention for settle, snooze and re-sort. Off passes nothing, so today's list is untouched.
+  const chatListInboxOn = useChatListInbox();
+  const chatListAttention = useChatListAttention(
+    chatListInboxOn ? sessions : EMPTY_CHAT_LIST_SESSIONS,
+  );
 
   const activeSessionId = inboxViewOpen
     ? inboxAskPortal?.sessionId
@@ -2758,6 +2799,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // WP-164: held notices leave when quiet hours end; a failure waits no longer than its ping interval.
+  useNotablePings();
   // Model, effort and permission changes reach a running turn's CLI now.
   useLiveHarnessSettings(sessions);
 
@@ -3462,6 +3505,8 @@ function Workspace({
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, cwd, setSessions);
       return tab.id;
     },
     [appendTab, sessionDefaults?.runtimeMode],
@@ -3490,8 +3535,28 @@ function Workspace({
     appendTab(tab, cwd);
     setActiveTabId(tab.id);
     setComposerFocused(true);
+    // WP-110: a new chat follows the worktree setting.
+    attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
+
+  // WP-123: open a forked chat. The original is not written.
+  const openForkedSession = useCallback(
+    (session: Session) => {
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        insertFork(sessions, session),
+      );
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+    },
+    [appendTab],
+  );
 
   const onSelectRemoteSession = useCallback(
     (project: string, remoteSessionId: string) => {
@@ -3546,6 +3611,8 @@ function Workspace({
         appendTab(tab, cwd);
         setActiveTabId(tab.id);
         setComposerFocused(true);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, cwd, setSessions);
       };
 
       start(await inboxTrackerDescription(item, body));
@@ -3585,6 +3652,8 @@ function Workspace({
       appendTab(tab, cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, cwd, setSessions);
     },
     [
       active?.cwd,
@@ -3684,6 +3753,8 @@ function Workspace({
         }),
       );
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, session.cwd, setSessions);
     },
     [activeTab, projectCwd, sessionDefaults?.cwd, sessionDefaults?.runtimeMode],
   );
@@ -4431,6 +4502,8 @@ function Workspace({
         };
 
         setSessions((prev) => [...prev, session]);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, session.cwd, setSessions);
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
           for (const file of closingFiles) updated.delete(file.id);
@@ -4564,6 +4637,8 @@ function Workspace({
         // The tab held no session: seed one so the workspace stays usable.
         const session = seedSession(keptFiles[0]?.cwd || projectCwd);
         setSessions((prev) => [...prev, session]);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, session.cwd, setSessions);
         setDirtyFiles((prev) => {
           const updated = new Set(prev);
           for (const file of keptFiles) updated.delete(file.id);
@@ -6645,6 +6720,42 @@ function Workspace({
     [onPinHistorySession],
   );
 
+  // WP-111: private is per chat. Off keeps only the messages after the switch readable.
+  const onPrivateHistorySession = useCallback((sessionId: string, on: boolean) => {
+    const apply = (session: Session) => {
+      const live = sessionsRef.current.find((item) => item.id === sessionId) ?? session;
+      const next = withPrivate(live, on);
+      if (next === live) return;
+      if (sessionsRef.current.some((item) => item.id === sessionId)) {
+        const nextSessions = sessionsRef.current.map((item) => (item.id === sessionId ? next : item));
+        sessionsRef.current = nextSessions;
+        setSessions(nextSessions);
+      }
+      setHistory((current) =>
+        current.map((item) =>
+          item.id === sessionId ? { ...item, private: next.private === true || undefined } : item,
+        ),
+      );
+      void upsertSession(next).catch(() => undefined);
+      // After the transcript write, so a save already in flight cannot leave the flag behind.
+      void setSessionPrivate(sessionId, next.private === true, next.privateBoundaryId).catch(() => undefined);
+    };
+    const open = sessionsRef.current.find((session) => session.id === sessionId);
+    if (open) {
+      apply(open);
+      return;
+    }
+    void getSession(sessionId)
+      .then((loaded) => {
+        if (loaded) apply(loaded);
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    replaceLivePrivateKeys(privateChatKeys([...sessions, ...history]));
+  }, [sessions, history]);
+
   const onDeleteWorktreeSessions = useCallback(
     async (sessionIds: readonly string[]): Promise<boolean> => {
       for (const sessionId of sessionIds) {
@@ -6827,6 +6938,14 @@ function Workspace({
     [],
   );
 
+  // Relink all gave chats their folders in the store: the open copies take the folder and nothing else (no move to
+  // another project, nothing added to the recents, no change of the chat's own work).
+  const onSessionFolderRelinked = useCallback(
+    (sessionId: string, cwd: string) =>
+      setSessions((prev) => withRelinkedFolder(prev, sessionId, cwd)),
+    [setSessions],
+  );
+
   const onCwdChange = useCallback(
     (sessionId: string, cwd: string) => {
       const normalized = normalizeProjectPath(cwd);
@@ -6855,6 +6974,8 @@ function Workspace({
         appendTab(tab, normalized);
         setActiveTabId(tab.id);
         setComposerFocused(true);
+        // WP-110: a new chat follows the worktree setting.
+        attachNewChatWorktree(session.id, normalized, setSessions);
         return;
       }
       if (previous && !sameProjectPath(previous, normalized)) {
@@ -6872,6 +6993,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6880,7 +7002,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6889,8 +7011,12 @@ function Workspace({
             workspaceMode: undefined,
             worktreeBase: undefined,
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
+      // WP-110: a blank chat moved to another folder follows the worktree setting.
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -6947,19 +7073,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -7033,10 +7162,9 @@ function Workspace({
       try {
         const listed = await listWorktrees(current.cwd);
         if (!isCurrent()) return;
-        const target = listed.worktrees.find(
-          (entry) =>
-            pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
-        );
+        // WP-138: a listing has no .worktreeinclude note, so the one on the tree the picker
+        // just created is carried over and a failed copy is still seen in the chat header.
+        const target = listedWorktreeFor(listed.worktrees, tree);
         if (!target) {
           throw new Error(
             "This worktree is no longer available. Refresh the picker.",
@@ -7376,6 +7504,8 @@ function Workspace({
       appendTab(tab, project.folder);
       setActiveTabId(tab.id);
       setComposerFocused(true);
+      // WP-110: a new chat follows the worktree setting.
+      attachNewChatWorktree(session.id, project.folder, setSessions);
       return session.id;
     },
     [openCodingTeam, sessionDefaults?.runtimeMode, appendTab, setActiveTabId],
@@ -7865,41 +7995,47 @@ function Workspace({
         resolved,
         current.modelSettings,
       );
-      const plan = planComposerSwitch(current, harness);
       const recoverLimit =
         !current.busy &&
         !!current.usageLimit &&
         (current.harness !== harness || current.model !== resolved.id);
-      if (plan.kind === "empty") {
-        void forgetHarnessSession(plan.forget, sessionId);
-      }
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== sessionId) return s;
-          let next = withHarnessChoice(s, harness, resolved.id, modelSettings);
-          if (plan.kind === "arm") {
-            next = { ...next, pendingSwitch: plan.pending };
-          } else if (plan.kind === "revert") {
-            next = {
-              ...next,
-              pendingSwitch: undefined,
-              ...(plan.restoreProviderSessionId
-                ? { providerSessionId: plan.restoreProviderSessionId }
-                : { providerSessionId: undefined }),
-              ...(plan.restoreProviderAccountId
-                ? { providerAccountId: plan.restoreProviderAccountId }
-                : { providerAccountId: undefined }),
-            };
-          } else if (plan.kind === "empty") {
-            next = { ...next, pendingSwitch: undefined };
-          }
-          return recoverLimit
-            ? isMonoSession(sessionId)
-              ? resumeMonoUsageLimit(next)
-              : resumeUsageLimitedSession(next)
-            : next;
-        }),
+      // WP-121: keep this thread when the target can resume. A refusal still arms the recap.
+      const switched = commitMidThreadSwitch(
+        {
+          get: (id) => sessionsRef.current.find((session) => session.id === id),
+          compareAndPut: (session, seen) => {
+            let applied = false;
+            // The updater runs during render. flushSync runs it now so a refused write is visible here.
+            flushSync(() => {
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== session.id) return s;
+                  if (
+                    s.blocks.length !== seen.blocks ||
+                    s.harness !== seen.harness ||
+                    s.model !== seen.model
+                  ) {
+                    return s;
+                  }
+                  applied = true;
+                  const next = recoverLimit
+                    ? isMonoSession(sessionId)
+                      ? resumeMonoUsageLimit(session)
+                      : resumeUsageLimitedSession(session)
+                    : session;
+                  return next;
+                }),
+              );
+            });
+            return applied;
+          },
+        },
+        sessionId,
+        { harness, model: resolved.id, modelSettings },
       );
+      if (switched.kind === "ok" && switched.outcome.forget) {
+        void forgetHarnessSession(switched.outcome.forget, sessionId);
+      }
     },
     [],
   );
@@ -8017,10 +8153,12 @@ function Workspace({
   const submitSession = useCallback(
     (
       sessionId: string,
-      text: string,
+      rawText: string,
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
+      const text = stripHiddenCharacters(rawText).text;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -8244,6 +8382,16 @@ function Workspace({
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const initialWorkCwd = sessionWorkCwd(current);
+      // A chat that came in from an export with no folder here asks for one before anything runs (the harness seam
+      // refuses it too, so nothing starts however the turn was reached).
+      if (!hasChatFolder(initialWorkCwd)) {
+        enqueueHarnessEvent(sessionId, {
+          type: "session.error",
+          message: CHAT_NEEDS_FOLDER,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const createDraftWorktree =
         !current.worktreeCwd && current.workspaceMode === "worktree";
       const accountProvider = supportsProviderAccounts(current.harness)
@@ -8300,8 +8448,9 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
-      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
-      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      // WP-120: so does a chat in a hub project's coding team, on every CLI that can lead (not only Claude Code).
+      // An orchestrator like the Lead, its delegate tool calls the app (codingTeam.ts). Noted before the turn,
+      // so the session starts with the tool and its project.
       const team = mono ? undefined : codingTeamOf(current);
       const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
@@ -8331,6 +8480,22 @@ function Workspace({
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
+      // WP-121: a resumable switch sends its portable transcript. A refusal still uses pendingSwitch.
+      // A repair is not the person's next message, so it leaves the transcript for that message.
+      const portableResume =
+        pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
+      // WP-146: tell Ash why his message did not go into a turn that waits on his OK (approvalWait.ts).
+      const sayHeld = () => {
+        const heldLine = heldLineForSend(current, options);
+        if (!heldLine) return;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
+              : s,
+          ),
+        );
+      };
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8400,8 +8565,11 @@ function Workspace({
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
           operatorCommand.matched
-        )
+        ) {
+          // WP-146: Steer on a message held behind an open approval says why it stayed.
+          if (message) sayHeld();
           return false;
+        }
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -8476,21 +8644,11 @@ function Workspace({
         });
       }
 
-      if (current.busy && !pendingSwitch) {
-        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
-        const heldLine =
-          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
-            ? waitingOnYouLine(current.blocks)
-            : null;
-        if (heldLine) {
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === sessionId
-                ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
-                : s,
-            ),
-          );
-        }
+      if (current.busy && !pendingSwitch && !portableResume) {
+        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14). WP-146: the
+        // same when he presses Steer on a message already waiting (it stays queued), and only when the message
+        // really waits (not for the background-tasks branch, which hands it over now).
+        sayHeld();
         if (
           operatorCommand.matched &&
           options?.queuedMessageId &&
@@ -8503,27 +8661,46 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-146: a message does not go into a turn that is still waiting on approval. The background-tasks
+        // branch keeps precedence: parksForApproval is false when only background work is left.
+        const parkForApproval = parksForApproval(current);
+        // A message already in the queue (its own Steer button) stays where it is, and the line above says why.
+        // This stays ahead of followUpWhenBusy so it is never added to the queue a second time.
+        if (parkForApproval && options?.queuedMessageId) return false;
+        // The app is compacting this idle chat in the background (WP-115). Its
+        // busy flag is ours, there is no reply to steer into, and a message
+        // written now would land inside the compact.
+        const compacting = !!current.idleCompacting;
         const steerable =
-          isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched ||
-          options?.waitForIdle
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : // Messaging a Mono mid-reply is like texting a friend twice:
-                // it reads the new message now, or right after if it can't.
-                mono
-                ? steerable
-                  ? "steer"
-                  : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior());
+          isLiveHarness(current.harness) &&
+          canSteerHarness(current.harness) &&
+          !compacting;
+        const followUpBehavior = followUpWhenBusy({
+          setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
+          mustWait: !!(
+            parkForApproval ||
+            current.worktreePreparing ||
+            intent === "plan" ||
+            intent === "orchestrate" ||
+            operatorCommand.matched ||
+            options?.waitForIdle
+          ),
+          onlyBackgroundWork: !!current.backgroundTasks?.length,
+          mono: !!mono,
+          steerable,
+          cannotRedirect: harnessCannotSteer(current.harness),
+          compacting,
+          alreadyQueued: !!options?.queuedMessageId,
+        });
+        if (followUpBehavior === "stay") {
+          // Already in the queue and not to go in now: it stays where it is.
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: QUEUED_MESSAGE_WAITS,
+          });
+          flushHarnessEvents();
+          return false;
+        }
         if (followUpBehavior === "queue") {
           setSessions((prev) =>
             prev.map((s) =>
@@ -8559,11 +8736,15 @@ function Workspace({
           return true;
         }
         if (!steerable) {
-          // Harnesses that cannot steer (fx) used to drop the message on the
-          // floor here, so a follow-up sent mid-turn just vanished. Say so.
+          // WP-115: a stale button must not drop the message. A known refusal
+          // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
+            text: compacting
+              ? COMPACTING_NOTE
+              : harnessCannotSteer(current.harness)
+                ? cantRedirectTurn(current.harness)
+                : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;
@@ -8719,6 +8900,9 @@ function Workspace({
             status: "planning",
             title: "Orchestration plan",
             summary: "",
+            // WP-91: the model fills these from the request; a plan without a finish line is refused.
+            goal: "",
+            check: { command: "", expectExit: 0 },
             tasks: [],
           }
         : undefined;
@@ -8770,11 +8954,18 @@ function Workspace({
         ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
+      // WP-123: a forked chat's first send carries the chat copied into it; its provider has never seen it. That recap
+      // covers the whole copy, so it stands in for an older handoff recap that came along with the messages.
+      const queuedFork =
+        live && !pendingSwitch ? pendingForkBrief(current) : null;
       const queuedHandoff =
-        live && !pendingSwitch ? pendingHandoff(current) : null;
+        live && !pendingSwitch && !queuedFork ? pendingHandoff(current) : null;
 
-      if (pendingSwitch && current.busy) {
-        void cancelHarnessTurn(pendingSwitch.from, sessionId);
+      if (current.busy && (pendingSwitch || portableResume)) {
+        void cancelHarnessTurn(
+          (pendingSwitch ?? portableResume)!.from,
+          sessionId,
+        );
       }
 
       dismissNoticesForContinuedSession(sessionId);
@@ -8823,6 +9014,11 @@ function Workspace({
                 rawCommand || options?.ciRepair ? s.noteCard : undefined,
               handoffCard:
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
+              // WP-121: this send consumes the switch notice. The timeline marker stays.
+              // A slash command or a repair is not that send.
+              ...(rawCommand || options?.ciRepair
+                ? {}
+                : { portableResume: undefined, midThread: undefined }),
             };
             if (editedResend) {
               next = editedResend.replace(next);
@@ -8994,7 +9190,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, idleCompacting: undefined }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -9035,13 +9233,21 @@ function Workspace({
             await upsertSession(sent).catch(() => null);
         }
         let workCwd = initialWorkCwd;
-        if (createDraftWorktree) {
-          const tree = await createWorktree(
-            current.cwd,
-            temporaryWorktreeBranchName(),
-            current.worktreeBase || "HEAD",
-            false,
-          );
+        // WP-110: ask and always start a new chat in a worktree. A refusal keeps
+        // the creation function's own message.
+        const tree = await openNewChatWorktree(
+          newChatWorktreeOpenFor(current, {
+            setting: loadNewChatWorktree(),
+            isFirstTurn,
+            toggleOn: createDraftWorktree,
+          }),
+          {
+            gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
+            createWorktree,
+          },
+        );
+        if (tree) {
           workCwd = tree.path;
           // r86 (c02 run 2, +364s: the README worker's copy was the last commit, so it never saw the health route or the
           // shared type that had already landed, uncommitted, in the project): a delegated worker's new copy starts from
@@ -9052,6 +9258,8 @@ function Workspace({
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
           // The project's setup holds the first turn (and the queue) until it ends.
           const setupHolds = !!(tree.setup?.hold && tree.setup.run);
+          // WP-138: the include note stays with this chat. The session row does not store it.
+          const include = rememberWorktreeInclude(sessionId, tree);
           setSessions((prev) =>
             prev.map((session) =>
               session.id === sessionId
@@ -9062,6 +9270,8 @@ function Workspace({
                     workspaceMode: undefined,
                     worktreeBase: undefined,
                     worktreePreparing: setupHolds ? true : undefined,
+                    ...(include.note ? { includeNote: include.note } : {}),
+                    ...(include.warning ? { includeWarning: include.warning } : {}),
                   }
                 : session,
             ),
@@ -9126,13 +9336,20 @@ function Workspace({
             ),
           );
         }
-        let wrap = handoffCard
+        let wrap: {
+          from: HarnessId;
+          to: HarnessId;
+          text: string;
+          portable?: boolean;
+          /** WP-123: a fork's recap, worded as a fork's rather than a handoff's. */
+          fork?: boolean;
+        } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
               text: handoffCard.brief,
             }
-          : queuedHandoff;
+          : (queuedFork ?? queuedHandoff);
         if (pendingSwitch) {
           let agentText = "";
           if (
@@ -9159,13 +9376,28 @@ function Workspace({
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
+        } else if (portableResume) {
+          if (portableResume.from !== current.harness) {
+            await forgetHarnessSession(portableResume.from, sessionId);
+          }
+          if (turnGen.current.get(sessionId) !== gen) return;
+          wrap = {
+            from: portableResume.from,
+            to: current.harness,
+            // Built now, not when the picker changed: output since the switch is in it.
+            text: buildPortableTranscript(
+              current.blocks,
+              portableResume.messageIds,
+            ),
+            portable: true,
+          };
         }
 
         const revealHandoff = (brief: string) => {
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId || !isPreparingHandoff(s)) return s;
-              return { ...completeHandoff(s, brief), busy: true };
+              return { ...completeHandoff(s, brief), busy: true, idleCompacting: undefined };
             }),
           );
         };
@@ -9204,6 +9436,8 @@ function Workspace({
           return event;
         };
 
+        // WP-121: set once the provider has accepted the portable transcript.
+        let portableDelivered = false;
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
@@ -9219,6 +9453,8 @@ function Workspace({
               event.type === "session.providerBound")
           ) {
             revealHandoff(wrap.text);
+            // WP-121: the provider has the transcript. A later failure must not send it again.
+            if (wrap.portable) portableDelivered = true;
           }
           nudgeOpenEditors(event, workCwd);
           if (!orchestrator.forSession(sessionId))
@@ -9301,9 +9537,11 @@ function Workspace({
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
-          const earlier = queuedHandoff
-            ? userMessagesAfterHandoff(current)
-            : [];
+          const earlier = queuedFork
+            ? queuedFork.earlier
+            : queuedHandoff
+              ? userMessagesAfterHandoff(current)
+              : [];
           if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
@@ -9320,6 +9558,7 @@ function Workspace({
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
                 ...firstMateLaunch(current),
+                ...crewLaunch(current, crewRows()), // WP-143
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9379,6 +9618,7 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
+              ...crewLaunch(current, crewRows()), // WP-143
               text,
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
@@ -9399,12 +9639,25 @@ function Workspace({
             inboxAskPrompt(
               rawCommand ? undefined : current.inboxAsk,
               wrap && !rawCommand
-                ? wrapHandoffPrompt(
-                    wrap.text,
-                    wrap.from,
-                    turnPrompt.trim() || CONTINUE_PROMPT,
-                    earlier,
-                  )
+                ? wrap.portable
+                  ? wrapPortableResume(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
+                  : wrap.fork
+                    ? wrapForkPrompt(
+                        wrap.text,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
+                    : wrapHandoffPrompt(
+                        wrap.text,
+                        wrap.from,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
                 : turnPrompt,
             ),
           );
@@ -9582,13 +9835,28 @@ function Workspace({
             }))
               ? { everyMate: true as const, mateIds: listMonos().map((item) => item.id) }
               : undefined;
-            const recallNote = await recalledFence(memoryMate, turnPrompt, recallWide);
+            // WP-99: one conversation shows each memory once; a compaction lets them all return.
+            // WP-100: a fact an engine other than this chat's wrote is labelled with the engine that did.
+            const recallScope = {
+              sessionId,
+              compacted: compactionCount(sessionsRef.current.find((s) => s.id === sessionId)?.blocks ?? current.blocks),
+              // WP-111: a private chat is not given memory.
+              private: (sessionsRef.current.find((s) => s.id === sessionId) ?? current).private === true,
+            };
+            const recallNote = await recalledFence(
+              memoryMate,
+              turnPrompt,
+              recallWide ? { ...recallWide, ...recallScope } : recallScope,
+              current.harness,
+            );
             if (recallNote) sendText = `${sendText}\n\n${recallNote}`;
             // WP-83: opinions for a judgment call. Voice only when this turn drafts in the person's name.
             const profile = await profileNote(turnPrompt);
             if (profile) sendText = `${sendText}\n\n${profile}`;
           }
           await sendTurn(sendText);
+          // WP-121: the turn was handed over, so the transcript is not sent again.
+          if (wrap?.portable && !rawCommand) portableDelivered = true;
           if (teamHanded && teamPlan?.soul && !providerLost) {
             recordAgentContext(
               sessionId,
@@ -9626,6 +9894,9 @@ function Workspace({
               () =>
                 turnGen.current.get(sessionId) === gen &&
                 !isProviderFailureText(nativeProposalText || proposalText),
+              // WP-91: the graph is checked as the plan is read, so two tasks that could run at once on the same
+              // files, or a plan with no verify task, are refused with the fix named.
+              (nodes) => orchestrator.checkPlan(nodes),
             );
           }
           if (turnGen.current.get(sessionId) !== gen) return;
@@ -9639,7 +9910,9 @@ function Workspace({
                 ? completeHandoff(s, wrap.text)
                 : s;
               // A command owns its arguments; deliver the recap with the next chat prompt.
-              return rawCommand ? ready : consumeHandoff(ready);
+              return rawCommand
+                ? ready
+                : consumeForkPoint(consumeHandoff(ready));
             });
             setSessions(sessionsRef.current);
           }
@@ -9648,6 +9921,20 @@ function Workspace({
           recoverEditedResend();
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) revealHandoff(wrap.text);
+          // WP-121: a timeout or a provider that never started is not the end of the switch.
+          if (wrap?.portable && !portableDelivered && portableResume) {
+            const resume = portableResume;
+            const notice = current.midThread;
+            sessionsRef.current = sessionsRef.current.map((session) =>
+              session.id === sessionId
+                ? restoreUnsentPortableResume(session, resume, notice, {
+                    harness: current.harness,
+                    model: current.model,
+                  })
+                : session,
+            );
+            setSessions(sessionsRef.current);
+          }
           const message =
             error instanceof Error
               ? error.message
@@ -9742,6 +10029,8 @@ function Workspace({
               })
               .catch(() => undefined);
           }
+          // WP-164: a turn that failed is announced as a failure, which quiet hours never hold.
+          const turnFailed = controlOutcome.status === "failed";
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
@@ -9751,7 +10040,7 @@ function Workspace({
             const visible = sessionId === activeSessionIdRef.current;
             // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
             if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
-              void announceSessionFinished(finished, visible);
+              void announceSessionFinished(finished, visible, turnFailed);
           }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();
@@ -9828,36 +10117,76 @@ function Workspace({
     [submitSession],
   );
 
+  /**
+   * The bench's way into a Mono's chat (below): open the Mono as Ash's click does, then the chat to type into, which is
+   * the Mono's own. While its chat loads, something else at startup (a tab the window restores) can take the view, which
+   * leaves the view empty or on another chat; the message still goes to the Mono it was meant for.
+   */
+  const openVerifyMonoChat = useCallback(
+    async (monoId: string) => {
+      await onOpenMono(monoId);
+      const view = monoViewIdRef.current;
+      const own = findMono(monoId)?.sessionId ?? null;
+      return { view, own, chat: own ?? view };
+    },
+    [onOpenMono],
+  );
+
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
+  const verifyKickoffNoted = useRef(false);
   useEffect(() => {
-    if (verifyKickoffStarted.current || windowTransfer) return;
+    if (verifyKickoffStarted.current) return;
+    if (windowTransfer) {
+      traceVerifyKickoff("held-by-window-transfer");
+      return;
+    }
     const kickoff = pendingVerifyKickoff();
-    if (!kickoff) return;
+    if (!kickoff) {
+      // A plan whose kickoff this window won't send (already claimed by an earlier launch of the run, or none).
+      if (!verifyKickoffNoted.current && verifyRun()) traceVerifyKickoff("not-pending");
+      verifyKickoffNoted.current = true;
+      return;
+    }
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
+    traceVerifyKickoff("claimed", { monoId: kickoff.monoId ?? null, project: kickoff.project });
+    // Each change in what the window knows of the Mono it waits for, so a kickoff that never goes says why.
+    let seen = "";
     void verifyKickoffMono(kickoff, {
       create: (project, name) => {
         const mono = createMono([project]);
         saveMonoName(mono.id, name);
         return mono.id;
       },
-      // A plan naming an existing Mono (the built-in Chief of Staff) waits until the hub has tied it to the project.
+      // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
+        const state = JSON.stringify({ found: !!mono, projects: mono?.projects ?? [], monos: listMonos().length });
+        if (state !== seen) {
+          seen = state;
+          traceVerifyKickoff("mono-state", JSON.parse(state) as Record<string, unknown>);
+        }
         return !!mono && monoWorksOn(mono, project);
       },
     }).then(async (monoId) => {
       if (!monoId) {
+        traceVerifyKickoff("gave-up", { seen });
         console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
         return;
       }
-      await onOpenMono(monoId);
-      const sessionId = monoViewIdRef.current;
-      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+      traceVerifyKickoff("opening", { monoId });
+      const { view, own, chat } = await openVerifyMonoChat(monoId);
+      // "sending-to-mono-chat": the open lost the view to something else, so the send names the Mono's chat itself.
+      traceVerifyKickoff(!chat ? "no-chat-open" : chat === view ? "sending" : "sending-to-mono-chat", {
+        monoId,
+        view,
+        monoChat: own,
+      });
+      if (chat) onSubmit(chat, kickoff.prompt);
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, windowTransfer]);
   // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
@@ -9880,17 +10209,17 @@ function Workspace({
         if (message.newMono) {
           const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
           saveMonoName(mono.id, message.newMono.name);
-          await onOpenMono(mono.id);
-          const sessionId = monoViewIdRef.current;
-          if (sessionId) onSubmit(sessionId, message.prompt);
+          const { chat } = await openVerifyMonoChat(mono.id);
+          if (!chat) throw new Error(`no chat for the new Mono ${message.newMono.name}`);
+          onSubmit(chat, message.prompt);
           return;
         }
-        await onOpenMono(message.monoId);
-        const sessionId = monoViewIdRef.current;
-        if (sessionId) onSubmit(sessionId, message.prompt);
+        const { chat } = await openVerifyMonoChat(message.monoId);
+        if (!chat) throw new Error(`no chat for ${message.monoId}`);
+        onSubmit(chat, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -10021,7 +10350,7 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId },
+        approval: { requestId, at: Date.now() },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -10708,6 +11037,29 @@ function Workspace({
       },
     });
   }, []);
+  useEffect(() => {
+    // WP-144: fresh-eyes reviewers are cheap sessions with an empty history. Off until a project turns the review on.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindFreshEyesApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      remove: (sessionId) => {
+        sessionsRef.current = sessionsRef.current.filter((session) => session.id !== sessionId);
+        setSessions(sessionsRef.current);
+      },
+      cwd: () => folder,
+    });
+  }, []);
   const roomsHost = useRoomRunner({
     sessions,
     sessionsRef,
@@ -10803,6 +11155,53 @@ function Workspace({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [ensureAutomationRecovery, launchAutomation, shipHold]);
+
+  // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+  const idleCompactEvent = useRef(enqueueHarnessEvent);
+  idleCompactEvent.current = enqueueHarnessEvent;
+  useEffect(() => {
+    return watchIdleClaudeCompaction({
+      sessions: () => sessionsRef.current,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: sessionWorkCwd(session),
+        model: session.model,
+        modelSettings: session.modelSettings,
+        providerAccountId: supportsProviderAccounts(session.harness)
+          ? (session.providerAccountId ??
+            selectedProviderAccountId(session.harness, session.cwd))
+          : undefined,
+        runtimeMode: session.runtimeMode,
+        ephemeral: session.ephemeral === true,
+        controlsAgents:
+          isMonoSession(session.id) ||
+          operatorEnabledInThread(session.blocks) ||
+          orchestrator.run(session.id)?.status === "active",
+        ...firstMateLaunch(session),
+      }),
+      onEvent: (id, event) => idleCompactEvent.current(id, event),
+      // WP-115: hold the chat busy while compacting, so a send queues and a second look waits.
+      // Claimed once, then published. The store assigns the ref as well, so a
+      // diverged ref is put back afterwards.
+      markBusy: (sessionId, busy) => {
+        const result = commitIdleCompactBusy(
+          sessionState.snapshot(),
+          sessionsRef.current,
+          sessionId,
+          busy,
+          turnGen.current,
+          idleCompactOwners.current,
+        );
+        if (result.store !== sessionState.snapshot()) {
+          setSessions([...result.store]);
+          // Same array means the store publish already pointed the ref at it.
+          if (result.ref === result.store) return result.ok;
+        }
+        if (sessionsRef.current !== result.ref) sessionsRef.current = [...result.ref];
+        return result.ok;
+      },
+    });
+  }, []);
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -11132,7 +11531,11 @@ function Workspace({
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
                   message.id === messageId
-                    ? { ...message, text, error: undefined }
+                    ? {
+                        ...message,
+                        text: stripHiddenCharacters(text).text,
+                        error: undefined,
+                      }
                     : message,
                 ),
                 editingQueuedMessageId: undefined,
@@ -11563,14 +11966,9 @@ function Workspace({
         );
         const nextThread = update(current);
         if (!nextThread) return session;
-        const nextBlock = current
-          ? replaceBtwThread(block, nextThread)
-          : {
-              ...block,
-              btwThreads: [...(block.btwThreads ?? []), nextThread],
-            };
-        const blocks = session.blocks.slice();
-        blocks[blockIndex] = nextBlock;
+        // WP-112: attach the side thread only. Do not append, compact, or start a parent turn.
+        const blocks = withSideThread(session.blocks, userBlockId, nextThread);
+        if (!blocks) return session;
         updatedSession = { ...session, blocks };
         return updatedSession;
       });
@@ -12311,6 +12709,7 @@ function Workspace({
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
             ...firstMateLaunch(current),
+            ...crewLaunch(current, crewRows()), // WP-143
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -12777,6 +13176,8 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
+      decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
         const projectCwd = orchestrationProjectCwd(run);
         const leadCheckoutCwd = orchestrationCheckoutCwd(run);
@@ -12809,13 +13210,15 @@ function Workspace({
                   orchestrationWorktreeBranchName(task.id),
                   // WP-82: the crew id is the lease holder.
                   task.id,
-                ).then((tree) =>
-                  workspaceIdentity(
+                ).then((tree) => {
+                  // WP-138: the worker's header can say the include files were copied.
+                  rememberWorktreeInclude(task.sessionId, tree);
+                  return workspaceIdentity(
                     projectCwd,
                     tree.path,
                     tree.branch ?? undefined,
-                  ),
-                );
+                  );
+                });
         const checkoutCwd = workspace.checkoutCwd;
         const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
@@ -12950,6 +13353,20 @@ function Workspace({
           fromCwd,
           orchestrationCheckoutCwd(run),
         );
+      },
+      // WP-91: WP-40's check on this worker's own copy, in its own words, so the run's verdict has a real input. The
+      // check runs in the worker's checkout (or the lead's, for a shared task), through the same runner WP-40 uses;
+      // only a project with no check returns null.
+      gateWorker: async (run, task) => {
+        const checkout = task.workspace?.checkoutCwd ?? orchestrationCheckoutCwd(run);
+        const projectId =
+          hubProjectIdFor(orchestrationProjectCwd(run)) ??
+          orchestrationProjectCwd(run);
+        return workerGateWord(runTaskGate, {
+          projectId,
+          checkout,
+          signedOff: false,
+        });
       },
       cleanupWorker: async (run, task, onlyIfUnchanged) => {
         const workspace = task.workspace;
@@ -13140,6 +13557,16 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // WP-91: a decision answered anywhere (the Inbox, Home or a chat) starts the irreversible step that waited on it.
+  useEffect(
+    () =>
+      watchDecisions(
+        (event, handler) => listen(event, () => handler()),
+        () => orchestrator.decisionsChanged(),
+      ),
+    [],
+  );
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   onStopRef.current = onStop;
@@ -13208,11 +13635,14 @@ function Workspace({
   }, [sessions, pumpWorkersNow]);
   useEffect(() => {
     const offRows = subscribeDelegations(pumpWorkersNow);
-    const offPool = subscribeWorkerPool(pumpWorkersNow);
     // A provider's reset changes no row: look again then, and now and then anyway.
     let timer = 0;
     const arm = () => {
-      const wake = nextWake(providerRoomNow, Date.now());
+      // WP-161: waiting builders also look at the machine again soon, so a pause that clears starts them, and the
+      // Needs you line for a held disk reads a fresh sample.
+      const resets = nextWake(providerRoomNow, Date.now());
+      const recheck = nextHealthCheck(Date.now());
+      const wake = resets === undefined ? recheck : recheck === undefined ? resets : Math.min(resets, recheck);
       timer = window.setTimeout(
         () => {
           pumpWorkersNow();
@@ -13221,6 +13651,13 @@ function Workspace({
         Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
       );
     };
+    // WP-161: a builder joining the queue (or a health read landing) sets the next look again, so a wait that began
+    // after the timer was set is not left to the 60 second cap.
+    const offPool = subscribeWorkerPool(() => {
+      pumpWorkersNow();
+      window.clearTimeout(timer);
+      arm();
+    });
     arm();
     return () => {
       offRows();
@@ -13228,6 +13665,59 @@ function Workspace({
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
+  // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
+  // tasks.delegate call asked again under the same request ID, with the call that was reviewed, the way a waiting
+  // worker starts, so the checks, the worker limits and the waiting line all apply. The brief is kept with the review
+  // (in the app's database), so a restart does not lose it.
+  const steeringRef = useRef(steering);
+  steeringRef.current = steering;
+  useEffect(() => {
+    const unbind = bindHeldStarter({
+      canStart: (owner) =>
+        !!controlRequestRef.current && sessionsRef.current.some((session) => session.id === owner),
+      start: (owner, requestId, input) => {
+        // Its first ask answered "waiting" and that answer is remembered; this one starts it.
+        appReceipts.current.delete(`${owner}:${requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: owner,
+          requestId,
+          action: "tasks.delegate",
+          input,
+        });
+      },
+    });
+    // The Inbox and the chat that asked, for the review: the question, its close, the person's answer, a note to the chat.
+    const unbindBackend = bindFreshEyesBackend(backendFrom(steeringRef.current.backend));
+    const release = () => void releaseHeld();
+    const off = subscribeFreshEyes(release);
+    // What was left half done by the last run: reviewers that died with the window run again (or the person is asked),
+    // and an approved brief starts. Again every half minute, for a start that failed and for a lease that ran out.
+    const resume = () => {
+      void resumeReviews();
+      release();
+    };
+    resume();
+    const timer = window.setInterval(resume, 30_000);
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does. Only the
+    // person's own answer counts (gate.ts isPersonAnswer): a chat answering ask_person for them does not.
+    const offDecisions = watchDecisions(
+      (event, handler) => listen(event, () => handler()),
+      () => void syncHeldDecisions(),
+    );
+    return () => {
+      window.clearInterval(timer);
+      offDecisions();
+      off();
+      unbindBackend();
+      unbind();
+    };
+  }, []);
+  // A chat opened after a restart can take the brief it asked for.
+  const openChatIds = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  useEffect(() => {
+    void releaseHeld();
+  }, [openChatIds]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
   // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
   // reading's, else five hours on; a fresh reading that shows room brings the retry forward.
@@ -13599,7 +14089,14 @@ function Workspace({
                   monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(briefGates.failed(result));
+                if (accepted && row) {
+                  // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                  void invoke("delegations_sent_back", {
+                    id: row.id,
+                    rework: gateFailures,
+                    report: result.result,
+                  }).catch(() => undefined);
+                } else if (!accepted) finish(briefGates.failed(result));
                 return;
               }
               if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
@@ -13619,7 +14116,14 @@ function Workspace({
                     monoNote: gateAskNote(run),
                     onSettled: (next) => void turnEnded(next, true),
                   });
-                  if (!accepted) finish(gateFailedResult(result, run));
+                  if (accepted && row) {
+                    // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                    void invoke("delegations_sent_back", {
+                      id: row.id,
+                      rework: gateFailures,
+                      report: result.result,
+                    }).catch(() => undefined);
+                  } else if (!accepted) finish(gateFailedResult(result, run));
                   return;
                 }
                 if (verdict === "deliver-failed" && run) {
@@ -14101,6 +14605,8 @@ function Workspace({
             createWorktree: (cwd, branch, base, existing, options) =>
               createWorktree(cwd, branch, base, existing, options),
             projectActions: (cwd) => listProjectActions(cwd),
+            // WP-90: a crew reads the stack's names and fake services, never starts a real one.
+            stacks: (cwd) => invoke("stack_status", { cwd }),
             runProjectAction: (checkoutCwd, actionId) =>
               runProjectAction(checkoutCwd, actionId, "agent"),
             waitProjectAction: (runId, timeoutMs) =>
@@ -14198,6 +14704,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
@@ -14209,6 +14717,8 @@ function Workspace({
               const loaded = await invoke<{ doc?: unknown } | null>("memory_review_load");
               return loaded?.doc ?? null;
             },
+            // WP-100: a Mono reading memory through its tool is a use, so those facts are topped up.
+            markMemoryUsed: (ids, at) => recordUse(memoryUsePorts(), ids, at),
             mateIds: () => listMonos().map((item) => item.id),
             monoOf: (id) => {
               const mono =
@@ -14322,6 +14832,13 @@ function Workspace({
                     ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
+              // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
+              checkLead: (_owner, mono, lead) => {
+                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+                  throw new Error(
+                    `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+              },
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
@@ -14821,7 +15338,13 @@ function Workspace({
     });
   }, []);
 
+  // The palette's input takes focus as it opens, so keep what had it before.
+  const paletteFocusRef = useRef<Element | null>(null);
+  const rememberPaletteFocus = () => {
+    paletteFocusRef.current = focusBeforePalette(document.activeElement);
+  };
   const onGoToFile = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14832,6 +15355,7 @@ function Workspace({
     setFilePickerOpen(true);
   }, []);
   const onOpenCommandPalette = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14843,6 +15367,7 @@ function Workspace({
   }, []);
   // WP-74: ⌘K opens the same palette, ready to search every kind.
   const onOpenFinder = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -15691,6 +16216,83 @@ function Workspace({
     fn();
   }, []);
 
+  // WP-93: the command palette's rows for what the app can do right now, and
+  // the one runner that sends each row to the handler its shortcut uses.
+  // Read fresh on the render that opens the palette, so "now" means now.
+  // Esc stops the Mono's chat while the Mono view is open, else the focused
+  // tab's busy chat; Stop chat in the palette reads the same way.
+  const paletteStopTarget: string | null = monoViewId
+    ? sessions.find((session) => session.id === monoViewId)?.busy
+      ? monoViewId
+      : null
+    : focusedBusyAgentSessionId(
+        activeTabId,
+        tabs,
+        sessions,
+        projectTerminalFocusedRef.current,
+      );
+  const paletteContext: PaletteContext = {
+    project:
+      isLocalProject(sidebarCwd) || isRemoteProjectPath(sidebarCwd)
+        ? sidebarCwd
+        : null,
+    terminal: isLocalProject(projectCwd),
+    chat: Boolean(activeSessionId),
+    busy: Boolean(paletteStopTarget),
+    ...paletteFocusOf(paletteFocusRef.current),
+    editor: Boolean(activeFile && isFilesystemTab(activeFile)),
+  };
+  const paletteStopTargetRef = useRef<string | null>(null);
+  paletteStopTargetRef.current = paletteStopTarget;
+  // WP-123: the chat Fork from here acts on: the one in view, and none while a file tab is.
+  const paletteForkTargetRef = useRef<string | null>(null);
+  paletteForkTargetRef.current =
+    activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+      ? activeSessionId
+      : null;
+  const runPaletteCommandFromFinder = useCallback(
+    (row: Parameters<typeof runPaletteRow>[0]) =>
+      runPaletteCommand(row, actions.current, {
+        run,
+        stopChat: () => paletteStopTargetRef.current,
+        stop: (id) => onStopFromUser(id),
+        // The shortcut's own handler, as if it were pressed where focus was.
+        archiveFocused: () =>
+          onArchiveFocusedSession({
+            defaultPrevented: false,
+            target: focusBeforePalette(paletteFocusRef.current),
+            preventDefault: () => undefined,
+            stopPropagation: () => undefined,
+          } as unknown as KeyboardEvent),
+        showHome: () => showAppItem("home"),
+        showChanges: onShowSourceControl,
+        openModelPicker: () =>
+          window.dispatchEvent(new Event("open_model_picker")),
+        newWindow: () => void invoke("open_new_window"),
+        zoom: (action) => {
+          const next =
+            action === "zoom-in"
+              ? saveUiScale(zoomInUiScale(loadUiScale()))
+              : action === "zoom-out"
+                ? saveUiScale(zoomOutUiScale(loadUiScale()))
+                : UI_SCALE_DEFAULT;
+          saveUiScale(next);
+          void applyUiScale(next);
+        },
+        editor: (action) => {
+          if (action === "replace") openReplaceInActiveEditor();
+          else openFindInActiveEditor();
+        },
+        // WP-123: fork the chat in focus from its latest message.
+        forkChat: () => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
+        },
+      }),
+    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
+  );
+
   useEffect(() => {
     if (!IS_MAC) return;
     void invoke("autosave_set_enabled", { enabled: loadAutosave() }).catch(
@@ -16228,6 +16830,98 @@ function Workspace({
     create: () => createMono().id,
   });
 
+  // WP-135: a discarded loser is stopped first, the same as pressing Stop in that chat.
+  const stopFanOutChild = useCallback(
+    async (childId: string) => {
+      const child = sessionsRef.current.find((session) => session.id === childId);
+      if (!child?.busy) return;
+      await onStop(childId);
+    },
+    [onStop],
+  );
+
+  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model, each in its own
+  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two, or cannot be
+  // saved, says why and gives back the worktrees it made.
+  const fanOutBusy = useRef(new Set<string>());
+  const onCompareModels = useCallback(
+    async (
+      sessionId: string,
+      prompt: string,
+      targets: readonly { provider: HarnessId; model: string }[],
+    ) => {
+      if (fanOutBusy.current.has(sessionId)) return false;
+      const source = sessionsRef.current.find((session) => session.id === sessionId);
+      if (!source || source.worktreeRemoved) return false;
+      fanOutBusy.current.add(sessionId);
+      try {
+        const takeBack = fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild);
+        const result = await startFanOut(
+          {
+            prompt,
+            targets,
+            cwd: source.cwd,
+            runtimeMode: source.runtimeMode,
+            sourceId: sessionId,
+            now: Date.now(),
+          },
+          {
+            git: gitRepositoryOnThisComputer,
+            branchName: temporaryWorktreeBranchName,
+            // The project's setup waits until two worktrees exist and the compare is saved: a setup that had already
+            // started would leave a worktree that could not be given back.
+            createWorktree: async (cwd, branch) => {
+              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false, {
+                runSetup: false,
+              });
+              return { path: tree.path, branch: tree.branch ?? branch, head: tree.head };
+            },
+            allowedRoots: defaultWorktreeRoots,
+            release: (worktrees) => releaseFanOutWorktrees(worktrees, takeBack),
+            save: putCompare,
+          },
+        );
+        if (!result.ok) return result.message;
+        const known = new Set(sessionsRef.current.map((session) => session.id));
+        const added = result.sessions.filter((session) => !known.has(session.id));
+        if (added.length === 0) return false;
+        sessionsRef.current = [...sessionsRef.current, ...added];
+        setSessions(sessionsRef.current);
+        // The project's setup starts now that the compare is saved; the chats start with the whole prompt, while the
+        // saved record keeps a capped copy.
+        for (const child of result.record.children) {
+          if (child.worktree.kind === "assigned") void startFanOutSetup(source.cwd, child.worktree.path);
+        }
+        for (const session of added) onSubmit(session.id, prompt);
+        return true;
+      } finally {
+        fanOutBusy.current.delete(sessionId);
+      }
+    },
+    [onSubmit, onRemoveWorktree, stopFanOutChild],
+  );
+
+  // WP-135: the compare sits on the chat it was started from. Picking leaves the winner's worktree.
+  const fanOutCompares = useSyncExternalStore(subscribeCompares, listCompares, listCompares);
+  const fanOutForSession = (sessionId: string) => {
+    const record = [...fanOutCompares].reverse().find((item) => item.sourceId === sessionId);
+    if (!record) return null;
+    return {
+      rows: fanOutCompareRows(record, sessionsRef.current),
+      notStarted: fanOutNotStartedLines(record),
+      onPick: (childId: string) => pickFanOutInStore(record.id, childId),
+      onDiscard: (childId: string) => {
+        const source = sessionsRef.current.find((item) => item.id === sessionId);
+        if (!source) return;
+        return discardFanOutLoser(
+          record.id,
+          childId,
+          fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
+        );
+      },
+    };
+  };
+
   const sessionPaneProps = {
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
@@ -16249,6 +16943,8 @@ function Workspace({
     onSaveDraft,
     onRemoveDraft,
     onSubmit,
+    onCompareModels,
+    fanOutForSession,
     onStop: onStopFromUser,
     // A Mono's own Stop: its turn only (UniiChat stops "Unii's turn", not the agents at work).
     onStopTurn: (sessionId: string) => onStop(sessionId),
@@ -16641,6 +17337,8 @@ function Workspace({
     openNotes: () => homeOpenRef.current.onOpenNotes(),
     openSession: (id) => { void homeOpenRef.current.onSelectHistorySession(id); },
     openTeam: (projectId) => homeOpenRef.current.openCodingTeam(projectId),
+    // WP-161: a Needs you line about the machine (new builders waiting on disk) opens Settings where it says so.
+    openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
@@ -17058,11 +17756,14 @@ function Workspace({
       sessions={sidebarHistory}
       busySessionIds={liveBusySessionIds}
       approvalSessionIds={approvalSessionIds}
+      approvalElsewhereSessionIds={approvalElsewhereSessionIds}
+      chatAttention={chatListAttention}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
       activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
+      onSetSessionFolder={onSessionFolderRelinked}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}
@@ -17073,6 +17774,7 @@ function Workspace({
       onArchiveSessions={onArchiveHistorySessions}
       onPinSession={onPinHistorySession}
       onPinSessions={onPinHistorySessions}
+      onPrivateSession={onPrivateHistorySession}
       onSetSessionLinkedWorkItem={onSetHistorySessionLinkedWorkItem}
       reminders={sessionReminders.reminders}
       onSetReminders={sessionReminders.schedule}
@@ -17463,6 +18165,8 @@ function Workspace({
                                         onTerminalMetaChange={
                                           onTerminalMetaChange
                                         }
+                                        // WP-109: pane headers split through the same handler as the shortcut.
+                                        onSplit={onSplit}
                                       />
                                     </div>
                                   </div>
@@ -17810,6 +18514,8 @@ function Workspace({
               onRunAction={(id) => {
                 if (id === "reload") actions.current.onReload();
               }}
+              paletteContext={paletteContext}
+              onRunCommand={runPaletteCommandFromFinder}
               onClose={() => setFilePickerOpen(false)}
               onOpenHit={(hit, beside, query) => {
                 setFilePickerOpen(false);
@@ -17913,6 +18619,8 @@ function Workspace({
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
           />
+          {/* WP-123: fork a chat from one message. */}
+          <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

@@ -8,9 +8,10 @@ import {
 import { hubData, liveHubStore } from "../model/hubData";
 import { archiveCheck, archiveProject, renameProjectEverywhere, setProjectShape, type ArchiveCheck } from "../model/projectActions";
 import {
-  isImageFileName, moveProject, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
-  useProjectPrefsVersion, type ProjectIconChoice,
+  isImageFileName, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
+  swapProjects, useProjectPrefsVersion, type ProjectIconChoice,
 } from "../model/projectPrefs";
+import { projectMonogram, projectMonogramClasses } from "../model/projectMonogram";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES } from "./projectShapeIcons";
@@ -19,6 +20,10 @@ import {
   DEFAULT_LIMITS, MAX_WORKERS, limitsLine, setWorkerLimits, workerLimits,
 } from "../../monos/model/workerPool";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
+import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
+import { plainErrorText } from "../../../shared/text/plainErrorText";
+import { ProjectGroupChooser } from "./StripGroups";
+import { readStripGroups, stripLayout, stripSectionNeighbour } from "../model/stripGroups";
 
 /**
  * Icons a project could wear on this Mac before Ash OS kept its shape: still drawn for a choice stored back then.
@@ -32,10 +37,10 @@ export const PROJECT_ICONS: Record<string, IconComponent> = {
 };
 export const PROJECT_EMOJI = ["🚀", "🎮", "🛠️", "📦", "🧪", "🌱", "🔥", "⭐", "🎨", "📈", "🧠", "💬", "🏠", "🍀", "🐝", "🌊"];
 
-/** First letter, light, on a grey glass square: the default for every project. */
 /**
  * A project's tile letters: its first letter, or its first two ("Hi", "Ha") when another project on the hub shares
- * that first letter. `others` is every project shown (it may include this one).
+ * that first letter. `others` is every project shown (it may include this one). WP-94: no longer drawn, because the
+ * monogram (projectMonogram.ts) says more about a nameless project; kept for any caller that still asks for it.
  */
 export function letterOf(project: Pick<HubProject, "id" | "name" | "shortName">, others: readonly Pick<HubProject, "id" | "name" | "shortName">[] = []): string {
   const chars = (p: Pick<HubProject, "name" | "shortName">) => [...(p.shortName || p.name).trim()];
@@ -43,14 +48,6 @@ export function letterOf(project: Pick<HubProject, "id" | "name" | "shortName">,
   const first = (own[0] ?? "?").toUpperCase();
   const shared = others.some((o) => o.id !== project.id && (chars(o)[0] ?? "").toUpperCase() === first);
   return shared && own[1] ? first + own[1].toLowerCase() : first;
-}
-
-function safeProjects(): HubProject[] {
-  try {
-    return hubData().listProjects();
-  } catch {
-    return [];
-  }
 }
 
 /**
@@ -68,22 +65,30 @@ export function ProjectGlyph({ project, size = 18 }: { project: HubProject; size
   }
   if (choice?.kind === "image")
     return <img data-project-glyph="image" alt="" src={choice.src} style={{ width: size + 4, height: size + 4 }} className="rounded-[6px] object-cover" />;
-  const Shape = SHAPES[project.iconShape];
+  // WP-94: a project with no icon of its own gets two letters from its name on a tile whose colour that name always
+  // picks (projectMonogram.ts). "folder" is the shape every project is given when none was chosen, so it reads as
+  // "no icon" rather than as an identity: a grey folder says nothing about which project it is.
+  const Shape = project.iconShape === "folder" ? undefined : SHAPES[project.iconShape];
   if (Shape) return <Shape data-project-glyph="shape" data-project-shape={project.iconShape} aria-hidden style={{ width: size, height: size }} strokeWidth={1.75} />;
-  const letters = letterOf(project, safeProjects());
+  return <ProjectMonogramTile name={project.name} size={size} />;
+}
+
+/** A project's letters on their own colour, as T3 Code draws a project with no icon. */
+export function ProjectMonogramTile({ name, size }: { name: string; size: number }) {
   return (
     <span
-      data-project-glyph="letter"
+      data-project-glyph="monogram"
+      data-project-monogram={projectMonogram(name)}
       aria-hidden
-      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * (letters.length > 1 ? 0.56 : 0.72)) }}
-      className="grid place-items-center rounded-[7px] bg-content/10 font-medium leading-none text-content/85 ring-1 ring-inset ring-content/10"
+      style={{ width: size + 6, height: size + 6, fontSize: Math.round(size * 0.56) }}
+      className={`grid place-items-center rounded-[7px] font-medium leading-none ring-1 ring-inset ring-content/10 ${projectMonogramClasses(name)}`}
     >
-      {letters}
+      {projectMonogram(name)}
     </span>
   );
 }
 
-type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" };
+type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "workers" } | { kind: "remove" } | { kind: "group" };
 
 /**
  * Right-click (or the hover "⋯") on a project: Change icon or image, Rename, Show folder in Finder, Move up / down,
@@ -91,12 +96,20 @@ type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "
  */
 export function ProjectMenu({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
   const [mode, setMode] = useState<Mode>({ kind: "menu" });
-  const ids = hubData().listProjects().map((p) => p.id);
-  const at = ids.indexOf(project.id);
+  const projects = hubData().listProjects();
+  const ids = projects.map((p) => p.id);
+  // WP-137: the strip draws projects in no group first, then each group, so a move trades places with the neighbour in
+  // the project's own section (as this window draws it), and is offered only when that neighbour is there.
+  const strip = readStripGroups();
+  const layout = stripLayout(projects, strip.groups, strip.assignments, strip.filterId);
+  const above = stripSectionNeighbour(layout, project.id, -1);
+  const below = stripSectionNeighbour(layout, project.id, 1);
   if (mode.kind === "icon") return <IconChooser project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "rename") return <RenameProject project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "workers") return <ProjectWorkers project={project} anchor={anchor} onClose={onClose} />;
   if (mode.kind === "remove") return <RemoveFromHub project={project} anchor={anchor} onClose={onClose} />;
+  // WP-137: which group the project sits under on the strip.
+  if (mode.kind === "group") return <ProjectGroupChooser project={project} anchor={anchor} onClose={onClose} />;
   const item = (label: string, run: () => void, opts: { disabled?: boolean; danger?: boolean } = {}) => (
     <button
       type="button"
@@ -116,13 +129,14 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
       {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
+      {item("Group", () => setMode({ kind: "group" }))}
       {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {
         if (project.folder) void projectFileActions().then((a) => a.showFolder(project.folder!));
         onClose();
       }, { disabled: !project.folder })}
-      {item("Move up", () => { moveProject(ids, project.id, -1); onClose(); }, { disabled: at <= 0 })}
-      {item("Move down", () => { moveProject(ids, project.id, 1); onClose(); }, { disabled: at < 0 || at >= ids.length - 1 })}
+      {above ? item("Move up", () => { swapProjects(ids, project.id, above.id); onClose(); }) : null}
+      {below ? item("Move down", () => { swapProjects(ids, project.id, below.id); onClose(); }) : null}
       <div role="separator" className="my-1 h-px bg-content/10" />
       {item("Remove from hub", () => setMode({ kind: "remove" }), { danger: true })}
     </Popover>
@@ -142,9 +156,9 @@ function IconChooser({ project, anchor, onClose }: { project: HubProject; anchor
   const pickShape = (shape: ProjectIconShape) => {
     setBusy(shape);
     setProblem(undefined);
-    void setProjectShape(project, shape).then(onClose, (e: Error) => {
+    void setProjectShape(project, shape).then(onClose, (e: unknown) => {
       setBusy(undefined);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -213,9 +227,9 @@ function RenameProject({ project, anchor, onClose }: { project: HubProject; anch
     if (!name.trim() || name.trim() === project.name) return onClose();
     setBusy(true);
     setProblem(undefined);
-    void renameProjectEverywhere(project, name).then(onClose, (e: Error) => {
+    void renameProjectEverywhere(project, name).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (
@@ -248,10 +262,12 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
     </label>
   );
   return (
-    <Popover anchor={anchor} side="right" align="start" width={280} constrainHeight={false} role="dialog" aria-label={`${project.name} workers`}
+    <Popover anchor={anchor} side="right" align="start" width={340} constrainHeight={false} role="dialog" aria-label={`${project.name} workers`}
       onDismiss={onClose} className="flex flex-col gap-2 p-2.5" data-project-workers-dialog>
-      {field("Workers at once", limits.workers, "workers", MAX_WORKERS)}
+      {field("Max builders", limits.workers, "workers", MAX_WORKERS)}
       {field("Of them on heavy tests", limits.heavy, "heavy", limits.workers)}
+      {/* WP-161: pauses apply to every project. Running builders are not stopped. */}
+      <BuilderScaleControls />
       <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
         {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
       </p>
@@ -291,7 +307,7 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
   useEffect(() => {
     if (!live) return;
     let on = true;
-    archiveCheck(project.id).then((c) => on && setCheck(c), (e: Error) => on && setProblem(e.message));
+    archiveCheck(project.id).then((c) => on && setCheck(c), (e: unknown) => on && setProblem(plainErrorText(e)));
     return () => { on = false; };
   }, [live, project.id]);
   const typedOk = typed.trim().toLowerCase() === project.name.trim().toLowerCase();
@@ -300,9 +316,9 @@ export function RemoveFromHub({ project, anchor, onClose }: { project: HubProjec
     setBusy(true);
     setProblem(undefined);
     const hide = live ? { hide: () => archiveProject(project.id, true), unhide: () => archiveProject(project.id, false) } : undefined;
-    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: Error) => {
+    void removeFromHub(project, { retireLead: !!lead && removeLead, hide }).then(onClose, (e: unknown) => {
       setBusy(false);
-      setProblem(e.message);
+      setProblem(plainErrorText(e));
     });
   };
   return (

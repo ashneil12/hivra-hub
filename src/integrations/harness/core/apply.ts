@@ -1,4 +1,5 @@
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
+import { stripHiddenCharacters } from "../../../features/sessions/model/hiddenText";
 import { withoutTurnRepeats } from "./turnRepeats";
 import { isCliNotice } from "./cliNotices";
 import type {
@@ -25,6 +26,7 @@ import { taskListText } from "../../../features/sessions/model/taskList";
 import { isReviewablePlan } from "../../../features/sessions/model/plan";
 import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
+import { childApprovalFrom } from "../../../features/sessions/model/childApproval";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
 import { providerRetryText } from "./providerFailure";
 
@@ -131,6 +133,10 @@ export function applyHarnessEvent(
         pendingQuestion: {
           requestId: event.requestId,
           questions: event.questions,
+          // The same question sent again is not a new ask: it keeps the time it was first made.
+          askedAt:
+            (session.pendingQuestion?.requestId === event.requestId ? session.pendingQuestion.askedAt : undefined) ??
+            Date.now(),
           ...(event.title ? { title: event.title } : {}),
           ...(event.autoResolveAt != null
             ? { autoResolveAt: event.autoResolveAt }
@@ -330,6 +336,8 @@ function mergeTurnMetrics(
     ...(event.cacheHitPercent != null
       ? { cacheHitPercent: event.cacheHitPercent }
       : {}),
+    // WP-108: a price the CLI reported. Each report is the turn's cost so far, so a later one replaces it.
+    ...(event.costUsd != null ? { costUsd: event.costUsd } : {}),
   };
   const blocks = session.blocks.slice();
   blocks[userIndex] = { ...current, turnMetrics: metrics };
@@ -564,11 +572,13 @@ export function appendUser(
 ): Session {
   session = settlePendingApprovals(session);
   return appendBlock(
-    { ...session, busy: true, turnReady: false },
+    // A real turn starts: any background compact hold is over (WP-115).
+    { ...session, busy: true, turnReady: false, idleCompacting: undefined },
     {
       id: crypto.randomUUID(),
       role: "user",
-      text,
+      // Hidden characters never reach a user turn, whoever built it (hiddenText.ts).
+      text: stripHiddenCharacters(text).text,
       startedAt: Date.now(),
       ...turnModelFields(session),
       ...(attachments.length > 0 ? { attachments } : {}),
@@ -592,7 +602,7 @@ export function appendSteerUser(
       {
         id: crypto.randomUUID(),
         role: "user",
-        text,
+        text: stripHiddenCharacters(text).text,
         sentAt: Date.now(),
         ...turnModelFields(session),
         ...(attachments.length > 0 ? { attachments } : {}),
@@ -609,6 +619,7 @@ export function stopStreaming(session: Session, endedAt = Date.now()): Session {
     ...settled,
     busy: false,
     turnReady: false,
+    idleCompacting: undefined,
     pendingQuestion: undefined,
     blocks: stampTurnDuration(
       withoutTurnRepeats(
@@ -948,6 +959,12 @@ function attachApproval(
   session: Session,
   event: Extract<HarnessEvent, { type: "approval.requested" }>,
 ): Session {
+  const child = childApprovalFrom(event.child);
+  const approval = {
+    requestId: event.requestId,
+    ...(event.call ? { call: event.call } : {}),
+    ...(child ? { child } : {}),
+  };
   const index = findToolForApproval(session, event);
   if (index >= 0) {
     const blocks = session.blocks.slice();
@@ -978,7 +995,11 @@ function attachApproval(
               ...(preview ? { preview } : {}),
             }
           : prev.tool,
-      approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+      approval: {
+        ...approval,
+        // The same request sent again is not a new ask: it keeps the time it was first made.
+        at: (prev.approval?.requestId === event.requestId ? prev.approval.at : undefined) ?? Date.now(),
+      },
     };
     return { ...session, blocks };
   }
@@ -996,7 +1017,7 @@ function attachApproval(
       kind: event.kind,
       ...(preview ? { preview } : {}),
     },
-    approval: { requestId: event.requestId, ...(event.call ? { call: event.call } : {}) },
+    approval: { ...approval, at: Date.now() },
   });
 }
 

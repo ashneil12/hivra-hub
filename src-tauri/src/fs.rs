@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -20,6 +20,8 @@ const MAX_DOCUMENT_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_GENERATED_IMAGE_DATA_BYTES: u64 = MAX_GENERATED_IMAGE_BYTES * 4 / 3 + 4;
 const GENERATED_IMAGE_DIR: &str = "generated-images";
+/// Where a pasted blob is kept (`write_attachment`), under the system temp folder.
+const ATTACHMENT_DIR: &str = "monocode-attachments";
 
 #[derive(Serialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -684,6 +686,9 @@ const CHECK_IGNORE_NONE_MATCHED: i32 = 1;
 pub(crate) fn git_ignored_names(dir: &Path, names: &[&str]) -> Option<HashSet<String>> {
     if names.is_empty() {
         return Some(HashSet::new());
+    }
+    if crate::chat_folder::is_blank(dir) {
+        return None;
     }
     let mut child = git_cmd()
         .arg("-C")
@@ -1546,6 +1551,9 @@ pub struct GitHubPrDiff {
     pub files: Vec<GitHubPrFile>,
     pub patch: String,
     pub truncated: bool,
+    /// The pull request's head commit, read in the same `gh pr view` call as the files (no extra request). A review
+    /// guide (WP-132) is kept against it, so a new push shows the guide as out of date.
+    pub head_sha: Option<String>,
 }
 
 const MAX_PR_DIFF_BYTES: usize = 2 * 1024 * 1024;
@@ -1753,10 +1761,11 @@ pub struct GitBranchEntry {
     pub remote: Option<String>,
 }
 
-/// Local branches, plus remote-only branches that can be checked out.
+/// Local branches, plus remote-only branches that can be checked out. A git that has not answered within
+/// `GIT_BRANCHES_LIMIT` is killed and the call fails, so a stuck git leaves no process behind.
 #[tauri::command]
 pub async fn git_branches(cwd: String) -> Result<GitBranches, String> {
-    tauri::async_runtime::spawn_blocking(move || Ok(git_branches_for(&expand_home(&cwd))))
+    tauri::async_runtime::spawn_blocking(move || git_branches_for(&expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -2567,6 +2576,7 @@ fn git_index_mode(root: &Path, relative: &str) -> Option<String> {
 }
 
 fn git_hash_object(root: &Path, relative: &str, contents: &[u8]) -> Result<String, String> {
+    no_blank_root(root)?;
     let mut child = git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -2815,6 +2825,7 @@ impl Drop for GitSelectionIndex {
 }
 
 fn git_selected_context_for(root: &Path, paths: &[String]) -> Result<GitStagedContext, String> {
+    no_blank_root(root)?;
     let paths = git_selected_paths(root, paths)?;
     let index_dir = std::env::temp_dir().join(format!("monocode-git-selection-{}", Uuid::new_v4()));
     let directory = std::fs::DirBuilder::new();
@@ -3896,7 +3907,7 @@ fn git_github_pr_diff_for(
     let fields = if full_context {
         "files,additions,deletions,baseRefOid,headRefOid"
     } else {
-        "files,additions,deletions"
+        "files,additions,deletions,headRefOid"
     };
     let json = gh_run(
         root,
@@ -4224,8 +4235,14 @@ fn parse_github_pr_diff_meta(json: &str) -> Result<GitHubPrDiff, String> {
         deletions: i64,
         #[serde(default)]
         files: Vec<FileRow>,
+        #[serde(default, rename = "headRefOid")]
+        head_ref_oid: Option<String>,
     }
     let row: Row = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let head_sha = row
+        .head_ref_oid
+        .map(|oid| oid.trim().to_string())
+        .filter(|oid| !oid.is_empty());
     Ok(GitHubPrDiff {
         additions: row.additions,
         deletions: row.deletions,
@@ -4240,6 +4257,7 @@ fn parse_github_pr_diff_meta(json: &str) -> Result<GitHubPrDiff, String> {
             .collect(),
         patch: String::new(),
         truncated: false,
+        head_sha,
     })
 }
 
@@ -4571,7 +4589,8 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// Any git can start a filter: in an LFS repo `status`, `diff`, `add`, and
 /// checkouts all run `git-lfs`, which a Finder launch's bare PATH lacks. The
 /// cached search path finds it without waiting on the login shell.
-fn git_cmd() -> Command {
+/// WP-104: the health list reads `git --version` through this same command.
+pub(crate) fn git_cmd() -> Command {
     let mut cmd = Command::new("git");
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
@@ -4604,7 +4623,17 @@ pub(crate) fn canonical(path: impl AsRef<Path>) -> std::io::Result<PathBuf> {
     dunce::canonicalize(path)
 }
 
+/// `git -C ""` changes nowhere, so a blank root would read and write whatever checkout the app runs in. A chat with no
+/// folder (docs/PORTABLE.md) reaches git as a blank root: every git helper here refuses it instead.
+fn no_blank_root(root: &Path) -> Result<(), String> {
+    if crate::chat_folder::is_blank(root) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
+    Ok(())
+}
+
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
+    no_blank_root(root)?;
     let mut cmd = git_cmd_for_args(args);
     let output = cmd
         .arg("--no-pager")
@@ -4640,6 +4669,7 @@ fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 }
 
 fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
+    no_blank_root(root).ok()?;
     let output = git_cmd_for_args(args)
         .arg("--no-pager")
         .arg("-C")
@@ -4675,6 +4705,7 @@ pub(crate) fn git_output_capped(
     max_bytes: usize,
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
+    no_blank_root(root).ok()?;
     let mut child = git_cmd()
         .arg("--no-pager")
         .arg("-C")
@@ -4791,26 +4822,75 @@ fn git_is_work_tree(root: &Path) -> bool {
     git_stdout(root, &["rev-parse", "--is-inside-work-tree"]).as_deref() == Some("true")
 }
 
-fn git_branches_for(root: &Path) -> GitBranches {
-    if !git_is_work_tree(root) {
-        return GitBranches::default();
+/// How long `git_branches` lets git run, all its calls together, before it kills it and fails. The new chat's own
+/// wait for this list is shorter (`NEW_CHAT_GIT_WAIT_MS` in newChatWorktree.ts); this is what keeps a git that never
+/// answers from outliving that wait.
+const GIT_BRANCHES_LIMIT: Duration = Duration::from_secs(10);
+const GIT_BRANCHES_NO_ANSWER: &str = "git did not answer";
+/// A branch list is a few KB. This only stops a runaway.
+const GIT_BRANCHES_MAX_BYTES: usize = 64 * 1024 * 1024;
+
+fn git_branches_for(root: &Path) -> Result<GitBranches, String> {
+    git_branches_within(root, GIT_BRANCHES_LIMIT)
+}
+
+/// The branch list, with every git call it makes under one time limit. At `limit` the git still running is killed
+/// (`git_output_capped` stops on the flag) and the list fails with `GIT_BRANCHES_NO_ANSWER`, which is not "not a repo".
+fn git_branches_within(root: &Path, limit: Duration) -> Result<GitBranches, String> {
+    let expired = Arc::new(AtomicBool::new(false));
+    let (finished, finish) = mpsc::channel::<()>();
+    let flag = Arc::clone(&expired);
+    thread::spawn(move || {
+        // Dropping `finished` ends the wait at once: the list is done and nothing is left to expire.
+        if finish.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let listed = list_git_branches(root, &expired);
+    drop(finished);
+    listed
+}
+
+/// One git call of the list: its trimmed output, `Ok(None)` when git refused it or printed nothing, `Err` when the
+/// limit passed (git was killed).
+fn git_listing_text(
+    root: &Path,
+    args: &[&str],
+    expired: &AtomicBool,
+) -> Result<Option<String>, String> {
+    let no_answer = || Err(GIT_BRANCHES_NO_ANSWER.to_string());
+    if expired.load(Ordering::Acquire) {
+        return no_answer();
+    }
+    match git_output_capped(root, args, GIT_BRANCHES_MAX_BYTES, Some(expired)) {
+        Some((bytes, false)) => {
+            let text = String::from_utf8_lossy(&bytes).trim().to_string();
+            Ok(Some(text).filter(|text| !text.is_empty()))
+        }
+        _ if expired.load(Ordering::Acquire) => no_answer(),
+        _ => Ok(None),
+    }
+}
+
+fn list_git_branches(root: &Path, expired: &AtomicBool) -> Result<GitBranches, String> {
+    let git = |args: &[&str]| git_listing_text(root, args, expired);
+    if git(&["rev-parse", "--is-inside-work-tree"])?.as_deref() != Some("true") {
+        return Ok(GitBranches::default());
     }
 
-    let current_branch = git_head_branch(root);
-    let head_sha = git_stdout(root, &["rev-parse", "--short", "HEAD"]);
+    let current_branch =
+        git(&["symbolic-ref", "--short", "HEAD"])?.filter(|branch| branch != "HEAD");
+    let head_sha = git(&["rev-parse", "--short", "HEAD"])?;
     let detached = current_branch.is_none() && head_sha.is_some();
     let current = current_branch.clone().or(head_sha);
 
     let mut branches = Vec::new();
     let mut local_names = HashSet::new();
-    if let Some(text) = git_run(
-        root,
-        &[
-            "for-each-ref",
-            "--format=%(refname:short)\t%(HEAD)",
-            "refs/heads",
-        ],
-    ) {
+    if let Some(text) = git(&[
+        "for-each-ref",
+        "--format=%(refname:short)\t%(HEAD)",
+        "refs/heads",
+    ])? {
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -4840,10 +4920,7 @@ fn git_branches_for(root: &Path) -> GitBranches {
         }
     }
 
-    if let Some(text) = git_run(
-        root,
-        &["for-each-ref", "--format=%(refname:short)", "refs/remotes"],
-    ) {
+    if let Some(text) = git(&["for-each-ref", "--format=%(refname:short)", "refs/remotes"])? {
         for line in text.lines() {
             let full = line.trim();
             if full.is_empty() {
@@ -4878,11 +4955,11 @@ fn git_branches_for(root: &Path) -> GitBranches {
             .then_with(|| a.remote.cmp(&b.remote))
     });
 
-    GitBranches {
+    Ok(GitBranches {
         current,
         detached,
         branches,
-    }
+    })
 }
 
 fn git_checkout_for(root: &Path, name: &str, remote: Option<&str>) -> Result<String, String> {
@@ -4961,6 +5038,7 @@ fn checkout_blocked_by_changes(err: &str) -> bool {
 }
 
 fn git_branch_name(root: &Path, name: &str) -> Result<String, String> {
+    no_blank_root(root)?;
     let name = name.trim();
     if name.is_empty() {
         return Err("Branch name cannot be empty".into());
@@ -5104,6 +5182,7 @@ fn git_ahead_behind(root: &Path, base: &str) -> (i64, i64) {
 }
 
 fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
+    no_blank_root(root).ok()?;
     let output = git_cmd().arg("-C").arg(root).args(args).output().ok()?;
     if !output.status.success() {
         return None;
@@ -5674,29 +5753,547 @@ const STREAMABLE_VIDEO_EXTENSIONS: &[&str] = &[
     "mp4", "m4v", "mov", "webm", "ogv", "avi", "mkv", "mpg", "mpeg", "3gp", "3g2",
 ];
 
-/// Let the asset protocol serve one local video, so a chat can stream it with
-/// range requests instead of reading the whole file into memory. Only that
-/// file, and only a video container, joins the scope. Returns the canonical
-/// path the caller should load.
-#[tauri::command]
-pub fn allow_video_stream(app: AppHandle, path: String) -> Result<String, String> {
-    let path = expand_home(&path)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let video = is_streamable_video(&path);
-    if !video || !path.is_file() {
-        return Err("Not a video file".into());
+/// Image files a chat's Markdown can show; mirrors `IMAGE_EXTENSIONS` in the UI
+/// (no `.svg`, which is text and opens in the editor).
+const CHAT_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico"];
+
+/// The one answer for every refusal: a missing file, one outside the chat's
+/// folders and one that is not media look the same, so a reply cannot use the
+/// answer to find out what is on this computer.
+const CHAT_MEDIA_REFUSED: &str = "That file can't be shown in this chat.";
+
+/// A path given as text, as an absolute path on this computer, or `None` when it
+/// is anything else. It touches no filesystem, so a path that names another
+/// machine is turned away before anything can reach it: a UNC or device path
+/// (`\\host\share\x.png`, `//host/share/x.png`, `\\?\...`), which Windows
+/// answers by opening a network session to the host, and a path under the
+/// automounted network folders (`/net/host/x.png` on a Mac or Linux, `/Network`
+/// on a Mac), which the first look inside mounts. `~` is the home folder, `.`
+/// and `..` are resolved in the text alone (`/..` is `/`), so a `..` cannot
+/// carry a path from a folder it starts in to one it must not reach.
+///
+/// Anything that takes a path out of a saved chat or a reply should ask this
+/// first, check the result against the folder it may use, and only then
+/// canonicalise it and check again.
+pub(crate) fn local_path_text(path: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    if path.is_empty() || path.contains('\0') || path.starts_with("\\\\") || path.starts_with("//")
+    {
+        return None;
     }
-    app.asset_protocol_scope()
-        .allow_file(&path)
-        .map_err(|e| e.to_string())?;
-    Ok(path.to_string_lossy().into_owned())
+    let path = expand_home(path);
+    if !path.is_absolute() {
+        return None;
+    }
+    let mut out = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                }
+            }
+            Component::Prefix(prefix) => {
+                // A drive letter is this computer; every other prefix is a
+                // network or device path.
+                if !matches!(
+                    prefix.kind(),
+                    std::path::Prefix::Disk(_) | std::path::Prefix::VerbatimDisk(_)
+                ) {
+                    return None;
+                }
+                out.push(part.as_os_str());
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    (!is_network_automount(&out)).then_some(out)
 }
 
-fn is_streamable_video(path: &std::path::Path) -> bool {
+/// Whether an absolute path starts in the folders the system mounts a network
+/// share into when it is first looked at. The names match in any case, since a
+/// Mac's disk does not tell `/NET` from `/net`.
+fn is_network_automount(path: &Path) -> bool {
+    use std::path::Component;
+    let mut parts = path.components();
+    if !matches!(parts.next(), Some(Component::RootDir)) {
+        return false;
+    }
+    matches!(parts.next(), Some(Component::Normal(name))
+        if name.eq_ignore_ascii_case("net") || name.eq_ignore_ascii_case("network"))
+}
+
+/// A folder a chat's Markdown may load local media from: the path as the chat's
+/// records name it, which a path is first held to as text, and the real path
+/// with symlinks followed, which the file must then lie inside.
+#[derive(Debug)]
+struct MediaRoot {
+    text: PathBuf,
+    real: PathBuf,
+    /// One of the app's own folders (generated images, pasted attachments, a Mono's
+    /// own folders), not a folder the chat's records name. It is exact, and is not
+    /// held to what a chat's own folder must not be.
+    trusted: bool,
+}
+
+/// A file's identity on this computer: its device and inode, which a symlink,
+/// a firmlink or a bind mount does not change. There is none where this cannot
+/// be read.
+type FileId = (u64, u64);
+
+#[cfg(unix)]
+fn file_id(path: &Path) -> Option<FileId> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(path)
+        .ok()
+        .map(|meta| (meta.dev(), meta.ino()))
+}
+
+#[cfg(not(unix))]
+fn file_id(_path: &Path) -> Option<FileId> {
+    None
+}
+
+fn real_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(path)
+}
+
+/// What the checks ask of the disk: the real one, or a stand-in that shows a
+/// test whether the disk was asked, or that makes two folders one.
+struct Disk<'a> {
+    canonicalize: &'a dyn Fn(&Path) -> std::io::Result<PathBuf>,
+    id_of: &'a dyn Fn(&Path) -> Option<FileId>,
+}
+
+const REAL_DISK: Disk<'static> = Disk {
+    canonicalize: &real_canonicalize,
+    id_of: &file_id,
+};
+
+/// Folders that are too broad to be a chat's own, whatever its records say:
+/// each would let a chat show anything the user keeps below it.
+#[derive(Debug)]
+struct Withheld {
+    home: Option<PathBuf>,
+    /// The home folder and every folder above it, by identity, so an alias of
+    /// one is caught as the folder itself.
+    above_home: Vec<FileId>,
+    app_data_path: Option<PathBuf>,
+    app_data: Option<FileId>,
+    above_app_data: Vec<FileId>,
+    /// The home folder's `Library`, by identity.
+    library: Option<FileId>,
+}
+
+/// Folders that list other volumes or whole systems, or that hold everything
+/// temporary or variable, as the system names them and as they resolve (`/tmp`
+/// is `/private/tmp` on a Mac).
+const BROAD_FOLDERS: &[&str] = &[
+    "/Volumes",
+    "/private",
+    "/private/tmp",
+    "/private/var",
+    "/tmp",
+    "/var",
+    "/mnt",
+    "/media",
+];
+
+impl Withheld {
+    fn new(home: Option<&Path>, app_data: Option<&Path>, disk: &Disk) -> Self {
+        let home = home.and_then(|path| (disk.canonicalize)(path).ok());
+        let app_data = app_data.and_then(|path| (disk.canonicalize)(path).ok());
+        let chain = |path: &Option<PathBuf>| -> Vec<FileId> {
+            path.iter()
+                .flat_map(|path| path.ancestors())
+                .filter_map(|folder| (disk.id_of)(folder))
+                .collect()
+        };
+        Self {
+            above_home: chain(&home),
+            app_data: app_data.as_ref().and_then(|path| (disk.id_of)(path)),
+            above_app_data: chain(&app_data),
+            app_data_path: app_data,
+            library: home
+                .as_ref()
+                .and_then(|home| (disk.id_of)(&home.join("Library"))),
+            home,
+        }
+    }
+
+    /// Whether `real` (canonical) is too broad to be a chat's folder: the
+    /// filesystem root, a folder that lists volumes, systems or temporary files,
+    /// anything in the Mac's `/System` (whose `Volumes/Data` reaches the whole
+    /// home through a firmlink and resolves to itself), a volume or mount point
+    /// (a folder on a different device than the one holding it), the home folder
+    /// or any folder above it, the app's data folder or any folder above it, or
+    /// the home folder's `Library` or anything in it. The last three are found by
+    /// identity as well as by name, so an alias of them is too.
+    fn covers(&self, real: &Path, disk: &Disk) -> bool {
+        let id = (disk.id_of)(real);
+        real.parent().is_none()
+            || is_network_automount(real)
+            || BROAD_FOLDERS.iter().any(|broad| real == Path::new(broad))
+            || (cfg!(target_os = "macos") && real.starts_with("/System"))
+            || self.home.as_ref().is_some_and(|home| {
+                home.starts_with(real) || real.starts_with(home.join("Library"))
+            })
+            || self.app_data_text_covers(real)
+            || id.is_some_and(|id| {
+                self.above_home.contains(&id) || self.above_app_data.contains(&id)
+            })
+            || self.library.is_some_and(|library| {
+                real.ancestors()
+                    .any(|folder| (disk.id_of)(folder) == Some(library))
+            })
+            || match (id, real.parent().and_then(|parent| (disk.id_of)(parent))) {
+                (Some(here), Some(above)) => here.0 != above.0,
+                _ => false,
+            }
+    }
+
+    fn app_data_text_covers(&self, real: &Path) -> bool {
+        self.app_data_path
+            .as_ref()
+            .is_some_and(|data| data.starts_with(real))
+    }
+
+    /// Whether a canonical file under a folder the chat's records name has
+    /// reached the home folder's `Library` or the app's data folder, or the
+    /// home folder from a folder that is not in it, through an alias that
+    /// canonicalising does not undo (a bind mount, a firmlink).
+    fn covers_file(&self, file: &Path, root: &MediaRoot, disk: &Disk) -> bool {
+        if root.trusted {
+            return false;
+        }
+        let home = self.home.as_ref().and_then(|home| (disk.id_of)(home));
+        let root_in_home = self
+            .home
+            .as_ref()
+            .is_some_and(|home| root.real.starts_with(home));
+        file.ancestors().skip(1).any(|folder| {
+            let Some(id) = (disk.id_of)(folder) else {
+                return false;
+            };
+            Some(id) == self.library
+                || Some(id) == self.app_data
+                || (Some(id) == home && !root_in_home)
+        })
+    }
+}
+
+/// The folders a chat's Markdown may load local media from, and what they are
+/// held to.
+#[derive(Debug)]
+struct MediaScope {
+    roots: Vec<MediaRoot>,
+    withheld: Withheld,
+}
+
+impl MediaScope {
+    /// `folders` are the ones the app's records name for the chat
+    /// (`chat_media::folders`); `trusted` are the app's own, exact folders.
+    ///
+    /// A reply, or a chat imported from elsewhere, is untrusted text, so a path
+    /// in it is shown only when it names a file inside one of these. A folder
+    /// that is missing, or is not on this computer (`local_path_text`), is left
+    /// out without the disk being asked about it. So is one that is too broad to
+    /// be a chat's own (`Withheld`): most Mono chats start in the home folder,
+    /// which is never a root, and show what lies in their projects and the
+    /// projects' worktrees instead.
+    fn build(
+        folders: &[String],
+        trusted: &[PathBuf],
+        home: Option<&Path>,
+        app_data: Option<&Path>,
+        disk: &Disk,
+    ) -> Self {
+        let withheld = Withheld::new(home, app_data, disk);
+        let mut roots: Vec<MediaRoot> = Vec::new();
+        for folder in folders {
+            let Some(text) = local_path_text(folder) else {
+                continue;
+            };
+            let Ok(real) = (disk.canonicalize)(&text) else {
+                continue;
+            };
+            if withheld.covers(&real, disk) || roots.iter().any(|root| root.real == real) {
+                continue;
+            }
+            roots.push(MediaRoot {
+                text,
+                real,
+                trusted: false,
+            });
+        }
+        for folder in trusted {
+            let Some(text) = local_path_text(&folder.to_string_lossy()) else {
+                continue;
+            };
+            let Ok(real) = (disk.canonicalize)(&text) else {
+                continue;
+            };
+            if real.parent().is_some() {
+                roots.push(MediaRoot {
+                    text,
+                    real,
+                    trusted: true,
+                });
+            }
+        }
+        Self { roots, withheld }
+    }
+}
+
+/// The scope of chat `session_id`: the folders the app's own records give it
+/// (`chat_media::folders`: its folder and worktree, the projects of its Mono
+/// and their worktrees, its workers' worktrees), not what the window that asks
+/// says; and the app's own places: its generated images, the pasted
+/// attachments, and its Mono's own folders.
+fn chat_media_scope(
+    app: &AppHandle,
+    store: &crate::session_store::SessionStore,
+    session_id: &str,
+) -> Result<MediaScope, String> {
+    let roster = crate::mono::roster_value(app);
+    // The database is read and let go before any folder is looked at on disk (`chat_media::Candidates`).
+    let candidates = {
+        let conn = store.lock_conn()?;
+        crate::chat_media::candidates(&conn, roster.as_ref(), session_id)
+    };
+    let found = candidates.vet();
+    let app_data = app.path().app_data_dir().ok();
+    let mut trusted = vec![std::env::temp_dir().join(ATTACHMENT_DIR)];
+    if let Some(data) = &app_data {
+        trusted.push(data.join(GENERATED_IMAGE_DIR));
+        for mono in &found.monos {
+            trusted.extend(crate::mono::mono_places(
+                &crate::mono::resolved_root(data),
+                data,
+                mono,
+            ));
+        }
+    }
+    // The app's own places skip the broadness rules, so each must really be the app's: a folder (not a link to
+    // somewhere else) that this user owns. On Linux the temp folder is shared, and another account could make
+    // `/tmp/monocode-attachments` a link to this user's home before the app first writes there.
+    trusted.retain(|folder| own_real_folder(folder));
+    let home = crate::dirs_home().map(PathBuf::from);
+    Ok(MediaScope::build(
+        &found.folders,
+        &trusted,
+        home.as_deref(),
+        app_data.as_deref(),
+        &REAL_DISK,
+    ))
+}
+
+/// `folder` is a folder itself, not a link, and (on unix) this user's own.
+fn own_real_folder(folder: &Path) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(folder) else {
+        return false;
+    };
+    if !meta.is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        meta.uid() == unsafe { libc::geteuid() }
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
+
+/// The canonical file `path` names, if it is a file of the wanted `kind` that
+/// lies inside one of the scope's roots.
+///
+/// The path is checked twice. As text it must be a local absolute path that
+/// starts with a root's own text, so a path to another machine, or one that
+/// climbs out with `..`, is turned away before the disk is asked about it.
+/// Then it is resolved with symlinks followed, which does follow a link inside
+/// a root to wherever it points, and must lie inside a root's real path, so a
+/// link inside a folder that points out of it is refused; and it must not have
+/// reached a place a chat's folder may not hold through an alias
+/// (`Withheld::covers_file`). Both compare whole path components, so
+/// `/work/repo-evil` is not inside `/work/repo`, and the file read or streamed
+/// afterwards is the one checked, not the name.
+fn chat_media_file_via(
+    path: &str,
+    scope: &MediaScope,
+    kind: fn(&Path) -> bool,
+    disk: &Disk,
+) -> Result<PathBuf, String> {
+    let refused = || CHAT_MEDIA_REFUSED.to_string();
+    let text = local_path_text(path).ok_or_else(refused)?;
+    if !scope
+        .roots
+        .iter()
+        .any(|root| text.starts_with(&root.text) || text.starts_with(&root.real))
+    {
+        return Err(refused());
+    }
+    let file = (disk.canonicalize)(&text).map_err(|_| refused())?;
+    let held = scope
+        .roots
+        .iter()
+        .any(|root| file.starts_with(&root.real) && !scope.withheld.covers_file(&file, root, disk));
+    if !held || !kind(&file) || !file.is_file() {
+        return Err(refused());
+    }
+    crate::instance::guard_lock_file(&file)?;
+    Ok(file)
+}
+
+fn chat_media_file(
+    path: &str,
+    scope: &MediaScope,
+    kind: fn(&Path) -> bool,
+) -> Result<PathBuf, String> {
+    chat_media_file_via(path, scope, kind, &REAL_DISK)
+}
+
+/// Let the asset protocol serve one local video, so a chat can stream it with
+/// range requests instead of reading the whole file into memory. The video must
+/// lie inside one of the folders the app's records give chat `session_id`
+/// (`chat_media_scope`) or one of the app's own, and be a video container, and
+/// only then does that one file join the scope. Anything else is refused before
+/// the scope changes, so a reply cannot widen what the webview may load.
+/// Returns the canonical path the caller should load. The folders are worked
+/// out, and the disk asked, on a blocking thread, so a volume that does not
+/// answer cannot tie up the async workers or the main thread.
+#[tauri::command]
+pub async fn allow_video_stream(
+    app: AppHandle,
+    session_id: String,
+    path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<crate::session_store::SessionStore>();
+        let scope = chat_media_scope(&app, &store, &session_id)?;
+        allow_video_stream_in(&path, &scope, |file| {
+            app.asset_protocol_scope()
+                .allow_file(file)
+                .map_err(|e| e.to_string())
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The command without the app: `allow` widens the asset scope and is called
+/// only for a video the scope allows.
+fn allow_video_stream_in(
+    path: &str,
+    scope: &MediaScope,
+    allow: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<String, String> {
+    let file = chat_media_file(path, scope, is_streamable_video)?;
+    allow(&file)?;
+    Ok(file.to_string_lossy().into_owned())
+}
+
+fn is_streamable_video(path: &Path) -> bool {
+    has_extension_in(path, STREAMABLE_VIDEO_EXTENSIONS)
+}
+
+fn is_chat_image(path: &Path) -> bool {
+    has_extension_in(path, CHAT_IMAGE_EXTENSIONS)
+}
+
+fn has_extension_in(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
-        .is_some_and(|ext| STREAMABLE_VIDEO_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+        .is_some_and(|ext| extensions.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// Whether bytes start like an image the chat shows; mirrors `sniffImageMime`
+/// in the UI. A file named `.png` that is not one is never handed over.
+fn looks_like_chat_image(bytes: &[u8]) -> bool {
+    let at = |offset: usize, magic: &[u8]| {
+        bytes
+            .get(offset..offset + magic.len())
+            .is_some_and(|found| found == magic)
+    };
+    at(0, &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        || at(0, &[0xff, 0xd8, 0xff])
+        || at(0, b"GIF8")
+        || at(0, b"BM")
+        || at(0, &[0x00, 0x00, 0x01, 0x00])
+        || (at(0, b"RIFF") && at(8, b"WEBP"))
+        || (at(4, b"ftyp") && (at(8, b"avif") || at(8, b"avis")))
+}
+
+/// Read an image that a chat's Markdown shows from this computer.
+///
+/// The reply is untrusted, so the file must lie inside one of the folders the
+/// app's records give chat `session_id` (`chat_media_scope`) or one of the
+/// app's own, with symlinks followed, and its bytes must be an image. The caller
+/// sniffs them again for the blob it makes, as for `read_binary_file`. The
+/// folders are worked out, and the disk asked, on a blocking thread.
+#[tauri::command]
+pub async fn read_chat_image(
+    app: AppHandle,
+    session_id: String,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let store = app.state::<crate::session_store::SessionStore>();
+        let scope = chat_media_scope(&app, &store, &session_id)?;
+        read_chat_image_in(&path, &scope)
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes))
+}
+
+/// Open a file for reading without waiting on, or following, what has taken its
+/// place since it was checked: a pipe (which would block forever) or a link.
+fn open_media_file(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
+    }
+    options.open(path)
+}
+
+fn read_chat_image_in(path: &str, scope: &MediaScope) -> Result<Vec<u8>, String> {
+    let file = chat_media_file(path, scope, is_chat_image)?;
+    let handle = open_media_file(&file).map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    let meta = handle
+        .metadata()
+        .map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    let too_large = || {
+        format!(
+            "Image is too large to show (maximum {} MB).",
+            MAX_PREVIEW_BYTES / 1024 / 1024
+        )
+    };
+    if !meta.is_file() {
+        return Err(CHAT_MEDIA_REFUSED.into());
+    }
+    if meta.len() > MAX_PREVIEW_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    handle
+        .take(MAX_PREVIEW_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| CHAT_MEDIA_REFUSED.to_string())?;
+    if bytes.len() as u64 > MAX_PREVIEW_BYTES {
+        return Err(too_large());
+    }
+    if !looks_like_chat_image(&bytes) {
+        return Err(CHAT_MEDIA_REFUSED.into());
+    }
+    Ok(bytes)
 }
 
 /// Read a file as raw bytes for the image viewer.
@@ -5805,7 +6402,7 @@ fn write_attachment_sync(name: &str, data: &str) -> Result<String, String> {
             MAX_ATTACHMENT_EMBED_BYTES / 1024 / 1024
         ));
     }
-    let dir = std::env::temp_dir().join("monocode-attachments");
+    let dir = std::env::temp_dir().join(ATTACHMENT_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -5861,21 +6458,34 @@ fn save_generated_image_sync(
         .collect();
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
         .map_err(|_| "Generated image data is not valid base64.".to_string())?;
+    store_generated_png(&generated_image_dir(app)?, &bytes, name)
+}
+
+/// The one folder the app keeps generated images in. Every generated image's path names a file inside it.
+fn generated_image_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join(GENERATED_IMAGE_DIR))
+}
+
+/// Check that `bytes` are a PNG of a sane size and write them to a new file of their own in `dir`.
+fn store_generated_png(
+    dir: &Path,
+    bytes: &[u8],
+    name: &str,
+) -> Result<GeneratedImageAsset, String> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_GENERATED_IMAGE_BYTES {
         return Err(format!(
             "Generated image is too large (maximum {} MB).",
             MAX_GENERATED_IMAGE_BYTES / 1024 / 1024
         ));
     }
-    if !is_png(&bytes) {
+    if !is_png(bytes) {
         return Err("Generated image data is not a PNG image.".into());
     }
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(GENERATED_IMAGE_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     let safe_name = safe_attachment_name(name);
     let destination = dir.join(format!("{}-{}.png", Uuid::new_v4(), safe_name));
     let mut file = std::fs::OpenOptions::new()
@@ -5883,7 +6493,7 @@ fn save_generated_image_sync(
         .create_new(true)
         .open(&destination)
         .map_err(|e| format!("{}: {e}", destination.display()))?;
-    if let Err(error) = file.write_all(&bytes) {
+    if let Err(error) = file.write_all(bytes) {
         let _ = std::fs::remove_file(&destination);
         return Err(format!("{}: {error}", destination.display()));
     }
@@ -5894,8 +6504,120 @@ fn save_generated_image_sync(
     })
 }
 
+/// What one generated-image delete did. `skipped` counts the paths it refused (outside the
+/// generated-images folder, or not a file); the files they name are never touched.
+#[derive(Serialize, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GeneratedImageDeletion {
+    pub removed: usize,
+    pub skipped: usize,
+}
+
+/// Give a chat its own copy of one of the app's generated images, for a fork.
+///
+/// `path` comes from a chat's saved blocks, and an imported chat or a hand-edited store can put anything there, so
+/// the file is read only when it resolves inside the generated-images folder with symlinks followed. A file that is
+/// gone, or that is not inside, gives `None` and the caller carries on without the picture; any other failure is an
+/// error.
 #[tauri::command]
-pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+pub async fn copy_generated_image(
+    app: AppHandle,
+    path: String,
+    name: String,
+) -> Result<Option<GeneratedImageAsset>, String> {
+    let dir = generated_image_dir(&app)?;
+    tauri::async_runtime::spawn_blocking(move || copy_generated_image_in(&dir, &path, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn copy_generated_image_in(
+    dir: &Path,
+    path: &str,
+    name: &str,
+) -> Result<Option<GeneratedImageAsset>, String> {
+    let Some(bytes) = read_generated_image_in(dir, path)? else {
+        return Ok(None);
+    };
+    store_generated_png(dir, &bytes, name).map(Some)
+}
+
+/// The bytes of one of the app's generated images, for showing it in a chat.
+///
+/// `path` comes from a chat's saved blocks, so it is read only under the rule of `copy_generated_image`: inside the
+/// generated-images folder, symlinks followed. An empty reply means the chat's file is not here: it is gone, or it is
+/// not one of the app's own images. The caller shows that as a missing picture.
+#[tauri::command]
+pub async fn read_generated_image(
+    app: AppHandle,
+    path: String,
+) -> Result<tauri::ipc::Response, String> {
+    let dir = generated_image_dir(&app)?;
+    let bytes = tauri::async_runtime::spawn_blocking(move || read_generated_image_in(&dir, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(bytes.unwrap_or_default()))
+}
+
+/// The file a saved generated-image path names, when it is a file of the app's own folder. `None` when it is gone or
+/// not inside; any other failure is an error.
+fn read_generated_image_in(dir: &Path, path: &str) -> Result<Option<Vec<u8>>, String> {
+    // Resolve both sides before comparing, so `..` and a symlink in the folder that points out cannot pass. A path
+    // that cannot be resolved (gone, or not reachable) is not a file this can read.
+    let Ok(root) = std::fs::canonicalize(dir) else {
+        return Ok(None);
+    };
+    let requested = Path::new(path);
+    if !requested.is_absolute() {
+        return Ok(None);
+    }
+    let Ok(source) = std::fs::canonicalize(requested) else {
+        return Ok(None);
+    };
+    if source == root || !source.starts_with(&root) {
+        return Ok(None);
+    }
+    // A folder is not an image. Asked before opening: Windows refuses to open a folder as a file ("Access is
+    // denied"), which would read as a real error rather than a picture that is not there.
+    if !source.is_file() {
+        return Ok(None);
+    }
+    let mut handle = match std::fs::File::open(&source) {
+        Ok(handle) => handle,
+        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("{}: {error}", source.display())),
+    };
+    let meta = handle
+        .metadata()
+        .map_err(|e| format!("{}: {e}", source.display()))?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    let too_large = || {
+        format!(
+            "Generated image is too large (maximum {} MB).",
+            MAX_GENERATED_IMAGE_BYTES / 1024 / 1024
+        )
+    };
+    if meta.len() > MAX_GENERATED_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    let mut bytes = Vec::with_capacity(meta.len() as usize);
+    (&mut handle)
+        .take(MAX_GENERATED_IMAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("{}: {e}", source.display()))?;
+    if bytes.len() as u64 > MAX_GENERATED_IMAGE_BYTES {
+        return Err(too_large());
+    }
+    Ok(Some(bytes))
+}
+
+#[tauri::command]
+pub async fn delete_generated_images(
+    app: AppHandle,
+    paths: Vec<String>,
+) -> Result<GeneratedImageDeletion, String> {
     tauri::async_runtime::spawn_blocking(move || delete_generated_images_sync(&app, &paths))
         .await
         .map_err(|e| e.to_string())?
@@ -5904,26 +6626,62 @@ pub async fn delete_generated_images(app: AppHandle, paths: Vec<String>) -> Resu
 pub(crate) fn delete_generated_images_sync(
     app: &AppHandle,
     paths: &[String],
-) -> Result<(), String> {
-    let root = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(GENERATED_IMAGE_DIR)
+) -> Result<GeneratedImageDeletion, String> {
+    delete_generated_images_in(&generated_image_dir(app)?, paths)
+}
+
+/// Remove each named image that sits inside `dir`, one by one. A path outside it, or one that is
+/// not a file, is refused and counted in `skipped` (logged once, without the path); it never stops
+/// the rest. A file that is already gone is not counted. A real I/O failure on an inside file is
+/// collected the same way, so later images are still removed, and comes back as the `Err` once every
+/// path has been tried.
+pub(crate) fn delete_generated_images_in(
+    dir: &Path,
+    paths: &[String],
+) -> Result<GeneratedImageDeletion, String> {
+    let root = dir
         .canonicalize()
         .map_err(|error| format!("Generated image directory is unavailable: {error}"))?;
+    let mut done = GeneratedImageDeletion::default();
+    let mut failures: Vec<String> = Vec::new();
     for path in paths {
+        // A chat that came in from another Mac names no file for its pictures (an empty path): nothing to remove.
+        if path.is_empty() {
+            continue;
+        }
         let candidate = match PathBuf::from(path).canonicalize() {
             Ok(candidate) => candidate,
             Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => return Err(error.to_string()),
+            Err(error) => {
+                failures.push(error.to_string());
+                continue;
+            }
         };
         if !candidate.starts_with(&root) || !candidate.is_file() {
-            return Err("Invalid generated image path".into());
+            done.skipped += 1;
+            continue;
         }
-        std::fs::remove_file(candidate).map_err(|error| error.to_string())?;
+        match std::fs::remove_file(candidate) {
+            Ok(()) => done.removed += 1,
+            Err(error) => failures.push(error.to_string()),
+        }
     }
-    Ok(())
+    if done.skipped > 0 {
+        eprintln!(
+            "Generated image delete skipped {} path(s) outside the generated images folder",
+            done.skipped
+        );
+    }
+    match failures.first() {
+        None => Ok(done),
+        Some(first) => Err(format!(
+            "{} of {} generated images could not be removed ({} removed, {} skipped): {first}",
+            failures.len(),
+            paths.len(),
+            done.removed,
+            done.skipped
+        )),
+    }
 }
 
 fn is_png(bytes: &[u8]) -> bool {
@@ -6548,6 +7306,122 @@ mod tests {
         assert!(!is_png(&[]));
     }
 
+    /// A data folder holding a generated-images folder and, beside it, a file the delete must never touch.
+    fn images_with_outsider(label: &str) -> (Tmp, PathBuf, PathBuf) {
+        let data = tmp(label);
+        let images = data.0.join(GENERATED_IMAGE_DIR);
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.0.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        (data, images, outsider)
+    }
+
+    #[test]
+    fn a_delete_with_one_outside_path_still_removes_the_inside_images() {
+        let (_data, images, outsider) = images_with_outsider("delete-outside");
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+        // The refused path comes first: it must not stop the two real images after it.
+        let paths = [
+            outsider.to_string_lossy().into_owned(),
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 2,
+                skipped: 1
+            }
+        );
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+    }
+
+    #[test]
+    fn a_delete_skips_a_folder_and_leaves_a_missing_path_uncounted() {
+        let (_data, images, _outsider) = images_with_outsider("delete-folder");
+        let folder = images.join("not-a-file");
+        std::fs::create_dir_all(&folder).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let gone = images.join("already-gone.png");
+        let paths = [
+            folder.to_string_lossy().into_owned(),
+            gone.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert!(folder.is_dir());
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_folder_to_an_outside_file_is_skipped_and_the_file_survives() {
+        let (_data, images, outsider) = images_with_outsider("delete-link");
+        let link = images.join("link.png");
+        std::os::unix::fs::symlink(&outsider, &link).unwrap();
+        let real = images.join("real.png");
+        std::fs::write(&real, "x").unwrap();
+        let paths = [
+            link.to_string_lossy().into_owned(),
+            real.to_string_lossy().into_owned(),
+        ];
+        let done = delete_generated_images_in(&images, &paths).unwrap();
+        assert_eq!(
+            done,
+            GeneratedImageDeletion {
+                removed: 1,
+                skipped: 1
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        assert!(!real.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_real_failure_on_an_inside_file_is_reported_after_the_rest_are_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_data, images, _outsider) = images_with_outsider("delete-io");
+        let locked_dir = images.join("locked");
+        std::fs::create_dir_all(&locked_dir).unwrap();
+        let stuck = locked_dir.join("stuck.png");
+        std::fs::write(&stuck, "s").unwrap();
+        let later = images.join("later.png");
+        std::fs::write(&later, "l").unwrap();
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let unlock =
+            || std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755));
+        // A user who may write anyway (root) cannot make this delete fail, so there is nothing to prove.
+        if std::fs::File::create(locked_dir.join("probe")).is_ok() {
+            unlock().unwrap();
+            return;
+        }
+        let paths = [
+            stuck.to_string_lossy().into_owned(),
+            later.to_string_lossy().into_owned(),
+        ];
+        let result = delete_generated_images_in(&images, &paths);
+        unlock().unwrap();
+        let error = result.unwrap_err();
+        assert!(error.starts_with("1 of 2 generated images"), "{error}");
+        assert!(stuck.exists());
+        assert!(!later.exists(), "one failing file stopped the rest");
+    }
+
     #[test]
     fn github_star_status_distinguishes_a_missing_star_from_an_unavailable_check() {
         assert_eq!(
@@ -6850,6 +7724,1030 @@ mod tests {
         assert!(error.contains("too large"), "{error}");
     }
 
+    const PNG_BYTES: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a];
+
+    fn media_scope(
+        folders: &[String],
+        trusted: &[PathBuf],
+        home: Option<&Path>,
+        app_data: Option<&Path>,
+    ) -> MediaScope {
+        MediaScope::build(folders, trusted, home, app_data, &REAL_DISK)
+    }
+
+    /// A worktree of `project` as `git worktree add` records it: `.git` in the
+    /// worktree names the project's `.git/worktrees/<name>`, which names the
+    /// worktree's `.git` back.
+    fn git_worktree(project: &Path, at: &Path, name: &str) {
+        let admin = project.join(".git/worktrees").join(name);
+        std::fs::create_dir_all(&admin).unwrap();
+        std::fs::create_dir_all(at).unwrap();
+        std::fs::write(at.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+        std::fs::write(
+            admin.join("gitdir"),
+            format!("{}\n", at.join(".git").display()),
+        )
+        .unwrap();
+    }
+
+    /// A chat's folder `repo`, beside a folder that shares its name as a
+    /// prefix (`repo-evil`), the app's `data/generated-images` and files the
+    /// chat has no business showing, all under one temporary folder.
+    struct ChatMedia {
+        dir: Tmp,
+        repo: PathBuf,
+        generated: PathBuf,
+    }
+
+    impl ChatMedia {
+        fn new(label: &str) -> Self {
+            let dir = tmp(label);
+            let repo = dir.0.join("repo");
+            let generated = dir.0.join("data/generated-images");
+            for folder in [
+                repo.join("docs"),
+                repo.join("clips"),
+                dir.0.join("repo-evil"),
+                generated.clone(),
+                dir.0.join("elsewhere/generated-images"),
+            ] {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            for file in [
+                repo.join("docs/shot.png"),
+                generated.join("one.png"),
+                dir.0.join("secret.png"),
+                dir.0.join("repo-evil/leak.png"),
+                dir.0.join("elsewhere/generated-images/lookalike.png"),
+            ] {
+                std::fs::write(file, PNG_BYTES).unwrap();
+            }
+            for file in [
+                repo.join("clips/demo.mp4"),
+                dir.0.join("secret.mp4"),
+                dir.0.join("repo-evil/leak.mp4"),
+            ] {
+                std::fs::write(file, b"video").unwrap();
+            }
+            std::fs::write(repo.join("notes.txt"), b"notes").unwrap();
+            std::fs::write(repo.join("fake.png"), b"<html>not an image</html>").unwrap();
+            Self {
+                dir,
+                repo,
+                generated,
+            }
+        }
+
+        fn at(&self, relative: &str) -> String {
+            self.dir.0.join(relative).to_string_lossy().into_owned()
+        }
+
+        /// The chat's folder, plus the app's generated-images folder.
+        fn roots(&self) -> MediaScope {
+            media_scope(
+                &[self.repo.to_string_lossy().into_owned()],
+                std::slice::from_ref(&self.generated),
+                None,
+                None,
+            )
+        }
+
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            read_chat_image_in(path, &self.roots())
+        }
+
+        /// Ask for a video; also says whether the asset scope was widened.
+        fn stream(&self, path: &str) -> (Result<String, String>, Vec<PathBuf>) {
+            let widened = std::cell::RefCell::new(Vec::new());
+            let result = allow_video_stream_in(path, &self.roots(), |file| {
+                widened.borrow_mut().push(file.to_path_buf());
+                Ok(())
+            });
+            (result, widened.into_inner())
+        }
+    }
+
+    #[test]
+    fn chat_images_read_inside_the_chat_folder_and_the_generated_images_folder() {
+        let media = ChatMedia::new("chat-image-inside");
+
+        assert_eq!(
+            media.read(&media.at("repo/docs/shot.png")).unwrap(),
+            PNG_BYTES
+        );
+        assert_eq!(
+            media.read(&media.at("repo/docs/../docs/shot.png")).unwrap(),
+            PNG_BYTES
+        );
+        assert_eq!(
+            media
+                .read(&media.at("data/generated-images/one.png"))
+                .unwrap(),
+            PNG_BYTES
+        );
+        // A chat with no folder still shows the app's own generated images.
+        let only_generated = media_scope(&[], std::slice::from_ref(&media.generated), None, None);
+        assert_eq!(
+            read_chat_image_in(&media.at("data/generated-images/one.png"), &only_generated)
+                .unwrap(),
+            PNG_BYTES
+        );
+    }
+
+    #[test]
+    fn an_app_folder_that_is_a_link_is_not_one_of_its_own_places() {
+        let temp = std::env::temp_dir().join(format!("hivra-own-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join("real")).unwrap();
+        assert!(own_real_folder(&temp.join("real")));
+        assert!(!own_real_folder(&temp.join("missing")));
+        std::fs::write(temp.join("file"), "x").unwrap();
+        assert!(!own_real_folder(&temp.join("file")));
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(temp.join("real"), temp.join("link")).unwrap();
+            assert!(!own_real_folder(&temp.join("link")));
+        }
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn chat_images_refuse_files_outside_the_chat_folders() {
+        let media = ChatMedia::new("chat-image-outside");
+
+        for outside in [
+            // Another place on the computer.
+            "secret.png",
+            // A sibling whose name starts with the chat folder's name.
+            "repo-evil/leak.png",
+            // Climbing out of the folder, and out and back into a sibling.
+            "repo/../secret.png",
+            "repo/docs/../../repo-evil/leak.png",
+            // A folder called generated-images that is not the app's.
+            "elsewhere/generated-images/lookalike.png",
+            // Not there at all: the same answer as for a file that exists.
+            "repo/docs/missing.png",
+            // A folder, not a file.
+            "repo/docs",
+        ] {
+            assert_eq!(
+                media.read(&media.at(outside)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{outside}"
+            );
+        }
+        // A relative path would resolve against the app's own folder.
+        assert_eq!(media.read("docs/shot.png").unwrap_err(), CHAT_MEDIA_REFUSED);
+        assert_eq!(media.read("").unwrap_err(), CHAT_MEDIA_REFUSED);
+        // No folder and no generated-images folder: nothing is allowed.
+        assert_eq!(
+            read_chat_image_in(
+                &media.at("repo/docs/shot.png"),
+                &media_scope(&[], &[], None, None)
+            )
+            .unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn chat_images_refuse_symlinks_that_point_out_of_the_chat_folder() {
+        let media = ChatMedia::new("chat-image-links");
+        let repo = &media.repo;
+        std::os::unix::fs::symlink(media.dir.0.join("secret.png"), repo.join("link-out.png"))
+            .unwrap();
+        std::os::unix::fs::symlink(media.dir.0.join("repo-evil"), repo.join("sibling")).unwrap();
+        std::os::unix::fs::symlink(&media.dir.0, repo.join("outside")).unwrap();
+        std::os::unix::fs::symlink(repo.join("docs/shot.png"), repo.join("alias.png")).unwrap();
+        // A link whose own name is an image but whose target is not one.
+        std::os::unix::fs::symlink(repo.join("notes.txt"), repo.join("notes.png")).unwrap();
+
+        for out in [
+            "repo/link-out.png",
+            "repo/sibling/leak.png",
+            "repo/outside/secret.png",
+        ] {
+            assert_eq!(
+                media.read(&media.at(out)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{out}"
+            );
+        }
+        assert_eq!(media.read(&media.at("repo/alias.png")).unwrap(), PNG_BYTES);
+        assert_eq!(
+            media.read(&media.at("repo/notes.png")).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+        // The chat's folder may itself be reached through a link.
+        std::os::unix::fs::symlink(repo, media.dir.0.join("repo-link")).unwrap();
+        let through_link = media_scope(&[media.at("repo-link")], &[], None, None);
+        assert_eq!(
+            read_chat_image_in(&media.at("repo-link/docs/shot.png"), &through_link).unwrap(),
+            PNG_BYTES
+        );
+        // A link out of it, named through the link, is still refused.
+        assert_eq!(
+            read_chat_image_in(&media.at("repo-link/link-out.png"), &through_link).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+    }
+
+    #[test]
+    fn chat_images_must_be_images() {
+        let media = ChatMedia::new("chat-image-kind");
+
+        // Not an image by name, and an image by name but not by content.
+        for not_image in ["repo/notes.txt", "repo/fake.png", "repo/clips/demo.mp4"] {
+            assert_eq!(
+                media.read(&media.at(not_image)).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{not_image}"
+            );
+        }
+        let sniffed: [(&[u8], bool); 9] = [
+            (&PNG_BYTES, true),
+            (&[0xff, 0xd8, 0xff, 0xe0], true),
+            (b"GIF89a", true),
+            (b"BM\x00\x00", true),
+            (&[0x00, 0x00, 0x01, 0x00], true),
+            (b"RIFF\x00\x00\x00\x00WEBPVP8 ", true),
+            (b"\x00\x00\x00\x1cftypavif", true),
+            (b"\x00\x00\x00\x1cftypmp42", false),
+            (b"<svg xmlns='http://www.w3.org/2000/svg'/>", false),
+        ];
+        for (bytes, image) in sniffed {
+            assert_eq!(looks_like_chat_image(bytes), image, "{bytes:?}");
+        }
+        assert!(!looks_like_chat_image(&[]));
+    }
+
+    #[test]
+    fn a_folder_that_is_too_broad_is_never_a_chats_own() {
+        let dir = tmp("chat-media-broad");
+        let home = dir.0.join("home/me");
+        let app_data = dir.0.join("data/Support/app");
+        let generated = app_data.join("generated-images");
+        for folder in [
+            home.join("Library/Mail"),
+            home.join("Libraries"),
+            home.join("proj"),
+            home.join(".ssh"),
+            dir.0.join("data/other"),
+            generated.clone(),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        std::fs::write(home.join("proj/shot.png"), PNG_BYTES).unwrap();
+        std::fs::write(home.join("Library/Mail/leak.png"), PNG_BYTES).unwrap();
+        std::fs::write(home.join("loose.png"), PNG_BYTES).unwrap();
+        std::fs::write(generated.join("one.png"), PNG_BYTES).unwrap();
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let roots = |folders: &[PathBuf]| {
+            let folders: Vec<String> = folders.iter().map(|folder| text(folder)).collect();
+            media_scope(&folders, &[], Some(&home), Some(&app_data))
+        };
+
+        // The filesystem root, the home folder and every folder above it, the
+        // app's data folder and every folder above it, and the home folder's
+        // Library with all it holds, would each make files a chat's own that
+        // the chat has no business showing.
+        let root_of_disk = dir.0.ancestors().last().unwrap().to_path_buf();
+        for broad in [
+            root_of_disk,
+            dir.0.clone(),
+            dir.0.join("home"),
+            home.clone(),
+            home.join("Library"),
+            home.join("Library/Mail"),
+            app_data.clone(),
+            app_data.parent().unwrap().to_path_buf(),
+            dir.0.join("data"),
+        ] {
+            assert!(
+                roots(std::slice::from_ref(&broad)).roots.is_empty(),
+                "{broad:?}"
+            );
+        }
+        // Folders beside those are projects like any other.
+        for fine in [
+            home.join("proj"),
+            home.join("Libraries"),
+            home.join(".ssh"),
+            dir.0.join("data/other"),
+        ] {
+            assert_eq!(
+                roots(std::slice::from_ref(&fine)).roots.len(),
+                1,
+                "{fine:?}"
+            );
+        }
+        assert_eq!(
+            read_chat_image_in(
+                &text(&home.join("loose.png")),
+                &roots(std::slice::from_ref(&home))
+            )
+            .unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+        let mail = text(&home.join("Library/Mail/leak.png"));
+        let library = roots(&[home.join("Library"), home.join("Library/Mail")]);
+        assert_eq!(
+            read_chat_image_in(&mail, &library).unwrap_err(),
+            CHAT_MEDIA_REFUSED
+        );
+        // The app's own generated-images folder is inside Library and the data
+        // folder, and still shows its images.
+        let with_generated = media_scope(
+            &[],
+            std::slice::from_ref(&generated),
+            Some(&home),
+            Some(&app_data),
+        );
+        assert_eq!(
+            read_chat_image_in(&text(&generated.join("one.png")), &with_generated).unwrap(),
+            PNG_BYTES
+        );
+        // A relative folder, and one that is not there, are left out.
+        let rest = roots(&[PathBuf::from("proj"), home.join("gone")]);
+        assert!(rest.roots.is_empty());
+    }
+
+    /// A disk whose folders have the identities given, and where every path is
+    /// its own real path: aliases (a bind mount, a firmlink) are made by giving
+    /// two paths one identity, volumes by giving a folder another device.
+    fn aliased(ids: &[(&str, FileId)]) -> impl Fn(&Path) -> Option<FileId> {
+        let ids: HashMap<PathBuf, FileId> = ids
+            .iter()
+            .map(|(path, id)| (PathBuf::from(path), *id))
+            .collect();
+        move |path: &Path| ids.get(path).copied()
+    }
+
+    #[test]
+    fn a_folder_that_is_a_volume_or_holds_everything_temporary_is_never_a_chats_own() {
+        let ids = aliased(&[
+            ("/", (1, 1)),
+            ("/Volumes", (1, 10)),
+            // A backup disk, which holds a copy of the home folder, and a work
+            // disk with a project on it.
+            ("/Volumes/Backup", (2, 1)),
+            ("/Volumes/Backup/Backups.backupdb", (2, 5)),
+            ("/Volumes/Work", (3, 1)),
+            ("/Volumes/Work/proj", (3, 7)),
+            ("/work", (1, 30)),
+            ("/work/proj", (1, 31)),
+            ("/work/mounted", (4, 1)),
+        ]);
+        let disk = Disk {
+            canonicalize: &|path| Ok(path.to_path_buf()),
+            id_of: &ids,
+        };
+        let withheld = Withheld::new(None, None, &disk);
+
+        // A volume or mount point: on a different device than the folder it is in.
+        for volume in ["/Volumes/Backup", "/Volumes/Work", "/work/mounted"] {
+            assert!(withheld.covers(Path::new(volume), &disk), "{volume}");
+        }
+        // What is inside a volume is a project like any other.
+        for fine in [
+            "/Volumes/Work/proj",
+            "/Volumes/Backup/Backups.backupdb",
+            "/work/proj",
+            "/private/var/folders/xy/T/proj",
+            "/work/tmp",
+        ] {
+            assert!(!withheld.covers(Path::new(fine), &disk), "{fine}");
+        }
+        // The folders that list volumes, and hold everything temporary or
+        // variable, as named and as a Mac resolves them.
+        for broad in [
+            "/",
+            "/Volumes",
+            "/private",
+            "/private/tmp",
+            "/private/var",
+            "/tmp",
+            "/var",
+            "/mnt",
+            "/media",
+        ] {
+            assert!(withheld.covers(Path::new(broad), &disk), "{broad}");
+        }
+        // A Mac's /System reaches the whole home through `Volumes/Data` and
+        // resolves to itself, so nothing of it is a project.
+        #[cfg(target_os = "macos")]
+        for system in [
+            "/System",
+            "/System/Library",
+            "/System/Volumes/Data",
+            "/System/Volumes/Data/Users/me",
+            "/System/Volumes/Data/Users/me/Library/Mail",
+        ] {
+            assert!(withheld.covers(Path::new(system), &disk), "{system}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_mount_point_on_this_computer_is_never_a_chats_own() {
+        // /dev is a file system of its own on a Mac and on Linux.
+        let withheld = Withheld::new(None, None, &REAL_DISK);
+        assert!(withheld.covers(Path::new("/dev"), &REAL_DISK));
+        let here = std::env::temp_dir().canonicalize().unwrap();
+        assert!(!withheld.covers(&here.join("proj"), &REAL_DISK));
+    }
+
+    #[test]
+    fn an_alias_of_home_library_or_app_data_is_the_folder_itself() {
+        let ids = aliased(&[
+            ("/", (1, 1)),
+            ("/home", (1, 50)),
+            ("/home/me", (1, 100)),
+            ("/home/me/Library", (1, 200)),
+            ("/data", (1, 60)),
+            ("/data/app", (1, 300)),
+            // The same folders reached another way, which canonicalising does
+            // not undo: a bind mount, a firmlink.
+            ("/alias", (1, 2)),
+            ("/alias/home", (1, 100)),
+            ("/alias/above-home", (1, 50)),
+            ("/alias/library", (1, 200)),
+            ("/alias/library/Mail", (1, 201)),
+            ("/alias/app", (1, 300)),
+            ("/alias/above-app", (1, 60)),
+            ("/alias/other", (1, 3)),
+        ]);
+        let disk = Disk {
+            canonicalize: &|path| Ok(path.to_path_buf()),
+            id_of: &ids,
+        };
+        let withheld = Withheld::new(
+            Some(Path::new("/home/me")),
+            Some(Path::new("/data/app")),
+            &disk,
+        );
+
+        for alias in [
+            "/alias/home",
+            "/alias/above-home",
+            "/alias/library",
+            "/alias/library/Mail",
+            "/alias/app",
+            "/alias/above-app",
+        ] {
+            assert!(withheld.covers(Path::new(alias), &disk), "{alias}");
+        }
+        assert!(!withheld.covers(Path::new("/alias/other"), &disk));
+    }
+
+    #[test]
+    fn a_file_that_reached_library_app_data_or_home_through_an_alias_is_refused() {
+        let ids = aliased(&[
+            ("/home/me", (1, 100)),
+            ("/home/me/Library", (1, 200)),
+            ("/data/app", (1, 300)),
+            ("/work/repo", (1, 400)),
+            // A bind mount of Library, one of the app's data folder and one
+            // of the home folder, inside folders that are not any of them.
+            ("/work/repo/bind", (1, 200)),
+            ("/work/repo/bind/Mail", (1, 201)),
+            ("/work/repo/data", (1, 300)),
+            ("/work/repo/ok", (1, 401)),
+            ("/work/other", (1, 500)),
+            ("/work/other/me", (1, 100)),
+            ("/home/me/proj", (1, 600)),
+        ]);
+        let disk = Disk {
+            canonicalize: &|path| Ok(path.to_path_buf()),
+            id_of: &ids,
+        };
+        let withheld = Withheld::new(
+            Some(Path::new("/home/me")),
+            Some(Path::new("/data/app")),
+            &disk,
+        );
+        let root = |path: &str, trusted: bool| MediaRoot {
+            text: PathBuf::from(path),
+            real: PathBuf::from(path),
+            trusted,
+        };
+        let repo = root("/work/repo", false);
+
+        for reached in [
+            "/work/repo/bind/Mail/x.png",
+            "/work/repo/bind/x.png",
+            "/work/repo/data/x.png",
+        ] {
+            assert!(
+                withheld.covers_file(Path::new(reached), &repo, &disk),
+                "{reached}"
+            );
+        }
+        assert!(!withheld.covers_file(Path::new("/work/repo/ok/x.png"), &repo, &disk));
+        // The home folder reached from a folder that is not in it.
+        assert!(withheld.covers_file(
+            Path::new("/work/other/me/x.png"),
+            &root("/work/other", false),
+            &disk
+        ));
+        // A project in the home folder has it above it, which is no alias.
+        assert!(!withheld.covers_file(
+            Path::new("/home/me/proj/x.png"),
+            &root("/home/me/proj", false),
+            &disk
+        ));
+        // The app's own folders are exact, and may be inside Library or the
+        // data folder.
+        assert!(!withheld.covers_file(
+            Path::new("/work/repo/bind/x.png"),
+            &root("/work/repo", true),
+            &disk
+        ));
+    }
+
+    #[test]
+    fn the_apps_own_folders_show_their_images_and_nothing_beside_them() {
+        let dir = tmp("chat-media-trusted");
+        let home = dir.0.join("home/me");
+        let app_data = home.join("Library/Application Support/app");
+        let generated = app_data.join("generated-images");
+        let mono = home.join("agent-memory/monos/ada");
+        let team = app_data.join("mono-teams/ada");
+        let attachments = dir.0.join("tmp/monocode-attachments");
+        for folder in [
+            generated.clone(),
+            mono.clone(),
+            team.clone(),
+            attachments.clone(),
+            home.join("agent-memory/monos/bob"),
+            home.join("Library/Application Support/other"),
+        ] {
+            std::fs::create_dir_all(folder).unwrap();
+        }
+        for file in [
+            generated.join("one.png"),
+            mono.join("made.png"),
+            team.join("made.png"),
+            attachments.join("pasted.png"),
+            home.join("agent-memory/monos/bob/leak.png"),
+            app_data.join("note.png"),
+            home.join("Library/Application Support/other/leak.png"),
+        ] {
+            std::fs::write(file, PNG_BYTES).unwrap();
+        }
+        let text = |path: &Path| path.to_string_lossy().into_owned();
+        let scope = media_scope(
+            &[],
+            &[
+                generated.clone(),
+                mono.clone(),
+                team.clone(),
+                attachments.clone(),
+                // Never the filesystem root, whatever asks.
+                PathBuf::from("/"),
+            ],
+            Some(&home),
+            Some(&app_data),
+        );
+
+        assert_eq!(scope.roots.len(), 4);
+        for shown in [
+            generated.join("one.png"),
+            mono.join("made.png"),
+            team.join("made.png"),
+            attachments.join("pasted.png"),
+        ] {
+            assert!(
+                read_chat_image_in(&text(&shown), &scope).is_ok(),
+                "{shown:?}"
+            );
+        }
+        for not_shown in [
+            home.join("agent-memory/monos/bob/leak.png"),
+            app_data.join("note.png"),
+            home.join("Library/Application Support/other/leak.png"),
+        ] {
+            assert_eq!(
+                read_chat_image_in(&text(&not_shown), &scope).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{not_shown:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pipe_or_a_link_in_place_of_an_image_is_never_waited_on_or_followed() {
+        use std::sync::mpsc;
+        let dir = tmp("chat-media-pipe");
+        let pipe = dir.0.join("shot.png");
+        let name = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let real = dir.0.join("real.png");
+        std::fs::write(&real, PNG_BYTES).unwrap();
+        let link = dir.0.join("link.png");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // Opening a pipe for reading waits for a writer, unless it is told not
+        // to; run it where a wait can be told from an answer.
+        let (sent, received) = mpsc::channel();
+        thread::spawn(move || {
+            let opened = open_media_file(&pipe).and_then(|handle| handle.metadata());
+            let _ = sent.send(opened.map(|meta| meta.is_file()));
+        });
+        let answer = received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("opening the pipe waited for a writer");
+        assert!(!answer.unwrap(), "a pipe is not a file");
+        // A link in the final place is not followed.
+        assert!(open_media_file(&link).is_err());
+        assert!(open_media_file(&real).is_ok());
+    }
+
+    /// A user's home with a project, a worktree of it and things that are theirs
+    /// but not any chat's, under one temporary folder.
+    struct Home {
+        dir: Tmp,
+        home: PathBuf,
+        project: PathBuf,
+        worktree: PathBuf,
+    }
+
+    impl Home {
+        fn new(label: &str) -> Self {
+            let dir = tmp(label);
+            let home = dir.0.join("home");
+            let project = home.join("Projects/p");
+            let other = home.join("Projects/other");
+            let worktree = home.join("Worktrees/p-feature");
+            for folder in [
+                project.join(".git/worktrees"),
+                other.join(".git/worktrees"),
+                home.join("Desktop"),
+            ] {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            git_worktree(&project, &worktree, "p-feature");
+            git_worktree(
+                &other,
+                &home.join("Worktrees/other-feature"),
+                "other-feature",
+            );
+            for file in [
+                project.join("shot.png"),
+                worktree.join("shot.png"),
+                home.join("Projects/other/shot.png"),
+                home.join("Worktrees/other-feature/shot.png"),
+                home.join("Desktop/private.png"),
+                home.join("loose.png"),
+            ] {
+                std::fs::write(file, PNG_BYTES).unwrap();
+            }
+            Self {
+                dir,
+                home,
+                project,
+                worktree,
+            }
+        }
+
+        fn text(&self, path: &Path) -> String {
+            path.to_string_lossy().into_owned()
+        }
+
+        /// What chat `session_id` may read: the folders the app's records give it.
+        fn roots(
+            &self,
+            conn: &rusqlite::Connection,
+            roster: Option<&serde_json::Value>,
+            session_id: &str,
+        ) -> MediaScope {
+            let found = crate::chat_media::folders(conn, roster, session_id);
+            media_scope(&found.folders, &[], Some(&self.home), None)
+        }
+
+        fn shows(&self, scope: &MediaScope, path: &Path) -> bool {
+            read_chat_image_in(&self.text(path), scope).is_ok()
+        }
+    }
+
+    fn insert_session(conn: &rusqlite::Connection, id: &str, cwd: &str, worktree: Option<&str>) {
+        conn.execute(
+            "INSERT INTO sessions (id, cwd, harness, model, runtime_mode, title, blocks_json, created_at, updated_at, worktree_cwd) VALUES (?1, ?2, 'codex', 'test', 'supervised', 'Test', '[]', 0, 0, ?3)",
+            rusqlite::params![id, cwd, worktree],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_mono_chat_that_starts_in_the_home_folder_shows_images_in_its_projects() {
+        let fixture = Home::new("chat-media-mono-in-home");
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let (home, project, worktree) = (
+            fixture.text(&fixture.home),
+            fixture.text(&fixture.project),
+            fixture.text(&fixture.worktree),
+        );
+        insert_session(&conn, "mono-chat", &home, None);
+        // A worker of the project, in a worktree of it.
+        insert_session(&conn, "worker", &project, Some(&worktree));
+        let roster = serde_json::json!({"monos": [
+            {"id": "ada", "sessionId": "mono-chat", "projects": [project]},
+        ]});
+
+        let roots = fixture.roots(&conn, Some(&roster), "mono-chat");
+        // What lies in its project, and in the project's worktree.
+        assert!(fixture.shows(&roots, &fixture.project.join("shot.png")));
+        assert!(fixture.shows(&roots, &fixture.worktree.join("shot.png")));
+        // The home folder is not a root, so nothing else in it is.
+        let real_home = std::fs::canonicalize(&fixture.home).unwrap();
+        assert!(roots.roots.iter().all(|root| root.real != real_home));
+        for private in [
+            fixture.home.join("loose.png"),
+            fixture.home.join("Desktop/private.png"),
+            fixture.home.join("Projects/other/shot.png"),
+            fixture.home.join("Worktrees/other-feature/shot.png"),
+        ] {
+            assert!(!fixture.shows(&roots, &private), "{private:?}");
+        }
+        // The same Mono's chat with no projects shows nothing from the home.
+        let bare =
+            serde_json::json!({"monos": [{"id": "ada", "sessionId": "mono-chat", "projects": []}]});
+        let roots = fixture.roots(&conn, Some(&bare), "mono-chat");
+        assert!(roots.roots.is_empty(), "{roots:?}");
+        assert!(!fixture.shows(&roots, &fixture.home.join("loose.png")));
+        let _ = &fixture.dir;
+    }
+
+    #[test]
+    fn a_lead_chat_shows_images_in_the_worktrees_of_its_workers() {
+        let fixture = Home::new("chat-media-lead");
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let (project, worktree) = (
+            fixture.text(&fixture.project),
+            fixture.text(&fixture.worktree),
+        );
+        let other_project = fixture.text(&fixture.home.join("Projects/other"));
+        let other_tree = fixture.text(&fixture.home.join("Worktrees/other-feature"));
+        insert_session(&conn, "lead", &project, None);
+        insert_session(&conn, "worker", &project, Some(&worktree));
+        // Another project's worker, which this Lead has nothing to do with.
+        insert_session(&conn, "stranger", &other_project, Some(&other_tree));
+        conn.execute(
+            "INSERT INTO delegations (id, owner_session, owner_mono, root_id, child_session, request_id, state, delivery, created_at, updated_at) VALUES ('d1', 'lead', 'lead-mono', 'd1', 'worker', 'd1', 'done', 'delivered', 0, 0)",
+            [],
+        )
+        .unwrap();
+
+        let roots = fixture.roots(&conn, None, "lead");
+        assert!(fixture.shows(&roots, &fixture.project.join("shot.png")));
+        assert!(fixture.shows(&roots, &fixture.worktree.join("shot.png")));
+        for not_its_own in [
+            fixture.home.join("loose.png"),
+            fixture.home.join("Desktop/private.png"),
+            fixture.home.join("Projects/other/shot.png"),
+            fixture.home.join("Worktrees/other-feature/shot.png"),
+        ] {
+            assert!(!fixture.shows(&roots, &not_its_own), "{not_its_own:?}");
+        }
+        // A chat the app has no record of shows nothing at all.
+        assert!(fixture.roots(&conn, None, "never-saved").roots.is_empty());
+        let _ = &fixture.dir;
+    }
+
+    #[test]
+    fn local_path_text_takes_only_absolute_paths_on_this_computer() {
+        // An absolute path is `/...` on a Mac or Linux and `C:\...` on Windows, where `/work` is not one (it is
+        // relative to whichever drive is current) and is refused below like any other relative path.
+        #[cfg(unix)]
+        {
+            assert_eq!(
+                local_path_text("/work/repo/./a/../shot.png"),
+                Some(PathBuf::from("/work/repo/shot.png"))
+            );
+            // There is nothing above the root to climb to.
+            assert_eq!(
+                local_path_text("/../../etc/x.png"),
+                Some(PathBuf::from("/etc/x.png"))
+            );
+            // Only the folder at the top is the automounter's.
+            assert!(local_path_text("/work/net/x.png").is_some());
+            assert!(local_path_text("/network-notes/x.png").is_some());
+        }
+        #[cfg(windows)]
+        {
+            assert_eq!(
+                local_path_text(r"C:\work\repo\.\a\..\shot.png"),
+                Some(PathBuf::from(r"C:\work\repo\shot.png"))
+            );
+            assert_eq!(
+                local_path_text("C:/work/repo/shot.png"),
+                Some(PathBuf::from(r"C:\work\repo\shot.png"))
+            );
+            assert_eq!(
+                local_path_text(r"C:\..\..\x.png"),
+                Some(PathBuf::from(r"C:\x.png"))
+            );
+            for refused in ["/work/repo/shot.png", r"\work\x.png", "C:x.png"] {
+                assert_eq!(local_path_text(refused), None, "{refused:?}");
+            }
+        }
+        for refused in [
+            "",
+            "x.png",
+            "./x.png",
+            "../x.png",
+            "x\0.png",
+            // Another machine, by UNC and device paths and as the Mac and
+            // Linux automounter names it.
+            r"\\host\share\x.png",
+            r"\\?\UNC\host\share\x.png",
+            r"\\?\C:\x.png",
+            "//host/share/x.png",
+            "/net/host/x.png",
+            "/NET/host/x.png",
+            "/Network/Servers/host/x.png",
+            // The same, reached by climbing out of a local folder first.
+            "/work/../net/host/x.png",
+            "/work/repo/../../../net/host/x.png",
+        ] {
+            assert_eq!(local_path_text(refused), None, "{refused:?}");
+        }
+    }
+
+    #[test]
+    fn chat_media_never_asks_the_disk_about_a_path_to_another_machine() {
+        let media = ChatMedia::new("chat-media-network");
+        let scope = media.roots();
+        let asked = std::cell::RefCell::new(Vec::new());
+        // A disk that says nothing is there, and notes every question.
+        let silent_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Err(ErrorKind::NotFound.into())
+        };
+        let silent = Disk {
+            canonicalize: &silent_disk,
+            id_of: &|_| None,
+        };
+
+        let climbing = format!(
+            "{}{}/net/host/x.png",
+            media.repo.display(),
+            "/..".repeat(30)
+        );
+        for network in [
+            "/net/host/x.png",
+            "/NET/host/x.png",
+            "/Network/Servers/host/x.png",
+            "//host/share/x.png",
+            r"\\host\share\x.png",
+            r"\\?\UNC\host\share\x.png",
+            // Starts in the chat's folder and climbs out to one.
+            climbing.as_str(),
+            // Local, but outside every folder the chat may use.
+            &media.at("secret.png"),
+        ] {
+            assert_eq!(
+                chat_media_file_via(network, &scope, is_chat_image, &silent).unwrap_err(),
+                CHAT_MEDIA_REFUSED,
+                "{network}"
+            );
+        }
+        assert!(asked.borrow().is_empty(), "the disk was asked: {:?}", asked);
+
+        // A path inside a folder it may use is what the disk is asked about.
+        let real_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            std::fs::canonicalize(path)
+        };
+        let noting = Disk {
+            canonicalize: &real_disk,
+            id_of: &file_id,
+        };
+        let inside = media.at("repo/docs/shot.png");
+        chat_media_file_via(&inside, &scope, is_chat_image, &noting).unwrap();
+        assert_eq!(asked.borrow().len(), 1);
+    }
+
+    #[test]
+    fn chat_media_never_asks_the_disk_about_a_chat_folder_on_another_machine() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let silent_disk = |path: &Path| {
+            asked.borrow_mut().push(path.to_path_buf());
+            Err(ErrorKind::NotFound.into())
+        };
+        let network: Vec<String> = [
+            "/net/host/proj",
+            r"\\host\share\proj",
+            "//host/share/proj",
+            "/Network/Servers/host/proj",
+            "/work/../net/host/proj",
+        ]
+        .map(String::from)
+        .into();
+
+        let silent = Disk {
+            canonicalize: &silent_disk,
+            id_of: &|_| None,
+        };
+        let scope = MediaScope::build(
+            &network,
+            &[PathBuf::from("/net/host/app/generated-images")],
+            None,
+            None,
+            &silent,
+        );
+        assert!(scope.roots.is_empty());
+        assert!(asked.borrow().is_empty(), "the disk was asked: {:?}", asked);
+
+        // A folder that is a link to a network share is dropped once resolved.
+        let to_share = Disk {
+            canonicalize: &|_| Ok(PathBuf::from("/net/host/proj")),
+            id_of: &|_| None,
+        };
+        let linked = MediaScope::build(&["/work/proj".to_string()], &[], None, None, &to_share);
+        assert!(linked.roots.is_empty());
+    }
+
+    #[test]
+    fn chat_images_refuse_oversized_files() {
+        let media = ChatMedia::new("chat-image-size");
+        let huge = media.repo.join("huge.png");
+        let file = std::fs::File::create(&huge).unwrap();
+        file.set_len(MAX_PREVIEW_BYTES + 1).unwrap();
+
+        let error = media.read(&huge.to_string_lossy()).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+    }
+
+    #[test]
+    fn video_streams_widen_the_asset_scope_only_for_videos_inside_the_chat_folder() {
+        let media = ChatMedia::new("chat-video-inside");
+
+        let (result, widened) = media.stream(&media.at("repo/clips/demo.mp4"));
+        let canonical = std::fs::canonicalize(media.repo.join("clips/demo.mp4")).unwrap();
+        assert_eq!(result.unwrap(), canonical.to_string_lossy());
+        assert_eq!(widened, vec![canonical]);
+
+        // Through a `..`, the file that is streamed is the one that was checked.
+        let (result, widened) = media.stream(&media.at("repo/docs/../clips/demo.mp4"));
+        assert!(result.is_ok());
+        assert_eq!(widened.len(), 1);
+    }
+
+    #[test]
+    fn video_streams_refuse_a_video_outside_the_chat_folder_without_widening_the_scope() {
+        let media = ChatMedia::new("chat-video-outside");
+
+        for outside in [
+            "secret.mp4",
+            "repo-evil/leak.mp4",
+            "repo/../secret.mp4",
+            "repo/clips/missing.mp4",
+            // Inside the chat folder but not a video.
+            "repo/notes.txt",
+            "repo/docs/shot.png",
+        ] {
+            let (result, widened) = media.stream(&media.at(outside));
+            assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED, "{outside}");
+            assert!(widened.is_empty(), "{outside} widened the scope");
+        }
+        let (result, widened) = media.stream("clips/demo.mp4");
+        assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED);
+        assert!(widened.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn video_streams_refuse_a_link_out_of_the_chat_folder_without_widening_the_scope() {
+        let media = ChatMedia::new("chat-video-links");
+        std::os::unix::fs::symlink(
+            media.dir.0.join("secret.mp4"),
+            media.repo.join("clips/link-out.mp4"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&media.dir.0, media.repo.join("outside")).unwrap();
+
+        for out in ["repo/clips/link-out.mp4", "repo/outside/secret.mp4"] {
+            let (result, widened) = media.stream(&media.at(out));
+            assert_eq!(result.unwrap_err(), CHAT_MEDIA_REFUSED, "{out}");
+            assert!(widened.is_empty(), "{out} widened the scope");
+        }
+    }
+
+    #[test]
+    fn a_video_stream_that_fails_to_widen_the_scope_is_not_reported_as_allowed() {
+        let media = ChatMedia::new("chat-video-scope-error");
+        let result =
+            allow_video_stream_in(&media.at("repo/clips/demo.mp4"), &media.roots(), |_| {
+                Err("scope is closed".into())
+            });
+        assert_eq!(result.unwrap_err(), "scope is closed");
+    }
+
     #[test]
     fn inspect_paths_reports_files_and_directories() {
         let dir = tmp("inspect-paths");
@@ -6874,6 +8772,236 @@ mod tests {
         assert_eq!(encoded, "aGVsbG8=");
         assert_eq!(safe_attachment_name("../../secret.png"), "secret.png");
         assert_eq!(safe_attachment_name(""), "attachment");
+    }
+
+    const PNG_HEADER: [u8; 8] = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+    /// A generated-images folder with one real image in it, and a PNG outside it standing in for a private file.
+    fn generated_image_fixture(label: &str) -> (Tmp, PathBuf, PathBuf, PathBuf) {
+        let dir = tmp(label);
+        let root = dir.0.join("generated-images");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.join("one.png");
+        std::fs::write(&real, [&PNG_HEADER[..], b"real pixels"].concat()).unwrap();
+        let outside = dir.0.join("id_rsa.png");
+        std::fs::write(&outside, [&PNG_HEADER[..], b"private bytes"].concat()).unwrap();
+        (dir, root, real, outside)
+    }
+
+    fn files_in(dir: &Path) -> usize {
+        std::fs::read_dir(dir).unwrap().count()
+    }
+
+    fn copy_image(root: &Path, path: &Path) -> Result<Option<GeneratedImageAsset>, String> {
+        copy_generated_image_in(root, &path.to_string_lossy(), "cat")
+    }
+
+    #[test]
+    fn generated_image_copy_makes_a_file_of_its_own_from_a_real_image() {
+        let (_dir, root, real, _outside) = generated_image_fixture("gen-copy-real");
+        let copy = copy_image(&root, &real).unwrap().expect("a copy");
+        let copy_path = PathBuf::from(&copy.path);
+        assert_eq!(copy_path.parent().unwrap(), root);
+        assert_ne!(copy_path, real);
+        assert!(copy.path.ends_with("-cat.png"), "{}", copy.path);
+        assert_eq!(copy.mime_type, "image/png");
+        assert_eq!(
+            std::fs::read(&copy_path).unwrap(),
+            std::fs::read(&real).unwrap()
+        );
+        assert_eq!(copy.size, std::fs::read(&real).unwrap().len() as u64);
+        assert!(real.is_file(), "the original stays");
+    }
+
+    #[test]
+    fn generated_image_copy_does_not_read_or_copy_a_file_outside_the_folder() {
+        let (_dir, root, _real, outside) = generated_image_fixture("gen-copy-outside");
+        let before = files_in(&root);
+        assert_eq!(copy_image(&root, &outside), Ok(None));
+        assert_eq!(files_in(&root), before, "nothing was copied in");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_copy_never_opens_a_file_outside_the_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, root, _real, outside) = generated_image_fixture("gen-copy-unopened");
+        // A file that cannot be opened: an attempt to read it would be an error, not a refusal.
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(copy_image(&root, &outside), Ok(None));
+    }
+
+    #[test]
+    fn generated_image_copy_refuses_paths_that_climb_out_or_sit_beside_the_folder() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-copy-climb");
+        let before = files_in(&root);
+        let climbing = root.join("..").join("id_rsa.png");
+        assert_eq!(copy_image(&root, &climbing), Ok(None));
+        let via_real = real.join("..").join("..").join("id_rsa.png");
+        assert_eq!(copy_image(&root, &via_real), Ok(None));
+        let beside = dir.0.join("generated-images-evil");
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::copy(&outside, beside.join("x.png")).unwrap();
+        assert_eq!(copy_image(&root, &beside.join("x.png")), Ok(None));
+        assert_eq!(files_in(&root), before);
+    }
+
+    #[test]
+    fn generated_image_copy_refuses_a_relative_path_and_the_folder_itself() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-relative");
+        assert_eq!(
+            copy_generated_image_in(&root, "generated-images/one.png", "cat"),
+            Ok(None)
+        );
+        assert_eq!(copy_generated_image_in(&root, "", "cat"), Ok(None));
+        assert_eq!(copy_image(&root, &root), Ok(None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_copy_refuses_a_symlink_inside_the_folder_that_points_out() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-copy-link");
+        std::os::unix::fs::symlink(&outside, root.join("leak.png")).unwrap();
+        let elsewhere = dir.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::copy(&outside, elsewhere.join("deep.png")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("folder-link")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("alias.png")).unwrap();
+        let before = files_in(&root);
+
+        assert_eq!(copy_image(&root, &root.join("leak.png")), Ok(None));
+        assert_eq!(
+            copy_image(&root, &root.join("folder-link").join("deep.png")),
+            Ok(None)
+        );
+        assert_eq!(files_in(&root), before, "nothing was copied in");
+        // A link that stays inside the folder is still one of the app's own images.
+        assert!(copy_image(&root, &root.join("alias.png"))
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn generated_image_copy_gives_none_for_a_file_that_is_gone() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-gone");
+        assert_eq!(copy_image(&root, &root.join("missing.png")), Ok(None));
+        let absent = root.join("not-made-yet");
+        assert_eq!(copy_image(&absent, &absent.join("one.png")), Ok(None));
+        assert!(!absent.exists(), "a missing folder is not created");
+    }
+
+    #[test]
+    fn generated_image_copy_still_checks_what_the_file_holds() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-copy-bytes");
+        std::fs::write(root.join("page.png"), b"<html>").unwrap();
+        std::fs::write(root.join("empty.png"), b"").unwrap();
+        std::fs::create_dir_all(root.join("nested.png")).unwrap();
+        assert!(copy_image(&root, &root.join("page.png"))
+            .unwrap_err()
+            .contains("not a PNG"));
+        assert!(copy_image(&root, &root.join("empty.png")).is_err());
+        assert_eq!(copy_image(&root, &root.join("nested.png")), Ok(None));
+    }
+
+    fn read_image(root: &Path, path: &Path) -> Result<Option<Vec<u8>>, String> {
+        read_generated_image_in(root, &path.to_string_lossy())
+    }
+
+    #[test]
+    fn generated_image_read_gives_a_real_image_and_nothing_outside_the_folder() {
+        let (dir, root, real, outside) = generated_image_fixture("gen-read");
+        assert_eq!(
+            read_image(&root, &real).unwrap(),
+            Some(std::fs::read(&real).unwrap())
+        );
+        assert_eq!(read_image(&root, &outside), Ok(None));
+        assert_eq!(
+            read_image(&root, &root.join("..").join("id_rsa.png")),
+            Ok(None)
+        );
+        let beside = dir.0.join("generated-images-evil");
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::copy(&outside, beside.join("x.png")).unwrap();
+        assert_eq!(read_image(&root, &beside.join("x.png")), Ok(None));
+        assert_eq!(read_image(&root, &root.join("missing.png")), Ok(None));
+        assert_eq!(read_image(&root, &root), Ok(None));
+        assert_eq!(read_generated_image_in(&root, ""), Ok(None));
+        assert_eq!(
+            read_generated_image_in(&root, "generated-images/one.png"),
+            Ok(None)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_image_read_refuses_symlinks_that_point_out_and_never_opens_outside_files() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, root, real, outside) = generated_image_fixture("gen-read-link");
+        std::os::unix::fs::symlink(&outside, root.join("leak.png")).unwrap();
+        let elsewhere = dir.0.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::fs::copy(&outside, elsewhere.join("deep.png")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("folder-link")).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("alias.png")).unwrap();
+        assert_eq!(read_image(&root, &root.join("leak.png")), Ok(None));
+        assert_eq!(
+            read_image(&root, &root.join("folder-link").join("deep.png")),
+            Ok(None)
+        );
+        assert!(read_image(&root, &root.join("alias.png"))
+            .unwrap()
+            .is_some());
+        // A file that cannot be opened: an attempt to read it would be an error, not a refusal.
+        std::fs::set_permissions(&outside, std::fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(read_image(&root, &outside), Ok(None));
+    }
+
+    #[test]
+    fn generated_image_read_refuses_a_folder_and_an_oversized_file() {
+        let (_dir, root, _real, _outside) = generated_image_fixture("gen-read-limits");
+        std::fs::create_dir_all(root.join("nested.png")).unwrap();
+        assert_eq!(read_image(&root, &root.join("nested.png")), Ok(None));
+        let huge = std::fs::File::create(root.join("huge.png")).unwrap();
+        huge.set_len(MAX_GENERATED_IMAGE_BYTES + 1).unwrap();
+        assert!(read_image(&root, &root.join("huge.png"))
+            .unwrap_err()
+            .contains("too large"));
+    }
+
+    #[test]
+    fn generated_image_delete_skips_an_empty_path_and_one_outside_the_folder() {
+        let (_dir, root, real, outside) = generated_image_fixture("gen-delete");
+        let paths = |items: &[&Path]| -> Vec<String> {
+            items
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect()
+        };
+        // An empty path (a picture that came in from another Mac) is nothing to remove, and is not counted.
+        assert_eq!(
+            delete_generated_images_in(&root, &["".to_string()]),
+            Ok(GeneratedImageDeletion::default())
+        );
+        assert!(real.is_file());
+        assert_eq!(
+            delete_generated_images_in(&root, &paths(&[&outside])),
+            Ok(GeneratedImageDeletion {
+                removed: 0,
+                skipped: 1
+            })
+        );
+        assert!(
+            outside.is_file(),
+            "a file outside the folder is never removed"
+        );
+        assert_eq!(
+            delete_generated_images_in(&root, &paths(&[&real, &root.join("gone.png")])),
+            Ok(GeneratedImageDeletion {
+                removed: 1,
+                skipped: 0
+            })
+        );
+        assert!(!real.exists());
     }
 
     struct Tmp(PathBuf);
@@ -9040,6 +11168,21 @@ mod tests {
         assert_eq!(diff.files[0].additions, 4);
         assert_eq!(diff.patch, "");
         assert!(!diff.truncated);
+        assert_eq!(diff.head_sha, None);
+    }
+
+    #[test]
+    fn parse_github_pr_diff_meta_keeps_the_head_commit() {
+        let json = r#"{
+            "additions": 1,
+            "deletions": 0,
+            "headRefOid": " bbb222 ",
+            "files": [{"path": "a.ts", "additions": 1, "deletions": 0}]
+        }"#;
+        let diff = parse_github_pr_diff_meta(json).unwrap();
+        assert_eq!(diff.head_sha.as_deref(), Some("bbb222"));
+        let blank = parse_github_pr_diff_meta(r#"{"headRefOid": "  ", "files": []}"#).unwrap();
+        assert_eq!(blank.head_sha, None);
     }
 
     #[test]
@@ -9608,7 +11751,7 @@ mod tests {
     fn git_branches_empty_outside_a_repo() {
         let dir = tmp("git-branches-none");
         std::fs::write(dir.0.join("notes.txt"), "hello\n").unwrap();
-        assert_eq!(git_branches_for(&dir.0), GitBranches::default());
+        assert_eq!(git_branches_for(&dir.0).unwrap(), GitBranches::default());
     }
 
     #[test]
@@ -9617,13 +11760,76 @@ mod tests {
         if !init_git(&dir.0, "main", None) {
             return;
         }
-        let listed = git_branches_for(&dir.0);
+        let listed = git_branches_for(&dir.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("main"));
         assert!(!listed.detached);
         assert!(listed
             .branches
             .iter()
             .any(|branch| { branch.name == "main" && branch.current && branch.remote.is_none() }));
+    }
+
+    /// Git reads `.git/config` first, so a FIFO there blocks every git command in the folder until something writes
+    /// to it: a git that never answers, with nothing to mock.
+    #[cfg(unix)]
+    fn repo_whose_git_never_answers(label: &str) -> Option<Tmp> {
+        let dir = tmp(label);
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return None;
+        }
+        let config = dir.0.join(".git").join("config");
+        std::fs::remove_file(&config).ok()?;
+        let made = Command::new("mkfifo").arg(&config).status().ok()?;
+        made.success().then_some(dir)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_branches_kills_a_git_that_does_not_answer_within_the_limit() {
+        use std::os::unix::fs::OpenOptionsExt;
+        let Some(dir) = repo_whose_git_never_answers("git-branches-hung") else {
+            return;
+        };
+        let config = dir.0.join(".git").join("config");
+        let root = dir.0.clone();
+        let (sender, receiver) = mpsc::channel();
+        let started = Instant::now();
+        // Off the test thread, so a limit that stops working fails this test and does not hang it.
+        thread::spawn(move || {
+            let _ = sender.send(git_branches_within(&root, Duration::from_millis(600)));
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("git_branches did not return after its limit");
+        assert_eq!(result, Err(GIT_BRANCHES_NO_ANSWER.to_string()));
+        assert!(started.elapsed() >= Duration::from_millis(500));
+        // The killed git no longer has the FIFO open for reading, so a write open that does not wait finds no reader
+        // (ENXIO). A git left running would be the reader.
+        let gone = (0..50).any(|_| {
+            let opened = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&config);
+            match opened {
+                Err(error) if error.raw_os_error() == Some(libc::ENXIO) => true,
+                _ => {
+                    thread::sleep(Duration::from_millis(100));
+                    false
+                }
+            }
+        });
+        assert!(gone, "a git process was left running after the limit");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_branches_limit_does_not_cut_a_git_that_answers() {
+        let dir = tmp("git-branches-answers");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let listed = git_branches_within(&dir.0, Duration::from_secs(30)).unwrap();
+        assert_eq!(listed.current.as_deref(), Some("main"));
     }
 
     #[test]
@@ -9636,7 +11842,7 @@ mod tests {
             git_create_branch_for(&dir.0, "feat/picker").unwrap(),
             "feat/picker"
         );
-        let listed = git_branches_for(&dir.0);
+        let listed = git_branches_for(&dir.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("feat/picker"));
         assert_eq!(git_checkout_for(&dir.0, "main", None).unwrap(), "main");
         assert_eq!(git_head_branch(&dir.0).as_deref(), Some("main"));
@@ -9760,7 +11966,7 @@ mod tests {
         {
             return;
         }
-        let listed = git_branches_for(&repo.0);
+        let listed = git_branches_for(&repo.0).unwrap();
         assert_eq!(listed.current.as_deref(), Some("main"));
         let remote = listed
             .branches
@@ -9777,5 +11983,28 @@ mod tests {
             "feature"
         );
         assert_eq!(git_head_branch(&repo.0).as_deref(), Some("feature"));
+    }
+
+    /// `git -C ""` changes nowhere, so a chat with no folder would read and write whatever checkout the app runs in.
+    #[test]
+    fn git_never_falls_back_to_the_folder_the_app_runs_in() {
+        let args = ["rev-parse", "--show-toplevel"];
+        // The test runs inside this checkout; that is the folder a blank root would silently read.
+        if git_output(Path::new("."), &args).is_none() {
+            return;
+        }
+        let blank = Path::new("");
+        assert_eq!(git_output(blank, &args), None);
+        assert_eq!(git_run(blank, &args), None);
+        assert_eq!(git_stdout(blank, &args), None);
+        assert!(git_checked(blank, &args).is_err());
+        assert!(git_output_capped(blank, &args, 1024, None).is_none());
+        assert_eq!(git_ignored_names(blank, &["target"]), None);
+        assert!(git_hash_object(blank, "a.txt", b"a").is_err());
+        assert!(git_branch_name(blank, "main").is_err());
+        assert_eq!(git_info_for(blank).branch, None);
+        assert!(git_diff_index_for(blank).files.is_empty());
+        assert!(git_commit_selected_for(blank, "message", &["a.txt".into()]).is_err());
+        assert!(git_push_for(blank).is_err());
     }
 }

@@ -18,8 +18,8 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
    real provider) and why.
 7. One package per PR. Credit sources from [SOURCES.md](SOURCES.md) in the PR and in `NOTICE` when code is
    vendored.
-8. Follow CLAUDE.md: never launch a build with the real HOME, never touch the daily app or its data, ship only
-   through `hub:ship`.
+8. Follow [AGENTS.md](../../AGENTS.md): never launch a build with the real HOME, never touch the daily app or its
+   data, ship only through `hub:ship`.
 
 ## Review and landing
 
@@ -38,7 +38,7 @@ has merged. Sizes are agent time: S is under two hours, M is half a day, L is ab
 - New features go in new modules. Upstream files get the smallest hook that works, with a comment naming the
   package.
 - Don't reformat or reorder upstream code. Don't rename upstream symbols.
-- Upstream is merged regularly (CLAUDE.md "Upstream merges"). A package that conflicts with a fresh upstream merge
+- Upstream is merged regularly (AGENTS.md "Upstream merges"). A package that conflicts with a fresh upstream merge
   rebases; it doesn't fight upstream.
 
 ## The waves

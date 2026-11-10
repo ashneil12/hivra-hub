@@ -11,6 +11,11 @@ import { test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
 const load = () => import(pathToFileURL(path.join(here, "hub-doctor.mjs")).href);
 const skip = process.platform !== "darwin" && "bundles are read with macOS PlistBuddy";
 

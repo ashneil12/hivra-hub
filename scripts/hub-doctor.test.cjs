@@ -7,7 +7,14 @@ const { execFileSync, spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+
 const { pathToFileURL } = require("node:url");
+
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
 
 const skip = process.platform !== "darwin" && "bundles are read with macOS PlistBuddy";
 const load = () => import(pathToFileURL(path.join(__dirname, "hub-doctor.mjs")).href);
@@ -399,4 +406,81 @@ test("hub:doctor --clean without --yes lists what it would reap and leaves the f
   assert.match(result.stdout, /config .*old-name\.conf\.json/);
   assert.equal(snapshot(), before);
   assert.ok(fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)));
+});
+
+test("disk: --clean clears the build output of a pushed, clean worktree, and keeps dirty, unpushed, linked and main-checkout output", { skip }, async (t) => {
+  const { collect, cleanPlan, applyClean, renderClean, buildOutputOf } = await load();
+  const { home, repo } = fixture(t);
+  const roots = [path.join(home, "Worktrees")];
+  const report = () => collect({ home, repo, worktreeRoots: roots, sizes: false, isAlive: alive });
+  const origin = path.join(home, "origin.git");
+  git(home, "init", "-q", "--bare", origin);
+  git(repo, "remote", "add", "origin", origin);
+  // As the real .gitignore does: build output is not a change.
+  fs.writeFileSync(path.join(repo, ".git/info/exclude"), "target/\ntest-results/\nplaywright-report/\nnode_modules\n");
+  const commit = (dir, name) => {
+    fs.writeFileSync(path.join(dir, name), name);
+    git(dir, "add", name);
+    git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name);
+  };
+  const output = (dir, names) => {
+    for (const name of names) {
+      fs.mkdirSync(path.join(dir, name, "deps"), { recursive: true });
+      fs.writeFileSync(path.join(dir, name, "deps/blob"), "x");
+    }
+  };
+  const tree = (name, branch) => {
+    const dir = path.join(home, "Worktrees", name);
+    git(repo, "worktree", "add", "-q", "-b", branch, dir);
+    return dir;
+  };
+  // Pushed and clean, with real build output and a real node_modules.
+  const pushed = tree("feat-e", "feat/e");
+  commit(pushed, "e.txt");
+  git(pushed, "push", "-q", "origin", "feat/e");
+  output(pushed, ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"]);
+  // Pushed and clean, but node_modules is a link to the main checkout's.
+  const linked = tree("feat-f", "feat/f");
+  commit(linked, "f.txt");
+  git(linked, "push", "-q", "origin", "feat/f");
+  output(linked, ["target"]);
+  fs.mkdirSync(path.join(repo, "node_modules/pkg"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "node_modules/pkg/index.js"), "main checkout's");
+  fs.symlinkSync(path.join(repo, "node_modules"), path.join(linked, "node_modules"));
+  // A commit that is only here.
+  const unpushed = tree("feat-g", "feat/g");
+  commit(unpushed, "g.txt");
+  output(unpushed, ["target"]);
+  // Pushed, then work left uncommitted.
+  const dirty = tree("feat-h", "feat/h");
+  commit(dirty, "h.txt");
+  git(dirty, "push", "-q", "origin", "feat/h");
+  output(dirty, ["target"]);
+  fs.writeFileSync(path.join(dirty, "wip.txt"), "unfinished");
+  // The main checkout's own build output.
+  output(repo, ["target"]);
+
+  assert.deepEqual(buildOutputOf(linked), ["target"], "a linked node_modules is not build output");
+  const plan = cleanPlan(await report(), { current: repo });
+  assert.deepEqual(
+    plan.buildOutputs.map((row) => [path.basename(row.path), row.folders]),
+    [
+      ["feat-e", ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"]],
+      ["feat-f", ["target"]],
+    ],
+  );
+  assert.match(renderClean(plan), /build output .*feat-e \(target, src-tauri\/target/);
+
+  const result = applyClean(plan);
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.removed.buildOutputs, 6);
+  for (const name of ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"])
+    assert.ok(!fs.existsSync(path.join(pushed, name)), `feat-e ${name} is gone`);
+  assert.ok(fs.existsSync(path.join(pushed, "e.txt")), "its code stays");
+  assert.ok(fs.existsSync(path.join(pushed, "src-tauri")), "only target/ inside src-tauri goes");
+  assert.ok(fs.lstatSync(path.join(linked, "node_modules")).isSymbolicLink(), "the link stays");
+  assert.ok(fs.existsSync(path.join(repo, "node_modules/pkg/index.js")), "the main checkout's node_modules is untouched");
+  assert.ok(fs.existsSync(path.join(unpushed, "target/deps/blob")), "unpushed work keeps its build output");
+  assert.ok(fs.existsSync(path.join(dirty, "target/deps/blob")), "a dirty worktree keeps its build output");
+  assert.ok(fs.existsSync(path.join(repo, "target/deps/blob")), "the main checkout keeps its build output");
 });

@@ -17,7 +17,7 @@ import { startAshOsImport } from "./localHub/ashOsImport";
 import { appIdentity } from "../../../app/model/appIdentity";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
-import { registerClaudeGuards, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { registerClaudeGuards, registeredCodexLeadConfig, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
@@ -30,6 +30,7 @@ import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, setHubDocsPath, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
+import { setCodexLeadConfig } from "../../../integrations/harness/providers/codex/codexLeadConfig";
 import { resourceDir } from "@tauri-apps/api/path";
 import { pathKey } from "../../../shared/lib/paths";
 import { createLiveHubData } from "./liveHubData";
@@ -82,6 +83,11 @@ function startHubMcp(): void {
   setClaudeExtraArgs(async (sessionId) => {
     await ready;
     return registeredHubMcpArgs(sessionId);
+  });
+  // WP-120: a Codex lead gets the same monocode server, once the app CLI is known.
+  setCodexLeadConfig(async (sessionId) => {
+    await ready;
+    return registeredCodexLeadConfig(sessionId);
   });
 }
 if (IS_HUB_BUNDLE) startHubMcp();

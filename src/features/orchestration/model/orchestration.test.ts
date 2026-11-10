@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Orchestrator,
+  handoffRelativePath,
   orchestrationPathKey,
   scopesOverlap,
   visibleUserPrompt,
@@ -15,9 +16,62 @@ import {
 import { newSession } from "../../sessions/model/session";
 import type { OrchestrationProposal } from "./orchestrationPlan";
 import { normalizeOrchestrationRun } from "./orchestrationState";
+import type { GoalGraphBackend, GoalRunView } from "./orchestrationGoal";
 import { previewFromToolPart } from "../../../integrations/harness/providers/opencode/opencodeProtocol";
 
+/**
+ * WP-91: the goal graph's rules live in Rust (`src-tauri/src/goal_graph`) and are tested there. The webview's tests
+ * stand in for that boundary, so what they exercise is the wiring — which rules the app asks for, and what it does
+ * with the answer — and never a second copy of a rule.
+ */
+export function stubGoals(
+  overrides: Partial<GoalGraphBackend> = {},
+): GoalGraphBackend {
+  return {
+    checkPlan: vi.fn(async () => ({
+      verify: "verify",
+      layers: [],
+      criticalPath: [],
+      bottlenecks: [],
+      lint: [],
+    })),
+    checkRepair: vi.fn(async () => {}),
+    report: vi.fn(async (run: GoalRunView) => ({
+      report: {
+        goal: run.goal,
+        verdict: "unverified" as const,
+        reasons: ["tasks_open"],
+        layers: [],
+        criticalPath: [],
+        bottlenecks: [],
+        lint: [],
+        ready: [],
+        cyclesLeft: {},
+        replan: [],
+        extendsLeft: 2,
+      },
+    })),
+    runCheck: vi.fn(async () => ({
+      outcome: "failed" as const,
+      exitCode: 1,
+      output: "1 failing",
+      layer: "app",
+      at: 1,
+    })),
+    readHandoff: vi.fn(async (checkout: string, taskId: string) => ({
+      path: `${checkout}/.hivra/handoff/${taskId}.md`,
+      sha256: "0".repeat(64),
+      bytes: 12,
+      text: "## Changed\nok",
+      headings: ["Changed"],
+      missing: ["Files", "Checked", "Left"],
+    })),
+    ...overrides,
+  };
+}
+
 function setup() {
+  const goals = stubGoals();
   const saved = new Map<string, OrchestrationRun>();
   const store = {
     save: vi.fn(async (run: OrchestrationRun) => {
@@ -33,7 +87,7 @@ function setup() {
     ),
     resolvePath: vi.fn(async (path: string) => path),
   };
-  const manager = new Orchestrator(store);
+  const manager = new Orchestrator(store, goals);
   const lead = { ...newSession("claude", "/repo"), id: "lead", busy: true };
   const sessions = [lead];
   const completions = new Map<string, (outcome: ControlOutcome) => void>();
@@ -102,6 +156,7 @@ function setup() {
   return {
     manager,
     store,
+    goals,
     host,
     lead,
     saved,
@@ -196,6 +251,9 @@ describe("local orchestration", () => {
     status: "ready",
     title: "Settings",
     summary: "Split the work",
+    // WP-91: a run states its goal and the finish line the app runs itself.
+    goal: "The settings screen saves and reloads",
+    check: { command: "npm test", expectExit: 0 },
     tasks: [
       {
         id: "ui",
@@ -215,6 +273,16 @@ describe("local orchestration", () => {
         files: ["src/types"],
         dependsOn: [],
       },
+      {
+        id: "verify",
+        title: "Check the goal",
+        prompt: "Verify the settings screen",
+        harness: "codex",
+        model: "codex:test",
+        role: "verify",
+        files: [],
+        dependsOn: ["ui", "types"],
+      },
     ],
   });
   it("starts exactly the approved assignments and preserves forward dependencies", async () => {
@@ -227,7 +295,12 @@ describe("local orchestration", () => {
     await vi.waitFor(() =>
       expect(f.host.createWorker).toHaveBeenCalledTimes(1),
     );
-    expect(f.tasks().map((task) => task.status)).toEqual(["queued", "running"]);
+    // WP-91: the plan's own verify task is queued behind the producers, and starts nothing by itself.
+    expect(f.tasks().map((task) => task.status)).toEqual([
+      "queued",
+      "running",
+      "queued",
+    ]);
     expect(f.tasks()[0].prompt).toBe("User edited instructions");
     expect(f.tasks()[0].dependsOn).toEqual([f.tasks()[1].id]);
     expect(f.tasks()[1].modelSettings).toEqual({
@@ -240,7 +313,7 @@ describe("local orchestration", () => {
       }),
     );
     expect(f.manager.run("lead")?.proposalId).toBe("card");
-    expect(f.saved.get("lead")?.tasks).toHaveLength(2);
+    expect(f.saved.get("lead")?.tasks).toHaveLength(3);
     const workerPrompt = vi
       .mocked(f.host.submit)
       .mock.calls.find(
@@ -392,7 +465,8 @@ describe("local orchestration", () => {
       results.filter((result) => result.status === "fulfilled"),
     ).toHaveLength(1);
     expect(f.store.enable).toHaveBeenCalledTimes(1);
-    expect(f.tasks()).toHaveLength(2);
+    // The plan's two producers and its own verify task: confirmed once, queued once.
+    expect(f.tasks()).toHaveLength(3);
   });
   it("ignores unavailable unused catalog models but blocks an unavailable assignment", async () => {
     const f = setup();
@@ -446,6 +520,12 @@ describe("local orchestration", () => {
   it("preserves case for POSIX checkout and scope identities", () => {
     expect(orchestrationPathKey("/repo/Foo")).toBe("/repo/Foo");
     expect(scopesOverlap(["/repo/Foo"], ["/repo/foo/file.ts"])).toBe(false);
+  });
+  it("reads a scope written with CRLF or padding as the same path", () => {
+    expect(orchestrationPathKey("src/a.ts\r")).toBe("src/a.ts");
+    expect(orchestrationPathKey("  src/a.ts\r\n")).toBe("src/a.ts");
+    // Two tasks writing the same file must meet even when one scope carries a stray carriage return.
+    expect(scopesOverlap(["/repo/src/a.ts\r"], ["/repo/src/a.ts"])).toBe(true);
   });
   it("records the selected worktree separately from the project identity", async () => {
     const f = setup();
@@ -565,6 +645,64 @@ describe("local orchestration", () => {
     expect(f.tasks()[0].workspace).toBeUndefined();
     expect(f.manager.run("lead")?.dispatches?.[0].stage).toBe("cleaned");
   });
+  it("closes a finished run with the usage its children recorded", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledOnce());
+    const task = f.tasks()[0];
+    const child = f.sessions.find((session) => session.id === task.sessionId)!;
+    child.blocks = [
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+      {
+        id: "turn-1",
+        role: "user",
+        text: "do it",
+        turnMetrics: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+      },
+    ];
+    f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+    await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+    await f.call("review", { taskId: task.id });
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({
+      finished: true,
+      usage: { inputTokens: 12, outputTokens: 340, costUsd: 0.02 },
+    });
+    expect(f.manager.run("lead")?.status).toBe("finished");
+    expect(f.manager.run("lead")?.closingUsage).toEqual({
+      inputTokens: 12,
+      outputTokens: 340,
+      costUsd: 0.02,
+    });
+  });
+
+  it("finishes when a child's usage cannot be read", async () => {
+    const f = setup();
+    await f.start();
+    await f.delegate(["src/a"]);
+    await vi.waitFor(() => expect(f.tasks()[0].sessionId).toBeTruthy());
+    const task = f.tasks()[0];
+    await f.call("cancel", { taskId: task.id });
+    const read = f.host.session;
+    f.host.session = (id) => {
+      if (id === task.sessionId) throw new Error("session store is down");
+      return read(id);
+    };
+
+    const result = await f.call("finish");
+
+    expect(result).toEqual({ finished: true });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
+  });
+
   it("reports a cancelled dirty worktree instead of silently orphaning it", async () => {
     const f = setup();
     await f.start();
@@ -582,6 +720,7 @@ describe("local orchestration", () => {
       finished: true,
       cleanupPending: [`/worktrees/${task.id}`],
     });
+    expect(f.manager.run("lead")?.closingUsage).toBeUndefined();
     expect(f.tasks()[0].workspace?.checkoutCwd).toBe(`/worktrees/${task.id}`);
     expect(f.host.cleanupWorker).toHaveBeenCalledWith(
       expect.anything(),
@@ -884,6 +1023,111 @@ describe("local orchestration", () => {
     );
     expect(f.tasks()[0].error).toContain("outside its assignment");
     expect(f.manager.run("lead")!.status).toBe("active");
+  });
+
+  describe("a worker's handoff file", () => {
+    // The worker is told to write `.hivra/handoff/<taskId>.md` in its own checkout (workerTurnPrompt), so the scope
+    // guard must let exactly that one file through, however the harness names the path.
+    const writes = (path: string) => ({
+      type: "tool.started" as const,
+      callId: path,
+      title: "Write",
+      preview: { kind: "write" as const, path },
+    });
+    const started = async () => {
+      const f = setup();
+      await f.start();
+      await f.delegate(["brief.py"]);
+      await f.delegate(["commands.py"]);
+      await vi.waitFor(() => expect(f.host.submit).toHaveBeenCalledTimes(2));
+      const [task, other] = f.tasks();
+      return { f, task, other, checkout: task.workspace!.checkoutCwd };
+    };
+
+    it("leaves the task running when it writes its handoff, by a relative or an absolute path", async () => {
+      const { f, task, checkout } = await started();
+      expect(vi.mocked(f.host.submit).mock.calls[0][1]).toContain(
+        `.hivra/handoff/${task.id}.md`,
+      );
+      f.manager.observe(task.sessionId, writes(`.hivra/handoff/${task.id}.md`));
+      f.manager.observe(
+        task.sessionId,
+        writes(`${checkout}/.hivra/handoff/${task.id}.md`),
+      );
+      // A turn that ends is published only after every reported write has been checked, so a block shows here.
+      f.completions.get(task.sessionId)!({ status: "completed", text: "Done" });
+      await vi.waitFor(() => expect(f.tasks()[0].status).toBe("completed"));
+      expect(f.tasks()[0].error).toBeUndefined();
+      expect(f.manager.run("lead")!.status).toBe("active");
+      expect(f.tasks()[1].status).toBe("running");
+    });
+
+    it("stays running while the handoff is the only write it reported", async () => {
+      const { f, task } = await started();
+      f.manager.observe(task.sessionId, writes(`.hivra/handoff/${task.id}.md`));
+      await vi.waitFor(() => expect(f.store.resolvePath).toHaveBeenCalled());
+      // Let the check finish: a block would have landed by now.
+      for (let turn = 0; turn < 5; turn++)
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(f.tasks().map((entry) => entry.status)).toEqual([
+        "running",
+        "running",
+      ]);
+    });
+
+    it("still blocks every other write under .hivra, and another task's handoff", async () => {
+      const paths: Array<
+        (task: { id: string }, other: { id: string }) => string
+      > = [
+        (_task, other) => `.hivra/handoff/${other.id}.md`,
+        (task) => `.hivra/handoff/${task.id}.md.bak`,
+        (task) => `.hivra/handoff/sub/${task.id}.md`,
+        () => ".hivra/notes.md",
+        (task) => `.hivra/${task.id}.md`,
+        (task) => `.hivra/handoff/${task.id}.md/..`,
+      ];
+      for (const path of paths) {
+        const { f, task, other } = await started();
+        f.manager.observe(task.sessionId, writes(path(task, other)));
+        await vi.waitFor(() => expect(f.tasks()[0].status).toBe("blocked"));
+        expect(f.tasks()[0].error).toContain("outside its assignment");
+        expect(f.tasks()[1].status).toBe("running");
+        await f.manager.stopRun("lead");
+      }
+    });
+
+    it("blocks a handoff path that is really somewhere else, or in the lead's checkout", async () => {
+      const first = await started();
+      // A planted link: the reported path resolves to a file outside this worker's assignment.
+      first.f.store.resolvePath.mockImplementation(async (path: string) =>
+        path.endsWith(`${first.task.id}.md`) ? "/repo/commands.py" : path,
+      );
+      first.f.manager.observe(
+        first.task.sessionId,
+        writes(`.hivra/handoff/${first.task.id}.md`),
+      );
+      await vi.waitFor(() =>
+        expect(first.f.tasks()[0].status).toBe("blocked"),
+      );
+      await first.f.manager.stopRun("lead");
+
+      const second = await started();
+      // The same file name, but in the lead's own checkout: a worker never writes there.
+      second.f.manager.observe(
+        second.task.sessionId,
+        writes(`/repo/.hivra/handoff/${second.task.id}.md`),
+      );
+      await vi.waitFor(() =>
+        expect(second.f.tasks()[0].status).toBe("blocked"),
+      );
+      await second.f.manager.stopRun("lead");
+    });
+
+    it("names a handoff only for a task id that is one plain path segment", () => {
+      expect(handoffRelativePath("3f2a-91")).toBe(".hivra/handoff/3f2a-91.md");
+      for (const bad of ["", ".", "..", "../x", "a/b", "a\\b", "C:x", "a\0b", "a\nb"])
+        expect(() => handoffRelativePath(bad)).toThrow(/not a task id/);
+    });
   });
 
   it("keeps a paused run inspectable and automatically continues interrupted work on Resume", async () => {

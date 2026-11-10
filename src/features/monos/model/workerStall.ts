@@ -24,6 +24,9 @@ import { isOpenDelegation, type Delegation, type DelegationTracker } from "./del
 import { serviceStallLine } from "./workerStuck";
 import { classifyLook, SILENCE_MS, type Decision, type Wake } from "../../firstmate/watcher/classifier";
 
+// WP-102: the sleep rule lives in the classifier beside SILENCE_MS; re-exported so the tick host can name its constant.
+export { sleepGap, SLEEP_TICKS } from "../../firstmate/watcher/classifier";
+
 // Moved to the watcher (Hivra WP-11, firstmate/watcher/stall.ts); re-exported so callers keep their imports.
 import { lookAt } from "../../firstmate/watcher/look";
 import {
@@ -169,11 +172,19 @@ export class StallWatch {
     else seen.repeatSince ??= now;
   }
 
-  private judge(row: Delegation, mode: "clear" | "both") {
+  private judge(row: Delegation, mode: "clear" | "both", sleptMs = 0) {
     const chat = this.host.session(row.childSession);
     if (!chat) return; // Not this window's: unknown, never stuck.
     const now = this.now();
     const seen = this.presence(row, chat, now);
+    // WP-102: time the computer slept is not silence. Every running worker's clock is moved forward by the gap, so its
+    // silent stretch starts at the wake; the look itself judges nothing (classifier.ts `classifyLook` receives `sleptMs`).
+    if (sleptMs > 0) {
+      seen.lastChangeAt = Math.min(now, (seen.lastChangeAt ?? now) + sleptMs);
+      seen.lastProgressAt = Math.min(now, (seen.lastProgressAt ?? now) + sleptMs);
+      if (seen.errorSince != null) seen.errorSince = Math.min(now, seen.errorSince + sleptMs);
+      if (seen.repeatSince != null) seen.repeatSince = Math.min(now, seen.repeatSince + sleptMs);
+    }
     const stored = row.stallKind ?? null;
     // A declared block (task_cannot) is the agent's own word, not a judgment: the watcher never overwrites or clears it.
     // It stands until the row itself moves (a settle, a Stop, a retried generation), which clears the stall in Rust.
@@ -199,6 +210,7 @@ export class StallWatch {
       },
       now,
       this.host.silenceMs?.() ?? SILENCE_MS,
+      { sleptMs },
     );
     for (const decision of decisions) {
       if (decision.kind === "stall") {
@@ -241,11 +253,14 @@ export class StallWatch {
     for (const row of this.running()) this.judge(row, "clear");
   }
 
-  /** The half-minute look: raise and clear. */
-  tick(): void {
+  /**
+   * The half-minute look: raise and clear. `sleptMs` is the time the computer slept before it (WP-102, `sleepGap`): every
+   * running worker's clock moves forward by that much, and the look stops nobody.
+   */
+  tick(sleptMs = 0): void {
     const rows = this.running();
     const live = new Set(rows.map((row) => row.childSession));
     for (const child of this.seen.keys()) if (!live.has(child)) this.seen.delete(child);
-    for (const row of rows) this.judge(row, "both");
+    for (const row of rows) this.judge(row, "both", sleptMs);
   }
 }

@@ -5,12 +5,15 @@ const SHOW_REMAINING_USAGE_KEY = "monocode.showRemainingUsage";
 const MASK_EMAILS_KEY = "monocode.maskEmails";
 const COMPOSER_AUTOCORRECT_KEY = "monocode.composerAutocorrect";
 const RAIL_MONOS_PINNED_KEY = "monocode.railMonosPinned";
+export const CHAT_LIST_INBOX_KEY = "monocode.chatListInbox";
 export const PACED_REVEAL_KEY = "monocode.pacedReveal";
 
 export const SHOW_REMAINING_USAGE_DEFAULT = false;
 export const MASK_EMAILS_DEFAULT = true;
 export const COMPOSER_AUTOCORRECT_DEFAULT = true;
 export const RAIL_MONOS_PINNED_DEFAULT = false;
+/** Settle, snooze and re-sort for the chat list. Off keeps today's list. */
+export const CHAT_LIST_INBOX_DEFAULT = false;
 
 /** Fired on `window` whenever the usage meter direction flips (detail: boolean). */
 export const SHOW_REMAINING_USAGE_CHANGE_EVENT =
@@ -22,6 +25,8 @@ export const COMPOSER_AUTOCORRECT_CHANGE_EVENT =
   "monocode:composerautocorrectchange";
 /** Fired on `window` whenever Monos are pinned to or unpinned from the icon rail (detail: boolean). */
 export const RAIL_MONOS_PINNED_CHANGE_EVENT = "monocode:railmonospinnedchange";
+/** Fired on `window` whenever settle and snooze for the chat list flips (detail: boolean). */
+export const CHAT_LIST_INBOX_CHANGE_EVENT = "monocode:chatlistinboxchange";
 
 function flagStore(key: string, fallback: boolean, event: string) {
   // Holds a saved value only while storage failed to keep it, so the switch
@@ -73,6 +78,11 @@ const railMonosPinned = flagStore(
   RAIL_MONOS_PINNED_DEFAULT,
   RAIL_MONOS_PINNED_CHANGE_EVENT,
 );
+const chatListInbox = flagStore(
+  CHAT_LIST_INBOX_KEY,
+  CHAT_LIST_INBOX_DEFAULT,
+  CHAT_LIST_INBOX_CHANGE_EVENT,
+);
 const pacedReveal = flagStore(
   PACED_REVEAL_KEY,
   true,
@@ -113,3 +123,13 @@ export const loadRailMonosPinned = railMonosPinned.load;
 export const saveRailMonosPinned = railMonosPinned.save;
 export const subscribeRailMonosPinned = railMonosPinned.subscribe;
 export const useRailMonosPinned = railMonosPinned.useFlag;
+
+/**
+ * The chat list can settle finished chats, snooze a chat until a time, and
+ * bring a chat that needs you back to the top. Missing, old and unreadable
+ * values stay off, which is today's list.
+ */
+export const loadChatListInbox = chatListInbox.load;
+export const saveChatListInbox = chatListInbox.save;
+export const subscribeChatListInbox = chatListInbox.subscribe;
+export const useChatListInbox = chatListInbox.useFlag;

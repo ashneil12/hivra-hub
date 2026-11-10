@@ -103,7 +103,7 @@ function platformPin(binary: Buffer | string, helper?: Buffer | string) {
   }
   return JSON.stringify({
     package: "agent-desktop",
-    version: "1.1.0",
+    version: "1.2.0",
     platforms: { [key]: entry },
   });
 }
@@ -549,7 +549,7 @@ describe("desktop gate", () => {
     const missing = gate(ctx, ["snapshot", "--app", "Notes"], { binary: false });
     refusal(missing, "BINARY_MISSING", "safe");
     expect(missing.code).toBe(1);
-    expect(JSON.parse(missing.stdout).error.message).toContain("agent-desktop 1.1.0");
+    expect(JSON.parse(missing.stdout).error.message).toContain("agent-desktop 1.2.0");
     expect(JSON.parse(missing.stdout).error.code).not.toBe("CONSENT_REQUIRED");
     expect(ctx.calls).toEqual([]);
     const bundled = path.resolve(
@@ -1256,7 +1256,7 @@ describe("desktop gate, app launch", () => {
     expect(ctx.calls).toHaveLength(2);
   });
 
-  it("refuses every 1.1.0 command that cannot be kept on the allowed app", () => {
+  it("refuses every 1.2.0 command that cannot be kept on the allowed app", () => {
     const ctx = setup();
     on(ctx);
     touch(ctx);
@@ -1454,6 +1454,28 @@ describe("desktop gate, app launch", () => {
         refusal(result, "INVALID_ARGS", "unsafe");
         if (attack.hidden) expect(result.stdout, label).not.toContain(attack.hidden);
       }
+    }
+  });
+
+  it("refuses --stdin, so the text a worker types is always a word the gate has seen", () => {
+    // agent-desktop 1.2.0 accepts --stdin for type, set-value and clipboard-set. The gate refuses
+    // it: a piped value is never an argument it can inspect, and a refused flag is refused, not stripped.
+    const ctx = setup();
+    on(ctx);
+    touch(ctx);
+    allow(ctx, "Notes");
+    ctx.seen.apps.s1 = "Notes";
+    for (const argv of [
+      ["type", "@s1:e2", "--stdin"],
+      ["set-value", "@s1:e2", "--stdin"],
+      ["type", "--stdin", "@s1:e2", "hello"],
+      ["set-value", "--stdin=1", "@s1:e2", "hello"],
+    ]) {
+      const before = ctx.calls.length;
+      const result = launched(ctx, argv);
+      expect(result.code, argv.join(" ")).not.toBe(0);
+      expect(ctx.calls, argv.join(" ")).toHaveLength(before);
+      refusal(result, "INVALID_ARGS", "unsafe");
     }
   });
 

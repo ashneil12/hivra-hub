@@ -102,7 +102,8 @@ export type WorkspaceTab = {
   groupId?: string;
 };
 
-const MIN_SIZE = 0.08;
+/** The smallest share of its group a pane may shrink to. */
+export const MIN_SIZE = 0.08;
 
 export function leaf(sessionId: string): LayoutNode {
   return { type: "leaf", id: sessionId };

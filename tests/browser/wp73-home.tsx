@@ -12,8 +12,12 @@ import { FirstMateInbox } from "../../src/features/crew/ui/FirstMateInbox";
 import type { FirstMateItem } from "../../src/features/crew/model/inbox";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
+import { importFromAshOsAgain } from "../../src/features/hub/model/localHub/ashOsImport";
+import { appHubTransport } from "../../src/features/hub/model/localHub/localTransport";
 
 const empty = new URLSearchParams(location.search).has("empty");
+// No project at all, as on a Mac whose projects are still in Ash OS: Home says why and offers the way back.
+const noProjects = new URLSearchParams(location.search).has("noprojects");
 const HUB_KEY = "wp73-home-hub";
 
 type Row = Record<string, unknown>;
@@ -63,13 +67,13 @@ const projects = [
 ];
 
 const inboxItems: FirstMateItem[] = [
-  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", updatedAt: 1 },
-  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", updatedAt: 2 },
+  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", since: 1, updatedAt: 1 },
+  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", since: 2, updatedAt: 2 },
 ];
 
 const base = hubData();
 const src = Object.create(base) as HubDataSource;
-src.listProjects = () => projects;
+src.listProjects = () => (noProjects ? [] : projects);
 setHubDataSource(src);
 setHubSelection({ project: "crew", item: "home" });
 
@@ -149,6 +153,14 @@ function Shell() {
       </div>
     </>
   );
+}
+
+// What the start-up import leaves when Ash OS doesn't answer: nothing decided, so Home offers to try again.
+if (noProjects) {
+  void importFromAshOsAgain(appHubTransport().hub, {
+    fetch: async () => ({ state: "unreachable", message: "no answer", projects: [], memberships: [], pages: [] }),
+    ask: async () => "later",
+  });
 }
 
 createRoot(document.getElementById("shell")!).render(<Shell />);

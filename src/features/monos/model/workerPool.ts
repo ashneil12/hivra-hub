@@ -24,6 +24,20 @@ import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWater
 import { isOpenDelegation } from "./delegations";
 import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
+import {
+  DEFAULT_BUILDER_SCALE,
+  HEALTH_CACHE_MS,
+  HEALTH_STALE_MS,
+  builderHoldNeed,
+  builderLaunchAllowed,
+  builderScaleFromStored,
+  builderScaleIsDefault,
+  builderScaleToStored,
+  sanitizeBuilderScale,
+  type BuilderHealth,
+  type BuilderHoldNeed,
+  type BuilderScale,
+} from "./builderScale";
 
 export type WorkerLimits = {
   workers: number;
@@ -75,7 +89,9 @@ let settingsCopy: {
   heavy: Set<string>;
   /** WP-89: the worker default for every project, when one is set. */
   workerDefault?: WorkerPick;
-} = { limits: {}, heavy: new Set() };
+  /** WP-161: the shared ceiling and the optional health pauses. */
+  builderScale: BuilderScale;
+} = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
 /**
  * Bumped on every local settings write. A refresh that started earlier read the old
  * copy; it must not put that copy back over a write that landed while it was reading.
@@ -115,7 +131,8 @@ const clampCount = (n: unknown, fallback: number) =>
 
 export function workerLimits(project: string): WorkerLimits {
   const saved = settingsCopy.limits[project];
-  const workers = clampCount(saved?.workers, DEFAULT_LIMITS.workers);
+  // WP-161: a project with no ceiling of its own uses the shared max builders (still 6 until raised).
+  const workers = clampCount(saved?.workers, builderScale().maxBuilders);
   return {
     workers,
     heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
@@ -170,6 +187,28 @@ export function projectWorkerDefault(project: string): WorkerPick | undefined {
 /** WP-89: the worker default for every project, when one is set. */
 export function systemWorkerDefault(): WorkerPick | undefined {
   return cleanStoredDefault(settingsCopy.workerDefault);
+}
+
+/** WP-161: the shared max builders and the optional pauses. A bad value falls back, it is not thrown away whole. */
+export function builderScale(): BuilderScale {
+  return sanitizeBuilderScale(settingsCopy.builderScale);
+}
+
+/**
+ * Saves the shared scale. The default is not stored. This does not stop a builder that is already running:
+ * the saved value has no list of builders to stop.
+ */
+export function setBuilderScale(next: BuilderScale): BuilderScale {
+  const clean = sanitizeBuilderScale(next);
+  wroteSettings();
+  settingsCopy = { ...settingsCopy, builderScale: clean };
+  changed();
+  noteSettingsWrite(
+    (backend.setBuilderScale?.(clean) ?? Promise.resolve(null)).catch((error: unknown) =>
+      console.warn("Could not save the builder scale", error),
+    ),
+  );
+  return clean;
 }
 
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
@@ -296,11 +335,13 @@ export type WorkerQueueBackend = {
   claim(id: string, by: string): Promise<boolean>;
   /** The claimed job started: out of the queue (only the claimant's finish counts). */
   finish(id: string, by: string): Promise<boolean>;
-  /** Each project's limits, the workers marked heavy, and the system worker default when one is set. */
+  /** Each project's limits, the workers marked heavy, the system worker default, and the builder scale when one is set. */
   settings(): Promise<{
     limits: Record<string, Partial<WorkerLimits>>;
     heavy: string[];
     workerDefault?: WorkerPick;
+    /** WP-161. Absent means the defaults (6, load at 1.6 times the cores, memory off, disk below 30 GB). */
+    builderScale?: unknown;
   }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
   /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
@@ -310,6 +351,8 @@ export type WorkerQueueBackend = {
   ): Promise<unknown>;
   /** WP-89: the worker default for every project. Undefined clears it. */
   setWorkerDefault(choice: WorkerPick | undefined): Promise<unknown>;
+  /** WP-161: the shared ceiling and pauses. Optional so a stand-in from before this field still loads. */
+  setBuilderScale?(scale: BuilderScale): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -336,6 +379,8 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
       cli: choice?.cli ?? null,
     }),
   setWorkerDefault: (choice) => invoke("worker_default_set", { value: choice ?? null }),
+  // WP-161: null clears a scale that is back to the defaults.
+  setBuilderScale: (scale) => invoke("builder_scale_set", { value: builderScaleToStored(scale) }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -378,6 +423,7 @@ export function memoryWorkerQueue(
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
     workerDefault: undefined as WorkerPick | undefined,
+    builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } } as BuilderScale,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -432,6 +478,7 @@ export function memoryWorkerQueue(
       limits: { ...store.limits },
       heavy: [...store.heavy],
       ...(store.workerDefault ? { workerDefault: store.workerDefault } : {}),
+      ...(builderScaleIsDefault(store.builderScale) ? {} : { builderScale: builderScaleToStored(store.builderScale) }),
     }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
@@ -458,6 +505,11 @@ export function memoryWorkerQueue(
       store.workerDefault = choice;
       notify();
       return choice ?? null;
+    },
+    setBuilderScale: async (scale: BuilderScale) => {
+      store.builderScale = sanitizeBuilderScale(scale);
+      notify();
+      return builderScaleToStored(store.builderScale);
     },
     markHeavy: async (child: string) => {
       if (store.heavy.includes(child)) return false;
@@ -497,7 +549,7 @@ export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   noteQueueEdit();
   copy = [];
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
   return loadWorkerQueue();
@@ -567,6 +619,8 @@ export async function refreshWorkerQueue(): Promise<void> {
       limits: settings.limits ?? {},
       heavy: new Set(settings.heavy ?? []),
       ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
+      // A row saved before the disk pause was on by default reads as the new default (builderScaleFromStored).
+      builderScale: builderScaleFromStored(settings.builderScale),
     };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
@@ -623,7 +677,7 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit" | "files";
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -757,12 +811,140 @@ export type AdmitContext = {
   queue?: readonly QueuedWorker[];
 };
 
+/** The latest health sample. A launch with none yet is allowed. Reset drops it. */
+let healthNow: BuilderHealth | undefined;
+let healthEpoch = 0;
+let healthInflight: Promise<void> | undefined;
+let healthTimeoutMs = 3_000;
+const defaultHealthReader = (): Promise<unknown> => invoke("builder_health");
+let healthReader: () => Promise<unknown> = defaultHealthReader;
+
+/** The sample a launch reads. Undefined until a read has landed. */
+export function builderHealth(): BuilderHealth | undefined {
+  return healthNow;
+}
+
+/**
+ * WP-161: the Needs you line for builders the disk pause is holding, or null. It reads the same sample and the same
+ * saved pause the launch gate reads, and the queue, so it appears when a builder waits and clears when the disk recovers.
+ */
+export function builderHold(): BuilderHoldNeed | null {
+  return builderHoldNeed(queuedWorkers().length, healthNow, builderScale());
+}
+
+/** Tests stand in for the command. `null` puts the command back. */
+export function setBuilderHealthReader(reader: (() => Promise<unknown>) | null): void {
+  healthReader = reader ?? defaultHealthReader;
+}
+
+/** Tests shorten the wait. `null` puts the 3s wait back. */
+export function setBuilderHealthTimeout(ms: number | null): void {
+  healthTimeoutMs = ms == null || !Number.isFinite(ms) || ms < 1 ? 3_000 : ms;
+}
+
+function finiteHealth(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** A command payload. Only the known numbers are kept. Anything else is missing, not a pause. */
+function healthFromWire(raw: unknown, now: number): BuilderHealth | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const cores = finiteHealth(row.cores);
+  const readAt = finiteHealth(row.readAt);
+  return {
+    load1: finiteHealth(row.load1),
+    cores: cores != null && cores >= 1 ? Math.round(cores) : null,
+    freeMemoryGb: finiteHealth(row.freeMemoryGb),
+    freeDiskGb: finiteHealth(row.freeDiskGb),
+    readAt: readAt ?? now,
+  };
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The health reading timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error("The health reading failed"));
+      },
+    );
+  });
+}
+
+async function refreshBuilderHealthOnce(): Promise<void> {
+  const epoch = healthEpoch;
+  const held = healthNow;
+  const now = Date.now();
+  if (held && held.now == null && typeof held.readAt === "number" && now - held.readAt < HEALTH_CACHE_MS) return;
+  let sample: BuilderHealth | null = null;
+  try {
+    sample = healthFromWire(await withTimeout(healthReader(), healthTimeoutMs), now);
+  } catch (error) {
+    sample = null;
+    const internals = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (internals) console.warn("Could not read builder health", error);
+  }
+  if (epoch !== healthEpoch) return;
+  if (sample) {
+    setBuilderHealth(sample);
+    return;
+  }
+  // A timeout is not a pause. Keep a fresh sample, drop one old enough that it must not keep pausing.
+  if (held?.now != null) return;
+  if (held && typeof held.readAt === "number" && now - held.readAt <= HEALTH_STALE_MS) return;
+  setBuilderHealth(null);
+}
+
+/** Reads health unless the sample is still fresh. One read at a time. Never throws. */
+export function refreshBuilderHealth(): Promise<void> {
+  if (healthInflight) return healthInflight;
+  healthInflight = refreshBuilderHealthOnce().finally(() => {
+    healthInflight = undefined;
+  });
+  return healthInflight;
+}
+
+/**
+ * The sample the launch gate reads. A sample that is older than the one already held is ignored,
+ * so a late read cannot put a stale pause back. `null` clears it.
+ */
+export function setBuilderHealth(next: BuilderHealth | null | undefined): void {
+  if (next == null) {
+    if (healthNow === undefined) return;
+    healthNow = undefined;
+    changed();
+    return;
+  }
+  const prevAt = healthNow?.readAt;
+  const nextAt = next.readAt;
+  if (
+    typeof prevAt === "number" &&
+    Number.isFinite(prevAt) &&
+    typeof nextAt === "number" &&
+    Number.isFinite(nextAt) &&
+    nextAt < prevAt
+  ) {
+    return;
+  }
+  healthNow = next;
+  changed();
+}
+
 function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: ProviderRoom): Admission {
   if (load.running >= limits.workers)
     return { start: false, reason: "workers", line: waitLine("workers", job.projectName, limits) };
   if (job.heavy && load.heavy >= limits.heavy)
     return { start: false, reason: "heavy", line: waitLine("heavy", job.projectName, limits) };
   if (!room.room) return { start: false, reason: "limit", line: waitLine("limit", job.projectName, limits, room) };
+  // WP-161: health is after the counts and the provider. Raising the ceiling does not skip it.
+  const gate = builderLaunchAllowed(healthNow, builderScale());
+  if (!gate.ok) return { start: false, reason: "health", line: gate.reason };
   return { start: true };
 }
 
@@ -884,7 +1066,12 @@ export function resetWorkerPool(): void {
   copy = [];
   settingsEpoch = Promise.resolve();
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
+  healthEpoch += 1;
+  healthInflight = undefined;
+  healthReader = defaultHealthReader;
+  healthTimeoutMs = 3_000;
+  healthNow = undefined;
   loading = undefined;
   changed();
 }
@@ -911,6 +1098,10 @@ export function workerPoolHost(deps: {
   return {
     openRows: deps.openRows,
     admit: (job) => (startingNow.has(job.id) ? { start: true } : admitWorker(job, ctx())),
+    // WP-161: the machine is read before a launch is decided. The pump only reads it once something waits, so without
+    // this the first launch would never meet a pause. A read that fails or is slow leaves the last fresh sample, or
+    // none, which allows. Never throws.
+    refreshHealth: () => refreshBuilderHealth(),
     enqueue: (job, launch) => {
       enqueueWorker(job);
       deps.card?.(job, launch);
@@ -955,6 +1146,8 @@ export async function pumpWorkers(deps: {
   start(job: QueuedWorker): Promise<unknown>;
   failed?(job: QueuedWorker, error: unknown): void;
 }): Promise<QueuedWorker[]> {
+  // WP-161: a fresh sample when the last one is old. A timeout keeps the last fresh sample, or none.
+  await refreshBuilderHealth();
   for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
   if (!queue.length) return [];
@@ -980,6 +1173,17 @@ export async function pumpWorkers(deps: {
     }
   }
   return started;
+}
+
+/** How often waiting builders are checked against the machine again: a pause that clears lets them start. */
+export const HEALTH_RECHECK_MS = 10_000;
+
+/**
+ * When to look at the machine again for waiting builders, with nothing else changing: soon, while any wait. Under
+ * {@link HEALTH_STALE_MS}, so the sample the Needs you line reads never goes stale between looks.
+ */
+export function nextHealthCheck(now: number): number | undefined {
+  return queuedWorkers().length ? now + HEALTH_RECHECK_MS : undefined;
 }
 
 /** When a waiting worker might start without any row changing: the soonest provider reset among the waiting. */

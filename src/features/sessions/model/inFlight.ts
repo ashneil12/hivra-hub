@@ -51,10 +51,19 @@ export type ResumedWorkspace = {
   lastDockSide?: DockSide;
 };
 
+/**
+ * A real turn is running. A chat the app holds busy for its own background
+ * compact (`idleCompacting`) is not one: nothing the person asked for would be
+ * lost if it were cut.
+ */
+export function isTurnRunning(session: Pick<Session, "busy" | "idleCompacting">): boolean {
+  return !!session.busy && !session.idleCompacting;
+}
+
 /** A turn or approval that would be lost if this webview died. */
 export function isInFlightSession(session: Session): boolean {
   return (
-    !session.worktreeRemoved && (!!session.busy || sessionNeedsInput(session))
+    !session.worktreeRemoved && (isTurnRunning(session) || sessionNeedsInput(session))
   );
 }
 
@@ -66,7 +75,7 @@ export function isInFlightSession(session: Session): boolean {
 export function isRunningWork(session: Session): boolean {
   if (session.worktreeRemoved) return false;
   if (session.busy !== false && hasPendingApproval(session.blocks ?? [])) return true;
-  return !!session.busy && session.pendingQuestion == null;
+  return isTurnRunning(session) && session.pendingQuestion == null;
 }
 
 /** The open question as a cut-work entry (one line, with its options), so the in-flight row keeps it. */
@@ -100,7 +109,7 @@ export function inFlightRefs(
     if (!isInFlightSession(session) || !canResumeAfterQuit(session)) return;
     seen.add(session.id);
     const ask = askCut(session);
-    const background = [...(session.busy ? (session.cutWork ?? []).filter((w) => w.kind !== "ask") : []), ...(ask ? [ask] : [])];
+    const background = [...(isTurnRunning(session) ? (session.cutWork ?? []).filter((w) => w.kind !== "ask") : []), ...(ask ? [ask] : [])];
     refs.push({
       sessionId: session.id,
       cwd: session.cwd,

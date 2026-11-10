@@ -87,6 +87,44 @@ it("a watch gets the data now and again whenever it changes (only when it change
   expect(src.listeners("agents.read")).toBe(0);
 });
 
+it("a push the frame did not take is tried again, and the same snapshot is not sent twice once it lands", async () => {
+  vi.useFakeTimers();
+  let open = false;
+  const { h, src } = host({
+    post: (m) => {
+      if (!open && (m as Msg).type === "hub:data") return false;
+      sent.push(m as Msg);
+    },
+  });
+  h.receive({ type: "hub:watch", id: "w1", call: "agents.read" });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(data()).toEqual([]);
+  open = true;
+  await vi.advanceTimersByTimeAsync(60);
+  expect(data()).toHaveLength(1);
+  await vi.advanceTimersByTimeAsync(200);
+  expect(data()).toHaveLength(1);
+  src.set({ agents: [{ id: "ed", state: "working" }] });
+  await vi.advanceTimersByTimeAsync(60);
+  expect(data().map((m) => (m.data as { agents: { state: string }[] }).agents[0].state)).toEqual(["idle", "working"]);
+});
+
+it("a frame that never takes a push is not retried forever", async () => {
+  vi.useFakeTimers();
+  const { h } = host({
+    post: (m) => {
+      if ((m as Msg).type === "hub:data") return false;
+      sent.push(m as Msg);
+    },
+  });
+  h.receive({ type: "hub:watch", id: "w1", call: "agents.read" });
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(data()).toEqual([]);
+  const before = sent.length;
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(sent.length).toBe(before);
+});
+
 it("a watch passes its args to the read", async () => {
   const { h } = host();
   h.receive({ type: "hub:watch", id: "w1", call: "rooms.read", args: { projectId: "hivra" } });

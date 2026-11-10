@@ -1194,7 +1194,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
             let (path, start) = (path.clone(), start.clone());
             std::thread::spawn(move || {
                 let conn = Connection::open(&path).unwrap();
-                conn.busy_timeout(std::time::Duration::from_secs(5)).unwrap();
+                conn.busy_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
                 start.wait();
                 spend_once(&conn, SCOPE_GLOBAL, "stripe-api-key", "mono-1", "stripe").unwrap()
             })

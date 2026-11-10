@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { modelNote } from "../../../../features/sessions/model/modelNotes";
 import {
   modelsForClaudeVersion,
   modelsFromClaudeListModels,
@@ -19,6 +20,7 @@ import {
   isSubagentMessage,
   isTodoTool,
   listModelsFromControlResponse,
+  MINIMUM_CLAUDE_OPUS_5_5_VERSION,
   normalizeClaudeCliEffort,
   parseBackgroundTasks,
   parseClaudeVersion,
@@ -423,6 +425,65 @@ describe("modelsForClaudeVersion", () => {
     const missing = modelsForClaudeVersion(null).map((model) => model.nativeId);
     expect(missing).not.toContain("claude-sonnet-5");
   });
+
+  it("offers Fable 5.1 from 2.1.255, the version the CLI itself names for it, and rejects a missing version", () => {
+    const before = modelsForClaudeVersion("2.1.254").map(
+      (model) => model.nativeId,
+    );
+    expect(before).not.toContain("claude-fable-5-1");
+    expect(before).toContain("claude-fable-5");
+
+    const at = modelsForClaudeVersion("2.1.255");
+    expect(at.map((model) => model.nativeId)).toContain("claude-fable-5-1");
+    const next = at.find((model) => model.nativeId === "claude-fable-5-1");
+    const previous = at.find((model) => model.nativeId === "claude-fable-5");
+    expect(next).toMatchObject({
+      id: "claude:fable-5-1",
+      name: "Claude Fable 5.1",
+      nativeId: "claude-fable-5-1",
+    });
+    expect(next?.settings).toEqual(previous?.settings);
+
+    const missing = modelsForClaudeVersion(null).map((model) => model.nativeId);
+    expect(missing).not.toContain("claude-fable-5-1");
+  });
+
+  it("gives Fable 5.2 no minimum of its own: it follows Fable 5.1, not the borrowed 2.1.280", () => {
+    expect(MINIMUM_CLAUDE_OPUS_5_5_VERSION).toBe("2.1.280");
+    const at = (version: string | null) =>
+      modelsForClaudeVersion(version).map((model) => model.nativeId);
+
+    expect(at("2.1.254")).not.toContain("claude-fable-5-2");
+    for (const version of ["2.1.255", "2.1.279", "2.1.280"]) {
+      expect(at(version)).toContain("claude-fable-5-2");
+      expect(at(version)).toContain("claude-fable-5-1");
+    }
+    expect(at(null)).not.toContain("claude-fable-5-2");
+
+    const next = modelsForClaudeVersion("2.1.255").find(
+      (model) => model.nativeId === "claude-fable-5-2",
+    );
+    const previous = modelsForClaudeVersion("2.1.255").find(
+      (model) => model.nativeId === "claude-fable-5",
+    );
+    expect(next).toMatchObject({
+      id: "claude:fable-5-2",
+      name: "Claude Fable 5.2",
+      nativeId: "claude-fable-5-2",
+    });
+    expect(next?.settings).toEqual(previous?.settings);
+  });
+
+  it("lists the Fable rows newest first", () => {
+    const fable = modelsForClaudeVersion("2.1.304")
+      .filter((model) => model.nativeId?.startsWith("claude-fable"))
+      .map((model) => model.nativeId);
+    expect(fable).toEqual([
+      "claude-fable-5-2",
+      "claude-fable-5-1",
+      "claude-fable-5",
+    ]);
+  });
 });
 
 describe("list_models catalog", () => {
@@ -643,6 +704,62 @@ describe("list_models catalog", () => {
       id: "claude:opus",
       nativeId: "opus",
     });
+  });
+
+  it("maps a live Fable 5.2 row without dropping the concrete id", () => {
+    const note = "Effort levels may behave differently from Fable 5.1.";
+    const models = modelsFromClaudeListModels([
+      {
+        value: "fable",
+        resolvedModel: "claude-fable-5-2",
+        displayName: "Fable",
+        description: "Fast and capable",
+      },
+      {
+        value: "claude-fable-5-2[1m]",
+        resolvedModel: "claude-fable-5-2",
+        displayName: "Claude Fable 5.2",
+      },
+    ]);
+
+    expect(models.map((model) => model.name)).toEqual([
+      "Fable 5.2",
+      "Claude Fable 5.2",
+    ]);
+    expect(models[0]).toMatchObject({
+      id: "claude:fable",
+      nativeId: "fable",
+      aliasTarget: "claude-fable-5-2",
+    });
+    expect(models[1]).toMatchObject({
+      id: "claude:fable-5-2",
+      nativeId: "claude-fable-5-2",
+    });
+    expect(
+      models[1]?.settings?.find((setting) => setting.id === "context")?.value,
+    ).toBe("1m");
+    expect(modelNote(models[0]!)).toBe(note);
+    expect(modelNote(models[1]!)).toBe(note);
+  });
+
+  it("maps a live Fable 5.1 row to its own id, with no Fable 5.2 note", () => {
+    const models = modelsFromClaudeListModels([
+      {
+        value: "claude-fable-5-1[1m]",
+        resolvedModel: "claude-fable-5-1",
+        displayName: "Claude Fable 5.1",
+      },
+    ]);
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      id: "claude:fable-5-1",
+      nativeId: "claude-fable-5-1",
+      name: "Claude Fable 5.1",
+    });
+    expect(
+      models[0]?.settings?.find((setting) => setting.id === "context")?.value,
+    ).toBe("1m");
+    expect(modelNote(models[0]!)).toBeUndefined();
   });
 
   it("parses success and error control responses", () => {
@@ -932,6 +1049,47 @@ describe("turnMetricsFromResult", () => {
       outputTokens: 13,
       cacheHitPercent: (16_652 / (2 + 12_941 + 16_652)) * 100,
     });
+  });
+
+  // WP-108: a reported price is kept; none is ever guessed.
+  it("keeps the total cost the CLI reported", () => {
+    expect(
+      turnMetricsFromResult({
+        total_cost_usd: 0.0036516,
+        usage: { input_tokens: 3, output_tokens: 7 },
+      }),
+    ).toEqual({
+      inputTokens: 3,
+      outputTokens: 7,
+      costUsd: 0.0036516,
+    });
+  });
+
+  it("reports no cost when the CLI sent none", () => {
+    const metrics = turnMetricsFromResult({
+      usage: { input_tokens: 3, output_tokens: 7 },
+    });
+    expect(metrics?.costUsd).toBeUndefined();
+    expect("costUsd" in (metrics ?? {})).toBe(false);
+  });
+
+  it("ignores a cost it cannot read as a number", () => {
+    for (const bad of ["0.01", null, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        turnMetricsFromResult({
+          total_cost_usd: bad,
+          usage: { input_tokens: 3, output_tokens: 7 },
+        })?.costUsd,
+      ).toBeUndefined();
+    }
+  });
+
+  it("still reports the cost when the usage counts alone are empty", () => {
+    const metrics = turnMetricsFromResult({
+      total_cost_usd: 0.5,
+      usage: { input_tokens: 0, output_tokens: 0 },
+    });
+    expect(metrics).toEqual({ costUsd: 0.5 });
   });
 });
 

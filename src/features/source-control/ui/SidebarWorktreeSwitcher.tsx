@@ -8,6 +8,11 @@ import {
 import { useProjectWorktrees } from "../hooks/useProjectWorktrees";
 import { useWorktreeFocus, type WorktreeFocus } from "../model/worktreeFocus";
 import { createWorktree } from "../model/worktrees";
+import {
+  worktreeIncludeLinesOf,
+  type WorktreeIncludeLines as IncludeLines,
+} from "../model/worktreeIncludeNote";
+import { hasIncludeLines, WorktreeIncludeLines } from "./WorktreeIncludeLines";
 import { pathKey, prettyCwd } from "../../../shared/lib/paths";
 import { Popover } from "../../../shared/ui/Popover";
 import { LAYER } from "../../../shared/lib/layers";
@@ -84,6 +89,8 @@ export function SidebarWorktreeSwitcher({
   const [active, setActive] = useState(0);
   const [creating, setCreating] = useState(false);
   const [creationError, setCreationError] = useState<string>();
+  // WP-138: what copying the files named in .worktreeinclude did for the worktree just made.
+  const [creationInclude, setCreationInclude] = useState<IncludeLines>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const anchor = useRef<HTMLButtonElement>(null);
@@ -145,6 +152,7 @@ export function SidebarWorktreeSwitcher({
     setQuery("");
     setActive(0);
     setCreationError(undefined);
+    setCreationInclude(undefined);
   };
 
   const openPicker = () => {
@@ -154,6 +162,7 @@ export function SidebarWorktreeSwitcher({
     setQuery("");
     setActive(0);
     setCreationError(undefined);
+    setCreationInclude(undefined);
     void refresh();
   };
 
@@ -180,6 +189,7 @@ export function SidebarWorktreeSwitcher({
     if (!canCreate || creating) return;
     setCreating(true);
     setCreationError(undefined);
+    setCreationInclude(undefined);
     try {
       const tree = await createWorktree(
         focus?.path ?? cwd,
@@ -189,7 +199,14 @@ export function SidebarWorktreeSwitcher({
       );
       await refresh();
       onSelect?.({ path: tree.path, branch: tree.branch });
-      closePicker();
+      // The switch has happened. When files were copied, or a copy failed, the picker
+      // stays open long enough to say so: there is no chat header to show it in yet.
+      const include = worktreeIncludeLinesOf(tree);
+      if (hasIncludeLines(include)) {
+        setQuery("");
+        setActive(0);
+        setCreationInclude(include);
+      } else closePicker();
     } catch (err) {
       setCreationError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -628,6 +645,11 @@ export function SidebarWorktreeSwitcher({
             <p role="alert" className="px-2 py-2 text-[11px] text-red-400">
               {creationError || switchError || error}
             </p>
+          ) : null}
+          {creationInclude ? (
+            <div className="flex flex-col gap-1 px-2 py-2 text-[11px]">
+              <WorktreeIncludeLines lines={creationInclude} />
+            </div>
           ) : null}
           {canCreate ? (
             <div className="shrink-0 border-t border-stroke p-1.5">

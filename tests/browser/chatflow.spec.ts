@@ -101,10 +101,10 @@ test("a typed answer reaches the question; a failed turn shows on the rail and a
   await next(page, "reply");
   await send(page, "credits are back, pick it up");
   await expect(rail(page).locator('[data-mono-failed="vg-game-lead"]')).toHaveCount(0, { timeout: 15_000 });
-  // It sent Ash's new words, not a bare "continue" (which takes up whatever the Lead was on before).
-  const last = await fake<string>(page, "prompts.at(-1).text");
-  expect(last).toContain("credits are back, pick it up");
-  expect(last).not.toContain("Continue from where you left off");
+  // It sent Ash's new words, not a bare "continue" (which takes up whatever the Lead was on before). The rail clears as
+  // the send starts, a moment before the stand-in CLI has the prompt: wait for it rather than read the one before.
+  await expect.poll(() => fake<string>(page, "prompts.at(-1).text"), { timeout: 15_000 }).toContain("credits are back, pick it up");
+  expect(await fake<string>(page, "prompts.at(-1).text")).not.toContain("Continue from where you left off");
   await shot(page, "7-after-try-again");
 });
 

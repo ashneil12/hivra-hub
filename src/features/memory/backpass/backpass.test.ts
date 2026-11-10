@@ -540,6 +540,25 @@ describe("redact", () => {
     expect(both).toContain("[secret removed]");
   });
 
+  // WP-102 item 3: shapes Hivra's list now knows, and backpass's own never did. Made up, in each token's documented
+  // shape; ordinary words that only name the service stay as they are.
+  it("WP-102: redacts GitLab, PyPI, SendGrid, Slack app, Stripe webhook and temporary AWS shapes", () => {
+    const cases: [string, string][] = [
+      ["glpat-PLANTEDtoken0123456789ab", "GITLAB_TOKEN"],
+      [`pypi-AgEIcHlwaS5vcmcPLANTED${"x".repeat(40)}`, "PYPI_TOKEN"],
+      [`SG.PLANTED${"a".repeat(15)}.PLANTED${"b".repeat(36)}`, "SENDGRID_KEY"],
+      ["xapp-1-A0PLANTED01-1234567890123-PLANTEDslackappsecret", "SLACK_APP_TOKEN"],
+      ["whsec_PLANTEDwebhooksecret0123456789", "WEBHOOK_SECRET"],
+      ["ASIA" + "PLANTED2ABCDEFGH", "AWS_ACCESS_KEY_ID"],
+    ];
+    for (const [token, label] of cases) {
+      const out = redact(`before ${token} after`);
+      expect(out, token).toBe(`before [redacted:${label}] after`);
+    }
+    const prose = "From GitLab to PyPI with SendGrid, the xapp- prefix and the whsec_ prefix in the ASIA region.";
+    expect(redact(prose)).toBe(prose);
+  });
+
   it("does not send a timed out call, and does not record a rejection", async () => {
     const rejections = emptyRejections();
     const before = structuredClone(rejections);

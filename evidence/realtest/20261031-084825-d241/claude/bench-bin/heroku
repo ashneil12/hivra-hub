@@ -1,3 +1,0 @@
-#!/bin/sh
-echo "heroku: not available in the MonoCode test bench (no real accounts here; ask Ash)" >&2
-exit 1

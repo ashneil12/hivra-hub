@@ -8,11 +8,15 @@
 //!   turn saw.
 //! - `timers`: timers a first mate sets ("wake me in an hour to look at the deploy"); a due timer becomes a wake in the
 //!   same transaction.
+//! - `checks` (WP-104): a command the safe table already allows, polled until it exits 0 or its text matches, then one
+//!   wake. The poll runs from `watcher_tick`, not from `tick`, so a look never holds the database while a process runs.
 //!
-//! Nothing here calls a model, starts a CLI or spends a token. Own tables, made by `ensure_tables` (no numbered
+//! Nothing here calls a model or spends a token. Own tables, made by `ensure_tables` (no numbered
 //! migration, so upstream's migration numbers can't collide).
 
+pub mod checks;
 pub mod queue;
+mod safe_cmd;
 pub mod timers;
 
 use rusqlite::Connection;
@@ -26,7 +30,8 @@ pub const WAKE: &str = "monocode:firstmate-wake";
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     queue::ensure_tables(conn)?;
-    timers::ensure_tables(conn)
+    timers::ensure_tables(conn)?;
+    checks::ensure_tables(conn)
 }
 
 fn woke(app: &AppHandle, wakes: &[queue::Wake]) {
@@ -153,17 +158,54 @@ pub struct Tick {
 }
 
 /// The watcher's look, also run once at start: due timers fire into the queue, and old settled rows go.
+/// Checks are not run here. This stays database-only; `watcher_tick` runs a due check after it drops the lock.
 pub fn tick(conn: &mut Connection, now: i64) -> Result<Tick, String> {
     let fired = timers::fire_due(conn, now)?;
-    let pruned = queue::prune(conn, now)? + timers::prune(conn, now)?;
+    let pruned = queue::prune(conn, now)? + timers::prune(conn, now)? + checks::prune(conn, now)?;
     Ok(Tick { fired, pruned })
 }
 
 #[tauri::command(async)]
 pub fn watcher_tick(app: AppHandle, store: State<'_, SessionStore>) -> Result<Tick, String> {
-    let done = tick(&mut *store.lock_conn()?, now_millis())?;
+    let now = now_millis();
+    // Claim under the lock, then drop it before any process starts.
+    let (mut done, due) = {
+        let mut conn = store.lock_conn()?;
+        let done = tick(&mut conn, now)?;
+        let due = checks::claim_due(&mut conn, now)?;
+        (done, due)
+    };
+    let attempts: Vec<_> = due
+        .iter()
+        .map(|item| checks::look(item, &checks::LiveRunner))
+        .collect();
+    if !due.is_empty() {
+        let mut conn = store.lock_conn()?;
+        for (item, attempt) in due.into_iter().zip(attempts) {
+            if let Some(wake) = checks::settle(&mut conn, &item, attempt, now)? {
+                done.fired.push(wake);
+            }
+        }
+    }
     woke(&app, &done.fired);
     Ok(done)
+}
+
+#[tauri::command(async)]
+pub fn watcher_check_set(
+    store: State<'_, SessionStore>,
+    input: checks::CheckInput,
+) -> Result<checks::Check, String> {
+    checks::set(&mut *store.lock_conn()?, input, now_millis())
+}
+
+#[tauri::command(async)]
+pub fn watcher_check_cancel(
+    store: State<'_, SessionStore>,
+    owner_session: String,
+    id: String,
+) -> Result<Option<checks::Check>, String> {
+    checks::cancel(&mut *store.lock_conn()?, &owner_session, &id, now_millis())
 }
 
 #[cfg(test)]

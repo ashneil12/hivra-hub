@@ -15,6 +15,7 @@
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { canLead, codexLeadServer } from "../../firstmate/model/leadCli";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
@@ -375,12 +376,24 @@ export function registeredHubMcpArgs(sessionId: string): string[] {
 }
 
 /**
- * Whether a chat's Claude Code session has the delegate tool, so its context can teach it (monoFiles.ts
- * `<delegate_rules>`). Only Claude Code sessions take the extra arguments.
+ * Whether this chat's session has the delegate tool, so its context can teach it (monoFiles.ts
+ * `<delegate_rules>`). WP-120: any CLI in the lead table, not only Claude Code. A CLI that cannot
+ * lead is a no, and the chat says why (leadBlockReason).
  */
 export function hasDelegateTool(sessionId: string, harness: string): boolean {
-  if (harness !== "claude" || !registered?.servers.cli) return false;
+  if (!canLead(harness) || !registered?.servers.cli) return false;
   return getsDelegateTool(hubChatIdentity(sessionId, registered.lookups));
+}
+
+/**
+ * Codex config for the same chats. Empty unless this chat leads and the app CLI is known.
+ * The connection is only the names MONOCODE_APP_ENDPOINT and MONOCODE_APP_TOKEN in env_vars, never a token value.
+ */
+export function registeredCodexLeadConfig(sessionId: string): Record<string, unknown> {
+  const cli = registered?.servers.cli;
+  if (!cli || !registered) return {};
+  if (!getsDelegateTool(hubChatIdentity(sessionId, registered.lookups))) return {};
+  return { mcp_servers: { monocode: codexLeadServer(cli) } };
 }
 
 /**

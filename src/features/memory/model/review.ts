@@ -2,7 +2,15 @@
 // only after this window's compare-and-swap lands, and a later failure puts that write back.
 
 import { ftsMatch } from "../vendor/mercuryBelief";
-import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryItem } from "./doc";
+import { contradicts } from "./contradicts";
+import { givesOrders } from "./orderScan";
+import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
+import { touch } from "./fade";
+
+/** WP-111: why a fact is parked. Shown as written. */
+export const DISPUTE_REASON = "A newer message says something different";
+
+export type DisputeChoice = "keep-old" | "use-new" | "keep-both";
 
 const CITE = /\[src:\s+[A-Za-z0-9._:-]+\s+#[A-Za-z0-9._:-]+\]/;
 const IMPORT_ID = /^[a-z0-9-]{1,80}$/;
@@ -16,11 +24,12 @@ function replaceItem(doc: MemoryDoc, next: MemoryItem): MemoryDoc {
 
 export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResult {
   const item = doc.items.find((candidate) => candidate.id === id);
-  if (!item || item.state !== "unreviewed") return { doc };
+  if (!item || item.state !== "unreviewed" || item.dispute) return { doc };
   if (item.action === "skill" && item.skill) {
-    return { doc: replaceItem(doc, { ...item, state: "confirmed", updatedAt: now }), skill: { ...item.skill } };
+    return { doc: replaceItem(doc, touch({ ...item, state: "confirmed", updatedAt: now }, now)), skill: { ...item.skill } };
   }
-  if (item.action === "add") return { doc: replaceItem(doc, { ...item, state: "confirmed", updatedAt: now }) };
+  // WP-100: the person accepting it is a use, so it starts its clock from today.
+  if (item.action === "add") return { doc: replaceItem(doc, touch({ ...item, state: "confirmed", updatedAt: now }, now)) };
   if (item.action === "update" && item.targetId) {
     const target = doc.items.find((candidate) => candidate.id === item.targetId && candidate.action === "add");
     const rest = doc.items.filter((candidate) => candidate.id !== item.id);
@@ -29,7 +38,9 @@ export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResul
       doc: bump({
         ...doc,
         items: rest.map((candidate) =>
-          candidate.id === target.id ? { ...candidate, text: item.text, state: "edited" as const, updatedAt: now } : candidate,
+          candidate.id === target.id
+            ? touch({ ...candidate, text: item.text, state: "edited" as const, updatedAt: now, support: candidate.support + 1 }, now)
+            : candidate,
         ),
       }),
     };
@@ -42,7 +53,7 @@ export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResul
 
 export function rejectItem(doc: MemoryDoc, id: string): MemoryDoc {
   const item = doc.items.find((candidate) => candidate.id === id);
-  if (!item || item.state !== "unreviewed") return doc;
+  if (!item || item.state !== "unreviewed" || item.dispute) return doc;
   return bump({ ...doc, items: doc.items.filter((candidate) => candidate.id !== id) });
 }
 
@@ -50,13 +61,122 @@ export function editItem(doc: MemoryDoc, id: string, text: string, now: number):
   const clean = normalizeFact(text);
   if (!clean || mentionsSecret(clean)) return doc;
   const item = doc.items.find((candidate) => candidate.id === id && candidate.action === "add");
-  if (!item || normalizeFact(item.text) === clean) return doc;
-  return replaceItem(doc, { ...item, text: clean, state: "edited", updatedAt: now });
+  if (!item || item.dispute || normalizeFact(item.text) === clean) return doc;
+  // WP-100: the person rewrote it, so it is theirs now and does not fade (fade.ownerStated).
+  return replaceItem(doc, { ...item, text: clean, state: "edited", updatedAt: now, fade: 1, lastUsedAt: now });
 }
 
 export function deleteItem(doc: MemoryDoc, id: string): MemoryDoc {
-  if (!doc.items.some((item) => item.id === id)) return doc;
-  return bump({ ...doc, items: doc.items.filter((item) => item.id !== id) });
+  const item = doc.items.find((candidate) => candidate.id === id);
+  if (!item || item.dispute) return doc;
+  return bump({ ...doc, items: doc.items.filter((candidate) => candidate.id !== id) });
+}
+
+function withoutDispute(item: MemoryItem): MemoryItem {
+  const next = { ...item };
+  delete next.dispute;
+  return next;
+}
+
+function restoreParked(item: MemoryItem): MemoryItem {
+  const was = item.dispute?.was;
+  if (was !== "confirmed" && was !== "edited") return withoutDispute(item);
+  return withoutDispute({ ...item, state: was });
+}
+
+/**
+ * WP-111: parks every confirmed fact this new one contradicts, and links the new one back.
+ * Nothing is overwritten. No clash leaves the doc and the item as they were.
+ */
+export function withContradiction(doc: MemoryDoc, item: MemoryItem): { doc: MemoryDoc; item: MemoryItem } {
+  const clashes = doc.items.filter(
+    (have) =>
+      have.mateId === item.mateId &&
+      have.action === "add" &&
+      (have.state === "confirmed" || have.state === "edited") &&
+      !have.dispute &&
+      have.id !== item.id &&
+      contradicts(have.text, item.text),
+  );
+  if (clashes.length === 0) return { doc, item };
+  const reason = DISPUTE_REASON;
+  const ids = new Set(clashes.map((clash) => clash.id));
+  return {
+    doc: {
+      ...doc,
+      items: doc.items.map((have) => {
+        if (!ids.has(have.id)) return have;
+        if (have.state !== "confirmed" && have.state !== "edited") return have;
+        const dispute: MemoryDispute = { otherId: item.id, reason, was: have.state };
+        // Keep the review state: a confirmed or edited fact stays in recall until the person settles the pair.
+        return { ...have, dispute };
+      }),
+    },
+    item: { ...item, dispute: { otherId: clashes[0].id, reason } },
+  };
+}
+
+/** The parked older facts for this search. A match on either side keeps the pair on screen. */
+export function parkedDisputes(items: readonly MemoryItem[], query: string): MemoryItem[] {
+  const parked = items.filter((item) => item.dispute?.was);
+  if (!query.trim()) return parked;
+  const matched = new Set(searchMemory([...items], query).map((item) => item.id));
+  return parked.filter((item) => {
+    if (matched.has(item.id)) return true;
+    const otherId = item.dispute?.otherId;
+    return otherId ? matched.has(otherId) : false;
+  });
+}
+
+/**
+ * WP-111: the person's choice for a parked pair. Only the older fact (the one that remembers its
+ * previous state) can be resolved. The three choices are the only way a clash is settled.
+ */
+export function resolveDispute(doc: MemoryDoc, parkedId: string, choice: DisputeChoice, now: number): MemoryDoc {
+  if (choice !== "keep-old" && choice !== "use-new" && choice !== "keep-both") return doc;
+  const item = doc.items.find((candidate) => candidate.id === parkedId);
+  if (!item?.dispute?.was) return doc;
+  const other = doc.items.find((candidate) => candidate.id === item.dispute?.otherId);
+  if (choice === "use-new") {
+    if (!other) return doc;
+    const replaced = touch(withoutDispute({ ...item, text: other.text, state: "edited", updatedAt: now }), now);
+    return bump({
+      ...doc,
+      items: doc.items
+        .filter((candidate) => candidate.id !== other.id)
+        .map((candidate) => {
+          if (candidate.id === item.id) return replaced;
+          if (candidate.dispute?.otherId === other.id) {
+            return { ...candidate, dispute: { ...candidate.dispute, otherId: item.id } };
+          }
+          return candidate;
+        }),
+    });
+  }
+  if (choice === "keep-both") {
+    const restored = restoreParked(item);
+    return bump({
+      ...doc,
+      items: doc.items.map((candidate) => {
+        if (candidate.id === item.id) return restored;
+        if (other && candidate.id === other.id) {
+          return touch(withoutDispute({ ...candidate, state: "confirmed", updatedAt: now }), now);
+        }
+        return candidate;
+      }),
+    });
+  }
+  const removedId = other?.id;
+  return bump({
+    ...doc,
+    items: doc.items
+      .filter((candidate) => candidate.id !== removedId)
+      .map((candidate) => {
+        if (candidate.id === item.id) return restoreParked(candidate);
+        if (removedId && candidate.dispute?.otherId === removedId && candidate.dispute.was) return restoreParked(candidate);
+        return candidate;
+      }),
+  });
 }
 
 export function searchMemory(items: readonly MemoryItem[], query: string): MemoryItem[] {
@@ -83,7 +203,7 @@ export function acceptImport(doc: MemoryDoc, proposal: ImportProposal, now: numb
   const items = [...doc.items];
   for (const line of proposal.markdown.replace(/\r\n/g, "\n").split("\n")) {
     const text = normalizeFact(line);
-    if (!text || !CITE.test(text) || mentionsSecret(text)) continue;
+    if (!text || !CITE.test(text) || mentionsSecret(text) || givesOrders(text)) continue;
     const id = memoryId([mateId, "add", text.toLowerCase()]);
     if (items.some((item) => item.id === id)) continue;
     items.push({
@@ -117,7 +237,13 @@ export class MemoryDeferred extends Error {
 }
 
 function sameDoc(a: MemoryDoc, b: MemoryDoc): boolean {
-  return a.generation === b.generation && a.items === b.items && a.doneTurns === b.doneTurns && a.imports === b.imports;
+  return (
+    a.generation === b.generation &&
+    a.items === b.items &&
+    a.doneTurns === b.doneTurns &&
+    a.imports === b.imports &&
+    a.livedDays === b.livedDays
+  );
 }
 
 export type CommitResult = { doc: MemoryDoc; applied: boolean };

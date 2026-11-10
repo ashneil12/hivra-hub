@@ -1,5 +1,6 @@
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
+import { boundaryFromDisk } from "../../memory/model/privateChat";
 import { parseWorkflowRun } from "../model/workflowRun";
 import { isMonoSession } from "../../monos/model/mono";
 import { parseCard } from "../../monos/model/monoCards";
@@ -14,6 +15,7 @@ import { recoverCursorSubagents } from "../../../integrations/harness/providers/
 import { dropHarnessSession } from "../../../integrations/harness/core/registry";
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { persistableAttachment } from "../model/attachments";
+import { isPersistableId } from "../model/persistableId";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
 import {
@@ -66,6 +68,8 @@ import type { OrchestrationSummary } from "../../orchestration/model/orchestrati
 
 export type SessionSummary = {
   sidebarHidden?: boolean;
+  /** WP-111: memory leaves this chat alone. */
+  private?: boolean;
   orchestrationLeadId?: string;
   orchestration?: OrchestrationSummary;
   id: string;
@@ -94,6 +98,9 @@ export type SessionSummary = {
 
 type SessionRecord = {
   sidebarHidden?: boolean;
+  /** WP-111 */
+  private?: boolean;
+  privateBoundaryId?: string;
   monoTranscript?: Session["monoTranscript"];
   orchestrationLeadId?: string;
   id: string;
@@ -124,6 +131,9 @@ type SessionRecord = {
 
 type SessionUpsertPayload = {
   sidebarHidden?: boolean;
+  /** WP-111 */
+  private?: boolean;
+  privateBoundaryId?: string;
   id: string;
   cwd: string;
   harness: string;
@@ -159,11 +169,6 @@ export function shouldPersistSession(session: Session): boolean {
   );
 }
 
-/** Matches Rust `validate_id` — a path here fails the whole upsert. */
-export function isPersistableId(value: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(value);
-}
-
 function persistableMeta(
   session: Session,
   includeQueue = true,
@@ -181,6 +186,11 @@ function persistableMeta(
     runtimeMode: session.runtimeMode,
     title: session.title,
     ...(session.sidebarHidden === true ? { sidebarHidden: true } : {}),
+    // WP-111: omitted when off, so an old chat stays readable. The boundary is only a real message id.
+    ...(session.private === true ? { private: true } : {}),
+    ...(boundaryFromDisk(session.privateBoundaryId)
+      ? { privateBoundaryId: boundaryFromDisk(session.privateBoundaryId) }
+      : {}),
     ...(queuedMessages.length
       ? {
           queuedMessages,
@@ -577,6 +587,12 @@ export async function listSessionsByProject(
   return rows.map(normalizeSummary);
 }
 
+/** Chats that have no folder (an import cleared it, docs/PORTABLE.md): the sidebar's "Needs a folder" group. */
+export async function listFolderlessSessions(): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_folderless");
+  return rows.map(normalizeSummary);
+}
+
 export function rebaseProjectSessions(
   fromCwd: string,
   toCwd: string,
@@ -955,6 +971,30 @@ export async function setSessionPinned(
   await invoke<void>("session_set_pinned", { sessionId, pinned });
 }
 
+/** WP-111: the private flag, on its own so a transcript save cannot clear it. A miss is tried again. */
+export async function setSessionPrivate(
+  sessionId: string,
+  on: boolean,
+  boundaryId?: string,
+): Promise<void> {
+  await enqueueSessionWrite(sessionId, async () => {
+    let last: unknown;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await invoke<void>("session_set_private", {
+          sessionId,
+          privateChat: on,
+          privateBoundaryId: boundaryId && boundaryId.length > 0 ? boundaryId : null,
+        });
+        return;
+      } catch (error) {
+        last = error;
+      }
+    }
+    throw last instanceof Error ? last : new Error("Couldn't update this chat.");
+  });
+}
+
 export async function setSessionLinkedWorkItem(
   sessionId: string,
   value: LinkedWorkItem | undefined,
@@ -1102,6 +1142,8 @@ function sanitizeBlock(
       // A card that doesn't parse is dropped. The words stay.
     }
   }
+  // WP-123: the last message copied into a fork; its next send carries the recap until a turn is taken.
+  if (block.forkPoint === true) next.forkPoint = true;
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   const turnModel = sanitizeTurnModel(block.turnModel);
@@ -1404,13 +1446,14 @@ function sanitizeGeneratedImage(
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  const path = typeof record.path === "string" ? record.path.trim() : "";
+  // An empty path is kept: it says the picture's file is not on this Mac (a chat imported from another one).
+  const path = typeof record.path === "string" ? record.path.trim() : null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const mimeType =
     typeof record.mimeType === "string" ? record.mimeType.trim() : "";
   const size = record.size;
   if (
-    !path ||
+    path === null ||
     !name ||
     !mimeType.startsWith("image/") ||
     typeof size !== "number" ||
@@ -1458,6 +1501,8 @@ function sanitizeTurnMetrics(value: unknown): TurnMetrics | undefined {
     ...(number("cacheHitPercent") != null
       ? { cacheHitPercent: number("cacheHitPercent") }
       : {}),
+    // WP-108: the CLI's own price, kept only when it is a usable number.
+    ...(number("costUsd") != null ? { costUsd: number("costUsd") } : {}),
   };
   return Object.keys(metrics).length > 0 ? metrics : undefined;
 }
@@ -1645,6 +1690,7 @@ function normalizeSummary(summary: SessionSummary): SessionSummary {
     pinned: summary.pinned || undefined,
     draft: summary.draft || undefined,
     sidebarHidden: summary.sidebarHidden === true || undefined,
+    private: summary.private === true || undefined,
     linkedWorkItem,
     ...(typeof summary.automationId === "string" &&
     isPersistableId(summary.automationId)
@@ -1665,6 +1711,10 @@ function recordToSession(record: SessionRecord): Session {
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
+    private: record.private === true || undefined,
+    ...(boundaryFromDisk(record.privateBoundaryId)
+      ? { privateBoundaryId: boundaryFromDisk(record.privateBoundaryId) }
+      : {}),
     cwd: record.cwd,
     harness: asHarness(record.harness),
     // WP-16: the retired Grok model id reads as the default Claude model. Nothing is written back.

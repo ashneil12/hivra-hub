@@ -2,7 +2,7 @@
 // WIRING CHECK ONLY. A PASS here is never a behaviour result: the agents are a scripted fake (see WIRING_NOTE). Real
 // conversations with real models are `npm run hub:realconv` (docs/REALCONV.md).
 //
-// `npm run hub:verify-live`: the fake-Claude test bench (Phase 1b WP5, docs/PHASE-1B-DEV-SETUP.md, docs/T3-HARVEST.md
+// `npm run hub:verify-live`: the fake-Claude test bench (Phase 1b WP5, docs/PHASE-1B-DEV-SETUP.md, the Phase 1b design notes
 // "Fake-Claude test bench with evidence"). It runs this worktree's dev copy of the Hub, with a scripted fake Claude
 // (scripts/fake-claude.mjs), under a throwaway HOME, and walks the delegation chain through real restarts:
 //
@@ -14,16 +14,16 @@
 //   5. the Lead's Claude transcript is deleted while the app is down: it starts fresh from its brief;
 //   6. the app is killed under the Lead's turn again and again: it resumes three times, then stops in Needs you.
 //   Then double delegation, in one more launch with a second plan: the plan lists a scratch project, so the hub
-//   makes that project's Lead and ties its built-in leadership team to it, and the kickoff goes to Chief of Staff, which
+//   makes that project's Lead, and the kickoff goes to the Coordinator the walk seated (teamPack), which
 //   briefs the Lead with `delegate_task {lead}`:
 //   7. the Lead's worker asks a question (AskUserQuestion): it reaches the Lead as a [MonoCode question] turn, not
-//      Chief of Staff and not Ash's Waiting on you; the Lead answers with task_answer and the worker's turn carries on
+//      the Coordinator and not Ash's Waiting on you; the Lead answers with task_answer and the worker's turn carries on
 //      with that answer;
 //   8. the Lead delegates another worker for the same brief, which goes silent mid-turn: the window marks its row
-//      stalled (quiet) within seconds (the plan's stallMs), and Chief of Staff cancels its brief (task_cancel): the
+//      stalled (quiet) within seconds (the plan's stallMs), and the Coordinator cancels its brief (task_cancel): the
 //      worker beneath the Lead is stopped, both rows end cancelled with their reports dropped (the stall with them), and
 //      the Lead's own long-running chat is not stopped for it.
-//   Then restarts, on a third plan whose fake Claude takes /goal (verify_live.rs `goals`): Chief of Staff starts two
+//   Then restarts, on a third plan whose fake Claude takes /goal (verify_live.rs `goals`): the Coordinator starts two
 //   workers with a finish line (delegate_task `goal`), briefs the Verify lead, queues two more briefs behind the Lead's
 //   work and one behind worker A's, and cancels one of the Lead's waiting briefs; the app is killed with all of them
 //   busy, and worker B's transcript is deleted meanwhile:
@@ -33,7 +33,7 @@
 //   11. the brief cancelled while it waited in the busy Lead's queue stays out, and the Lead was never stopped for it;
 //   12. one more restart repeats nothing: no brief twice, no /goal again, no goal back.
 //   Then coding with a Lead (Ash, 20 Oct: "a good chat and delegate if needed ... and still chat"), on a fourth plan:
-//   Chief of Staff briefs the Verify lead, which hands the API and the UI to two workers and says it is done, and Ash
+//   the Coordinator briefs the Verify lead, which hands the API and the UI to two workers and says it is done, and Ash
 //   writes to the Lead through his own path (the plan's messages file, sent by the window as he types):
 //   13. the Lead's "done" while both workers run gets one "Still working on" note and the brief stays open;
 //   14. Ash's message to the Lead while both workers run is answered within one turn;
@@ -135,8 +135,14 @@ export const KICKOFF = "VERIFY-LEAD-KICKOFF";
 export const WORKER = "VERIFY-WORKER";
 export const QUEUED = "VERIFY-QUEUED-BRIEF";
 export const CONTINUE = "Continue from where you left off";
-/** Double delegation (checks 7 and 8): the built-in team Mono the second plan's kickoff opens, and the plan's project. */
-export const TEAM_MONO = "chief-of-staff";
+/**
+ * The starter Monos the room speaks as, in rule order: host, reviewer, planner, keeper. WP-05 gives every fresh Mono a
+ * new id, so the walk seats these templates (teamPack) and talks to them by the id that came back. The names are the
+ * template names (starterOffers, name order's first four: Coordinator, Design review, Planner, Record keeper).
+ */
+export const ROOM_SEATS = ["Coordinator", "Design review", "Planner", "Record keeper"];
+/** Their template ids, same order as ROOM_SEATS, so a seat is picked from teamPack's specId and never from its name. */
+export const ROOM_SPEC = ["coordinator", "design-review", "planner", "record-keeper"];
 export const TREE_PROJECT = { id: "verify", name: "Verify", shortName: "Verify", iconShape: "rocket" };
 export const TREE_LEAD = "verify";
 export const TREE_KICKOFF = "VERIFY-TREE-KICKOFF";
@@ -159,7 +165,7 @@ export const FLOW_UI = "VERIFY-FLOW-UI";
 export const FLOW_ASH = (n) => `VERIFY-FLOW-ASH-${n}`;
 /** The Verify lead's Mono id (hubLeads.ts leadSpecFor: `<project id>-lead`): Ash's messages go to its chat. */
 export const FLOW_LEAD_MONO = `${TREE_PROJECT.id}-lead`;
-/** The room (checks 18 to 20): Ash's messages in the Verify project's Leadership team, frank's own work, the DM. */
+/** The room (checks 18 to 20): Ash's messages in the Verify project's Leadership team, the planner's own work, the DM. */
 export const ROOM_ID = `${TREE_PROJECT.id}:leadership`;
 export const ROOM_ASH = (n) => `VERIFY-ROOM-ASH-${n}`;
 export const ROOM_BUSY = "VERIFY-ROOM-BUSY";
@@ -576,58 +582,60 @@ export function scenario({ runId, failGate = false }) {
   // Never match the user's name: roomTurns.ts writes "Ash just wrote" through forUser, which renames the user on an
   // install without his team, so under the bench's throwaway HOME it reads "The user just wrote". The hosting sentence
   // after it is a plain literal and survives either way.
+  // answer-2 before answer-1: a later transcript still contains the first message, and times: 1 keeps a spent rule from taking it.
+  const [hostName, reviewerName, plannerName, keeperName] = ROOM_SEATS;
   const room = [
     {
-      name: "room-cos-answer-2",
-      match: `${roomTurn("Chief of Staff")}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(2)}`,
+      name: "room-host-answer-2",
+      match: `${roomTurn(hostName)}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(2)}`,
       times: 1,
       steps: [
-        { app: "monos.message", input: { to: "alfred", text: `${ROOM_DM} run ${runId}: keep the label rule in mind.` }, save: "room-dm" },
-        { mark: "room-cos-answered-2" },
-        { say: "Heard. frank, is the label in?" },
+        { app: "monos.message", input: { to: keeperName, text: `${ROOM_DM} run ${runId}: keep the label rule in mind.` }, save: "room-dm" },
+        { mark: "room-host-answered-2" },
+        { say: `Heard. ${plannerName}, is the label in?` },
       ],
     },
     {
-      name: "room-cos-answer-1",
-      match: `${roomTurn("Chief of Staff")}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(1)}`,
+      name: "room-host-answer-1",
+      match: `${roomTurn(hostName)}[\\s\\S]*host this room, so you answer first[\\s\\S]*${ROOM_ASH(1)}`,
       times: 1,
-      steps: [{ mark: "room-cos-answered" }, { say: "Heard. PM, post round 1 for review." }],
+      steps: [{ mark: "room-host-answered" }, { say: `Heard. ${plannerName}, post round 1 for review.` }],
     },
     {
-      name: "room-pm-round",
-      match: `${roomTurn("Projects Manager")}[\\s\\S]*Chief of Staff addressed you`,
+      name: "room-planner-round",
+      match: `${roomTurn(plannerName)}[\\s\\S]*${hostName} addressed you`,
       times: 1,
-      steps: [{ say: "Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. frank, please pass or flag." }],
+      steps: [{ say: `Round 1 is ready: commit abc1234, 3 tests pass. Still a stand-in: the label. ${reviewerName}, please pass or flag.` }],
     },
     {
-      name: "room-frank-flag",
-      match: `${roomTurn("frank")}[\\s\\S]*Projects Manager addressed you[\\s\\S]*>> Projects Manager: Round 1`,
+      name: "room-reviewer-flag",
+      match: `${roomTurn(reviewerName)}[\\s\\S]*${plannerName} addressed you[\\s\\S]*>> ${plannerName}: Round 1`,
       times: 1,
-      steps: [{ say: "PM, one flag: the label still says stand-in, and Ash asked for real words." }],
+      steps: [{ say: `${plannerName}, one flag: the label still says stand-in, and Ash asked for real words.` }],
     },
     {
-      name: "room-pm-retake",
-      match: `${roomTurn("Projects Manager")}[\\s\\S]*frank addressed you`,
+      name: "room-planner-retake",
+      match: `${roomTurn(plannerName)}[\\s\\S]*${reviewerName} addressed you`,
       times: 1,
-      steps: [{ say: "Fair, frank. The label is fixed in commit def5678. frank, please re-check." }],
+      steps: [{ say: `Fair, ${reviewerName}. The label is fixed in commit def5678. ${reviewerName}, please re-check.` }],
     },
-    { name: "room-frank-pass", match: `${roomTurn("frank")}[\\s\\S]*>> Projects Manager: Fair, frank`, times: 1, steps: [{ mark: "room-pass" }, { say: "Pass from me." }] },
-    // frank, busy in its own chat (r62): the room's turn runs in frank's room session, not in that work, and posts.
+    { name: "room-reviewer-pass", match: `${roomTurn(reviewerName)}[\\s\\S]*>> ${plannerName}: Fair, ${reviewerName}`, times: 1, steps: [{ mark: "room-pass" }, { say: "Pass from me." }] },
+    // The planner, busy in its own chat: the room's turn runs in the planner's room session, not in that work, and posts.
     {
-      name: "room-frank-busy",
+      name: "room-planner-busy",
       match: said(ROOM_BUSY),
       times: 1,
       steerable: true,
-      steps: [{ say: "On the label copy." }, { mark: "room-frank-busy" }, { waitFile: "room-frank-release", timeoutMs: 600_000 }, { say: "Label copy done." }],
+      steps: [{ say: "On the label copy." }, { mark: "room-planner-busy" }, { waitFile: "room-planner-release", timeoutMs: 600_000 }, { say: "Label copy done." }],
     },
     {
-      name: "room-frank-wake",
-      match: `${roomTurn("frank")}[\\s\\S]*Chief of Staff addressed you[\\s\\S]*${ROOM_ASH(2)}`,
+      name: "room-planner-wake",
+      match: `${roomTurn(plannerName)}[\\s\\S]*${hostName} addressed you[\\s\\S]*${ROOM_ASH(2)}`,
       times: 1,
-      // A short think first, so the room's live line (step, timer, frank's MonoCode after it) is on screen to be seen.
-      steps: [{ mark: "room-frank-posted" }, { sleep: 2500 }, { say: "The label is in. Pass from me." }],
+      // A short think first, so the room's live line (step, timer, the planner's MonoCode after it) is on screen to be seen.
+      steps: [{ mark: "room-planner-posted" }, { sleep: 2500 }, { say: "The label is in. Pass from me." }],
     },
-    { name: "room-alfred-dm", match: said("\\[MonoCode message from Chief of Staff\\]"), times: 1, steps: [{ mark: "room-alfred-dm" }, { say: "NO_REPLY" }] },
+    { name: "room-keeper-dm", match: said(`\\[MonoCode message from ${hostName}\\]`), times: 1, steps: [{ mark: "room-keeper-dm" }, { say: "NO_REPLY" }] },
     { name: "room-quiet", match: said("\\[MonoCode room\\]"), steps: [{ say: "NO_REPLY" }] },
   ];
   // The coding team: a plain chat in the Verify project's folder, an orchestrator like the Lead.
@@ -1004,7 +1012,26 @@ function git(args) {
   }
 }
 
-function parseArgs(argv) {
+/**
+ * `--only a,b` narrows the verdict to those checks (the walk still runs; the rest are recorded as skipped). No flag is
+ * every check; a mistyped id fails loudly, so a typo can never come out as a green run of nothing.
+ */
+export function parseOnly(value) {
+  if (value === undefined || value === null) return null;
+  const ids = String(value).split(",").map((id) => id.trim()).filter(Boolean);
+  if (!ids.length) throw new Error(`--only needs at least one check id: ${WALK.join(", ")}`);
+  const unknown = ids.filter((id) => !WALK.includes(id));
+  if (unknown.length) throw new Error(`--only: no such check ${unknown.map((id) => `"${id}"`).join(", ")}. Checks: ${WALK.join(", ")}`);
+  return [...new Set(ids)];
+}
+
+/** A check nobody asked for is recorded as skipped; the run-wide "run" check keeps its own verdict. */
+export function onlySkipped(check, only) {
+  if (!only || check.id === "run" || only.includes(check.id)) return null;
+  return { ...check, status: "skipped", detail: `not asked for (--only ${only.join(",")})` };
+}
+
+export function parseArgs(argv) {
   const value = (flag, fallback) => {
     const index = argv.indexOf(flag);
     return index >= 0 && argv[index + 1] ? argv[index + 1] : fallback;
@@ -1013,6 +1040,7 @@ function parseArgs(argv) {
     failGate: argv.includes("--fail-gate"),
     build: !argv.includes("--no-build"),
     keep: argv.includes("--keep"),
+    only: argv.includes("--only") ? parseOnly(argv[argv.indexOf("--only") + 1]) : null,
     slot: value("--slot", `${path.basename(ROOT)}-verify`),
     scale: Number(value("--timeout-scale", "1")) || 1,
   };
@@ -1134,6 +1162,9 @@ async function main() {
   const project = path.join(scratch, "project");
   const bin = path.join(scratch, "bin");
   const fake = path.join(evidence, "fake");
+  // The window's driver (verifyDriver.ts), from the first launch: the walk seats the starter team through it before the
+  // kickoff that names one of them. Later plans keep the same folder.
+  const driverDir = path.join(scratch, "driver");
   const log = (line) => {
     const text = `[verify-live ${new Date().toISOString().slice(11, 19)}] ${line}`;
     console.log(text);
@@ -1143,8 +1174,9 @@ async function main() {
   const started = new Date().toISOString();
   const checks = [];
   const record = (check) => {
-    checks.push(check);
-    log(`${check.status.toUpperCase().padEnd(7)} ${check.id}: ${check.detail}`);
+    const kept = onlySkipped(check, options.only) ?? check;
+    checks.push(kept);
+    log(`${kept.status.toUpperCase().padEnd(7)} ${kept.id}: ${kept.detail}`);
   };
   const pass = (idName, title, detail, extra = {}) => record({ id: idName, title, status: "pass", detail, ...extra });
   const fail = (idName, title, detail, extra = {}) => record({ id: idName, title, status: "fail", detail, ...extra });
@@ -1178,6 +1210,28 @@ async function main() {
   let teardown = null;
   let cleanupResult = { ran: false, why: "the run never reached a launch with the window's driver; the temporary HOME goes with everything in it" };
 
+  // The window's kickoff steps (verifyKickoff.ts traceVerifyKickoff: the driver's done/kickoff-*.json), kept per launch
+  // in evidence/kickoff/launch-<n>/: a kickoff that never reaches the fake says where it stopped.
+  const keepKickoffTraces = () => {
+    const done = path.join(driverDir, "done");
+    let names = [];
+    try {
+      names = fs.readdirSync(done).filter((name) => /^kickoff-[A-Za-z0-9._-]+\.json$/.test(name));
+    } catch {
+      return [];
+    }
+    if (!names.length) return [];
+    const into = path.join(evidence, "kickoff", `launch-${launches}`);
+    fs.mkdirSync(into, { recursive: true });
+    for (const name of names.sort()) {
+      try {
+        fs.renameSync(path.join(done, name), path.join(into, name));
+      } catch {
+        // a step written while this ran is kept with the next launch
+      }
+    }
+    return names.map((name) => name.replace(/^kickoff-\d+-|\.json$/g, ""));
+  };
   const cleanup = async () => {
     if (app && alive(app.pid)) {
       try {
@@ -1217,6 +1271,7 @@ async function main() {
         log(`cleanup: ${cleanupResult.ok ? "OK" : "LEFT SOMETHING"} ${JSON.stringify(cleanupResult.leftovers ?? cleanupResult.error ?? {})}`);
       }
       await cleanup();
+      keepKickoffTraces();
       // The database, after the app is gone (WAL and all).
       if (dataDir) {
         try {
@@ -1235,7 +1290,7 @@ async function main() {
   );
 
   try {
-    for (const dir of [home, project, bin, fake]) fs.mkdirSync(dir, { recursive: true });
+    for (const dir of [home, project, bin, fake, path.join(driverDir, "inbox")]) fs.mkdirSync(dir, { recursive: true });
     // The app asks Claude's usage before it admits a worker, and a machine with no Claude login has no room: the walk
     // would sit with every delegate waiting. The fake Claude needs no login, so the bench writes the shape of a
     // signed-in account with a stale token (no network call: the probe answers 401 itself).
@@ -1271,6 +1326,7 @@ async function main() {
       runId: id,
       claudeBinary: claude,
       autoResume: true,
+      driver: driverDir,
       kickoff: { project, monoName: "Verify Lead", prompt: `${KICKOFF} run ${id}: delegate the verify worker, then wait for its report.` },
     };
     messagesFile = path.join(scratch, "verify-messages.json");
@@ -1368,6 +1424,25 @@ async function main() {
       log(`launch ${launches}: pid ${record.pid}`);
       return record;
     };
+    /** One action for the window's driver (verifyDriver.ts perform), and its answer. */
+    let driverSeq = 0;
+    const act = async (op, payload = {}, timeoutMs = 60_000) => {
+      const actionId = `${String(++driverSeq).padStart(5, "0")}-${op}`;
+      const tmp = path.join(driverDir, "inbox", `.${actionId}.tmp`);
+      fs.writeFileSync(tmp, JSON.stringify({ id: actionId, op, ...payload }));
+      fs.renameSync(tmp, path.join(driverDir, "inbox", `${actionId}.json`));
+      const done = path.join(driverDir, "done", `${actionId}.json`);
+      const answer = await until(() => {
+        try {
+          return JSON.parse(fs.readFileSync(done, "utf8"));
+        } catch {
+          return null;
+        }
+      }, scale(timeoutMs));
+      if (!answer) throw new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`);
+      fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
+      return answer;
+    };
     const kill = async (why) => {
       const pids = [...new Set([app.pid, app.child.pid])].filter((pid) => alive(pid));
       for (const pid of pids) {
@@ -1377,7 +1452,8 @@ async function main() {
         process.kill(pid, "SIGKILL");
       }
       await until(() => pids.every((pid) => !alive(pid)), 15_000);
-      log(`killed launch ${launches} (${why})`);
+      const steps = keepKickoffTraces();
+      log(`killed launch ${launches} (${why})${steps.length ? `; its kickoff: ${steps.join(", ")}` : ""}`);
       // Its Claude children see stdin close and exit.
       await sleep(500);
     };
@@ -1593,9 +1669,22 @@ async function main() {
     }
 
     phase();
+    // WP-05: a starter template is never the Mono's id. Seat the bench team while this launch's driver is still up.
+    // The room takes the hub project id; each Mono is tied to the scratch folder, or a kickoff aimed at that folder
+    // never finds it (verifyKickoffMono). --fail-gate throws at phase() above, so it never waits on this.
+    const seated = await act("teamPack", { pack: "ash", project: TREE_PROJECT.id, folder: project }, 120_000);
+    const bySpec = new Map((seated?.monos ?? []).filter((mono) => mono?.specId).map((mono) => [mono.specId, mono]));
+    const idOf = (spec) => bySpec.get(spec)?.id ?? null;
+    const hostId = idOf("coordinator") ?? "missing-coordinator";
+    const reviewerId = idOf("design-review") ?? "missing-reviewer";
+    const plannerId = idOf("planner") ?? "missing-planner";
+    const keeperId = idOf("record-keeper") ?? "missing-keeper";
+    for (const mono of bySpec.values()) ledger.monos.add(mono.id);
+    log(`seated ${[...bySpec.entries()].map(([spec, mono]) => `${spec}=${mono.id}`).join(", ") || "nobody"}`);
+    if (!seated?.ok) log(`teamPack failed: ${JSON.stringify(seated)}`);
     // 7 and 8. Double delegation, in a fresh launch with a second plan. The plan now lists a project on the
-    // scratch folder, so the hub makes its Lead ("Verify lead") and ties the built-in team to it; the kickoff waits for
-    // Chief of Staff to work on that folder and sends it the brief.
+    // scratch folder, so the hub makes its Lead ("Verify lead"); the kickoff waits for the Coordinator seated above
+    // to work on that folder and sends it the brief.
     benchProjects.push({ id: TREE_PROJECT.id, name: TREE_PROJECT.name, folder: project });
     ledger.project = TREE_PROJECT.id;
     await kill("for the double-delegation plan");
@@ -1606,8 +1695,8 @@ async function main() {
       stallMs: 10_000,
       kickoff: {
         project,
-        monoName: "Chief of Staff",
-        monoId: TEAM_MONO,
+        monoName: ROOM_SEATS[0],
+        monoId: hostId,
         prompt: `${TREE_KICKOFF} run ${id}: brief the Verify lead, then cancel that brief when told.`,
       },
     };
@@ -1698,7 +1787,7 @@ async function main() {
       pass(
         "question_routed",
         "A delegated worker's question goes to its Lead, not Ash, and its turn carries on with the Lead's answer",
-        `Chief of Staff briefed ${cosBrief.response.result.lead} (task ${cosTaskId}); its worker asked "${QUESTION}" -> row ${askerTaskId} in question, the Lead woke with [MonoCode question] (Chief of Staff got none), Ash's Waiting on you ${store.entry ? "lists it as routed to the Lead" : "does not list it"}; task_answer ${PICK} -> the worker's same turn went on: "${askerDone.result.slice(0, 120)}"`,
+        `${ROOM_SEATS[0]} briefed ${cosBrief.response.result.lead} (task ${cosTaskId}); its worker asked "${QUESTION}" -> row ${askerTaskId} in question, the Lead woke with [MonoCode question] (${ROOM_SEATS[0]} got none), Ash's Waiting on you ${store.entry ? "lists it as routed to the Lead" : "does not list it"}; task_answer ${PICK} -> the worker's same turn went on: "${askerDone.result.slice(0, 120)}"`,
         { evidence: { asked: brief(asked), answered: brief(askerDone), waitingOnYou: store, question } },
       );
     else
@@ -1798,7 +1887,7 @@ async function main() {
       pass(
         "cascade_stop",
         "One cancel at the top of a double delegation stops everything beneath it",
-        `Chief of Staff -> Verify lead (task ${cosTaskId}, follow lead) -> worker (task ${helperTaskId}, parent ${beneath.parent_id}); task_cancel -> ${result.status}, cancelledBeneath ${result.cancelledBeneath}, stopFailed []; both rows cancelled and disposed, the worker's turn interrupted, the Lead's own turn not stopped (it carried on), no report to Chief of Staff or the Lead; the finished asker's row stays completed`,
+        `${ROOM_SEATS[0]} -> Verify lead (task ${cosTaskId}, follow lead) -> worker (task ${helperTaskId}, parent ${beneath.parent_id}); task_cancel -> ${result.status}, cancelledBeneath ${result.cancelledBeneath}, stopFailed []; both rows cancelled and disposed, the worker's turn interrupted, the Lead's own turn not stopped (it carried on), no report to ${ROOM_SEATS[0]} or the Lead; the finished asker's row stays completed`,
         { evidence: { before, after: { top: brief(ended.top), helper: brief(ended.helper), asker: brief(askerRow) }, cancel: cancelCall.response } },
       );
     else
@@ -1822,7 +1911,7 @@ async function main() {
       );
 
     phase();
-    // 9 to 12. Restarts. A third plan whose fake Claude takes /goal; the kickoff goes to Chief of Staff again.
+    // 9 to 12. Restarts. A third plan whose fake Claude takes /goal; the kickoff goes to the Coordinator again.
     await kill("for the durability plan");
     const durablePlan = {
       ...plan,
@@ -1830,8 +1919,8 @@ async function main() {
       goals: true,
       kickoff: {
         project,
-        monoName: "Chief of Staff",
-        monoId: TEAM_MONO,
+        monoName: ROOM_SEATS[0],
+        monoId: hostId,
         prompt: `${DURABLE_KICKOFF} run ${id}: start the goal workers and brief the Verify lead.`,
       },
     };
@@ -2035,7 +2124,7 @@ async function main() {
     else fail("cancelled_brief_stays_out", "A brief cancelled while it waits in a busy Lead's queue leaves the queue, the Lead isn't stopped, and a restart doesn't bring it back", JSON.stringify(cancelEvidence));
 
     // 12. One more restart, with everything idle: nothing goes in twice and no goal comes back.
-    // Idle includes Chief of Staff: its reports from this phase (goal A, goal B and the Lead's briefs) have gone in and
+    // Idle includes the host: its reports from this phase (goal A, goal B and the Lead's briefs) have gone in and
     // its queue is empty. Under load the kill came while two still waited in its queue, and they went in after the
     // lead-flow plan's launch, where check 17 read one as the report it was waiting for.
     const cosSettled = await until(async () => {
@@ -2047,7 +2136,7 @@ async function main() {
       const busyNow = (await inFlight()).some((entry) => entry.session_id === cosChat);
       return !owed.length && !queue.messages.length && !busyNow ? true : null;
     }, scale(90_000));
-    if (!cosSettled) log("Chief of Staff still had reports owed or queued at the idle restart (waited 90 s)");
+    if (!cosSettled) log("the host still had reports owed or queued at the idle restart (waited 90 s)");
     await sleep(scale(2_000));
     await kill("everything idle");
     await launch();
@@ -2084,21 +2173,19 @@ async function main() {
     else fail("nothing_repeats_after_restart", "Another restart repeats nothing: no brief twice, no /goal again, no finished goal back", JSON.stringify(finalCounts));
 
     phase();
-    // 13 to 17. Coding with a Lead, on a fourth plan: Chief of Staff briefs the Verify lead, which starts two workers,
+    // 13 to 17. Coding with a Lead, on a fourth plan: the Coordinator briefs the Verify lead, which starts two workers,
     // and Ash writes to the Lead the way he types (the messages file lists them; the window sends each once).
     await kill("for the lead-flow plan");
     // This launch also reads the window (checks 22 and 23) through the driver the real-Claude bench uses
     // (verifyDriver.ts): its actions go into <driver>/inbox and its answers come back in <driver>/done.
-    const driverDir = path.join(scratch, "driver");
-    fs.mkdirSync(path.join(driverDir, "inbox"), { recursive: true });
     const flowPlan = {
       ...plan,
       driver: driverDir,
       runId: `${id}-flow`,
       kickoff: {
         project,
-        monoName: "Chief of Staff",
-        monoId: TEAM_MONO,
+        monoName: ROOM_SEATS[0],
+        monoId: hostId,
         prompt: `${FLOW_KICKOFF} run ${id}: brief the Verify lead on the API and the UI.`,
       },
     };
@@ -2118,25 +2205,6 @@ async function main() {
       );
     const promptsOf = (rule) => prompts().filter((entry) => entry.rule === rule);
     const after = (mark, sentAt) => (mark ? Date.parse(mark.at) - sentAt : null);
-    /** One action for the window's driver (verifyDriver.ts perform), and its answer. */
-    let driverSeq = 0;
-    const act = async (op, payload = {}, timeoutMs = 60_000) => {
-      const actionId = `${String(++driverSeq).padStart(5, "0")}-${op}`;
-      const tmp = path.join(driverDir, "inbox", `.${actionId}.tmp`);
-      fs.writeFileSync(tmp, JSON.stringify({ id: actionId, op, ...payload }));
-      fs.renameSync(tmp, path.join(driverDir, "inbox", `${actionId}.json`));
-      const done = path.join(driverDir, "done", `${actionId}.json`);
-      const answer = await until(() => {
-        try {
-          return JSON.parse(fs.readFileSync(done, "utf8"));
-        } catch {
-          return null;
-        }
-      }, scale(timeoutMs));
-      if (!answer) throw new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`);
-      fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
-      return answer;
-    };
 
     // The run's teardown, for the ending (pass or fail): only ids this run made (teardownList), through the driver.
     teardown = async () => {
@@ -2222,7 +2290,7 @@ async function main() {
       pass(
         "still_running_noted",
         "A Lead that says it's done while its workers run gets one \"Still running\" note, and its brief stays open",
-        `Chief of Staff briefed ${flowBrief.lead} (task ${flowTaskId}); the Lead started Flow API and Flow UI and said "Done"; its chat shows "${notes[0].text}" once, and the brief is still ${briefWhileOut.state}`,
+        `${ROOM_SEATS[0]} briefed ${flowBrief.lead} (task ${flowTaskId}); the Lead started Flow API and Flow UI and said "Done"; its chat shows "${notes[0].text}" once, and the brief is still ${briefWhileOut.state}`,
         { evidence: noteEvidence },
       );
     else
@@ -2376,7 +2444,7 @@ async function main() {
       pass(
         "leadership_report_complete",
         "A message Ash steers into the Lead's last turn never truncates its report to leadership",
-        `Ash steered into the Lead's last turn on the brief (answered in ${reportEvidence.ash3.latencyMs} ms); the Lead was asked for its report on its own and Chief of Staff got all of it: "${reported.result}"`,
+        `Ash steered into the Lead's last turn on the brief (answered in ${reportEvidence.ash3.latencyMs} ms); the Lead was asked for its report on its own and ${ROOM_SEATS[0]} got all of it: "${reported.result}"`,
         { evidence: reportEvidence },
       );
     else fail("leadership_report_complete", "A message Ash steers into the Lead's last turn never truncates its report to leadership", JSON.stringify(reportEvidence));
@@ -2434,7 +2502,7 @@ async function main() {
         .map((row) => ({ session: row.session_id, block: JSON.parse(row.block_json) }))
         .filter((row) => row.block.role === "user" && row.block.internal && row.block.monoNote?.kind === kind);
     const roomSent = ashInRoom(1, "plan round 1");
-    const cosAnswered = await waitMark("room-cos-answered", 60_000);
+    const hostAnswered = await waitMark("room-host-answered", 60_000);
     const passed = await waitMark("room-pass", 120_000);
     const loop = await until(async () => {
       const rows = await roomRows();
@@ -2444,17 +2512,17 @@ async function main() {
     }, scale(30_000));
     const roomNotes = await notesIn("room");
     const loopEvidence = {
-      latencyMs: after(cosAnswered, roomSent),
+      latencyMs: after(hostAnswered, roomSent),
       authors: (loop ?? []).map((row) => row.author),
       picks: (loop ?? []).map((row) => row.meta.pick?.by ?? null),
       texts: (loop ?? []).map((row) => row.text),
       quietLines: [...new Set(roomNotes.map((row) => row.session))],
     };
     if (
-      cosAnswered &&
+      hostAnswered &&
       passed &&
       loop &&
-      JSON.stringify(loopEvidence.authors) === JSON.stringify(["ash", TEAM_MONO, "projects-manager", "frank", "projects-manager", "frank"]) &&
+      JSON.stringify(loopEvidence.authors) === JSON.stringify(["ash", hostId, plannerId, reviewerId, plannerId, reviewerId]) &&
       JSON.stringify(loopEvidence.picks) === JSON.stringify([null, "lead", "addressed", "addressed", "addressed", "addressed"]) &&
       loop[1].reply_to === loop[0].id &&
       loopEvidence.latencyMs < scale(15_000) &&
@@ -2463,90 +2531,90 @@ async function main() {
       pass(
         "room_agents_talk",
         "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest",
-        `Chief of Staff answered ${loopEvidence.latencyMs} ms after Ash's message; then ${loopEvidence.authors.slice(2).join(", ")} without Ash (round, flag, retake, "${loopEvidence.texts.at(-1)}"); all ${loop.length} rows are in room_messages, and ${loopEvidence.quietLines.length} Mono chats show their room turns as quiet lines`,
+        `${ROOM_SEATS[0]} answered ${loopEvidence.latencyMs} ms after Ash's message; then ${loopEvidence.authors.slice(2).join(", ")} without Ash (round, flag, retake, "${loopEvidence.texts.at(-1)}"); all ${loop.length} rows are in room_messages, and ${loopEvidence.quietLines.length} Mono chats show their room turns as quiet lines`,
         { evidence: loopEvidence },
       );
-    else fail("room_agents_talk", "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest", JSON.stringify({ cosAnswered: !!cosAnswered, passed: !!passed, ...loopEvidence }));
+    else fail("room_agents_talk", "Ash writes in a room: the host answers first, then the Monos hand off among themselves by naming each other, with no digest", JSON.stringify({ hostAnswered: !!hostAnswered, passed: !!passed, ...loopEvidence }));
 
     phase();
-    // 19. frank works in its own chat; Ash asks the room; frank's room session answers in the room (its 1:1 untouched).
-    sendMessages({ id: "room-busy", monoId: "frank", prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` });
-    const frankBusy = await waitMark("room-frank-busy", 60_000);
+    // 19. The planner works in its own chat; Ash asks the room; the planner's room session answers in the room (its 1:1 untouched).
+    sendMessages({ id: "room-busy", monoId: plannerId, prompt: `${ROOM_BUSY} run ${id}: work on the label copy.` });
+    const plannerBusy = await waitMark("room-planner-busy", 60_000);
     const askSent = ashInRoom(2, "is the label in?");
-    const cosAnswered2 = await waitMark("room-cos-answered-2", 60_000);
-    const frankPosted = await waitMark("room-frank-posted", 90_000);
+    const hostAnswered2 = await waitMark("room-host-answered-2", 60_000);
+    const plannerPosted = await waitMark("room-planner-posted", 90_000);
     const answeredRows = await until(async () => {
       const rows = await roomRows();
       const at = rows.findIndex((row) => row.author === "ash" && row.text.startsWith(ROOM_ASH(2)));
       const tail = at >= 0 ? rows.slice(at) : [];
-      return tail.some((row) => row.author === "frank") ? tail : null;
+      return tail.some((row) => row.author === plannerId) ? tail : null;
     }, scale(30_000));
-    const frankWake = prompts().find((entry) => entry.rule === "room-frank-wake");
-    const frankRow = answeredRows?.find((row) => row.author === "frank");
-    const cosRow = answeredRows?.find((row) => row.author === TEAM_MONO);
-    // frank's 1:1 work must not have taken the room's prompt (Alfred's 0.16.3 A2 run).
-    const busyConv = frankBusy?.conversation;
+    const plannerWake = prompts().find((entry) => entry.rule === "room-planner-wake");
+    const plannerRow = answeredRows?.find((row) => row.author === plannerId);
+    const hostRow = answeredRows?.find((row) => row.author === hostId);
+    // The planner's 1:1 work must not have taken the room's prompt.
+    const busyConv = plannerBusy?.conversation;
     const roomPromptInWork = !!busyConv && prompts().some((entry) => entry.conversation === busyConv && /\[MonoCode room\]/.test(entry.prompt ?? ""));
-    open("room-frank-release");
+    open("room-planner-release");
     const busyEvidence = {
-      frankBusy: !!frankBusy,
-      cosAnsweredMs: after(cosAnswered2, askSent),
-      steered: frankWake?.steered ?? false,
-      ownRoomSession: !!frankWake && frankWake.conversation !== busyConv,
+      plannerBusy: !!plannerBusy,
+      hostAnsweredMs: after(hostAnswered2, askSent),
+      steered: plannerWake?.steered ?? false,
+      ownRoomSession: !!plannerWake && plannerWake.conversation !== busyConv,
       roomPromptInWork,
-      frankRow: frankRow ? { text: frankRow.text, pick: frankRow.meta.pick?.by, replyTo: frankRow.reply_to } : null,
-      cosRow: cosRow ? cosRow.id : null,
+      plannerRow: plannerRow ? { text: plannerRow.text, pick: plannerRow.meta.pick?.by, replyTo: plannerRow.reply_to } : null,
+      hostRow: hostRow ? hostRow.id : null,
     };
     if (
-      frankBusy &&
-      cosAnswered2 &&
-      frankPosted &&
+      plannerBusy &&
+      hostAnswered2 &&
+      plannerPosted &&
       !busyEvidence.steered &&
       busyEvidence.ownRoomSession &&
       !roomPromptInWork &&
-      frankRow?.text === "The label is in. Pass from me." &&
-      frankRow.meta.pick?.by === "addressed" &&
-      frankRow.reply_to === cosRow?.id
+      plannerRow?.text === "The label is in. Pass from me." &&
+      plannerRow.meta.pick?.by === "addressed" &&
+      plannerRow.reply_to === hostRow?.id
     )
       pass(
         "room_busy_mono_answers",
         "A Mono busy in its own chat still answers the room: the room's turn runs in its room session, never in that work, and posts",
-        `frank was mid-turn on its own work; Chief of Staff named it ${busyEvidence.cosAnsweredMs} ms after Ash asked; frank's room session took the turn (its 1:1 work got no room prompt) and frank posted "${frankRow.text}", as the answer to Chief of Staff's message`,
+        `${ROOM_SEATS[2]} was mid-turn on its own work; ${ROOM_SEATS[0]} named it ${busyEvidence.hostAnsweredMs} ms after Ash asked; its room session took the turn (its 1:1 work got no room prompt) and it posted "${plannerRow.text}", as the answer to ${ROOM_SEATS[0]}'s message`,
         { evidence: busyEvidence },
       );
     else fail("room_busy_mono_answers", "A Mono busy in its own chat still answers the room: the room's turn runs in its room session, never in that work, and posts", JSON.stringify(busyEvidence));
 
     phase();
-    // 20. Chief of Staff's private message to Alfred (sent from its room turn).
+    // 20. The host's private message to the record keeper (sent from its room turn).
     const dmCall = savedCall("room-dm");
-    const alfredGot = await waitMark("room-alfred-dm", 60_000);
-    const dmNotes = alfredGot ? ((await until(async () => {
+    const keeperGot = await waitMark("room-keeper-dm", 60_000);
+    const dmNotes = keeperGot ? ((await until(async () => {
       const notes = await notesIn("message");
       return notes.length ? notes : null;
     }, scale(15_000))) ?? []) : [];
     const roomNow = await roomRows();
     const dmEvidence = {
       call: dmCall?.response ?? null,
-      delivered: !!alfredGot,
+      delivered: !!keeperGot,
       notes: dmNotes.map((row) => ({ session: row.session, note: row.block.monoNote })),
-      inRoom: roomNow.some((row) => row.author === "alfred" || row.text.includes(ROOM_DM)),
+      inRoom: roomNow.some((row) => row.author === keeperId || row.text.includes(ROOM_DM)),
     };
     if (
       dmCall?.response?.ok === true &&
-      alfredGot &&
-      dmNotes.some((row) => row.block.monoNote?.from === "Chief of Staff" && row.block.monoNote?.ref === TEAM_MONO && row.block.text.includes(ROOM_DM)) &&
+      keeperGot &&
+      dmNotes.some((row) => row.block.monoNote?.from === ROOM_SEATS[0] && row.block.monoNote?.ref === hostId && row.block.text.includes(ROOM_DM)) &&
       !dmEvidence.inRoom
     )
       pass(
         "room_private_message",
         "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room",
-        `mono_message from Chief of Staff (sent during its room turn) reached Alfred's own chat as a quiet "From Chief of Staff" turn; nothing of it is in the room`,
+        `mono_message from ${ROOM_SEATS[0]} (sent during its room turn) reached ${ROOM_SEATS[3]}'s own chat as a quiet "From ${ROOM_SEATS[0]}" turn; nothing of it is in the room`,
         { evidence: dmEvidence },
       );
     else fail("room_private_message", "A private message between Monos arrives as a hidden turn in the other Mono's own chat, shown as from the sender, and stays out of the room", JSON.stringify(dmEvidence));
 
     phase();
-    // The live line (r62): while frank thought in the room, its status line showed the step with a timer and frank's
+    // The live line (r62): while the planner thought in the room, its status line showed the step with a timer and the planner's
     // MonoCode right after it. Read from what the window drew (sessions/model/verifyLiveLines.ts), never the model.
     const seenLines = liveLinesSeen((await localStorageOf(home, scratch)).items);
     const liveVerdict = liveLineVerdict(seenLines);
@@ -2822,6 +2890,7 @@ async function main() {
     finishedAt: new Date().toISOString(),
     build: { branch: git(["rev-parse", "--abbrev-ref", "HEAD"]), sha: git(["rev-parse", "HEAD"]), dirty: git(["status", "--porcelain"]) !== "" },
     slot: options.slot,
+    ...(options.only ? { only: options.only } : {}),
     launches,
     checks,
     cleanup: cleanupResult,

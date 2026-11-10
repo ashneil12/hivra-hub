@@ -1,5 +1,24 @@
 import { expect, test } from "@playwright/test";
 
+// One play, then one more if the first call was aborted or did not start. A media error is not retried.
+async function playOnce(element: HTMLVideoElement): Promise<void> {
+  element.muted = true;
+  const first = element.play();
+  let timer = 0;
+  const timed = new Promise<never>((_, reject) => {
+    timer = window.setTimeout(() => reject(new DOMException("The play call did not start", "AbortError")), 3_000);
+  });
+  try {
+    await Promise.race([first, timed]);
+    window.clearTimeout(timer);
+  } catch (error) {
+    window.clearTimeout(timer);
+    void first.catch(() => undefined);
+    if (element.error) throw error;
+    await element.play();
+  }
+}
+
 test("file preview decodes, plays and seeks a video, then pauses on tab change", async ({
   page,
 }) => {
@@ -26,10 +45,11 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
   await expect(page.locator("footer").first()).toContainText("160 × 90");
   await expect(page.locator("footer").first()).toContainText("0:03");
 
-  await video.evaluate(async (element: HTMLVideoElement) => {
-    element.muted = true;
-    await element.play();
-  });
+  // Metadata is not enough on a cold WebKit pipeline: the first play() can be
+  // aborted before a frame is buffered, and waiting for canplay first never
+  // arrives because WebKit does not buffer until play() is called. Try play(),
+  // and if that call does not start, try once more. A real media error still fails.
+  await video.evaluate(playOnce);
   await expect
     .poll(() =>
       video.evaluate((element: HTMLVideoElement) => element.currentTime),
@@ -59,9 +79,7 @@ test("file preview decodes, plays and seeks a video, then pauses on tab change",
   expect(bounds!.width).toBeLessThanOrEqual(850);
   expect(bounds!.height).toBeLessThanOrEqual(600);
 
-  await video.evaluate(async (element: HTMLVideoElement) => {
-    await element.play();
-  });
+  await video.evaluate(playOnce);
   await page.getByRole("button", { name: "Hide workspace" }).click();
   await expect(video).toBeHidden();
   await expect

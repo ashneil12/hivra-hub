@@ -1,1 +1,0 @@
-- EXO's hero palette is Vanguard orange #FF6A00 with gunmetal grey (Ash, 12 Oct).

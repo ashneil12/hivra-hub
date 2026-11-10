@@ -176,6 +176,12 @@ function openReplacePanel(view: EditorView): boolean {
   return true;
 }
 
+/** WP-93: the command palette's Replace row, through the same panel the chord opens. */
+export function openReplaceInActiveEditor(): boolean {
+  const view = editorViewForFind();
+  return view ? openReplacePanel(view) : false;
+}
+
 function findKeymap(): KeyBinding[] {
   return [
     {

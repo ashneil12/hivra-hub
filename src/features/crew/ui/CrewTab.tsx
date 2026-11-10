@@ -1,7 +1,9 @@
 // Hivra WP-15: the crew, one plain row per worker. No chips, rings, or colour rules.
 
 import { useState } from "react";
+import type { CrewTree } from "../model/crewTree";
 import type { CrewAction, CrewRow } from "../model/rows";
+import { CrewTreeView } from "./CrewTree";
 
 const ACTION_LABEL: Record<CrewAction, string> = {
   open: "Open as a tab",
@@ -157,6 +159,8 @@ export function CrewTab({
   onStop,
   onRetry,
   onDeliver,
+  tree,
+  onOpenChat,
 }: {
   rows: readonly CrewRow[];
   briefTitle?: string | null;
@@ -168,6 +172,9 @@ export function CrewTab({
   onStop?: (row: CrewRow) => void;
   onRetry?: (row: CrewRow) => void;
   onDeliver?: (row: CrewRow) => void;
+  /** WP-119: the tree sits above the rows. Row actions stay where they are. */
+  tree?: CrewTree | null;
+  onOpenChat?: (sessionId: string) => void;
 }) {
   return (
     <div aria-label="Crew" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
@@ -185,21 +192,21 @@ export function CrewTab({
           </button>
         </p>
       ) : null}
-      {rows.length === 0 ? (
+      {tree?.root ? <CrewTreeView tree={tree} onOpenChat={onOpenChat} /> : null}
+      {rows.length === 0 && !tree?.root ? (
         <p className="px-3 py-3 text-[12px] text-content/50">No one is on this yet.</p>
-      ) : (
-        rows.map((row) => (
-          <CrewRowView
-            key={row.id}
-            row={row}
-            onOpen={onOpen}
-            onMessage={onMessage}
-            onStop={onStop}
-            onRetry={onRetry}
-            onDeliver={onDeliver}
-          />
-        ))
-      )}
+      ) : null}
+      {rows.map((row) => (
+        <CrewRowView
+          key={row.id}
+          row={row}
+          onOpen={onOpen}
+          onMessage={onMessage}
+          onStop={onStop}
+          onRetry={onRetry}
+          onDeliver={onDeliver}
+        />
+      ))}
     </div>
   );
 }

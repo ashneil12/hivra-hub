@@ -116,6 +116,104 @@ describe("markdown round trip", () => {
   });
 });
 
+// WP-102 item 2 (Orbit ab86dac): a list item's paragraph, quote or heading child needs a blank line before it, and so
+// does a numbered list that does not start at 1. Without one, Markdown reads the child as more of the item's own
+// paragraph and the child is lost on the way back in.
+describe("markdown lists with child blocks (WP-102)", () => {
+  const childOf = (child: Block): Block => block("bulletListItem", {}, [text("Parent")], [child]);
+
+  it("keeps a paragraph child of a list item", () => {
+    const blocks = [childOf(block("paragraph", {}, [text("The child")]))];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n\n  The child\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps a quote child of a list item", () => {
+    const blocks = [childOf(block("quote", {}, [text("A quoted child")]))];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n\n  > A quoted child\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps a heading child of a list item", () => {
+    const blocks = [childOf(block("heading", { level: 2 }, [text("A heading child")]))];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n\n  ## A heading child\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps more than one paragraph child, in order", () => {
+    const blocks = [
+      block("numberedListItem", {}, [text("Parent")], [
+        block("paragraph", {}, [text("First child")]),
+        block("paragraph", {}, [text("Second child")]),
+      ]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe("1. Parent\n\n   First child\n\n   Second child\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps a paragraph child that comes before a nested list child", () => {
+    const blocks = [
+      block("bulletListItem", {}, [text("Parent")], [
+        block("paragraph", {}, [text("The child")]),
+        block("bulletListItem", {}, [text("Nested")]),
+      ]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n\n  The child\n\n  - Nested\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps a nested list that starts at 1 on the line under its parent", () => {
+    const blocks = [
+      block("bulletListItem", {}, [text("Parent")], [
+        block("bulletListItem", {}, [text("One")]),
+        block("numberedListItem", {}, [text("Two")]),
+      ]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n  - One\n  1. Two\n");
+    roundtrip(blocks);
+  });
+
+  it("puts a blank line before a numbered list that does not start at 1", () => {
+    const blocks = [
+      block("bulletListItem", {}, [text("Before")]),
+      block("numberedListItem", { start: 3 }, [text("three")]),
+      block("numberedListItem", {}, [text("four")]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe("- Before\n\n3. three\n4. four\n");
+    roundtrip(blocks);
+  });
+
+  it("puts a blank line before a nested numbered list that does not start at 1", () => {
+    const blocks = [
+      block("bulletListItem", {}, [text("Parent")], [block("numberedListItem", { start: 3 }, [text("three")])]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe("- Parent\n\n  3. three\n");
+    roundtrip(blocks);
+  });
+
+  it("keeps the Orbit fixture: nesting, numbers, checks, an empty paragraph and a toggle with a child", () => {
+    const blocks: Block[] = [
+      block("bulletListItem", {}, [text("a")], [
+        block("bulletListItem", {}, [text("a.1")]),
+        block("numberedListItem", {}, [text("a.n")]),
+      ]),
+      block("bulletListItem", {}, [text("b")]),
+      block("numberedListItem", { start: 3 }, [text("three")]),
+      block("numberedListItem", {}, [text("four")], [block("checkListItem", { checked: true }, [text("done")])]),
+      block("paragraph", {}, []),
+      block("numberedListItem", {}, [text("restart")]),
+      block("checkListItem", { checked: false }, [text("todo")]),
+      block("toggleListItem", {}, [text("toggle")], [block("paragraph", {}, [text("hidden")])]),
+    ];
+    expect(blocksToMarkdown(blocks)).toBe(
+      "- a\n  - a.1\n  1. a.n\n- b\n\n3. three\n4. four\n   - [x] done\n\n1. restart\n- [ ] todo\n- toggle\n\n  hidden\n",
+    );
+    // Markdown has no empty paragraph and no toggle marker, so those two cannot come back as themselves (they never
+    // could). Everything else in the fixture does.
+    roundtrip(blocks.filter((item) => item.type !== "toggleListItem" && (item.type !== "paragraph" || item.content.length > 0)));
+  });
+});
+
 describe("links", () => {
   it("rejects javascript and upgrades a bare host", () => {
     expect(normalizeLinkHref("javascript:alert(1)")).toBeNull();

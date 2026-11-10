@@ -25,6 +25,9 @@ pub const TREEHOUSE_VERSION: &str = "3.1.8";
 
 const MAX_TREES_LIMIT: u32 = 32;
 const LOCK_STALE: Duration = Duration::from_secs(300);
+// A writer holds the lock across the treehouse and git calls. A second writer waits for the file to go, with a
+// deadline far past what a loaded machine needs; only then is the pool called full.
+const LOCK_WAIT: Duration = Duration::from_secs(30);
 
 /// treehouse v3.1.8. Checksums are the release `checksums.txt` (SHA-256 of each
 /// archive). The installer keeps only `treehouse` (`treehouse.exe` on Windows).
@@ -246,7 +249,9 @@ fn overlaps(pool: &Path, other: &Path) -> bool {
     component_prefix(other, pool) || component_prefix(pool, other)
 }
 
-/// `path` is `prefix` or a directory inside it. Windows matches ignoring case.
+/// `path` is `prefix` or a directory inside it, compared as spelled. Windows matches ignoring case. This is the text
+/// rule the dev-copy guard and the slots folder check need: resolving `/var` to `/private/var` would make two spellings
+/// of one folder look unrelated. Lease matching uses `same_path`, which resolves both sides (WP-102 item 5).
 fn component_prefix(path: &Path, prefix: &Path) -> bool {
     let path = normalize(path);
     let prefix = normalize(prefix);
@@ -264,6 +269,11 @@ fn component_prefix(path: &Path, prefix: &Path) -> bool {
     })
 }
 
+/// The folder a path really names. A path that isn't there (a slot already removed) is only cleaned, never refused.
+fn resolve(path: &Path) -> PathBuf {
+    crate::fs::canonical(path).unwrap_or_else(|_| normalize(path))
+}
+
 fn normalize(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -278,8 +288,32 @@ fn normalize(path: &Path) -> PathBuf {
     out
 }
 
+/// `path` is a folder inside `dir` (not `dir` itself), by the folders' real identity. A slot reached through a link is
+/// still inside the pool; a link that resolves outside it is not.
 fn path_in(dir: &Path, path: &Path) -> bool {
-    component_prefix(path, dir) && !same_path(path, dir)
+    let dir = resolve(dir);
+    let path = resolve(path);
+    component_prefix(&path, &dir) && path != dir
+}
+
+/// WP-91: the folder this copy's pool hands its slots out of, or none when the pool can't be kept apart from the
+/// real one (then no checkout is a slot).
+pub(crate) fn slots_dir(env: &PoolEnv) -> Option<PathBuf> {
+    paths_for(env).ok().map(|paths| paths.slots_dir)
+}
+
+/// [`slots_dir`] for the running app.
+pub(crate) fn slots_dir_for(app: &AppHandle) -> Option<PathBuf> {
+    slots_dir(&env_from_app(app))
+}
+
+/// WP-91: whether `path` is a slot of the pool that hands its slots out of `slots_dir`: a folder straight under it,
+/// by the folders' real identity. The folder itself, a folder inside a slot, and a link in it that leads to some
+/// other folder are not slots.
+pub(crate) fn is_slot_in(slots_dir: &Path, path: &Path) -> bool {
+    let (dir, path) = (resolve(slots_dir), resolve(path));
+    path.parent()
+        .is_some_and(|parent| component_prefix(parent, &dir) && component_prefix(&dir, parent))
 }
 
 pub fn env_from_app(app: &AppHandle) -> PoolEnv {
@@ -337,7 +371,8 @@ impl Lock {
     fn acquire(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
         let path = dir.join(".pool.lock");
-        for _ in 0..40 {
+        let deadline = std::time::Instant::now() + LOCK_WAIT;
+        loop {
             match std::fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -347,14 +382,17 @@ impl Lock {
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     if lock_is_stale(&path) {
                         let _ = std::fs::remove_file(&path);
-                        continue;
+                    } else {
+                        std::thread::sleep(Duration::from_millis(25));
                     }
-                    std::thread::sleep(Duration::from_millis(25));
+                    // Checked on the stale path too: a lock file that can't be removed is not a wait forever.
+                    if std::time::Instant::now() >= deadline {
+                        return Err(format!("{POOL_FULL_PREFIX}{POOL_FULL_NOTE}"));
+                    }
                 }
                 Err(error) => return Err(error.to_string()),
             }
         }
-        Err(format!("{POOL_FULL_PREFIX}{POOL_FULL_NOTE}"))
     }
 }
 
@@ -752,7 +790,16 @@ pub fn give_back(env: &PoolEnv, repo: &Path, path: &Path) -> Result<HandBack, St
     Ok(HandBack::Returned)
 }
 
+/// Whether two spellings name the same folder. WP-102 item 5: the lease table used to compare spellings, so a slot
+/// reached through a link (macOS `/var` is `/private/var`) or by another letter case lost its lease. Now each side is
+/// resolved first, so the folder's real identity decides; when it can't be read (the slot is gone) the spelling still
+/// has a say, as before.
 fn same_path(left: &Path, right: &Path) -> bool {
+    if let (Ok(left), Ok(right)) = (same_identity(left), same_identity(right)) {
+        if left == right {
+            return true;
+        }
+    }
     if cfg!(windows) {
         normalize(left)
             .to_string_lossy()
@@ -760,6 +807,11 @@ fn same_path(left: &Path, right: &Path) -> bool {
     } else {
         normalize(left) == normalize(right)
     }
+}
+
+/// A folder's real identity: its resolved path, with any trailing separator already gone.
+fn same_identity(path: &Path) -> std::io::Result<PathBuf> {
+    crate::fs::canonical(path)
 }
 
 pub fn leased_protections(data_dir: &Path) -> Result<Vec<(PathBuf, String)>, String> {
@@ -1084,13 +1136,17 @@ mod tests {
 
     impl Tmp {
         fn new() -> Self {
+            // Tests run in parallel, and the clock's ticks are coarse enough that two of them can land on the same
+            // reading. The counter keeps every test's folder its own, so one test's cleanup can't remove another's.
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let root = std::env::temp_dir().join(format!(
-                "wp82-{}-{}",
+                "wp82-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .unwrap()
-                    .as_nanos()
+                    .as_nanos(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ));
             std::fs::create_dir_all(&root).unwrap();
             Self { root }
@@ -1594,6 +1650,91 @@ mod tests {
         fix.marker_ok();
     }
 
+    // WP-102 item 5: a lease is matched by the folder it names, not the letters it was spelled with. macOS aliases
+    // /var to /private/var, so a caller can reach the same slot by another spelling; that is the same worktree.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_spelling_with_a_trailing_slash_is_the_same_slot() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        // A link beside the pool that resolves to the slot's own folder, the way /var resolves to /private/var.
+        let alias = fix.tmp.root.join("alias");
+        std::os::unix::fs::symlink(&leased, &alias).unwrap();
+        let mut spelled = alias.to_string_lossy().into_owned();
+        spelled.push(std::path::MAIN_SEPARATOR);
+        assert_eq!(
+            give_back(&env, &fix.repo, Path::new(&spelled)).unwrap(),
+            HandBack::Returned,
+            "a symlinked spelling with a trailing slash is the same slot"
+        );
+        assert!(leased_protections(&fix.data).unwrap().is_empty());
+        fix.marker_ok();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_differently_cased_spelling_is_the_same_slot() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let spelled = leased.to_string_lossy().to_uppercase();
+        assert_eq!(
+            give_back(&env, &fix.repo, Path::new(&spelled)).unwrap(),
+            HandBack::Returned,
+            "a differently cased spelling is the same slot"
+        );
+        assert!(leased_protections(&fix.data).unwrap().is_empty());
+        fix.marker_ok();
+    }
+
+    // The other half of the same rule: the repo is keyed by its real folder too, so a second call by another spelling
+    // reuses the crew's lease instead of taking a fresh slot.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_repo_spelling_reuses_the_crew_lease() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (first, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let alias = fix.tmp.root.join("repo-alias");
+        std::os::unix::fs::symlink(&fix.repo, &alias).unwrap();
+        let (again, _) = slot(acquire(&env, &alias, "mc/orch-aaaa", "crew-a").unwrap());
+        assert_eq!(
+            resolve(&first),
+            resolve(&again),
+            "the same crew and branch get the slot they already hold"
+        );
+        assert_eq!(
+            argv_log(&env).matches("\"command\":\"get\"").count(),
+            1,
+            "the pool is asked once, not again for the other spelling"
+        );
+        fix.marker_ok();
+    }
+
+    // The other half of the same rule: a slot reached through a link is still inside the pool, so its lease is found
+    // there. A link that resolves outside the pool is refused, because the folder really is outside.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_out_of_the_pool_is_still_outside_it() {
+        let fix = Fix::new();
+        let env = fix.env();
+        let (leased, _) = slot(acquire(&env, &fix.repo, "mc/orch-aaaa", "crew-a").unwrap());
+        let outside = fix.tmp.root.join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep"), b"stay").unwrap();
+        let link = fix.tmp.root.join("link-out");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert_eq!(
+            give_back(&env, &fix.repo, &link).unwrap(),
+            HandBack::NotLeased,
+            "a link to a folder the pool never leased is not a lease"
+        );
+        assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"stay");
+        assert!(leased.is_dir());
+        fix.marker_ok();
+    }
+
     #[test]
     fn give_back_of_the_real_pool_does_not_touch_it() {
         let fix = Fix::new();
@@ -1626,5 +1767,34 @@ mod tests {
         assert!(error.contains("outside"), "{error}");
         assert_eq!(std::fs::read(outside.join("keep")).unwrap(), b"stay");
         assert!(!paths.root.join("argv.log").exists());
+    }
+
+    // The store's lock is held across the treehouse and git calls, which on a loaded machine can take well over a
+    // second. A second writer waits for the file to go; it is not a full pool.
+    #[test]
+    fn a_slow_writer_is_waited_for_instead_of_reported_as_a_full_pool() {
+        let tmp = Tmp::new();
+        let state_dir = tmp.root.join("state");
+        let (held_tx, held_rx) = std::sync::mpsc::channel();
+        let writer = {
+            let dir = state_dir.clone();
+            std::thread::spawn(move || {
+                let lock = Lock::acquire(&dir).unwrap();
+                held_tx.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(1500));
+                drop(lock);
+            })
+        };
+        held_rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        let lock = Lock::acquire(&state_dir)
+            .expect("a lock held by a slow writer is waited for, not called a full pool");
+        assert!(
+            started.elapsed() >= Duration::from_millis(1200),
+            "the second writer waited"
+        );
+        drop(lock);
+        writer.join().unwrap();
+        assert!(!state_dir.join(".pool.lock").exists());
     }
 }

@@ -116,7 +116,6 @@ import { MODE_COMMAND_STYLES } from "../../features/sessions/ui/modeCommands";
 import { OPERATOR_COMMAND } from "../../features/sessions/model/operatorCommand";
 import { ORCHESTRATOR_COMMAND } from "../../features/sessions/model/orchestratorCommand";
 import {
-  compareSessionSummaries,
   filterSessionsByArchive,
   filterSessionsByQuery,
 } from "../../features/sessions/data/sessionHistory";
@@ -166,6 +165,7 @@ import type {
 } from "../../features/sessions/model/session";
 import type { LiveAgent } from "../../features/sessions/model/liveAgents";
 import type { SessionSummary } from "../../features/sessions/data/sessionStore";
+import { NeedsFolderSection } from "./NeedsFolderSection";
 import {
   keybindingShortcutLabel,
   subscribeKeybindings,
@@ -224,6 +224,31 @@ import {
   reminderTime,
   type SessionReminder,
 } from "../../features/sessions/model/sessionReminders";
+// WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+import { useChatListInbox } from "../../features/settings/model/displayPrefs";
+import {
+  attentionWithApprovals,
+  compareInboxOrder,
+  inboxMenuChoices,
+  settleHeldBack,
+  snoozeUntil,
+  splitInboxSessions,
+  type ChatAttention,
+  type SnoozePreset,
+} from "../../features/sessions/model/chatListInbox";
+import {
+  settleChats,
+  snoozeChats,
+  unsettleChats,
+  unsnoozeChats,
+  useInboxDoc,
+  useInboxNow,
+} from "../../features/sessions/model/chatListInboxStore";
+import {
+  ChatListInboxNotice,
+  ChatListShelves,
+  SnoozeTimeDialog,
+} from "../../features/sessions/ui/ChatListInbox";
 import { SessionsEmpty } from "../../features/sessions/ui/SessionsEmpty";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
@@ -325,6 +350,14 @@ type Props = {
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
   approvalSessionIds: Set<string>;
+  /**
+   * The ids in `approvalSessionIds` that are listed because a worker they lead needs input, not for a need of the
+   * chat's own. A Lead can have an open question of its own and a worker's approval at once; the first is dated and
+   * a settle holds for it, the second is not and is never hidden (WP-113).
+   */
+  approvalElsewhereSessionIds?: Set<string>;
+  /** WP-113: why a listed chat needs the person, when settle and snooze is on. */
+  chatAttention?: ReadonlyMap<string, ChatAttention>;
   activeSessionId?: string;
   /** Open tabs, including blank ones not yet in history. */
   openSessions?: readonly SessionSummary[];
@@ -332,6 +365,8 @@ type Props = {
   /** First listing for this project has not arrived yet. */
   pending: boolean;
   onSelectSession: (sessionId: string) => void;
+  /** A chat that had no folder was given one outside the window's own picker (Relink all): the open copy takes it too. */
+  onSetSessionFolder?: (sessionId: string, cwd: string) => void;
   onSelectRemoteSession?: (project: string, sessionId: string) => void;
   onRemoteSessionDeleted?: (sessionId: string) => void;
   onSessionNavigationOrder?: (ids: readonly string[]) => void;
@@ -349,6 +384,8 @@ type Props = {
   ) => void;
   onPinSession?: (sessionId: string, pinned: boolean) => void;
   onPinSessions?: (sessionIds: readonly string[], pinned: boolean) => void;
+  /** WP-111: make one chat private, or switch it off. */
+  onPrivateSession?: (sessionId: string, on: boolean) => void;
   onSetSessionLinkedWorkItem?: (
     sessionId: string,
     item: LinkedWorkItem | undefined,
@@ -502,11 +539,14 @@ function SidebarComponent({
   sessions,
   busySessionIds,
   approvalSessionIds,
+  approvalElsewhereSessionIds,
+  chatAttention,
   activeSessionId,
   openSessions = [],
   status,
   pending,
   onSelectSession: onSelectLocalSession,
+  onSetSessionFolder,
   onSelectRemoteSession,
   onRemoteSessionDeleted,
   onSessionNavigationOrder,
@@ -517,6 +557,7 @@ function SidebarComponent({
   onArchiveSessions: onArchiveLocalSessions,
   onPinSession: onPinLocalSession,
   onPinSessions: onPinLocalSessions,
+  onPrivateSession,
   onSetSessionLinkedWorkItem: onSetLocalSessionLinkedWorkItem,
   reminders = [],
   onSetReminders,
@@ -776,6 +817,11 @@ function SidebarComponent({
   const [rightTabOrder, setRightTabOrder] =
     useState<RightPanelTab[]>(loadRightPanelTabOrder);
   const [now, setNow] = useState(() => Date.now());
+  // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+  const inboxOn = useChatListInbox();
+  const inboxDoc = useInboxDoc();
+  const inboxNow = useInboxNow(inboxOn);
+  const [snoozeChoiceIds, setSnoozeChoiceIds] = useState<readonly string[] | null>(null);
   const sessionsLock = useLockOverscroll<HTMLDivElement>();
   const sessionsScrollRef = useRef<HTMLDivElement>(null);
   const [sessionMenu, setSessionMenu] = useState<{
@@ -877,13 +923,31 @@ function SidebarComponent({
       !session.sidebarHidden ||
       !!startedSessionCaller(session.id, shownSessionIds),
   );
+  // WP-113: with the setting on, settled and snoozed chats leave the active list.
+  const inboxAttention = inboxOn
+    ? attentionWithApprovals(
+        chatAttention,
+        listedApprovalSessionIds,
+        // A remote project's flag says only that a chat needs input, so none of its ids is known to be a worker's.
+        remoteProject ? undefined : approvalElsewhereSessionIds,
+      )
+    : undefined;
+  const inboxRows = splitInboxSessions(listedSessions, {
+    enabled: inboxOn,
+    marks: inboxDoc.chats,
+    now: inboxNow,
+    attention: inboxAttention,
+  });
+  const inboxListed = inboxOn ? inboxRows.active : listedSessions;
+  const inboxCompare = (a: SessionSummary, b: SessionSummary) =>
+    compareInboxOrder(a, b, inboxOn, inboxAttention);
   const visibleSessions = [
     ...filterSessionsByQuery(
       filterSessionsByStatus(
         filterSessionsByTime(
           filterSessionsByHarness(
             filterSessionsByArchive(
-              listedSessions,
+              inboxListed,
               sessionFilters.showArchived,
             ),
             sessionFilters.hiddenHarnesses,
@@ -898,7 +962,7 @@ function SidebarComponent({
       ),
       searchQuery,
     ),
-  ].sort(compareSessionSummaries);
+  ].sort(inboxCompare);
   // The inset list hangs the sessions an /operator thread started under it,
   // like an orchestrator's agents, rather than listing them on their own. A
   // coding team nests every chat a chat started under the chat Ash talks to
@@ -912,7 +976,7 @@ function SidebarComponent({
             .filter((session) => !session.id.startsWith("app-"))
             .map((session) => session.id),
         ],
-        listedSessions,
+        inboxListed,
         // A brief to a project's Lead is that coding team's work, never a sub-chat of the Mono that sent it: without
         // its row, the Lead's workers can't climb through it into the Mono's own team.
         delegationRows.filter((row) => row.follow !== "lead"),
@@ -973,6 +1037,7 @@ function SidebarComponent({
     ungroupedVisible,
     pinnedSessionsCollapsed,
     reminderGroup,
+    inboxCompare,
   );
   const sessionListEntries = buildSessionList(
     listedVisibleSessions,
@@ -980,6 +1045,7 @@ function SidebarComponent({
     shownUngrouped,
     pinnedSessionsCollapsed,
     reminderGroup,
+    inboxCompare,
   );
   const firstLooseSessionIndex = sessionListEntries.findIndex(
     (entry) => entry.kind === "session",
@@ -1603,6 +1669,16 @@ function SidebarComponent({
           },
         ]
       : []),
+    // WP-111: one chat at a time, same as rename.
+    ...(!multipleMenuSessions && onPrivateSession
+      ? [
+          {
+            kind: "item" as const,
+            id: "private",
+            label: menuSessions[0]?.private === true ? "Not private" : "Private",
+          },
+        ]
+      : []),
     ...(!multipleMenuSessions && onRenameSession
       ? [
           {
@@ -1675,6 +1751,27 @@ function SidebarComponent({
               ? "Remove from folders"
               : "Remove from folder",
           },
+        ]
+      : []),
+    // WP-113: settle and snooze. These do not archive or delete the chat.
+    ...(inboxOn
+      ? [
+          { kind: "sep" as const },
+          ...inboxMenuChoices(menuSessionIds, inboxDoc.chats, new Date(inboxNow), inboxAttention).map(
+            (choice) => ({
+              kind: "item" as const,
+              id: choice.id,
+              label: choice.label,
+              description: choice.description,
+              disabled: choice.disabled,
+              submenu: choice.children?.map((child) => ({
+                kind: "item" as const,
+                id: child.id,
+                label: child.label,
+                disabled: child.disabled,
+              })),
+            }),
+          ),
         ]
       : []),
     ...(onArchiveSession ||
@@ -1770,6 +1867,10 @@ function SidebarComponent({
       }
       return;
     }
+    if (id === "private") {
+      onPrivateSession?.(sessionId, menuSessions[0]?.private !== true);
+      return;
+    }
     if (id === "rename") {
       setRenamingSessionId(sessionId);
       return;
@@ -1814,6 +1915,33 @@ function SidebarComponent({
           sessionFolders,
         ),
       );
+      return;
+    }
+    // WP-113: settle and snooze never archive or delete the chat.
+    if (id === "inbox-settle") {
+      // An approval waiting on a chat is never hidden: the menu item is off, and a late pick does nothing either.
+      if (settleHeldBack(sessionIds, inboxAttention)) return;
+      settleChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-unsettle") {
+      unsettleChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-unsnooze") {
+      unsnoozeChats(sessionIds);
+      return;
+    }
+    if (id === "inbox-snooze:choose") {
+      setSnoozeChoiceIds(sessionIds);
+      return;
+    }
+    if (id.startsWith("inbox-snooze:")) {
+      const until = snoozeUntil(
+        id.slice("inbox-snooze:".length) as SnoozePreset,
+        new Date(inboxNow),
+      );
+      if (until != null) snoozeChats(sessionIds, until);
       return;
     }
     if (id === "archive") {
@@ -2887,6 +3015,15 @@ function SidebarComponent({
           {/* Hub mode: the project's items, which the classic rail lists in
               place of Projects. */}
           {inset ? hubItems : null}
+          {/* Chats that came in from an export with no folder here: listed together until each gets one. */}
+          {!remoteProject ? (
+            <NeedsFolderSection
+              onSelect={onSelectSession}
+              activeSessionId={activeSessionId}
+              openSessions={openSessions}
+              onRelinked={onSetSessionFolder}
+            />
+          ) : null}
           {!cwd || cwd === "~" ? (
             <div className="px-3 py-2 text-[12px] text-content/50">
               <p>No project folder</p>
@@ -3304,6 +3441,32 @@ function SidebarComponent({
                   ) : null}
                 </ul>
               )}
+              {/* WP-113: settled and snoozed chats stay listed, off the active rows. */}
+              {inboxOn ? (
+                <ChatListShelves
+                  settled={inboxRows.settled.map((session) => ({
+                    id: session.id,
+                    title: session.title || "New session",
+                  }))}
+                  snoozed={inboxRows.snoozed.map((session) => ({
+                    id: session.id,
+                    title: session.title || "New session",
+                  }))}
+                  onOpen={onSelectLocalSession}
+                  onUnsettle={(sessionId) => unsettleChats([sessionId])}
+                  onUnsnooze={(sessionId) => unsnoozeChats([sessionId])}
+                />
+              ) : null}
+              <ChatListInboxNotice />
+              {snoozeChoiceIds ? (
+                <SnoozeTimeDialog
+                  onClose={() => setSnoozeChoiceIds(null)}
+                  onSnooze={(until) => {
+                    snoozeChats(snoozeChoiceIds, until);
+                    setSnoozeChoiceIds(null);
+                  }}
+                />
+              ) : null}
             </div>
           )}
         </div>

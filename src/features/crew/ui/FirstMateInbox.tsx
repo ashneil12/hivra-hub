@@ -1,6 +1,6 @@
 // Hivra WP-15: decisions, results, failures and credential needs, answered where they sit.
 
-import type { FirstMateItem } from "../model/inbox";
+import { waitingPhrase, type FirstMateItem } from "../model/inbox";
 import { useEffect, useRef } from "react";
 
 export function FirstMateInbox({
@@ -10,6 +10,7 @@ export function FirstMateInbox({
   onOpenChat,
   onOpenWorker,
   selectedKey = null,
+  now,
 }: {
   items: readonly FirstMateItem[];
   stale?: boolean;
@@ -17,6 +18,8 @@ export function FirstMateInbox({
   onOpenChat?: (sessionId: string) => void;
   onOpenWorker?: (workerId: string) => void;
   selectedKey?: string | null;
+  /** WP-119: the clock the wait phrase is read against. */
+  now?: number;
 }) {
   const root = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -38,6 +41,11 @@ export function FirstMateInbox({
           className="rounded-md border border-stroke px-3 py-2"
         >
           <h3 className="text-[13px] text-content">{item.title}</h3>
+          {typeof now === "number" && waitingPhrase(item.since, now) ? (
+            <p data-waiting className="text-[12px] text-content/60">
+              {waitingPhrase(item.since, now)}
+            </p>
+          ) : null}
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
           {item.body ? (
             <p

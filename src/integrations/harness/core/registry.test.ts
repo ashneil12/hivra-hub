@@ -22,6 +22,7 @@ import {
   sendHarnessTurn,
   type HarnessAdapter,
 } from "./registry";
+import { CHAT_NEEDS_FOLDER } from "./chatFolder";
 import type { SendTurnInput, SteerTurnInput } from "./types";
 import { registerBuiltinHarnesses } from "./register";
 
@@ -328,6 +329,41 @@ describe("harness registry", () => {
     await refreshHarnessCatalogs([]);
     expect(pi).not.toHaveBeenCalled();
   });
+
+  // A chat whose folder was cleared on import (docs/PORTABLE.md) starts nothing, on any provider.
+  it.each(["claude", "codex", "cursor", "pi"] as const)(
+    "refuses a %s turn for a chat with no folder before the provider hears of it",
+    async (harness) => {
+      const sendTurn = vi.fn(async () => undefined);
+      const compactContext = vi.fn(async () => undefined);
+      registerHarness(stub(harness, { sendTurn, compactContext }));
+      for (const cwd of ["", "   "]) {
+        await expect(
+          sendHarnessTurn({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            text: "hi",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+        await expect(
+          compactHarnessContext({
+            harness,
+            sessionId: "s1",
+            cwd,
+            model: "m",
+            runtimeMode: "supervised",
+            onEvent: () => undefined,
+          }),
+        ).rejects.toThrow(CHAT_NEEDS_FOLDER);
+      }
+      expect(sendTurn).not.toHaveBeenCalled();
+      expect(compactContext).not.toHaveBeenCalled();
+    },
+  );
 
   it("parks a live child a few minutes after the turn settles", async () => {
     vi.useFakeTimers();

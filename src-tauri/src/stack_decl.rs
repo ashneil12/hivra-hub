@@ -32,6 +32,13 @@ pub struct ServiceDecl {
     pub ports: Vec<PortDecl>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// WP-90: this service is an outside service, and the stack's stand-in answers for it
+    /// (`"github"` and the other 13). The stand-in gets its own port from the block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emulate: Option<String>,
+    /// The variable carrying its named base URL. Defaults to `<SERVICE>_BASE_URL`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url_env: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +68,7 @@ pub fn validate(stack: &StackDecl) -> Result<(), String> {
     }
     let mut seen_services = HashSet::new();
     let mut seen_env = HashSet::new();
+    let mut seen_emulated = HashSet::new();
     let mut port_names = Vec::new();
     let mut ports = 0usize;
     for service in &stack.services {
@@ -81,9 +89,44 @@ pub fn validate(stack: &StackDecl) -> Result<(), String> {
                 ));
             }
         }
-        if service.ports.is_empty() && service.env.is_empty() && service.compose.is_none() {
+        if service.ports.is_empty()
+            && service.env.is_empty()
+            && service.compose.is_none()
+            && service.emulate.is_none()
+        {
             return Err(format!(
-                "service {:?} needs a port, an env value, or a compose name",
+                "service {:?} needs a port, an env value, a compose name or an emulated service",
+                service.name
+            ));
+        }
+        if let Some(emulated) = &service.emulate {
+            if !crate::local_services::emulate::is_service(emulated) {
+                return Err(format!(
+                    "service {:?} names {emulated:?}, which is not one of emulate's services",
+                    service.name
+                ));
+            }
+            if !seen_emulated.insert(emulated.as_str()) {
+                return Err(format!("the {emulated} stand-in is named twice"));
+            }
+            // Each emulated service needs one port from this block for its stand-in.
+            ports += 1;
+            if ports > MAX_PORTS {
+                return Err(format!("a stack can ask for at most {MAX_PORTS} ports"));
+            }
+            let env = service
+                .url_env
+                .clone()
+                .unwrap_or_else(|| crate::local_services::emulate::env_name(emulated));
+            if !valid_env(&env) {
+                return Err(format!("urlEnv {env:?} must be an uppercase name"));
+            }
+            if !seen_env.insert(env.clone()) {
+                return Err(format!("{env} is already used, so it can't be set again"));
+            }
+        } else if service.url_env.is_some() {
+            return Err(format!(
+                "service {:?} sets urlEnv without an emulated service",
                 service.name
             ));
         }
@@ -113,6 +156,25 @@ pub fn validate(stack: &StackDecl) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The emulated services a stack declares, in declaration order.
+pub fn emulated(stack: &StackDecl) -> Vec<&ServiceDecl> {
+    stack
+        .services
+        .iter()
+        .filter(|service| service.emulate.is_some())
+        .collect()
+}
+
+/// The variable a declared service's named base URL goes in.
+pub fn base_url_env(service: &ServiceDecl) -> Option<String> {
+    service.emulate.as_ref().map(|emulated| {
+        service
+            .url_env
+            .clone()
+            .unwrap_or_else(|| crate::local_services::emulate::env_name(emulated))
+    })
 }
 
 fn valid_service(name: &str) -> bool {
@@ -165,6 +227,8 @@ fn check_value(value: &str, ports: &[String]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{base_url_env, emulated};
+
     const DECLARED: &str = r#"{
       "version": 1,
       "stack": {
@@ -189,6 +253,56 @@ mod tests {
         assert!(bare.stack.is_none());
         let text = serde_json::to_string(&bare).unwrap();
         assert!(!text.contains("stack"));
+    }
+
+    #[test]
+    fn an_emulated_service_gets_a_port_and_its_own_url_variable() {
+        let file = crate::project_file::parse(
+            r#"{"version":1,"stack":{"services":[
+              {"name":"web","ports":[{"env":"PORT","url":true}]},
+              {"name":"github","emulate":"github"},
+              {"name":"billing","emulate":"stripe","urlEnv":"STRIPE_URL"}
+            ]}}"#,
+        )
+        .unwrap();
+        let stack = file.stack.unwrap();
+        assert_eq!(emulated(&stack).len(), 2);
+        assert_eq!(base_url_env(&stack.services[1]).unwrap(), "GITHUB_BASE_URL");
+        assert_eq!(base_url_env(&stack.services[2]).unwrap(), "STRIPE_URL");
+        // A service with only an emulated name is valid and counts as a port.
+        crate::stack_decl::validate(&stack).unwrap();
+    }
+
+    #[test]
+    fn an_emulated_service_that_is_not_real_or_asks_for_too_much_is_refused() {
+        let cases = [
+            (
+                r#"{"version":1,"stack":{"services":[{"name":"github","emulate":"gitlab"}]}}"#,
+                "not one of emulate",
+            ),
+            (
+                r#"{"version":1,"stack":{"services":[{"name":"a","emulate":"github"},{"name":"b","emulate":"github"}]}}"#,
+                "named twice",
+            ),
+            (
+                r#"{"version":1,"stack":{"services":[{"name":"github","emulate":"github","urlEnv":"github_url"}]}}"#,
+                "uppercase",
+            ),
+            (
+                r#"{"version":1,"stack":{"services":[{"name":"web","urlEnv":"WEB_URL","ports":[{"env":"PORT"}]}]}}"#,
+                "without an emulated service",
+            ),
+            (
+                r#"{"version":1,"stack":{"services":[
+                  {"name":"web","ports":[{"env":"P0"},{"env":"P1"},{"env":"P2"},{"env":"P3"},{"env":"P4"},{"env":"P5"},{"env":"P6"},{"env":"P7"},{"env":"P8"}]},
+                  {"name":"github","emulate":"github"},{"name":"stripe","emulate":"stripe"}]}}"#,
+                "at most 10",
+            ),
+        ];
+        for (text, needle) in cases {
+            let error = crate::project_file::parse(text).unwrap_err();
+            assert!(error.contains(needle), "{text} -> {error}");
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // Hivra WP-15: the Crew tab. A refresh that fails keeps the last list.
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
@@ -23,9 +23,12 @@ import {
   type CrewWorkerInput,
 } from "../model/rows";
 import { GateCards } from "../../delivery-gate/ui/GateCards";
+import { FreshEyesPanel } from "../../fresh-eyes/ui/FreshEyesPanel";
 import { phaseDocLinks } from "../../phases/model/pr";
 import { taskForCrew, workFor } from "../../phases/model/store";
+import { crewTree } from "../model/crewTree";
 import { CrewTab } from "./CrewTab";
+import { useCrewSessions } from "./useCrewSessions";
 import { TaskPane } from "../../tasks/ui/TaskPane";
 
 // steering.rs `TEXT_MAX`. Counted in Unicode scalar values, the same as `chars().count()`.
@@ -138,6 +141,19 @@ export function CrewPanel({
     };
   }, [load]);
 
+  // WP-119: the tree is built from the crew and the chats already open.
+  const extraIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const worker of workers) {
+      if (typeof worker.ownerSession === "string" && worker.ownerSession.trim()) ids.add(worker.ownerSession.trim());
+      if (typeof worker.childSession === "string" && worker.childSession.trim()) ids.add(worker.childSession.trim());
+    }
+    return [...ids].sort();
+  }, [workers]);
+  const liveSessions = useCrewSessions(project, extraIds);
+  // Built again only when something it draws changes, not on every render of the panel.
+  const tree = useMemo(() => crewTree({ project, workers, sessions: liveSessions, now }), [project, workers, liveSessions, now]);
+
   const rows = crewRows({
     project,
     rows: workers,
@@ -234,6 +250,8 @@ export function CrewPanel({
     <>
       {/* WP-81: the check on the crew's task, and one question when it needs a person. */}
       <GateCards project={project} />
+      {/* WP-144: one line before the crew starts, off until this project turns it on. */}
+      <FreshEyesPanel project={project} />
       <CrewTab
         rows={rows}
         briefTitle={focus.briefId ? "This brief" : null}
@@ -247,6 +265,8 @@ export function CrewPanel({
         onStop={(row) => void onStop(row)}
         onRetry={(row) => void onRetry(row)}
         onDeliver={(row) => void onDeliver(row)}
+        tree={tree}
+        onOpenChat={onOpenSession}
       />
       {/* WP-70: the tasks of this project, under the crew. */}
       <TaskPane project={project} />

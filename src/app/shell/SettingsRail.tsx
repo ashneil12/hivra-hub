@@ -16,7 +16,7 @@ import {
   Chatting,
   Code,
   Lock,
-  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock, Book } from "../../shared/ui/icons";
+  type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock, ChartBreakoutSquare, Book, FileScript } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
   settingsSectionsByGroup,
@@ -42,6 +42,8 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   changes: Undo2,
   decisions: CheckCheck,
   activity: Clock, // WP-78
+  "work-log": FileScript, // WP-157
+  usage: ChartBreakoutSquare, // WP-108
   connected: Globe, // WP-79
   dashboards: DashboardSquare,
   portable: CloudUpload,

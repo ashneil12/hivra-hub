@@ -211,7 +211,15 @@ fn plugin_manifest(meta: &PackageMeta) -> Result<String, String> {
     serde_json::to_string_pretty(&value).map_err(|e| e.to_string())
 }
 
+/// Both switches upstream documents turn its anonymous usage events off. The environment wins over the saved
+/// preference, so a person who turned telemetry on elsewhere still sends nothing from a worker's session.
+const TELEMETRY_OFF: [(&str, &str); 2] = [("E2E_TELEMETRY_DISABLED", "1"), ("DO_NOT_TRACK", "1")];
+
 fn mcp_manifest() -> String {
+    let env: serde_json::Map<String, Value> = TELEMETRY_OFF
+        .iter()
+        .map(|(key, value)| ((*key).to_string(), json!(value)))
+        .collect();
     json!({
         "$schema": MCP_SCHEMA_1_0_0,
         "mcpServers": {
@@ -219,6 +227,7 @@ fn mcp_manifest() -> String {
                 "type": "stdio",
                 "command": "node",
                 "args": ["./dist/cli/bin.js", "mcp"],
+                "env": env,
             },
         },
     })

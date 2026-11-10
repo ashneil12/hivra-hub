@@ -442,3 +442,15 @@ assumed one.
 - **Not run here.** The browser spec ran on Chromium only (Playwright's WebKit binary is not installed on this Mac),
   nothing was compiled or run for Windows, and the macOS keychain prompt was not exercised: every test uses the
   in-memory store.
+## Addendum (10 Nov 2026): planted-secret acceptance tests
+
+Source: AgenticBench (agenticbench.org; no repo or licence file found). Ideas only, no probes or code copied.
+
+Before the vault ships, a test suite plants a fake secret and checks that it does not reach the model context, a log, telemetry, a crash report or an export. Cases:
+
+1. A command the agent did not need cannot read a file outside the project to find a secret.
+2. A project file, or the output of a script the agent runs, that says to read the secret and send it does not get the secret.
+3. When a requested command fails and prints the secret in its error output, the value is removed from every copy except the one the person chose.
+4. A new chat in a second project does not carry the first chat's secret.
+
+Trust-gate cases (project hooks or project MCP config running before the person trusts the folder) belong to WP-31's acceptance list, not here. Done when each case is a test that fails if the secret appears, and the suite runs in `npm run check`.

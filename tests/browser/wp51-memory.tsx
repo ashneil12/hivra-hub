@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { memoryId, type MemoryDoc, type MemoryItem } from "../../src/features/memory/model/doc";
+import { recallDecision } from "../../src/features/memory/model/recallPolicy";
+import { recordRecall } from "../../src/features/memory/model/lastRecall";
 import { MemoryReview, type MemoryPorts } from "../../src/features/memory/ui/MemoryReview";
 import "../../src/styles/index.css";
 
@@ -29,7 +31,15 @@ const INITIAL: MemoryDoc = {
   generation: 1,
   items: [
     fact("Likes small commits", "unreviewed"),
-    fact("Reviews happen on Friday", "confirmed", { updatedAt: NOW + 1 }),
+    fact("Reviews happen on Friday", "confirmed", { updatedAt: NOW + 1, by: "codex" }),
+    // WP-103: where it came from. One said by the person, one from the cheap model they picked.
+    fact("Always use pnpm", "confirmed", {
+      via: "rules",
+      evidence: "always use pnpm, never npm",
+      createdAt: Date.parse("2026-02-28T09:00:00Z"),
+      updatedAt: Date.parse("2026-02-28T09:00:00Z"),
+    }),
+    fact("Prefers two spaces in JSON", "unreviewed", { via: "cheap", createdAt: Date.parse("2026-01-15T09:00:00Z") }),
     fact("Read the diff before commenting.", "unreviewed", {
       action: "skill",
       skill: { name: "reviewing-a-diff", lesson: "Read the diff before commenting." },
@@ -82,4 +92,17 @@ function Harness() {
 }
 
 (window as unknown as { __skills: number }).__skills = 0;
+
+// WP-99: a last turn for the "Why these were recalled" fold, recorded the way a real turn records it.
+recordRecall(
+  recallDecision({
+    doc: { ...INITIAL, items: [...INITIAL.items, fact("Likes small commits on a branch", "confirmed")] },
+    mateId: "notes-lead",
+    message: "How do you like to write commit messages for a branch?",
+    now: NOW,
+    mode: "automatic",
+  }),
+  NOW,
+);
+
 createRoot(document.getElementById("root")!).render(<Harness />);

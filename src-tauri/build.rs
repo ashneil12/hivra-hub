@@ -69,6 +69,9 @@ fn main() {
             "model_key_delete",
             // WP-22: a room's auto responder asks the quick model through this.
             "model_quick_pick",
+            // WP-103: the cheap memory tier, and its "Test this model" check.
+            "memory_cheap_ask",
+            "memory_cheap_test",
         ])
         .default_permission(tauri_build::DefaultPermissionRule::AllowAllCommands);
     tauri_build::try_build(tauri_build::Attributes::new().plugin("hub", hub))

@@ -9,6 +9,26 @@ import { waitsOnAshCall, type MonoSessionCompletionResult } from "./monoSessionC
 export type GateRun = { name: string; ok: boolean; output: string };
 export type GateRunner = (input: { projectId: string; checkout: string; signedOff: boolean }) => Promise<GateRun | null>;
 
+/** WP-91: the word a finished turn's check leaves on its task. `null` means the project has no check configured, so
+ * nothing ran; a check that exists but could not run is `notRun`, never a pass. */
+export type GateWord = "passed" | "failed" | "notRun";
+
+/**
+ * WP-91: WP-40's own word for a task, from the check on its own copy. A runner that throws could not run its check;
+ * that is `notRun` rather than no gate, so the run's verdict names the task instead of reading silence as a pass.
+ */
+export async function workerGateWord(
+  run: GateRunner,
+  input: { projectId: string; checkout: string; signedOff: boolean },
+): Promise<GateWord | null> {
+  try {
+    const answer = await run(input);
+    return answer ? (answer.ok ? "passed" : "failed") : null;
+  } catch {
+    return "notRun";
+  }
+}
+
 /** How many failed runs a worker gets before its Lead hears it failed. */
 export const GATE_TRIES = 2;
 
@@ -112,3 +132,10 @@ export const runWorkerGate: GateRunner = async ({ projectId, checkout, signedOff
     return null;
   }
 };
+
+/**
+ * The same check, for a WP-91 task, where "there is no check" and "the check couldn't run" must not look alike: only
+ * a project with no check returns `null`; a failure to run it is thrown, so the task records `notRun`.
+ */
+export const runTaskGate: GateRunner = async ({ projectId, checkout, signedOff }) =>
+  invoke<GateRun | null>("run_worker_gate", { projectId, checkout, signedOff });

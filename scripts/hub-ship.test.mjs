@@ -17,9 +17,15 @@ import os from "node:os";
 import path from "node:path";
 import { after, afterEach, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
+import { compareVersions, homeFromEnv, homePaths, isIsolatedHome, main, runLimited, runnerDetachOptions, runnerPlist, runnerSubmitArgs, versionProblem } from "./hub-ship.mjs";
 import { appCommand, isInside } from "./ship-platform.mjs";
 import { PREVIOUS_APP, backupMonoHome, clearStartCache, isRunning, renameApp, sameStart, leaveSubmittedJob, monosHome, readJson, releaseLock, restoreData, retainShips, runShip, setStartTimeLog, sha256File, stampOf, tryLock, windowsStart, writeJson } from "./hub-ship-runner.mjs";
+
+// WP-105: git run in a temporary repo must stop at the temp parent and never discover this checkout.
+{
+  const existing = process.env.GIT_CEILING_DIRECTORIES;
+  process.env.GIT_CEILING_DIRECTORIES = existing ? `${os.tmpdir()}${path.delimiter}${existing}` : os.tmpdir();
+}
 
 const SCRIPTS = path.dirname(fileURLToPath(import.meta.url));
 const NODE = process.execPath;
@@ -27,6 +33,19 @@ const HUB = "com.ash.monocode-hub";
 const SHA_A = "a".repeat(40);
 const pids = new Set();
 const roots = [];
+
+/**
+ * How long the real app waits for a held data folder before it refuses with exit 75: `LOCK_WAIT` in
+ * src-tauri/src/instance.rs, read from the source so the fake app below can't drift from it. A rename or a change of
+ * shape fails here, loudly, instead of leaving the fake on an old number.
+ */
+function realLockWaitMs() {
+  const source = fs.readFileSync(path.join(SCRIPTS, "..", "src-tauri", "src", "instance.rs"), "utf8");
+  const found = /^const LOCK_WAIT: Duration = Duration::from_(secs|millis)\((\d+)\);/m.exec(source);
+  if (!found) throw new Error("instance.rs no longer has `const LOCK_WAIT: Duration = Duration::from_secs(N);`: teach realLockWaitMs() its new shape");
+  return Number(found[2]) * (found[1] === "secs" ? 1000 : 1);
+}
+const REAL_LOCK_WAIT_MS = realLockWaitMs();
 
 /**
  * Every live process started from one of this suite's temporary folders (its command line names the folder: the fake
@@ -54,13 +73,11 @@ function strays() {
   return [...found.values()];
 }
 
+const WINDOWS_PROCESS_TIMEOUT_MS = 15_000;
+
 function straysWindows() {
   const bin = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const ps = spawnSync(
-    bin,
-    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
-    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
-  );
+  const ps = queryWindowsProcesses((command, args, options) => spawnSync(command, args, options), bin);
   let parsed = [];
   try {
     const value = JSON.parse(ps.stdout || "[]");
@@ -82,6 +99,19 @@ function straysWindows() {
       }
   }
   return [...found.values()];
+}
+
+/** WMI has no deadline of its own. A hung query is a failure, not a wait. */
+function queryWindowsProcesses(spawnImpl, bin) {
+  const ps = spawnImpl(
+    bin,
+    ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress"],
+    { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: WINDOWS_PROCESS_TIMEOUT_MS },
+  );
+  if (ps.error?.code === "ETIMEDOUT") {
+    throw new Error(`listing Windows processes did not finish within ${WINDOWS_PROCESS_TIMEOUT_MS / 1000}s`);
+  }
+  return ps;
 }
 
 function alive(pid) {
@@ -163,12 +193,23 @@ const read = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8"));
 const data = path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub");
 fs.mkdirSync(data, { recursive: true });
 let lock = null;
-const deadline = Date.now() + 2000;
+// Wait the way the real app does (src-tauri/src/instance.rs): try, and while another copy holds the folder retry every
+// 100 ms until its LOCK_WAIT is over, then refuse with exit 75. Never longer: the runner opens a build with the folder
+// free, so a build that has to wait here would have to wait in the real app too.
+const started = Date.now();
+let tries = 0;
 while (!lock) {
+  tries += 1;
   const db = new DatabaseSync(path.join(data, "instance-owner.sqlite"));
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
-  catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
+  catch {
+    db.close();
+    if (tries === 1) fs.writeFileSync(path.join(process.env.HOME, "lock-waiting.json"), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    if (Date.now() - started >= ${REAL_LOCK_WAIT_MS}) process.exit(75);
+    await sleep(100);
+  }
 }
+fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started, at: Date.now() }) + "\n");
 // Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
 globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
@@ -188,7 +229,9 @@ const first = ship();
 const onTrial = first?.state?.phase === "trial" && first.state.to.sha === fake.sha;
 if (onTrial) fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
 if (onTrial && fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
+let quitting = false;
 setInterval(() => {
+  if (quitting) return;
   const now = ship();
   if (!now?.state) return;
   const { dir, state } = now;
@@ -198,7 +241,14 @@ setInterval(() => {
     fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
   else if (staged && fake.behavior !== "refuse") {
     fs.writeFileSync(path.join(dir, "accepted.json"), JSON.stringify({ pid: process.pid, bridge: "down" }));
-    process.exit(0);
+    if (!fake.quitDelayMs) process.exit(0);
+    // A real app takes a moment to quit and keeps the data folder until it is gone: this one for as long as the test says.
+    quitting = true;
+    const quitStartedAt = Date.now();
+    setTimeout(() => {
+      fs.appendFileSync(path.join(process.env.HOME, "lock-releases.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, quitStartedAt, releasedAt: Date.now() }) + "\n");
+      process.exit(0);
+    }, fake.quitDelayMs);
   }
   if (["commit", "old"].includes(fake.behavior) && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
     fs.writeFileSync(path.join(dir, "committed.json"), JSON.stringify({ sha: fake.sha, pid: process.pid }));
@@ -258,7 +308,7 @@ esac
 exit 0
 `;
 
-function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version }) {
+function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version, quitDelayMs = 0 }) {
   fs.mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   fs.mkdirSync(path.join(app, "Contents/Resources"), { recursive: true });
   fs.writeFileSync(
@@ -315,12 +365,12 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
       }),
     );
   }
-  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
+  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch, quitDelayMs }));
   return app;
 }
 
 /** A temporary HOME with an installed old app and its data, a clean checkout, and a new bundle built from its HEAD. */
-function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
+function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0, newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
@@ -344,7 +394,7 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
   fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
   const paths = homePaths(home);
-  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root, quitDelayMs: oldQuitDelayMs });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
@@ -383,8 +433,75 @@ function rollbackCli(w, id, args = [], env = {}) {
   );
 }
 
+const SHIP_CLI_TIMEOUT_MS = 60_000;
+
+function runBounded(command, args, { timeoutMs = SHIP_CLI_TIMEOUT_MS, label, env } = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", timeout: timeoutMs, env });
+  if (result.error?.code === "ETIMEDOUT") {
+    throw new Error(`${label} did not finish within ${Math.round(timeoutMs / 1000)}s`);
+  }
+  return result;
+}
+
+test("a command that does not answer is stopped, and a rejected one is not rewritten", () => {
+  const started = Date.now();
+  assert.throws(
+    () =>
+      runLimited(execFileSync, process.execPath, ["-e", "setTimeout(() => {}, 1e8)"], {
+        timeout: 1000,
+        label: "git status",
+      }),
+    /git status did not answer within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+  assert.throws(
+    () =>
+      runLimited(
+        () => {
+          const error = new Error("not a git repository");
+          error.status = 128;
+          throw error;
+        },
+        "git",
+        ["status"],
+        { timeout: 15_000, label: "git status" },
+      ),
+    (error) => error.message === "not a git repository",
+  );
+});
+
+test("a child that does not exit is stopped within the bound", () => {
+  const started = Date.now();
+  assert.throws(
+    () => runBounded(NODE, ["-e", "setTimeout(() => {}, 1e8)"], { timeoutMs: 1000, label: "hub-ship" }),
+    /hub-ship did not finish within 1s/,
+  );
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `took ${elapsed}ms`);
+});
+
+test("a Windows process list that does not answer fails instead of hanging", () => {
+  let seen = 0;
+  assert.throws(
+    () =>
+      queryWindowsProcesses(() => {
+        const error = new Error("timed out");
+        error.code = "ETIMEDOUT";
+        return { error, stdout: "" };
+      }, "powershell.exe"),
+    /listing Windows processes did not finish within 15s/,
+  );
+  const ps = queryWindowsProcesses((_command, _args, options) => {
+    seen = options.timeout;
+    return { stdout: "[]" };
+  }, "powershell.exe");
+  assert.equal(seen, WINDOWS_PROCESS_TIMEOUT_MS);
+  assert.equal(ps.stdout, "[]");
+});
+
 function ship(w, args = [], env = {}) {
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
     [
       "--disable-warning=ExperimentalWarning",
@@ -395,10 +512,12 @@ function ship(w, args = [], env = {}) {
       "--launcher",
       "spawn",
       "--timeouts",
-      "3000,6000,30000",
+      // The build's start (it appears in running.json) waits on a condition with a deadline far past what a loaded
+      // machine needs. The 6 s commit window stays: the no-commit test reads that number.
+      "30000,6000,30000",
       ...args,
     ],
-    { env: { ...w.env, ...env }, encoding: "utf8" },
+    { env: { ...w.env, ...env }, label: "hub-ship" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   return { code: result.status, answer };
@@ -590,10 +709,112 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   assert.equal(receipt.outcome, "committed");
   assert.equal(receipt.running.sha, w.sha);
   assert.equal(receipt.from.sha, SHA_A);
+  // Who holds the folder while the runner opens a build? Nobody: the old app has quit, the runner held the folder for
+  // the swap and let go just before opening the new build, so the build takes it on its first try. The real app only
+  // waits LOCK_WAIT (the fake app waits the same), so a runner that opened a build while still holding it would fail here.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[SHA_A, 1], [w.sha, 1]],
+    "the trial build found the data folder free",
+  );
   assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha);
   assert.equal(readJson(path.join(w.data, "ship/current.json")).id, answer.id);
   assert.equal(state.launch.mode, "direct", "under a temporary HOME the app is opened directly");
   assert.equal(state.launch.env.CFFIXED_USER_HOME, w.home);
+});
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Each fake app that took the data folder, in order: which build, and how many tries it needed. */
+function lockWaits(w) {
+  try {
+    return fs
+      .readFileSync(path.join(w.home, "lock-waits.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+/** The fake app, started like `startApp`, with a promise for how it ended. */
+function startAppWatched(w) {
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
+  pids.add(child.pid);
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now() })));
+  child.unref();
+  return { pid: child.pid, exited };
+}
+
+// The fake app takes the data folder's lock the way the real one does (src-tauri/src/instance.rs): retry every 100 ms
+// for the real wait, then refuse with exit 75. It used to wait 60 s, so every ship test would have passed a build that
+// the real app, giving up after 2 s, turns into a rolled-back ship. Nothing here lets it wait longer than the app.
+test("a copy that finds the data folder held takes it once the holder lets go inside the app's wait", async () => {
+  const w = world();
+  let holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    await pause(REAL_LOCK_WAIT_MS / 4);
+    assert.equal(alive(app.pid), true, "the app is still inside its wait, not gone");
+    releaseLock(holder);
+    holder = null;
+    const running = await until("the app to take the folder", () => readJson(path.join(w.data, "running.json")), REAL_LOCK_WAIT_MS + 30_000);
+    assert.equal(running.pid, app.pid);
+    assert.ok(lockWaits(w)[0].tries > 1, "it had to retry for the folder");
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+test("a copy still finding the data folder held when the app's wait is over refuses with exit 75, as the real app does", async () => {
+  const w = world();
+  const holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    const waiting = await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    let ended = null;
+    app.exited.then((how) => (ended = how));
+    await until("the app to give up", () => ended, REAL_LOCK_WAIT_MS + 10_000);
+    assert.equal(ended.code, 75, `it refused: ${JSON.stringify(ended)}`);
+    assert.ok(ended.at - waiting.at >= REAL_LOCK_WAIT_MS - 500, `it waited the real ${REAL_LOCK_WAIT_MS} ms before refusing, not less`);
+    assert.equal(readJson(path.join(w.data, "running.json")), null, "it never took the folder");
+    assert.deepEqual(lockWaits(w), []);
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+// An old app can be slow to quit and keep the data folder past the new build's whole wait. The runner is who waits for
+// that, not the new build: it opens the build only once it holds the folder itself, so the build finds it free. A runner
+// that opened the build while the old app still held the folder would get exit 75 from the build, as the real app would.
+test("an old app that keeps the data folder past the app's wait is waited out by the runner, not by the new build", async () => {
+  const quitDelayMs = REAL_LOCK_WAIT_MS + 2_000;
+  const w = world({ oldQuitDelayMs: quitDelayMs });
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const { code, answer } = ship(w);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  const state = await until("the commit", settled(dir, "committed"), 90_000);
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  const [released] = fs
+    .readFileSync(path.join(w.home, "lock-releases.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.equal(released.sha, SHA_A);
+  assert.ok(released.releasedAt - released.quitStartedAt > REAL_LOCK_WAIT_MS, "the old app kept the folder longer than the app's wait");
+  const [, fresh] = lockWaits(w);
+  assert.equal(fresh.sha, w.sha);
+  assert.ok(fresh.at >= released.releasedAt, "the new build took the folder only after the old app let go");
+  assert.equal(fresh.tries, 1, "and found it free on its first try");
+  assert.equal(state.launch.mode, "direct");
 });
 
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
@@ -617,6 +838,13 @@ test("no commit rolls back: the old app returns and the database matches its cop
   const receipt = readJson(path.join(dir, "receipt.json"));
   assert.equal(receipt.outcome, "rolled-back");
   assert.equal(receipt.running.sha, SHA_A);
+  // The rollback hands the folder over the same way: the stopped trial build is gone, the runner held the folder to
+  // put the old build back, and the reopened old build takes it on its first try.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[w.sha, 1], [SHA_A, 1]],
+    "the trial build and the reopened old build each found the data folder free",
+  );
 });
 
 test("a build that exits during its trial is rolled back at once", async () => {
@@ -669,10 +897,10 @@ test("a rollback drill goes all the way to a commit, then puts the old build bac
 
 test("hub:ship -- --drill-rollback under a temporary HOME detaches and does not register a service", async () => {
   const w = world();
-  const result = spawnSync(
+  const result = runBounded(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
-    { env: w.env, encoding: "utf8" },
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--drill-rollback", "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
+    { env: w.env, label: "hub-ship" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   assert.equal(result.status, 0, JSON.stringify(answer));
@@ -1163,7 +1391,7 @@ test("r50: the runner is submitted to launchd with no plist, so macOS sees no ne
   const launchctl = fakeLaunchctl(w.root);
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "30000,6000,30000"],
     { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1230,7 +1458,7 @@ test("r53 drill: the default ship starts a detached runner, asks launchd for not
   const started = Date.now();
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--timeouts", "30000,6000,30000"],
     { env: { ...w.env, MONOCODE_SHIP_LAUNCHCTL: launchctl.bin }, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1266,7 +1494,7 @@ test("r50 drill: a submitted runner carries a ship across the app's restart and 
   await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
   const result = spawnSync(
     NODE,
-    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "3000,6000,30000"],
+    ["--disable-warning=ExperimentalWarning", path.join(SCRIPTS, "hub-ship.mjs"), "--json", "--repo", w.repo, "--launcher", "launchd", "--timeouts", "30000,6000,30000"],
     { env: w.env, encoding: "utf8" },
   );
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
@@ -1395,4 +1623,42 @@ test("on Windows a briefly locked app folder is renamed again, for up to ten sec
   calls = 0;
   assert.throws(() => renameApp("a", "b", () => {}, { platform: "win32", rename: () => { calls += 1; throw busy("ENOENT"); }, now: () => 0, wait: () => {} }), /ENOENT/);
   assert.equal(calls, 1, "only a locked folder is retried");
+});
+
+// Two writers, or a virus checker holding the old file, can make the rename fail on Windows with EPERM or EBUSY.
+// That is a moment, not a failure: the state file is written by trying again briefly, and never on another error.
+test("a state file whose rename is locked for a moment is written by trying again", () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const file = path.join(root, "state.json");
+  const busy = (code) => Object.assign(new Error(`${code}: the file is locked`), { code });
+  let calls = 0;
+  let clock = 0;
+  writeJson(file, { phase: "waiting" }, {
+    now: () => clock,
+    wait: (ms) => (clock += ms),
+    rename: (from, to) => {
+      calls += 1;
+      if (calls < 3) throw busy(calls === 1 ? "EPERM" : "EBUSY");
+      fs.renameSync(from, to);
+    },
+  });
+  assert.equal(calls, 3, "a locked rename is tried again");
+  assert.equal(readJson(file).phase, "waiting");
+  assert.ok(clock > 0 && clock < 2_000, "the retries stay inside a short budget");
+
+  calls = 0;
+  clock = 0;
+  assert.throws(
+    () => writeJson(file, { phase: "waiting" }, { now: () => clock, wait: (ms) => (clock += ms), rename: () => { calls += 1; throw busy("EBUSY"); } }),
+    /EBUSY/,
+  );
+  assert.ok(clock >= 2_000, "a lock that never clears is given up on");
+
+  calls = 0;
+  assert.throws(
+    () => writeJson(file, {}, { now: () => 0, wait: () => {}, rename: () => { calls += 1; throw busy("ENOENT"); } }),
+    /ENOENT/,
+  );
+  assert.equal(calls, 1, "only a locked rename is retried");
 });

@@ -65,3 +65,6 @@ Desktop.ini
 
 # hub:verify-live evidence folders (scripts/hub-verify-live.mjs)
 /evidence/
+
+# Local-only research and planning notes (never pushed): put them in docs/local/
+/docs/local/

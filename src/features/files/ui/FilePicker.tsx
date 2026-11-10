@@ -1,4 +1,4 @@
-import { RefreshCw, Search } from "../../../shared/ui/icons";
+import { Search } from "../../../shared/ui/icons";
 import {
   useEffect,
   useMemo,
@@ -17,7 +17,6 @@ import {
   type RankedFile,
 } from "../model/fileIndex";
 import { LAYER } from "../../../shared/lib/layers";
-import { fuzzyMatch, type FuzzyHit } from "../../../shared/lib/fuzzy";
 import {
   looksLikeProject,
 } from "../../projects/model/recents";
@@ -33,20 +32,42 @@ import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { FileTypeIcon } from "./FileTypeIcon";
 import { MatchText } from "../../../shared/ui/MatchText";
 import { MOD, SHIFT } from "../../../platform/tauri/platform";
-type Action = {
-  id: string;
-  label: string;
-  hint?: string;
-};
+// WP-93: the command palette is every command the app has, not one "reload".
+import {
+  resolvePaletteRows,
+  type PaletteContext,
+  type PaletteRow,
+} from "../../search/model/commandRegistry";
+import {
+  commandItems,
+  loadPaletteState,
+  paletteList,
+  recordPalettePick,
+  recordPaletteUse,
+  savePaletteState,
+  stepRunnable,
+  type PaletteItem,
+} from "../../search/model/paletteRanking";
 
-type RankedAction = Action & FuzzyHit;
 export function reloadActionHint(mod = MOD, shift = SHIFT) {
   return `${mod}${shift}R`;
 }
 
-const ACTIONS: Action[] = [
-  { id: "reload", label: "Reload MonoCode", hint: reloadActionHint() },
-];
+/** The palette with nothing open: every command, and what could run alone. */
+const NOTHING_OPEN: PaletteContext = {
+  project: null,
+  terminal: false,
+  chat: false,
+  busy: false,
+  terminalFocus: false,
+  pickerFocus: false,
+  editor: false,
+};
+
+/** A keybinding label with the one dash the shortcut table uses for a range. */
+function readableShortcut(keys: string): string {
+  return keys.includes("…") ? keys.replace("…", " to ") : keys;
+}
 
 type FinderPalette = {
   hits: readonly FinderHit[];
@@ -62,10 +83,15 @@ type Props = {
   openPaths?: string[];
   initialQuery?: string;
   onOpenFile: OpenFileFn;
-  onRunAction: (id: string) => void;
+  /** The older command hook, by id; the palette prefers onRunCommand. */
+  onRunAction?: (id: string) => void;
   onClose: () => void;
   /** WP-74: set when this palette is the finder. Off for go to file. */
   finder?: FinderPalette;
+  /** WP-93: what the app can do right now, so a command that cannot run says why. */
+  paletteContext?: PaletteContext;
+  /** WP-93: runs a command through the handler its shortcut already uses. */
+  onRunCommand?: (command: PaletteRow) => void;
 };
 
 export function FilePicker({
@@ -77,6 +103,8 @@ export function FilePicker({
   onRunAction,
   onClose,
   finder,
+  paletteContext,
+  onRunCommand,
 }: Props) {
   const peekFiles = () => peekProjectFiles(cwd);
   const search = useRef<HTMLInputElement>(null);
@@ -111,23 +139,40 @@ export function FilePicker({
     () => (paletteMode ? [] : rankProjectFiles(files, query, recents)),
     [files, paletteMode, query, recents],
   );
-  const actionResults = useMemo((): RankedAction[] => {
-    if (!paletteMode) return [];
-    if (!actionQuery) {
-      return ACTIONS.map((action) => ({
-        ...action,
-        score: 0,
-        positions: [],
-      }));
-    }
-    return ACTIONS.flatMap((action) => {
-      const hit = fuzzyMatch(actionQuery, action.label);
-      return hit ? [{ ...action, ...hit }] : [];
-    }).sort((a, b) => b.score - a.score);
-  }, [actionQuery, paletteMode]);
+  // WP-93: the palette reads the app once, when it opens, so the chords and
+  // what can run are what was true as the person reached for it.
+  const paletteContextRef = useRef(paletteContext);
+  paletteContextRef.current = paletteContext;
+  const rows = useMemo(
+    () =>
+      paletteMode
+        ? resolvePaletteRows(paletteContextRef.current ?? NOTHING_OPEN)
+        : [],
+    [paletteMode],
+  );
+  const rowsById = useMemo(() => new Map(rows.map((row) => [row.id, row])), [rows]);
+  const [paletteState, setPaletteState] = useState(loadPaletteState);
+  const paletteItems = useMemo(
+    () =>
+      paletteMode
+        ? paletteList(
+            rows.map((row) => ({
+              id: row.id,
+              label: row.label,
+              group: row.group,
+              blockedReason: row.blockedReason,
+            })),
+            actionQuery,
+            paletteState,
+            Date.now(),
+          )
+        : [],
+    [paletteMode, rows, actionQuery, paletteState],
+  );
+  const paletteCommands = useMemo(() => commandItems(paletteItems), [paletteItems]);
   const showingFinder = finder != null && !paletteMode;
   const optionCount = paletteMode
-    ? actionResults.length
+    ? paletteCommands.length
     : showingFinder
       ? finder.hits.length
       : results.length;
@@ -205,9 +250,29 @@ export function FilePicker({
     onOpenFile(file.path, undefined, { exact: true });
     onClose();
   };
-  const runAction = (action: RankedAction) => {
-    onRunAction(action.id);
+  // WP-93: a command runs through the handler its shortcut already uses, and
+  // the query remembers the pick so it comes first next time.
+  const runCommand = (item: Extract<PaletteItem, { kind: "command" }>) => {
+    if (item.blockedReason) return;
+    const row = rowsById.get(item.command.id);
+    // Another window shares this history, so read it as it is now and add to
+    // that, instead of writing back what this palette saw when it opened.
+    const at = Date.now();
+    const next = recordPalettePick(
+      recordPaletteUse(loadPaletteState(), item.command.id, at),
+      actionQuery,
+      item.command.id,
+      at,
+    );
+    setPaletteState(next);
+    savePaletteState(next);
     onClose();
+    // Run it once the palette has unmounted and focus has left its input, as
+    // the shortcut would: Switch model refuses while focus is in a picker.
+    window.setTimeout(() => {
+      if (onRunCommand && row) onRunCommand(row);
+      else if (onRunAction && row?.binding === "View: Reload") onRunAction("reload");
+    }, 0);
   };
 
   const onSearchKey = (e: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -243,20 +308,28 @@ export function FilePicker({
     if (e.key === "ArrowDown") {
       e.preventDefault();
       if (optionCount === 0) return;
-      setActive((index) => (index + 1) % optionCount);
+      setActive((index) =>
+        paletteMode
+          ? Math.max(0, stepRunnable(paletteCommands.map((item) => ({ blockedReason: item.blockedReason })), index, 1))
+          : (index + 1) % optionCount,
+      );
       return;
     }
     if (e.key === "ArrowUp") {
       e.preventDefault();
       if (optionCount === 0) return;
-      setActive((index) => (index - 1 + optionCount) % optionCount);
+      setActive((index) =>
+        paletteMode
+          ? Math.max(0, stepRunnable(paletteCommands.map((item) => ({ blockedReason: item.blockedReason })), index, -1))
+          : (index - 1 + optionCount) % optionCount,
+      );
       return;
     }
     if (e.key === "Enter") {
       e.preventDefault();
       if (paletteMode) {
-        const action = actionResults[active];
-        if (action) runAction(action);
+        const item = paletteCommands[active];
+        if (item) runCommand(item);
       } else {
         const file = results[active];
         if (file) pick(file);
@@ -276,7 +349,7 @@ export function FilePicker({
     fileCount: files.length,
     matchCount: results.length,
     paletteMode,
-    actionCount: actionResults.length,
+    actionCount: paletteCommands.length,
   });
   const finderLabel = showingFinder ? "Finder" : paletteMode ? "Command Palette" : "Go to File";
 
@@ -324,11 +397,12 @@ export function FilePicker({
           <p className="px-3 pb-3 pt-1 text-[12px] text-content/50">{empty}</p>
         ) : paletteMode ? (
           <ActionList
-            actions={actionResults}
+            items={paletteItems}
             active={active}
             query={actionQuery}
+            hints={rowsById}
             onActive={setActive}
-            onRun={runAction}
+            onRun={runCommand}
           />
         ) : showingFinder && finder ? (
           <FinderList
@@ -392,20 +466,23 @@ function emptyLabel({
 }
 
 function ActionList({
-  actions,
+  items,
   active,
   query,
+  hints,
   onActive,
   onRun,
 }: {
-  actions: RankedAction[];
+  items: PaletteItem[];
   active: number;
   query: string;
+  hints: Map<string, PaletteRow>;
   onActive: (index: number) => void;
-  onRun: (action: RankedAction) => void;
+  onRun: (item: Extract<PaletteItem, { kind: "command" }>) => void;
 }) {
   const lockOverscroll = useLockOverscroll<HTMLDivElement>();
   const activeRef = useRef<HTMLButtonElement>(null);
+  let commandIndex = -1;
 
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest" });
@@ -418,36 +495,60 @@ function ActionList({
       aria-label="Commands"
       className="max-h-[min(380px,50vh)] overflow-y-auto overscroll-none px-1.5 pb-1.5"
     >
-      {actions.map((action, index) => {
+      {items.map((item) => {
+        if (item.kind === "heading") {
+          return (
+            <p
+              key={`heading:${item.label}`}
+              data-command-group
+              className="px-2 pb-0.5 pt-2 text-[10px] font-medium uppercase tracking-wide text-content/40"
+            >
+              {item.label}
+            </p>
+          );
+        }
+        commandIndex += 1;
+        const index = commandIndex;
         const highlighted = index === active;
+        const row = hints.get(item.command.id);
+        const hint = row ? readableShortcut(row.hint ?? "") : "";
+        const blocked = item.blockedReason !== null;
         return (
           <button
-            key={action.id}
+            key={item.command.id}
             ref={highlighted ? activeRef : undefined}
             type="button"
             role="option"
             aria-selected={highlighted}
+            aria-disabled={blocked ? "true" : undefined}
+            data-command-label={item.command.label}
             onMouseDown={(e) => e.preventDefault()}
             onMouseEnter={() => onActive(index)}
-            onClick={() => onRun(action)}
-            className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm leading-none ${
+            onClick={() => onRun(item)}
+            className={`flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-sm leading-5 ${
               highlighted ? "bg-selection text-content" : "text-content"
-            }`}
+            } ${blocked ? "opacity-45" : ""}`}
           >
-            <RefreshCw
-              className="size-4 shrink-0 text-content/50"
-              strokeWidth={1.75}
-            />
             <span className="min-w-0 flex-1 truncate">
               <MatchText
-                text={action.label}
-                positions={action.positions}
+                text={item.command.label}
+                positions={item.positions}
                 active={Boolean(query)}
               />
+              {blocked ? (
+                <span className="block text-[11px] leading-4 text-content/70">
+                  {item.blockedReason}
+                </span>
+              ) : null}
             </span>
-            {action.hint ? (
+            {item.command.group && item.command.group !== "App" ? (
+              <span className="shrink-0 text-[11px] text-content/35">
+                {item.command.group}
+              </span>
+            ) : null}
+            {hint ? (
               <kbd className="ml-auto shrink-0 rounded border border-content/10 bg-content/5 px-1.5 py-0.5 font-mono text-[10px] text-content/50">
-                {action.hint}
+                {hint}
               </kbd>
             ) : null}
           </button>

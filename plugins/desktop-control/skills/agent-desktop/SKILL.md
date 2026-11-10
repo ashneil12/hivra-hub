@@ -4,7 +4,7 @@ description: Use Hivra's desktop gate to see and operate desktop apps through th
 ---
 
 <!--
-Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.1.0.
+Vendored from skills/agent-desktop/SKILL.md at agent-desktop 1.2.0.
 License: Apache-2.0
 The upstream files do not carry a separate copyright line (Apache-2.0).
 Changed by adding Hivra's gate, consent and visible-control rules. The observe, act and verify loop is kept.
@@ -12,7 +12,7 @@ Changed by adding Hivra's gate, consent and visible-control rules. The observe, 
 
 # agent-desktop
 
-The app starts the desktop server. Use that server's desktop tool. Do not start a program yourself, and do not pass a path, a pin, or a registry. The desktop program is the pinned agent-desktop 1.1.0.
+The app starts the desktop server. Use that server's desktop tool. Do not start a program yourself, and do not pass a path, a pin, or a registry. The desktop program is the pinned agent-desktop 1.2.0.
 
 ## How to call it
 
@@ -35,7 +35,7 @@ The gate prints one JSON envelope. Branch on `error.code` and `error.disposition
 - `CONSENT_REQUIRED`: this app has not been allowed in this project. Ask the person. Don't try another app or another path.
 - `REFUSED_APP`: the person said no. Don't ask again and don't try another way.
 - `VISIBLE_NOT_ALLOWED`: drop the idea of `--headed`. Stay headless.
-- `retry: safe` (`CONSENT_BUSY`, `CONSENT_UNREADABLE`, `BINARY_MISSING`, `PROJECT_NOT_READY`) means nothing was done. Try the same call again once the file, folder or program is there. A missing binary is the pinned agent-desktop 1.1.0, not a consent question. `BINARY_UNTRUSTED` means the program did not match the pin. That is final. Do not point the gate at another file.
+- `retry: safe` (`CONSENT_BUSY`, `CONSENT_UNREADABLE`, `BINARY_MISSING`, `PROJECT_NOT_READY`) means nothing was done. Try the same call again once the file, folder or program is there. A missing binary is the pinned agent-desktop 1.2.0, not a consent question. `BINARY_UNTRUSTED` means the program did not match the pin. That is final. Do not point the gate at another file.
 
 ## The loop
 

@@ -1,4 +1,4 @@
-//! PR and CI watch that wakes the owning Lead (docs/HUB-PLAN.md phase 4; docs/T3-HARVEST.md).
+//! PR and CI watch that wakes the owning Lead (docs/HUB-PLAN.md phase 4; the PR watch design notes).
 //!
 //! A Mono registers a pull request it opened (`prs.watch`, the `pr_watch` tool of `monocode mcp`) and ends its turn.
 //! The app reads the pull request from GitHub through the user's own `gh` and wakes the owner's chat only when:

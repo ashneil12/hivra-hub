@@ -190,17 +190,18 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
 }
 
 /**
- * For a Mono that is already seated here: adds the file's projects it lacks, its engine when it has none, and the
- * file's soul files that are missing (all of them with `replace`). Nothing of its own is overwritten otherwise.
+ * For a Mono that is already seated here: its engine when it has none, and the file's soul files that are missing (all
+ * of them with `replace`), and with `projects` the file's projects it lacks. Nothing of its own is overwritten otherwise.
  */
 export async function mergeIntoSeated(
   soul: SetupSoul,
   {
     replace = false,
+    projects = false,
     write,
     read,
     stale,
-  }: { replace?: boolean; write?: Writer; read?: Read; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
+  }: { replace?: boolean; /** Also add the file's projects it lacks. Off unless asked: a folder on a Mono is where it may start sessions and actions. */ projects?: boolean; write?: Writer; read?: Read; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
 ): Promise<SoulFilesResult> {
   const mono = findMono(soul.monoId);
   if (!mono) return { written: [], kept: [], problems: [] };
@@ -208,7 +209,7 @@ export async function mergeIntoSeated(
   const workerDefault = cleanStoredDefault(soul.workerDefault);
   updateMono(mono.id, (m) => ({
     ...m,
-    projects: [...m.projects, ...(soul.projects ?? [])],
+    ...(projects ? { projects: [...m.projects, ...(soul.projects ?? [])] } : {}),
     ...(engine.engine && (!m.engine || replace) ? engine : {}),
     ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
     ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),

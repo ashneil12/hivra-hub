@@ -20,7 +20,7 @@
 # It also lists each data folder and the copy that last owned it (running.json).
 #
 # Run it from the repo root:   bash scripts/identity-guard.sh
-# Wired into: `npm run hub:check` (before a Hub build) and the repo's CLAUDE.md checklist.
+# Wired into: `npm run hub:check` (before a Hub build) and the repo's AGENTS.md checklist.
 # Tests (scripts/identity-guard.test.cjs) run it with HOME and HUB_GUARD_BASELINE pointing at fixtures.
 
 set -uo pipefail

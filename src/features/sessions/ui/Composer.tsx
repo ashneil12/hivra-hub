@@ -90,6 +90,12 @@ import {
   dropPastedText,
   insertRestoredText,
 } from "../../../shared/lib/draftRestore";
+import { stripHiddenCharacters, stripHiddenText } from "../model/hiddenText";
+import {
+  isLargePaste,
+  isPasteKey,
+  largePasteContents,
+} from "../model/largePaste";
 import {
   createBlankSkill,
   rankSkills,
@@ -105,6 +111,7 @@ import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { contextCeilingFor } from "../model/contextCeiling";
+import { catalogueVersion, subscribeCatalogue } from "../model/modelCatalogue";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
@@ -121,9 +128,13 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { FanOutPicker } from "./FanOutPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
+import { appNoteText } from "../model/appNote";
+import { redirectNotePlace } from "../model/cantDo";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
@@ -175,6 +186,8 @@ import {
   BTW_COMMAND,
   consumeBtwCommand,
   consumeBtwPrefix,
+  SIDE_COMMAND,
+  SIDE_QUESTION_UNAVAILABLE,
   supportsBtwHarness,
 } from "../model/btw";
 import { COMPACT_COMMAND, isCompactCommand } from "../model/compact";
@@ -248,6 +261,8 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-121: the continue or recap line, until the next send. */
+  midThreadLine?: string;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -289,6 +304,11 @@ type Props = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: send this prompt to several models. Absent on surfaces that cannot start those chats. */
+  onCompareModels?: (
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
   /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
   onBtwCommand?: (
     text: string,
@@ -303,6 +323,10 @@ type Props = {
   onEditQueuedMessage?: (messageId: string, text: string) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
+  /** Shown once when this agent cannot redirect a running turn. */
+  steerNote?: string;
+  /** Show the note beside the box even when nothing is queued (the app is compacting this chat). */
+  steerNoteBesideBox?: boolean;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
@@ -381,6 +405,7 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  midThreadLine,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -414,6 +439,7 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  onCompareModels,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
@@ -423,6 +449,8 @@ export function Composer({
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
   onSteerQueuedMessage,
+  steerNote,
+  steerNoteBesideBox = false,
   onResumeQueue,
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
@@ -445,6 +473,8 @@ export function Composer({
   const consumedQuoteId = useRef<number | null>(null);
   const draftRevisionRef = useRef(0);
   const draftResetTokenRef = useRef(draftResetToken);
+  /** The paste shortcut was held at the last keydown; null before any key is seen. */
+  const inlinePasteRef = useRef<boolean | null>(null);
   /** Bumped when the draft is cleared, so a late file read cannot land on the next one. */
   const pasteGenerationRef = useRef(0);
   /** Pasted and dropped files still reading when Send is pressed. */
@@ -492,6 +522,9 @@ export function Composer({
   );
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [pasteError, setPasteError] = useState<string | null>(null);
+  /** A paste or send where hidden characters were removed: news, not a failure. */
+  const [pasteNotice, setPasteNotice] = useState<string | null>(null);
+  const [sideNotice, setSideNotice] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
@@ -538,6 +571,8 @@ export function Composer({
     loadModelControls,
     () => "menu" as const,
   );
+  // WP-104: a custom route's window loads on first use; draw the context ceiling again when it arrives.
+  useSyncExternalStore(subscribeCatalogue, catalogueVersion, catalogueVersion);
   const controlsBeside = modelControls === "beside";
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);
@@ -586,7 +621,7 @@ export function Composer({
             COUNCIL_COMMAND,
             ...(canSaveDraft && onSaveDraft ? [DRAFT_COMMAND] : []),
             COMPACT_COMMAND,
-            ...(supportsBtwHarness(harness) ? [BTW_COMMAND] : []),
+            ...(supportsBtwHarness(harness) ? [BTW_COMMAND, SIDE_COMMAND] : []),
             ...skills.filter(
               (skill) =>
                 ![OPERATOR_COMMAND.name, "mono", "monocode"].includes(
@@ -1037,16 +1072,20 @@ export function Composer({
     onQuoteRequestConsumed?.(quoteRequest.id);
   }, [onQuoteRequestConsumed, quoteRequest, syncHasValue]);
 
-  // `/btw ` opens the side conversation as soon as it is typed, carrying any
-  // text after it over as the unsent side question.
+  // `/btw ` or `/side ` opens the side conversation as soon as it is typed,
+  // carrying any text after it over as the unsent side question.
   const enterBtwFromPrefix = useCallback(
     (el: HTMLTextAreaElement) => {
-      if (!onBtwCommand || inboxCard || noteCard || handoffCard) return false;
-      if (attachmentsRef.current.length > 0) return false;
       const rest = consumeBtwPrefix(el.value);
-      if (rest == null || onBtwCommand(rest, { draft: true }) === false) {
+      if (rest == null) return false;
+      if (!supportsBtwHarness(harness)) {
+        setSideNotice(SIDE_QUESTION_UNAVAILABLE);
         return false;
       }
+      if (!onBtwCommand || inboxCard || noteCard || handoffCard) return false;
+      if (attachmentsRef.current.length > 0) return false;
+      if (onBtwCommand(rest, { draft: true }) === false) return false;
+      setSideNotice(null);
       el.value = "";
       resizeComposer(el);
       draftRevisionRef.current += 1;
@@ -1059,6 +1098,7 @@ export function Composer({
     },
     [
       handoffCard,
+      harness,
       inboxCard,
       noteCard,
       onBtwCommand,
@@ -1338,7 +1378,30 @@ export function Composer({
       if (pasteGenerationRef.current !== generation) return;
       pending = pasteFlightRef.current;
     }
-    const value = ref.current?.value ?? submittedValue;
+    // WP-94: hidden characters would reach the agent unseen by the person sending them (hiddenText.ts).
+    const hidden = stripHiddenText(ref.current?.value ?? submittedValue);
+    let value = hidden.text;
+    if (hidden.removed > 0) {
+      if (!value && attachmentsRef.current.length === 0) {
+        setPasteNotice(null);
+        setPasteError(
+          "That message had only hidden characters, so it was not sent.",
+        );
+        return;
+      }
+      // The draft loses them too, so what is on screen is what was sent.
+      if (ref.current) {
+        ref.current.value = hidden.text;
+        draftRevisionRef.current += 1;
+        setDraft(hidden.text);
+        onDraftChange?.(hidden.text);
+      }
+      setPasteNotice(
+        `Removed ${hidden.removed} hidden ${hidden.removed === 1 ? "character" : "characters"} from your message.`,
+      );
+    } else {
+      setPasteNotice(null);
+    }
     if (disabled || worktreeRemoved) return;
     if (isMcpCommand(value)) {
       mcpInsertAt.current = 0;
@@ -1385,6 +1448,17 @@ export function Composer({
     const btwCommand = consumeBtwCommand(value);
     if (
       btwCommand.matched &&
+      !supportsBtwHarness(harness) &&
+      attachmentsRef.current.length === 0 &&
+      !inboxCard &&
+      !noteCard &&
+      !handoffCard
+    ) {
+      setSideNotice(SIDE_QUESTION_UNAVAILABLE);
+      return;
+    }
+    if (
+      btwCommand.matched &&
       onBtwCommand &&
       attachmentsRef.current.length === 0 &&
       !inboxCard &&
@@ -1393,6 +1467,7 @@ export function Composer({
     ) {
       const accepted = onBtwCommand(btwCommand.text);
       if (accepted === false) return;
+      setSideNotice(null);
       pasteGenerationRef.current += 1;
       if (ref.current) {
         ref.current.value = "";
@@ -1539,6 +1614,9 @@ export function Composer({
     syncHasValue("", []);
   };
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // A paste event carries no modifier keys, so the shortcut is read here (largePaste.ts).
+    inlinePasteRef.current =
+      (e.metaKey || e.ctrlKey) && e.shiftKey && isPasteKey(e.nativeEvent);
     if (disabled) return;
     if (isImeComposition(e.nativeEvent)) return;
     if (creatingSkill) return;
@@ -1703,6 +1781,93 @@ export function Composer({
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     setPasteError(null);
+    // WP-94: a hidden character never reaches the draft, so it never reaches the agent (hiddenText.ts).
+    const plain = e.clipboardData?.getData("text/plain") ?? "";
+    const paste = plain ? stripHiddenCharacters(plain) : null;
+    // A paste that carries an image as well as text keeps the image, whatever happens to the text.
+    const carried = (() => {
+      const files = filesFromClipboard(e.clipboardData);
+      return files.length > 0
+        ? files
+        : (messageFilesFromClipboard(e.clipboardData) ?? []);
+    })();
+    const attachCarried = () => {
+      if (carried.length === 0 || !attachmentsSupported) return;
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles(carried).then((pasted) => {
+          if (pasteGenerationRef.current !== generation) {
+            pasted.forEach(revokeAttachment);
+            return;
+          }
+          addAttachments(pasted);
+        }),
+      );
+    };
+    if (paste && paste.removed > 0 && !paste.text) {
+      e.preventDefault();
+      attachCarried();
+      setPasteNotice(null);
+      setPasteError(
+        "That paste had only hidden characters, so nothing was pasted.",
+      );
+      return;
+    }
+    // WP-94: a big paste becomes a text file instead of flooding the prompt; Shift keeps it inline (largePaste.ts).
+    if (
+      paste?.text &&
+      attachmentsSupported &&
+      isLargePaste(paste.text) &&
+      inlinePasteRef.current !== true
+    ) {
+      e.preventDefault();
+      attachCarried();
+      const captured = captureDraft(e.currentTarget);
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles([largePasteContents(paste.text)]).then(
+          (pasted) => {
+            if (pasteGenerationRef.current !== generation) {
+              pasted.forEach(revokeAttachment);
+              return;
+            }
+            if (pasted.length === 0) {
+              // Saved nowhere, so it stays in the draft rather than disappearing.
+              if (captured) insertRestoredText(captured, paste.text);
+              setPasteNotice(null);
+              setPasteError(
+                "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+              );
+              return;
+            }
+            // WebKit can insert the paste after preventDefault; the new chip replaces it.
+            if (captured) dropPastedText(captured, plain);
+            addAttachments(pasted);
+            setPasteNotice(
+              `That paste was large, so it became the file ${pasted[0].name}. Hold Shift while pasting to keep it inline.`,
+            );
+          },
+          () => {
+            if (pasteGenerationRef.current !== generation) return;
+            if (captured) insertRestoredText(captured, paste.text);
+            setPasteError(
+              "That paste was too big to send as text, and it could not be saved as a file. Try again.",
+            );
+          },
+        ),
+      );
+      return;
+    }
+    if (paste && paste.removed > 0) {
+      e.preventDefault();
+      attachCarried();
+      const captured = captureDraft(e.currentTarget);
+      if (captured) insertRestoredText(captured, paste.text);
+      setPasteNotice(
+        `Removed ${paste.removed} hidden ${paste.removed === 1 ? "character" : "characters"} from the paste.`,
+      );
+      return;
+    }
     const messageFiles = messageFilesFromClipboard(e.clipboardData);
     if (messageFiles) {
       e.preventDefault();
@@ -1884,6 +2049,15 @@ export function Composer({
       </div>
     </div>
   );
+  const queueVisible = queuedMessages.some(
+    (message) =>
+      message.monoSessionCompletion || appNoteText(message.text) === undefined,
+  );
+  const notePlace = redirectNotePlace(
+    steerNote,
+    queueVisible,
+    !allowBusySubmit || steerNoteBesideBox,
+  );
   return (
     <div
       data-composer
@@ -1924,8 +2098,14 @@ export function Composer({
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
         onSteer={onSteerQueuedMessage}
+        steerNote={notePlace === "queue" ? steerNote : undefined}
         onResume={onResumeQueue}
       />
+      {notePlace === "composer" ? (
+        <p role="note" className="px-2 pb-1 text-[12px] text-content/55">
+          {steerNote}
+        </p>
+      ) : null}
       <div className="relative overflow-visible">
         {mcpPickerOpen ? (
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
@@ -2127,6 +2307,19 @@ export function Composer({
             <p role="alert" className="px-3 pt-2 text-xs text-red-400">
               {pasteError}
             </p>
+          ) : pasteNotice ? (
+            <p data-composer-notice className="px-3 pt-2 text-xs text-content/55">
+              {pasteNotice}
+            </p>
+          ) : null}
+          {sideNotice ? (
+            <p
+              role="status"
+              data-side-notice
+              className="px-3 pt-2 text-xs text-content/70"
+            >
+              {sideNotice}
+            </p>
           ) : null}
 
           {inboxCard ? (
@@ -2143,6 +2336,8 @@ export function Composer({
               onDismiss={onHandoffCardDismiss}
             />
           ) : null}
+
+          <MidThreadSwitchNotice line={midThreadLine} place="composer" />
 
           <div className="relative">
             <div
@@ -2198,6 +2393,12 @@ export function Composer({
               onInput={(e) => {
                 const el = e.currentTarget;
                 if (enterBtwFromPrefix(el)) return;
+                if (
+                  consumeBtwPrefix(el.value) == null &&
+                  !consumeBtwCommand(el.value).matched
+                ) {
+                  setSideNotice(null);
+                }
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);
@@ -2210,6 +2411,7 @@ export function Composer({
                     : retained;
                 });
                 setPasteError(null);
+                setPasteNotice(null);
                 if (
                   sessionFolderSelected &&
                   !consumeSessionFolderCommand(el.value).matched
@@ -2541,15 +2743,37 @@ export function Composer({
               showsStop({ enabled, busy, text: draft, attachments: attachments.length, canStop: !!onStop }) ? (
                 <TurnStopButton onClick={() => onStop?.()} />
               ) : (
-              <ComposerAction
-                busy={busy}
-                disabled={disabled}
-                hasValue={hasValue && !worktreeRemoved}
-                allowBusySubmit={allowBusySubmit}
-                label={draftActive ? "Save draft" : "Send"}
-                onSend={() => submit(ref.current?.value ?? "")}
-                onStop={() => onStop?.()}
-              />
+                <>
+                  {onCompareModels && !compact && !remoteSession ? (
+                    <FanOutPicker
+                      prompt={draft}
+                      disabled={disabled || worktreeRemoved}
+                      allowedHarnesses={allowedModelHarnesses}
+                      onLaunch={async (prompt, targets) => {
+                        const accepted = await onCompareModels(prompt, targets);
+                        if (accepted === false || typeof accepted === "string") return accepted;
+                        pasteGenerationRef.current += 1;
+                        if (ref.current) {
+                          ref.current.value = "";
+                          ref.current.style.height = "auto";
+                        }
+                        setDraft("");
+                        onDraftChange?.("");
+                        syncHasValue("", attachmentsRef.current);
+                        return true;
+                      }}
+                    />
+                  ) : null}
+                  <ComposerAction
+                    busy={busy}
+                    disabled={disabled}
+                    hasValue={hasValue && !worktreeRemoved}
+                    allowBusySubmit={allowBusySubmit}
+                    label={draftActive ? "Save draft" : "Send"}
+                    onSend={() => submit(ref.current?.value ?? "")}
+                    onStop={() => onStop?.()}
+                  />
+                </>
               )}
             </div>
           </div>

@@ -196,6 +196,48 @@ describe("inbox and digest on screen", () => {
     const ship = [...container.querySelectorAll("button")].find((button) => button.textContent?.includes("Ship it"));
     act(() => ship?.click());
     expect(onAnswer).toHaveBeenCalledWith(expect.objectContaining({ key: "ship" }), "Ship it");
+    expect(container.querySelector("[data-waiting]")).toBeNull();
+  });
+
+  it("says how long a question has been waiting", () => {
+    const items = inboxItems({
+      project: PROJECT,
+      decisions: [
+        {
+          project: PROJECT,
+          decisionKey: "old",
+          question: "Oldest question",
+          state: "open",
+          waiting: [],
+          createdAt: NOW - 12 * 60_000,
+          // Touched a second ago: the phrase still counts from when it was asked.
+          updatedAt: NOW - 1_000,
+        },
+      ],
+    });
+    act(() => root.render(createElement(FirstMateInbox, { items, now: NOW })));
+    expect(container.querySelector("[data-inbox-kind='decision'] [data-waiting]")?.textContent).toBe("waiting 12 minutes");
+  });
+
+  it("says how long a blocked row has been stuck, not how long its work has run", () => {
+    const items = inboxItems({
+      project: PROJECT,
+      rows: [
+        {
+          id: "stuck",
+          project: PROJECT,
+          title: "Cannot finish",
+          status: "needs-you",
+          statusNotice: "Cannot finish: the deploy key is missing",
+          stallKind: "blocked",
+          stalledAt: NOW - 4 * 60_000,
+          createdAt: NOW - 3 * 60 * 60_000,
+          updatedAt: NOW - 1_000,
+        },
+      ],
+    });
+    act(() => root.render(createElement(FirstMateInbox, { items, now: NOW })));
+    expect(container.querySelector("[data-inbox-id='question:stuck'] [data-waiting]")?.textContent).toBe("waiting 4 minutes");
   });
 
   it("shows no digest when there is nothing to say", () => {

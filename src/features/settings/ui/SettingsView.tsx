@@ -6,6 +6,9 @@ import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingThe
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
+import { WorkLogPanel } from "../../workLog/ui/WorkLogPanel";
+// WP-108: Settings, Usage. Counts and names only.
+import { UsagePage } from "../../usage/ui/UsagePage";
 // WP-79: Settings → Connected apps.
 import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
@@ -26,8 +29,13 @@ import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
+// WP-104: copy diagnostics, and the health list.
+import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-164: quiet hours for routine programme notices.
+import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
+import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -308,8 +316,10 @@ import { AccountOrderControls, AccountWaterfallSwitch } from "../../providers/ui
 import { orderedAccounts } from "../../providers/model/accountWaterfall";
 import { signInOptions } from "../../providers/model/providerSignIn";
 import {
+  saveChatListInbox,
   saveComposerAutocorrect,
   savePacedReveal,
+  useChatListInbox,
   usePacedReveal,
   saveMaskEmails,
   saveNewLayoutPromptDismissed,
@@ -696,6 +706,8 @@ export function SettingsView({
               ) : null}
               {/* WP-84: how much process a task gets, for this project. */}
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
+              {/* WP-104: diagnostics a person can send, and the health list. */}
+              {section === "general" ? <DiagnosticsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   <ConnectionsSettings />
@@ -710,6 +722,14 @@ export function SettingsView({
               {section === "activity" ? (
                 // WP-78: Settings → Activity.
                 <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
+              {section === "work-log" ? (
+                // WP-157: Settings → Work log.
+                <WorkLogPanel />
+              ) : null}
+              {section === "usage" ? (
+                // WP-108: token and cost history. Read only.
+                <UsagePage />
               ) : null}
               {section === "connected" ? (
                 // WP-79: Settings → Connected apps.
@@ -1093,6 +1113,10 @@ function GeneralPage({
             onChange={onNotificationsEnabled}
           />
         </Row>
+        {/* WP-164: what waits and what comes through is spelled out in QUIET_HOURS_DESCRIPTION. */}
+        <Row id="quiet-hours" label="Quiet hours" description={QUIET_HOURS_DESCRIPTION}>
+          <QuietHoursSetting />
+        </Row>
       </Group>
 
       {/* WP-85: off until the person turns it on. */}
@@ -1203,6 +1227,8 @@ function ChatPage() {
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
   const composerAutocorrect = useComposerAutocorrect();
+  // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
+  const chatListInbox = useChatListInbox();
   const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
     loadGridArcadeEnabled,
   );
@@ -1267,6 +1293,20 @@ function ChatPage() {
           description="Replies end with one short paragraph in plain words about what happened and what it means."
         >
           <PlainEnglishSetting />
+        </Row>
+      </Group>
+      {/* WP-113: one switch for settle, snooze and re-sort. */}
+      <Group title="Chat list" description="How the list of chats behaves.">
+        <Row
+          id="chat-list-inbox"
+          label="Settle and snooze"
+          description="Settle finished chats, snooze a chat until a time, and bring a chat that needs you back to the top. Off keeps today's list."
+        >
+          <Toggle
+            label="Settle and snooze"
+            on={chatListInbox}
+            onChange={saveChatListInbox}
+          />
         </Row>
       </Group>
       <Group

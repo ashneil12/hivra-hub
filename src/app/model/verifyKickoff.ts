@@ -1,12 +1,38 @@
 // The fake-Claude test bench's kickoff (scripts/hub-verify-live.mjs). A dev copy started with a verify plan
 // (src-tauri/src/verify_live.rs: only a dev copy under a temporary HOME) opens a Mono on the plan's scratch project
-// (or an existing one, such as the built-in Chief of Staff, when the plan names it) and sends its first message, once
-// per run: the window's storage lives in that temporary HOME, so every restart of the same run finds the claim and
-// leaves the chat to resume by itself.
+// (or an existing one, when the plan names its id) and sends its first message, once per run: the window's storage
+// lives in that temporary HOME, so every restart of the same run finds the claim and leaves the chat to resume by
+// itself.
 
+import { invoke } from "@tauri-apps/api/core";
 import { appIdentity, type AppIdentity, type VerifyPlan } from "./appIdentity";
 
 const CLAIM_KEY = "monocode:verify-live-kickoff";
+
+/** Where a kickoff step goes: the driver's answer folder (verify_live.rs `verify_live_done`). Tests pass their own. */
+export type KickoffTraceSink = (id: string, step: Record<string, unknown>) => Promise<unknown>;
+
+let traced = 0;
+
+/**
+ * One step of the kickoff, kept for the bench as `<driver>/done/kickoff-<n>-<step>.json`: the window's console isn't
+ * kept, and a run whose kickoff never reaches the fake Claude has to say where it stopped (pending, waiting for the Mono,
+ * opened, sent). Only a dev copy whose plan has a driver; a step that can't be written is dropped.
+ */
+export function traceVerifyKickoff(
+  step: string,
+  detail: Record<string, unknown> = {},
+  sink: KickoffTraceSink = (id, result) => invoke("verify_live_done", { id, result }),
+  identity: AppIdentity | null = appIdentity(),
+): void {
+  const verify = identity?.kind === "dev" ? identity.verify : undefined;
+  if (!verify?.driver) return;
+  traced += 1;
+  const id = `kickoff-${String(traced).padStart(3, "0")}-${step}`.replace(/[^A-Za-z0-9._-]/g, "-").slice(0, 64);
+  void Promise.resolve()
+    .then(() => sink(id, { step, runId: verify.runId, at: Date.now(), ...detail }))
+    .catch(() => undefined);
+}
 
 /** The kickoff this window should send, or none (no plan, or this run's was already sent). */
 export function pendingVerifyKickoff(
@@ -46,9 +72,11 @@ export type VerifyMonoHost = {
 };
 
 /**
- * The Mono the kickoff goes to: a new one on the plan's project, or (`monoId`) that existing Mono once it works on the
- * project. The hub makes its built-in team and ties it to the projects Ash OS lists a moment after the window is up,
- * so this waits for that (up to `timeoutMs`); null when it never happens, and the walk notices nothing was sent.
+ * The Mono the kickoff goes to: a new one on the plan's project, or (`monoId`) an existing one once it works on the
+ * project. Waits for the one it names (up to `timeoutMs`); null when it never appears, and the walk notices nothing was
+ * sent.
+ *
+ * WP-05: a Mono's id is fresh every time, so a plan names none; the app makes the Mono from the plan's name.
  */
 export async function verifyKickoffMono(
   kickoff: Pick<NonNullable<VerifyPlan["kickoff"]>, "project" | "monoName" | "monoId">,
