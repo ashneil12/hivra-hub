@@ -6,7 +6,6 @@ import {
   CursorMagicSelection,
   FilePlus,
   Camera,
-  Mic,
   Plus,
   Share,
   Square,
@@ -36,6 +35,16 @@ import {
   revokeAttachment,
 } from "../model/attachments";
 import { resizeComposer, restoreComposerSize } from "../model/composerResize";
+import { tauriDictationPort } from "../model/dictationPort";
+import {
+  DictationAskButton,
+  DictationExplainDialog,
+  DictationListening,
+  DictationMenuRow,
+  DictationProvisional,
+  DictationWaiting,
+} from "./DictationControl";
+import { useDictation, writeDraftKeepingUndo } from "./useDictation";
 import {
   isFileReferenceText,
   messageFilesFromClipboard,
@@ -701,6 +710,28 @@ export function Composer({
     [inboxCard, noteCard, handoffCard],
   );
 
+  // WP-131: dictation writes into this draft and never sends it.
+  const dictation = useDictation({
+    port: tauriDictationPort,
+    enabled: enabled && !disabled && !worktreeRemoved,
+    getText: () => ref.current?.value ?? "",
+    getSelection: () => ({
+      start: ref.current?.selectionStart ?? 0,
+      end: ref.current?.selectionEnd ?? 0,
+    }),
+    write: (text, cursor) => {
+      const el = ref.current;
+      if (!el) return;
+      writeDraftKeepingUndo(el, text);
+      const caret = Math.max(0, Math.min(text.length, cursor));
+      el.setSelectionRange(caret, caret);
+      resizeComposer(el);
+      draftRevisionRef.current += 1;
+      setDraft(text);
+      syncHasValue(text, attachmentsRef.current);
+    },
+  });
+
   // A leading mode command in the text shows the same pill as picking the mode.
   const operatorActive =
     operatorSelected || leadingMode?.name === OPERATOR_COMMAND.name;
@@ -1347,6 +1378,8 @@ export function Composer({
   }, [editLastTurnSupported, onRecallLastTurnReady, recallLastTurn]);
 
   const submit = (value: string) => {
+    // WP-131: a late transcript must not refill a draft that is being sent.
+    dictation.seal();
     // An empty box while the turn runs: Enter or the button stops this chat's turn (TurnStop.tsx).
     if (
       turnStop &&
@@ -2312,6 +2345,21 @@ export function Composer({
               {pasteNotice}
             </p>
           ) : null}
+          {dictation.note ? (
+            <p role="status" data-dictation-note className="px-3 pt-2 text-xs text-content/70">
+              {dictation.note}
+            </p>
+          ) : null}
+          {dictation.phase === "explain" ? (
+            <DictationExplainDialog
+              onContinue={() => {
+                // Dictation writes into this draft, so the draft takes focus; Undo then works on the dictated words.
+                ref.current?.focus();
+                dictation.accept();
+              }}
+              onNotNow={() => dictation.decline()}
+            />
+          ) : null}
           {sideNotice ? (
             <p
               role="status"
@@ -2354,6 +2402,7 @@ export function Composer({
                 names={skillNames}
                 mentions={mentionIndex.labels}
                 mcpTags={selectedMcp}
+                provisional={dictation.provisional}
               />
             </div>
             <textarea
@@ -2402,6 +2451,7 @@ export function Composer({
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);
+                dictation.onTyped(el.value);
                 setSelectedMcp((current) => {
                   const retained = current.filter(
                     (tag) => taggedMcpServers(el.value, [tag]).length > 0,
@@ -2611,21 +2661,15 @@ export function Composer({
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    aria-disabled
-                    data-composer-plus-unwired
-                    className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content opacity-50"
-                  >
-                    <Mic className="mt-0.5 size-4 shrink-0 text-content/60" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px]">Voice</span>
-                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                        Not connected yet
-                      </span>
-                    </span>
-                  </button>
+                  {dictation.supported && !disabled && !worktreeRemoved ? (
+                    <DictationMenuRow
+                      onAsk={() => {
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                        dictation.ask();
+                      }}
+                    />
+                  ) : null}
                 </Popover>
               ) : null}
             </div>
@@ -2737,6 +2781,18 @@ export function Composer({
                 <span>Cancel edit</span>
               </button>
             ) : null}
+            {dictation.phase === "listening" ? (
+              <DictationListening onStop={() => dictation.stop()} />
+            ) : dictation.phase === "authorizing" ? (
+              <DictationWaiting onCancel={() => dictation.cancel()} />
+            ) : dictation.supported && !disabled && !worktreeRemoved && dictation.phase === "idle" ? (
+              <DictationAskButton
+                onAsk={() => {
+                  ref.current?.focus();
+                  dictation.ask();
+                }}
+              />
+            ) : null}
             <div className="flex shrink-0 items-center gap-1">
               {turnStop &&
               !disabled &&
@@ -2800,13 +2856,49 @@ function ComposerHighlight({
   names,
   mentions,
   mcpTags,
+  provisional = null,
+  suppressTrail = false,
 }: {
   text: string;
   mode: ModeCommandToken | null;
   names: ReadonlySet<string>;
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
+  /** WP-131: the words still being heard, in draft indexes. */
+  provisional?: { start: number; end: number } | null;
+  /** A slice of a marked draft must not add its own trailing break. */
+  suppressTrail?: boolean;
 }) {
+  // WP-131: an out-of-range mark renders unmarked. It must not throw.
+  if (
+    provisional &&
+    provisional.end > provisional.start &&
+    provisional.start >= 0 &&
+    provisional.end <= text.length
+  ) {
+    return (
+      <>
+        <ComposerHighlight
+          text={text.slice(0, provisional.start)}
+          mode={mode && provisional.start >= mode.end ? mode : null}
+          names={names}
+          mentions={mentions}
+          mcpTags={mcpTags}
+          suppressTrail
+        />
+        <DictationProvisional text={text.slice(provisional.start, provisional.end)} />
+        <ComposerHighlight
+          text={text.slice(provisional.end)}
+          mode={null}
+          names={names}
+          mentions={mentions}
+          mcpTags={mcpTags}
+          suppressTrail
+        />
+        {text.endsWith("\n") ? "\n" : null}
+      </>
+    );
+  }
   const rest = mode ? text.slice(mode.end) : text;
   const parts = skillTextParts(rest, names);
   return (
@@ -2828,7 +2920,7 @@ function ComposerHighlight({
           />
         ),
       )}
-      {text.endsWith("\n") ? "\n" : null}
+      {suppressTrail || !text.endsWith("\n") ? null : "\n"}
     </>
   );
 }

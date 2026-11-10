@@ -711,7 +711,7 @@ impl Writer {
         }
     }
 
-    fn text(&mut self, relative: &str, text: &str) -> Result<(), String> {
+    fn text(&mut self, relative: &str, text: &str) -> Result<bool, String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
         // A file without secrets goes byte for byte as it is (a Mono's habits.json stays as written).
@@ -740,7 +740,7 @@ impl Writer {
         self.raw(relative, &path, clean.as_bytes())
     }
 
-    fn json(&mut self, relative: &str, value: &Value) -> Result<(), String> {
+    fn json(&mut self, relative: &str, value: &Value) -> Result<bool, String> {
         let mut value = value.clone();
         self.secrets += scrubber().redact_value(&mut value);
         let text = serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?;
@@ -751,14 +751,14 @@ impl Writer {
 
     /// A binary file (a git bundle) copied as it is: a plain file that is not a link. One past `cap` bytes is left out of
     /// the export, with a line, rather than failing it.
-    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<(), String> {
+    fn binary(&mut self, relative: &str, source: &Path, cap: u64) -> Result<bool, String> {
         match plain_file::read(source, cap) {
             Ok(bytes) => self.bytes(relative, &bytes),
             Err(Refusal::TooBig) => {
                 self.left_out.push(format!(
                     "The history in {relative} is larger than an export may hold of one file, so it was left out of the export."
                 ));
-                Ok(())
+                Ok(false)
             }
             Err(why) => Err(format!(
                 "{} {}.",
@@ -773,13 +773,14 @@ impl Writer {
     }
 
     /// A binary file whose bytes are already in hand (an image), written as they are.
-    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<(), String> {
+    fn bytes(&mut self, relative: &str, bytes: &[u8]) -> Result<bool, String> {
         let path = safe_relative(relative)
             .ok_or_else(|| format!("Not a path inside an export: {relative}"))?;
         self.raw(relative, &path, bytes)
     }
 
-    fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<(), String> {
+    /// Writes the file, or leaves it out with a line: true when it was written.
+    fn raw(&mut self, relative: &str, path: &Path, bytes: &[u8]) -> Result<bool, String> {
         let canonical = canonical_relative(path);
         // The limits an import holds a file to (`left_out_reason`): a file past them is left out with a line, so the
         // export never holds a file the import would turn away.
@@ -801,19 +802,19 @@ impl Writer {
             self.left_out.push(format!(
                 "{relative} {why}, so it was left out of the export."
             ));
-            return Ok(());
+            return Ok(false);
         }
         // An import refuses an export that names one file twice (a name that differs only in capitals included).
         if !self.seen.insert(fold(&canonical)) {
             self.left_out.push(format!(
                 "{relative} has the same name as a file already in the export, apart from capitals, so it was left out of the export."
             ));
-            return Ok(());
+            return Ok(false);
         }
         write_private(&self.root.join(path), bytes)?;
         self.files
             .push((relative.to_string(), bytes.len() as u64, sha256_hex(bytes)));
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -848,6 +849,50 @@ pub fn export_with_vault(
     request: &ExportRequest,
     vault: &dyn crate::secrets::store::Vault,
 ) -> Result<ExportReport, String> {
+    export_within(env, request, MAX_INSPECT_BYTES, vault)
+}
+
+/// The file that holds the setup itself: the one webview file an export never goes without.
+const SETUP_FILE: &str = "setup/setup.json";
+
+/// The webview's files, setup/setup.json first: should the budget leave one out, it is never that one.
+fn write_webview_files(
+    writer: &mut Writer,
+    files: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if let Some(text) = files.get(SETUP_FILE) {
+        writer.text(SETUP_FILE, text)?;
+    }
+    for (path, text) in files.iter().filter(|(path, _)| path.as_str() != SETUP_FILE) {
+        writer.text(path, text)?;
+    }
+    Ok(())
+}
+
+/// Setup files that together are past what the preview holds stop the export with one line, before anything is
+/// written, rather than an export that leaves some of them out.
+fn check_webview_total(
+    files: &BTreeMap<String, String>,
+    webview_budget: u64,
+) -> Result<(), String> {
+    let total: u64 = files.values().map(|text| text.len() as u64).sum();
+    if total > webview_budget {
+        return Err(format!(
+            "The setup files come to {:.1} MB; an export holds at most {} MB of them. Leave something out and try again.",
+            total as f64 / 1024.0 / 1024.0,
+            (webview_budget / 1024 / 1024).max(1)
+        ));
+    }
+    Ok(())
+}
+
+/// `export`, holding the webview's files to `webview_budget` bytes.
+fn export_within(
+    env: &Env,
+    request: &ExportRequest,
+    webview_budget: u64,
+    vault: &dyn crate::secrets::store::Vault,
+) -> Result<ExportReport, String> {
     let mut destination = crate::fs::expand_home(request.destination.trim());
     if request.destination.trim().is_empty() || !destination.is_absolute() {
         return Err("Pick where the export goes.".into());
@@ -877,14 +922,15 @@ pub fn export_with_vault(
         }
     }
 
+    check_webview_total(&request.files, webview_budget)?;
+
     let staging = Scratch::beside(&destination, "export")?;
     let mut writer = Writer::new(staging.0.clone());
+    writer.webview_budget = webview_budget;
     let mut counts = request.counts.clone();
     let mut notes = Vec::new();
 
-    for (path, text) in &request.files {
-        writer.text(path, text)?;
-    }
+    write_webview_files(&mut writer, &request.files)?;
     if let Some(choice) = &request.memory {
         export_memory(env, choice, &mut writer, &mut counts, &mut notes)?;
     }
@@ -1111,8 +1157,9 @@ fn export_memory(
         for (relative, _) in memory_files(&dir) {
             let text =
                 fs::read_to_string(dir.join(&relative)).map_err(|e| format!("{relative}: {e}"))?;
-            writer.text(&format!("memory/{name}/{relative}"), &text)?;
-            files += 1;
+            if writer.text(&format!("memory/{name}/{relative}"), &text)? {
+                files += 1;
+            }
         }
         if choice.history && dir.join(".git").exists() {
             match history_bundle(&dir) {
@@ -1358,41 +1405,63 @@ fn export_workspace(
             "providerTranscript": pointer,
             "blocks": blocks,
         });
-        writer
+        // Only a chat the export holds is counted: one the writer left out is in its notes instead.
+        if writer
             .json(&format!("workspace/sessions/{id}.json"), &file)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-        sessions += 1;
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?
+        {
+            sessions += 1;
+        }
     }
     counts.insert("sessions".into(), json!(sessions));
 
-    let notes = table_rows(conn, "notes", "created_at, id")?;
-    counts.insert("notes".into(), json!(notes.len()));
-    let note_ids: Vec<Value> = notes.iter().filter_map(|n| n.get("id").cloned()).collect();
-    counts.insert("noteIds".into(), Value::Array(note_ids));
     let wrote = |writer: &mut Writer, path: &str, value: Value| {
         writer
             .json(path, &value)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
     };
-    wrote(
+    // A table's count is what its file holds in the export: nothing, when the writer left the file out.
+    let counted = |writer: &mut Writer,
+                   counts: &mut Map<String, Value>,
+                   key: &str,
+                   path: &str,
+                   rows: Vec<Value>| {
+        let len = rows.len();
+        let written = wrote(writer, path, Value::Array(rows))?;
+        counts.insert(key.into(), json!(if written { len } else { 0 }));
+        Ok::<(), rusqlite::Error>(())
+    };
+    let notes = table_rows(conn, "notes", "created_at, id")?;
+    let note_ids: Vec<Value> = notes.iter().filter_map(|n| n.get("id").cloned()).collect();
+    let note_count = notes.len();
+    // Notes left out of the export take their pictures with them: none are exported for notes it doesn't hold.
+    if wrote(
         writer,
         "workspace/notes.json",
         Value::Array(notes.into_iter().map(Value::Object).collect()),
-    )?;
+    )? {
+        counts.insert("notes".into(), json!(note_count));
+        counts.insert("noteIds".into(), Value::Array(note_ids));
+    } else {
+        counts.insert("notes".into(), json!(0));
+        counts.insert("noteIds".into(), Value::Array(Vec::new()));
+    }
     // WP-72: a page's history and mentions travel with the note. An older export has neither file.
     let doc_versions = table_rows(conn, "note_versions", "note_id, version")?;
-    counts.insert("docVersions".into(), json!(doc_versions.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "docVersions",
         "workspace/doc-versions.json",
-        Value::Array(doc_versions.into_iter().map(Value::Object).collect()),
+        doc_versions.into_iter().map(Value::Object).collect(),
     )?;
     let doc_mentions = table_rows(conn, "note_mentions", "note_id, kind, target_id")?;
-    counts.insert("docMentions".into(), json!(doc_mentions.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "docMentions",
         "workspace/doc-mentions.json",
-        Value::Array(doc_mentions.into_iter().map(Value::Object).collect()),
+        doc_mentions.into_iter().map(Value::Object).collect(),
     )?;
 
     let automations: Vec<Value> = table_rows(conn, "automations", "updated_at, id")?
@@ -1403,19 +1472,25 @@ fn export_workspace(
                 .and_then(|raw| serde_json::from_str(raw).ok())
         })
         .collect();
-    counts.insert("automations".into(), json!(automations.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "automations",
         "workspace/automations.json",
-        Value::Array(automations),
+        automations,
     )?;
 
     let reminders: Vec<Value> = table_rows(conn, "session_reminders", "due_at, session_id")?
         .into_iter()
         .map(|row| json!({"sessionId": row.get("session_id"), "dueAt": row.get("due_at"), "firedAt": row.get("fired_at")}))
         .collect();
-    counts.insert("reminders".into(), json!(reminders.len()));
-    wrote(writer, "workspace/reminders.json", Value::Array(reminders))?;
+    counted(
+        writer,
+        counts,
+        "reminders",
+        "workspace/reminders.json",
+        reminders,
+    )?;
 
     let delegations: Vec<Value> = table_rows(conn, "delegations", "created_at, id")?
         .into_iter()
@@ -1426,19 +1501,25 @@ fn export_workspace(
             Value::Object(row)
         })
         .collect();
-    counts.insert("delegations".into(), json!(delegations.len()));
-    wrote(
+    counted(
         writer,
+        counts,
+        "delegations",
         "workspace/delegations.json",
-        Value::Array(delegations),
+        delegations,
     )?;
 
     // WP-78: the activity log rides with the workspace. Rows past 90 days stay
     // out, and the writer scrubs the summaries again.
     let activity = crate::activity::export_rows(conn)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))?;
-    counts.insert("activity".into(), json!(activity.len()));
-    wrote(writer, "workspace/activity.json", Value::Array(activity))?;
+    counted(
+        writer,
+        counts,
+        "activity",
+        "workspace/activity.json",
+        activity,
+    )?;
     Ok(())
 }
 
@@ -1499,7 +1580,9 @@ fn export_note_assets(
         for name in names {
             let relative = format!("workspace/{NOTE_ASSET_DIR}/{id}/{name}");
             match plain_file::read(&dir.join(&name), crate::notes::IMAGE_MAX_BYTES) {
-                Ok(bytes) => writer.bytes(&relative, &bytes)?,
+                Ok(bytes) => {
+                    writer.bytes(&relative, &bytes)?;
+                }
                 Err(why) => notes.push(format!(
                     "{NOTE_ASSET_DIR}/{id}/{name} was not exported: {}.",
                     match why {
@@ -1670,6 +1753,16 @@ struct Listing {
     /// Lines for the report about files left out (see `left_out_reason`), and the paths they are.
     left_out: Vec<String>,
     left_out_paths: HashSet<String>,
+    /// Each file left out and why, for the preview.
+    too_big: Vec<LeftOutFile>,
+}
+
+/// A file an export lists that an import will leave out, and why (`left_out_reason`), for the preview.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeftOutFile {
+    pub path: String,
+    pub reason: String,
 }
 
 /// Every file a manifest lists, checked against what an export may be before anything is read from the disk: no more
@@ -1691,6 +1784,7 @@ fn list_files(manifest: &Value, webview_budget: u64) -> Result<Listing, String> 
         index: HashMap::with_capacity(entries.len()),
         left_out: Vec::new(),
         left_out_paths: HashSet::new(),
+        too_big: Vec::new(),
     };
     let mut seen: HashSet<String> = HashSet::with_capacity(entries.len());
     let mut total = 0u64;
@@ -1721,6 +1815,10 @@ fn list_files(manifest: &Value, webview_budget: u64) -> Result<Listing, String> 
                     .left_out
                     .push(format!("{relative} {why}, so it was left out."));
             }
+            listing.too_big.push(LeftOutFile {
+                path: relative.to_string(),
+                reason: why,
+            });
             listing.left_out_paths.insert(canonical);
             continue;
         }
@@ -1752,6 +1850,8 @@ enum Opened {
         /// Lines about listed files that were left out (`left_out_reason`), and which paths they are.
         left_out: Vec<String>,
         left_out_paths: HashSet<String>,
+        /// Each file left out and why, for the preview.
+        too_big: Vec<LeftOutFile>,
         /// Listed files that were fine when the export was checked and weren't when they were read, for the report.
         problems: Mutex<Vec<String>>,
         _scratch: Option<Scratch>,
@@ -2021,6 +2121,7 @@ fn open_export_within(path: &str, webview_budget: u64) -> Result<Opened, String>
         index,
         left_out,
         left_out_paths,
+        too_big,
     } = list_files(&manifest, webview_budget)?;
     // Every listed file must be there, in a folder of the export itself, a plain file (not a link, a pipe or a
     // device), unchanged.
@@ -2063,6 +2164,7 @@ fn open_export_within(path: &str, webview_budget: u64) -> Result<Opened, String>
         index,
         left_out,
         left_out_paths,
+        too_big,
         problems: Mutex::new(Vec::new()),
         _scratch: scratch,
     })
@@ -2146,6 +2248,8 @@ pub struct Inspection {
     pub workspace: Option<WorkspacePreview>,
     /// Where imported memory goes on this copy.
     pub memory_target: String,
+    /// Files the export lists that an import will leave out (too big for their kind, or past what the preview holds).
+    pub left_out: Vec<LeftOutFile>,
 }
 
 /// Two chats are the same when their words and blocks match. File paths are left out of the comparison: an import
@@ -2267,9 +2371,14 @@ fn inspect_within(env: &Env, path: &str, webview_budget: u64) -> Result<Inspecti
                 memory: Vec::new(),
                 workspace: None,
                 memory_target: env.memory_root.to_string_lossy().into_owned(),
+                left_out: Vec::new(),
             })
         }
         Opened::V2 { manifest, .. } => manifest.clone(),
+    };
+    let left_out = match &opened {
+        Opened::V2 { too_big, .. } => too_big.clone(),
+        Opened::V1(_) => Vec::new(),
     };
     let listed = opened.listed();
     let files: BTreeMap<String, String> = listed
@@ -2329,6 +2438,7 @@ fn inspect_within(env: &Env, path: &str, webview_budget: u64) -> Result<Inspecti
         memory: memory.into_values().collect(),
         workspace,
         memory_target: env.memory_root.to_string_lossy().into_owned(),
+        left_out,
     })
 }
 
@@ -3689,18 +3799,24 @@ fn import_memory(
         if let (true, Some(history), false) = (wanted.history, history, target.exists()) {
             fs::create_dir_all(&env.memory_root).map_err(|e| e.to_string())?;
             match restore_history(&bundle, history, &target) {
-                Ok(dropped) => {
+                Ok(restored) => {
                     report.memory_history.push(name.clone());
                     fresh = true;
-                    if !dropped.is_empty() {
+                    if !restored.control.is_empty() {
                         report.notes.push(format!(
                             "The history of {name} held {} (files that tell git what to run or fetch); they were not restored.",
-                            dropped.join(", ")
+                            restored.control.join(", ")
                         ));
                     }
-                    // Whatever a history's newest tree holds that a CLI would read (instruction and settings files,
-                    // anything hidden) is removed again, in every folder it restores.
-                    prune_unsafe(&target);
+                    // Whatever the history's newest tree held that a CLI would read as instructions or settings, or that is
+                    // hidden, was removed in a commit of its own, in every folder (`restore_history`). The export's tip stays
+                    // under refs/hivra/imported-tip.
+                    if !restored.pruned.is_empty() {
+                        report.notes.push(format!(
+                            "The history of {name} held {} (instruction, settings or hidden files); they were removed in a commit of its own, and the export's tip is kept as refs/hivra/imported-tip.",
+                            restored.pruned.join(", ")
+                        ));
+                    }
                     written.extend(files_under(&target));
                 }
                 Err(why) => {
@@ -3737,21 +3853,35 @@ fn import_memory(
                 ));
                 continue;
             }
-            // A memory import writes notes: `.md` files, never one a CLI reads as instructions, rules or settings
-            // (CLAUDE.md, AGENTS.md, AGENTS.override.md, opencode.json ...), nothing in a hidden folder.
-            if !folders::memory_note_file(&safe) {
-                report.notes.push(format!(
-                    "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
-                ));
-                continue;
-            }
-            // And inside the Monos home (however it is spelled or linked to) only the names a Mono's folder uses.
-            if let Some(relative) = inside_monos_home(env, &dest) {
-                if !folders::mono_folder_file(&relative) {
-                    report.notes.push(format!(
-                        "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
-                    ));
-                    continue;
+            // A memory import writes notes only, in every folder: `.md` files, nothing hidden (round 6 restored this for
+            // folders outside the Monos home too). An instruction file (CLAUDE.md, AGENTS.md, settings, rules ...) never
+            // comes in under its own name, in any folder: it is held beside its original, for Ash to review. Inside the
+            // Monos home only the names a Mono's folder uses are written, and an instruction file is held for review only
+            // where a Mono keeps one (`folders::instruction_file_for_review`). Trust is never decided by a folder's name.
+            let monos_relative = inside_monos_home(env, &dest);
+            let instruction = match &monos_relative {
+                Some(relative) => folders::instruction_file_for_review(relative),
+                None => folders::instruction_file_at(&safe),
+            };
+            match &monos_relative {
+                Some(relative) => {
+                    if !folders::mono_folder_file(relative) && !instruction {
+                        report.notes.push(format!(
+                            "{path} wasn't written: a Mono's folder only takes SOUL.md, MEMORY.md, soul-template.md and its memory and skills notes."
+                        ));
+                        continue;
+                    }
+                }
+                None => {
+                    if !folders::memory_note_file(&safe) && !instruction {
+                        // A file a restored history brought in is already here: nothing is reported for it.
+                        if !(fresh && dest.exists()) {
+                            report.notes.push(format!(
+                                "{path} wasn't written: a memory import only writes notes (.md files), never instructions, rules or settings."
+                            ));
+                        }
+                        continue;
+                    }
                 }
             }
             // Memory is text: a file that isn't UTF-8 is skipped, never written as nothing over what is here.
@@ -3771,6 +3901,17 @@ fn import_memory(
                     continue;
                 }
             };
+            if instruction {
+                // Never under its own name, here or in a restored history: beside its original, for Ash to review.
+                let review = beside_name(&dest);
+                write_within(&inside, &review, &text)?;
+                report.notes.push(format!(
+                    "{path} came in as {} for you to review: an instruction file is never written under its own name here, so nothing was written under that name.",
+                    review.file_name().and_then(|n| n.to_str()).unwrap_or_default()
+                ));
+                written.push(review);
+                continue;
+            }
             // Whether `dest` now holds the export's text because of this restore (a fresh folder's history counts).
             let wrote = match fs::read_to_string(&dest) {
                 Ok(local) if local == text => fresh,
@@ -3831,48 +3972,18 @@ fn files_under(dir: &Path) -> Vec<PathBuf> {
     out
 }
 
-/// A restored history's newest tree can hold files a CLI reads as instructions or settings and anything hidden: they are
-/// removed again, and the removal is amended into the restored tip so the folder isn't left with a dirty tree.
-fn prune_unsafe(root: &Path) {
-    let mut removed = false;
-    for file in files_under(root) {
-        let Ok(relative) = file.strip_prefix(root) else {
-            continue;
-        };
-        let hidden = relative.components().any(|part| {
-            matches!(part, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
-        });
-        let instruction = file
-            .file_name()
-            .is_some_and(|name| folders::instruction_file(&name.to_string_lossy()));
-        if (hidden || instruction) && fs::remove_file(&file).is_ok() {
-            removed = true;
-        }
-    }
-    if removed && root.join(".git").exists() {
-        let git = |args: &[&str]| {
-            let mut command = Command::new("git");
-            crate::hide_window_console(&mut command);
-            command
-                .arg("-C")
-                .arg(root)
-                .args([
-                    "-c",
-                    "user.name=MonoCode",
-                    "-c",
-                    "user.email=import@monocode.invalid",
-                    "-c",
-                    "commit.gpgsign=false",
-                    "-c",
-                    "core.hooksPath=/dev/null",
-                ])
-                .args(args)
-                .output()
-        };
-        // Amended into the restored tip (the history keeps its length), so the folder is clean, not dirty.
-        let _ = git(&["add", "-A"]);
-        let _ = git(&["commit", "-q", "--amend", "--no-edit", "--allow-empty"]);
-    }
+/// The message of the commit that takes instruction and hidden files out of a restored history (in every folder).
+const INSTRUCTIONS_REMOVED: &str = "Removed instruction and hidden files from an imported history";
+
+/// Whether a file of a restored history is one a CLI reads as instructions or settings, or anything hidden: those are
+/// removed in the restore's own commit, in every folder. `relative` is inside the folder.
+fn prunable_path(relative: &str) -> bool {
+    let parts: Vec<&str> = relative.split('/').collect();
+    let hidden = parts.iter().any(|part| part.starts_with('.'));
+    let instruction = parts
+        .last()
+        .is_some_and(|name| folders::instruction_file(name));
+    hidden || instruction
 }
 
 /// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
@@ -4008,11 +4119,16 @@ fn copy_listed_bundle(source: &Path, listed: &Listed, copy: &Path) -> Result<(),
 /// there clones the repository it names, and `<path>.git` beside it is cloned in its place), so the hash of the file
 /// would limit nothing. The listed bytes are copied, hashed as they go, into a private folder as its only file, and
 /// git clones that; the folder goes when this returns, however it returns.
+///
+/// Whatever the newest tree holds that a CLI would read as instructions or settings, or that is hidden, is removed in a
+/// commit of its own on top of the export's tip, in every folder (`prunable_path`). The tip itself is kept under
+/// `refs/hivra/imported-tip` first, so nothing of the export is lost. Every commit here runs under the isolated git of
+/// this function, so a failed commit refuses the restore (the caller removes the folder).
 fn restore_history(
     bundle: &Path,
     listed: &Listed,
     target: &Path,
-) -> Result<Vec<String>, HistoryRefusal> {
+) -> Result<Restored, HistoryRefusal> {
     let scratch = Scratch::private("history").map_err(|_| HistoryRefusal::Failed)?;
     let copy = scratch.0.join("history.bundle");
     copy_listed_bundle(bundle, listed, &copy)?;
@@ -4030,6 +4146,12 @@ fn restore_history(
     fs::create_dir(&hooks).map_err(|_| HistoryRefusal::Failed)?;
     let git = || {
         let mut command = Command::new("git");
+        #[cfg(test)]
+        INHERITED_GIT_ENV.with(|vars| {
+            for (name, value) in vars.borrow().iter() {
+                command.env(name, value);
+            }
+        });
         command
             .env("GIT_CONFIG_GLOBAL", &config)
             .env("GIT_CONFIG_SYSTEM", &config)
@@ -4057,6 +4179,14 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
+    // The export's tip, as it came, under a ref of its own: the removal below is a commit on top of it, never an amend.
+    if !ok(git()
+        .arg("-C")
+        .arg(target)
+        .args(["update-ref", IMPORTED_TIP, "HEAD"]))
+    {
+        return Err(HistoryRefusal::Failed);
+    }
     let listing = git()
         .arg("-C")
         .arg(target)
@@ -4067,9 +4197,11 @@ fn restore_history(
         return Err(HistoryRefusal::Failed);
     }
     // Plain files only (a hidden one like .gitignore is still a plain file; git itself refuses `..` and `.git`), and
-    // not the files that tell git what to run or fetch: a bundle doesn't get to bring those in.
+    // not the files that tell git what to run or fetch, nor the instruction and hidden files a CLI would read: a bundle
+    // doesn't get to bring those in, in any folder.
     let mut dropped: Vec<String> = Vec::new();
     let mut dropped_paths: Vec<String> = Vec::new();
+    let mut pruned_paths: Vec<String> = Vec::new();
     for entry in listing.stdout.split(|b| *b == 0).filter(|e| !e.is_empty()) {
         let entry = String::from_utf8_lossy(entry);
         let (meta, path) = entry.split_once('\t').unwrap_or((&entry, ""));
@@ -4086,6 +4218,8 @@ fn restore_history(
             if !dropped.iter().any(|d| d == known) {
                 dropped.push((*known).to_string());
             }
+        } else if prunable_path(path) {
+            pruned_paths.push(path.to_string());
         }
     }
     // The index without them, then the files out of the index: they are never in the folder when git checks the rest
@@ -4109,14 +4243,85 @@ fn restore_history(
     {
         return Err(HistoryRefusal::Failed);
     }
+    // Their removal is a commit of its own, made while nothing is configured (this same isolated git). A commit that
+    // fails refuses the restore, so no deletion is left uncommitted for a later checkout to undo.
+    let commit = |message: &str| {
+        ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["-c", "user.name=Hivra import"])
+            .args(["-c", "user.email=import@hivra.invalid"])
+            .args(["-c", "commit.gpgsign=false"])
+            .args(["commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m"])
+            .arg(message))
+    };
+    // Left in HEAD, the control files would be one `git reset --hard` (under the machine's own config, filters and all)
+    // from coming back and acting on the folder.
+    if !dropped_paths.is_empty() && !commit(CONTROL_FILES_REMOVED) {
+        return Err(HistoryRefusal::Failed);
+    }
+    // The instruction and hidden files are taken out of the folder and of HEAD in a commit of their own, in every folder.
+    let pruned_and_committed = || {
+        ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["rm", "--quiet", "--"])
+            .args(pruned_paths.iter().map(|path| format!(":(literal){path}"))))
+            && commit(INSTRUCTIONS_REMOVED)
+    };
+    if !pruned_paths.is_empty() && !pruned_and_committed() {
+        return Err(HistoryRefusal::Failed);
+    }
+    // And should one come back by another way, git-lfs in this folder fetches nothing and runs no filter.
+    for (key, value) in [
+        ("lfs.fetchexclude", "*"),
+        ("filter.lfs.process", ""),
+        ("filter.lfs.smudge", ""),
+        ("filter.lfs.clean", ""),
+        ("filter.lfs.required", "false"),
+    ] {
+        if !ok(git()
+            .arg("-C")
+            .arg(target)
+            .args(["config", "--local", key, value]))
+        {
+            return Err(HistoryRefusal::Failed);
+        }
+    }
     // The bundle was a scratch file: don't leave a remote pointing at it.
     let _ = git()
         .arg("-C")
         .arg(target)
         .args(["remote", "remove", "origin"])
         .output();
-    Ok(dropped)
+    Ok(Restored {
+        control: dropped,
+        pruned: pruned_paths,
+    })
 }
+
+/// What a restored history left out: the files that tell git what to run or fetch (`control`), and the instruction,
+/// settings and hidden files a CLI would read (`pruned`), both removed in the restore's own commits.
+#[derive(Debug)]
+struct Restored {
+    control: Vec<String>,
+    pruned: Vec<String>,
+}
+
+/// Where an export's history tip is kept, once restored: a ref of its own, so nothing of the export is lost when the
+/// removal commit goes on top of it.
+const IMPORTED_TIP: &str = "refs/hivra/imported-tip";
+
+#[cfg(test)]
+thread_local! {
+    /// What a test hands the git commands of a history restore on its thread, standing in for the environment the app
+    /// was started with (the machine's own git config, say) without setting anything for the whole test process.
+    static INHERITED_GIT_ENV: std::cell::RefCell<Vec<(std::ffi::OsString, std::ffi::OsString)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The message of the commit that takes a history's git control files out of its HEAD.
+const CONTROL_FILES_REMOVED: &str = "Removed git control files from an imported history";
 
 /// Files in a history that tell git what to run or fetch (filters, an LFS server, submodules): never restored.
 const GIT_CONTROL_FILES: [&str; 3] = [".gitattributes", ".lfsconfig", ".gitmodules"];

@@ -139,6 +139,7 @@ import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import { useLeadTick } from "../features/leadTick/hooks/useLeadTick";
 // WP-43: Stop stays on screen while a browser is showing.
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
@@ -10728,6 +10729,12 @@ function Workspace({
     sessionsRef,
     queueWake: (ownerId, message) =>
       queueMonoSessionCompletionRef.current(ownerId, message),
+  });
+  // WP-160: the First Mate's lead tick, while the app is open.
+  useLeadTick({
+    sessions: () => sessionsRef.current,
+    open: async (id) => (await ensureOpenSession(id)) ?? undefined,
+    openRows: () => openDelegationRows(),
   });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,

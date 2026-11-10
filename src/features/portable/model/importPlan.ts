@@ -68,6 +68,8 @@ export type Inspection = {
   memory: MemoryPreview[];
   workspace: WorkspacePreview | null;
   memoryTarget: string;
+  /** Files the export lists that an import will leave out, and why (too big for their kind, or past what the preview holds). */
+  leftOut?: { path: string; reason: string }[];
 };
 
 /** An export picked for import, read and waiting for Ash's choices in the preview. */

@@ -119,15 +119,21 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      allow-list judges the result. The rules load after the memory is written, and a chat is not kept where this
      import wrote a file a CLI reads as instructions (CLAUDE.md, AGENTS.md, a settings file, anything in a hidden
      folder) in the folder or above it; a note beside it, or a folder that merely holds a written file further down,
-     takes nothing away. A memory import writes notes only, in every folder: `.md` files, never one a CLI reads as
-     instructions, rules or settings (CLAUDE.md, AGENTS.md, AGENTS.override.md, CLAUDE.local.md, GEMINI.md,
-     opencode.json, mcp files, rules files ...), nothing hidden. Inside the Monos home (decided by the resolved path, by
-     device and inode, and with case folded and trailing dots and spaces dropped, so a case alias or `monos.` is the
-     same folder) it writes only the names a Mono's folder uses: `<id>/SOUL.md`, `MEMORY.md`, `soul-template.md`,
-     `memory/<name>.md`, `skills/<name>.md`. A memory folder that reaches the Monos home under another name (another
-     spelling, or a link) is refused, and a memory folder name ending in a dot or a space is never taken. A history
-     restored for a memory folder loses its instruction files and hidden files again (the removal is amended into the
-     restored tip, so the history keeps its length and the folder stays clean); other files stay.
+     takes nothing away. A memory import writes notes only, in every folder: `.md` files, nothing hidden. An instruction
+     file (CLAUDE.md, AGENTS.md, AGENTS.override.md, CLAUDE.local.md, GEMINI.md, opencode.json, mcp files, rules and
+     settings files ...) never comes in under its own name, in any folder, whoever's folder it is: it is written beside
+     its original as `<name>.imported.md` (`.imported-2.md` ... if that is taken), with a line in the report for Ash to
+     review, so nothing a CLI reads from the folder changes. Trust is never decided by a folder's name. Inside the Monos
+     home (decided by the resolved path, by device and inode, and with case folded and trailing dots and spaces dropped,
+     so a case alias or `monos.` is the same folder) it writes only the names a Mono's folder uses: `<id>/SOUL.md`,
+     `MEMORY.md`, `soul-template.md`, `memory/<name>.md`, `skills/<name>.md`. An instruction file there is held for
+     review only in a Mono's id folder or under its `memory/` or `skills/` folders (`<id>/CLAUDE.md`,
+     `<id>/memory/x/AGENTS.md`); one at any other depth, or at the Monos home itself, is left out with a line saying so.
+     A memory folder that reaches the Monos home under another name (another spelling, or a link) is refused, and a
+     memory folder name ending in a dot or a space is never taken. A history restored for a memory folder, in any folder,
+     loses its instruction and hidden files in a commit of its own on top of the export's history. The export's own tip
+     is kept under `refs/hivra/imported-tip`, so nothing is lost. If that commit fails, the history is refused: the
+     folder is removed, and its files come in as plain notes with the report saying so. Other files of a history stay.
      The folder is stored as this Mac resolves it. A worktree stays only when it is inside the chat's own project, or is
      a linked working copy `git worktree list` names for that project (never the main entry, and only when git says the
      project is the top of its own repository, so a parent repository can't vouch for a plain project inside it).
@@ -142,7 +148,8 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
      (`portable_relink_candidate`) once it exists here and passes the same checks, and the "Needs a folder" group
      offers one "Relink all N" per project or Mono (`portable_relink_candidates`, `portable_relink_apply`). A note for a
      folder the import wrote instructions into is marked blocked and never offered, and a Mono's folder is looked at on
-     disk again when it is offered (an instruction file there or above it, or a hidden tool folder, withholds it). A chat whose folder is in
+     disk again when it is offered (an instruction file there or above it, a link, or any hidden entry other than `.git`, `.gitignore`, `.DS_Store`, `.env`,
+     `.env.*` and `.venv` in any letter case, withholds it). A chat whose folder is in
      `~/agent-memory`, a hidden folder or outside the home folder can't be relinked, and the report says so. The report counts those chats
      (`foldersCleared`) and the automations that lost a folder the same way (`automationFoldersCleared`, they also come
      back paused). A chat with no folder is listed in the sidebar's "Needs a folder" group
