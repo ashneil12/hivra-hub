@@ -43,6 +43,8 @@ export type DelegationTasksDeps = {
   unqueue?(childSession: string, requestId: string): void;
   /** A Mono briefs a project's Lead (App.tsx, through leadershipDelegation.ts). */
   briefLead?: AgentAppTasksHost["briefLead"];
+  /** Whether the Lead a brief names exists, asked before a fresh-eyes review. */
+  checkLead?: AgentAppTasksHost["checkLead"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
@@ -161,6 +163,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       };
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
+    ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),

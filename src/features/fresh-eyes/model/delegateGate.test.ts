@@ -4,6 +4,7 @@ import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
 import { handleWithBriefParts } from "../../firstmate/testing/briefParts";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
 import type { Delegation, DelegationsBackend } from "../../monos/model/delegations";
+import { forgetAshAnswers, noteAshAnswer } from "../../monos/model/ashAnswersWorker";
 import { delegationTasksHost } from "../../monos/model/delegationTasks";
 import { newSession, type Session } from "../../sessions/model/session";
 import { fakeInbox, FINDING, testClock } from "../testing/world";
@@ -24,6 +25,7 @@ const PROJECT = "/tmp/fresh-eyes-project";
 let warn: ReturnType<typeof vi.spyOn>;
 afterEach(() => {
   warn?.mockRestore();
+  forgetAshAnswers();
   setFreshEyesStorage(undefined);
   setFreshEyesPort(undefined);
   resetHeld();
@@ -386,6 +388,108 @@ describe("fresh-eyes before a builder starts", () => {
   });
 });
 
+describe("the hold comes after every refusal", () => {
+  it("returns every refusal of a brief to a Lead before anything is held, and holds a good one", async () => {
+    const world = await heldWorld();
+    const { source, host, storage } = world;
+    const refused: [string, Record<string, unknown>, RegExp][] = [
+      ["l1", { lead: "lead-1", project: "/tmp/other" }, /leave out project/],
+      ["l2", { lead: "lead-1", model: "claude:haiku-4.5" }, /leave out model/],
+      ["l3", { lead: "lead-1", effort: "high" }, /leave out effort/],
+      ["l4", { lead: "lead-1", isolation: "worktree" }, /leave out isolation/],
+      ["l5", { lead: "lead-1", whenBusy: "later" }, /whenBusy must be "queue" or "steer"/],
+      ["l6", { lead: "nobody" }, /No Lead "nobody"/],
+      ["l7", { lead: "" }, /lead/],
+    ];
+    for (const [id, extra, why] of refused) {
+      await expect(handleWithBriefParts(source, id, "tasks.delegate", { brief: "Fix the save bug.", ...extra }, host)).rejects.toThrow(why);
+      expect(reviewFor(PROJECT, id, storage)).toBeNull();
+    }
+    expect(world.port.seen).toEqual([]);
+    expect(world.briefLead).not.toHaveBeenCalled();
+    expect(storage.snapshot().reviews).toEqual([]);
+
+    const good = await handleWithBriefParts(source, "l9", "tasks.delegate", { brief: "Fix the save bug.", lead: "lead-1", whenBusy: "steer" }, host);
+    expect(good).toMatchObject({ status: "waiting", freshEyes: true });
+    expect(world.briefLead).not.toHaveBeenCalled();
+    await answerFreshEyes(PROJECT, "l9", "Approve", { storage });
+    expect(world.briefLead).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the refusal of a job Ash already answered before anything is held", async () => {
+    const world = await heldWorld();
+    const { source, host, storage, rows } = world;
+    // Ash answered the worker of "Fix the save bug" in its own chat, and it is still open.
+    rows.push({ ...startedRow("app-mono-lead-first", "mono-lead"), id: "t-open", title: "Fix the save bug." });
+    noteAshAnswer("t-open", "keep them for 30 days");
+
+    await expect(handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host)).rejects.toThrow(
+      /Ash already answered/,
+    );
+    expect(reviewFor(PROJECT, "r1", storage)).toBeNull();
+    expect(world.port.seen).toEqual([]);
+    // It is turned back once; a second call that really is other work goes on to its review.
+    const again = await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(again).toMatchObject({ status: "waiting", freshEyes: true });
+  });
+});
+
+describe("a brief that started is spent", () => {
+  async function started() {
+    const world = await heldWorld({ answer: FINDING });
+    const { source, host, storage } = world;
+    await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    await world.reviewsDone("r1");
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
+    expect(world.start).toHaveBeenCalledTimes(1);
+    expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved", launched: true });
+    return world;
+  }
+
+  it("is not started again by an approval it already used, after the worker was cancelled and the app restarted", async () => {
+    const world = await started();
+    const { source, host, rows, start } = world;
+    rows[0].state = "cancelled";
+
+    // The app restarts: the record, in the database, is all that is left. The same brief under the same ID comes again.
+    resetHeld();
+    const restarted = createEyesStorage(world.disk, { windowId: "w2" });
+    setFreshEyesStorage(restarted);
+    bindFreshEyesBackend(world.inbox);
+    world.bindStarter();
+    const again = await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(again).toMatchObject({ status: "waiting", freshEyes: true });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(reviewFor(PROJECT, "r1", restarted)).toMatchObject({ status: "pending" });
+    expect(reviewFor(PROJECT, "r1", restarted)?.launched).toBeUndefined();
+  });
+
+  it("still reads back a worker that is running, without a new review", async () => {
+    const world = await started();
+    const { source, host, start, port } = world;
+    const seen = port.seen.length;
+    const again = await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    expect(again).toMatchObject({ alreadyStarted: true, childSessionId: "app-mono-lead-r1" });
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(port.seen.length).toBe(seen);
+  });
+});
+
+describe("a reading list keeps the same hash through a restart", () => {
+  it("starts a brief whose reading is cut at a space, because the call that starts it is the call that was reviewed", async () => {
+    const world = await heldWorld();
+    const { source, host, start, storage } = world;
+    const reading = [{ path: "src/a.ts", text: `${"x".repeat(7_999)} ${"y".repeat(100)}` }];
+    await handleWithBriefParts(source, "r1", "tasks.delegate", { brief: "Fix the save bug.", reading }, host);
+    const hash = reviewFor(PROJECT, "r1", storage)!.hash;
+
+    await answerFreshEyes(PROJECT, "r1", "Approve", { storage });
+    // The start asks again with what was kept. It is the same call: it is not held for a second review.
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(reviewFor(PROJECT, "r1", storage)).toMatchObject({ status: "approved", launched: true, hash });
+  });
+});
+
 type StatusAnswer = { tasks: Record<string, unknown>[]; waiting?: Record<string, unknown>[] };
 
 /**
@@ -403,6 +507,11 @@ async function heldWorld(
     monoWork?: NonNullable<Parameters<typeof delegationTasksHost>[0]["monoWork"]>;
   } = {},
 ) {
+  // A brief to a Lead: the app's own checks and start, as App.tsx has them.
+  const briefLead = vi.fn(async () => ({ row: null, childSessionId: "lead-chat", delivery: "started" as const, leadName: "Lead" }));
+  const checkLead = vi.fn((_source: Session, _mono: { id: string }, lead: string) => {
+    if (lead !== "lead-1") throw new Error(`No Lead "${lead}" among the ones you can brief.`);
+  });
   const base = memoryDisk();
   let failing = false;
   const disk = {
@@ -451,6 +560,8 @@ async function heldWorld(
     stop: async () => undefined,
     dropReport: () => undefined,
     ...(options.monoWork ? { monoWork: options.monoWork } : {}),
+    briefLead,
+    checkLead,
   });
   const host = appHost(source, start, tasks);
   const started: { owner: string; requestId: string; input: Record<string, unknown> }[] = [];
@@ -475,6 +586,8 @@ async function heldWorld(
     port,
     inbox,
     started,
+    briefLead,
+    checkLead,
     bindStarter,
     breakWrites: () => {
       failing = true;

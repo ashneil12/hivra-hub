@@ -47,6 +47,8 @@ export type ReviewRecord = {
   nextTryAt?: number;
   /** Every try failed: the owner chat and the person were told, and it waits for their word. */
   startGaveUp?: boolean;
+  /** How many times every try has failed. Each give-up asks its own question. */
+  startRound?: number;
   /** The window running the reviewers, or starting the brief. Another window leaves it alone until it runs out. */
   lease?: Lease;
   updatedAt?: number;
@@ -173,6 +175,8 @@ function normalize(row: ReviewRecord): ReviewRecord {
   const nextTryAt = time(row.nextTryAt);
   if (nextTryAt) next.nextTryAt = nextTryAt;
   if (row.startGaveUp === true) next.startGaveUp = true;
+  const startRound = count(row.startRound);
+  if (startRound) next.startRound = startRound;
   const lease = leaseFrom(row.lease);
   if (lease) next.lease = lease;
   const updatedAt = time(row.updatedAt);

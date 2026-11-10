@@ -22,12 +22,15 @@ describe("which brief a review is about", () => {
     expect(decisionKeyFor("r1", "other", hash)).not.toBe(key);
     // The Inbox keeps a key to 120 characters, of letters, digits and - _ . : /.
     const long = "r".repeat(100);
-    for (const made of [decisionKeyFor(long, "lead", hash), startKeyFor(long, "lead", hash)]) {
+    for (const made of [decisionKeyFor(long, "lead", hash), startKeyFor(long, "lead", hash, 1)]) {
       expect(made.length).toBeLessThanOrEqual(120);
       expect(made).toMatch(/^[A-Za-z0-9\-_.:/]+$/);
     }
     // Two long request IDs that share a start do not share a question.
     expect(decisionKeyFor(`${"r".repeat(70)}a`, "lead", hash)).not.toBe(decisionKeyFor(`${"r".repeat(70)}b`, "lead", hash));
-    expect(startKeyFor("r1", "lead", hash)).not.toBe(key);
+    expect(startKeyFor("r1", "lead", hash, 1)).not.toBe(key);
+    // Each give-up is its own question, so an answered one is never taken for the answer to the next.
+    expect(startKeyFor("r1", "lead", hash, 1)).not.toBe(startKeyFor("r1", "lead", hash, 2));
+    expect(startKeyFor("r1", "lead", hash, 2)).toBe(startKeyFor("r1", "lead", hash, 2));
   });
 });

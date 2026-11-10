@@ -43,6 +43,10 @@ export function fakeInbox(options: { refuseChats?: boolean; failAsk?: boolean; f
       return {};
     },
     async answer(project, key, answer, by) {
+      // decisions.rs person_only: a review's question is the person's, and the app's own close, nobody else's.
+      if (/^fresh-eyes(-start)?\//.test(key) && by !== undefined && !["user", "person", "app:fresh-eyes"].includes(by)) {
+        throw new Error(`Only the person answers a fresh-eyes review; ${by} cannot. It waits in the Inbox until they do.`);
+      }
       inbox.answered.push({ project, key, answer, ...(by ? { by } : {}) });
       const row = inbox.rows.find((entry) => entry.project === project && entry.decisionKey === key);
       if (row && row.state === "open") Object.assign(row, { answer, state: "answered", answeredBy: by ?? "person" });
@@ -99,3 +103,5 @@ export function windowOn(disk: ReturnType<typeof memoryDisk>, windowId: string, 
 }
 
 export const FINDING = "FINDING: A step is missing.\nBREAK: It stops half way.";
+/** What a reviewer says when it finds nothing to break. Silence is not this. */
+export const CLEAN = "NO CONCERNS";

@@ -55,6 +55,8 @@ const LEASE_RENEW_MS = 30_000;
 export const START_BACKOFF_MS = [30_000, 120_000] as const;
 const START_TRIES = START_BACKOFF_MS.length + 1;
 const DECISIONS_READ = 200;
+/** Who the app says it is when it closes a question itself (a brief taken back, replaced, or accepted as clean). */
+export const APP_CLOSER = "app:fresh-eyes";
 
 /** A refusal in plain words: the delegate answers it as an error, so nothing is held and nothing is lost quietly. */
 export class FreshEyesRefusal extends Error {
@@ -116,12 +118,28 @@ export function freshEyesLine(input: {
   const count = input.findings ?? 0;
   if (input.status === "approved") return "Fresh-eyes review: cleared";
   if (input.status === "skipped_by_person") return "Fresh-eyes review: skipped once";
+  if (input.status === "editing") return "Fresh-eyes review: the plan is being edited";
   if (input.running && count === 0) return "Fresh-eyes review: still running";
   const base =
     count > 0
       ? `Fresh-eyes review: ${count} ${count === 1 ? "finding" : "findings"}, waiting on you`
       : "Fresh-eyes review: waiting on you";
   return input.askFailed ? `${base} (the Inbox question could not be asked, so decide here)` : base;
+}
+
+/** The first lines of the brief a review is about, for the card: what Approve would start. */
+export function briefPreview(record: Pick<ReviewRecord, "held" | "plan"> | null | undefined): string | null {
+  if (!record) return null;
+  const brief = typeof record.held?.brief === "string" ? record.held.brief : record.plan;
+  const lines = brief
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 3);
+  if (lines.length === 0) return null;
+  const text = lines.join("\n");
+  return text.length > 320 ? `${text.slice(0, 320).trimEnd()}...` : text;
 }
 
 export type FreshEyesRequest = {
@@ -188,6 +206,14 @@ function decided(record: ReviewRecord): boolean {
 
 function decidedToStart(record: ReviewRecord): boolean {
   return record.status === "approved" || record.status === "skipped_by_person";
+}
+
+/** The record once the person has decided. Edit plan ends this brief: it is not kept to start, only remembered. */
+function decidedRecord(current: ReviewRecord, status: ReviewStatus): ReviewRecord {
+  const { held: _held, ...rest } = current;
+  const next: ReviewRecord = { ...(status === "editing" ? rest : current), status, retry: false, running: false };
+  delete next.lease;
+  return next;
 }
 
 function messageOf(error: unknown): string {
@@ -280,7 +306,8 @@ async function decide(
   const hash = briefHash(owner, held ?? { plan });
   const stored = reviewFor(project, input.requestId, storage, owner);
   // Another call under this request ID (an edited brief) is not this brief's decision: it is a new review below.
-  let record = sameBrief(stored, owner, hash) ? stored : null;
+  // A brief that started is spent: its approval does not cover starting it again (the worker may have been cancelled).
+  let record = stored && !stored.launched && sameBrief(stored, owner, hash) ? stored : null;
   if (record) record = await applyLookup(record, storage, backendOf(deps));
   if (record && mayLaunchBuilders(setting, record)) return { hold: false, why: lineFor(record) };
   if (record?.status === "editing") return { hold: true, why: lineFor(record) };
@@ -345,7 +372,7 @@ async function startReview(
   if (!current) throw new FreshEyesRefusal(UNSAVED);
   // The brief this one replaced (an edited call) is no longer waiting on anyone: its question closes.
   if (stored && stored.hash !== hash && stored.held && !stored.launched) {
-    void closeQuestions(stored, "Replaced by an edited brief.", `chat:${owner}`, deps);
+    void closeQuestions(stored, "Replaced by an edited brief.", APP_CLOSER, deps);
   }
   if (!port) {
     // Nobody can review it here. The person decides: this is the fallback, not a skipped review.
@@ -425,6 +452,8 @@ async function settleReview(
     const record = done.current;
     if (!record || !sameBrief(record, start.owner ?? "", start.hash ?? "")) return;
     if (mayLaunchBuilders(settingFor(start.project, storage), record)) {
+      // A review that timed out, was asked, ran again and was accepted as clean: the question is answered now.
+      if (accept && record.asked) await closeQuestions(record, "Approve (a clean review, accepted as allowed)", APP_CLOSER, deps);
       await releaseHeld(deps);
       return;
     }
@@ -485,7 +514,9 @@ async function closeQuestions(record: ReviewRecord, text: string, by: string, de
   const backend = backendOf(deps);
   if (!backend) return;
   const keys = [reviewKeyOf(record)];
-  if (record.owner && record.hash) keys.push(startKeyFor(record.requestId, record.owner, record.hash));
+  if (record.owner && record.hash && record.startRound) {
+    keys.push(startKeyFor(record.requestId, record.owner, record.hash, record.startRound));
+  }
   for (const key of keys) {
     try {
       await backend.answer(record.project, key, text, by);
@@ -504,7 +535,7 @@ async function applyLookup(
   storage: EyesStorage,
   backend: FreshEyesBackend | undefined,
 ): Promise<ReviewRecord> {
-  if (!backend || (record.status !== "pending" && record.status !== "editing")) return record;
+  if (!backend || record.status !== "pending") return record;
   try {
     const key = reviewKeyOf(record);
     const found = (await backend.decisions()).find((row) => row.project === record.project && row.decisionKey === key);
@@ -517,8 +548,8 @@ async function applyLookup(
     if (record.status === status) return record;
     const done = await updateReview(record, (current) => {
       if (!sameBrief(current, record.owner ?? "", record.hash ?? "")) return null;
-      if (current.status !== "pending" && current.status !== "editing") return null;
-      return { ...current, status, retry: false, running: false, lease: undefined };
+      if (current.status !== "pending") return null;
+      return decidedRecord(current, status);
     }, storage);
     return done.current ?? record;
   } catch {
@@ -534,7 +565,7 @@ export async function answerFreshEyes(
   project: string,
   requestId: string,
   answer: string,
-  options: { storage?: EyesStorage; backend?: FreshEyesBackend; owner?: string } = {},
+  options: { storage?: EyesStorage; backend?: FreshEyesBackend; owner?: string; hash?: string } = {},
 ): Promise<ReviewRecord | null> {
   const storage = options.storage ?? freshEyesStorage();
   const status = statusFromAnswer(answer);
@@ -547,12 +578,15 @@ export async function answerFreshEyes(
   }
   const first = reviewFor(key, requestId, storage, options.owner);
   if (!first) return null;
-  if (first.status === "pending" || first.status === "editing") {
-    const done = await updateReview(first, (current) =>
-      current.status === "pending" || current.status === "editing"
-        ? { ...current, status, retry: false, running: false, lease: undefined }
-        : null,
-    storage);
+  // The card showed one brief. If the record holds another now (it was replaced while the card was open), the answer
+  // was not about it: nothing is approved, and the question for the brief that is held is asked.
+  if (options.hash !== undefined && first.hash !== options.hash) {
+    console.warn("A fresh-eyes answer was about a brief that has been replaced, so it was not applied.");
+    if (!first.asked && !first.running) await askOnce(first, storage, options);
+    return first;
+  }
+  if (first.status === "pending") {
+    const done = await updateReview(first, (current) => (current.status === "pending" ? decidedRecord(current, status) : null), storage);
     if (done.ok && done.current) await closeQuestions(done.current, answer, "user", options);
   }
   const record = reviewFor(key, requestId, storage, first.owner) ?? first;
@@ -652,6 +686,7 @@ async function noteStartFailure(
     const next: ReviewRecord = { ...current, startFailures: failures, startError: reason, lease: undefined };
     if (gaveUp) {
       next.startGaveUp = true;
+      next.startRound = (current.startRound ?? 0) + 1;
       delete next.nextTryAt;
     } else {
       next.nextTryAt = storage.now() + START_BACKOFF_MS[failures - 1];
@@ -678,7 +713,7 @@ async function announceStartFailure(
   } catch (error) {
     console.warn("The chat that asked could not be told its brief did not start", error);
   }
-  const key = startKeyFor(record.requestId, record.owner, record.hash);
+  const key = startKeyFor(record.requestId, record.owner, record.hash, record.startRound ?? 1);
   const question = `A brief that passed its fresh-eyes review could not start: ${reason}`.slice(0, 1_900);
   let asked = false;
   for (const askedBy of [...new Set([record.owner.trim() || "gate", "gate"])]) {
@@ -717,7 +752,7 @@ export async function syncHeldDecisions(deps: Pick<FreshEyesDeps, "storage" | "b
   if (backend) {
     for (const row of [...storage.snapshot().reviews]) {
       if (!row.held || row.launched) continue;
-      if (row.status === "pending" || row.status === "editing") {
+      if (row.status === "pending") {
         await applyLookup(row, storage, backend);
       } else if (row.startGaveUp && row.owner && row.hash) {
         await applyStartAnswer(row, storage, backend);
@@ -730,7 +765,7 @@ export async function syncHeldDecisions(deps: Pick<FreshEyesDeps, "storage" | "b
 async function applyStartAnswer(row: ReviewRecord, storage: EyesStorage, backend: FreshEyesBackend): Promise<void> {
   let found: EyesDecision | undefined;
   try {
-    const key = startKeyFor(row.requestId, row.owner ?? "", row.hash ?? "");
+    const key = startKeyFor(row.requestId, row.owner ?? "", row.hash ?? "", row.startRound ?? 1);
     found = (await backend.decisions()).find((entry) => entry.project === row.project && entry.decisionKey === key);
   } catch {
     return;
@@ -797,7 +832,7 @@ export async function cancelHeld(
     .reviews.find((entry) => entry.owner === owner && entry.held && !entry.launched && heldChatId(owner, entry.requestId) === childSessionId);
   if (!row) return false;
   const gone = await dropReview(row, storage);
-  if (gone) await closeQuestions(row, "Cancelled by the chat that asked.", `chat:${owner}`, deps);
+  if (gone) await closeQuestions(row, "Cancelled by the chat that asked.", APP_CLOSER, deps);
   return gone;
 }
 

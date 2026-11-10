@@ -8,6 +8,8 @@ export function FreshEyesCard(props: {
   enabled: boolean;
   autoAccept: boolean;
   line: string | null;
+  /** The first lines of the brief Approve would start. */
+  brief?: string | null;
   findings: readonly Finding[];
   pending: boolean;
   onToggle: () => void;
@@ -51,6 +53,11 @@ export function FreshEyesCard(props: {
       {props.line ? (
         <p className="mt-1 text-[13px] text-content" data-fresh-eyes-line="">
           {props.line}
+        </p>
+      ) : null}
+      {props.enabled && props.brief ? (
+        <p className="mt-1 whitespace-pre-line text-[12px] text-content/70" data-fresh-eyes-brief="">
+          {props.brief}
         </p>
       ) : null}
       {props.enabled && props.findings.length > 0 ? (

@@ -54,7 +54,9 @@ export function readingEntries(value: unknown): Reading[] {
     const path = cleanPath(row.path);
     if (!path || seen.has(path)) continue;
     if (typeof row.text !== "string") continue;
-    const text = row.text.replace(/\0/g, "").replace(/\r\n/g, "\n").trim().slice(0, 8_000);
+    // Trim again after the cut: a cut that ends in whitespace would otherwise change on a second pass, and the brief
+    // would hash differently after a restart. Cleaning twice must give what cleaning once gave.
+    const text = row.text.replace(/\0/g, "").replace(/\r\n/g, "\n").trim().slice(0, 8_000).trim();
     if (!text) continue;
     seen.add(path);
     out.push({ path, text });
@@ -76,9 +78,10 @@ export function reviewerPrompt(input: { persona: Persona; plan: string; reading:
   const lines = [
     PERSONA_BRIEF[input.persona],
     "",
-    "Reply with zero or more findings. Each finding is two lines:",
+    "Reply with one or more findings. Each finding is two lines:",
     "FINDING: one sentence",
     "BREAK: what would go wrong",
+    `If there is nothing to break, reply with exactly ${NO_CONCERNS} and nothing else. An empty reply is not an answer.`,
     "No other text.",
     "",
     "Plan:",
@@ -110,9 +113,16 @@ export function reviewerChoice(
   return roleModel("plan", base);
 }
 
+/** What a reviewer says when it finds nothing to break. Silence is not this. */
+export const NO_CONCERNS = "NO CONCERNS";
+
+/**
+ * A reviewer's reply. Findings are findings. A reply with none is clean only when it is the explicit token (nothing else):
+ * an empty, missing or unparseable reply is a reviewer that did not answer, never a pass, so a reviewer that died silently
+ * or a brief written to keep reviewers quiet cannot approve itself.
+ */
 export function parseFindings(persona: Persona, text: string): { findings: Finding[]; readable: boolean } {
   const body = text.replace(/\r\n/g, "\n").trim();
-  if (!body) return { findings: [], readable: true };
   const findings: Finding[] = [];
   for (const block of body.split(/\n(?=FINDING:)/)) {
     const summary = /^FINDING:\s*(.+)$/m.exec(block)?.[1]?.trim() ?? "";
@@ -120,8 +130,9 @@ export function parseFindings(persona: Persona, text: string): { findings: Findi
     if (!summary) continue;
     findings.push({ persona, summary: summary.slice(0, 400), break: broken.slice(0, 400) });
   }
-  if (findings.length === 0) return { findings: [], readable: false };
-  return { findings, readable: true };
+  if (findings.length > 0) return { findings, readable: true };
+  if (/^NO CONCERNS\.?$/i.test(body)) return { findings: [], readable: true };
+  return { findings: [], readable: false };
 }
 
 /** Same summary twice is one finding. The first one is kept. */

@@ -29,8 +29,11 @@ export function decisionKeyFor(requestId: string, owner: string, hash: string): 
   return `fresh-eyes/${requestId.slice(0, 60)}/${tag}`;
 }
 
-/** The key of the question that says an approved brief could not start. */
-export function startKeyFor(requestId: string, owner: string, hash: string): string {
-  const tag = sha256Hex(`${owner.trim()}\n${requestId}\n${hash}`).slice(0, 16);
+/**
+ * The key of the question that says an approved brief could not start. Each give-up is its own question (`round`), so
+ * one the person already answered ("Try again") is never taken for the answer to the next.
+ */
+export function startKeyFor(requestId: string, owner: string, hash: string, round: number): string {
+  const tag = sha256Hex(`${owner.trim()}\n${requestId}\n${hash}\n${round}`).slice(0, 16);
   return `fresh-eyes-start/${requestId.slice(0, 60)}/${tag}`;
 }

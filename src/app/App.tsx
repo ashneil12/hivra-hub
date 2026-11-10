@@ -14644,6 +14644,13 @@ function Workspace({
                     ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
+              // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
+              checkLead: (_owner, mono, lead) => {
+                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+                  throw new Error(
+                    `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+              },
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

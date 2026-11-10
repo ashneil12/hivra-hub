@@ -286,6 +286,8 @@ export type AgentAppTasksHost = {
     /** The delegate call, kept so a later approval can start this same brief. */
     held?: Record<string, unknown>;
   }): Promise<{ hold: boolean; why: string }>;
+  /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
+  checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
   /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
   freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
   /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
@@ -795,12 +797,19 @@ async function delegate(
       unbindPhaseLauncher(sharedTask);
     }
   }
+  const startedAlready = async (): Promise<boolean> => {
+    const [row] = await tasks.owned(source.id, { requestIds: [`app-${source.id}-${requestId}`] }).catch(() => [] as Delegation[]);
+    return !!row && row.state !== "cancelled";
+  };
   // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
   // cheaply (so a brief that would fail is never reviewed) and before anything starts. The review keeps the call as a
   // waiting task; Approve (or Skip once) asks tasks.delegate again under the same request ID, with the call that was
   // reviewed. The reviewers run after this call returns, so it never waits on them.
   const heldForReview = async () => {
     if (!tasks.freshEyes) return undefined;
+    // A task already started for this request is read back below, never started again: nothing to review, and a
+    // worker that was cancelled is not started again on the strength of an earlier approval.
+    if (await startedAlready()) return undefined;
     // The reading list is capped here, so what is kept, reviewed and started is the same short list.
     const held = { ...input, ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}) };
     const eyes = await tasks.freshEyes({
@@ -837,6 +846,9 @@ async function delegate(
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
+    // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
+    const request = leadRequest(input, tasks);
+    await tasks.checkLead?.(source, owner.mono, request.lead);
     const held = await heldForReview();
     if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
@@ -909,6 +921,12 @@ async function delegate(
   // A model the call names must be one this chat can ask for. Checked here, so a bad name is refused before a review.
   const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
   const askedModel = taskModel(input.model, source, onBridge);
+  // A job Ash already answered in its worker's chat is his: refused before a review, as it is before a start.
+  if (tasks.freshEyes && !(await startedAlready())) {
+    const open = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+    const refusal = answeredJobRefusal(open, { requestId, title, ...(redoes ? { redoes } : {}) });
+    if (refusal) throw new Error(refusal);
+  }
   const held = await heldForReview();
   if (held) return held;
   // The Mono's own team is made now, once the brief may start: its folder is where this worker runs.
@@ -1219,6 +1237,24 @@ async function delegate(
 }
 
 /** delegate_task {lead}: a Mono briefs a project's Lead (double delegation); its report comes back later. */
+/** What a brief to a Lead names, checked: the Lead, no project, model, effort or isolation, and how to go in when busy. */
+function leadRequest(
+  input: Record<string, unknown>,
+  tasks: AgentAppTasksHost,
+): { lead: string; whenBusy: "queue" | "steer" } {
+  if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  const lead = text(input.lead, "lead", 200);
+  for (const field of ["project", "model", "effort", "isolation"] as const)
+    if (input[field] !== undefined)
+      throw new Error(
+        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
+      );
+  const whenBusy = input.whenBusy ?? "queue";
+  if (whenBusy !== "queue" && whenBusy !== "steer")
+    throw new Error('whenBusy must be "queue" or "steer"');
+  return { lead, whenBusy };
+}
+
 async function briefLead(
   source: Session,
   mono: { id: string; name?: string },
@@ -1235,17 +1271,8 @@ async function briefLead(
     gateFolder?: string;
   },
 ) {
-  const { input } = job;
+  const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
-  const lead = text(input.lead, "lead", 200);
-  for (const field of ["project", "model", "effort", "isolation"] as const)
-    if (input[field] !== undefined)
-      throw new Error(
-        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
-      );
-  const whenBusy = input.whenBusy ?? "queue";
-  if (whenBusy !== "queue" && whenBusy !== "steer")
-    throw new Error('whenBusy must be "queue" or "steer"');
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
