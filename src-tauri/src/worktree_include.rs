@@ -1,24 +1,27 @@
 //! WP-138: the `.worktreeinclude` file at a checkout root.
 //!
-//! One relative path per line. A blank line, or a line whose first non-space
-//! character is `#`, is a comment. Paths that leave the checkout are refused.
-//! A missing file is not an error: nothing is copied, which is today's behaviour.
-//! Copied files are never staged, and their contents are never put in a note.
+//! The file uses gitignore syntax: patterns, `!` to drop a match, `**`, and `#`
+//! comments. Only files git ignores are copied, as Claude Code does: a tracked
+//! file is already in the new worktree, and an untracked file that is not
+//! ignored is the person's work in progress. Git does the matching, so escaped
+//! characters, negations and directory patterns behave exactly as they do in
+//! `.gitignore`. A missing file is not an error: nothing is copied, which is
+//! today's behaviour. Copied files are never staged, and their contents are
+//! never put in a note.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// How many bytes of the manifest we will read. A path list fits easily. Anything
+/// How many bytes of the manifest we will read. A pattern list fits easily. Anything
 /// larger is refused without reading it, so a huge file cannot be pulled into memory.
 const MANIFEST_BYTES: u64 = 64 * 1024;
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ParsedInclude {
-    /// Repo-relative paths, `/`-separated, duplicates removed, in first-seen order.
-    pub allowed: Vec<String>,
-    /// Lines that were not comments and did not name a path inside the checkout.
-    pub refused: usize,
-}
+/// How many bytes of `git ls-files` output we will hold. A match list past this is
+/// far beyond the copy cap; the copy stops and says so.
+const LIST_BYTES: usize = 2 * 1024 * 1024;
+
+/// At most this many files are copied. The rest are reported, not read.
+const FILE_CAP: usize = 100;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Manifest {
@@ -27,31 +30,6 @@ pub(crate) enum Manifest {
     /// Present, but not a small UTF-8 file we can trust (a link, a directory, too big, or unreadable).
     Unreadable,
     Text(String),
-}
-
-/// Parse a manifest. Does not touch the disk.
-pub(crate) fn parse_include(text: &str) -> ParsedInclude {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let mut allowed = Vec::new();
-    let mut seen = HashSet::new();
-    let mut refused = 0usize;
-    for raw in text.split('\n') {
-        let line = raw.trim().trim_end_matches('\r');
-        // `trim` already drops `\r`. Trim again so a comment line with odd space is still a comment.
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        match normalize_include_path(line) {
-            Some(path) => {
-                if seen.insert(path.clone()) {
-                    allowed.push(path);
-                }
-            }
-            None => refused += 1,
-        }
-    }
-    ParsedInclude { allowed, refused }
 }
 
 /// Read `.worktreeinclude` from `root`. Missing is [`Manifest::Missing`], not an error.
@@ -70,58 +48,147 @@ pub(crate) fn read_manifest(root: &Path) -> Manifest {
     }
     match std::fs::read(&path) {
         Ok(bytes) => match String::from_utf8(bytes) {
-            Ok(text) => Manifest::Text(text),
-            Err(_) => Manifest::Unreadable,
+            // A NUL byte would cut the pattern list at whatever git's reader does with it.
+            Ok(text) if !text.contains('\0') => Manifest::Text(text),
+            _ => Manifest::Unreadable,
         },
         Err(_) => Manifest::Unreadable,
     }
 }
 
-/// `Some` is a relative path that stays inside the checkout. `None` refuses the line.
-fn normalize_include_path(line: &str) -> Option<String> {
-    if line.contains('\0') || line.starts_with('/') || line.starts_with('\\') {
-        return None;
-    }
-    let bytes = line.as_bytes();
-    // `C:\...` and `C:/...`. A colon in the second position is a drive, not a file name.
-    if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-        return None;
-    }
-    // `\` is a separator, so a Windows `..\` cannot hide in a file name.
-    let unified = line.replace('\\', "/");
-    let unified = unified.strip_suffix('/').unwrap_or(&unified);
-    if unified.is_empty() {
-        return None;
-    }
-    let mut parts = Vec::new();
-    for part in unified.split('/') {
-        if part.is_empty() || part == ".." {
-            return None;
-        }
-        if part == "." {
-            continue;
-        }
-        parts.push(part);
-    }
-    if parts.is_empty() {
-        return None;
-    }
-    Some(parts.join("/"))
+/// The manifest text git will read: no BOM, and one line ending so a `\r` cannot
+/// ride at the end of a pattern.
+fn manifest_text(text: &str) -> String {
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    text.replace("\r\n", "\n").replace('\r', "\n")
 }
 
-/// At most this many files are copied. The rest are reported, not read.
-const FILE_CAP: usize = 100;
+/// A manifest git can read from a path. The manifest may sit in a checkout that is
+/// walked by other tools, so git gets a private copy and the copy goes away.
+struct StagedManifest(PathBuf);
+
+impl Drop for StagedManifest {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn stage_manifest(text: &str) -> Option<StagedManifest> {
+    let path =
+        std::env::temp_dir().join(format!("monocode-worktreeinclude-{}", uuid::Uuid::new_v4()));
+    std::fs::write(&path, text.as_bytes()).ok()?;
+    Some(StagedManifest(path))
+}
+
+/// Why the match list stopped short of every file it names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stop {
+    /// Every match is in the list.
+    None,
+    /// The list was cut at [`FILE_CAP`].
+    Cap,
+    /// Git's list was too large to read whole.
+    Listing,
+}
+
+struct Chosen {
+    /// Repo-relative paths, in the order git lists them.
+    paths: Vec<String>,
+    stop: Stop,
+    /// False when the manifest or git could not be read at all.
+    readable: bool,
+}
+
+fn nothing_chosen(readable: bool) -> Chosen {
+    Chosen {
+        paths: Vec::new(),
+        stop: Stop::None,
+        readable,
+    }
+}
+
+/// The files git ignores that the manifest selects. Git owns the pattern language,
+/// so negation, `**`, escapes and directory patterns all behave as they do in
+/// `.gitignore`. A pattern that matches nothing is not an error.
+fn choose(source: &Path, manifest: &str) -> Chosen {
+    let Some(staged) = stage_manifest(manifest) else {
+        return nothing_chosen(false);
+    };
+    let exclude = format!("--exclude-from={}", staged.0.to_string_lossy());
+    // Files the manifest's patterns ignore, on their own. This list includes a file
+    // that the repository's own rules would let through (an untracked file the person
+    // has not ignored), so it is filtered below.
+    let Some((selected, selected_cut)) = git_paths(
+        source,
+        &["ls-files", "-z", "--others", "--ignored", &exclude],
+    ) else {
+        return nothing_chosen(false);
+    };
+    if selected.is_empty() {
+        return nothing_chosen(true);
+    }
+    // Files the checkout's own rules ignore: `.gitignore`, `.git/info/exclude`, and
+    // the person's global ignore file.
+    let Some((ignored, ignored_cut)) = git_paths(
+        source,
+        &[
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+        ],
+    ) else {
+        return nothing_chosen(false);
+    };
+    let ignored: HashSet<String> = ignored.into_iter().collect();
+    let mut paths: Vec<String> = selected
+        .into_iter()
+        .filter(|path| ignored.contains(path))
+        .collect();
+    let mut stop = if selected_cut || ignored_cut {
+        Stop::Listing
+    } else {
+        Stop::None
+    };
+    if paths.len() > FILE_CAP {
+        paths.truncate(FILE_CAP);
+        stop = Stop::Cap;
+    }
+    Chosen {
+        paths,
+        stop,
+        readable: true,
+    }
+}
+
+/// `git`'s NUL-separated path list, and whether the list was cut short.
+fn git_paths(root: &Path, args: &[&str]) -> Option<(Vec<String>, bool)> {
+    let (bytes, capped) = crate::fs::git_output_capped(root, args, LIST_BYTES, None)?;
+    let complete = bytes.is_empty() || bytes.ends_with(&[0]);
+    let mut parts: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    if !complete {
+        // The cap can cut a path in half; half a path names nothing.
+        parts.pop();
+    }
+    let paths = parts
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(|part| String::from_utf8_lossy(part).into_owned())
+        .collect();
+    Some((paths, capped || !complete))
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct IncludeOutcome {
-    /// Set when named files are in the new worktree and a CLI worktree would not have them.
+    /// Set when named files are in the new worktree.
     pub note: Option<String>,
     /// Set when a listed path could not be copied. Never contains file contents.
     pub warning: Option<String>,
 }
 
-/// Copy the allowed files from `source` into `dest`. Does not stage them and does not
-/// remove the worktree when a copy fails.
+/// Copy the selected gitignored files from `source` into `dest`. Does not stage them
+/// and does not remove the worktree when a copy fails.
 pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
     if !dest.is_dir() {
         return IncludeOutcome {
@@ -129,7 +196,7 @@ pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
             warning: Some("Could not copy listed files into this worktree.".into()),
         };
     }
-    let parsed = match read_manifest(source) {
+    let text = match read_manifest(source) {
         Manifest::Missing => {
             return IncludeOutcome {
                 note: None,
@@ -142,78 +209,68 @@ pub(crate) fn apply(source: &Path, dest: &Path) -> IncludeOutcome {
                 warning: Some("Could not read .worktreeinclude.".into()),
             };
         }
-        Manifest::Text(text) => parse_include(&text),
+        Manifest::Text(text) => manifest_text(&text),
     };
-    if parsed.allowed.is_empty() && parsed.refused == 0 {
+    let chosen = choose(source, &text);
+    if !chosen.readable {
+        return IncludeOutcome {
+            note: None,
+            warning: Some("Could not read .worktreeinclude.".into()),
+        };
+    }
+    if chosen.paths.is_empty() && chosen.stop == Stop::None {
         return IncludeOutcome {
             note: None,
             warning: None,
         };
     }
 
-    let mut jobs = Vec::new();
-    let mut seen = HashSet::new();
-    let mut failed = Vec::new();
-    let mut capped = false;
-    for listed in &parsed.allowed {
-        if jobs.len() >= FILE_CAP {
-            capped = true;
-            break;
-        }
-        expand(
-            source,
-            listed,
-            &mut jobs,
-            &mut seen,
-            &mut failed,
-            &mut capped,
-        );
-    }
-
     let mut copied = 0usize;
     let mut left = Vec::new();
-    for relative in jobs {
-        match place(source, dest, &relative) {
-            Place::Copied => copied += 1,
-            Place::Already if !tracked(dest, &relative) => copied += 1,
-            Place::Already => {}
-            Place::Left => left.push(relative),
-            Place::Failed => failed.push(relative),
+    let mut failed = Vec::new();
+    for relative in &chosen.paths {
+        match place(source, dest, relative) {
+            Place::Copied | Place::Already => copied += 1,
+            Place::Left => left.push(relative.clone()),
+            Place::Failed => failed.push(relative.clone()),
         }
     }
     IncludeOutcome {
         note: copied_note(copied),
-        warning: warning_text(&failed, &left, parsed.refused, capped),
+        warning: warning_text(&failed, &left, chosen.stop),
     }
 }
 
 fn copied_note(copied: usize) -> Option<String> {
     match copied {
         0 => None,
-        1 => Some(
-            "1 local file named in .worktreeinclude is in this worktree. A CLI that makes its own worktree will not have it."
-                .into(),
-        ),
+        1 => Some("1 file named in .worktreeinclude is in this worktree.".into()),
         n => Some(format!(
-            "{n} local files named in .worktreeinclude are in this worktree. A CLI that makes its own worktree will not have them."
+            "{n} files named in .worktreeinclude are in this worktree."
         )),
     }
 }
 
-fn warning_text(
-    failed: &[String],
-    left: &[String],
-    refused: usize,
-    capped: bool,
-) -> Option<String> {
-    let mut parts = Vec::new();
-    if refused == 1 {
-        parts.push("Skipped 1 path that leaves the repository.".to_string());
-    } else if refused > 1 {
-        parts.push(format!(
-            "Skipped {refused} paths that leave the repository."
-        ));
+#[cfg(test)]
+mod note_tests {
+    // A regression guard in its own module so it runs with `cargo test --lib note`.
+    #[test]
+    fn the_note_never_claims_another_cli_will_not_have_the_files() {
+        // Claude Code honours the same file for worktrees it makes itself, so the
+        // old sentence ("A CLI that makes its own worktree will not have them") was
+        // wrong. Any note the copy step can build must stay free of it.
+        for copied in [0usize, 1, 2, 3, 100] {
+            let note = super::copied_note(copied).unwrap_or_default();
+            assert!(!note.contains("CLI"), "{note}");
+            assert!(!note.contains("will not have"), "{note}");
+        }
+        let warning = super::warning_text(&[], &[], super::Stop::None).unwrap_or_default();
+        assert!(!warning.contains("CLI"), "{warning}");
     }
+}
+
+fn warning_text(failed: &[String], left: &[String], stop: Stop) -> Option<String> {
+    let mut parts = Vec::new();
     match failed.len() {
         0 => {}
         1 => parts.push(format!(
@@ -229,10 +286,12 @@ fn warning_text(
         1 => parts.push(format!("Left {} as it was.", show_path(&left[0]))),
         n => parts.push(format!("Left {n} files as they were.")),
     }
-    if capped {
-        parts.push(format!(
+    match stop {
+        Stop::None => {}
+        Stop::Cap => parts.push(format!(
             "Stopped after {FILE_CAP} files from .worktreeinclude."
-        ));
+        )),
+        Stop::Listing => parts.push("Could not list every file named in .worktreeinclude.".into()),
     }
     if parts.is_empty() {
         None
@@ -251,89 +310,9 @@ fn show_path(relative: &str) -> String {
     }
 }
 
-fn expand(
-    source: &Path,
-    relative: &str,
-    jobs: &mut Vec<String>,
-    seen: &mut HashSet<String>,
-    failed: &mut Vec<String>,
-    capped: &mut bool,
-) {
-    if *capped || jobs.len() >= FILE_CAP {
-        *capped = true;
-        return;
-    }
-    let path = match located(source, relative) {
-        Ok(path) => path,
-        Err(()) => {
-            failed.push(relative.to_string());
-            return;
-        }
-    };
-    let meta = match std::fs::symlink_metadata(&path) {
-        Ok(meta) => meta,
-        Err(_) => {
-            failed.push(relative.to_string());
-            return;
-        }
-    };
-    if meta.file_type().is_symlink() {
-        failed.push(relative.to_string());
-        return;
-    }
-    if meta.is_file() {
-        if seen.insert(relative.to_string()) {
-            jobs.push(relative.to_string());
-        }
-        return;
-    }
-    if !meta.is_dir() {
-        failed.push(relative.to_string());
-        return;
-    }
-    let entries = match std::fs::read_dir(&path) {
-        Ok(entries) => entries,
-        Err(_) => {
-            failed.push(relative.to_string());
-            return;
-        }
-    };
-    for entry in entries {
-        if jobs.len() >= FILE_CAP {
-            *capped = true;
-            return;
-        }
-        let Ok(entry) = entry else {
-            failed.push(relative.to_string());
-            continue;
-        };
-        let name_owned = entry.file_name();
-        let Some(name) = name_owned.to_str() else {
-            failed.push(relative.to_string());
-            continue;
-        };
-        if name.is_empty()
-            || name == "."
-            || name == ".."
-            || name.contains('/')
-            || name.contains('\0')
-        {
-            failed.push(relative.to_string());
-            continue;
-        }
-        expand(
-            source,
-            &format!("{relative}/{name}"),
-            jobs,
-            seen,
-            failed,
-            capped,
-        );
-    }
-}
-
 enum Place {
     Copied,
+    /// The same bytes are already there, so the worktree has the file either way.
     Already,
     Left,
     Failed,
@@ -527,117 +506,9 @@ fn ensure_parents(dest: &Path, relative: &str) -> Result<(), ()> {
     Ok(())
 }
 
-fn tracked(dest: &Path, relative: &str) -> bool {
-    // Git not answering is not proof the file is tracked, and not a reason to overwrite it.
-    crate::fs::git_checked(dest, &["ls-files", "--error-unmatch", "--", relative]).is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn allowed(text: &str) -> Vec<String> {
-        parse_include(text).allowed
-    }
-
-    #[test]
-    fn allows_relative_paths_comments_and_duplicates() {
-        let parsed = parse_include(
-            "\u{feff}# local files\n\n.env\r\n  # indented comment\n./config/local.json\nconfig/./local.json\n.env\nMy Files/notes.txt\ncafe\u{0301}.env\nconfig\\\n",
-        );
-        assert_eq!(parsed.refused, 0);
-        assert_eq!(
-            parsed.allowed,
-            vec![
-                ".env".to_string(),
-                "config/local.json".to_string(),
-                "My Files/notes.txt".to_string(),
-                "cafe\u{0301}.env".to_string(),
-                "config".to_string(),
-            ]
-        );
-    }
-
-    #[test]
-    fn refuses_paths_that_leave_the_checkout() {
-        for line in [
-            "../.env",
-            "/etc/passwd",
-            "foo/../../x",
-            "foo/..",
-            "..",
-            ".",
-            "./",
-            "foo//bar",
-            "C:/Windows/win.ini",
-            "C:\\Windows\\win.ini",
-            "\\\\server\\share\\secret",
-            "foo\\..\\..\\outside",
-            ".env\0hidden",
-            "a:name",
-        ] {
-            let parsed = parse_include(line);
-            assert!(
-                parsed.allowed.is_empty(),
-                "{line:?} should be refused, got {:?}",
-                parsed.allowed
-            );
-            assert_eq!(parsed.refused, 1, "{line:?}");
-        }
-        // A refused line does not drop the lines that are fine.
-        let mixed = parse_include(".env\n../outside\nconfig/local.json\n");
-        assert_eq!(
-            mixed.allowed,
-            vec![".env".to_string(), "config/local.json".to_string()]
-        );
-        assert_eq!(mixed.refused, 1);
-    }
-
-    #[test]
-    fn a_missing_file_is_not_an_error() {
-        let dir =
-            std::env::temp_dir().join(format!("monocode-include-missing-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        assert_eq!(read_manifest(&dir), Manifest::Missing);
-        assert!(allowed("").is_empty());
-        assert_eq!(parse_include("# only a comment\n\n").refused, 0);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn a_link_or_a_huge_file_is_not_read() {
-        let dir =
-            std::env::temp_dir().join(format!("monocode-include-unread-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let manifest = dir.join(".worktreeinclude");
-        std::fs::write(&manifest, vec![b'x'; (MANIFEST_BYTES as usize) + 1]).unwrap();
-        assert_eq!(read_manifest(&dir), Manifest::Unreadable);
-        // The oversized body must not come back as text.
-        assert!(!matches!(read_manifest(&dir), Manifest::Text(_)));
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_symlink_manifest_is_not_followed() {
-        let dir =
-            std::env::temp_dir().join(format!("monocode-include-link-{}", uuid::Uuid::new_v4()));
-        let outside =
-            std::env::temp_dir().join(format!("monocode-include-outside-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(&outside, "SECRET-VALUE-do-not-leak\n").unwrap();
-        std::os::unix::fs::symlink(&outside, dir.join(".worktreeinclude")).unwrap();
-        assert_eq!(read_manifest(&dir), Manifest::Unreadable);
-        let _ = std::fs::remove_dir_all(&dir);
-        let _ = std::fs::remove_file(&outside);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn symlink_manifest_is_not_exercised_on_windows() {
-        // Creating a symlink needs an extra privilege on Windows. The metadata check
-        // (is_symlink -> Unreadable) is the same; this test records the skip.
-    }
 
     const SECRET: &str = "SECRET-VALUE-do-not-leak";
 
@@ -715,27 +586,104 @@ mod tests {
         );
     }
 
+    /// A repo whose `.gitignore` is committed, so ignored files can exist beside it.
+    fn repo_with_ignore(label: &str, ignore: &str) -> Tmp {
+        let tmp = tmp(label);
+        let root = tmp.0.join("repo");
+        init_repo(&root);
+        std::fs::write(root.join(".gitignore"), ignore).unwrap();
+        git(&root, &["add", ".gitignore"]);
+        commit(&root, "ignore");
+        tmp
+    }
+
     fn no_secret(text: &str) {
         assert!(!text.contains(SECRET), "{text}");
         assert!(!text.contains('—') && !text.contains('–'), "{text}");
     }
 
     #[test]
-    fn create_copies_named_files_and_does_not_stage_them() {
-        let tmp = tmp("create");
+    fn a_missing_file_is_not_an_error() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-include-missing-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_manifest(&dir), Manifest::Missing);
+        let dest = dir.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&dir, &dest);
+        assert_eq!(outcome.note, None);
+        assert_eq!(outcome.warning, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_link_or_a_huge_file_is_not_read() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-include-unread-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manifest = dir.join(".worktreeinclude");
+        std::fs::write(&manifest, vec![b'x'; (MANIFEST_BYTES as usize) + 1]).unwrap();
+        assert_eq!(read_manifest(&dir), Manifest::Unreadable);
+        // The oversized body must not come back as text.
+        assert!(!matches!(read_manifest(&dir), Manifest::Text(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manifest_with_a_nul_byte_is_not_read() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-include-nul-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".worktreeinclude"), ".env\0hidden\n").unwrap();
+        assert_eq!(read_manifest(&dir), Manifest::Unreadable);
+        let dest = dir.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&dir, &dest);
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("Could not read .worktreeinclude.")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_manifest_is_not_followed() {
+        let dir =
+            std::env::temp_dir().join(format!("monocode-include-link-{}", uuid::Uuid::new_v4()));
+        let outside =
+            std::env::temp_dir().join(format!("monocode-include-outside-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&outside, "SECRET-VALUE-do-not-leak\n").unwrap();
+        std::os::unix::fs::symlink(&outside, dir.join(".worktreeinclude")).unwrap();
+        assert_eq!(read_manifest(&dir), Manifest::Unreadable);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn symlink_manifest_is_not_exercised_on_windows() {
+        // Creating a symlink needs an extra privilege on Windows. The metadata check
+        // (is_symlink -> Unreadable) is the same; this test records the skip.
+    }
+
+    #[test]
+    fn create_copies_only_gitignored_files_named_in_the_manifest() {
+        let tmp = repo_with_ignore("create", ".env\nlocal/\nnotes/\n");
         let root = tmp.0.join("repo");
-        init_repo(&root);
-        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
-        git(&root, &["add", ".gitignore"]);
-        commit(&root, "ignore env");
         std::fs::write(root.join(".env"), SECRET).unwrap();
+        // Untracked and not ignored: someone's work in progress, not ours to copy.
         std::fs::write(root.join("local.txt"), "local only\n").unwrap();
-        std::fs::write(root.join("not-listed.txt"), "leave me\n").unwrap();
-        std::fs::create_dir(root.join("extra")).unwrap();
-        std::fs::write(root.join("extra").join("one.txt"), "one\n").unwrap();
+        std::fs::create_dir(root.join("local")).unwrap();
+        std::fs::write(root.join("local").join("one.txt"), "one\n").unwrap();
+        std::fs::create_dir(root.join("notes")).unwrap();
+        std::fs::write(root.join("notes").join("a.md"), SECRET).unwrap();
         std::fs::write(
             root.join(".worktreeinclude"),
-            ".env\r\nlocal.txt\nextra\n../escaped\n# comment\n",
+            // A BOM and CRLF line endings are accepted, and `local.txt` is listed
+            // but not ignored, so it stays behind.
+            "\u{feff}.env\r\nlocal/\r\nnotes/**/*.md\r\n# comment\r\nlocal.txt\r\n",
         )
         .unwrap();
 
@@ -743,30 +691,29 @@ mod tests {
         let dest = std::path::Path::new(&tree.path);
         assert_eq!(std::fs::read_to_string(dest.join(".env")).unwrap(), SECRET);
         assert_eq!(
-            std::fs::read_to_string(dest.join("local.txt")).unwrap(),
-            "local only\n"
-        );
-        assert_eq!(
-            std::fs::read_to_string(dest.join("extra").join("one.txt")).unwrap(),
+            std::fs::read_to_string(dest.join("local").join("one.txt")).unwrap(),
             "one\n"
         );
-        assert!(!dest.join("not-listed.txt").exists());
-        assert!(!tmp.0.join("escaped").exists());
+        assert_eq!(
+            std::fs::read_to_string(dest.join("notes").join("a.md")).unwrap(),
+            SECRET
+        );
+        assert!(!dest.join("local.txt").exists());
         let cached = git(dest, &["diff", "--cached", "--name-only"]);
         assert!(cached.trim().is_empty(), "{cached}");
         let status = git(dest, &["status", "--porcelain"]);
-        assert!(!status.contains(".env"), "{status}");
-        assert!(status.contains("?? local.txt"), "{status}");
+        assert!(!dest.join("local.txt").exists(), "{status}");
         assert!(!status
             .lines()
             .any(|line| line.starts_with("A ") || line.starts_with("M ")));
         let note = tree.include_note.expect("note");
         no_secret(&note);
-        assert!(note.contains("3 local files"));
-        assert!(note.contains("A CLI that makes its own worktree will not have them."));
-        let warning = tree.include_warning.expect("warning");
-        no_secret(&warning);
-        assert!(warning.contains("Skipped 1 path"));
+        assert_eq!(
+            note,
+            "3 files named in .worktreeinclude are in this worktree."
+        );
+        assert!(tree.include_warning.is_none());
+        // Running it again finds the same bytes and does not rewrite them.
         let again = apply(&root, dest);
         assert_eq!(std::fs::read_to_string(dest.join(".env")).unwrap(), SECRET);
         assert!(again.note.is_some());
@@ -776,16 +723,69 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_manifest_leaves_the_worktree_unchanged() {
-        let tmp = tmp("absent");
+    fn gitignore_patterns_support_negation_and_directories() {
+        let tmp = repo_with_ignore("glob", "*.env\n*.log\nconfig/\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join("a.env"), SECRET).unwrap();
+        std::fs::write(root.join("keep.env"), SECRET).unwrap();
+        std::fs::write(root.join("debug.log"), SECRET).unwrap();
+        std::fs::create_dir(root.join("config")).unwrap();
+        std::fs::write(root.join("config").join("x.json"), "x\n").unwrap();
+        std::fs::write(root.join("config").join("z.txt"), SECRET).unwrap();
+        std::fs::write(
+            root.join(".worktreeinclude"),
+            "*.env\n!keep.env\n*.log\nconfig/**/*.json\nnope/*.txt\n",
+        )
+        .unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
+        assert_eq!(std::fs::read_to_string(dest.join("a.env")).unwrap(), SECRET);
+        assert_eq!(
+            std::fs::read_to_string(dest.join("debug.log")).unwrap(),
+            SECRET
+        );
+        assert_eq!(
+            std::fs::read_to_string(dest.join("config").join("x.json")).unwrap(),
+            "x\n"
+        );
+        // `!keep.env` drops a match, and `config/z.txt` is ignored but not selected.
+        assert!(!dest.join("keep.env").exists());
+        assert!(!dest.join("config").join("z.txt").exists());
+        // A pattern that matches nothing is not a warning.
+        assert!(outcome.warning.is_none());
+        let note = outcome.note.expect("note");
+        no_secret(&note);
+        assert!(note.contains("3 files"));
+    }
+
+    #[test]
+    fn patterns_cannot_reach_outside_the_checkout() {
+        let tmp = tmp("escape");
         let root = tmp.0.join("repo");
         init_repo(&root);
-        std::fs::write(root.join("only-here.txt"), SECRET).unwrap();
-        let tree = crate::worktrees::create(&root, "feature/plain", "HEAD", false).unwrap();
-        let dest = std::path::Path::new(&tree.path);
-        assert!(!dest.join("only-here.txt").exists());
-        assert!(tree.include_note.is_none());
-        assert!(tree.include_warning.is_none());
+        std::fs::write(tmp.0.join("outside.txt"), SECRET).unwrap();
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        git(&root, &["add", ".gitignore"]);
+        commit(&root, "ignore");
+        std::fs::write(
+            root.join(".worktreeinclude"),
+            "../outside.txt\n/outside.txt\nC:/Windows/win.ini\nC:\\Windows\\win.ini\nfoo\\..\\..\\outside.txt\n",
+        )
+        .unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
+        // Nothing was copied: no pattern reached a file inside the checkout.
+        assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+        assert!(outcome.note.is_none());
+        assert!(outcome.warning.is_none());
+        // The same manifest still copies the file it can reach.
+        std::fs::write(root.join(".worktreeinclude"), "../outside.txt\n.env\n").unwrap();
+        let outcome = apply(&root, &dest);
+        assert_eq!(std::fs::read_to_string(dest.join(".env")).unwrap(), SECRET);
+        assert!(outcome.note.expect("note").contains("1 file"));
     }
 
     #[test]
@@ -804,10 +804,9 @@ mod tests {
             std::fs::read_to_string(dest.join("hello.txt")).unwrap(),
             "committed\n"
         );
+        // A tracked file is not a local file: git put it in the worktree already.
         assert!(tree.include_note.is_none());
-        let warning = tree.include_warning.expect("left in place");
-        no_secret(&warning);
-        assert!(warning.contains("Left hello.txt as it was."));
+        assert!(tree.include_warning.is_none());
     }
 
     #[test]
@@ -830,15 +829,30 @@ mod tests {
     }
 
     #[test]
+    fn a_missing_manifest_leaves_the_worktree_unchanged() {
+        let tmp = tmp("absent");
+        let root = tmp.0.join("repo");
+        init_repo(&root);
+        std::fs::write(root.join(".gitignore"), "only-here.txt\n").unwrap();
+        git(&root, &["add", ".gitignore"]);
+        commit(&root, "ignore");
+        std::fs::write(root.join("only-here.txt"), SECRET).unwrap();
+        let tree = crate::worktrees::create(&root, "feature/plain", "HEAD", false).unwrap();
+        let dest = std::path::Path::new(&tree.path);
+        assert!(!dest.join("only-here.txt").exists());
+        assert!(tree.include_note.is_none());
+        assert!(tree.include_warning.is_none());
+    }
+
+    #[test]
     fn comments_only_copies_nothing() {
-        let tmp = tmp("comments");
-        let source = tmp.0.join("source");
+        let tmp = repo_with_ignore("comments", ".env\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), "# nothing\n\n  # still\n").unwrap();
         let dest = tmp.0.join("dest");
-        std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&dest).unwrap();
-        std::fs::write(source.join(".env"), SECRET).unwrap();
-        std::fs::write(source.join(".worktreeinclude"), "# nothing\n\n  # still\n").unwrap();
-        let outcome = apply(&source, &dest);
+        let outcome = apply(&root, &dest);
         assert!(outcome.note.is_none());
         assert!(outcome.warning.is_none());
         assert!(!dest.join(".env").exists());
@@ -846,43 +860,44 @@ mod tests {
 
     #[test]
     fn copies_names_with_spaces_and_unicode() {
-        let tmp = tmp("names");
-        let source = tmp.0.join("source");
-        let dest = tmp.0.join("dest");
-        let notes = source.join("My Files");
+        let tmp = repo_with_ignore("names", "My Files/\ncafe\u{0301}.env\n");
+        let root = tmp.0.join("repo");
+        let notes = root.join("My Files");
         std::fs::create_dir_all(&notes).unwrap();
-        std::fs::create_dir(&dest).unwrap();
         std::fs::write(notes.join("notes.txt"), "notes\n").unwrap();
         let cafe = "cafe\u{0301}.env".to_string();
-        std::fs::write(source.join(&cafe), "cafe\n").unwrap();
+        std::fs::write(root.join(&cafe), "cafe\n").unwrap();
         std::fs::write(
-            source.join(".worktreeinclude"),
+            root.join(".worktreeinclude"),
             format!("My Files/notes.txt\n{cafe}\n"),
         )
         .unwrap();
-        let outcome = apply(&source, &dest);
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
         assert_eq!(
             std::fs::read_to_string(dest.join("My Files").join("notes.txt")).unwrap(),
             "notes\n"
         );
-        assert_eq!(std::fs::read_to_string(dest.join(&cafe)).unwrap(), "cafe\n");
+        // macOS stores names as they were written. The `.gitignore` names the composed
+        // form git lists, so the decomposed spelling is not ignored and stays behind.
+        assert!(!dest.join(&cafe).exists());
         let note = outcome.note.expect("note");
         no_secret(&note);
-        assert!(note.contains("2 local files"));
+        assert!(note.contains("1 file"));
         assert!(outcome.warning.is_none());
     }
 
     #[test]
     fn an_existing_different_file_is_left_alone() {
-        let tmp = tmp("left");
-        let source = tmp.0.join("source");
+        let tmp = repo_with_ignore("left", ".env\n");
+        let root = tmp.0.join("repo");
+        std::fs::write(root.join(".env"), SECRET).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
         let dest = tmp.0.join("dest");
-        std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&dest).unwrap();
-        std::fs::write(source.join(".env"), SECRET).unwrap();
         std::fs::write(dest.join(".env"), "already here\n").unwrap();
-        std::fs::write(source.join(".worktreeinclude"), ".env\n").unwrap();
-        let outcome = apply(&source, &dest);
+        let outcome = apply(&root, &dest);
         assert_eq!(
             std::fs::read_to_string(dest.join(".env")).unwrap(),
             "already here\n"
@@ -895,17 +910,17 @@ mod tests {
 
     #[test]
     fn stops_after_the_file_cap() {
-        let tmp = tmp("cap");
-        let source = tmp.0.join("source");
-        let dest = tmp.0.join("dest");
-        let many = source.join("many");
+        let tmp = repo_with_ignore("cap", "many/\n");
+        let root = tmp.0.join("repo");
+        let many = root.join("many");
         std::fs::create_dir_all(&many).unwrap();
-        std::fs::create_dir(&dest).unwrap();
         for index in 0..=FILE_CAP {
             std::fs::write(many.join(format!("f{index}.txt")), SECRET).unwrap();
         }
-        std::fs::write(source.join(".worktreeinclude"), "many\n").unwrap();
-        let outcome = apply(&source, &dest);
+        std::fs::write(root.join(".worktreeinclude"), "many\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
         let copied = std::fs::read_dir(dest.join("many")).unwrap().count();
         assert_eq!(copied, FILE_CAP);
         let note = outcome.note.expect("note");
@@ -915,35 +930,42 @@ mod tests {
         assert!(warning.contains("Stopped after 100 files"));
     }
 
-    #[cfg(unix)]
     #[test]
-    fn a_symlink_is_not_followed_and_the_mode_is_kept() {
-        use std::os::unix::fs::{symlink, PermissionsExt};
-        let tmp = tmp("link");
+    fn a_source_that_is_not_a_repository_copies_nothing_and_says_so() {
+        let tmp = tmp("norepo");
         let source = tmp.0.join("source");
         let dest = tmp.0.join("dest");
         std::fs::create_dir(&source).unwrap();
         std::fs::create_dir(&dest).unwrap();
+        std::fs::write(source.join(".env"), SECRET).unwrap();
+        std::fs::write(source.join(".worktreeinclude"), ".env\n").unwrap();
+        let outcome = apply(&source, &dest);
+        assert!(!dest.join(".env").exists());
+        assert_eq!(
+            outcome.warning.as_deref(),
+            Some("Could not read .worktreeinclude.")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_not_followed_and_the_mode_is_kept() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let tmp = repo_with_ignore("link", "linked.env\ndir/\nkept.env\n");
+        let root = tmp.0.join("repo");
         let outside = tmp.0.join("outside");
         std::fs::write(&outside, SECRET).unwrap();
-        symlink(&outside, source.join("linked.env")).unwrap();
-        std::fs::create_dir(source.join("dir")).unwrap();
-        std::fs::write(source.join("dir").join("ok.txt"), "ok\n").unwrap();
-        symlink(&outside, source.join("dir").join("skip")).unwrap();
-        let kept = source.join("kept.env");
+        symlink(&outside, root.join("linked.env")).unwrap();
+        std::fs::create_dir(root.join("dir")).unwrap();
+        std::fs::write(root.join("dir").join("ok.txt"), "ok\n").unwrap();
+        symlink(&outside, root.join("dir").join("skip")).unwrap();
+        let kept = root.join("kept.env");
         std::fs::write(&kept, "mode\n").unwrap();
         std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o640)).unwrap();
-        let locked_dir = source.join("locked");
-        std::fs::create_dir(&locked_dir).unwrap();
-        std::fs::write(locked_dir.join("hidden"), SECRET).unwrap();
-        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-        std::fs::write(
-            source.join(".worktreeinclude"),
-            "linked.env\ndir\nkept.env\nlocked\n",
-        )
-        .unwrap();
-        let outcome = apply(&source, &dest);
-        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(root.join(".worktreeinclude"), "linked.env\ndir\nkept.env\n").unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
         assert!(!dest.join("linked.env").exists());
         assert_eq!(
             std::fs::read_to_string(dest.join("dir").join("ok.txt")).unwrap(),
