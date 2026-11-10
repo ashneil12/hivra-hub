@@ -1,4 +1,4 @@
-# WP-146: OpenBot approval gate — never carry past an unapproved action
+# WP-146: OpenBot approval gate, never carry past an unapproved action
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
