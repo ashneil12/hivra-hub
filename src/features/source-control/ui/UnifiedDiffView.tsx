@@ -56,6 +56,11 @@ type Props = {
   fileCount?: number;
   focusPath?: string;
   focusId?: string;
+  /**
+   * A line to jump to (a review guide's stop): that file opens and the first shown line at or after `line` comes
+   * into view. `seq` makes the same stop jump again when it is picked twice.
+   */
+  focusLine?: { path: string; line: number; seq: number };
   busyId?: string | null;
   totals?: { additions: number; deletions: number };
   visible?: boolean;
@@ -66,7 +71,9 @@ type Props = {
   onDiscardFile?: (id: string) => void;
   onStageHunk?: (id: string, pos: number) => void;
 };
-type PendingJump = { kind: "file" | "hunk"; key: string };
+type PendingJump =
+  | { kind: "file" | "hunk"; key: string }
+  | { kind: "line"; key: string; line: number };
 type Actions = {
   toggle: (id: string) => void;
   stage: (id: string) => void;
@@ -82,6 +89,7 @@ export function UnifiedDiffView({
   fileCount,
   focusPath,
   focusId,
+  focusLine,
   busyId,
   totals,
   visible: isVisible = true,
@@ -271,6 +279,20 @@ export function UnifiedDiffView({
     setPending({ kind: "file", key: resolvedFocus });
   }, [resolvedFocus]);
 
+  const lineJump = focusLine?.seq;
+  useLayoutEffect(() => {
+    if (!focusLine) return;
+    const fileId = stableFiles.find(
+      (file) => file.path === focusLine.path || file.id === focusLine.path,
+    )?.id;
+    if (!fileId) return;
+    setOpen((current) =>
+      current.has(fileId) ? current : new Set(current).add(fileId),
+    );
+    setPending({ kind: "line", key: fileId, line: focusLine.line });
+    // Only a new pick jumps; the files changing under the same pick do not.
+  }, [lineJump]);
+
   const previousDocument = useRef<ReviewDocument | null>(null);
   useLayoutEffect(() => {
     if (!isVisible) return;
@@ -280,13 +302,15 @@ export function UnifiedDiffView({
       const target =
         pending.kind === "file"
           ? document.fileRows.get(pending.key)
-          : indices.get(pending.key);
+          : pending.kind === "line"
+            ? lineRowIndex(document, pending.key, pending.line)
+            : indices.get(pending.key);
       if (target != null) {
         scrollTo(
           Math.max(
             0,
             document.offsets[target] -
-              (pending.kind === "hunk" ? DIFF_FILE_HEADER_PX + 8 : 0),
+              (pending.kind === "file" ? 0 : DIFF_FILE_HEADER_PX + 8),
           ),
         );
         const fileId = document.rows[target]?.fileId;
@@ -997,4 +1021,31 @@ function useVisibleHighlights(
     },
     [],
   );
+}
+
+/**
+ * The row to show for a jump to `line` in a file: the first shown line at or after it (by its new number, or its old
+ * one for a removed line), else the file's last shown line, else the file's header (a binary file, or a file whose
+ * rows are not built yet).
+ */
+export function lineRowIndex(
+  document: Pick<ReviewDocument, "rows" | "fileRows">,
+  fileId: string,
+  line: number,
+): number | undefined {
+  const start = document.fileRows.get(fileId);
+  if (start == null) return undefined;
+  let last: number | undefined;
+  for (
+    let i = start + 1;
+    i < document.rows.length && document.rows[i].fileId === fileId;
+    i++
+  ) {
+    const row = document.rows[i];
+    if (row.type !== "line") continue;
+    last = i;
+    const at = row.line.newNumber ?? row.line.oldNumber;
+    if (at != null && at >= line) return i;
+  }
+  return last ?? start;
 }

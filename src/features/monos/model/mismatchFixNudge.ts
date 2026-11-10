@@ -4,7 +4,7 @@
 // Not fixed piece, and neither started a worker nor asked Ash gets one app message: hand the fix to a worker now, or, if
 // it is Ash's call, ask him in one Needs Ash line with its pick. Once per reply, never on its own nudge's turn.
 import { forUser } from "../../hub/model/userName";
-import { delegateToolFailed, delegateToolName } from "../../sessions/model/monocodeToolCall";
+import { delegateToolFailed, handsOutWork } from "../../sessions/model/monocodeToolCall";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
 
 export const FIX_MISMATCH_PREFIX = "[MonoCode fix mismatch]";
@@ -41,7 +41,7 @@ export function mismatchFixNudge(chat: Session, nudged: ReadonlySet<string>): Qu
   const replies = turn.filter((b: Block) => b.role === "assistant" && !b.tool && !b.internal && b.text.trim());
   const last = replies[replies.length - 1];
   if (!last || nudged.has(last.id)) return undefined;
-  if (turn.some((b) => delegateToolName(b) === "delegate_task" && !delegateToolFailed(b))) return undefined;
+  if (turn.some((b) => handsOutWork(b) && !delegateToolFailed(b))) return undefined;
   const reply = replies.map((b) => b.text).join("\n");
   if (NEEDS_ASH.test(reply)) return undefined;
   const flagged = mismatchFlagged(reply);
