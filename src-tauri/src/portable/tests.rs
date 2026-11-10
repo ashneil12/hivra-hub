@@ -2031,7 +2031,7 @@ fn an_unlisted_link_in_a_picture_folder_never_copies_what_it_points_at() {
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
     assert!(
         !target.data_dir.join("note-assets/note-1/x.png").exists(),
         "the link was followed and its target copied in"
@@ -2041,6 +2041,11 @@ fn an_unlisted_link_in_a_picture_folder_never_copies_what_it_points_at() {
         fs::read(target.data_dir.join("note-assets/note-1/1-shot.png")).unwrap(),
         PICTURE,
         "the listed picture still comes in"
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+    assert_eq!(
+        report.notes,
+        vec!["1 picture of note note-1 was not copied (the export doesn't list it).".to_string()]
     );
 }
 
@@ -2063,11 +2068,16 @@ fn a_listed_picture_that_is_a_link_is_refused_even_when_the_hash_matches() {
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
     assert_eq!(
         files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
         Vec::<String>::new(),
         "a link was followed and its target copied in"
+    );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
+    assert_eq!(
+        report.notes,
+        vec!["1 picture of note note-1 was not copied (it is a link).".to_string()]
     );
 }
 
@@ -2104,13 +2114,19 @@ fn a_linked_picture_folder_is_never_followed() {
 
         let store = open_store(&target);
         let conn = store.lock_conn().unwrap();
-        import_held(&target, &conn, &note_import(&dest)).unwrap();
+        let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
         assert_eq!(
             files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
             Vec::<String>::new(),
             "{linked} is a link and was followed"
         );
         assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+        assert_eq!(report.note_assets_skipped, 1, "{linked}: {report:?}");
+        assert_eq!(
+            report.notes,
+            vec!["1 picture of note note-1 was not copied (its folder is a link).".to_string()],
+            "{linked}"
+        );
     }
 }
 
@@ -2131,11 +2147,12 @@ fn an_unlisted_file_in_a_picture_folder_is_not_copied() {
 
     let store = open_store(&target);
     let conn = store.lock_conn().unwrap();
-    import_held(&target, &conn, &note_import(&dest)).unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
     assert_eq!(
         files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
         vec!["note-1/1-shot.png".to_string()]
     );
+    assert_eq!(report.note_assets_skipped, 1, "{report:?}");
 }
 
 /// A listed picture that changes after the export was checked (the import opens, checks every hash, and only then
@@ -2149,18 +2166,28 @@ fn a_picture_that_changed_after_the_check_is_not_copied() {
     let target = env_for(&target_dir.0);
     let dest = note_export(&source, &out.0);
     let opened = open_export(&dest.to_string_lossy()).unwrap();
-    fs::write(
-        dest.join("workspace/note-assets/note-1/1-shot.png"),
-        PRIVATE_KEY,
-    )
-    .unwrap();
-
-    copy_note_assets(&target, &opened, "note-1", "note-1");
+    // The same call copies the picture while it still hashes as listed.
+    assert!(copy_note_assets(&target, &opened, "note-1", "control").is_empty());
     assert_eq!(
-        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
-        Vec::<String>::new()
+        fs::read(target.data_dir.join("note-assets/control/1-shot.png")).unwrap(),
+        PICTURE
     );
+
+    let picture = dest.join("workspace/note-assets/note-1/1-shot.png");
+    // Swapped for other bytes of the same length (only the hash can tell), then for a longer file (past the size the
+    // manifest gives).
+    for swapped in [&b"KEYBYTE"[..], PRIVATE_KEY.as_bytes()] {
+        assert_eq!(swapped.len() == PICTURE.len(), swapped == b"KEYBYTE");
+        fs::write(&picture, swapped).unwrap();
+        let left_out = copy_note_assets(&target, &opened, "note-1", "note-1");
+        assert_eq!(left_out, vec!["it changed after the export was checked"]);
+        assert_eq!(
+            files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+            vec!["control/1-shot.png".to_string()]
+        );
+    }
     assert_not_in_pictures(&target, "OPENSSH PRIVATE KEY");
+    assert_not_in_pictures(&target, "KEYBYTE");
 }
 
 /// A note id is one plain name. `..` would read the export's workspace folder as pictures, or write them beside the
@@ -2174,7 +2201,11 @@ fn a_note_id_that_is_not_one_plain_name_copies_nothing() {
     let target = env_for(&target_dir.0);
     let dest = note_export(&source, &out.0);
     let opened = open_export(&dest.to_string_lossy()).unwrap();
+    open_store(&target);
+    // A plain id copies.
+    assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
     let before = files_under(&target.data_dir);
+    assert!(before.contains(&"note-assets/note-1/1-shot.png".to_string()));
 
     for (from, to) in [
         ("..", "note-1"),
@@ -2186,11 +2217,54 @@ fn a_note_id_that_is_not_one_plain_name_copies_nothing() {
         ("note-1", "a/b"),
         ("note-1", ""),
     ] {
-        copy_note_assets(&target, &opened, from, to);
+        assert_eq!(
+            copy_note_assets(&target, &opened, from, to),
+            vec!["the note's id isn't one plain name"],
+            "from {from:?} to {to:?}"
+        );
         assert_eq!(
             files_under(&target.data_dir),
             before,
             "from {from:?} to {to:?} wrote something"
         );
     }
+}
+
+/// The normal case: a listed picture that hashes as listed comes in, owner-only; one already here is kept; a hidden
+/// file the Finder leaves in the folder is passed over without a word.
+#[test]
+fn a_listed_picture_that_hashes_as_listed_is_copied_and_never_replaces_one_already_here() {
+    let source_dir = TestDir::new("source");
+    let target_dir = TestDir::new("target");
+    let out = TestDir::new("out");
+    let source = env_for(&source_dir.0);
+    let target = env_for(&target_dir.0);
+    let dest = note_export(&source, &out.0);
+    fs::write(dest.join("workspace/note-assets/note-1/.DS_Store"), "junk").unwrap();
+
+    let store = open_store(&target);
+    let conn = store.lock_conn().unwrap();
+    let report = import_held(&target, &conn, &note_import(&dest)).unwrap();
+    let picture = target.data_dir.join("note-assets/note-1/1-shot.png");
+    assert_eq!(fs::read(&picture).unwrap(), PICTURE);
+    assert_eq!(
+        files_under(&target.data_dir.join(NOTE_ASSET_DIR)),
+        vec!["note-1/1-shot.png".to_string()]
+    );
+    assert_eq!(report.note_assets_skipped, 0, "{report:?}");
+    assert!(report.notes.is_empty(), "{:?}", report.notes);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&picture).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    // A second restore of the same note into a copy of the data folder that kept its own picture: that one stays.
+    let opened = open_export(&dest.to_string_lossy()).unwrap();
+    fs::write(&picture, "mine").unwrap();
+    assert!(copy_note_assets(&target, &opened, "note-1", "note-1").is_empty());
+    assert_eq!(fs::read_to_string(&picture).unwrap(), "mine");
 }
