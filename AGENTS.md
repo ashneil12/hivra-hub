@@ -244,8 +244,21 @@ store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has 
   the file in a branch changes nothing. Agents use `app actions.list` / `app actions.run`.
 - `scripts/setup-worktree.mjs` links `node_modules` from the main checkout when the lockfiles match (else `npm ci`) and
   links missing env files; it never replaces a real file and never writes through a link.
-- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees`; nothing is removed without Ash's tap.
-  `monocode worktrees-report` prints the same report read-only. Never delete a worktree or its `target/` by hand.
+- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees` (its size and how much of it is build
+  output); nothing is removed without Ash's tap. `monocode worktrees-report` prints the same report read-only. Never
+  delete a worktree or its `target/` by hand.
+- **A finished worktree gives its build output back by itself** (`src-tauri/src/worktree_autoclean.rs`; the daily app
+  only, a dev copy never runs it). Every 15 minutes, and 2 minutes after launch, it sweeps `~/Worktrees` and the
+  worktrees the app knows (chats, PR watches). A worktree is **finished** when a pull request from its branch merged or
+  closed with this exact commit as its head (the PR watch, else `gh pr list`, asked at most hourly per commit), or every
+  delegated task in it is accepted and its commit is in the branch's upstream, or its branch is merged into the mainline
+  with its commit on a remote. It must also be a linked worktree (never the main checkout) with an empty
+  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, or a cargo build holding
+  `.cargo-lock`) and untouched for 10 minutes. Then only `target/`, `src-tauri/target/`, `test-results/`,
+  `playwright-report/` and every `node_modules/` that is a real folder go (a linked `node_modules` stays), each only
+  when git ignores it and tracks nothing in it. Each worktree is checked again under the removal reservation. The
+  switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default, kept in
+  `<data>/worktree-autoclean.json` (a file it can't read means off).
 
 ## Signing (why the app kept asking for your password)
 
