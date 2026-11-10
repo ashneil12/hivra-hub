@@ -271,6 +271,66 @@ describe("the question path (WP-101 fix round, row 19)", () => {
     expect(questionVeto({ question })).toBe(reason);
   });
 
+  // WP-101 fix round 4, finding 5: a disk wiped or a machine switched off is as final as a delete, and none of these
+  // phrases held. "format" alone is also a word for tidying code, so it holds only with a disk or a machine after it.
+  it.each([
+    ["Should I format the disk?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the drive?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the external drive?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the whole disk?", ALWAYS_ASK_REASON.delete],
+    ["Should I reformat the volume?", ALWAYS_ASK_REASON.delete],
+    ["Should I re-format the partition?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the USB stick?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the SSD?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the SD card?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the machine?", ALWAYS_ASK_REASON.delete],
+    ["Should I format the laptop?", ALWAYS_ASK_REASON.delete],
+    ["FORMAT THE DISK?", ALWAYS_ASK_REASON.delete],
+    ["Should I fo​rmat the disk?", ALWAYS_ASK_REASON.delete],
+    ["Should I shut down the server?", ALWAYS_ASK_REASON.forceful],
+    ["Should I shut the server down?", ALWAYS_ASK_REASON.forceful],
+    ["Should I shutdown the server?", ALWAYS_ASK_REASON.forceful],
+    ["Should I shut it down?", ALWAYS_ASK_REASON.forceful],
+    ["Shutting down the machine now?", ALWAYS_ASK_REASON.forceful],
+    ["Should we shut  down\tthe box?", ALWAYS_ASK_REASON.forceful],
+    ["Should I power off the machine?", ALWAYS_ASK_REASON.forceful],
+    ["Should I power the machine off?", ALWAYS_ASK_REASON.forceful],
+    ["Should I power down the laptop?", ALWAYS_ASK_REASON.forceful],
+    ["Should I poweroff the box?", ALWAYS_ASK_REASON.forceful],
+    ["Powering off the computer?", ALWAYS_ASK_REASON.forceful],
+    ["Should I turn off the server?", ALWAYS_ASK_REASON.forceful],
+    ["Should I turn the machine off?", ALWAYS_ASK_REASON.forceful],
+  ])("holds a question that formats a disk or switches a machine off: %s", (question, reason) => {
+    expect(questionVeto({ question })).toBe(reason);
+  });
+
+  it("holds when the recommendation or an option is the format or the shutdown", () => {
+    expect(questionVeto({ question: "What next?", recommendation: "Format the disk" })).toBe(ALWAYS_ASK_REASON.delete);
+    expect(questionVeto({ question: "Which?", options: ["A: keep", "B: power off the machine"] })).toBe(ALWAYS_ASK_REASON.forceful);
+    expect(questionVeto({ question: "Which?", options: ["A: shut down the server", "B: keep"] })).toBe(ALWAYS_ASK_REASON.forceful);
+  });
+
+  it("still takes a question about formatting code or text, and about turning a setting off", () => {
+    for (const question of [
+      "Should I format the code with prettier?",
+      "Should I format the date as ISO?",
+      "Should I format the file?",
+      "Which format do you prefer?",
+      "Should I run the formatter?",
+      "Should I format the output as a table?",
+      "Should I turn off the lint rule?",
+      "Should I turn on the lint rule?",
+      "Should I power through the list?",
+      "Should I shut the file?",
+      "Should I turn the server into a worker?",
+      "Should I turn the machine learning notes into a doc?",
+      "Should I format the machine-readable output?",
+      "Should I format the phone numbers?",
+      "Should I power on the dev flag?",
+    ])
+      expect(questionVeto({ question }), question).toBeNull();
+  });
+
   it("still takes a question that only reads, or that closes nothing that matters", () => {
     for (const question of ["Should I read the README?", "Split into two PRs?", "Should I close the file?", "Should I close the tab?"])
       expect(questionVeto({ question }), question).toBeNull();

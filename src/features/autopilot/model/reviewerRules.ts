@@ -160,6 +160,23 @@ const ASK_PHRASES: readonly { pattern: RegExp; kind: AskKind }[] = [
   { pattern: /\bclos(?:e|es|ed|ing) (?:a |an |the |this |our )?(?:repo|repos|repository|repositories|issue|issues|pr|prs|pull requests?|merge requests?)\b/, kind: "delete" },
   // "force" is already a word that holds. The phrase covers "force-push" written as one action.
   { pattern: /\bforce[- ]push(?:es|ed|ing)?\b/, kind: "forceful" },
+  // WP-101 fix round 4, finding 5. Wiping a disk is as final as a delete. "format" alone is also the word for tidying
+  // code or text ("format the date"), so it holds only with a disk, a drive or a machine after it, with up to three
+  // small words between ("format the whole external drive"). A dash after the noun ("machine-readable") is not it.
+  {
+    pattern:
+      /\b(?:re[- ]?)?format(?:s|ted|ting)? (?:(?:the|a|an|this|that|my|our|your|whole|entire|all|external|internal|usb|hard|startup|boot) ){0,3}(?:disks?|drives?|volumes?|partitions?|usb|ssds?|sd card|memory card|machines?|computers?|laptops?|macs?)\b(?!-)/,
+    kind: "delete",
+  },
+  // Switching a machine off or shutting it down ends everything running on it. "shut down", "shutdown", "shut it down",
+  // "power off", "power the machine off", "poweroff" and "turn off the server" are the same action said different ways.
+  { pattern: /\bshut(?:s|ting)?[- ]?down\b|\bshut(?:s|ting)? (?:\w+ ){1,3}down\b/, kind: "forceful" },
+  { pattern: /\bpower(?:s|ed|ing)?[- ]?(?:off|down)\b|\bpoweroff\b|\bpower(?:s|ed|ing)? (?:\w+ ){1,3}(?:off|down)\b/, kind: "forceful" },
+  {
+    pattern:
+      /\bturn(?:s|ed|ing)? off (?:the |this |that |my |our )?(?:\w+ )?(?:server|machine|computer|laptop|mac|box|host|vm)\b|\bturn(?:s|ed|ing)? (?:the |this |that |my |our )(?:\w+ )?(?:server|machine|computer|laptop|mac|box|host|vm) off\b/,
+    kind: "forceful",
+  },
 ];
 
 /** Words that name something a person's own or a secret: anywhere in a tool's name they make it an account change. */

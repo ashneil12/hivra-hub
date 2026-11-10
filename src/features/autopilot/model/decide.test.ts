@@ -78,6 +78,20 @@ describe("autopilot.decide", () => {
     expect(decideCall({ question: "Should I close the file?", recommendation: "Yes", until: UNTIL })).toMatchObject({ outcome: "taken" });
   });
 
+  // WP-101 fix round 4, finding 5: formatting a disk and switching a machine off were taken.
+  it("holds a question that formats a disk or switches a machine off (fix round 4, finding 5)", () => {
+    for (const input of [
+      { question: "Should I format the disk?", recommendation: "Yes" },
+      { question: "Should I shut down the server?", recommendation: "Yes" },
+      { question: "Should I power off the machine?", recommendation: "Yes" },
+      { question: "Which next?", recommendation: "Format the external drive" },
+      { question: "Which next?", recommendation: "Option B", options: ["A: keep", "B: shut it down"] },
+    ])
+      expect(decideCall({ ...input, until: UNTIL }), input.question).toMatchObject({ outcome: "held" });
+    // Tidying code or text is not formatting a disk.
+    expect(decideCall({ question: "Should I format the code with prettier?", recommendation: "Yes", until: UNTIL })).toMatchObject({ outcome: "taken" });
+  });
+
   it("holds a call whose words it can't read, instead of taking it (fix round 2, item F)", () => {
     for (const input of [
       { question: null, recommendation: "Yes" },
