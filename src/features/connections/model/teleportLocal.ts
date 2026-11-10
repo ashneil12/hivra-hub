@@ -112,9 +112,9 @@ export function localMoveEndpoint(options: {
       incoming.delete(chatId);
       unlockChat(chatId);
     },
-    async release(chatId, moveId, _to) {
+    async release(chatId, moveId, to) {
       if (frozen.get(chatId) !== moveId) throw new Error("This move did not freeze the chat");
-      await port.markMoved(chatId, labelFor(_to), new Date().toISOString());
+      await port.markMoved(chatId, labelFor(to), new Date().toISOString());
       lockChat(chatId);
       frozen.delete(chatId);
     },
