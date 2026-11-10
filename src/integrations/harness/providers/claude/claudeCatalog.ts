@@ -21,7 +21,7 @@ import {
   compareSemver,
   isClaudeInitMessage,
   listModelsFromControlResponse,
-  MINIMUM_CLAUDE_FABLE_5_2_VERSION,
+  MINIMUM_CLAUDE_FABLE_5_1_VERSION,
   MINIMUM_CLAUDE_FABLE_5_VERSION,
   MINIMUM_CLAUDE_OPUS_4_7_VERSION,
   MINIMUM_CLAUDE_OPUS_4_8_VERSION,
@@ -124,6 +124,13 @@ export const CLAUDE_MODEL_CATALOG: AgentModel[] = [
     harness: "claude",
     name: "Claude Fable 5.2",
     nativeId: "claude-fable-5-2",
+    settings: [EFFORT_WITH_XHIGH, contextWindow("1m")],
+  },
+  {
+    id: "claude:fable-5-1",
+    harness: "claude",
+    name: "Claude Fable 5.1",
+    nativeId: "claude-fable-5-1",
     settings: [EFFORT_WITH_XHIGH, contextWindow("1m")],
   },
   {
@@ -583,9 +590,10 @@ export function modelsForClaudeVersion(
         ? compareSemver(version, MINIMUM_CLAUDE_SONNET_5_VERSION) >= 0
         : false;
     }
-    if (slug === "claude-fable-5-2") {
+    if (slug === "claude-fable-5-2" || slug === "claude-fable-5-1") {
+      // 5.1's minimum is the CLI's own. 5.2 has none on record, so it follows 5.1's.
       return version
-        ? compareSemver(version, MINIMUM_CLAUDE_FABLE_5_2_VERSION) >= 0
+        ? compareSemver(version, MINIMUM_CLAUDE_FABLE_5_1_VERSION) >= 0
         : false;
     }
     if (slug === "claude-fable-5") {

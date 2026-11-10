@@ -18,6 +18,7 @@ describe("model notes", () => {
   it("returns nothing for a model with no note, or a blank note", () => {
     expect(modelNote({ id: "claude:opus-5-5" })).toBeUndefined();
     expect(modelNote({ id: "claude:fable-5", nativeId: "claude-fable-5" })).toBeUndefined();
+    expect(modelNote({ id: "claude:fable-5-1", nativeId: "claude-fable-5-1" })).toBeUndefined();
     expect(modelNote({ id: "" })).toBeUndefined();
     expect(visibleModelNote(undefined)).toBeUndefined();
     expect(visibleModelNote("")).toBeUndefined();

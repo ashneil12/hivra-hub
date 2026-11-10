@@ -45,11 +45,13 @@ export const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
 export const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
 export const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
 /**
- * Offline fallback only. Live `list_models` is not filtered by this.
- * This checkout has no separate CLI version for the 9 Nov 2026 Fable 5.2
- * launch, so the fallback uses the newest gate already recorded (Opus 5.5).
+ * Fable 5.1, offline fallback only (live `list_models` is not filtered by it).
+ * The CLI's own words for it, in the recorded list_models row in
+ * claudeProtocol.test.ts: "Update to 2.1.255+ to use Fable 5.1". Fable 5.2 has
+ * no minimum on record anywhere in this checkout, so it has no constant: the
+ * fallback offers it wherever it offers 5.1, and live `list_models` decides.
  */
-export const MINIMUM_CLAUDE_FABLE_5_2_VERSION = "2.1.280";
+export const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.255";
 export const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 export const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 
