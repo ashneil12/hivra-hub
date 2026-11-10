@@ -125,6 +125,10 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import {
+  SkillSwitchNotices,
+  skillSwitchPairs,
+} from "../../skills/ui/SkillSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
@@ -252,6 +256,9 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-126: the CLI a mid-thread switch is leaving, and the one it is moving to. */
+  switchFrom?: HarnessId;
+  switchTo?: HarnessId;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -385,6 +392,8 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  switchFrom,
+  switchTo,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -2238,6 +2247,13 @@ export function Composer({
               onDismiss={onHandoffCardDismiss}
             />
           ) : null}
+
+          {/* WP-126: say when a handoff or a mid-thread switch drops skills. */}
+          <SkillSwitchNotices
+            cwd={executionCwd}
+            pairs={skillSwitchPairs(handoffCard, switchFrom, switchTo)}
+            labelFor={(id) => HARNESS_TITLE[id]}
+          />
 
           <div className="relative">
             <div
