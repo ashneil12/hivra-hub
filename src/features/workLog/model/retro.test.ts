@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { WorkLogLine } from "./workLog";
 import {
-  acceptEdit,
+  correctionTitle,
   defaultWeeklyRetro,
   markAsked,
   parseWeeklyRetro,
@@ -16,8 +16,8 @@ function line(day: string, kind: WorkLogLine["kind"], text: string): WorkLogLine
 const today = "2026-11-10";
 
 describe("retro", () => {
-  it("reports the last 7 days and does not apply anything", () => {
-    const apply = vi.fn();
+  it("reports the last 7 days and takes no writer, so it cannot apply anything", () => {
+    expect(stageRetro).toHaveLength(2);
     const result = stageRetro(
       [
         line("2026-11-03", "outcome", "Done: Too old."),
@@ -44,9 +44,61 @@ describe("retro", () => {
       "Work was sent back 1 time this week. Check the brief before the next try.",
       "1 task failed this week. Say what broke, in one line.",
     ]);
-    expect(apply).not.toHaveBeenCalled();
-    acceptEdit(result.pending[0], apply);
-    expect(apply).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the log lines behind each edit, and gives an edit an id that follows its words", () => {
+    const rows = [
+      line("2026-11-09", "outcome", "Sent back: The brief was wrong."),
+      line("2026-11-10", "outcome", "Sent back: The brief was thin."),
+      line("2026-11-10", "outcome", "Failed: The build broke."),
+      line("2026-11-08", "feedback", "Keep the line short."),
+      line("2026-11-03", "feedback", "Too old to count."),
+    ];
+    const result = stageRetro(rows, today);
+    const byTitle = Object.fromEntries(result.pending.map((edit) => [edit.title, edit]));
+    expect(byTitle["Correction: Keep the line short."].evidence).toEqual([
+      { day: "2026-11-08", line: "Keep the line short." },
+    ]);
+    expect(byTitle["Work sent back"].evidence).toEqual([
+      { day: "2026-11-09", line: "Sent back: The brief was wrong." },
+      { day: "2026-11-10", line: "Sent back: The brief was thin." },
+    ]);
+    expect(byTitle["Failed work"].evidence).toEqual([{ day: "2026-11-10", line: "Failed: The build broke." }]);
+    const again = stageRetro(rows, today);
+    expect(again.pending.map((edit) => edit.id)).toEqual(result.pending.map((edit) => edit.id));
+    expect(new Set(result.pending.map((edit) => edit.id)).size).toBe(result.pending.length);
+    expect(result.pending.every((edit) => edit.id.startsWith("retro:"))).toBe(true);
+    const fewer = stageRetro(rows.filter((row) => !row.line.includes("thin")), today);
+    const sentBack = fewer.pending.find((edit) => edit.title === "Work sent back")!;
+    expect(sentBack.id).not.toBe(byTitle["Work sent back"].id);
+  });
+
+  it("gives every correction a title of its own, cut at a word", () => {
+    const long = "Always name the file you changed in the first line of the summary, and never skip it.";
+    expect(correctionTitle("Keep the line short.")).toBe("Correction: Keep the line short.");
+    const title = correctionTitle(long);
+    expect(title).toBe("Correction: Always name the file you changed in the first...");
+    expect(title.length).toBeLessThan(70);
+    expect(correctionTitle("  Spaced\n  out.  ")).toBe("Correction: Spaced out.");
+    const result = stageRetro(
+      [line("2026-11-10", "feedback", "Keep the line short."), line("2026-11-10", "feedback", long)],
+      today,
+    );
+    expect(new Set(result.pending.map((edit) => edit.title)).size).toBe(2);
+  });
+
+  it("the same correction on two days is one edit with both days behind it", () => {
+    const result = stageRetro(
+      [
+        line("2026-11-08", "feedback", "Keep the line short."),
+        line("2026-11-10", "feedback", "Keep the line short."),
+        line("2026-11-10", "feedback", "Name the file."),
+      ],
+      today,
+    );
+    expect(result.pending.map((edit) => edit.text)).toEqual(["Keep the line short.", "Name the file."]);
+    expect(result.pending[0].evidence.map((row) => row.day)).toEqual(["2026-11-08", "2026-11-10"]);
+    expect(result.pending[1].evidence).toHaveLength(1);
   });
 
   it("keeps at most 5 edits, and an empty week changes nothing", () => {

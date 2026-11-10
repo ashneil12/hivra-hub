@@ -1,16 +1,23 @@
 // WP-157: a retro reads the last 7 days and proposes edits. It never applies them.
-// Applying is the learn store's accept, and only after the person accepts each one.
+// The proposals are staged as pending learn store changes (retroStage.ts, retroStore.ts)
+// and the learn store's own accept writes one, only after the person accepts it.
 
+import { sha256 } from "../../memory/backpass/sha";
 import { isDay, shiftDay, type WorkLogLine } from "./workLog";
 
 export const RETRO_EDIT_CAP = 5;
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** The log line a proposed edit rests on, kept so the person can see why it was proposed. */
+export type Evidence = { day: string; line: string };
+
 export type PendingEdit = {
+  /** Follows the file and the words, so the same edit found again is the same edit. */
   id: string;
   file: "opinions.md";
   title: string;
   text: string;
+  evidence: Evidence[];
 };
 
 export type RetroCounts = { shipped: number; failed: number; sentBack: number; feedback: number };
@@ -30,6 +37,29 @@ export type WeeklyRetro = { enabled: boolean; lastAskedAt: string | null };
 
 function starts(line: string, lead: string): boolean {
   return line.startsWith(lead);
+}
+
+export function retroEditId(file: string, text: string): string {
+  return `retro:${sha256(`${file}\n${text}`).slice(0, 16)}`;
+}
+
+const TITLE_WORDS_CAP = 50;
+
+/** Each correction gets a title of its own, so the screen's Accept and Reject buttons tell them apart. */
+export function correctionTitle(text: string): string {
+  const line = text.replace(/\s+/g, " ").trim();
+  if (line.length <= TITLE_WORDS_CAP) return `Correction: ${line}`;
+  const cut = line.slice(0, TITLE_WORDS_CAP);
+  const at = cut.lastIndexOf(" ");
+  return `Correction: ${(at > 20 ? cut.slice(0, at) : cut).replace(/[.,;:\s]+$/, "")}...`;
+}
+
+function proposed(title: string, text: string, evidence: Evidence[]): PendingEdit {
+  return { id: retroEditId("opinions.md", text), file: "opinions.md", title, text, evidence };
+}
+
+function seen(line: WorkLogLine): Evidence {
+  return { day: line.day, line: line.line };
 }
 
 function empty(report: string): RetroResult {
@@ -54,39 +84,38 @@ export function stageRetro(lines: readonly WorkLogLine[], today: string): RetroR
   if (!isDay(today)) return empty("The day should look like 2026-11-10.");
   const from = shiftDay(today, -6);
   const week = lines.filter((line) => line.day >= from && line.day <= today);
-  const shipped = week.filter((line) => line.kind === "outcome" && starts(line.line, "Done:")).map((line) => line.line);
-  const failed = week.filter((line) => line.kind === "outcome" && starts(line.line, "Failed:")).length;
-  const sentBack = week.filter((line) => line.kind === "outcome" && starts(line.line, "Sent back:")).length;
+  const outcomes = week.filter((line) => line.kind === "outcome");
+  const shipped = outcomes.filter((line) => starts(line.line, "Done:")).map((line) => line.line);
+  const failedLines = outcomes.filter((line) => starts(line.line, "Failed:"));
+  const sentBackLines = outcomes.filter((line) => starts(line.line, "Sent back:"));
+  const failed = failedLines.length;
+  const sentBack = sentBackLines.length;
   const feedback = week.filter((line) => line.kind === "feedback");
   const counts: RetroCounts = { shipped: shipped.length, failed, sentBack, feedback: feedback.length };
 
   const pending: PendingEdit[] = [];
-  feedback.forEach((line, index) => {
-    if (pending.length >= RETRO_EDIT_CAP) return;
-    pending.push({
-      id: `feedback:${index}`,
-      file: "opinions.md",
-      title: "A correction from the week",
-      text: line.line,
-    });
-  });
+  for (const line of feedback) {
+    const edit = proposed(correctionTitle(line.line), line.line, [seen(line)]);
+    // The same correction on two days is one edit with two lines behind it.
+    const same = pending.find((row) => row.id === edit.id);
+    if (same) same.evidence.push(seen(line));
+    else if (pending.length < RETRO_EDIT_CAP) pending.push(edit);
+  }
   if (sentBack > 0 && pending.length < RETRO_EDIT_CAP) {
     const times = sentBack === 1 ? "1 time" : `${sentBack} times`;
-    pending.push({
-      id: "sent-back",
-      file: "opinions.md",
-      title: "Work sent back",
-      text: `Work was sent back ${times} this week. Check the brief before the next try.`,
-    });
+    pending.push(
+      proposed(
+        "Work sent back",
+        `Work was sent back ${times} this week. Check the brief before the next try.`,
+        sentBackLines.map(seen),
+      ),
+    );
   }
   if (failed > 0 && pending.length < RETRO_EDIT_CAP) {
     const tasks = failed === 1 ? "1 task" : `${failed} tasks`;
-    pending.push({
-      id: "failed",
-      file: "opinions.md",
-      title: "Failed work",
-      text: `${tasks} failed this week. Say what broke, in one line.`,
-    });
+    pending.push(
+      proposed("Failed work", `${tasks} failed this week. Say what broke, in one line.`, failedLines.map(seen)),
+    );
   }
 
   const shippedLines = shipped.length === 0 ? "Nothing shipped." : shipped.join("\n");
@@ -105,14 +134,6 @@ export function stageRetro(lines: readonly WorkLogLine[], today: string): RetroR
     report,
   ].join("\n");
   return { from, to: today, shipped, counts, report, ask, pending, applied: false };
-}
-
-/**
- * The learn store's accept is the only writer. The retro does not call this.
- * A caller passes the existing accept, and only after the person accepts one edit.
- */
-export function acceptEdit(edit: PendingEdit, apply: (edit: PendingEdit) => void): void {
-  apply(edit);
 }
 
 export function defaultWeeklyRetro(): WeeklyRetro {
