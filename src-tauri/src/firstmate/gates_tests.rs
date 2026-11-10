@@ -139,6 +139,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             report: "## Report\nSummary: added b",
             now: 1,
             gate_owns_checks: false,
+            facts: None,
         },
         fake,
     )
@@ -531,12 +532,94 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             report: "",
             now: 1,
             gate_owns_checks: false,
+            facts: None,
         },
         &fake,
     );
     assert_eq!(record.verdict, Verdict::Unsure);
     assert!(fake.prompts.borrow().is_empty());
     let _ = &f.project;
+}
+
+fn stale_facts() -> crate::firstmate::fact_gaps::FactTurn {
+    crate::firstmate::fact_gaps::FactTurn {
+        checks: vec![crate::firstmate::fact_gaps::FactCheck {
+            command: "npm test".into(),
+            status: "passed".into(),
+            at: 1.0,
+        }],
+        edits: vec![crate::firstmate::fact_gaps::FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn fact_gaps_fail_the_claim_without_asking_the_model() {
+    let f = fixture("stale");
+    let facts = stale_facts();
+    let fake = Fake::default();
+    let record = run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: &f.copy,
+            plan: &plan(&[]),
+            brief: "Add a row.",
+            done_when: "the row is there",
+            report: "Done.",
+            now: 1,
+            gate_owns_checks: false,
+            facts: Some(&facts),
+        },
+        &fake,
+    );
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.check.is_none(), "a fact gap does not ask the model");
+    assert!(fake.prompts.borrow().is_empty());
+    assert_eq!(
+        record.summary, "Sent back: tests went stale after the last edit.",
+        "the first line is the reason a person sees"
+    );
+    let _ = &f.project;
+}
+
+#[test]
+fn a_planless_turn_fails_on_fact_gaps_and_stays_quiet_when_there_are_none() {
+    let failed = fact_only_record("d-1", 2, 9, &stale_facts()).expect("a gap");
+    assert_eq!(failed.verdict, Verdict::Failed);
+    assert!(failed.check.is_none());
+    assert!(
+        failed.gates.is_empty(),
+        "no plan means no routes check here"
+    );
+    assert_eq!(
+        failed.summary,
+        "Sent back: tests went stale after the last edit."
+    );
+    assert!(fact_only_record(
+        "d-1",
+        2,
+        9,
+        &crate::firstmate::fact_gaps::FactTurn::default()
+    )
+    .is_none());
+    // A docs edit after a passing test is not a gap, so the routes check stays in the webview.
+    let docs = crate::firstmate::fact_gaps::FactTurn {
+        checks: vec![crate::firstmate::fact_gaps::FactCheck {
+            command: "npm test".into(),
+            status: "passed".into(),
+            at: 1.0,
+        }],
+        edits: vec![crate::firstmate::fact_gaps::FactEdit {
+            path: "docs/readme.md".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert!(fact_only_record("d-1", 2, 9, &docs).is_none());
 }
 
 // ---- evidence and the row -----------------------------------------------------------------------------------------------

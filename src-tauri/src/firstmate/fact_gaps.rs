@@ -7,11 +7,7 @@
 //! are not coverage gaps. Hivra's own wording. Not a line-by-line copy.
 //!
 //! The sentences match `src/features/firstmate/model/factGaps.ts`.
-//!
-//! `gates` is what calls this on a done claim. Until that call is in, nothing else in the
-//! crate names these functions, so the lib target would call them unused.
-
-#![allow(dead_code)]
+//! `gates` calls this when a worker says done.
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};

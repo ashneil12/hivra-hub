@@ -5,7 +5,12 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { completionMessage, type MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
 import { GATE_TRIES } from "../../monos/model/workerGate";
-import { briefGateAction, briefGatesFor, gateRequest, type GateRecordView } from "./completionGates";
+import type { Block } from "../../sessions/model/session";
+import { briefGateAction, briefGatesFor, gateRequest, type BriefGateInput, type GateRecordView } from "./completionGates";
+
+function block(partial: Partial<Block> & Pick<Block, "role">): Block {
+  return { id: partial.id ?? partial.role, text: partial.text ?? "", ...partial };
+}
 
 const done = (over: Partial<MonoSessionCompletionResult> = {}): MonoSessionCompletionResult =>
   ({
@@ -100,6 +105,41 @@ describe("one round", () => {
     const step = briefGateAction({ verdict: "not-run", summary: "Routes check not run: no script." }, 0);
     expect(step.action).toBe("unsure");
   });
+
+  it("a sent-back failure names the reason, once, then fails the report", () => {
+    const summary = "Sent back: tests went stale after the last edit.";
+    const first = briefGateAction({ verdict: "failed", summary }, 0);
+    expect(first.action).toBe("resend");
+    if (first.action !== "resend") return;
+    expect(first.note.line).toBe(summary);
+    expect(first.ask).toContain(summary);
+    expect(first.failed(done()).error).toBe(`${summary} Still failed after 2 tries.`);
+
+    const listed = [
+      "Sent back: a check failed this turn (npm test). Also 1 more.",
+      "A check failed this turn (npm test).",
+      "Tests went stale after the last edit.",
+    ].join("\n");
+    const again = briefGateAction({ verdict: "failed", summary: listed }, 0);
+    if (again.action !== "resend") throw new Error("expected resend");
+    expect(again.note.line).toBe("Sent back: a check failed this turn (npm test). Also 1 more.");
+    expect(again.ask).toContain("Tests went stale after the last edit.");
+
+    const second = briefGateAction({ verdict: "failed", summary }, 1);
+    expect(second.action).toBe("fail");
+    if (second.action !== "fail") return;
+    expect(second.apply(done()).error).toBe(`${summary} Still failed after 2 tries.`);
+    expect(second.apply(done()).status).toBe("failed");
+  });
+
+  it("a sent-back line with nothing after it, a control character, or a line too long keeps the usual note", () => {
+    const usual = "Checks failed; their words went back to the worker";
+    for (const summary of ["Sent back:", "Sent back:   ", "Sent back: tests\u0007failed.", `Sent back: ${"x".repeat(200)}`]) {
+      const step = briefGateAction({ verdict: "failed", summary }, 0);
+      if (step.action !== "resend") throw new Error(summary);
+      expect(step.note.line, summary).toBe(usual);
+    }
+  });
 });
 
 describe("running them", () => {
@@ -133,6 +173,37 @@ describe("running them", () => {
     expect((await briefGatesFor(input, async () => failed))?.action).toBe("resend");
     expect((await briefGatesFor({ ...input, failures: 1 }, async () => failed))?.action).toBe("fail");
   });
+
+  it("reads facts from this turn only, and does not invent them when the blocks are missing", async () => {
+    let missing: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, report: "The tests passed." }, async (got) => {
+      missing = got;
+      return null;
+    });
+    expect(missing?.facts).toBeUndefined();
+
+    const blocks: Block[] = [
+      block({ role: "user", text: "earlier" }),
+      block({ role: "tool", tool: { command: "cargo test", status: "failed" } }),
+      block({ role: "user", text: "again" }),
+      block({ role: "tool", tool: { command: "npm test", status: "completed" } }),
+    ];
+    let seen: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, blocks, report: "Done." }, async (got) => {
+      seen = got;
+      return null;
+    });
+    expect(seen?.facts?.checks).toEqual([{ command: "npm test", status: "passed", at: 0 }]);
+    expect(seen?.facts?.answer).toBe("Done.");
+
+    const kept = { checks: [], edits: [], todos: [], answer: "kept" };
+    let given: BriefGateInput | undefined;
+    await briefGatesFor({ ...input, blocks, facts: kept }, async (got) => {
+      given = got;
+      return null;
+    });
+    expect(given?.facts).toEqual(kept);
+  });
 });
 
 describe("the report its first mate reads", () => {
@@ -151,6 +222,8 @@ describe("the report its first mate reads", () => {
 it("the app runs a brief's gates first and keeps the routes check for a brief that has none", () => {
   const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
   expect(app).toMatch(/WP-40:/);
+  expect(app).toMatch(/WP-145:/);
+  expect(app).toMatch(/blocks: session\?\.blocks/);
   expect(app).toMatch(/briefGatesFor\(/);
   expect(app).toMatch(/if \(gateDue\(result\)\) \{/);
   expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffFor\(workerStarted, monoId, /);
