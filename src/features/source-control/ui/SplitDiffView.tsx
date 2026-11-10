@@ -1,7 +1,5 @@
 import {
   Component,
-  lazy,
-  Suspense,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -15,29 +13,33 @@ import {
   type SplitFileText,
 } from "../model/splitDiff";
 import type { UnifiedDiffFileModel } from "../model/unifiedDiffDocument";
+import type { PierreFileComponent, SplitTheme } from "./splitPackage";
 
 // WP-116: optional split view. @pierre/diffs is a pinned package, not copied source.
-// It is large and starts a highlighter, so it loads the first time a file is drawn
-// side by side. Nothing else imports ./pierreDiff, or this would stop being lazy.
-const PierreFile = lazy(() =>
-  import("./pierreDiff").then((module) => ({ default: module.PierreFile })),
-);
+// It is loaded on demand (see splitPackage.ts), so this view is only drawn once it
+// has arrived and takes the component as a prop. Import nothing from ./pierreDiff here.
 
 type Props = {
   files: readonly UnifiedDiffFileModel[];
   fill: boolean;
+  /** The package's file view. Null when the review only has notes to show. */
+  PierreFile: PierreFileComponent | null;
   /** A file to bring to the top, by path or id, as the unified view does. */
   focusPath?: string;
   focusId?: string;
 };
 
-type Theme = "github-light" | "github-dark";
-
-function themeName(light: boolean): Theme {
+function themeName(light: boolean): SplitTheme {
   return light ? "github-light" : "github-dark";
 }
 
-export function SplitDiffView({ files, fill, focusPath, focusId }: Props) {
+export function SplitDiffView({
+  files,
+  fill,
+  PierreFile,
+  focusPath,
+  focusId,
+}: Props) {
   const [light, setLight] = useState(() =>
     document.documentElement.classList.contains("theme-light"),
   );
@@ -51,22 +53,13 @@ export function SplitDiffView({ files, fill, focusPath, focusId }: Props) {
   }, []);
 
   return (
-    <Suspense
-      fallback={
-        <SplitRegion fill={fill}>
-          <p className="px-4 py-6 text-[13px] text-content/45">
-            Loading split view…
-          </p>
-        </SplitRegion>
-      }
-    >
-      <SplitFiles
-        files={files}
-        theme={themeName(light)}
-        fill={fill}
-        focus={splitFocusId(files, focusId, focusPath)}
-      />
-    </Suspense>
+    <SplitFiles
+      files={files}
+      PierreFile={PierreFile}
+      theme={themeName(light)}
+      fill={fill}
+      focus={splitFocusId(files, focusId, focusPath)}
+    />
   );
 }
 
@@ -105,16 +98,17 @@ const SCROLL_INTENT = [
 
 type FilesProps = {
   files: readonly UnifiedDiffFileModel[];
-  theme: Theme;
+  PierreFile: PierreFileComponent | null;
+  theme: SplitTheme;
   fill: boolean;
   focus: string | undefined;
 };
 
 /**
- * The region and its files, inside the Suspense boundary. It first renders once
- * the package has arrived, so the focused file is found and aligned as it mounts.
+ * The region and its files. It first renders once the package has arrived, so
+ * the focused file is found and aligned as it mounts.
  */
-function SplitFiles({ files, theme, fill, focus }: FilesProps) {
+function SplitFiles({ files, PierreFile, theme, fill, focus }: FilesProps) {
   const region = useRef<HTMLDivElement | null>(null);
   const list = useRef<HTMLDivElement | null>(null);
   const nodes = useRef(new Map<string, HTMLElement>());
@@ -192,9 +186,11 @@ function SplitFiles({ files, theme, fill, focus }: FilesProps) {
                 }}
               >
                 {text ? (
-                  <SplitBoundary label={text.name}>
-                    <PierreFile file={text} theme={theme} />
-                  </SplitBoundary>
+                  PierreFile ? (
+                    <SplitBoundary label={text.name}>
+                      <PierreFile file={text} theme={theme} />
+                    </SplitBoundary>
+                  ) : null
                 ) : (
                   <FileNote label={file.label}>
                     {file.emptyMessage ??

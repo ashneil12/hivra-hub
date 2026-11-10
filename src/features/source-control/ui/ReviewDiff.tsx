@@ -5,8 +5,9 @@ import {
   writeDiffPresentation,
   type DiffPresentation,
 } from "../model/diffPresentation";
-import { canSplit } from "../model/splitDiff";
+import { canSplit, splitFileText } from "../model/splitDiff";
 import { SplitDiffView } from "./SplitDiffView";
+import { useSplitPackage } from "./splitPackage";
 import { UnifiedDiffView } from "./UnifiedDiffView";
 
 type Props = ComponentProps<typeof UnifiedDiffView>;
@@ -15,6 +16,8 @@ type Props = ComponentProps<typeof UnifiedDiffView>;
  * Unified review, with an optional split view. Unified stays the default.
  * A review that only has a patch (a pull request) has no Split: hunks are not
  * whole files. The saved choice is left alone for the reviews that can split.
+ * The split view's package loads on demand. Until it arrives, and if it fails
+ * to load, the unified review stays on screen.
  */
 export function ReviewDiff(props: Props) {
   const [mode, setMode] = useState<DiffPresentation>(() => readDiffPresentation());
@@ -33,6 +36,15 @@ export function ReviewDiff(props: Props) {
   };
   const splittable = useMemo(() => canSplit(props.files), [props.files]);
   const shown: DiffPresentation = splittable ? mode : "unified";
+  const needsPackage = useMemo(
+    () =>
+      shown === "split" &&
+      props.files.some((file) => splitFileText(file) !== null),
+    [shown, props.files],
+  );
+  const pierre = useSplitPackage(needsPackage);
+  const splitDrawn =
+    shown === "split" && (pierre.status === "idle" || pierre.status === "ready");
   const canChange = Boolean(
     props.onStageFile || props.onStageHunk || props.onDiscardFile,
   );
@@ -50,20 +62,28 @@ export function ReviewDiff(props: Props) {
         <DiffLayoutControl
           mode={mode}
           onChange={choose}
-          viewOnly={mode === "split" && canChange}
+          viewOnly={splitDrawn && canChange}
         />
       ) : null}
-      {shown === "split" ? (
+      {splitDrawn ? (
         <SplitDiffView
           files={props.files}
           fill={fill}
+          PierreFile={pierre.status === "ready" ? pierre.PierreFile : null}
           focusPath={props.focusPath}
           focusId={props.focusId}
         />
       ) : (
-        <div className={fill ? "min-h-0 flex-1" : undefined}>
-          <UnifiedDiffView {...props} />
-        </div>
+        <>
+          {shown === "split" && pierre.status === "failed" ? (
+            <p className="shrink-0 border-b border-stroke px-3 py-1.5 text-[12px] text-content/55">
+              Split view could not load. Showing Unified.
+            </p>
+          ) : null}
+          <div className={fill ? "min-h-0 flex-1" : undefined}>
+            <UnifiedDiffView {...props} />
+          </div>
+        </>
       )}
     </div>
   );

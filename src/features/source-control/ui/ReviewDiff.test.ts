@@ -81,11 +81,13 @@ function button(name: string): HTMLButtonElement {
   return found as HTMLButtonElement;
 }
 
-// The split view's package loads on demand, so it arrives a moment after Split is chosen.
+// The split view's package loads on demand, so the split view arrives a moment after
+// Split is chosen. The unified review stays on screen until then.
 async function waitForSplit() {
   await act(async () => {
-    await import("./pierreDiff");
-    await Promise.resolve();
+    await vi.waitFor(() =>
+      expect(container.querySelector("[aria-label='Split diff']")).not.toBeNull(),
+    );
   });
 }
 
@@ -145,12 +147,14 @@ it("keeps the inline comment on unified", async () => {
 it("does not call split view only when the review cannot stage", async () => {
   await render({ onStageHunk: undefined });
   await act(async () => button("Split").click());
+  await waitForSplit();
   expect(container.textContent).not.toContain("view only");
 });
 
 it("remembers split, and follows another window", async () => {
   localStorage.setItem(DIFF_PRESENTATION_KEY, "split");
   await render();
+  await waitForSplit();
   expect(container.querySelector("[aria-label='Split diff']")).not.toBeNull();
 
   localStorage.setItem(DIFF_PRESENTATION_KEY, "unified");

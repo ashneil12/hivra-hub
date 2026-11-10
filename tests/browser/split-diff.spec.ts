@@ -72,6 +72,62 @@ test("the split package loads only when Split is chosen", async ({ page }) => {
   expect(requested.length).toBeGreaterThan(0);
 });
 
+const SPLIT_MODULE = /pierreDiff\.tsx/;
+
+test("the unified review stays on screen while the split package is on its way", async ({
+  page,
+}) => {
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await page.route(SPLIT_MODULE, async (route) => {
+    await gate;
+    await route.continue();
+  });
+  await page.goto("/tests/browser/split-diff.html");
+  const unified = page.getByRole("region", { name: "Unified diff", exact: true });
+  const split = page.getByRole("region", { name: "Split diff", exact: true });
+  await expect(unified).toBeVisible();
+
+  await page.getByRole("radio", { name: "Split" }).click();
+  await expect(page.getByRole("radio", { name: "Split" })).toHaveAttribute(
+    "aria-checked",
+    "true",
+  );
+  await page.waitForTimeout(400);
+  await expect(unified).toBeVisible();
+  await expect(split).toHaveCount(0);
+  await expect(page.getByText("Loading split view")).toHaveCount(0);
+
+  release();
+  await expect(split).toContainText("new line");
+  await expect(unified).toHaveCount(0);
+});
+
+test("a split package that fails to load leaves the unified review and says so", async ({
+  page,
+}) => {
+  await page.route(SPLIT_MODULE, (route) => route.abort());
+  await page.goto("/tests/browser/split-diff.html");
+  await page.getByRole("radio", { name: "Split" }).click();
+  await expect(
+    page.getByText("Split view could not load. Showing Unified."),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Unified diff", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Split diff", exact: true }),
+  ).toHaveCount(0);
+  // Unified is what is drawn, so staging is still there.
+  const added = page.locator(".diff-review-gutter-lane .diff-review-line.is-add").first();
+  await added.hover();
+  await expect(
+    added.getByRole("button", { name: "Stage hunk", exact: true }),
+  ).toBeVisible();
+});
+
 test("split brings the focused file to the top, until the person scrolls", async ({
   page,
 }) => {
