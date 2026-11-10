@@ -9985,6 +9985,21 @@ function Workspace({
     [submitSession],
   );
 
+  /**
+   * The bench's way into a Mono's chat (below): open the Mono as Ash's click does, then the chat to type into, which is
+   * the Mono's own. While its chat loads, something else at startup (a tab the window restores) can take the view, which
+   * leaves the view empty or on another chat; the message still goes to the Mono it was meant for.
+   */
+  const openVerifyMonoChat = useCallback(
+    async (monoId: string) => {
+      await onOpenMono(monoId);
+      const view = monoViewIdRef.current;
+      const own = findMono(monoId)?.sessionId ?? null;
+      return { view, own, chat: own ?? view };
+    },
+    [onOpenMono],
+  );
+
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
@@ -10030,16 +10045,16 @@ function Workspace({
         return;
       }
       traceVerifyKickoff("opening", { monoId });
-      await onOpenMono(monoId);
-      const sessionId = monoViewIdRef.current;
-      traceVerifyKickoff(sessionId ? "sending" : "no-chat-open", {
+      const { view, own, chat } = await openVerifyMonoChat(monoId);
+      // "sending-to-mono-chat": the open lost the view to something else, so the send names the Mono's chat itself.
+      traceVerifyKickoff(!chat ? "no-chat-open" : chat === view ? "sending" : "sending-to-mono-chat", {
         monoId,
-        view: sessionId,
-        monoChat: findMono(monoId)?.sessionId ?? null,
+        view,
+        monoChat: own,
       });
-      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+      if (chat) onSubmit(chat, kickoff.prompt);
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, windowTransfer]);
   // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
@@ -10062,17 +10077,17 @@ function Workspace({
         if (message.newMono) {
           const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
           saveMonoName(mono.id, message.newMono.name);
-          await onOpenMono(mono.id);
-          const sessionId = monoViewIdRef.current;
-          if (sessionId) onSubmit(sessionId, message.prompt);
+          const { chat } = await openVerifyMonoChat(mono.id);
+          if (!chat) throw new Error(`no chat for the new Mono ${message.newMono.name}`);
+          onSubmit(chat, message.prompt);
           return;
         }
-        await onOpenMono(message.monoId);
-        const sessionId = monoViewIdRef.current;
-        if (sessionId) onSubmit(sessionId, message.prompt);
+        const { chat } = await openVerifyMonoChat(message.monoId);
+        if (!chat) throw new Error(`no chat for ${message.monoId}`);
+        onSubmit(chat, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
