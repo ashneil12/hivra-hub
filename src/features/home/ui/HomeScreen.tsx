@@ -117,6 +117,7 @@ export function HomeScreen({
   onUnpin,
   onAsk,
   renderPanel,
+  programme,
 }: {
   needsYou: readonly HomeLine[];
   moving: readonly HomeLine[];
@@ -135,6 +136,8 @@ export function HomeScreen({
   onUnpin: (key: string) => void;
   onAsk: (text: string) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
+  /** WP-159: the programme card. Absent when the board is empty, so a quiet home stays quiet. */
+  programme?: ReactNode;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
     "needs-you": needsYou,
@@ -150,7 +153,7 @@ export function HomeScreen({
   const pinned = new Set(arrangement.order.filter((ref) => ref.kind === "panel").map(sectionKey));
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const summaryNotes = summary ?? [];
-  const quiet = known && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+  const quiet = known && !programme && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -159,6 +162,7 @@ export function HomeScreen({
     >
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
         {known ? <HomeChatBox reply={reply} onAsk={onAsk} onOpen={onOpen} /> : null}
+        {programme ?? null}
         {known && summaryNotes.length > 0 ? (
           <div data-home-summary className="rounded-lg border border-stroke px-3 py-2">
             <Notes notes={summaryNotes} onOpen={onOpen} />
