@@ -85,7 +85,8 @@ function harmlessWord(tokens: readonly string[], index: number): boolean {
 
 /** Whether a name is, word for word, a plain read. */
 function closedReadName(tokens: readonly string[] | null): boolean {
-  if (!tokens?.length || !READ_VERBS.has(tokens[0])) return false;
+  // A bare verb ("get", "status") names no object, so it can't say what it reads: it needs a noun after it.
+  if (!tokens || tokens.length < 2 || !READ_VERBS.has(tokens[0])) return false;
   for (let index = 0; index < tokens.length; index++) {
     const word = tokens[index];
     if (JOINING_TOKENS.has(word)) return false;
@@ -320,6 +321,8 @@ export function toolEffect(toolName: string, description = "", hints: McpHints =
     // "share" or "comment" in a description are often nouns.
     return SAYS_HIGH_IMPACT.test(said) && hints.destructiveHint !== false ? "high_impact" : "change";
   }
+  // A bare read verb ("query", "status") says nothing about its object, so it waits whatever its description says.
+  if (tokens?.length === 1 && READ_VERBS.has(tokens[0]) && hints.readOnlyHint !== true) return "unknown";
   if (closedReadName(tokens)) {
     if (hints.readOnlyHint === false) return "unknown";
     // WP-101 fix round 2, item E: a page, URL, file, path, shell or SQL name is only as safe as the arguments it is

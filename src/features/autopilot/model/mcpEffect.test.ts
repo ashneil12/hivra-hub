@@ -248,7 +248,7 @@ describe("a read is a closed vocabulary, never a guess (WP-101 fix round)", () =
 describe("Hivra's own cases", () => {
   it("reads the names real servers use", () => {
     // get_file waits since fix round 2, item E: which file it reads is an argument the approval request doesn't carry.
-    for (const name of ["list_issues", "describe_instance", "status", "get_commit_status", "get_posts", "search_issues"])
+    for (const name of ["list_issues", "describe_instance", "get_commit_status", "get_posts", "search_issues"])
       expect(toolEffect(name), name).toBe("read_only");
     expect(toolEffect("get_file")).toBe("unknown");
     for (const name of ["create_page", "update_settings", "move_file", "rename_file"]) expect(toolEffect(name), name).toBe("change");
@@ -295,6 +295,14 @@ describe("Hivra's own cases", () => {
       expect(toolEffect(name), name).not.toBe("read_only");
     // A bare verb has no object at all, so only the call says what it reads.
     for (const name of ["query", "read_query", "get_query", "search", "fetch"]) expect(toolEffect(name), name).not.toBe("read_only");
+  });
+
+  it("holds a bare read verb with no noun after it, whatever it is called (review 2, N6; fix round 5)", () => {
+    // A name that is only a verb says nothing about what it reads: "status", "get" or "read" on a trusted server could
+    // read anything, so the name needs an object before it can pass.
+    for (const name of ["get", "read", "status", "list", "check", "view", "show", "lookup", "describe", "inspect", "count", "find"])
+      expect(toolEffect(name), name).not.toBe("read_only");
+    for (const name of ["get_status", "read_issue", "list_branches"]) expect(toolEffect(name), name).toBe("read_only");
   });
 
   it("keeps the plain reads for a trusted server (fix round 2, item E)", () => {
