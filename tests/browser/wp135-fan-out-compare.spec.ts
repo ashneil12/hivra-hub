@@ -31,3 +31,19 @@ test("a compare can pick one chat and discard the other", async ({ page }) => {
   expect(text).not.toContain("/Users/");
   expect(text.toLowerCase()).not.toContain("merge");
 });
+
+test("a loser with changes in its worktree is stopped and its worktree is kept, and Ash is told", async ({ page }) => {
+  await page.goto("/tests/browser/wp135-fan-out-compare.html?loser=dirty");
+
+  const loser = page.locator("[data-fan-out-child='child-b']");
+  await loser.getByRole("button", { name: "Discard" }).click();
+  await expect(loser.locator("[data-fan-out-cleanup]")).toContainText("changes or commits of its own, so it was kept");
+  await expect(loser.locator("[data-fan-out-cleanup]")).toContainText("Settings, under Worktrees");
+  await expect(page.locator("[data-fan-out-order]")).toHaveText("stop:child-b");
+  await expect(page.locator("[data-fan-out-removed]")).toHaveText("none");
+  await expect(loser).toContainText("Idle");
+
+  const text = await page.locator("body").innerText();
+  expect(text).not.toMatch(/[—–]/);
+  expect(text).not.toContain("/Users/");
+});

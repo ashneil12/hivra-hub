@@ -1,11 +1,17 @@
-// WP-135: the compare view, with made-up chats, a loser that is still running, and a janitor that can remove it.
+// WP-135: the compare view, with made-up chats, a loser that is still running, and a fake git that behaves like the
+// app's: a worktree is clean and at the commit it was made at until a change is made in it, and git refuses to remove
+// one with changes in it. `?loser=dirty` makes the loser's worktree hold a change.
 import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { assignFanOutWorktrees, planFanOut, replaceFanOutChildren, type CompareRecord } from "../../src/features/sessions/model/fanOut";
-import { discardFanOutLoser, pickFanOutInStore } from "../../src/features/sessions/model/fanOutDecide";
+import { discardFanOutLoser, pickFanOutInStore, type CompareStore } from "../../src/features/sessions/model/fanOutDecide";
+import { ownWorktreeVerdict } from "../../src/features/sessions/model/fanOutJanitor";
 import { fanOutCompareRows } from "../../src/features/sessions/model/fanOutView";
 import { FanOutCompare } from "../../src/features/sessions/ui/FanOutCompare";
 import "../../src/styles/index.css";
+
+const MADE_AT = "abc1234";
+const loserHasChanges = new URLSearchParams(window.location.search).get("loser") === "dirty";
 
 const planned = planFanOut({
   prompt: "Fix the flaky test",
@@ -22,12 +28,18 @@ const assigned = assignFanOutWorktrees(planned.record.children, {
   allowedRoots: ["/work/trees"],
   git: true,
   offers: [
-    { path: "/work/trees/a", branch: "mc/fan-a" },
-    { path: "/work/trees/b", branch: "mc/fan-b" },
+    { path: "/work/trees/a", branch: "mc/fan-a", head: MADE_AT },
+    { path: "/work/trees/b", branch: "mc/fan-b", head: MADE_AT },
   ],
 });
 const written = replaceFanOutChildren(planned.record, planned.record.revision, assigned);
 if (!written.ok) throw new Error(written.code);
+
+/** The worktrees git holds, by path. */
+const git = new Map<string, { head: string; dirty: boolean }>([
+  ["/work/trees/a", { head: MADE_AT, dirty: false }],
+  ["/work/trees/b", { head: MADE_AT, dirty: loserHasChanges }],
+]);
 
 function sequence(values: string[]) {
   const left = [...values];
@@ -40,9 +52,9 @@ function Page() {
   const [removed, setRemoved] = useState("none");
   const [stopped, setStopped] = useState<string[]>([]);
   const [order, setOrder] = useState<string[]>([]);
-  const store = {
-    get: (id: string) => (held.current.id === id ? held.current : null),
-    put: (record: CompareRecord) => {
+  const store: CompareStore = {
+    get: async (id) => (held.current.id === id ? held.current : null),
+    put: async (record) => {
       held.current = record;
       setRevision(record.revision);
       return true;
@@ -68,9 +80,7 @@ function Page() {
       <FanOutCompare
         view={{
           rows,
-          onPick: (childId) => {
-            pickFanOutInStore(held.current.id, childId, store);
-          },
+          onPick: (childId) => pickFanOutInStore(held.current.id, childId, store),
           onDiscard: (childId) =>
             discardFanOutLoser(
               held.current.id,
@@ -81,8 +91,16 @@ function Page() {
                   setStopped((list) => [...list, id]);
                   setOrder((list) => [...list, `stop:${id}`]);
                 },
-                inspect: async () => "remove",
+                inspect: async (path, madeAt) => {
+                  const tree = git.get(path);
+                  return ownWorktreeVerdict(
+                    tree ? { head: tree.head, dirty: tree.dirty, locked: false, missing: false, isMain: false } : undefined,
+                    madeAt,
+                  );
+                },
                 remove: async (path) => {
+                  if (git.get(path)?.dirty) throw new Error("contains modified or untracked files");
+                  git.delete(path);
                   setRemoved(path);
                   setOrder((list) => [...list, `remove:${path}`]);
                 },
