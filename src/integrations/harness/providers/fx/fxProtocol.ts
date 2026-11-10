@@ -1,3 +1,4 @@
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 import type { PromptContentBlock } from "../../../../features/sessions/model/attachments";
 import type { AgentModel, ModelSetting, ModelSettingChoice } from "../../../../features/sessions/model/models";
 import type { RuntimeMode, ToolPreview } from "../../../../features/sessions/model/session";
@@ -54,8 +55,8 @@ export function fxPromptBlocks(text: string): PromptContentBlock[] {
  * touched a single file would park forever with nothing on screen. fx has a
  * working auto mode; use it and let fx police itself.
  */
-export function fxModeId(_runtimeMode: RuntimeMode): FxModeId {
-  return "code";
+export function fxModeId(runtimeMode: RuntimeMode): FxModeId {
+  return cliPermissionSetting("fx", runtimeMode) as FxModeId;
 }
 
 /**

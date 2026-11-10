@@ -2,6 +2,7 @@ import { promptBlocks, type PromptContentBlock } from "../../../../features/sess
 import type { AgentModel, ModelSetting } from "../../../../features/sessions/model/models";
 import type { Attachment, RuntimeMode, ToolPreview } from "../../../../features/sessions/model/session";
 import { nativeCommandInvocation, type NativeCommand } from "../../core/nativeCommands";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 import type { HarnessEvent } from "../../core/types";
 import { asRecord, eventsFromAcpUpdate, stringField } from "../antigravity/antigravityProtocol";
 
@@ -23,10 +24,7 @@ export function devinModeId(
   runtimeMode: RuntimeMode,
   planning = false,
 ): DevinModeId {
-  if (planning) return "plan";
-  if (runtimeMode === "full-access") return "bypass";
-  if (runtimeMode === "auto") return "smart";
-  return "accept-edits";
+  return cliPermissionSetting("devin", planning ? "plan" : runtimeMode) as DevinModeId;
 }
 
 /**
