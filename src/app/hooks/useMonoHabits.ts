@@ -37,6 +37,8 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+// WP-164: leftovers from the notable-event buffer go with the morning habit only.
+import { morningHabitExtra } from "../../features/notifications/model/notableEvents";
 
 const TICK_MS = 60_000;
 
@@ -205,7 +207,8 @@ export function useMonoHabits(
       let outcome: ControlOutcome;
       try {
         // /operator gives the run the same app access the Mono has.
-        const prompt = `/operator ${habitRunPrompt(look, files, habit, now)}`;
+        // WP-164: a read that fails leaves the morning run with its usual instructions.
+        const prompt = `/operator ${habitRunPrompt(look, files, habit, now, morningHabitExtra(habit.id))}`;
         outcome = await watchRun(host, mono.id, habit, run.id, () =>
           host.run(run.id, prompt),
         );
