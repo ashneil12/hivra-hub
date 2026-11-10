@@ -7,6 +7,7 @@ import { draftRule, moveRule, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
+import { SpendLimitLine } from "../../usage/ui/SpendLimitLine";
 
 export type ShownRule = {
   labels: string[];
@@ -197,6 +198,8 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
       {/* WP-161: the shared ceiling and the pauses. Running builders are not stopped. */}
       <BuilderScaleControls showSharedMax />
+      {/* WP-176: the measured-cost limit for this project. A running builder is not stopped. */}
+      <SpendLimitLine project={cwd ?? ""} indexed />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"

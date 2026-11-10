@@ -977,6 +977,7 @@ import {
   type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
+import { subscribeSpend } from "../features/usage/model/spendGate";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -13650,10 +13651,13 @@ function Workspace({
       window.clearTimeout(timer);
       arm();
     });
+    // WP-176: raising a spend limit starts a builder that was waiting on it, without waiting for the timer.
+    const offSpend = subscribeSpend(pumpWorkersNow);
     arm();
     return () => {
       offRows();
       offPool();
+      offSpend();
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);

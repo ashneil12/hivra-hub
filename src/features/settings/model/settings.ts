@@ -782,6 +782,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Crew rules",
     keywords: "routing cli model effort reroute labels paths",
   },
+  {
+    id: "spend-limit",
+    section: "crew",
+    label: "Spend limit",
+    keywords: "measured cost usd money budget pause builders ceiling month day",
+  },
 ];
 
 export type SettingsSearchResult = {
