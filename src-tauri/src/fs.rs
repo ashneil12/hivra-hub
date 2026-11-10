@@ -5993,6 +5993,11 @@ fn copy_generated_image_in(
     if source == root || !source.starts_with(&root) {
         return Ok(None);
     }
+    // A folder is not an image. Asked before opening: Windows refuses to open a folder as a file ("Access is
+    // denied"), which would read as a real error rather than a picture that is not there.
+    if !source.is_file() {
+        return Ok(None);
+    }
     let mut handle = match std::fs::File::open(&source) {
         Ok(handle) => handle,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
