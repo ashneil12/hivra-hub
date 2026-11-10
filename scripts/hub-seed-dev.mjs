@@ -147,6 +147,12 @@ export function scrub(db) {
     // Mono chats and make mc/pr-<n> worktrees in his real project checkouts.
     wipe("prWatchWakes", "pr_watch_wakes");
     wipe("prWatches", "pr_watches");
+    // WP-144: a held brief and its fresh-eyes review name Ash's real chats and folders; a dev copy would start the brief
+    // as a worker there once approved. Only that document goes: the other hub documents are what the seed is for.
+    if (has(db, "hub_local_docs")) {
+      cleared.freshEyesReviews = count(db, "SELECT count(*) FROM hub_local_docs WHERE key = 'fresh-eyes'");
+      db.exec("DELETE FROM hub_local_docs WHERE key = 'fresh-eyes'");
+    }
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");

@@ -73,6 +73,7 @@ in Settings, under About.
 - [mcode-stack](https://github.com/MiniMax-AI/mcode-stack): team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117).
 - [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143).
 - [models.dev](https://github.com/anomalyco/models.dev): a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104).
+- [Elephant-Goldfish](https://github.com/google/elephant-goldfish-model): a zero-context review of a plan before a crew starts (WP-144).
 - [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
 - [numbrone](https://github.com/stevenmichaelthomas/numbrone): ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees.
 
