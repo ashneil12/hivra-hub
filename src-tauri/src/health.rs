@@ -180,6 +180,8 @@ fn read_git() -> GitFact {
     }
 }
 
+// Only the unix free-space reader calls this; Windows keeps it for the shared test.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn blocks_to_bytes(avail: u64, frsize: u64) -> Option<u64> {
     avail.checked_mul(frsize)
 }

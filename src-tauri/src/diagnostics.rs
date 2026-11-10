@@ -178,14 +178,12 @@ fn name_ok(value: &str) -> bool {
         Some(first) if first.is_ascii_lowercase() => {}
         _ => return false,
     }
-    let mut count = 1usize;
-    for c in chars {
+    for (count, c) in (1usize..).zip(chars) {
         if count >= 40
             || !(c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-'))
         {
             return false;
         }
-        count += 1;
     }
     true
 }
