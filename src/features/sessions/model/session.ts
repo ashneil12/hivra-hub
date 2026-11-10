@@ -460,6 +460,8 @@ export type Block = {
   };
   approval?: {
     requestId: number;
+    /** Epoch ms the app was asked. A settled chat comes back for a request newer than its settle (chatListInbox.ts). */
+    at?: number;
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;
@@ -627,6 +629,13 @@ export type Session = {
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
   /**
+   * The app holds this chat busy for a background compact (WP-115). It is not
+   * a turn: Quit, the in-flight list and a restore ignore it, so a quit or a
+   * crash during the compact never reads as a cut turn. In-memory only (never
+   * written to the database), and cleared by whatever starts or ends a turn.
+   */
+  idleCompacting?: boolean;
+  /**
    * What the live turn is waiting on after the agent yielded with work still
    * running in the background. In-memory only.
    */
@@ -699,6 +708,11 @@ export type Session = {
   workspaceMode?: WorkspaceMode;
   /** Base ref for a worktree that will be created on first send. */
   worktreeBase?: string;
+  /**
+   * The person chose this folder for this new chat, so the new chat worktree
+   * setting leaves it alone. Saved with the open tabs, so a reload keeps it.
+   */
+  worktreeDeclined?: boolean;
   /** Internal guard while the first turn creates its selected worktree. */
   worktreePreparing?: boolean;
   /** Select a working copy before continuing after the previous one was deleted. */
