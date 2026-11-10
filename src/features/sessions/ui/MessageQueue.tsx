@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { stripHiddenCharacters } from "../model/hiddenText";
 import { appNoteText } from "../model/appNote";
 import {
   Check,
@@ -67,8 +68,9 @@ export function MessageQueue({
     onEditingChange?.();
   };
   const saveEdit = (message: QueuedMessage) => {
-    if (!editDraft.trim() && message.attachments.length === 0) return;
-    onEdit?.(message.id, editDraft);
+    const visible = stripHiddenCharacters(editDraft).text;
+    if (!visible.trim() && message.attachments.length === 0) return;
+    onEdit?.(message.id, visible);
     setEditingId(undefined);
     setEditDraft("");
   };

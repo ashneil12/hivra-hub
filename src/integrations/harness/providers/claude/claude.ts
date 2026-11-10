@@ -263,6 +263,8 @@ type Live = {
   /** TaskCreate/TaskUpdate items, keyed by Claude's task id. */
   claudeTasks: Map<string, TaskListItem>;
   turnResultSeen: boolean;
+  /** The last `total_cost_usd` this process reported: the CLI's running total, so a turn's own cost is the step from it. */
+  lastTotalCostUsd?: number;
   /**
    * Prompts written into this MonoCode turn that Claude hasn't answered yet: the turn's own, a follow-up written after
    * Claude yielded, the `/goal` sent behind a brief. A background wake Claude runs first (its result says
@@ -1712,6 +1714,13 @@ function handleResult(live: Live, rec: Record<string, unknown>): void {
     contextUsed: live.contextUsed,
   });
   const metrics = turnMetricsFromResult(rec);
+  if (metrics?.costUsd != null) {
+    const total = metrics.costUsd;
+    // A total below the last one means the counter started over; take it as it stands.
+    const previous = live.lastTotalCostUsd ?? 0;
+    metrics.costUsd = total >= previous ? total - previous : total;
+    live.lastTotalCostUsd = total;
+  }
   if (metrics) live.onEvent({ type: "turn.metrics", ...metrics });
   if (!live.manualCompaction) noteDroppedEffort(live);
 

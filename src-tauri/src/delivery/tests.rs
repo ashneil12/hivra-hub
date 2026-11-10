@@ -1427,6 +1427,35 @@ fn teardown_keeps_a_copy_whose_work_has_not_landed_or_merged() {
     );
 }
 
+// WP-91: an orchestration worker's handoff is a note kept in its own checkout. Integration leaves it out of what the
+// worker changed (checkpoint.rs), so it never reaches the project; the guard must not then call the copy unlanded for
+// holding it, or an accepted worker's copy could never be removed.
+#[test]
+fn teardown_does_not_count_a_workers_handoff_as_unlanded_work() {
+    let f = fixture("teardown-handoff");
+    let note = f.copy.join(".hivra").join("handoff").join("task-1.md");
+    std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+    std::fs::write(&note, "## Changed\nsrc/a.ts\n").unwrap();
+    // Only the note in it: the worker changed nothing, so there is nothing to lose.
+    assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Landed);
+    assert_eq!(
+        crate::land::land(&f.copy, &f.project).unwrap().outcome,
+        "nothing"
+    );
+
+    // A change that has not landed keeps the copy, note or no note.
+    std::fs::write(f.copy.join("a.txt"), "two\n").unwrap();
+    let kept = teardown::guard(&f.project, &f.copy).unwrap_err();
+    assert!(kept.contains("hasn't landed"), "{kept}");
+    // Once it has, the copy may go: the work is in the project and the note stays behind in the copy.
+    let landing = crate::land::land(&f.copy, &f.project).unwrap();
+    assert_eq!(landing.outcome, "landed");
+    assert_eq!(landing.files, vec!["a.txt".to_string()]);
+    assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Landed);
+    assert!(!f.project.join(".hivra").exists());
+    assert!(note.is_file());
+}
+
 #[test]
 fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
     use crate::worktree_janitor::{gather, verdict, Context, Kind as TreeKind, Outcome, Policy};
