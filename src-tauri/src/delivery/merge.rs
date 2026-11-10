@@ -208,6 +208,7 @@ fn named_files(hits: &[String]) -> String {
 /// otherwise merge needs the person's word when its files are unread or touch a protected path. One that
 /// would ask (no checks, with the switch on) keeps its question and says what the floor found in it too.
 pub(crate) fn floor_decision(
+    shared: &Result<&super::protected::Shared, String>,
     decision: Decision,
     enabled: bool,
     files: &super::protected::ChangedFiles,
@@ -220,6 +221,18 @@ pub(crate) fn floor_decision(
     if let Decision::Refuse(_) = &decision {
         return decision;
     }
+    // A list that would not load holds the pull request: the floor cannot judge it, so the person decides.
+    let shared = match shared {
+        Ok(list) => *list,
+        Err(error) => {
+            return ask_with(
+                decision,
+                format!(
+                    "{pr}'s protected-path list couldn't be loaded ({error}), so it needs your word to merge."
+                ),
+            )
+        }
+    };
     let paths = match files {
         super::protected::ChangedFiles::Unread { reason } => {
             let reason = reason.trim();
@@ -228,17 +241,16 @@ pub(crate) fn floor_decision(
             } else {
                 format!(" {reason}")
             };
-            let ask = format!(
-                "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
+            return ask_with(
+                decision,
+                format!(
+                    "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
+                ),
             );
-            return match decision {
-                Decision::Ask(question) => Decision::Ask(format!("{question} {ask}")),
-                _ => Decision::Ask(ask),
-            };
         }
         super::protected::ChangedFiles::Listed(paths) => paths,
     };
-    let hits = super::protected::protected_hits(paths, extras);
+    let hits = super::protected::protected_hits(Some(shared), paths, extras);
     if hits.is_empty() {
         return decision;
     }
@@ -251,6 +263,14 @@ pub(crate) fn floor_decision(
             "{pr} changes {}. It needs your word to merge.",
             named_files(&hits)
         )),
+    }
+}
+
+/// The floor's ask, added to a question the switch already asks, or on its own.
+fn ask_with(decision: Decision, ask: String) -> Decision {
+    match decision {
+        Decision::Ask(question) => Decision::Ask(format!("{question} {ask}")),
+        _ => Decision::Ask(ask),
     }
 }
 
@@ -455,6 +475,9 @@ pub fn merge(
     if number == 0 {
         return Err("number must be the pull request's number".into());
     }
+    // The protected-path list is loaded before the store lock is taken. A list that will not load is an error value
+    // the floor turns into an ask, never a panic while the lock is held.
+    let shared = super::protected::shared_list();
     let read = gh.read_pr(&repo, number);
     let mut conn = store.lock_conn()?;
     let read = match read {
@@ -517,8 +540,10 @@ pub fn merge(
     };
     // The pull request must still be on the branch the delivery pushed. A head pointed at another branch is not the
     // work the delivery judged, so it is refused. The delivery row is the only record of that branch.
+    // The check is the floor's: with the floor off the project decides exactly as before.
+    let floor_on = stored.as_ref().is_some_and(|row| row.protect_paths);
     let decided = match delivery.as_ref().and_then(|row| row.branch.as_deref()) {
-        Some(expected) if expected != read.head_ref => Decision::Refuse(format!(
+        Some(expected) if floor_on && expected != read.head_ref => Decision::Refuse(format!(
             "{repo}#{number} is on the branch {}, but its delivery pushed {}. Nothing was merged.",
             super::protected::show(&read.head_ref),
             super::protected::show(expected),
@@ -576,7 +601,14 @@ pub fn merge(
             Some(question) => Decision::Refuse(format!(
                 "A decision on this work is still open: {question}. It merges once that is answered."
             )),
-            None => floor_decision(decided, true, &files, &extras, &format!("{repo}#{number}")),
+            None => floor_decision(
+                &shared,
+                decided,
+                true,
+                &files,
+                &extras,
+                &format!("{repo}#{number}"),
+            ),
         }
     } else {
         decided

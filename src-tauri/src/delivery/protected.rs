@@ -127,7 +127,7 @@ struct SharedList {
     hold_any_dot_segment: bool,
 }
 
-struct Shared {
+pub(crate) struct Shared {
     files: Vec<String>,
     dirs: Vec<String>,
     suffixes: Vec<Vec<String>>,
@@ -136,22 +136,34 @@ struct Shared {
 
 const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
 
-fn shared_list() -> &'static Shared {
-    static LIST: std::sync::OnceLock<Shared> = std::sync::OnceLock::new();
-    LIST.get_or_init(|| {
-        let list: SharedList = serde_json::from_str(SHARED_LIST_JSON)
-            .expect("agentConfigPaths.json is a valid shared list");
-        assert_eq!(list.version, 1, "agentConfigPaths.json is version 1");
-        Shared {
-            files: list.files.iter().map(|name| fold(name)).collect(),
-            dirs: list.dirs.iter().map(|name| fold(name)).collect(),
-            suffixes: list
-                .path_suffixes
-                .iter()
-                .map(|suffix| segments(suffix))
-                .collect(),
-            hold_any_dot_segment: list.hold_any_dot_segment,
-        }
+/// The loaded shared list, or the reason it would not load. Loaded once, before any caller takes the session store's
+/// lock, and never by a panic: a list that will not load holds every path (see [`protected_hits`]).
+pub(crate) fn shared_list() -> Result<&'static Shared, String> {
+    static LIST: std::sync::OnceLock<Result<Shared, String>> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| load_shared(SHARED_LIST_JSON))
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// Reads a shared list from its JSON. A list that does not parse, or is not version 1, is an error.
+fn load_shared(json: &str) -> Result<Shared, String> {
+    let list: SharedList = serde_json::from_str(json)
+        .map_err(|error| format!("agentConfigPaths.json does not parse: {error}"))?;
+    if list.version != 1 {
+        return Err(format!(
+            "agentConfigPaths.json is version {}, not 1",
+            list.version
+        ));
+    }
+    Ok(Shared {
+        files: list.files.iter().map(|name| fold(name)).collect(),
+        dirs: list.dirs.iter().map(|name| fold(name)).collect(),
+        suffixes: list
+            .path_suffixes
+            .iter()
+            .map(|suffix| segments(suffix))
+            .collect(),
+        hold_any_dot_segment: list.hold_any_dot_segment,
     })
 }
 
@@ -261,10 +273,14 @@ fn dotted_hit(segment: &str, name: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('.'))
 }
 
-fn built_in_hit(path: &RepoPath) -> bool {
+fn built_in_hit(path: &RepoPath, shared: Option<&Shared>) -> bool {
     if path.suspicious {
         return true;
     }
+    // No list, no judgement: every path is held.
+    let Some(shared) = shared else {
+        return true;
+    };
     if path.lower.iter().any(|segment| {
         DIRECTORIES.iter().any(|dir| segment == *dir)
             || FILE_NAMES.iter().any(|name| segment == *name)
@@ -278,8 +294,10 @@ fn built_in_hit(path: &RepoPath) -> bool {
     }
     path.lower.windows(2).any(|pair| {
         pair[0] == "src-tauri" && pair[1].starts_with("tauri") && pair[1].ends_with(".json")
-    }) || shared_hit(path)
+    }) || shared_hit(path, shared)
         || delivery_source(path)
+        || shared_source(path)
+        || runner_configs(path)
         || capabilities_json(path)
         || tauri_build_inputs(path)
         || rust_roots(path)
@@ -287,8 +305,7 @@ fn built_in_hit(path: &RepoPath) -> bool {
 
 /// The shared list's rules: a hidden segment anywhere, a folder name anywhere, a file name, or a path ending in a listed
 /// suffix. The list is `src/shared/security/agentConfigPaths.json`.
-fn shared_hit(path: &RepoPath) -> bool {
-    let list = shared_list();
+fn shared_hit(path: &RepoPath, list: &Shared) -> bool {
     if list.hold_any_dot_segment
         && path
             .lower
@@ -358,6 +375,24 @@ fn delivery_source(path: &RepoPath) -> bool {
     path.lower
         .windows(3)
         .any(|window| window[0] == "src-tauri" && window[1] == "src" && window[2] == "delivery")
+}
+
+/// The shared list's own folder. A weakened list would hold less, so a merge that edits it asks first.
+fn shared_source(path: &RepoPath) -> bool {
+    path.lower
+        .windows(3)
+        .any(|window| window[0] == "src" && window[1] == "shared" && window[2] == "security")
+}
+
+/// Build and test runner configs in any folder. Vite loads `.js` and `.mjs` before `.ts`, so every extension of these
+/// names is held, not one of them.
+fn runner_configs(path: &RepoPath) -> bool {
+    const PREFIXES: &[&str] = &["vite.config.", "vitest.config.", "playwright.config."];
+    path.lower.last().is_some_and(|file| {
+        PREFIXES
+            .iter()
+            .any(|prefix| file.len() > prefix.len() && file.starts_with(prefix))
+    })
 }
 
 struct Extra {
@@ -606,7 +641,13 @@ fn needs_escape(c: char) -> bool {
 /// Paths from `paths` that the floor holds. Built-ins always count. `extras` only add.
 /// Each path is returned once, in input order, with `\` turned into `/` and `.` segments
 /// dropped. A `..` segment is not folded out: the path is untrusted, so it counts as a hit.
-pub fn protected_hits<P: AsRef<str>, E: AsRef<str>>(paths: &[P], extras: &[E]) -> Vec<String> {
+/// Against a list already loaded. `None` (a list that would not load) holds every path, so the floor asks rather than
+/// passing a change it cannot judge.
+pub(crate) fn protected_hits<P: AsRef<str>, E: AsRef<str>>(
+    shared: Option<&Shared>,
+    paths: &[P],
+    extras: &[E],
+) -> Vec<String> {
     let extras: Vec<Extra> = extras
         .iter()
         .filter_map(|extra| extra_rule(extra.as_ref()))
@@ -619,7 +660,7 @@ pub fn protected_hits<P: AsRef<str>, E: AsRef<str>>(paths: &[P], extras: &[E]) -
         if hits.iter().any(|seen: &String| seen == &parsed.display) {
             continue;
         }
-        if built_in_hit(&parsed) || extras.iter().any(|extra| extra_hit(&parsed, extra)) {
+        if built_in_hit(&parsed, shared) || extras.iter().any(|extra| extra_hit(&parsed, extra)) {
             hits.push(parsed.display);
         }
     }
@@ -631,7 +672,7 @@ mod tests {
     use super::*;
 
     fn hits(paths: &[&str], extras: &[&str]) -> Vec<String> {
-        protected_hits(paths, extras)
+        protected_hits(shared_list().ok(), paths, extras)
     }
 
     #[test]
@@ -997,7 +1038,7 @@ mod tests {
         match judge(ReadFiles::Parsed(list), Some(1)) {
             ChangedFiles::Listed(paths) => {
                 assert_eq!(
-                    protected_hits(&paths, &[] as &[&str]),
+                    protected_hits(shared_list().ok(), &paths, &[] as &[&str]),
                     vec![".github/workflows/old.yml".to_string()]
                 );
             }
@@ -1111,6 +1152,7 @@ mod tests {
     fn the_shared_list_loads_and_holds_every_harness_folder_and_root_file() {
         // The shared list (src/shared/security/agentConfigPaths.json) is the one list #198 and #201 hold.
         assert!(shared_list()
+            .expect("the list in the repository loads")
             .files
             .iter()
             .any(|name| name == "opencode.jsonc"));
@@ -1188,5 +1230,51 @@ mod tests {
         assert_eq!(show("pkg\u{fe0f}.json"), "pkg\\u{fe0f}.json");
         assert_eq!(show("pkg\u{e0100}.json"), "pkg\\u{e0100}.json");
         assert_eq!(show("plain name.json"), "plain name.json");
+    }
+
+    #[test]
+    fn a_list_that_will_not_load_holds_every_path_and_never_panics() {
+        // A list that does not parse, or is another version, is an error the caller sees. It is never a panic, and no
+        // path is passed: the floor asks, as it does for an unread file list.
+        assert!(load_shared("{").is_err());
+        assert!(load_shared(
+            r#"{"version":2,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
+        )
+        .is_err());
+        assert!(load_shared(
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
+        )
+        .is_ok());
+        assert!(shared_list().is_ok(), "the list in the repository loads");
+        let paths = ["src/lib.rs", "docs/notes.md"];
+        assert_eq!(
+            protected_hits(None, &paths, &[] as &[&str]),
+            vec!["src/lib.rs".to_string(), "docs/notes.md".to_string()]
+        );
+    }
+
+    #[test]
+    fn the_floor_holds_its_own_list_and_every_runner_config() {
+        // The list that decides what is held is itself held: a weakened list must not merge without the person's word.
+        // Vite picks `.js` and `.mjs` before `.ts`, so every `vite.config.*` is held, and so are the test runners' configs.
+        for path in [
+            "src/shared/security/agentConfigPaths.json",
+            "src/shared/security/anything.ts",
+            "vite.config.ts",
+            "vite.config.js",
+            "vite.config.mjs",
+            "vite.config.mts",
+            "vite.config.cjs",
+            "apps/web/vite.config.mjs",
+            "Vite.Config.JS",
+            "vitest.config.ts",
+            "vitest.config.mjs",
+            "playwright.config.ts",
+            "playwright.config.js",
+        ] {
+            assert_eq!(hits(&[path], &[]), vec![path.to_string()], "{path}");
+        }
+        assert!(hits(&["src/shared/other.ts"], &[]).is_empty());
+        assert!(hits(&["src/vite-config-notes.md"], &[]).is_empty());
     }
 }

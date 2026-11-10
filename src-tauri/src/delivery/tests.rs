@@ -11,7 +11,7 @@ use super::github::Github;
 use super::merge::{
     self, decide, floor_decision, Allow, Caller, Decision, MergeOutcome, MergeRequest, Method,
 };
-use super::protected::ChangedFiles;
+use super::protected::{shared_list, ChangedFiles};
 use super::settings::{self, Mode, Probe};
 use super::teardown::{self, Safe};
 use crate::delegations::{self, RecordInput};
@@ -1699,6 +1699,7 @@ fn the_floor_off_decides_exactly_as_before() {
     );
     assert_eq!(
         floor_decision(
+            &shared_list(),
             decision.clone(),
             false,
             &ChangedFiles::Unread {
@@ -1742,7 +1743,14 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
         "compose.yml".into(),
         "id_rsa".into(),
     ]);
-    let named = floor_decision(allowed.clone(), true, &six, &[], "acme/web#7");
+    let named = floor_decision(
+        &shared_list(),
+        allowed.clone(),
+        true,
+        &six,
+        &[],
+        "acme/web#7",
+    );
     let question = asked_decision(&named);
     for name in [
         ".github/workflows/a.yml",
@@ -1759,6 +1767,7 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
     assert!(!question.contains('\u{2014}') && !question.contains('\u{2013}'));
 
     let one = floor_decision(
+        &shared_list(),
         allowed.clone(),
         true,
         &ChangedFiles::Listed(vec![".github/workflows/x.yml".into()]),
@@ -1771,6 +1780,7 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
 
     assert_eq!(
         floor_decision(
+            &shared_list(),
             allowed.clone(),
             true,
             &ChangedFiles::Listed(vec!["readme.md".into()]),
@@ -1781,6 +1791,7 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
     );
 
     let unread_decision = floor_decision(
+        &shared_list(),
         allowed,
         true,
         &ChangedFiles::Unread {
@@ -1793,6 +1804,28 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
     assert!(unread.contains("couldn't be read"), "{unread}");
     assert!(unread.contains("2 minutes"), "{unread}");
     assert!(!unread.contains("secret"), "{unread}");
+}
+
+#[test]
+fn a_protected_list_that_will_not_load_asks_and_never_panics() {
+    // The list is an error value, not a panic: the pull request needs the person's word, and the store is not poisoned.
+    let allowed = Decision::Merge {
+        allowed_by: "project setting: merge without asking".into(),
+    };
+    let unloaded: Result<&super::protected::Shared, String> =
+        Err("the list is not version 1".into());
+    let decision = floor_decision(
+        &unloaded,
+        allowed,
+        true,
+        &ChangedFiles::Listed(vec!["readme.md".into()]),
+        &[],
+        "acme/web#7",
+    );
+    let question = asked_decision(&decision);
+    assert!(question.contains("couldn't be loaded"), "{question}");
+    assert!(question.contains("not version 1"), "{question}");
+    assert!(question.contains("your word"), "{question}");
 }
 
 fn asked_decision(decision: &Decision) -> String {
@@ -2231,6 +2264,7 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
     // The built-in list is not shrunk by what is stored.
     assert_eq!(
         super::protected::protected_hits(
+            super::protected::shared_list().ok(),
             &[".github/workflows/x.yml", "readme.md"],
             &on.protected_extra
         ),
@@ -2389,6 +2423,25 @@ fn a_pull_request_on_another_branch_than_the_delivery_is_refused() {
         other => panic!("expected a refusal, got {other:?}"),
     }
     assert!(gh.ran("pr", "merge").is_empty());
+}
+
+#[test]
+fn the_head_branch_check_belongs_to_the_floor() {
+    // The floor is off, so the project decides exactly as before: a pull request on another branch than the delivery
+    // pushed merges with the switch on, as it did before the floor existed.
+    let project = floor_project("branch-off");
+    let s = store();
+    set_mode(&s, &project, Some(Mode::Pr), true);
+    remember_delivery(&s, &project, None, 7);
+    let mut read = green("1111111111111111111111111111111111111111");
+    read.head_ref = "someone-else".into();
+    let gh = FakeGithub::new(vec![read]);
+    *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
+    let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        matches!(&merged, MergeOutcome::Merged { .. }),
+        "the floor is off, so the branch check does not apply: {merged:?}"
+    );
 }
 
 #[test]
