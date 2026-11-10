@@ -37,6 +37,11 @@ import {
 } from "./codexProtocol";
 import { JsonRpcClient, type JsonRpcId } from "../../core/jsonRpc";
 import {
+  forwardChildAnswer,
+  type ChildAnswer,
+  type SessionPort,
+} from "../../../../features/sessions/model/childApproval";
+import {
   deleteGeneratedImages,
   saveGeneratedImage,
 } from "../../../../platform/tauri/fs";
@@ -122,6 +127,9 @@ type Live = {
   notificationQueue: Promise<void> | null;
   /** Child thread id -> the agent tool row that spawned it. */
   subagentThreads: Map<string, string>;
+  /** WP-122: child thread id -> the port an approval answer is written to. */
+  childPorts: Map<string, SessionPort>;
+  childSenders: Map<string, (answer: ChildAnswer) => void>;
   /** Child notifications that arrived before their row was known. */
   pendingSubagent: Map<string, Array<{ method: string; params: unknown }>>;
   /** Agent rows still running, by call id, with the name to settle them under. */
@@ -445,6 +453,9 @@ export async function stopCodexSession(sessionId: string): Promise<void> {
   liveByThread.delete(sessionId);
   if (live) {
     live.muteUpdates = true;
+    // WP-122: the process is going away, so a late click cannot be delivered as a parent answer.
+    live.childPorts.clear();
+    live.childSenders.clear();
     live.turnGeneration += 1;
     clearServerRequests(live);
     live.turnDone?.();
@@ -784,6 +795,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       turnGeneration: 0,
       notificationQueue: null,
       subagentThreads: new Map(),
+      childPorts: new Map(),
+      childSenders: new Map(),
       pendingSubagent: new Map(),
       openAgentRows: new Map(),
       rateLimits: new Map(),
@@ -1203,9 +1216,11 @@ function bindSubagentThreads(
           agentModel: model,
         });
       if (owner !== callId) claimed += 1;
+      ensureChildPort(live, childId);
       continue;
     }
     live.subagentThreads.set(childId, callId);
+    ensureChildPort(live, childId);
   }
   return children.length > 0 && claimed === children.length;
 }
@@ -1471,6 +1486,34 @@ async function handleServerRequest(
       return;
     }
     const uiId = live.nextApprovalUiId++;
+    // WP-122: a child thread's ask is answered here, and the answer goes to that thread only.
+    const child = childThread(live, threadId);
+    if (child) {
+      await answerChildApproval(
+        live,
+        uiId,
+        id,
+        "permissions",
+        threadId,
+        child,
+        {
+          type: "approval.requested",
+          requestId: uiId,
+          kind: "other",
+          title: confirmation.title,
+        },
+        (decision) => {
+          void live.rpc
+            .respond(id, {
+              action: decision === "allow" ? "accept" : "decline",
+              content: decision === "allow" ? confirmation.content : null,
+              _meta: null,
+            })
+            .catch(() => undefined);
+        },
+      );
+      return;
+    }
     const pending = waitApproval(live, uiId, id, "permissions", threadId);
     // MCP consent requires an explicit decision outside non-plan Full Access turns.
     live.onEvent({
@@ -1533,6 +1576,20 @@ async function handleServerRequest(
       return;
     }
     if (live.runtimeMode === "supervised") {
+      const child = childThread(live, threadId);
+      if (child) {
+        await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) => {
+          if (decision === "allow") {
+            const rec = asRecord(params);
+            void live.rpc
+              .respond(id, { scope: "turn", permissions: rec?.permissions ?? {} })
+              .catch(() => undefined);
+          } else {
+            void live.rpc.respond(id, { permissions: {} }).catch(() => undefined);
+          }
+        });
+        return;
+      }
       const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
       live.onEvent(mapped.event);
       const decision = await pending;
@@ -1570,6 +1627,15 @@ async function handleServerRequest(
     return;
   }
 
+  const child = childThread(live, threadId);
+  if (child) {
+    await answerChildApproval(live, uiId, id, mapped.kind, threadId, child, mapped.event, (decision) => {
+      void live.rpc
+        .respond(id, { decision: toCodexApprovalDecision(decision, mapped.kind) })
+        .catch(() => undefined);
+    });
+    return;
+  }
   const pending = waitApproval(live, uiId, id, mapped.kind, threadId);
   live.onEvent(mapped.event);
   const decision = await pending;
@@ -1582,6 +1648,99 @@ async function handleServerRequest(
   await live.rpc.respond(id, {
     decision: toCodexApprovalDecision(decision, mapped.kind),
   });
+}
+
+function childPortId(threadId: string): string {
+  const id = threadId.replace(/\r/g, "").trim();
+  if (!id || /[\u0000-\u001f]/.test(id)) return "";
+  return id;
+}
+
+function childThread(
+  live: Live,
+  threadId: string,
+): { name: string; sessionPort: string } | null {
+  if (!threadId || threadId === live.threadId || !live.subagentThreads.has(threadId)) return null;
+  const sessionPort = childPortId(threadId);
+  if (!sessionPort || sessionPort === live.threadId) return null;
+  const callId = live.subagentThreads.get(threadId);
+  if (!callId) return null;
+  return { name: live.openAgentRows.get(callId)?.trim() || "Subagent", sessionPort };
+}
+
+function ensureChildPort(live: Live, threadId: string): void {
+  const id = childPortId(threadId);
+  if (!id || id === live.threadId || live.childPorts.has(id)) return;
+  live.childPorts.set(id, {
+    id,
+    write: (answer) => {
+      const send = live.childSenders.get(answer.requestId);
+      if (!send) throw new Error("missing child sender");
+      live.childSenders.delete(answer.requestId);
+      send(answer);
+    },
+  });
+}
+
+function deliverChildDecision(
+  live: Live,
+  threadId: string,
+  requestId: string,
+  decision: "allow" | "deny",
+  send: (decision: "allow" | "deny") => void,
+): "sent" | "unreachable" | "parent" {
+  if (!threadId || threadId === live.threadId || !live.subagentThreads.has(threadId)) return "parent";
+  const sessionPort = childPortId(threadId);
+  const port = sessionPort ? live.childPorts.get(sessionPort) : undefined;
+  if (!sessionPort || !port || port.id !== sessionPort) return "unreachable";
+  live.childSenders.set(requestId, (answer) => send(answer.decision));
+  const result = forwardChildAnswer({ requestId, sessionPort }, decision, live.childPorts);
+  if (result !== "sent") live.childSenders.delete(requestId);
+  return result;
+}
+
+async function answerChildApproval(
+  live: Live,
+  uiId: number,
+  rpcId: JsonRpcId,
+  kind: CodexApprovalKind,
+  threadId: string,
+  child: { name: string; sessionPort: string },
+  event: Extract<HarnessEvent, { type: "approval.requested" }>,
+  send: (decision: "allow" | "deny") => void,
+): Promise<void> {
+  const detail = event.title.trim();
+  let pending = waitApproval(live, uiId, rpcId, kind, threadId);
+  live.onEvent({
+    ...event,
+    child: { name: child.name, sessionPort: child.sessionPort, ...(detail ? { detail } : {}) },
+  });
+  for (;;) {
+    const decision = await pending;
+    if (decision === "cancelled") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    const sent = deliverChildDecision(live, threadId, String(rpcId), decision, send);
+    if (sent === "sent") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    if (sent === "parent") {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      send(decision);
+      return;
+    }
+    if (live.muteUpdates || live.cancelled) {
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    live.onEvent({
+      type: "status",
+      text: "The subagent is not reachable, so the answer was not sent.",
+    });
+    pending = waitApproval(live, uiId, rpcId, kind, threadId);
+  }
 }
 
 function waitApproval(

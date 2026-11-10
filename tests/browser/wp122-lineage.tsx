@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { foldLineage } from "../../src/features/sessions/model/subagentLineage";
+import { ChildApprovalNote } from "../../src/features/sessions/ui/ChildApprovalNote";
 import { LineageList } from "../../src/features/sessions/ui/LineageList";
 import "../../src/styles/index.css";
 
@@ -72,4 +73,7 @@ createRoot(document.getElementById("unreported")!).render(
 );
 createRoot(document.getElementById("empty")!).render(
   <LineageList lineage={foldLineage("claude", [])} />,
+);
+createRoot(document.getElementById("approval")!).render(
+  <ChildApprovalNote name="Explore the auth module" detail="Read the config file" />,
 );

@@ -22,6 +22,10 @@ test("the subagent list on the parent thread", async ({ page }) => {
   await expect(unreported.locator("[data-lineage-child]")).toHaveCount(0);
   await expect(page.locator("#empty [data-lineage]")).toHaveCount(0);
 
+  const approval = page.locator("#approval [data-child-approval]");
+  await expect(approval).toContainText("Approval needed from Explore the auth module");
+  await expect(approval.locator("[data-child-approval-detail]")).toHaveText("Read the config file");
+
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("—");
   expect(body).not.toContain("–");

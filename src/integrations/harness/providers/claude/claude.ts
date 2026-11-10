@@ -90,6 +90,7 @@ import {
   type ClaudeCliSettings,
   type ClaudeControlRequest,
 } from "./claudeProtocol";
+import { forwardChildAnswer, type SessionPort } from "../../../../features/sessions/model/childApproval";
 import { claudeRetryFromMessage } from "./claudeFailure";
 import { withDevCopiesOff } from "./devCopies";
 import { withWorkerNotificationsOff } from "./quietWorkers";
@@ -223,6 +224,10 @@ type Live = {
   pendingControls: Map<string, (response: ClaudeControlResponse) => void>;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
+  /** WP-122: a child tool id, and the port its approval answer is written to. */
+  childTools: Map<string, { name: string; sessionPort: string }>;
+  childPorts: Map<string, SessionPort>;
+  childInputs: Map<string, Record<string, unknown>>;
   questions: Map<number, PendingQuestion>;
   visibleQuestionId: number | null;
   nextApprovalUiId: number;
@@ -776,6 +781,8 @@ export async function stopClaudeSession(sessionId: string): Promise<void> {
   if (live) {
     settleWorkflows(live, "stopped");
     live.muteUpdates = true;
+    // WP-122: the process is going away, so a courtesy deny is not a delivered child answer.
+    live.childPorts.clear();
     dropPendingGoalCheck(sessionId, live);
     for (const [, pending] of live.approvals) pending.resolve("deny");
     live.approvals.clear();
@@ -954,6 +961,9 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     pendingControls: new Map(),
     onEvent: input.onEvent,
     approvals: new Map(),
+    childTools: new Map(),
+    childPorts: new Map(),
+    childInputs: new Map(),
     questions: new Map(),
     visibleQuestionId: null,
     nextApprovalUiId: 1,
@@ -1769,6 +1779,12 @@ async function handleControlRequest(
   }
 
   const uiId = live.nextApprovalUiId++;
+  // WP-122: a child's ask is answered on the parent, and the answer goes to the child port only.
+  const child = control.toolUseId ? live.childTools.get(control.toolUseId) : undefined;
+  if (child) {
+    await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child);
+    return;
+  }
   const pending = waitApproval(live, uiId, control.requestId, input);
   live.onEvent({
     type: "approval.requested",
@@ -1824,6 +1840,73 @@ function waitApproval(
   }).finally(() => {
     live.approvals.delete(uiId);
   });
+}
+
+function rememberChildPort(live: Live, toolUseId: string, name: string, sessionPort: string): void {
+  const id = toolUseId.trim();
+  const port = sessionPort.replace(/\r/g, "").trim();
+  if (!id || !port || /[\u0000-\u001f]/.test(port)) return;
+  if (!live.childTools.has(id)) {
+    live.childTools.set(id, { name: name.trim() || "Subagent", sessionPort: port });
+  }
+  if (live.childPorts.has(port)) return;
+  live.childPorts.set(port, {
+    id: port,
+    write: (answer) => {
+      const input = live.childInputs.get(answer.requestId) ?? {};
+      void writeJson(
+        live.threadId,
+        buildControlResponse(answer.requestId, toClaudePermissionResult(answer.decision, input)),
+      ).catch(() => undefined);
+    },
+  });
+}
+
+async function answerChildClaudeApproval(
+  live: Live,
+  uiId: number,
+  requestId: string,
+  toolUseId: string | undefined,
+  toolName: string,
+  input: Record<string, unknown>,
+  child: { name: string; sessionPort: string },
+): Promise<void> {
+  live.childInputs.set(requestId, input);
+  const title = toolTitle(toolName, input);
+  let pending = waitApproval(live, uiId, requestId, input);
+  live.onEvent({
+    type: "approval.requested",
+    requestId: uiId,
+    title,
+    kind: toolKindFromName(toolName),
+    callId: toolUseId,
+    preview: previewFromTool(toolName, input),
+    call: approvalCall(toolName, input),
+    child: { name: child.name, sessionPort: child.sessionPort, detail: title },
+  });
+  for (;;) {
+    const decision = await pending;
+    if (decision === "cancelled") {
+      live.childInputs.delete(requestId);
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    const sent = forwardChildAnswer(
+      { requestId, sessionPort: child.sessionPort },
+      decision,
+      live.childPorts,
+    );
+    if (sent === "sent" || live.muteUpdates || live.cancelled) {
+      live.childInputs.delete(requestId);
+      live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
+      return;
+    }
+    live.onEvent({
+      type: "status",
+      text: "The subagent is not reachable, so the answer was not sent.",
+    });
+    pending = waitApproval(live, uiId, requestId, input);
+  }
 }
 
 function waitQuestion(
@@ -2201,6 +2284,8 @@ function noteSubagentTool(
     status: "in_progress",
   });
   if (!id) return;
+  const sessionPort = stringField(rec, "session_id");
+  if (sessionPort) rememberChildPort(live, id, parent.title || "Subagent", sessionPort);
   const preview = previewFromTool(name, input);
   live.onEvent({
     type: "agent.step",

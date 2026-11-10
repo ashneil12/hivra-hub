@@ -461,6 +461,8 @@ export type Block = {
     decided?: "allow" | "deny" | "cancelled";
     /** Exactly what it would run, when the provider says (autopilot judges approvals on it). */
     call?: ApprovalCall;
+    /** WP-122: the child that asked, so the answer is sent to its port. */
+    child?: { name: string; sessionPort: string; detail?: string };
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;

@@ -48,6 +48,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { ChildApprovalNote } from "./ChildApprovalNote";
 import { GeneratedImage } from "./GeneratedImage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
@@ -5512,7 +5513,7 @@ function ApprovalControls({
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
-  return (
+  const controls = (
     <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
@@ -5530,6 +5531,14 @@ function ApprovalControls({
       </button>
       <span className="self-center text-[11px] text-content/50">Waiting for approval</span>
     </div>
+  );
+  // WP-122: a child's ask is named here. The buttons stay the parent's.
+  if (!approval.child) return controls;
+  return (
+    <>
+      <ChildApprovalNote name={approval.child.name} detail={approval.child.detail} />
+      {controls}
+    </>
   );
 }
 
