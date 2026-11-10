@@ -1,4 +1,4 @@
-# WP-XX: Idle reclaim and hibernation, a quiet chat gives back its process
+# WP-174: Idle reclaim and hibernation, a quiet chat gives back its process
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
