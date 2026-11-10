@@ -34,7 +34,8 @@ export type PageBridgeOptions = {
   approved(): readonly Capability[];
   /** Ash has just tapped inside the page. */
   tapped(): boolean;
-  post(message: unknown): void;
+  /** Return false when the frame did not take the message. Anything else counts as sent. */
+  post(message: unknown): unknown;
   sources: PageSources;
   act?(call: string, args: Record<string, unknown>, ctx: ActionContext): Promise<unknown>;
   /** What answers a write or a hub read (pageCapabilities.ts). Without it an approved call says it isn't connected. */
@@ -44,7 +45,9 @@ export type PageBridgeOptions = {
   onSize?(height: number): void;
 };
 
-type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string; lastError?: string };
+type Watch = { call: LiveRead; args: Record<string, unknown>; off: () => void; timer?: ReturnType<typeof setTimeout>; last?: string; lastError?: string; misses?: number };
+/** A frame that is mid-reload drops a push. Try that snapshot again, then stop so a gone frame does not spin. */
+const MAX_MISSED_PUSHES = 8;
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 
 export class PageBridgeHost {
@@ -140,6 +143,23 @@ export class PageBridgeHost {
 
   private schedule(id: string): void {
     const w = this.watches.get(id);
+    if (!w || this.closed) return;
+    w.misses = 0;
+    if (w.timer) return;
+    this.arm(id);
+  }
+
+  /** The frame missed a push. Same wait as a change, but a bounded number of tries and not a new change. */
+  private retry(id: string): void {
+    const w = this.watches.get(id);
+    if (!w || this.closed || w.timer) return;
+    w.misses = (w.misses ?? 0) + 1;
+    if (w.misses > MAX_MISSED_PUSHES) return;
+    this.arm(id);
+  }
+
+  private arm(id: string): void {
+    const w = this.watches.get(id);
     if (!w || w.timer) return;
     w.timer = setTimeout(() => {
       w.timer = undefined;
@@ -171,8 +191,12 @@ export class PageBridgeHost {
     w.lastError = undefined;
     const text = JSON.stringify(data);
     if (text === w.last) return;
+    if (this.o.post({ type: "hub:data", watch: id, call: w.call, data }) === false) {
+      this.retry(id);
+      return;
+    }
+    w.misses = 0;
     w.last = text;
-    this.o.post({ type: "hub:data", watch: id, call: w.call, data });
   }
 
   private unwatch(id: string): void {

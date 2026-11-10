@@ -239,6 +239,12 @@
       "url": "https://github.com/BarganConstantin/ccdeck",
       "licence": "AGPL-3.0",
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+    },
+    {
+      "name": "Memorilla",
+      "url": "https://github.com/snap-stanford/memorilla",
+      "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+      "gave": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
     }
   ],
   "components": [

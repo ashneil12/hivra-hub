@@ -45,11 +45,28 @@ pub(crate) enum GitFail {
     Rejected,
 }
 
+/// One extra try when git is missing or the wait expires. A command git
+/// rejected is not tried again. The timeout itself is unchanged.
+const TRANSIENT_ATTEMPTS: u32 = 2;
+
 /// Run a child and kill it when the wait exceeds `timeout`.
 pub fn run_limited(mut cmd: Command, timeout: Duration) -> Result<String, GitFail> {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::null());
+    let mut attempt = 0;
+    loop {
+        attempt += 1;
+        match run_once(&mut cmd, timeout) {
+            Err(GitFail::Unavailable) if attempt < TRANSIENT_ATTEMPTS => {
+                thread::sleep(Duration::from_millis(50));
+            }
+            other => return other,
+        }
+    }
+}
+
+fn run_once(cmd: &mut Command, timeout: Duration) -> Result<String, GitFail> {
     let child = cmd.spawn().map_err(|_| GitFail::Unavailable)?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
@@ -311,6 +328,17 @@ mod tests {
         let started = Instant::now();
         let result = super::run_limited(hang(), Duration::from_millis(300));
         assert!(matches!(result, Err(super::GitFail::Unavailable)));
+        // Two tries of the same 300 ms wait, not a longer timeout.
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_rejected_command_is_not_tried_again() {
+        let started = Instant::now();
+        let mut cmd = Command::new("git");
+        cmd.arg("not-a-command");
+        let result = super::run_limited(cmd, Duration::from_secs(3));
+        assert!(matches!(result, Err(super::GitFail::Rejected)));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }
