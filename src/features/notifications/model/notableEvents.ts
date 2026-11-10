@@ -14,7 +14,7 @@ export const NOTABLE_PENDING_LIMIT = 200;
 const TEXT_MAX = 160;
 const ID_MAX = 200;
 
-export const NOTABLE_KINDS = ["ci-red", "held"] as const;
+const NOTABLE_KINDS = ["ci-red", "held"] as const;
 export type NotableKind = (typeof NOTABLE_KINDS)[number];
 
 export type NotableEvent = {
@@ -145,7 +145,6 @@ export function notablePing(events: readonly NotableEvent[]): NotablePing | null
 }
 
 export type FlushOptions = {
-  intervalMs?: number;
   /** Held notices stay while this window is on. Without it nothing is held back. */
   quiet?: QuietHours;
 };
@@ -167,8 +166,6 @@ export type Flush = {
 export function flushNotable(buffer: NotableBuffer, now: number, options: FlushOptions = {}): Flush {
   const none: Flush = { buffer, ping: null, released: [], previousFlushAt: buffer.lastFlushAt };
   if (!buffer.pending.length || !Number.isFinite(now)) return none;
-  const intervalMs = options.intervalMs;
-  const interval = intervalMs !== undefined && Number.isFinite(intervalMs) && intervalMs > 0 ? intervalMs : NOTABLE_FLUSH_MS;
   const keepHeld = isQuietHour(now, options.quiet ?? defaultQuietHours());
   const released = buffer.pending.filter((event) => !(keepHeld && event.kind === "held"));
   if (!released.length) return none;
@@ -177,7 +174,7 @@ export function flushNotable(buffer: NotableBuffer, now: number, options: FlushO
   const windowEnded = !keepHeld && released.some((event) => event.kind === "held");
   const due =
     buffer.lastFlushAt === 0 ||
-    (now >= buffer.lastFlushAt && (windowEnded || now - buffer.lastFlushAt >= interval));
+    (now >= buffer.lastFlushAt && (windowEnded || now - buffer.lastFlushAt >= NOTABLE_FLUSH_MS));
   if (!due) return none;
   return {
     buffer: {
@@ -227,9 +224,14 @@ export function saveNotableBuffer(expectedRevision: number, next: NotableBuffer)
       current = emptyNotableBuffer();
     }
   }
-  if (current.revision !== expectedRevision || next.revision !== expectedRevision + 1) return false;
+  if (!isNextRevision(current, expectedRevision, next)) return false;
   localStorage.setItem(NOTABLE_BUFFER_KEY, JSON.stringify(next));
   return true;
+}
+
+/** A write goes through only on the revision it was read at, and only to the next one. */
+function isNextRevision(current: NotableBuffer, expectedRevision: number, next: NotableBuffer): boolean {
+  return current.revision === expectedRevision && next.revision === expectedRevision + 1;
 }
 
 /** In-memory store with the same revision check as the disk store. */
@@ -241,7 +243,7 @@ export function notableMemory(initial?: NotableBuffer): {
   return {
     read: () => current,
     save: (expectedRevision, next) => {
-      if (current.revision !== expectedRevision || next.revision !== expectedRevision + 1) return false;
+      if (!isNextRevision(current, expectedRevision, next)) return false;
       current = next;
       return true;
     },
@@ -252,7 +254,7 @@ type ReadBuffer = () => NotableBuffer;
 type SaveBuffer = (expectedRevision: number, next: NotableBuffer) => boolean;
 
 /** One attempt. `saved` is false when another writer won or the write threw. */
-export function rememberNotable(
+function rememberNotable(
   read: ReadBuffer,
   save: SaveBuffer,
   raw: unknown,
@@ -355,11 +357,6 @@ export function morningHabitNotes(
   } catch {
     return { text: "", ids: [] };
   }
-}
-
-/** The morning habit's extra note. Any other habit, or a read that throws, adds nothing. */
-export function morningHabitExtra(habitId: string, read: ReadBuffer = readNotableBuffer): string {
-  return morningHabitNotes(habitId, read).text;
 }
 
 /** Drops events a finished morning run was shown. One recorded since stays. True when nothing is left to drop. */

@@ -402,7 +402,7 @@ export function failureNoticeAllowed(
 export type PingResult = "shown" | "off" | "failed";
 
 /** Click target of a batched ping. It names no chat, so a click only brings the app forward. */
-export const NOTABLE_PING_ID = "programme-notices";
+const NOTABLE_PING_ID = "programme-notices";
 
 /**
  * Whether a batched programme ping would be shown: banners on and not denied. It belongs to no chat, so the window

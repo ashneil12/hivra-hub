@@ -8,7 +8,10 @@ import {
   type QuietHours,
 } from "../model/quietHours";
 
-/** From and until, local time, plus the switch. Another window's change updates this one. */
+/**
+ * From and until, local time, plus the switch. Another window's change updates this one. `onChange` is told after
+ * each saved change, so a page that reads the setting elsewhere can draw again (the WP-164 browser fixture does).
+ */
 export function QuietHoursSetting({ onChange }: { onChange?: () => void }) {
   const [quiet, setQuiet] = useState<QuietHours>(() => loadQuietHours());
   useEffect(() => {

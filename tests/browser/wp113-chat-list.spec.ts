@@ -182,3 +182,74 @@ test("Settle is disabled, with the reason, while a listed approval waits on the 
   await expect(page.locator("body")).not.toContainText(/[—–]/);
 });
 
+
+test("a chat with only its own open question can still be settled, and it stays settled", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+  await page.getByRole("button", { name: "Alpha asks a question", exact: true }).click();
+
+  // The question is in the approval ids too (the app lists a chat that needs input), but it is the chat's own.
+  await row(page, "alpha").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Settle", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await pick(page, "alpha", "Settle");
+  await expect(page.locator("[data-inbox-notice]")).toContainText("Settled");
+  await expect(row(page, "alpha")).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(row(page, "alpha")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});
+
+test("a chat with its own open question and a listed approval cannot be settled until the approval is answered", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+
+  // Beta has a question of its own, and a worker's approval is listed on it too.
+  await page.getByRole("button", { name: "Beta asks a question", exact: true }).click();
+  await page.getByRole("button", { name: "Beta approval listed", exact: true }).click();
+
+  await row(page, "beta").click({ button: "right" });
+  const settle = page.getByRole("menuitem", { name: /^Settle/ });
+  await expect(settle).toBeDisabled();
+  await expect(settle).toContainText("Answer its approval first");
+  await settle.click({ force: true });
+  await expect(page.locator("[data-inbox-notice]")).toHaveCount(0);
+  await expect(row(page, "beta")).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Snooze", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+
+  // The approval is answered; the question is still open, and that alone does not hold the settle back.
+  await page.getByRole("button", { name: "Beta listed approval answered", exact: true }).click();
+  await row(page, "beta").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: "Settle", exact: true })).toBeEnabled();
+  await page.keyboard.press("Escape");
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});
+
+test("a chat settled with its own open question comes back for a listed approval, and goes back once answered", async ({ page }) => {
+  await page.goto(PAGE);
+  await setting(page, true);
+
+  // Settled with a question open, which the person did knowing: it stays on the shelf.
+  await page.getByRole("button", { name: "Beta asks a question", exact: true }).click();
+  await pick(page, "beta", "Settle");
+  await expect(row(page, "beta")).toHaveCount(0);
+  await page.waitForTimeout(500);
+  await expect(row(page, "beta")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+
+  // A worker's approval is listed on it: an approval is never hidden, so the chat is back and Settle is off.
+  await page.getByRole("button", { name: "Beta approval listed", exact: true }).click();
+  await expect(row(page, "beta")).toBeVisible();
+  await expect(page.locator("[data-settled-shelf]")).toHaveCount(0);
+  await row(page, "beta").click({ button: "right" });
+  await expect(page.getByRole("menuitem", { name: /^Settle/ })).toBeDisabled();
+  await page.keyboard.press("Escape");
+
+  // Answered: the question was already there when it was settled, so it goes back to the shelf.
+  await page.getByRole("button", { name: "Beta listed approval answered", exact: true }).click();
+  await expect(row(page, "beta")).toHaveCount(0);
+  await expect(page.locator("[data-settled-shelf]")).toContainText("1");
+  await expect(page.locator("body")).not.toContainText(/[—–]/);
+});

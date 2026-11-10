@@ -18,7 +18,6 @@ files early, and to treat compaction as tidying the workbench, not as the only
 safety net.
 
 Companion to MCode Engineering Notes 03, "Keeping long sessions sharp".
-Plain-text checklist: `checklists/long-session.md`.
 
 This skill has two modes. Pick the one that matches the request.
 
@@ -32,8 +31,7 @@ This skill has two modes. Pick the one that matches the request.
    - *Write to a file*: anything that would hurt if lost or is needed in a
      later session (decisions and their reasons, progress, todos, acceptance
      criteria, long-lived rules).
-2. **Write the third bin down now**, in the project's progress or design doc,
-   or via `handoff-doc`.
+2. **Write the third bin down now**, in the project's progress or design doc.
 3. **Choose the next move:**
    - Same task, history just long: compact, and say what comes next and what
      must be kept (for example "focus on the auth refactor, drop the test

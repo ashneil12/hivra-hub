@@ -624,6 +624,18 @@ export async function readBinaryFile(path: string): Promise<Uint8Array> {
 }
 
 /**
+ * The bytes of one of the app's generated images, or null when its file is not here. The path comes from a saved chat,
+ * so the app reads it only from its own generated-images folder (symlinks followed) and answers with nothing for
+ * anything else: gone, outside that folder, or an empty path. Always asked of the app on this Mac, never routed to a
+ * connected machine.
+ */
+export async function readGeneratedImage(path: string): Promise<Uint8Array | null> {
+  if (!path) return null;
+  const buffer = await invokeLocal<ArrayBuffer | null>("read_generated_image", { path });
+  return buffer && buffer.byteLength > 0 ? new Uint8Array(buffer) : null;
+}
+
+/**
  * Bytes of an image a project's Markdown document shows. `path` is relative to
  * `root`, and the file is read only if it resolves inside `root`, symlinks
  * included. A connected machine already keeps every read inside its projects.

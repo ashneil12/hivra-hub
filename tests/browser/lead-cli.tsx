@@ -1,16 +1,11 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { setHarnessAvailability } from "../../src/integrations/harness/core/availabilityState";
 import { LeadCliNotice } from "../../src/features/firstmate/ui/LeadCliNotice";
-import { saveChosenClis } from "../../src/features/hub/model/codingTeamHome";
-import { HARNESSES, type HarnessId } from "../../src/features/sessions/model/session";
+import { type HarnessId } from "../../src/features/sessions/model/session";
 import "../../src/styles/index.css";
+import { installLeadStripHarnesses } from "./leadCliFixtureSetup";
 
-// Every CLI is installed here. Ash ticked Claude Code, Cursor and Pi at first launch; Codex is installed but was not
-// ticked, and Grok and OpenCode were neither. The strip must offer only Claude Code, the one ticked CLI that can lead.
-const availability = Object.fromEntries(HARNESSES.map((id) => [id, true])) as Record<HarnessId, boolean>;
-setHarnessAvailability(availability);
-saveChosenClis(["claude", "cursor", "pi"]);
+installLeadStripHarnesses();
 
 function Fixture() {
   const [harness, setHarness] = useState<HarnessId>("opencode");

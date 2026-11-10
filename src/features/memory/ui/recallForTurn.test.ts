@@ -29,6 +29,7 @@ function fact(text: string, mateId = "notes-lead"): MemoryItem {
   };
 }
 
+const lines = (fence: string | undefined) => (fence ?? "").split("\n").filter((line) => /^- \d{4}-/.test(line));
 const MESSAGE = "What do you remember about writing small commits on a branch?";
 
 beforeEach(() => {
@@ -80,7 +81,6 @@ describe("one recall for every Mono a turn reads", () => {
     mateIds: ["notes-lead", ...OTHERS],
     ...extra,
   });
-  const lines = (fence: string | undefined) => (fence ?? "").split("\n").filter((line) => /^- \d{4}-/.test(line));
   const fences = (fence: string | undefined) => (fence ?? "").split("<untrusted_memory>").length - 1;
 
   beforeEach(() => {
@@ -150,7 +150,6 @@ describe("the same fact saved under several Monos, turn after turn", () => {
   const MONTH = 30 * 86_400_000;
   const SAME = "Writing small commits on every branch";
   const wide = (sessionId: string) => ({ everyMate: true, mateIds: ["notes-lead", "b-lead", "c-lead"], sessionId });
-  const lines = (fence: string | undefined) => (fence ?? "").split("\n").filter((line) => /^- \d{4}-/.test(line));
 
   beforeEach(() => {
     // The turn's own copy is a month older than the other two, so a line that carries its date is its copy.

@@ -29,7 +29,7 @@ export function defaultQuietHours(): QuietHours {
 }
 
 /** "HH:MM", or "HH:MM:SS" from a time input, trimmed. Anything else is refused. */
-export function canonicalTime(value: unknown): string | null {
+function canonicalTime(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const match = /^([01]\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(value.trim());
   if (!match) return null;
