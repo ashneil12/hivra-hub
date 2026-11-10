@@ -668,10 +668,7 @@ pub fn start(request: &StartRequest) -> Result<u32, String> {
     let pid = child.id();
     // Asked of the handle `spawn` returned, so it is this process's start time and no other's.
     #[cfg(windows)]
-    let start_token = {
-        use std::os::windows::io::AsRawHandle;
-        super::process_win::start_token_of(child.as_raw_handle())
-    };
+    let start_token = super::process_win::start_token_of_child(&child);
     #[cfg(not(windows))]
     let start_token: Option<String> = None;
     if let Err(error) = store::save(
@@ -2019,9 +2016,8 @@ pub(crate) mod tests {
     /// Windows only: real processes, so the handle calls are exercised and not just the rules.
     #[cfg(windows)]
     fn record_pid(stack: &Path, child: &std::process::Child) {
-        use std::os::windows::io::AsRawHandle;
         std::fs::create_dir_all(stack).unwrap();
-        let token = super::super::process_win::start_token_of(child.as_raw_handle());
+        let token = super::super::process_win::start_token_of_child(child);
         std::fs::write(
             stack.join("emulate.pid"),
             pid_file_text(child.id(), token.as_deref()),

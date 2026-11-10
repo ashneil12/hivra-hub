@@ -54,7 +54,7 @@ impl Process {
     /// When the process was created, as a Windows file time in digits. This is the same text
     /// the pid file holds, taken from the handle the app got when it started the process.
     pub fn start_token(&self) -> Option<String> {
-        start_token_of(self.0)
+        start_token_raw(self.0)
     }
 
     /// The program file's name, such as `node.exe`, without its folders.
@@ -100,14 +100,19 @@ impl Drop for Process {
     }
 }
 
-/// The creation time of the process `handle` names, in digits. Asked of the handle `spawn`
+/// The creation time of the process `child` is, in digits. Asked of the handle `spawn`
 /// returned, it is the time of the process this app started and no other.
-pub fn start_token_of(handle: HANDLE) -> Option<String> {
+pub fn start_token_of_child(child: &std::process::Child) -> Option<String> {
+    use std::os::windows::io::AsRawHandle;
+    start_token_raw(child.as_raw_handle())
+}
+
+fn start_token_raw(handle: HANDLE) -> Option<String> {
     let mut created = FILETIME::default();
     let mut exited = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
-    // SAFETY: every pointer is to a local that outlives the call.
+    // SAFETY: every pointer is to a local that outlives the call, and the handle is open.
     let ok = unsafe { GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) };
     if ok == 0 {
         return None;
@@ -119,7 +124,6 @@ pub fn start_token_of(handle: HANDLE) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::windows::io::AsRawHandle;
     use std::process::{Command, Stdio};
 
     fn long_running() -> std::process::Child {
@@ -135,7 +139,7 @@ mod tests {
     #[test]
     fn a_held_process_gives_its_start_time_and_image_and_can_be_ended() {
         let mut child = long_running();
-        let spawned = start_token_of(child.as_raw_handle()).expect("a start time at spawn");
+        let spawned = start_token_of_child(&child).expect("a start time at spawn");
         let held = Process::open(child.id(), true)
             .unwrap_or_else(|error| panic!("the process did not open: {error:?}"));
         assert_eq!(held.start_token().as_deref(), Some(spawned.as_str()));

@@ -676,7 +676,15 @@ pub fn resume_names(env: &StackEnv) -> Result<(), String> {
             else {
                 continue;
             };
-            // A name another stack holds is not this stack's. The others stay on it.
+            // A name another stack holds is not this stack's, and an address built on it would
+            // open that stack's app. The app is then reached on its own port.
+            if let Some(app) = entry
+                .names
+                .iter()
+                .find(|name| name.service.is_none() && done.refused.contains(&name.hostname))
+            {
+                entry.url = Some(format!("http://127.0.0.1:{}", app.port));
+            }
             entry
                 .names
                 .retain(|name| !done.refused.contains(&name.hostname));
@@ -5317,6 +5325,12 @@ mod tests {
             .any(|name| name.hostname == "github.main-a.localhost"));
         let note = running.note.expect("a note says a name was not put back");
         assert!(note.contains("another stack"), "{note}");
+        // The address does not name the other stack's app.
+        assert_eq!(
+            running.url,
+            Some(format!("http://127.0.0.1:{app_port}")),
+            "the stack's address still leads to the name another stack holds"
+        );
         drop(app);
     }
 
