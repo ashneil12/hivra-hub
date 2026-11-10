@@ -106,8 +106,10 @@ export function neverMergeReason(pr: { title?: string; branch?: string; labels?:
 
 // ---- the tick ------------------------------------------------------------------------------------------------------
 
+/** The store matches branch names without case (programme enqueue and the open-row check), so the tick does too. */
 function watchFor(row: ProgrammePackage, watches: readonly TickWatch[]): TickWatch | undefined {
-  const mine = watches.filter((w) => w.headRef === row.branch);
+  const branch = row.branch.toLowerCase();
+  const mine = watches.filter((w) => w.headRef.toLowerCase() === branch);
   // A live watch first, then the latest ended one.
   return mine.find((w) => w.state === "watching") ?? mine[mine.length - 1];
 }

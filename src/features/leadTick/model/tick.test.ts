@@ -215,6 +215,19 @@ describe("lead tick step (c): read CI for programme pull requests", () => {
     expect(ports.calls.some((c) => c.startsWith("merge"))).toBe(false);
   });
 
+  it("matches a pull request to its package whatever the case of the branch name", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "building", branch: "wp/200-Thing" })], watches: [watch({ headRef: "wp/200-thing" })] });
+    await runLeadTick(base, ports);
+    expect(ports.calls).toContain("status a pr_open");
+  });
+
+  it("never acts on a merged package, even with a green pull request and Ship on green on", async () => {
+    const ports = fake({ rows: [row({ id: "a", status: "merged" })], watches: [watch({})] });
+    const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.calls.filter((c) => c.startsWith("merge") || c.startsWith("status") || c.startsWith("delegate"))).toEqual([]);
+    expect(result.line).toBe("Nothing on the programme.");
+  });
+
   it("says once that CI failed on a head, not every tick", async () => {
     const rows = [row({ id: "a", status: "pr_open" })];
     const red = [watch({ status: { passed: false, failed: ["test"] } })];
